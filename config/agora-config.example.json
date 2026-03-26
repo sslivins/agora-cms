@@ -1,0 +1,7 @@
+{
+    "api_key": "CHANGE_ME_to_a_secure_random_string",
+    "web_username": "admin",
+    "web_password": "CHANGE_ME_to_a_secure_password",
+    "secret_key": "CHANGE_ME_to_another_secure_random_string",
+    "device_name": "breakroom-01"
+}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Assets — Agora{% endblock %}
+{% block content %}
+<h1>Assets</h1>
+
+<div class="card">
+    <h2>Upload</h2>
+    <form id="upload-form" enctype="multipart/form-data">
+        <input type="file" id="upload-file" name="file" accept=".mp4,.jpg,.jpeg,.png" required>
+        <button type="submit">Upload</button>
+    </form>
+    <div id="upload-status"></div>
+</div>
+
+<div class="card">
+    <h2>Files</h2>
+    {% if assets %}
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Modified</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            <tr>
+                <td>{{ asset.name }}</td>
+                <td>{{ asset.asset_type }}</td>
+                <td>{{ "%.1f MB" | format(asset.size / 1048576) }}</td>
+                <td>{{ asset.modified_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td><button class="btn-sm danger" onclick="deleteAsset('{{ asset.name }}')">Delete</button></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No assets uploaded yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

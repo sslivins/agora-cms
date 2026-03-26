@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Playback — Agora{% endblock %}
+{% block content %}
+<h1>Playback</h1>
+
+<div class="card">
+    <h2>Now Playing</h2>
+    <dl>
+        <dt>Mode</dt>
+        <dd><span class="badge badge-{{ current.mode.value }}">{{ current.mode.value }}</span></dd>
+        <dt>Asset</dt><dd>{{ current.asset or "—" }}</dd>
+        <dt>Loop</dt><dd>{{ "Yes" if current.loop else "No" }}</dd>
+    </dl>
+</div>
+
+<div class="card">
+    <h2>Controls</h2>
+    <form id="play-form" onsubmit="return playAsset(event)">
+        <label for="asset-select">Asset</label>
+        <select id="asset-select" name="asset" required>
+            <option value="">Select an asset…</option>
+            {% for asset in assets %}
+            {% if asset.asset_type in ("video", "image") %}
+            <option value="{{ asset.name }}">{{ asset.name }} ({{ asset.asset_type }})</option>
+            {% endif %}
+            {% endfor %}
+        </select>
+        <label class="checkbox-label">
+            <input type="checkbox" id="loop-check" name="loop"> Loop
+        </label>
+        <div class="button-group">
+            <button type="submit" class="primary">Play</button>
+            <button type="button" onclick="stopPlayback()">Stop</button>
+            <button type="button" onclick="showSplash()">Splash</button>
+        </div>
+    </form>
+    <div id="playback-status"></div>
+</div>
+{% endblock %}

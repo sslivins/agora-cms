@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Agora{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="grid">
+    <div class="card">
+        <h2>Device</h2>
+        <dl>
+            <dt>Name</dt><dd>{{ device_name }}</dd>
+            <dt>Assets</dt><dd>{{ asset_count }}</dd>
+        </dl>
+    </div>
+    <div class="card">
+        <h2>Current State</h2>
+        <dl>
+            <dt>Mode</dt>
+            <dd><span class="badge badge-{{ current.mode.value }}">{{ current.mode.value }}</span></dd>
+            <dt>Asset</dt><dd>{{ current.asset or "—" }}</dd>
+            <dt>Loop</dt><dd>{{ "Yes" if current.loop else "No" }}</dd>
+            <dt>Pipeline</dt><dd>{{ current.pipeline_state }}</dd>
+            {% if current.error %}
+            <dt>Error</dt><dd class="text-error">{{ current.error }}</dd>
+            {% endif %}
+        </dl>
+    </div>
+    <div class="card">
+        <h2>Desired State</h2>
+        <dl>
+            <dt>Mode</dt>
+            <dd><span class="badge badge-{{ desired.mode.value }}">{{ desired.mode.value }}</span></dd>
+            <dt>Asset</dt><dd>{{ desired.asset or "—" }}</dd>
+            <dt>Loop</dt><dd>{{ "Yes" if desired.loop else "No" }}</dd>
+        </dl>
+    </div>
+</div>
+{% endblock %}

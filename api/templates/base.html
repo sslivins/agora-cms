@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Agora{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    {% block nav %}
+    <nav>
+        <div class="nav-brand">Agora</div>
+        <div class="nav-links">
+            <a href="/">Dashboard</a>
+            <a href="/assets">Assets</a>
+            <a href="/playback">Playback</a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+    {% endblock %}
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <script src="/static/app.js"></script>
+</body>
+</html>
