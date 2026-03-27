@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "purge" ]; then
+    # Remove generated config
+    rm -f /boot/agora-config.json
+
+    # Remove runtime data (but not user assets by default)
+    rm -rf /opt/agora/state
+    rm -rf /opt/agora/logs
+    rm -rf /opt/agora/tmp
+
+    # Disable services
+    systemctl disable agora-player agora-api 2>/dev/null || true
+fi
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    systemctl daemon-reload
+fi

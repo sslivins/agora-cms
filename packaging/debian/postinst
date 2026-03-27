@@ -1,0 +1,57 @@
+#!/bin/bash
+set -e
+
+AGORA_USER="mpv"
+AGORA_BASE="/opt/agora"
+
+# ── Create user if needed ──
+if ! id "${AGORA_USER}" &>/dev/null; then
+    useradd -r -m -s /bin/bash "${AGORA_USER}"
+fi
+
+# ── Ensure directory ownership ──
+chown -R "${AGORA_USER}:${AGORA_USER}" "${AGORA_BASE}/assets"
+chown -R "${AGORA_USER}:${AGORA_USER}" "${AGORA_BASE}/state"
+chown -R "${AGORA_USER}:${AGORA_USER}" "${AGORA_BASE}/logs"
+chown -R "${AGORA_USER}:${AGORA_USER}" "${AGORA_BASE}/tmp"
+
+# ── Generate config if first install ──
+BOOT_CONFIG="/boot/agora-config.json"
+if [ ! -f "${BOOT_CONFIG}" ]; then
+    API_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+    SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+    cat > "${BOOT_CONFIG}" <<EOF
+{
+    "api_key": "${API_KEY}",
+    "web_username": "admin",
+    "web_password": "agora",
+    "secret_key": "${SECRET_KEY}",
+    "device_name": "$(hostname)",
+    "default_splash": "splash/default.png"
+}
+EOF
+    chmod 600 "${BOOT_CONFIG}"
+    echo "Agora: generated config at ${BOOT_CONFIG} (default password: agora)"
+fi
+
+# ── Install Python packages ──
+pip3 install --break-system-packages -q \
+    -r "${AGORA_BASE}/src/requirements-api.txt" \
+    -r "${AGORA_BASE}/src/requirements-player.txt" 2>/dev/null \
+|| pip3 install -q \
+    -r "${AGORA_BASE}/src/requirements-api.txt" \
+    -r "${AGORA_BASE}/src/requirements-player.txt"
+
+# ── Plymouth theme ──
+if command -v plymouth-set-default-theme &>/dev/null; then
+    plymouth-set-default-theme splash 2>/dev/null || true
+    update-initramfs -u 2>/dev/null || true
+fi
+
+# ── Enable and restart services ──
+systemctl daemon-reload
+systemctl enable agora-player agora-api
+if [ "$1" = "configure" ]; then
+    systemctl restart agora-player || true
+    systemctl restart agora-api || true
+fi

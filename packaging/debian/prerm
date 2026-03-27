@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+
+# Stop services before removal/upgrade
+if [ "$1" = "remove" ] || [ "$1" = "upgrade" ]; then
+    systemctl stop agora-api || true
+    systemctl stop agora-player || true
+fi

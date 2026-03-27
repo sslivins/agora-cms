@@ -25,3 +25,6 @@ Thumbs.db
 # Agora runtime (never commit secrets or runtime data)
 /config/agora-config.json
 *.tmp
+
+# Build output
+build/
