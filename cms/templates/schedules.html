@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Schedules — Agora CMS{% endblock %}
+{% block content %}
+<h1>Schedules</h1>
+
+<div class="card">
+    <h2>Create Schedule</h2>
+    <form onsubmit="return createSchedule(this)">
+        <div class="form-row">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" name="name" required placeholder="e.g. Morning Promo">
+            </div>
+            <div class="form-group">
+                <label>Asset</label>
+                <select name="asset_id" required>
+                    <option value="">Select asset...</option>
+                    {% for a in assets %}
+                    <option value="{{ a.id }}">{{ a.filename }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Target Type</label>
+                <select name="target_type" id="target_type" onchange="updateTargetOptions()">
+                    <option value="device">Device</option>
+                    <option value="group">Group</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Target</label>
+                <select name="target_id" id="target_id" required>
+                    {% for d in devices %}
+                    <option value="{{ d.id }}" data-type="device">{{ d.name or d.id }}</option>
+                    {% endfor %}
+                    {% for g in groups %}
+                    <option value="{{ g.id }}" data-type="group">{{ g.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Start Time</label>
+                <input type="time" name="start_time" required>
+            </div>
+            <div class="form-group">
+                <label>End Time</label>
+                <input type="time" name="end_time" required>
+            </div>
+            <div class="form-group">
+                <label>Priority</label>
+                <input type="number" name="priority" value="0" min="0" max="100">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Start Date (optional)</label>
+                <input type="date" name="start_date">
+            </div>
+            <div class="form-group">
+                <label>End Date (optional)</label>
+                <input type="date" name="end_date">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Days of Week (leave all unchecked for every day)</label>
+            <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">
+                <label><input type="checkbox" name="day_1"> Mon</label>
+                <label><input type="checkbox" name="day_2"> Tue</label>
+                <label><input type="checkbox" name="day_3"> Wed</label>
+                <label><input type="checkbox" name="day_4"> Thu</label>
+                <label><input type="checkbox" name="day_5"> Fri</label>
+                <label><input type="checkbox" name="day_6"> Sat</label>
+                <label><input type="checkbox" name="day_7"> Sun</label>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Create Schedule</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Active Schedules</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Asset</th>
+                <th>Target</th>
+                <th>Time</th>
+                <th>Days</th>
+                <th>Priority</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in schedules %}
+            <tr>
+                <td>{{ s.name }}</td>
+                <td>{{ s.asset.filename if s.asset else '—' }}</td>
+                <td>
+                    {% if s.device %}{{ s.device.name or s.device.id }}
+                    {% elif s.group %}{{ s.group.name }}
+                    {% else %}—{% endif %}
+                </td>
+                <td>{{ s.start_time.strftime('%H:%M') }}–{{ s.end_time.strftime('%H:%M') }}</td>
+                <td>
+                    {% if s.days_of_week %}
+                        {{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] | select_days(s.days_of_week) }}
+                    {% else %}
+                        Every day
+                    {% endif %}
+                </td>
+                <td>{{ s.priority }}</td>
+                <td>
+                    <button class="btn btn-sm {% if s.enabled %}btn-primary{% else %}btn-danger{% endif %}"
+                            onclick="toggleSchedule('{{ s.id }}', {{ 'false' if s.enabled else 'true' }})">
+                        {{ 'On' if s.enabled else 'Off' }}
+                    </button>
+                </td>
+                <td>
+                    <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="empty">No schedules yet</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updateTargetOptions() {
+    const type = document.getElementById('target_type').value;
+    const options = document.getElementById('target_id').options;
+    for (let opt of options) {
+        opt.hidden = opt.dataset.type !== type;
+    }
+    // Select first visible option
+    for (let opt of options) {
+        if (!opt.hidden) { opt.selected = true; break; }
+    }
+}
+document.addEventListener('DOMContentLoaded', updateTargetOptions);
+</script>
+{% endblock %}

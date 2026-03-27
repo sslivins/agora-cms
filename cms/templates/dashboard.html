@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Agora CMS{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="stats">
+    <div class="stat">
+        <div class="stat-value">{{ device_count }}</div>
+        <div class="stat-label">Total Devices</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ online_count }}</div>
+        <div class="stat-label">Online Now</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ pending_count }}</div>
+        <div class="stat-label">Pending Approval</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ asset_count }}</div>
+        <div class="stat-label">Assets</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ schedule_count }}</div>
+        <div class="stat-label">Active Schedules</div>
+    </div>
+</div>
+
+{% if pending_devices %}
+<div class="card">
+    <h2>Pending Devices</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Device ID</th>
+                <th>Firmware</th>
+                <th>Storage</th>
+                <th>First Seen</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in pending_devices %}
+            <tr>
+                <td>{{ d.id }}</td>
+                <td>{{ d.firmware_version }}</td>
+                <td>{{ d.storage_capacity_mb }} MB</td>
+                <td>{{ d.registered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="actions">
+                    <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Reject</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if recent_devices %}
+<div class="card">
+    <h2>Recently Seen</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Group</th>
+                <th>Last Seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in recent_devices %}
+            <tr>
+                <td>{{ d.name or d.id }}</td>
+                <td>
+                    {% if d.is_online %}
+                    <span class="badge badge-online">Online</span>
+                    {% else %}
+                    <span class="badge badge-{{ d.status }}">{{ d.status }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ d.group.name if d.group else '—' }}</td>
+                <td>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

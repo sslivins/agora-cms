@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Assets — Agora CMS{% endblock %}
+{% block content %}
+<h1>Assets</h1>
+
+<div class="card">
+    <h2>Upload</h2>
+    <form onsubmit="return uploadAsset(this)" enctype="multipart/form-data">
+        <div class="upload-area">
+            <p>Select a video (.mp4) or image (.jpg, .png) to upload</p>
+            <input type="file" name="file" accept=".mp4,.jpg,.jpeg,.png" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Upload</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Library</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Filename</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Uploaded</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in assets %}
+            <tr>
+                <td>{{ a.filename }}</td>
+                <td><span class="badge badge-{{ a.asset_type }}">{{ a.asset_type }}</span></td>
+                <td>{{ "%.1f"|format(a.size_bytes / 1048576) }} MB</td>
+                <td>{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}')">Delete</button></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="empty">No assets uploaded yet</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

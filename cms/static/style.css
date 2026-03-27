@@ -1,0 +1,251 @@
+:root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --primary: #0f3460;
+    --accent: #e94560;
+    --text: #eee;
+    --text-muted: #999;
+    --success: #2ecc71;
+    --warning: #f39c12;
+    --danger: #e74c3c;
+    --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+}
+
+/* Navigation */
+header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--primary);
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.nav-brand {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+.logout-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: color 0.2s;
+}
+.logout-link:hover { color: var(--text); }
+
+nav {
+    background: var(--surface);
+    border-bottom: 1px solid var(--primary);
+    padding: 0 1.5rem;
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+}
+.nav-tab {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 1rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+.nav-tab:hover { color: var(--text); }
+.nav-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* Layout */
+main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+h2 { font-size: 1.2rem; margin-bottom: 1rem; }
+
+/* Cards */
+.card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+/* Stats grid */
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+.stat {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    text-align: center;
+}
+.stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+.stat-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+
+/* Table */
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+th, td {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--primary);
+}
+th {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* Status badges */
+.badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.badge-pending { background: var(--warning); color: #000; }
+.badge-approved { background: var(--success); color: #000; }
+.badge-offline { background: var(--text-muted); color: #000; }
+.badge-online { background: var(--success); color: #000; }
+.badge-video { background: var(--primary); color: var(--text); }
+.badge-image { background: #8e44ad; color: var(--text); }
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 0.9rem;
+    text-decoration: none;
+    transition: opacity 0.2s;
+}
+.btn:hover { opacity: 0.85; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-warn { background: var(--warning); color: #000; }
+.btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text); }
+.btn-small:hover { opacity: 0.85; }
+.btn-small.btn-warn { background: var(--warning); color: #000; }
+.btn-small.btn-danger { background: var(--danger); color: #fff; }
+
+/* Forms */
+.form-group {
+    margin-bottom: 1rem;
+}
+.form-group label {
+    display: block;
+    margin-bottom: 0.3rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+.form-group input,
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+}
+.form-row {
+    display: flex;
+    gap: 1rem;
+}
+.form-row .form-group { flex: 1; }
+
+/* Login */
+.login-container {
+    max-width: 360px;
+    margin: 10vh auto;
+}
+.login-container h1 {
+    text-align: center;
+    color: var(--accent);
+}
+.login-container .btn { width: 100%; margin-top: 0.5rem; }
+
+/* Upload */
+.upload-area {
+    border: 2px dashed var(--primary);
+    border-radius: var(--radius);
+    padding: 2rem;
+    text-align: center;
+    margin-bottom: 1rem;
+    transition: border-color 0.2s;
+}
+.upload-area:hover { border-color: var(--accent); }
+.upload-area input[type="file"] { margin-top: 0.5rem; }
+
+/* Empty state */
+.empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 3rem;
+}
+
+/* Actions row */
+.actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* Token-specific */
+.token-value {
+    font-family: monospace;
+    font-size: 0.75rem;
+    background: var(--bg);
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    word-break: break-all;
+    max-width: 200px;
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+.row-inactive { opacity: 0.5; }
+.empty-message { color: var(--text-muted); padding: 1.5rem; text-align: center; }
+.help-steps { padding-left: 1.5rem; color: var(--text-muted); }
+.help-steps li { margin-bottom: 0.5rem; }
+.help-steps strong { color: var(--text); }
+.help-steps code { background: var(--bg); padding: 0.15rem 0.3rem; border-radius: 4px; font-size: 0.85rem; }

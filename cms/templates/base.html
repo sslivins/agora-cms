@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Agora CMS{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    {% block nav %}
+    <header>
+        <div class="nav-brand">Agora CMS</div>
+        <a href="/logout" class="logout-link">Logout</a>
+    </header>
+    <nav>
+        <a href="/" class="nav-tab {% if active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="/devices" class="nav-tab {% if active_tab == 'devices' %}active{% endif %}">Devices</a>
+        <a href="/assets" class="nav-tab {% if active_tab == 'assets' %}active{% endif %}">Assets</a>
+        <a href="/schedules" class="nav-tab {% if active_tab == 'schedules' %}active{% endif %}">Schedules</a>
+        <a href="/tokens" class="nav-tab {% if active_tab == 'tokens' %}active{% endif %}">Tokens</a>
+    </nav>
+    {% endblock %}
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <script src="/static/app.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

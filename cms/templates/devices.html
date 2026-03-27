@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Devices — Agora CMS{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Device ID</th>
+                <th>Status</th>
+                <th>Group</th>
+                <th>Firmware</th>
+                <th>Storage</th>
+                <th>Last Seen</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in devices %}
+            <tr>
+                <td>{{ d.name or '—' }}</td>
+                <td style="font-family: monospace; font-size: 0.8rem;">{{ d.id }}</td>
+                <td>
+                    {% if d.is_online %}
+                    <span class="badge badge-online">Online</span>
+                    {% else %}
+                    <span class="badge badge-{{ d.status }}">{{ d.status }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ d.group.name if d.group else '—' }}</td>
+                <td>{{ d.firmware_version or '—' }}</td>
+                <td>{{ d.storage_used_mb }}/{{ d.storage_capacity_mb }} MB</td>
+                <td>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
+                <td class="actions">
+                    {% if d.status == 'pending' %}
+                    <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
+                    {% endif %}
+                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="empty">No devices registered yet</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<h2>Device Groups</h2>
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Devices</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for g in groups %}
+            <tr>
+                <td>{{ g.name }}</td>
+                <td>{{ g.description }}</td>
+                <td>{{ g.device_count }}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')">Delete</button></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="empty">No groups</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: end;">
+        <div class="form-group" style="margin: 0; flex: 1;">
+            <input type="text" id="group-name" placeholder="Group name">
+        </div>
+        <div class="form-group" style="margin: 0; flex: 2;">
+            <input type="text" id="group-desc" placeholder="Description (optional)">
+        </div>
+        <button class="btn btn-primary" onclick="createGroup()">Add Group</button>
+    </div>
+</div>
+{% endblock %}
