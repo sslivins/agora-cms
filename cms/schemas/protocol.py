@@ -31,6 +31,7 @@ class MessageType(str, Enum):
     FETCH_ASSET = "fetch_asset"
     DELETE_ASSET = "delete_asset"
     CONFIG = "config"
+    AUTH_ASSIGNED = "auth_assigned"
 
 
 class BaseMessage(BaseModel):
@@ -118,3 +119,8 @@ class ConfigMessage(BaseMessage):
     type: MessageType = MessageType.CONFIG
     splash: Optional[str] = None
     device_name: Optional[str] = None
+
+
+class AuthAssignedMessage(BaseMessage):
+    type: MessageType = MessageType.AUTH_ASSIGNED
+    device_auth_token: str

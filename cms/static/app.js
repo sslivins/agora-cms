@@ -77,6 +77,42 @@ async function toggleSchedule(scheduleId, enabled) {
     if (resp && resp.ok) location.reload();
 }
 
+// ── Token actions ──
+async function createToken(form) {
+    const data = new FormData(form);
+    const body = {
+        label: data.get("label") || "",
+        max_uses: parseInt(data.get("max_uses") || "1"),
+    };
+    const expires = data.get("expires_at");
+    if (expires) body.expires_at = new Date(expires).toISOString();
+
+    const resp = await apiCall("POST", "/api/tokens", body);
+    if (resp && resp.ok) location.reload();
+    else if (resp) {
+        const err = await resp.json();
+        alert(err.detail || "Failed to create token");
+    }
+    return false;
+}
+
+function copyToken(elementId) {
+    const el = document.getElementById(elementId);
+    navigator.clipboard.writeText(el.textContent.trim());
+}
+
+async function revokeToken(tokenId) {
+    if (!confirm("Revoke this token? Devices can no longer register with it.")) return;
+    const resp = await apiCall("POST", `/api/tokens/${tokenId}/revoke`);
+    if (resp && resp.ok) location.reload();
+}
+
+async function deleteToken(tokenId) {
+    if (!confirm("Delete this token permanently?")) return;
+    const resp = await apiCall("DELETE", `/api/tokens/${tokenId}`);
+    if (resp && resp.ok) location.reload();
+}
+
 async function createSchedule(form) {
     const data = new FormData(form);
     const body = {

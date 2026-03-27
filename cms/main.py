@@ -39,6 +39,7 @@ app.mount("/static", StaticFiles(directory="cms/static"), name="static")
 # API routes
 from cms.routers.assets import router as assets_router  # noqa: E402
 from cms.routers.devices import router as devices_router  # noqa: E402
+from cms.routers.registration_tokens import router as tokens_router  # noqa: E402
 from cms.routers.schedules import router as schedules_router  # noqa: E402
 from cms.routers.ws import router as ws_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
@@ -46,5 +47,6 @@ from cms.ui import router as ui_router  # noqa: E402
 app.include_router(devices_router)
 app.include_router(assets_router)
 app.include_router(schedules_router)
+app.include_router(tokens_router)
 app.include_router(ws_router)
 app.include_router(ui_router)

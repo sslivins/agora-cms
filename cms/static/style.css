@@ -157,7 +157,12 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn:hover { opacity: 0.85; }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-danger { background: var(--danger); color: #fff; }
+.btn-warn { background: var(--warning); color: #000; }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text); }
+.btn-small:hover { opacity: 0.85; }
+.btn-small.btn-warn { background: var(--warning); color: #000; }
+.btn-small.btn-danger { background: var(--danger); color: #fff; }
 
 /* Forms */
 .form-group {
@@ -222,3 +227,25 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     gap: 0.5rem;
     align-items: center;
 }
+
+/* Token-specific */
+.token-value {
+    font-family: monospace;
+    font-size: 0.75rem;
+    background: var(--bg);
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    word-break: break-all;
+    max-width: 200px;
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+.row-inactive { opacity: 0.5; }
+.empty-message { color: var(--text-muted); padding: 1.5rem; text-align: center; }
+.help-steps { padding-left: 1.5rem; color: var(--text-muted); }
+.help-steps li { margin-bottom: 0.5rem; }
+.help-steps strong { color: var(--text); }
+.help-steps code { background: var(--bg); padding: 0.15rem 0.3rem; border-radius: 4px; font-size: 0.85rem; }

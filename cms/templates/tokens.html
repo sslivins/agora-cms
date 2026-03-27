@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Registration Tokens — Agora CMS{% endblock %}
+{% block content %}
+<h1>Registration Tokens</h1>
+
+<section class="card">
+    <h2>Generate Token</h2>
+    <form onsubmit="return createToken(this)">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="token-label">Label</label>
+                <input type="text" id="token-label" name="label" placeholder="e.g. Batch 1 — Office TVs">
+            </div>
+            <div class="form-group">
+                <label for="token-max-uses">Max Uses</label>
+                <input type="number" id="token-max-uses" name="max_uses" value="1" min="1">
+            </div>
+            <div class="form-group">
+                <label for="token-expires">Expires (optional)</label>
+                <input type="datetime-local" id="token-expires" name="expires_at">
+            </div>
+        </div>
+        <button type="submit" class="btn-primary">Generate Token</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Active Tokens</h2>
+    {% if tokens %}
+    <table>
+        <thead>
+            <tr>
+                <th>Label</th>
+                <th>Token</th>
+                <th>Uses</th>
+                <th>Expires</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in tokens %}
+            <tr class="{{ 'row-inactive' if not t.is_active }}">
+                <td>{{ t.label or '—' }}</td>
+                <td>
+                    <code class="token-value" id="tok-{{ t.id }}">{{ t.token }}</code>
+                    <button class="btn-small" onclick="copyToken('tok-{{ t.id }}')">Copy</button>
+                </td>
+                <td>{{ t.use_count }} / {{ t.max_uses }}</td>
+                <td>{{ t.expires_at.strftime('%Y-%m-%d %H:%M') if t.expires_at else 'Never' }}</td>
+                <td>{{ t.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td>
+                    {% if t.is_active %}
+                    <button class="btn-small btn-warn" onclick="revokeToken('{{ t.id }}')">Revoke</button>
+                    {% else %}
+                    <span class="badge badge-offline">Revoked</span>
+                    {% endif %}
+                    <button class="btn-small btn-danger" onclick="deleteToken('{{ t.id }}')">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-message">No registration tokens. Generate one to allow devices to register.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>How It Works</h2>
+    <ol class="help-steps">
+        <li><strong>Generate a token</strong> above (single-use or batch).</li>
+        <li><strong>Put the token in the device's config</strong> — add <code>"registration_token": "TOKEN"</code> to <code>/boot/agora-config.json</code> when flashing the SD card.</li>
+        <li><strong>Device connects</strong> using the registration token. It appears as <em>Pending</em> in the Devices page.</li>
+        <li><strong>Approve the device</strong> — the CMS generates a unique device auth token and pushes it to the device.</li>
+        <li><strong>On reconnect</strong>, the device uses its device auth token (not the registration token).</li>
+    </ol>
+</section>
+{% endblock %}
