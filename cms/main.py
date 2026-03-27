@@ -3,7 +3,9 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from cms import __version__
@@ -32,6 +34,20 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HTTPException)
+async def unauthorized_redirect(request: Request, exc: HTTPException):
+    """Redirect browser requests to /login on 401, return JSON for API calls."""
+    if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept:
+            return RedirectResponse(url="/login", status_code=303)
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
 
 # Static files
 app.mount("/static", StaticFiles(directory="cms/static"), name="static")
