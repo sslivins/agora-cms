@@ -1,0 +1,366 @@
+openapi: 3.0.3
+info:
+  title: Agora
+  description: >
+    Media playback system for Raspberry Pi — REST API for asset management,
+    playback control, and status monitoring. Content is uploaded and controlled
+    through this API, while a separate player service handles GStreamer pipelines.
+  version: 0.1.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://{host}:8000/api/v1
+    description: Agora device
+    variables:
+      host:
+        default: agora.local
+
+security:
+  - apiKey: []
+  - sessionCookie: []
+
+tags:
+  - name: status
+    description: Health check and system status
+  - name: playback
+    description: Media playback control
+  - name: assets
+    description: Asset upload, listing, and management
+
+paths:
+  /health:
+    get:
+      tags: [status]
+      summary: Health check
+      description: Returns device health — no authentication required.
+      security: []
+      operationId: health
+      responses:
+        "200":
+          description: Device is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /status:
+    get:
+      tags: [status]
+      summary: System status
+      description: >
+        Returns the current and desired playback states plus an asset count.
+      operationId: getStatus
+      responses:
+        "200":
+          description: Current system status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /play:
+    post:
+      tags: [playback]
+      summary: Play an asset
+      description: >
+        Begin playback of a named asset. The asset must already exist on the
+        device (uploaded via `/assets/upload`).
+      operationId: play
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlayRequest"
+      responses:
+        "200":
+          description: Playback started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Asset not found.
+
+  /stop:
+    post:
+      tags: [playback]
+      summary: Stop playback
+      description: >
+        Stop the current playback and return to the splash screen.
+      operationId: stop
+      responses:
+        "200":
+          description: Playback stopped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /splash:
+    post:
+      tags: [playback]
+      summary: Show splash screen
+      description: >
+        Switch to the splash screen. If a splash asset exists in the splash
+        directory it will be displayed; otherwise the built-in default is used.
+      operationId: splash
+      responses:
+        "200":
+          description: Splash screen shown.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /assets:
+    get:
+      tags: [assets]
+      summary: List assets
+      description: Returns all assets across videos, images, and splash directories.
+      operationId: listAssets
+      responses:
+        "200":
+          description: Asset list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AssetInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /assets/upload:
+    post:
+      tags: [assets]
+      summary: Upload an asset
+      description: >
+        Upload a media file. Supported formats: `.mp4`, `.jpg`, `.jpeg`, `.png`.
+        Maximum file size is 500 MB.
+      operationId: uploadAsset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The media file to upload.
+      responses:
+        "200":
+          description: Upload successful.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetInfo"
+        "400":
+          description: Invalid filename or unsupported file type.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: File too large.
+
+  /assets/{name}:
+    delete:
+      tags: [assets]
+      summary: Delete an asset
+      description: Remove an asset from the device.
+      operationId: deleteAsset
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Filename of the asset to delete.
+      responses:
+        "200":
+          description: Asset deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Asset not found.
+
+  /assets/{name}/set-splash:
+    post:
+      tags: [assets]
+      summary: Set asset as splash screen
+      description: >
+        Copy an existing asset (from videos or images) to the splash directory,
+        replacing any existing splash. The asset will be shown when playback is
+        stopped or the splash endpoint is called.
+      operationId: setSplash
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Filename of the asset to use as splash.
+      responses:
+        "200":
+          description: Splash set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  splash:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Asset not found.
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key passed via header.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: agora_session
+      description: Signed session cookie (set after web login).
+
+  responses:
+    Unauthorized:
+      description: Authentication required.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail:
+                type: string
+                example: Not authenticated
+
+  schemas:
+    PlaybackMode:
+      type: string
+      enum: [play, stop, splash]
+
+    DesiredState:
+      type: object
+      properties:
+        mode:
+          $ref: "#/components/schemas/PlaybackMode"
+        asset:
+          type: string
+          nullable: true
+        loop:
+          type: boolean
+        timestamp:
+          type: string
+          format: date-time
+
+    CurrentState:
+      type: object
+      properties:
+        mode:
+          $ref: "#/components/schemas/PlaybackMode"
+        asset:
+          type: string
+          nullable: true
+        loop:
+          type: boolean
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        pipeline_state:
+          type: string
+          example: PLAYING
+        error:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        device_name:
+          type: string
+          example: agora-node
+        version:
+          type: string
+          example: 0.1.0
+        uptime_seconds:
+          type: number
+          format: float
+
+    StatusResponse:
+      type: object
+      properties:
+        device_name:
+          type: string
+        current_state:
+          $ref: "#/components/schemas/CurrentState"
+        desired_state:
+          $ref: "#/components/schemas/DesiredState"
+        asset_count:
+          type: integer
+
+    PlayRequest:
+      type: object
+      required: [asset]
+      properties:
+        asset:
+          type: string
+          description: Filename of the asset to play.
+        loop:
+          type: boolean
+          default: false
+
+    PlaybackResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        desired:
+          $ref: "#/components/schemas/DesiredState"
+
+    AssetInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: video.mp4
+        size:
+          type: integer
+          description: File size in bytes.
+        modified_at:
+          type: string
+          format: date-time
+        asset_type:
+          type: string
+          enum: [video, image, splash]

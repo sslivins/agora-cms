@@ -15,6 +15,7 @@ def atomic_write(path: Path, data: str) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(data)
+        os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, path)
     except BaseException:
         try:

@@ -1,7 +1,9 @@
 """Agora Player Service — watches desired state and manages GStreamer pipelines."""
 
 import logging
+import os
 import signal
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +35,8 @@ class AgoraPlayer:
         "decodebin ! videoconvert ! imagefreeze ! kmssink sync=false"
     )
 
+    DEFAULT_SPLASH = Path(__file__).parent / "default_splash.png"
+
     def __init__(self, base_path: str = "/opt/agora"):
         self.base = Path(base_path)
         self.state_dir = self.base / "state"
@@ -58,15 +62,17 @@ class AgoraPlayer:
 
     def _find_splash(self) -> Optional[Path]:
         splash_dir = self.assets_dir / "splash"
-        if not splash_dir.exists():
-            return None
-        # Prefer MP4 splash (loopable), fall back to image
-        for f in sorted(splash_dir.iterdir()):
-            if f.suffix.lower() == ".mp4":
-                return f
-        for f in sorted(splash_dir.iterdir()):
-            if f.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                return f
+        if splash_dir.exists():
+            # Prefer MP4 splash (loopable), fall back to image
+            for f in sorted(splash_dir.iterdir()):
+                if f.suffix.lower() == ".mp4":
+                    return f
+            for f in sorted(splash_dir.iterdir()):
+                if f.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                    return f
+        # Fall back to built-in default splash
+        if self.DEFAULT_SPLASH.is_file():
+            return self.DEFAULT_SPLASH
         return None
 
     # ── Pipeline management ──
@@ -179,8 +185,7 @@ class AgoraPlayer:
         self.current_desired = desired
 
         if desired.mode == PlaybackMode.STOP:
-            self._teardown()
-            self._update_current(mode=PlaybackMode.STOP)
+            self._show_splash()
             return
 
         if desired.mode == PlaybackMode.SPLASH:
@@ -232,9 +237,50 @@ class AgoraPlayer:
 
     # ── Main loop ──
 
+    @staticmethod
+    def _blank_console() -> None:
+        """Disable VT console and clear framebuffer so nothing bleeds through during transitions."""
+        try:
+            # Unbind VT console from framebuffer
+            vtcon = Path("/sys/class/vtconsole/vtcon1/bind")
+            if vtcon.exists():
+                vtcon.write_text("0")
+                logger.info("Unbound VT console from framebuffer")
+
+            # Blank all virtual terminals
+            for tty_num in range(1, 7):
+                tty_path = f"/dev/tty{tty_num}"
+                if os.path.exists(tty_path):
+                    subprocess.run(
+                        ["/usr/bin/setterm", "--blank", "force", "--term", "linux"],
+                        stdin=open(tty_path),
+                        stdout=open(tty_path, "w"),
+                        stderr=subprocess.DEVNULL,
+                    )
+
+            # Clear the framebuffer to black
+            fb_path = Path("/dev/fb0")
+            if fb_path.exists():
+                with open(fb_path, "wb") as fb:
+                    # 1920x1080 @ 16bpp = 4,147,200 bytes
+                    # Write in chunks to avoid large memory allocation
+                    chunk = b"\x00" * 65536
+                    total = 1920 * 1080 * 2
+                    written = 0
+                    while written < total:
+                        to_write = min(len(chunk), total - written)
+                        fb.write(chunk[:to_write])
+                        written += to_write
+                logger.info("Cleared framebuffer to black")
+        except Exception as e:
+            logger.warning("Could not blank console: %s", e)
+
     def run(self) -> None:
         logger.info("Agora Player starting")
         self.state_dir.mkdir(parents=True, exist_ok=True)
+
+        # Blank the Linux VT console so it doesn't show during transitions
+        self._blank_console()
 
         # Apply initial state
         self.apply_desired()

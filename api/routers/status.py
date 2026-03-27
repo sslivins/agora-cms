@@ -2,6 +2,7 @@ import time
 
 from fastapi import APIRouter, Depends, Request
 
+from api import __version__
 from api.auth import get_settings, require_auth
 from api.config import Settings
 from shared.models import CurrentState, DesiredState, HealthResponse, StatusResponse
@@ -14,6 +15,7 @@ router = APIRouter()
 async def health(request: Request, settings: Settings = Depends(get_settings)):
     return HealthResponse(
         device_name=settings.device_name,
+        version=__version__,
         uptime_seconds=time.time() - request.app.state.start_time,
     )
 

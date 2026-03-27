@@ -8,14 +8,14 @@
 </head>
 <body>
     {% block nav %}
-    <nav>
+    <header>
         <div class="nav-brand">Agora</div>
-        <div class="nav-links">
-            <a href="/">Dashboard</a>
-            <a href="/assets">Assets</a>
-            <a href="/playback">Playback</a>
-            <a href="/logout">Logout</a>
-        </div>
+        <a href="/logout" class="logout-link">Logout</a>
+    </header>
+    <nav>
+        <a href="/" class="nav-tab {% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
+        <a href="/assets" class="nav-tab {% if request.url.path == '/assets' %}active{% endif %}">Assets</a>
+        <a href="/playback" class="nav-tab {% if request.url.path == '/playback' %}active{% endif %}">Playback</a>
     </nav>
     {% endblock %}
     <main>

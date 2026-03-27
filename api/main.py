@@ -5,12 +5,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from api import __version__
 from api.auth import WebAuthRequired
 from api.config import load_settings
 from api.routers import assets, playback, status
 from api.ui import router as ui_router
 
-app = FastAPI(title="Agora API", version="1.0.0")
+app = FastAPI(
+    title="Agora",
+    description="Media playback system for Raspberry Pi — REST API for asset management, playback control, and status monitoring.",
+    version=__version__,
+)
 
 # Load config and initialize directories
 settings = load_settings()

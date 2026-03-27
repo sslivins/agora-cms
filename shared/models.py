@@ -45,6 +45,7 @@ class PlayRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str = "ok"
     device_name: str
+    version: str = ""
     uptime_seconds: float
 
 

@@ -1,11 +1,12 @@
 import os
 import re
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
 from api.auth import get_settings, require_auth
 from api.config import Settings
@@ -68,49 +69,54 @@ def _list_assets(settings: Settings) -> List[AssetInfo]:
 
 @router.post("/assets/upload", response_model=AssetInfo)
 async def upload_asset(
-    file: UploadFile,
+    request: Request,
     settings: Settings = Depends(get_settings),
 ):
-    name = _sanitize_filename(file.filename or "upload.mp4")
-    ext = Path(name).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
-
-    atype = _asset_type_for(name)
-    target_dir = _target_dir(atype, settings)
-    target = target_dir / name
-
-    # Atomic write: temp file in same directory, then rename
-    fd, tmp_path = tempfile.mkstemp(dir=str(target_dir), suffix=".tmp")
+    form = await request.form(max_part_size=settings.max_upload_bytes)
     try:
-        total = 0
-        with os.fdopen(fd, "wb") as f:
-            while chunk := await file.read(256 * 1024):
-                total += len(chunk)
-                if total > settings.max_upload_bytes:
-                    raise HTTPException(status_code=413, detail="File too large")
-                f.write(chunk)
-        os.replace(tmp_path, target)
-    except HTTPException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail="Upload failed")
+        file: UploadFile = form["file"]
+        name = _sanitize_filename(file.filename or "upload.mp4")
+        ext = Path(name).suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
 
-    stat = target.stat()
-    return AssetInfo(
-        name=name,
-        size=stat.st_size,
-        modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-        asset_type=atype,
-    )
+        atype = _asset_type_for(name)
+        target_dir = _target_dir(atype, settings)
+        target = target_dir / name
+
+        # Atomic write: temp file in same directory, then rename
+        fd, tmp_path = tempfile.mkstemp(dir=str(target_dir), suffix=".tmp")
+        try:
+            total = 0
+            with os.fdopen(fd, "wb") as f:
+                while chunk := await file.read(256 * 1024):
+                    total += len(chunk)
+                    if total > settings.max_upload_bytes:
+                        raise HTTPException(status_code=413, detail="File too large")
+                    f.write(chunk)
+            os.replace(tmp_path, target)
+        except HTTPException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise HTTPException(status_code=500, detail="Upload failed")
+
+        stat = target.stat()
+        return AssetInfo(
+            name=name,
+            size=stat.st_size,
+            modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            asset_type=atype,
+        )
+    finally:
+        await form.close()
 
 
 @router.get("/assets", response_model=List[AssetInfo])
@@ -127,3 +133,25 @@ async def delete_asset(name: str, settings: Settings = Depends(get_settings)):
             target.unlink()
             return {"deleted": name}
     raise HTTPException(status_code=404, detail="Asset not found")
+
+
+@router.post("/assets/{name}/set-splash")
+async def set_splash(name: str, settings: Settings = Depends(get_settings)):
+    name = _sanitize_filename(name)
+    # Find the asset in videos or images
+    source = None
+    for subdir in [settings.videos_dir, settings.images_dir]:
+        candidate = subdir / name
+        if candidate.is_file():
+            source = candidate
+            break
+    if not source:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    # Clear existing splash files and copy this one
+    if settings.splash_dir.exists():
+        for f in settings.splash_dir.iterdir():
+            if f.is_file():
+                f.unlink()
+    dest = settings.splash_dir / name
+    shutil.copy2(str(source), str(dest))
+    return {"splash": name}

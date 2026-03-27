@@ -22,7 +22,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 @router.get("/login")
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html")
 
 
 @router.post("/login")
@@ -39,8 +39,9 @@ async def login_submit(
         create_session(response, username, settings)
         return response
     return templates.TemplateResponse(
+        request,
         "login.html",
-        {"request": request, "error": "Invalid credentials"},
+        context={"error": "Invalid credentials"},
         status_code=401,
     )
 
@@ -65,9 +66,9 @@ async def dashboard(
         if subdir.exists():
             asset_count += sum(1 for f in subdir.iterdir() if f.is_file())
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
-        {
-            "request": request,
+        context={
             "user": user,
             "current": current,
             "desired": desired,
@@ -87,8 +88,9 @@ async def assets_page(
 
     assets = _list_assets(settings)
     return templates.TemplateResponse(
+        request,
         "assets.html",
-        {"request": request, "user": user, "assets": assets},
+        context={"user": user, "assets": assets},
     )
 
 
@@ -103,6 +105,7 @@ async def playback_page(
     current = read_state(settings.current_state_path, CurrentState)
     assets = _list_assets(settings)
     return templates.TemplateResponse(
+        request,
         "playback.html",
-        {"request": request, "user": user, "current": current, "assets": assets},
+        context={"user": user, "current": current, "assets": assets},
     )

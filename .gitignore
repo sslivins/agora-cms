@@ -19,6 +19,9 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+# Secrets
+.env
+
 # Agora runtime (never commit secrets or runtime data)
 /config/agora-config.json
 *.tmp
