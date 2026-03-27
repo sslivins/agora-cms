@@ -46,6 +46,13 @@ Two processes, communicating via JSON state files on disk (`desired.json` and `c
 - API version lives in `api/__init__.py` (`__version__`)
 - **Whenever API endpoints are added, changed, or removed, update `docs/openapi.yaml` to match.**
 
+## Git Workflow
+
+- **`main` is sacred** — never commit directly to `main`.
+- All changes must be made on a feature branch and merged via pull request.
+- Branch naming: `feature/<short-description>`, `fix/<short-description>`, `chore/<short-description>`.
+- Bump the version in `api/__init__.py` and `docs/openapi.yaml` when shipping user-facing changes.
+
 ## Hardware Target
 
 Raspberry Pi Zero 2 W — ARM Cortex-A53, limited RAM/CPU. Keep resource usage minimal. GStreamer pipelines use hardware H.264 decoding (`v4l2h264dec`) and KMS display sink (`kmssink`).

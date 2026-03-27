@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,20 +137,22 @@ async def delete_asset(name: str, settings: Settings = Depends(get_settings)):
 @router.post("/assets/{name}/set-splash")
 async def set_splash(name: str, settings: Settings = Depends(get_settings)):
     name = _sanitize_filename(name)
-    # Find the asset in videos or images
-    source = None
-    for subdir in [settings.videos_dir, settings.images_dir]:
-        candidate = subdir / name
-        if candidate.is_file():
-            source = candidate
+    # Verify the asset exists
+    found = False
+    for subdir in [settings.videos_dir, settings.images_dir, settings.splash_dir]:
+        if (subdir / name).is_file():
+            found = True
             break
-    if not source:
+    if not found:
         raise HTTPException(status_code=404, detail="Asset not found")
-    # Clear existing splash files and copy this one
-    if settings.splash_dir.exists():
-        for f in settings.splash_dir.iterdir():
-            if f.is_file():
-                f.unlink()
-    dest = settings.splash_dir / name
-    shutil.copy2(str(source), str(dest))
+    # Write the asset name to the splash config file
+    settings.splash_config_path.write_text(name)
     return {"splash": name}
+
+
+@router.delete("/assets/splash")
+async def clear_splash(settings: Settings = Depends(get_settings)):
+    """Clear the user-set splash, reverting to the default."""
+    if settings.splash_config_path.is_file():
+        settings.splash_config_path.unlink()
+    return {"splash": None}

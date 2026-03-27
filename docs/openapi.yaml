@@ -5,7 +5,7 @@ info:
     Media playback system for Raspberry Pi — REST API for asset management,
     playback control, and status monitoring. Content is uploaded and controlled
     through this API, while a separate player service handles GStreamer pipelines.
-  version: 0.1.0
+  version: 0.2.0
   license:
     name: MIT
 
@@ -207,9 +207,9 @@ paths:
       tags: [assets]
       summary: Set asset as splash screen
       description: >
-        Copy an existing asset (from videos or images) to the splash directory,
-        replacing any existing splash. The asset will be shown when playback is
-        stopped or the splash endpoint is called.
+        Configure an existing asset (from videos, images, or splash) as the
+        active splash screen. The asset will be shown when playback is stopped
+        or the splash endpoint is called. Does not move or copy the file.
       operationId: setSplash
       parameters:
         - name: name
@@ -232,6 +232,27 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: Asset not found.
+
+  /assets/splash:
+    delete:
+      tags: [assets]
+      summary: Clear splash override
+      description: >
+        Remove the user-configured splash screen, reverting to the default
+        splash defined in the system configuration.
+      operationId: clearSplash
+      responses:
+        "200":
+          description: Splash cleared, default will be used.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  splash:
+                    type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
 components:
   securitySchemes:
@@ -312,7 +333,7 @@ components:
           example: agora-node
         version:
           type: string
-          example: 0.1.0
+          example: 0.2.0
         uptime_seconds:
           type: number
           format: float
