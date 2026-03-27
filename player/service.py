@@ -1,5 +1,6 @@
 """Agora Player Service — watches desired state and manages GStreamer pipelines."""
 
+import json
 import logging
 import os
 import signal
@@ -35,7 +36,7 @@ class AgoraPlayer:
         "decodebin ! videoconvert ! imagefreeze ! kmssink sync=false"
     )
 
-    DEFAULT_SPLASH = Path(__file__).parent / "default_splash.png"
+    DEFAULT_SPLASH_CONFIG = "splash/default.png"
 
     def __init__(self, base_path: str = "/opt/agora"):
         self.base = Path(base_path)
@@ -43,6 +44,7 @@ class AgoraPlayer:
         self.assets_dir = self.base / "assets"
         self.desired_path = self.state_dir / "desired.json"
         self.current_path = self.state_dir / "current.json"
+        self.splash_config_path = self.state_dir / "splash"
 
         self.pipeline: Optional[Gst.Pipeline] = None
         self.loop = GLib.MainLoop()
@@ -61,18 +63,30 @@ class AgoraPlayer:
         return None
 
     def _find_splash(self) -> Optional[Path]:
-        splash_dir = self.assets_dir / "splash"
-        if splash_dir.exists():
-            # Prefer MP4 splash (loopable), fall back to image
-            for f in sorted(splash_dir.iterdir()):
-                if f.suffix.lower() == ".mp4":
-                    return f
-            for f in sorted(splash_dir.iterdir()):
-                if f.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                    return f
-        # Fall back to built-in default splash
-        if self.DEFAULT_SPLASH.is_file():
-            return self.DEFAULT_SPLASH
+        # 1. Check user-configured splash in state/splash
+        if self.splash_config_path.is_file():
+            name = self.splash_config_path.read_text().strip()
+            if name:
+                path = self._resolve_asset(name)
+                if path:
+                    return path
+                logger.warning("Configured splash '%s' not found, using default", name)
+
+        # 2. Fall back to default_splash from boot config
+        default = self.DEFAULT_SPLASH_CONFIG
+        boot_config = Path("/boot/agora-config.json")
+        if boot_config.is_file():
+            try:
+                cfg = json.loads(boot_config.read_text())
+                default = cfg.get("default_splash", default)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        path = self.assets_dir / default
+        if path.is_file():
+            return path
+
+        logger.warning("No splash asset found")
         return None
 
     # ── Pipeline management ──

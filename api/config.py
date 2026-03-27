@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Device
     device_name: str = "agora-node"
 
+    # Splash
+    default_splash: str = "splash/default.png"
+
     @property
     def assets_dir(self) -> Path:
         return self.agora_base / "assets"
@@ -43,6 +46,10 @@ class Settings(BaseSettings):
     @property
     def state_dir(self) -> Path:
         return self.agora_base / "state"
+
+    @property
+    def splash_config_path(self) -> Path:
+        return self.state_dir / "splash"
 
     @property
     def log_dir(self) -> Path:
