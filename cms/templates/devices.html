@@ -31,8 +31,8 @@
                 </td>
                 <td>{{ d.group.name if d.group else '—' }}</td>
                 <td>{{ d.firmware_version or '—' }}</td>
-                <td>{{ d.storage_used_mb }}/{{ d.storage_capacity_mb }} MB</td>
-                <td>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
+                <td data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }}/{{ d.storage_capacity_mb }} MB</td>
+                <td {% if d.last_seen %}data-utc="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
                 <td class="actions">
                     {% if d.status == 'pending' %}
                     <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
@@ -81,4 +81,22 @@
         <button class="btn btn-primary" onclick="createGroup()">Add Group</button>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}";
+    setInterval(async () => {
+        if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+        try {
+            const resp = await fetch("/api/devices");
+            if (!resp.ok) return;
+            const devices = await resp.json();
+            const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",");
+            if (state !== knownState) location.reload();
+        } catch (e) { /* ignore */ }
+    }, 5000);
+})();
+</script>
 {% endblock %}

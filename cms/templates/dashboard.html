@@ -44,8 +44,8 @@
             <tr>
                 <td>{{ d.id }}</td>
                 <td>{{ d.firmware_version }}</td>
-                <td>{{ d.storage_capacity_mb }} MB</td>
-                <td>{{ d.registered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
+                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.strftime('%Y-%m-%d %H:%M') }}</td>
                 <td class="actions">
                     <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Reject</button>
@@ -81,7 +81,7 @@
                     {% endif %}
                 </td>
                 <td>{{ d.group.name if d.group else '—' }}</td>
-                <td>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
+                <td {% if d.last_seen %}data-utc="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
             </tr>
             {% endfor %}
         </tbody>

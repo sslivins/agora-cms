@@ -113,12 +113,15 @@ h2 { font-size: 1.2rem; margin-bottom: 1rem; }
 table {
     width: 100%;
     border-collapse: collapse;
+    table-layout: auto;
 }
 th, td {
     text-align: left;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--primary);
+    white-space: nowrap;
 }
+td.wrap { white-space: normal; word-break: break-word; }
 th {
     font-size: 0.8rem;
     text-transform: uppercase;
@@ -158,6 +161,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-warn { background: var(--warning); color: #000; }
+.btn-secondary { background: var(--primary); color: var(--text); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 .btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text); }
 .btn-small:hover { opacity: 0.85; }
@@ -212,6 +216,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     transition: border-color 0.2s;
 }
 .upload-area:hover { border-color: var(--accent); }
+.upload-area.drag-over { border-color: var(--accent); background: rgba(233, 69, 96, 0.08); }
 .upload-area input[type="file"] { margin-top: 0.5rem; }
 
 /* Empty state */
@@ -249,3 +254,59 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .help-steps li { margin-bottom: 0.5rem; }
 .help-steps strong { color: var(--text); }
 .help-steps code { background: var(--bg); padding: 0.15rem 0.3rem; border-radius: 4px; font-size: 0.85rem; }
+
+/* Confirm modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: fadeIn 0.15s ease;
+}
+
+.modal-box {
+    background: var(--surface);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    min-width: 320px;
+    max-width: 440px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.modal-box p {
+    margin-bottom: 1.25rem;
+    line-height: 1.5;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+/* Toast notification */
+.toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    padding: 0.75rem 1.25rem;
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    z-index: 1001;
+    animation: slideUp 0.2s ease, fadeOut 0.3s ease 2.7s forwards;
+}
+
+.toast.toast-error {
+    border-color: var(--danger);
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }

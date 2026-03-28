@@ -13,7 +13,6 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.registration_token import RegistrationToken
 from cms.models.schedule import Schedule
 from cms.services.device_manager import device_manager
 
@@ -201,20 +200,4 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "assets": assets,
         "devices": devices,
         "groups": groups,
-    })
-
-
-# ── Tokens ──
-
-
-@router.get("/tokens", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
-async def tokens_page(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(RegistrationToken).order_by(RegistrationToken.created_at.desc())
-    )
-    tokens = result.scalars().all()
-
-    return templates.TemplateResponse(request, "tokens.html", {
-        "active_tab": "tokens",
-        "tokens": tokens,
     })

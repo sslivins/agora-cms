@@ -1,5 +1,64 @@
 /* Agora CMS — client-side JavaScript */
 
+// ── Modal confirm (replaces native confirm()) ──
+function showConfirm(message) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        const box = document.createElement("div");
+        box.className = "modal-box";
+        const msg = document.createElement("p");
+        msg.textContent = message;
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.textContent = "Cancel";
+        const okBtn = document.createElement("button");
+        okBtn.className = "btn btn-danger";
+        okBtn.textContent = "Confirm";
+        actions.appendChild(cancelBtn);
+        actions.appendChild(okBtn);
+        box.appendChild(msg);
+        box.appendChild(actions);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        const close = (result) => { overlay.remove(); resolve(result); };
+        cancelBtn.onclick = () => close(false);
+        okBtn.onclick = () => close(true);
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(false); });
+    });
+}
+
+// ── Toast notification (replaces native alert()) ──
+function showToast(message, isError = false) {
+    const el = document.createElement("div");
+    el.className = "toast" + (isError ? " toast-error" : "");
+    el.textContent = message;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3000);
+}
+
+// ── Formatters (run on page load) ──
+function humanStorage(mb) {
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + " GB";
+    return mb + " MB";
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll("[data-storage-mb]").forEach(el => {
+        const used = parseInt(el.dataset.usedMb || "0");
+        const cap = parseInt(el.dataset.storageMb);
+        el.textContent = used ? humanStorage(used) + " / " + humanStorage(cap) : humanStorage(cap);
+    });
+    document.querySelectorAll("[data-utc]").forEach(el => {
+        const d = new Date(el.dataset.utc);
+        if (isNaN(d)) return;
+        el.textContent = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+            + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    });
+});
+
 // ── API helpers ──
 async function apiCall(method, url, body = null) {
     const opts = { method, headers: {} };
@@ -22,7 +81,7 @@ async function approveDevice(deviceId) {
 }
 
 async function deleteDevice(deviceId) {
-    if (!confirm("Delete this device?")) return;
+    if (!await showConfirm("Delete this device?")) return;
     const resp = await apiCall("DELETE", `/api/devices/${deviceId}`);
     if (resp && resp.ok) location.reload();
 }
@@ -37,79 +96,77 @@ async function createGroup() {
 }
 
 async function deleteGroup(groupId) {
-    if (!confirm("Delete this group?")) return;
+    if (!await showConfirm("Delete this group?")) return;
     const resp = await apiCall("DELETE", `/api/devices/groups/${groupId}`);
     if (resp && resp.ok) location.reload();
 }
 
 // ── Asset actions ──
-async function deleteAsset(assetId) {
-    if (!confirm("Delete this asset?")) return;
+async function deleteAsset(assetId, filename) {
+    if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
     if (resp && resp.ok) location.reload();
 }
 
 async function uploadAsset(form) {
+    const fileInput = document.getElementById("file-input");
+    if (!fileInput || !fileInput.files.length) return false;
+
+    const statusEl = document.getElementById("upload-status");
+    const submitBtn = form.querySelector("button[type=submit]");
     const data = new FormData(form);
-    const resp = await fetch("/api/assets/upload", { method: "POST", body: data });
-    if (resp.status === 401) {
-        window.location.href = "/login";
-        return;
-    }
-    if (resp.ok) {
-        location.reload();
-    } else {
-        const err = await resp.json();
-        alert(err.detail || "Upload failed");
-    }
-    return false;
+
+    submitBtn.disabled = true;
+    statusEl.textContent = "Uploading… 0%";
+    statusEl.className = "form-status";
+
+    return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable) {
+                const pct = Math.round((e.loaded / e.total) * 100);
+                statusEl.textContent = "Uploading… " + pct + "%";
+            }
+        });
+        xhr.addEventListener("load", () => {
+            if (xhr.status === 401) {
+                window.location.href = "/login";
+            } else if (xhr.status >= 200 && xhr.status < 300) {
+                statusEl.textContent = "Upload complete!";
+                statusEl.className = "form-status text-success";
+                setTimeout(() => location.reload(), 500);
+            } else {
+                try {
+                    const err = JSON.parse(xhr.responseText);
+                    showToast(err.detail || "Upload failed", true);
+                } catch (_) {
+                    showToast("Upload failed", true);
+                }
+                statusEl.textContent = "";
+                submitBtn.disabled = false;
+            }
+            resolve(false);
+        });
+        xhr.addEventListener("error", () => {
+            showToast("Upload failed — network error", true);
+            statusEl.textContent = "";
+            submitBtn.disabled = false;
+            resolve(false);
+        });
+        xhr.open("POST", "/api/assets/upload");
+        xhr.send(data);
+    });
 }
 
 // ── Schedule actions ──
 async function deleteSchedule(scheduleId) {
-    if (!confirm("Delete this schedule?")) return;
+    if (!await showConfirm("Delete this schedule?")) return;
     const resp = await apiCall("DELETE", `/api/schedules/${scheduleId}`);
     if (resp && resp.ok) location.reload();
 }
 
 async function toggleSchedule(scheduleId, enabled) {
     const resp = await apiCall("PATCH", `/api/schedules/${scheduleId}`, { enabled });
-    if (resp && resp.ok) location.reload();
-}
-
-// ── Token actions ──
-async function createToken(form) {
-    const data = new FormData(form);
-    const body = {
-        label: data.get("label") || "",
-        max_uses: parseInt(data.get("max_uses") || "1"),
-    };
-    const expires = data.get("expires_at");
-    if (expires) body.expires_at = new Date(expires).toISOString();
-
-    const resp = await apiCall("POST", "/api/tokens", body);
-    if (resp && resp.ok) location.reload();
-    else if (resp) {
-        const err = await resp.json();
-        alert(err.detail || "Failed to create token");
-    }
-    return false;
-}
-
-function copyToken(elementId) {
-    const el = document.getElementById(elementId);
-    navigator.clipboard.writeText(el.textContent.trim());
-}
-
-async function revokeToken(tokenId) {
-    if (!confirm("Revoke this token? Devices can no longer register with it.")) return;
-    const resp = await apiCall("POST", `/api/tokens/${tokenId}/revoke`);
-    if (resp && resp.ok) location.reload();
-}
-
-async function deleteToken(tokenId) {
-    if (!confirm("Delete this token permanently?")) return;
-    const resp = await apiCall("DELETE", `/api/tokens/${tokenId}`);
     if (resp && resp.ok) location.reload();
 }
 
@@ -142,7 +199,7 @@ async function createSchedule(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        alert(err.detail || JSON.stringify(err));
+        showToast(err.detail || JSON.stringify(err), true);
     }
     return false;
 }

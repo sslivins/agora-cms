@@ -5,11 +5,14 @@
 
 <div class="card">
     <h2>Upload</h2>
-    <form onsubmit="return uploadAsset(this)" enctype="multipart/form-data">
-        <div class="upload-area">
-            <p>Select a video (.mp4) or image (.jpg, .png) to upload</p>
-            <input type="file" name="file" accept=".mp4,.jpg,.jpeg,.png" required>
+    <form id="upload-form" onsubmit="event.preventDefault(); uploadAsset(this)" enctype="multipart/form-data">
+        <div class="upload-area" id="drop-zone">
+            <p id="drop-label">Drag &amp; drop a file here, or</p>
+            <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem">Accepts .mp4, .jpg, .jpeg, .png</p>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Choose File</button>
+            <input type="file" id="file-input" name="file" accept=".mp4,.jpg,.jpeg,.png" required style="display:none">
         </div>
+        <div id="upload-status" class="form-status"></div>
         <button type="submit" class="btn btn-primary">Upload</button>
     </form>
 </div>
@@ -29,11 +32,11 @@
         <tbody>
             {% for a in assets %}
             <tr>
-                <td>{{ a.filename }}</td>
+                <td class="wrap">{{ a.filename }}</td>
                 <td><span class="badge badge-{{ a.asset_type }}">{{ a.asset_type }}</span></td>
-                <td>{{ "%.1f"|format(a.size_bytes / 1048576) }} MB</td>
-                <td>{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                <td><button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}')">Delete</button></td>
+                <td data-storage-mb="{{ (a.size_bytes / 1048576) | round(1) }}">{{ "%.1f"|format(a.size_bytes / 1048576) }} MB</td>
+                <td data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button></td>
             </tr>
             {% else %}
             <tr><td colspan="5" class="empty">No assets uploaded yet</td></tr>
@@ -41,4 +44,38 @@
         </tbody>
     </table>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const dropZone = document.getElementById("drop-zone");
+    const fileInput = document.getElementById("file-input");
+
+    ["dragenter", "dragover"].forEach(evt => {
+        dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add("drag-over"); });
+    });
+    ["dragleave", "drop"].forEach(evt => {
+        dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove("drag-over"); });
+    });
+
+    dropZone.addEventListener("drop", (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length) {
+            fileInput.files = files;
+            document.getElementById("drop-label").textContent = files[0].name;
+        }
+    });
+
+    fileInput.addEventListener("change", () => {
+        if (fileInput.files.length) {
+            document.getElementById("drop-label").textContent = fileInput.files[0].name;
+        }
+    });
+
+    // Prevent browser from opening dropped files outside the zone
+    document.addEventListener("dragover", (e) => e.preventDefault());
+    document.addEventListener("drop", (e) => e.preventDefault());
+})();
+</script>
 {% endblock %}
