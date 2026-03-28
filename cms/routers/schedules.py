@@ -1,5 +1,6 @@
 """Schedule CRUD API routes."""
 
+import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -52,7 +53,7 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOut)
-async def get_schedule(schedule_id: str, db: AsyncSession = Depends(get_db)):
+async def get_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
     )
@@ -64,7 +65,7 @@ async def get_schedule(schedule_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.patch("/{schedule_id}", response_model=ScheduleOut)
 async def update_schedule(
-    schedule_id: str,
+    schedule_id: uuid.UUID,
     data: ScheduleUpdate,
     db: AsyncSession = Depends(get_db),
 ):
@@ -84,7 +85,7 @@ async def update_schedule(
 
 
 @router.delete("/{schedule_id}")
-async def delete_schedule(schedule_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:

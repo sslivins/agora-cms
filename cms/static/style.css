@@ -163,6 +163,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn-warn { background: var(--warning); color: #000; }
 .btn-secondary { background: var(--primary); color: var(--text); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.inline-edit { background: transparent; border: 1px solid transparent; color: var(--text); padding: 0.2rem 0.4rem; border-radius: 4px; width: 100%; font-size: 0.9rem; }
+.inline-edit:hover { border-color: var(--border); }
+.inline-edit:focus { border-color: var(--accent); outline: none; background: var(--bg); }
+select.inline-edit { cursor: pointer; }
+select.inline-edit option { background: var(--card-bg); color: var(--text); }
 .btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text); }
 .btn-small:hover { opacity: 0.85; }
 .btn-small.btn-warn { background: var(--warning); color: #000; }

@@ -23,11 +23,15 @@ class DeviceGroup(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    default_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assets.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     devices: Mapped[list["Device"]] = relationship(back_populates="group")
+    default_asset: Mapped["Asset | None"] = relationship(foreign_keys=[default_asset_id])
 
 
 class Device(Base):
@@ -44,6 +48,9 @@ class Device(Base):
     firmware_version: Mapped[str] = mapped_column(String(32), default="")
     storage_capacity_mb: Mapped[int] = mapped_column(Integer, default=0)
     storage_used_mb: Mapped[int] = mapped_column(Integer, default=0)
+    default_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assets.id"), nullable=True
+    )
     device_auth_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registered_at: Mapped[datetime] = mapped_column(
@@ -51,4 +58,5 @@ class Device(Base):
     )
 
     group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
+    default_asset: Mapped["Asset | None"] = relationship(foreign_keys="[Device.default_asset_id]")
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="device")

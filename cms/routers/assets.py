@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -73,7 +74,7 @@ async def upload_asset(
 
 
 @router.get("/{asset_id}", response_model=AssetOut)
-async def get_asset(asset_id: str, db: AsyncSession = Depends(get_db)):
+async def get_asset(asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id))
     asset = result.scalar_one_or_none()
     if not asset:
@@ -83,7 +84,7 @@ async def get_asset(asset_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/{asset_id}")
 async def delete_asset(
-    asset_id: str,
+    asset_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):

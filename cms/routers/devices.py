@@ -1,5 +1,6 @@
 """Device management API routes."""
 
+import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -104,6 +105,7 @@ async def list_groups(db: AsyncSession = Depends(get_db)):
             id=group.id,
             name=group.name,
             description=group.description,
+            default_asset_id=group.default_asset_id,
             device_count=count,
             created_at=group.created_at,
         )
@@ -113,7 +115,7 @@ async def list_groups(db: AsyncSession = Depends(get_db)):
 
 @router.post("/groups/", response_model=DeviceGroupOut, status_code=201)
 async def create_group(data: DeviceGroupCreate, db: AsyncSession = Depends(get_db)):
-    group = DeviceGroup(name=data.name, description=data.description)
+    group = DeviceGroup(name=data.name, description=data.description, default_asset_id=data.default_asset_id)
     db.add(group)
     await db.commit()
     await db.refresh(group)
@@ -121,13 +123,39 @@ async def create_group(data: DeviceGroupCreate, db: AsyncSession = Depends(get_d
         id=group.id,
         name=group.name,
         description=group.description,
+        default_asset_id=group.default_asset_id,
         device_count=0,
         created_at=group.created_at,
     )
 
 
+@router.patch("/groups/{group_id}", response_model=DeviceGroupOut)
+async def update_group(
+    group_id: uuid.UUID,
+    data: DeviceGroupCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(group, field, value)
+    await db.commit()
+    await db.refresh(group)
+    count_q = await db.execute(select(func.count(Device.id)).where(Device.group_id == group.id))
+    return DeviceGroupOut(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        default_asset_id=group.default_asset_id,
+        device_count=count_q.scalar() or 0,
+        created_at=group.created_at,
+    )
+
+
 @router.delete("/groups/{group_id}")
-async def delete_group(group_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_group(group_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
     group = result.scalar_one_or_none()
     if not group:

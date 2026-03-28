@@ -17,6 +17,7 @@ class DeviceOut(BaseModel):
     status: DeviceStatus
     group_id: Optional[uuid.UUID] = None
     group_name: Optional[str] = None
+    default_asset_id: Optional[uuid.UUID] = None
     firmware_version: str
     storage_capacity_mb: int
     storage_used_mb: int
@@ -28,6 +29,7 @@ class DeviceUpdate(BaseModel):
     name: Optional[str] = None
     status: Optional[DeviceStatus] = None
     group_id: Optional[uuid.UUID] = None
+    default_asset_id: Optional[uuid.UUID] = None
 
 
 class DeviceGroupOut(BaseModel):
@@ -36,6 +38,7 @@ class DeviceGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
+    default_asset_id: Optional[uuid.UUID] = None
     device_count: int = 0
     created_at: datetime
 
@@ -43,3 +46,4 @@ class DeviceGroupOut(BaseModel):
 class DeviceGroupCreate(BaseModel):
     name: str
     description: str = ""
+    default_asset_id: Optional[uuid.UUID] = None

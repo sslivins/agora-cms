@@ -142,14 +142,18 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         .order_by(DeviceGroup.name)
     )
     groups = [
-        type("GroupRow", (), {"id": g.id, "name": g.name, "description": g.description, "device_count": c})()
+        type("GroupRow", (), {"id": g.id, "name": g.name, "description": g.description, "default_asset_id": g.default_asset_id, "device_count": c})()
         for g, c in groups_q.all()
     ]
+
+    assets_q = await db.execute(select(Asset).order_by(Asset.filename))
+    assets = assets_q.scalars().all()
 
     return templates.TemplateResponse(request, "devices.html", {
         "active_tab": "devices",
         "devices": devices,
         "groups": groups,
+        "assets": assets,
     })
 
 

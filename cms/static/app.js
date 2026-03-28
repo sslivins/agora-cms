@@ -75,6 +75,30 @@ async function apiCall(method, url, body = null) {
 }
 
 // ── Device actions ──
+async function renameDevice(deviceId, newName) {
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { name: newName.trim() });
+    if (resp && resp.ok) showToast("Device renamed");
+    else showToast("Rename failed", true);
+}
+
+async function assignGroup(deviceId, groupId) {
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { group_id: groupId || null });
+    if (resp && resp.ok) showToast("Group updated");
+    else showToast("Group update failed", true);
+}
+
+async function setDefaultAsset(deviceId, assetId) {
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { default_asset_id: assetId || null });
+    if (resp && resp.ok) showToast("Default asset updated");
+    else showToast("Update failed", true);
+}
+
+async function setGroupDefaultAsset(groupId, assetId) {
+    const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, { default_asset_id: assetId || null });
+    if (resp && resp.ok) showToast("Group default asset updated");
+    else showToast("Update failed", true);
+}
+
 async function approveDevice(deviceId) {
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { status: "approved" });
     if (resp && resp.ok) location.reload();
