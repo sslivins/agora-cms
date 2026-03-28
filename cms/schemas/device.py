@@ -19,6 +19,7 @@ class DeviceOut(BaseModel):
     group_name: Optional[str] = None
     default_asset_id: Optional[uuid.UUID] = None
     firmware_version: str
+    device_type: str = ""
     storage_capacity_mb: int
     storage_used_mb: int
     last_seen: Optional[datetime] = None

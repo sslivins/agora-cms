@@ -47,6 +47,7 @@ class RegisterMessage(BaseMessage):
     device_id: str
     auth_token: str
     firmware_version: str
+    device_type: str = ""
     storage_capacity_mb: int
     storage_used_mb: int
 

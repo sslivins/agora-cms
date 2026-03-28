@@ -33,10 +33,13 @@
             {% for a in assets %}
             <tr>
                 <td class="wrap">{{ a.filename }}</td>
-                <td><span class="badge badge-{{ a.asset_type }}">{{ a.asset_type }}</span></td>
+                <td><span class="badge badge-{{ a.asset_type.value }}">{{ a.asset_type.value | capitalize }}</span></td>
                 <td data-storage-mb="{{ (a.size_bytes / 1048576) | round(1) }}">{{ "%.1f"|format(a.size_bytes / 1048576) }} MB</td>
                 <td data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                <td><button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button></td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                </td>
             </tr>
             {% else %}
             <tr><td colspan="5" class="empty">No assets uploaded yet</td></tr>

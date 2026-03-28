@@ -103,3 +103,46 @@ class TestAssetChecksum:
         import hashlib
         expected = hashlib.sha256(content).hexdigest()
         assert resp.json()["checksum"] == expected
+
+
+@pytest.mark.asyncio
+class TestAssetPreview:
+    async def test_preview_image(self, client):
+        content = b"fake-png-content"
+        upload = await client.post("/api/assets/upload", files={"file": ("pic.png", io.BytesIO(content), "application/octet-stream")})
+        asset_id = upload.json()["id"]
+
+        resp = await client.get(f"/api/assets/{asset_id}/preview")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert resp.content == content
+
+    async def test_preview_jpeg(self, client):
+        content = b"fake-jpg-content"
+        upload = await client.post("/api/assets/upload", files={"file": ("photo.jpg", io.BytesIO(content), "application/octet-stream")})
+        asset_id = upload.json()["id"]
+
+        resp = await client.get(f"/api/assets/{asset_id}/preview")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+
+    async def test_preview_video(self, client):
+        content = b"fake-mp4-content"
+        upload = await client.post("/api/assets/upload", files={"file": ("clip.mp4", io.BytesIO(content), "application/octet-stream")})
+        asset_id = upload.json()["id"]
+
+        resp = await client.get(f"/api/assets/{asset_id}/preview")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "video/mp4"
+        assert resp.content == content
+
+    async def test_preview_nonexistent(self, client):
+        resp = await client.get("/api/assets/00000000-0000-0000-0000-000000000000/preview")
+        assert resp.status_code == 404
+
+    async def test_preview_requires_auth(self, unauthed_client, client):
+        upload = await client.post("/api/assets/upload", files={"file": ("auth.png", io.BytesIO(b"x"), "application/octet-stream")})
+        asset_id = upload.json()["id"]
+
+        resp = await unauthed_client.get(f"/api/assets/{asset_id}/preview")
+        assert resp.status_code in (401, 303)

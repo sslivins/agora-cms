@@ -87,6 +87,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 name=device_id,
                 status=DeviceStatus.PENDING,
                 firmware_version=raw.get("firmware_version", ""),
+                device_type=raw.get("device_type", ""),
                 storage_capacity_mb=raw.get("storage_capacity_mb", 0),
                 storage_used_mb=raw.get("storage_used_mb", 0),
                 last_seen=datetime.now(timezone.utc),
@@ -124,6 +125,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
 
             # Update device stats
             device.firmware_version = raw.get("firmware_version", device.firmware_version)
+            device.device_type = raw.get("device_type", device.device_type)
             device.storage_capacity_mb = raw.get("storage_capacity_mb", device.storage_capacity_mb)
             device.storage_used_mb = raw.get("storage_used_mb", device.storage_used_mb)
             device.last_seen = datetime.now(timezone.utc)

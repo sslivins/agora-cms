@@ -7,24 +7,22 @@
     <table>
         <thead>
             <tr>
+                <th style="width: 2rem;"></th>
                 <th>Name</th>
-                <th>Device ID</th>
                 <th>Status</th>
                 <th>Group</th>
-                <th>Default Asset</th>
-                <th>Firmware</th>
+                <th>Default Splash Screen</th>
                 <th>Storage</th>
-                <th>Last Seen</th>
                 <th>Actions</th>
             </tr>
         </thead>
         <tbody>
             {% for d in devices %}
-            <tr>
+            <tr class="device-row" onclick="toggleDevice(this)" data-device-id="{{ d.id }}">
+                <td class="expand-toggle">▶</td>
                 <td>
-                    <input type="text" class="inline-edit" value="{{ d.name or '' }}" placeholder="{{ d.id }}" onchange="renameDevice('{{ d.id }}', this.value)" onfocus="this.dataset.prev = this.value">
+                    <input type="text" class="inline-edit" value="{{ d.name or '' }}" placeholder="{{ d.id }}" onclick="event.stopPropagation()" onchange="renameDevice('{{ d.id }}', this.value)" onfocus="this.dataset.prev = this.value">
                 </td>
-                <td style="font-family: monospace; font-size: 0.8rem;">{{ d.id }}</td>
                 <td>
                     {% if d.is_online %}
                     <span class="badge badge-online">Online</span>
@@ -33,7 +31,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    <select class="inline-edit" onchange="assignGroup('{{ d.id }}', this.value)">
+                    <select class="inline-edit" onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
                         <option value="">None</option>
                         {% for g in groups %}
                         <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
@@ -41,28 +39,59 @@
                     </select>
                 </td>
                 <td>
-                    <select class="inline-edit" onchange="setDefaultAsset('{{ d.id }}', this.value)">
+                    <select class="inline-edit" onclick="event.stopPropagation()" onchange="setDefaultAsset('{{ d.id }}', this.value)">
                         <option value="">None (use group)</option>
                         {% for a in assets %}
                         <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
                         {% endfor %}
                     </select>
                 </td>
-                <td>{{ d.firmware_version or '—' }}</td>
-                <td data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }}/{{ d.storage_capacity_mb }} MB</td>
-                <td {% if d.last_seen %}data-utc="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
-                <td class="actions">
+                <td data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
+                    {% if d.storage_capacity_mb > 0 %}
+                    {{ ((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int }}% free
+                    {% else %}—{% endif %}
+                </td>
+                <td class="actions" onclick="event.stopPropagation()">
                     {% if d.status == 'pending' %}
                     <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
-                    {% endif %}
-                    {% if d.is_online %}
-                    <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Password</button>
                     {% endif %}
                     <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
                 </td>
             </tr>
+            <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
+                <td></td>
+                <td colspan="6">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Device ID</span>
+                            <span class="detail-value monospace">{{ d.id }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Device Type</span>
+                            <span class="detail-value">{{ d.device_type or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Firmware Version</span>
+                            <span class="detail-value">{{ d.firmware_version or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Storage</span>
+                            <span class="detail-value" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Last Seen</span>
+                            <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</span>
+                        </div>
+                        <div class="detail-item detail-actions">
+                            {% if d.is_online %}
+                            <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
+                            {% endif %}
+                        </div>
+                    </div>
+                </td>
+            </tr>
             {% else %}
-            <tr><td colspan="9" class="empty">No devices registered yet</td></tr>
+            <tr><td colspan="7" class="empty">No devices registered yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -120,6 +149,7 @@
     setInterval(async () => {
         const el = document.activeElement;
         if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
+        if (document.querySelector(".device-row.expanded")) return;
         try {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;

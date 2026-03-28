@@ -17,6 +17,7 @@ MAX_AGE = 86400  # 24 hours
 
 SETTING_PASSWORD_HASH = "admin_password_hash"
 SETTING_USERNAME = "admin_username"
+SETTING_TIMEZONE = "timezone"
 
 
 @lru_cache

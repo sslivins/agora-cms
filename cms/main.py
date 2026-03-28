@@ -1,7 +1,13 @@
 """Agora CMS — FastAPI application entry point."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import HTTPException
@@ -12,6 +18,7 @@ from cms import __version__
 from cms.auth import ensure_admin_credentials, get_settings
 from cms.database import create_tables, dispose_db, get_db, init_db
 from cms.models import *  # noqa: F401,F403 — ensure all models registered with Base
+from cms.services.scheduler import scheduler_loop
 
 logger = logging.getLogger("agora.cms")
 
@@ -28,9 +35,17 @@ async def lifespan(app: FastAPI):
     async for db in get_db():
         await ensure_admin_credentials(db, settings)
 
+    # Start background scheduler
+    scheduler_task = asyncio.create_task(scheduler_loop())
+
     logger.info("Agora CMS %s started", __version__)
     yield
     # Shutdown
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
     await dispose_db()
 
 

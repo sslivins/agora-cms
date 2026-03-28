@@ -26,6 +26,32 @@
     </div>
 </div>
 
+{% if now_playing %}
+<div class="card">
+    <h2>Now Playing</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Schedule</th>
+                <th>Asset</th>
+                <th>Since</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for np in now_playing %}
+            <tr>
+                <td>{{ np.device_name }}</td>
+                <td>{{ np.schedule_name }}</td>
+                <td>{{ np.asset_filename }}</td>
+                <td data-last-seen="{{ np.since }}">{{ np.since }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% if pending_devices %}
 <div class="card">
     <h2>Pending Devices</h2>
@@ -63,6 +89,7 @@
     <table>
         <thead>
             <tr>
+                <th style="width: 2rem;"></th>
                 <th>Name</th>
                 <th>Status</th>
                 <th>Group</th>
@@ -71,17 +98,41 @@
         </thead>
         <tbody>
             {% for d in recent_devices %}
-            <tr>
+            <tr class="device-row" onclick="toggleDevice(this)" data-device-id="{{ d.id }}">
+                <td class="expand-toggle">▶</td>
                 <td>{{ d.name or d.id }}</td>
                 <td>
                     {% if d.is_online %}
                     <span class="badge badge-online">Online</span>
                     {% else %}
-                    <span class="badge badge-{{ d.status }}">{{ d.status }}</span>
+                    <span class="badge badge-{{ d.status.value }}">{{ d.status.value | capitalize }}</span>
                     {% endif %}
                 </td>
                 <td>{{ d.group.name if d.group else '—' }}</td>
-                <td {% if d.last_seen %}data-utc="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
+                <td {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
+            </tr>
+            <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
+                <td></td>
+                <td colspan="4">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Device ID</span>
+                            <span class="detail-value monospace">{{ d.id }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Device Type</span>
+                            <span class="detail-value">{{ d.device_type or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Firmware Version</span>
+                            <span class="detail-value">{{ d.firmware_version or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Storage</span>
+                            <span class="detail-value" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
+                        </div>
+                    </div>
+                </td>
             </tr>
             {% endfor %}
         </tbody>

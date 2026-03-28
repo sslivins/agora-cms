@@ -48,6 +48,7 @@ class Device(Base):
     firmware_version: Mapped[str] = mapped_column(String(32), default="")
     storage_capacity_mb: Mapped[int] = mapped_column(Integer, default=0)
     storage_used_mb: Mapped[int] = mapped_column(Integer, default=0)
+    device_type: Mapped[str] = mapped_column(String(100), default="")
     default_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assets.id"), nullable=True
     )

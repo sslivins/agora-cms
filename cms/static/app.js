@@ -30,9 +30,6 @@ function showConfirm(message) {
     });
 }
 
-// ── Toast notification (replaces native alert()) ──
-function showToast(message, isError = false) {
-
 // ── Prompt modal (replaces native prompt()) ──
 function showPrompt(message, defaultValue = "", isPassword = false) {
     return new Promise((resolve) => {
@@ -85,19 +82,71 @@ function humanStorage(mb) {
     return mb + " MB";
 }
 
+function timeAgo(dateStr) {
+    const now = new Date();
+    const then = new Date(dateStr);
+    if (isNaN(then)) return "—";
+    const seconds = Math.floor((now - then) / 1000);
+    if (seconds < 60) return "less than a minute ago";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes === 1 ? "1 minute ago" : minutes + " minutes ago";
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours === 1 ? "1 hour ago" : hours + " hours ago";
+    const days = Math.floor(hours / 24);
+    if (days < 30) return days === 1 ? "1 day ago" : days + " days ago";
+    const months = Math.floor(days / 30);
+    return months === 1 ? "1 month ago" : months + " months ago";
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-    document.querySelectorAll("[data-storage-mb]").forEach(el => {
+    // Storage percentage in summary rows
+    document.querySelectorAll("[data-storage-pct]").forEach(el => {
+        const cap = parseInt(el.dataset.storageMb);
+        const used = parseInt(el.dataset.usedMb || "0");
+        if (cap > 0) {
+            const pct = Math.round((cap - used) / cap * 100);
+            el.textContent = pct + "% free";
+        }
+    });
+    // Storage detail (used / capacity in human form)
+    document.querySelectorAll("[data-storage-detail]").forEach(el => {
         const used = parseInt(el.dataset.usedMb || "0");
         const cap = parseInt(el.dataset.storageMb);
-        el.textContent = used ? humanStorage(used) + " / " + humanStorage(cap) : humanStorage(cap);
+        el.textContent = humanStorage(used) + " used / " + humanStorage(cap) + " total";
     });
+    // Last seen as human-readable time-ago
+    document.querySelectorAll("[data-last-seen]").forEach(el => {
+        el.textContent = timeAgo(el.dataset.lastSeen);
+    });
+    // Legacy UTC formatters (dashboard etc)
     document.querySelectorAll("[data-utc]").forEach(el => {
         const d = new Date(el.dataset.utc);
         if (isNaN(d)) return;
         el.textContent = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
             + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     });
+    // Legacy storage formatters (other pages)
+    document.querySelectorAll("[data-storage-mb]:not([data-storage-pct]):not([data-storage-detail])").forEach(el => {
+        const used = parseInt(el.dataset.usedMb || "0");
+        const cap = parseInt(el.dataset.storageMb);
+        el.textContent = used ? humanStorage(used) + " / " + humanStorage(cap) : humanStorage(cap);
+    });
 });
+
+// ── Device expand/collapse ──
+function toggleDevice(row) {
+    const deviceId = row.dataset.deviceId;
+    const detail = document.querySelector(`tr[data-detail-for="${deviceId}"]`);
+    if (!detail) return;
+    const isOpen = row.classList.contains("expanded");
+    if (isOpen) {
+        row.classList.remove("expanded");
+        detail.style.display = "none";
+    } else {
+        row.classList.add("expanded");
+        detail.style.display = "";
+    }
+}
 
 // ── API helpers ──
 async function apiCall(method, url, body = null) {
@@ -178,6 +227,44 @@ async function deleteGroup(groupId) {
 }
 
 // ── Asset actions ──
+function previewAsset(assetId, filename, assetType) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const box = document.createElement("div");
+    box.className = "modal-box preview-box";
+    const header = document.createElement("div");
+    header.className = "preview-header";
+    const title = document.createElement("span");
+    title.textContent = filename;
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "btn btn-secondary btn-sm";
+    closeBtn.textContent = "Close";
+    closeBtn.onclick = () => overlay.remove();
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    box.appendChild(header);
+
+    const url = `/api/assets/${assetId}/preview`;
+    if (assetType === "video") {
+        const video = document.createElement("video");
+        video.src = url;
+        video.controls = true;
+        video.autoplay = true;
+        video.className = "preview-media";
+        box.appendChild(video);
+    } else {
+        const img = document.createElement("img");
+        img.src = url;
+        img.className = "preview-media";
+        box.appendChild(img);
+    }
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", esc); } });
+}
+
 async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
@@ -246,13 +333,21 @@ async function toggleSchedule(scheduleId, enabled) {
     if (resp && resp.ok) location.reload();
 }
 
+function to24h(hour, minute, period) {
+    let h = parseInt(hour);
+    const m = parseInt(minute);
+    if (period === "AM" && h === 12) h = 0;
+    else if (period === "PM" && h !== 12) h += 12;
+    return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":00";
+}
+
 async function createSchedule(form) {
     const data = new FormData(form);
     const body = {
         name: data.get("name"),
         asset_id: data.get("asset_id"),
-        start_time: data.get("start_time") + ":00",
-        end_time: data.get("end_time") + ":00",
+        start_time: to24h(data.get("start_hour"), data.get("start_minute"), data.get("start_period")),
+        end_time: to24h(data.get("end_hour"), data.get("end_minute"), data.get("end_period")),
         priority: parseInt(data.get("priority") || "0"),
         enabled: true,
     };

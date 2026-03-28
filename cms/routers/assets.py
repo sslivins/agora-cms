@@ -108,6 +108,35 @@ async def download_asset(
     )
 
 
+MIME_TYPES = {
+    ".mp4": "video/mp4",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+
+@router.get("/{asset_id}/preview")
+async def preview_asset(
+    asset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    file_path = settings.asset_storage_path / asset.filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    ext = "." + asset.filename.rsplit(".", 1)[-1].lower()
+    media_type = MIME_TYPES.get(ext, "application/octet-stream")
+
+    return FileResponse(path=file_path, media_type=media_type)
+
+
 @router.delete("/{asset_id}")
 async def delete_asset(
     asset_id: uuid.UUID,
