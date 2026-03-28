@@ -3,18 +3,24 @@
 import hashlib
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from cms.auth import get_settings
 from cms.database import get_db
+from cms.models.asset import Asset
 from cms.models.device import Device, DeviceStatus
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
     AuthAssignedMessage,
+    ConfigMessage,
+    FetchAssetMessage,
     MessageType,
+    PlayMessage,
     SyncMessage,
 )
 from cms.services.device_manager import device_manager
@@ -27,6 +33,17 @@ router = APIRouter()
 def _hash_token(token: str) -> str:
     """SHA-256 hash of a token for storage."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def _generate_and_push_api_key(device: Device, websocket: WebSocket, db: AsyncSession) -> None:
+    """Generate a new device API key, store its hash, and push it to the device."""
+    new_key = secrets.token_urlsafe(32)
+    device.device_api_key_hash = _hash_token(new_key)
+    device.api_key_rotated_at = datetime.now(timezone.utc)
+    await db.commit()
+    config_msg = ConfigMessage(api_key=new_key)
+    await websocket.send_json(config_msg.model_dump(mode="json"))
+    logger.info("API key pushed to device %s", device.id)
 
 
 @router.websocket("/ws/device")
@@ -115,11 +132,44 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         # ── 3. Register connection ──
         device_manager.register(device_id, websocket)
 
-        # ── 4. Send sync ──
-        sync = SyncMessage()
+        # ── 4. Resolve default asset (device-level overrides group-level) ──
+        await db.refresh(device, ["default_asset", "group"])
+        default_asset = device.default_asset
+        if not default_asset and device.group:
+            await db.refresh(device.group, ["default_asset"])
+            default_asset = device.group.default_asset
+
+        # Build base URL from WebSocket connection for asset downloads
+        ws_url = websocket.url
+        scheme = "https" if ws_url.scheme == "wss" else "http"
+        base_url = f"{scheme}://{ws_url.hostname}"
+        if ws_url.port and ws_url.port not in (80, 443):
+            base_url += f":{ws_url.port}"
+
+        # ── 5. Send sync (with default asset if set) ──
+        sync = SyncMessage(
+            default_asset=default_asset.filename if default_asset else None,
+        )
         await websocket.send_json(sync.model_dump(mode="json"))
 
-        # ── 5. Message loop ──
+        # ── 6. If device is approved and has a default asset, push it ──
+        if device.status == DeviceStatus.APPROVED and default_asset:
+            download_url = f"{base_url}/api/assets/{default_asset.id}/download"
+            fetch = FetchAssetMessage(
+                asset_name=default_asset.filename,
+                download_url=download_url,
+                checksum=default_asset.checksum,
+                size_bytes=default_asset.size_bytes,
+            )
+            await websocket.send_json(fetch.model_dump(mode="json"))
+            logger.info("Sent fetch_asset for default asset %s to %s", default_asset.filename, device_id)
+
+        # ── 7. Push API key on connect (generate if missing) ──
+        if device.status == DeviceStatus.APPROVED:
+            await _generate_and_push_api_key(device, websocket, db)
+
+        # ── 8. Message loop ──
+        settings = get_settings()
         while True:
             msg = await websocket.receive_json()
             msg_type = msg.get("type")
@@ -128,6 +178,17 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 device.last_seen = datetime.now(timezone.utc)
                 device.storage_used_mb = msg.get("storage_used_mb", device.storage_used_mb)
                 await db.commit()
+
+                # Rotate API key if due
+                if (
+                    device.status == DeviceStatus.APPROVED
+                    and settings.api_key_rotation_hours > 0
+                    and device.api_key_rotated_at
+                ):
+                    age = datetime.now(timezone.utc) - device.api_key_rotated_at
+                    if age > timedelta(hours=settings.api_key_rotation_hours):
+                        await _generate_and_push_api_key(device, websocket, db)
+                        logger.info("API key rotated for device %s", device_id)
 
             elif msg_type == MessageType.ASSET_ACK:
                 logger.info("Device %s confirmed asset: %s", device_id, msg.get("asset_name"))

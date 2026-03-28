@@ -3,9 +3,7 @@ services:
     build: .
     ports:
       - "8080:8080"
-    environment:
-      - AGORA_CMS_DATABASE_URL=postgresql+asyncpg://agora:agora@db:5432/agora_cms
-      - AGORA_CMS_SECRET_KEY=change-me-in-production
+    env_file: .env
     depends_on:
       db:
         condition: service_healthy
@@ -14,10 +12,7 @@ services:
 
   db:
     image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: agora
-      POSTGRES_PASSWORD: agora
-      POSTGRES_DB: agora_cms
+    env_file: .env
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

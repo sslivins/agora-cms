@@ -32,6 +32,46 @@ function showConfirm(message) {
 
 // ── Toast notification (replaces native alert()) ──
 function showToast(message, isError = false) {
+
+// ── Prompt modal (replaces native prompt()) ──
+function showPrompt(message, defaultValue = "", isPassword = false) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        const box = document.createElement("div");
+        box.className = "modal-box";
+        const msg = document.createElement("p");
+        msg.textContent = message;
+        const input = document.createElement("input");
+        input.type = isPassword ? "password" : "text";
+        input.className = "modal-input";
+        input.value = defaultValue;
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.textContent = "Cancel";
+        const okBtn = document.createElement("button");
+        okBtn.className = "btn btn-primary";
+        okBtn.textContent = "OK";
+        actions.appendChild(cancelBtn);
+        actions.appendChild(okBtn);
+        box.appendChild(msg);
+        box.appendChild(input);
+        box.appendChild(actions);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        input.focus();
+        const close = (val) => { overlay.remove(); resolve(val); };
+        cancelBtn.onclick = () => close(null);
+        okBtn.onclick = () => close(input.value);
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") close(input.value); });
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    });
+}
+
+// ── Toast notification (replaces native alert()) ──
+function showToast(message, isError = false) {
     const el = document.createElement("div");
     el.className = "toast" + (isError ? " toast-error" : "");
     el.textContent = message;
@@ -108,6 +148,18 @@ async function deleteDevice(deviceId) {
     if (!await showConfirm("Delete this device?")) return;
     const resp = await apiCall("DELETE", `/api/devices/${deviceId}`);
     if (resp && resp.ok) location.reload();
+}
+
+async function changeDevicePassword(deviceId, deviceName) {
+    const password = await showPrompt("New web UI password for \"" + deviceName + "\":", "", true);
+    if (password === null) return;
+    if (password.length < 4) { showToast("Password must be at least 4 characters", true); return; }
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/password`, { password });
+    if (resp && resp.ok) showToast("Device password updated");
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to update password", true);
+    }
 }
 
 // ── Group actions ──

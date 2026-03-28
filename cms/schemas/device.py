@@ -47,3 +47,9 @@ class DeviceGroupCreate(BaseModel):
     name: str
     description: str = ""
     default_asset_id: Optional[uuid.UUID] = None
+
+
+class DeviceGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    default_asset_id: Optional[uuid.UUID] = None

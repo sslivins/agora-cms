@@ -6,6 +6,7 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,9 @@ from cms.models.asset import Asset, AssetType
 from cms.schemas.asset import AssetOut
 
 router = APIRouter(prefix="/api/assets", dependencies=[Depends(require_auth)])
+
+# Separate router for device-facing endpoints (no admin auth required)
+device_router = APIRouter(prefix="/api/assets")
 
 ALLOWED_PATTERN = re.compile(r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-. ]{0,200}\.(mp4|jpg|jpeg|png)$")
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
@@ -80,6 +84,28 @@ async def get_asset(asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     return asset
+
+
+@device_router.get("/{asset_id}/download")
+async def download_asset(
+    asset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    file_path = settings.asset_storage_path / asset.filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return FileResponse(
+        path=file_path,
+        filename=asset.filename,
+        media_type="application/octet-stream",
+    )
 
 
 @router.delete("/{asset_id}")

@@ -53,6 +53,12 @@ Single application with a PostgreSQL database:
 - `cms/schemas/protocol.py` defines the shared CMS ↔ device message contract — **any changes here must be mirrored in the device repo** (`sslivins/agora`)
 - API version lives in `cms/__init__.py` (`__version__`)
 
+## Bug Fixing — Test-Driven
+
+- **Before fixing any bug, write a failing test that reproduces it.** Confirm the test fails, then implement the fix, then confirm the test passes.
+- Tests live in `tests/` and use pytest + pytest-asyncio + httpx + aiosqlite.
+- Run tests inside the Docker container: `docker exec agora-cms-cms-1 python -m pytest tests/ --tb=short -q`
+
 ## Git Workflow
 
 - **`main` is sacred** — never commit directly to `main`.

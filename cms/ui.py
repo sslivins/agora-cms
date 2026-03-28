@@ -8,7 +8,18 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import COOKIE_NAME, MAX_AGE, get_settings, require_auth
+from cms.auth import (
+    COOKIE_NAME,
+    MAX_AGE,
+    SETTING_PASSWORD_HASH,
+    SETTING_USERNAME,
+    get_setting,
+    get_settings,
+    hash_password,
+    require_auth,
+    set_setting,
+    verify_password,
+)
 from cms.config import Settings
 from cms.database import get_db
 from cms.models.asset import Asset
@@ -36,12 +47,28 @@ async def login_page(request: Request):
 
 
 @router.post("/login")
-async def login_submit(request: Request, settings: Settings = Depends(get_settings)):
+async def login_submit(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
     form = await request.form()
     username = form.get("username", "")
     password = form.get("password", "")
 
-    if username == settings.admin_username and password == settings.admin_password:
+    stored_username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
+    stored_hash = await get_setting(db, SETTING_PASSWORD_HASH)
+
+    # Verify credentials
+    valid = False
+    if username == stored_username:
+        if stored_hash:
+            valid = verify_password(password, stored_hash)
+        else:
+            # Fallback to env var if DB not seeded yet
+            valid = password == settings.admin_password
+
+    if valid:
         serializer = URLSafeTimedSerializer(settings.secret_key)
         token = serializer.dumps({"user": username})
         response = RedirectResponse(url="/", status_code=303)
@@ -205,3 +232,78 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "devices": devices,
         "groups": groups,
     })
+
+
+# ── Settings ──
+
+
+@router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def settings_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    from cms import __version__
+
+    username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
+
+    return templates.TemplateResponse(request, "settings.html", {
+        "active_tab": "settings",
+        "version": __version__,
+        "username": username,
+        "online_count": device_manager.connected_count,
+        "asset_storage": str(settings.asset_storage_path),
+        "success": None,
+        "error": None,
+    })
+
+
+@router.post("/settings/password", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def change_password(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    from cms import __version__
+
+    form = await request.form()
+    current_password = form.get("current_password", "")
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+
+    username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
+    ctx = {
+        "active_tab": "settings",
+        "version": __version__,
+        "username": username,
+        "online_count": device_manager.connected_count,
+        "asset_storage": str(settings.asset_storage_path),
+        "success": None,
+        "error": None,
+    }
+
+    # Validate current password
+    stored_hash = await get_setting(db, SETTING_PASSWORD_HASH)
+    if stored_hash:
+        if not verify_password(current_password, stored_hash):
+            ctx["error"] = "Current password is incorrect"
+            return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
+    else:
+        if current_password != settings.admin_password:
+            ctx["error"] = "Current password is incorrect"
+            return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
+
+    # Validate new password
+    if len(new_password) < 6:
+        ctx["error"] = "New password must be at least 6 characters"
+        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
+
+    if new_password != confirm_password:
+        ctx["error"] = "New passwords do not match"
+        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
+
+    # Save new hash
+    await set_setting(db, SETTING_PASSWORD_HASH, hash_password(new_password))
+
+    ctx["success"] = "Password updated successfully"
+    return templates.TemplateResponse(request, "settings.html", ctx)

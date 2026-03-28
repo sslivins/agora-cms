@@ -55,6 +55,9 @@
                     {% if d.status == 'pending' %}
                     <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
                     {% endif %}
+                    {% if d.is_online %}
+                    <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Password</button>
+                    {% endif %}
                     <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
                 </td>
             </tr>
@@ -115,7 +118,8 @@
 (function() {
     const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}";
     setInterval(async () => {
-        if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+        const el = document.activeElement;
+        if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
         try {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;

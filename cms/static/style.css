@@ -69,7 +69,7 @@ nav {
 
 /* Layout */
 main {
-    max-width: 1200px;
+    max-width: 1400px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
 }
@@ -83,6 +83,7 @@ h2 { font-size: 1.2rem; margin-bottom: 1rem; }
     border-radius: var(--radius);
     padding: 1.5rem;
     margin-bottom: 1rem;
+    overflow-x: auto;
 }
 
 /* Stats grid */
@@ -163,7 +164,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn-warn { background: var(--warning); color: #000; }
 .btn-secondary { background: var(--primary); color: var(--text); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
-.inline-edit { background: transparent; border: 1px solid transparent; color: var(--text); padding: 0.2rem 0.4rem; border-radius: 4px; width: 100%; font-size: 0.9rem; }
+.inline-edit { background: transparent; border: 1px solid transparent; color: var(--text); padding: 0.2rem 0.4rem; border-radius: 4px; width: 100%; font-size: 0.9rem; min-width: 8rem; }
 .inline-edit:hover { border-color: var(--border); }
 .inline-edit:focus { border-color: var(--accent); outline: none; background: var(--bg); }
 select.inline-edit { cursor: pointer; }
@@ -287,6 +288,17 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     line-height: 1.5;
 }
 
+.modal-input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1.25rem;
+    background: var(--bg);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.95rem;
+}
+
 .modal-actions {
     display: flex;
     gap: 0.5rem;
@@ -315,3 +327,14 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+
+/* Settings page */
+.settings-form { max-width: 400px; }
+.flash {
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+.flash-success { background: rgba(46, 204, 113, 0.15); border: 1px solid var(--success); color: var(--success); }
+.flash-error { background: rgba(231, 76, 60, 0.15); border: 1px solid var(--danger); color: var(--danger); }

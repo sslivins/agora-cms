@@ -119,6 +119,8 @@ class ConfigMessage(BaseMessage):
     type: MessageType = MessageType.CONFIG
     splash: Optional[str] = None
     device_name: Optional[str] = None
+    web_password: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 class AuthAssignedMessage(BaseMessage):

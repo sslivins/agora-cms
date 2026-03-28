@@ -74,6 +74,61 @@ class TestDeviceCRUD:
         assert resp.status_code == 200
         assert resp.json()["default_asset_id"] == str(asset.id)
 
+    async def test_clear_device_default_asset_falls_back_to_group(self, client, db_session):
+        """Clearing device default_asset_id should succeed (group fallback)."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+
+        group_asset = Asset(filename="group_default.png", asset_type=AssetType.IMAGE, size_bytes=2048, checksum="grp1")
+        device_asset = Asset(filename="device_override.png", asset_type=AssetType.IMAGE, size_bytes=1024, checksum="dev1")
+        db_session.add_all([group_asset, device_asset])
+        await db_session.flush()
+
+        group = DeviceGroup(name="Fallback Group", default_asset_id=group_asset.id)
+        db_session.add(group)
+        await db_session.flush()
+
+        device = Device(
+            id="test-pi-fallback", name="test-pi-fallback",
+            status=DeviceStatus.APPROVED,
+            group_id=group.id,
+            default_asset_id=device_asset.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        # Clear device default — should fall back to group default
+        resp = await client.patch(
+            "/api/devices/test-pi-fallback",
+            json={"default_asset_id": None},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["default_asset_id"] is None
+
+    async def test_clear_device_default_asset_no_group(self, client, db_session):
+        """Clearing device default_asset_id with no group should succeed (splash)."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+
+        asset = Asset(filename="solo.png", asset_type=AssetType.IMAGE, size_bytes=1024, checksum="solo1")
+        db_session.add(asset)
+        await db_session.flush()
+
+        device = Device(
+            id="test-pi-solo", name="test-pi-solo",
+            status=DeviceStatus.APPROVED,
+            default_asset_id=asset.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.patch(
+            "/api/devices/test-pi-solo",
+            json={"default_asset_id": None},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["default_asset_id"] is None
+
     async def test_delete_device(self, client, db_session):
         from cms.models.device import Device, DeviceStatus
 
@@ -164,3 +219,46 @@ class TestDeviceGroups:
         assert resp.status_code == 200
         assert resp.json()["name"] == "New Name"
         assert resp.json()["description"] == "Updated"
+
+    async def test_update_group_default_asset(self, client, db_session):
+        """Setting only default_asset_id on a group (partial update) should work."""
+        from cms.models.asset import Asset, AssetType
+
+        asset = Asset(filename="group_splash.png", asset_type=AssetType.IMAGE, size_bytes=2048, checksum="abc")
+        db_session.add(asset)
+        await db_session.commit()
+
+        resp = await client.post("/api/devices/groups/", json={"name": "Asset Group"})
+        assert resp.status_code == 201
+        group_id = resp.json()["id"]
+
+        # Partial PATCH — only default_asset_id, no name required
+        resp = await client.patch(
+            f"/api/devices/groups/{group_id}",
+            json={"default_asset_id": str(asset.id)},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["default_asset_id"] == str(asset.id)
+        # Name should remain unchanged
+        assert resp.json()["name"] == "Asset Group"
+
+    async def test_clear_group_default_asset(self, client, db_session):
+        """Setting default_asset_id to null should clear it."""
+        from cms.models.asset import Asset, AssetType
+
+        asset = Asset(filename="temp.png", asset_type=AssetType.IMAGE, size_bytes=1024, checksum="xyz")
+        db_session.add(asset)
+        await db_session.commit()
+
+        resp = await client.post(
+            "/api/devices/groups/",
+            json={"name": "Clear Group", "default_asset_id": str(asset.id)},
+        )
+        group_id = resp.json()["id"]
+
+        resp = await client.patch(
+            f"/api/devices/groups/{group_id}",
+            json={"default_asset_id": None},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["default_asset_id"] is None
