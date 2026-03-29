@@ -197,37 +197,56 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 async def convert_image_to_jpeg(source_path: Path, output_path: Path) -> bool:
     """Convert an image file to JPEG using the best available tool.
 
-    HEIC/HEIF files use heif-convert (handles grid-tiled images correctly).
-    Other formats use ffmpeg.
+    HEIC/HEIF files use heif-convert (handles grid-tiled images correctly),
+    then ffmpeg to resize. Other formats use ffmpeg directly.
+    All images are capped at 1920×1080 for device compatibility.
     """
     ext = source_path.suffix.lower()
 
+    # Scale filter: shrink to fit 1920×1080, never upscale
+    scale_filter = (
+        "scale=w='min(iw,1920)':h='min(ih,1080)'"
+        ":force_original_aspect_ratio=decrease"
+    )
+
     try:
+        ffmpeg_input = source_path
+
         if ext in (".heic", ".heif"):
             # heif-convert properly assembles grid tiles into a full image
+            heif_tmp = output_path.with_suffix(".heif_tmp.jpg")
             proc = await asyncio.create_subprocess_exec(
                 "heif-convert", "-q", "92",
-                str(source_path), str(output_path),
+                str(source_path), str(heif_tmp),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
-            if proc.returncode == 0 and output_path.is_file():
-                return True
-            logger.warning("heif-convert failed for %s (exit %d), trying ffmpeg",
-                           source_path.name, proc.returncode)
+            if proc.returncode == 0 and heif_tmp.is_file():
+                ffmpeg_input = heif_tmp
+            else:
+                logger.warning("heif-convert failed for %s (exit %d), trying ffmpeg directly",
+                               source_path.name, proc.returncode)
 
-        # ffmpeg fallback (also primary path for AVIF, WebP, BMP, TIFF, GIF)
+        # ffmpeg: convert + resize to 1920×1080 max
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
-            "-i", str(source_path),
+            "-i", str(ffmpeg_input),
+            "-vf", scale_filter,
             "-frames:v", "1",
             "-update", "1",
+            "-q:v", "2",
             str(output_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
+
+        # Clean up heif temp file
+        heif_tmp = output_path.with_suffix(".heif_tmp.jpg")
+        if heif_tmp.is_file():
+            heif_tmp.unlink()
+
         return proc.returncode == 0 and output_path.is_file()
     except OSError:
         logger.exception("Image conversion failed: %s", source_path)

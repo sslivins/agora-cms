@@ -211,6 +211,16 @@ async function changeDevicePassword(deviceId, deviceName) {
     }
 }
 
+async function rebootDevice(deviceId, deviceName) {
+    if (!await showConfirm("Reboot device \"" + deviceName + "\"?")) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/reboot`);
+    if (resp && resp.ok) showToast("Reboot command sent to " + deviceName);
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to reboot device", true);
+    }
+}
+
 // ── Group actions ──
 async function createGroup() {
     const name = document.getElementById("group-name").value.trim();

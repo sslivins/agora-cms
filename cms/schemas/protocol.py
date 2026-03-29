@@ -34,6 +34,7 @@ class MessageType(str, Enum):
     DELETE_ASSET = "delete_asset"
     CONFIG = "config"
     AUTH_ASSIGNED = "auth_assigned"
+    REBOOT = "reboot"
 
 
 class BaseMessage(BaseModel):
@@ -134,3 +135,7 @@ class ConfigMessage(BaseMessage):
 class AuthAssignedMessage(BaseMessage):
     type: MessageType = MessageType.AUTH_ASSIGNED
     device_auth_token: str
+
+
+class RebootMessage(BaseMessage):
+    type: MessageType = MessageType.REBOOT

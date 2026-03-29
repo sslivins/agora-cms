@@ -87,6 +87,7 @@
                     <div class="detail-toolbar">
                         <span class="detail-label">Actions</span>
                         <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
+                        <button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button>
                     </div>
                     {% endif %}
                     </div>
