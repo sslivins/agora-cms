@@ -50,6 +50,8 @@ Single application with a PostgreSQL database:
 - Pydantic models for all API request/response schemas (`cms/schemas/`)
 - SQLAlchemy ORM models for database tables (`cms/models/`)
 - All WebSocket messages are JSON with a `type` field and `protocol_version`
+- **Never use native `confirm()`, `prompt()`, or `alert()` in the web UI.** Always use the custom modal helpers in `cms/static/app.js`: `showConfirm(message)`, `showPrompt(message, defaultValue)`, and `showToast(message, isError)`. `showConfirm` and `showPrompt` return Promises and must be `await`ed.
+- **Never use the native `title` attribute for tooltips.** Always use the custom CSS tooltip: `<span class="has-tooltip">Label<span class="tooltip">Tooltip text</span></span>` (styled in `cms/static/style.css`).
 - `cms/schemas/protocol.py` defines the shared CMS ↔ device message contract — **any changes here must be mirrored in the device repo** (`sslivins/agora`)
 - API version lives in `cms/__init__.py` (`__version__`)
 

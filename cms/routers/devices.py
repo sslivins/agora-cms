@@ -19,7 +19,7 @@ from cms.schemas.device import (
     DeviceOut,
     DeviceUpdate,
 )
-from cms.schemas.protocol import ConfigMessage, FetchAssetMessage, PlayMessage, SyncMessage
+from cms.schemas.protocol import ConfigMessage, FetchAssetMessage, PlayMessage, RebootMessage, SyncMessage
 from cms.services.device_manager import device_manager
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
@@ -133,6 +133,27 @@ async def set_device_password(
 
     config_msg = ConfigMessage(web_password=password)
     sent = await device_manager.send_to_device(device_id, config_msg.model_dump(mode="json"))
+    if not sent:
+        raise HTTPException(status_code=502, detail="Failed to send to device")
+
+    return {"ok": True}
+
+
+@router.post("/{device_id}/reboot")
+async def reboot_device(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if not device_manager.is_connected(device_id):
+        raise HTTPException(status_code=409, detail="Device is not connected")
+
+    reboot_msg = RebootMessage()
+    sent = await device_manager.send_to_device(device_id, reboot_msg.model_dump(mode="json"))
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 

@@ -23,8 +23,9 @@ from cms.auth import (
 )
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.asset import Asset
+from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.services.device_manager import device_manager
 
@@ -132,114 +133,136 @@ async def logout():
 
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
-    # Counts
-    device_result = await db.execute(select(func.count(Device.id)))
-    device_count = device_result.scalar() or 0
+    from datetime import datetime as _dt, timezone as _tz
+    from cms.services.scheduler import get_now_playing, get_upcoming_schedules
 
-    pending_result = await db.execute(
-        select(func.count(Device.id)).where(Device.status == DeviceStatus.PENDING)
-    )
-    pending_count = pending_result.scalar() or 0
-
-    asset_result = await db.execute(select(func.count(Asset.id)))
-    asset_count = asset_result.scalar() or 0
-
-    schedule_result = await db.execute(
-        select(func.count(Schedule.id)).where(Schedule.enabled == True)
-    )
-    schedule_count = schedule_result.scalar() or 0
-
-    online_count = device_manager.connected_count
+    # CMS timezone
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+    now = _dt.now(_tz.utc)
 
     # Pending devices
     pending_q = await db.execute(
         select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
     )
     pending_devices = pending_q.scalars().all()
-
-    # Recent devices
-    recent_q = await db.execute(
-        select(Device)
-        .options(selectinload(Device.group))
-        .where(Device.status != DeviceStatus.PENDING)
-        .order_by(Device.last_seen.desc().nullslast())
-        .limit(10)
-    )
-    recent_devices = recent_q.scalars().all()
-
-    # Tag online devices
-    for d in recent_devices:
-        d.is_online = device_manager.is_connected(d.id)
     for d in pending_devices:
         d.is_online = False
 
-    # Now Playing from scheduler
-    from cms.services.scheduler import get_now_playing
+    # All approved devices
+    devices_q = await db.execute(
+        select(Device)
+        .options(selectinload(Device.group))
+        .where(Device.status != DeviceStatus.PENDING)
+        .order_by(Device.name, Device.id)
+    )
+    all_devices = devices_q.scalars().all()
+    for d in all_devices:
+        d.is_online = device_manager.is_connected(d.id)
+
+    # Offline devices
+    offline_devices = [d for d in all_devices if not d.is_online]
+
+    # Now Playing
     now_playing = get_now_playing()
+
+    # Build device status with live playback state
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    device_states = []
+    for d in all_devices:
+        state = live_states.get(d.id)
+        device_states.append({
+            "id": d.id,
+            "name": d.name or d.id,
+            "group_name": d.group.name if d.group else None,
+            "is_online": d.is_online,
+            "mode": state["mode"] if state else "offline",
+            "asset": state["asset"] if state else None,
+        })
+
+    # Upcoming schedules (next 24h)
+    sched_q = await db.execute(
+        select(Schedule)
+        .options(
+            selectinload(Schedule.asset),
+            selectinload(Schedule.device),
+            selectinload(Schedule.group),
+        )
+        .where(Schedule.enabled == True)
+    )
+    all_schedules = sched_q.scalars().all()
+    upcoming = get_upcoming_schedules(all_schedules, now, tz)
+    upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
+    upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_tab": "dashboard",
-        "device_count": device_count,
-        "online_count": online_count,
-        "pending_count": pending_count,
-        "asset_count": asset_count,
-        "schedule_count": schedule_count,
+        "tz": tz,
         "pending_devices": pending_devices,
-        "recent_devices": recent_devices,
+        "offline_devices": offline_devices,
+        "all_devices": all_devices,
         "now_playing": now_playing,
+        "device_states": device_states,
+        "upcoming_today": upcoming_today,
+        "upcoming_tomorrow": upcoming_tomorrow,
     })
 
 
 @router.get("/api/dashboard", dependencies=[Depends(require_auth)])
 async def dashboard_json(db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""
-    device_result = await db.execute(select(func.count(Device.id)))
-    device_count = device_result.scalar() or 0
+    from datetime import datetime as _dt, timezone as _tz
+    from cms.services.scheduler import get_now_playing, get_upcoming_schedules
 
-    pending_result = await db.execute(
-        select(func.count(Device.id)).where(Device.status == DeviceStatus.PENDING)
-    )
-    pending_count = pending_result.scalar() or 0
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+    now = _dt.now(_tz.utc)
 
-    asset_result = await db.execute(select(func.count(Asset.id)))
-    asset_count = asset_result.scalar() or 0
-
-    schedule_result = await db.execute(
-        select(func.count(Schedule.id)).where(Schedule.enabled == True)
-    )
-    schedule_count = schedule_result.scalar() or 0
-
-    online_count = device_manager.connected_count
-
-    from cms.services.scheduler import get_now_playing
-    now_playing = get_now_playing()
-
-    # Pending device IDs (to detect new arrivals)
+    # Pending device IDs
     pending_q = await db.execute(
         select(Device.id).where(Device.status == DeviceStatus.PENDING)
     )
     pending_ids = [r[0] for r in pending_q.all()]
 
-    # Online device IDs
-    recent_q = await db.execute(
-        select(Device.id, Device.name)
+    # Online status
+    devices_q = await db.execute(
+        select(Device.id)
         .where(Device.status != DeviceStatus.PENDING)
-        .order_by(Device.last_seen.desc().nullslast())
-        .limit(10)
     )
-    recent_online = {
-        r[0]: device_manager.is_connected(r[0]) for r in recent_q.all()
-    }
+    all_device_ids = [r[0] for r in devices_q.all()]
+    offline_ids = [did for did in all_device_ids if not device_manager.is_connected(did)]
+
+    now_playing = get_now_playing()
+
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    device_states = [
+        {
+            "id": did,
+            "mode": live_states[did]["mode"] if did in live_states else "offline",
+            "asset": live_states[did]["asset"] if did in live_states else None,
+        }
+        for did in all_device_ids
+    ]
+
+    # Upcoming schedules
+    sched_q = await db.execute(
+        select(Schedule)
+        .options(
+            selectinload(Schedule.asset),
+            selectinload(Schedule.device),
+            selectinload(Schedule.group),
+        )
+        .where(Schedule.enabled == True)
+    )
+    all_schedules = sched_q.scalars().all()
+    upcoming = get_upcoming_schedules(all_schedules, now, tz)
 
     return JSONResponse({
-        "device_count": device_count,
-        "online_count": online_count,
-        "pending_count": pending_count,
-        "asset_count": asset_count,
-        "schedule_count": schedule_count,
         "now_playing": now_playing,
         "pending_ids": pending_ids,
-        "recent_online": recent_online,
+        "offline_ids": offline_ids,
+        "device_states": device_states,
+        "upcoming": upcoming,
     })
 
 
@@ -256,18 +279,20 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.is_online = device_manager.is_connected(d.id)
 
     groups_q = await db.execute(
-        select(
-            DeviceGroup,
-            func.count(Device.id).label("device_count"),
-        )
-        .outerjoin(Device, Device.group_id == DeviceGroup.id)
-        .group_by(DeviceGroup.id)
+        select(DeviceGroup)
+        .options(selectinload(DeviceGroup.devices))
         .order_by(DeviceGroup.name)
     )
-    groups = [
-        type("GroupRow", (), {"id": g.id, "name": g.name, "description": g.description, "default_asset_id": g.default_asset_id, "device_count": c})()
-        for g, c in groups_q.all()
-    ]
+    groups = groups_q.scalars().all()
+
+    # Attach device_count and is_online to each group's devices
+    for g in groups:
+        g.device_count = len(g.devices)
+        for d in g.devices:
+            d.is_online = device_manager.is_connected(d.id)
+
+    # Devices not assigned to any group
+    ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]
 
     assets_q = await db.execute(select(Asset).order_by(Asset.filename))
     assets = assets_q.scalars().all()
@@ -276,6 +301,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "active_tab": "devices",
         "devices": devices,
         "groups": groups,
+        "ungrouped": ungrouped,
         "assets": assets,
     })
 
@@ -285,13 +311,39 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/assets", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Asset).order_by(Asset.uploaded_at.desc()))
+
+    result = await db.execute(
+        select(Asset)
+        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+        .order_by(Asset.uploaded_at.desc())
+    )
     assets = result.scalars().all()
+
+    # Count schedules per asset
+    sched_counts_q = await db.execute(
+        select(Schedule.asset_id, func.count()).group_by(Schedule.asset_id)
+    )
+    sched_counts = dict(sched_counts_q.all())
+
+    # Annotate each asset with variant summary + schedule count
+    for a in assets:
+        total = len(a.variants)
+        ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
+        processing = sum(1 for v in a.variants if v.status == VariantStatus.PROCESSING)
+        failed = sum(1 for v in a.variants if v.status == VariantStatus.FAILED)
+        a.variant_total = total
+        a.variant_ready = ready
+        a.variant_processing = processing
+        a.variant_failed = failed
+        a.schedule_count = sched_counts.get(a.id, 0)
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
         "assets": assets,
     })
+
+
+
 
 
 # ── Schedules ──
@@ -344,6 +396,62 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "tz_options": tz_options,
+    })
+
+
+# ── Profiles ──
+
+
+@router.get("/profiles", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def profiles_page(request: Request, db: AsyncSession = Depends(get_db)):
+
+    result = await db.execute(
+        select(DeviceProfile).order_by(DeviceProfile.name)
+    )
+    profiles = result.scalars().all()
+
+    # Annotate each profile with device/variant counts
+    annotated = []
+    for p in profiles:
+        dev_count = (await db.execute(
+            select(func.count(Device.id)).where(Device.profile_id == p.id)
+        )).scalar() or 0
+        total_var = (await db.execute(
+            select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == p.id)
+        )).scalar() or 0
+        ready_var = (await db.execute(
+            select(func.count(AssetVariant.id)).where(
+                AssetVariant.profile_id == p.id,
+                AssetVariant.status == VariantStatus.READY,
+            )
+        )).scalar() or 0
+
+        p.device_count = dev_count
+        p.total_variants = total_var
+        p.ready_variants = ready_var
+        annotated.append(p)
+
+    # Active transcoding queue
+    queue_result = await db.execute(
+        select(AssetVariant)
+        .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
+        .order_by(AssetVariant.created_at)
+        .limit(50)
+    )
+    queue_variants = queue_result.scalars().all()
+
+    # Load relationships for display
+    transcode_queue = []
+    for v in queue_variants:
+        await db.refresh(v, ["source_asset", "profile"])
+        v.source_filename = v.source_asset.filename if v.source_asset else "?"
+        v.profile_name = v.profile.name if v.profile else "?"
+        transcode_queue.append(v)
+
+    return templates.TemplateResponse(request, "profiles.html", {
+        "active_tab": "profiles",
+        "profiles": annotated,
+        "transcode_queue": transcode_queue,
     })
 
 

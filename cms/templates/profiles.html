@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+{% block title %}Device Profiles — Agora CMS{% endblock %}
+{% block content %}
+<h1>Device Profiles</h1>
+
+<div class="card">
+    <h2>Create Profile</h2>
+    <form onsubmit="event.preventDefault(); createProfile(this)">
+        <div class="form-row">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" name="name" required placeholder="e.g. pi-zero-2w-lowres">
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <input type="text" name="description" placeholder="Short description">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Video Codec</label>
+                <select name="video_codec">
+                    <option value="h264" selected>H.264</option>
+                    <option value="h265">H.265 (HEVC)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Video Profile</label>
+                <select name="video_profile">
+                    <option value="baseline">Baseline</option>
+                    <option value="main" selected>Main</option>
+                    <option value="high">High</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Max Width</label>
+                <input type="number" name="max_width" value="1920" min="320" max="3840">
+            </div>
+            <div class="form-group">
+                <label>Max Height</label>
+                <input type="number" name="max_height" value="1080" min="240" max="2160">
+            </div>
+            <div class="form-group">
+                <label>Max FPS</label>
+                <input type="number" name="max_fps" value="30" min="1" max="60">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>CRF (quality)</label>
+                <input type="number" name="crf" value="23" min="0" max="51">
+            </div>
+            <div class="form-group">
+                <label>Video Bitrate (empty=use CRF)</label>
+                <input type="text" name="video_bitrate" placeholder="e.g. 5M">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Audio Codec</label>
+                <select name="audio_codec">
+                    <option value="aac" selected>AAC</option>
+                    <option value="mp3">MP3</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Audio Bitrate</label>
+                <input type="text" name="audio_bitrate" value="128k">
+            </div>
+        </div>
+        <div id="profile-create-status" class="form-status"></div>
+        <button type="submit" class="btn btn-primary">Create Profile</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Profiles</h2>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Codec</th>
+                <th>Resolution</th>
+                <th>FPS</th>
+                <th>CRF / Bitrate</th>
+                <th>Devices</th>
+                <th>Variants</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="profiles-body">
+            {% for p in profiles %}
+            <tr>
+                <td>
+                    {{ p.name }}
+                    {% if p.builtin %}<span class="badge badge-builtin">built-in</span>{% endif %}
+                </td>
+                <td>{{ p.video_codec }} / {{ p.video_profile }}</td>
+                <td>{{ p.max_width }}×{{ p.max_height }}</td>
+                <td>{{ p.max_fps }}</td>
+                <td>{% if p.video_bitrate %}{{ p.video_bitrate }}{% else %}CRF {{ p.crf }}{% endif %}</td>
+                <td>{{ p.device_count }}</td>
+                <td>
+                    {% if p.total_variants > 0 %}
+                    <span class="has-tooltip">
+                        {{ p.ready_variants }}/{{ p.total_variants }}
+                        <span class="tooltip">{{ p.ready_variants }} ready of {{ p.total_variants }} total variants</span>
+                    </span>
+                    {% if p.ready_variants == p.total_variants %}
+                        <span class="badge badge-approved">done</span>
+                    {% elif p.ready_variants > 0 %}
+                        <span class="badge badge-pending">in progress</span>
+                    {% else %}
+                        <span class="badge badge-offline">queued</span>
+                    {% endif %}
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" onclick="editProfile('{{ p.id }}')">Edit</button>
+                    {% if not p.builtin %}
+                    <button class="btn btn-danger btn-sm" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="empty">No profiles configured</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+{% if transcode_queue %}
+<div class="card">
+    <h2>Transcoding Queue</h2>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Asset</th>
+                <th>Profile</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for v in transcode_queue %}
+            <tr>
+                <td class="wrap">{{ v.source_filename }}</td>
+                <td>{{ v.profile_name }}</td>
+                <td><span class="badge badge-{{ v.status.value }}">{{ v.status.value }}</span></td>
+                <td>
+                    {% if v.status.value == 'processing' %}
+                    <div class="progress-bar"><div class="progress-fill" style="width:{{ v.progress }}%"></div></div>
+                    <span class="text-muted">{{ "%.1f"|format(v.progress) }}%</span>
+                    {% elif v.status.value == 'ready' %}
+                    100%
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td class="wrap text-muted">{{ v.error_message or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function createProfile(form) {
+    const data = new FormData(form);
+    const body = {
+        name: data.get("name"),
+        description: data.get("description") || "",
+        video_codec: data.get("video_codec"),
+        video_profile: data.get("video_profile"),
+        max_width: parseInt(data.get("max_width")),
+        max_height: parseInt(data.get("max_height")),
+        max_fps: parseInt(data.get("max_fps")),
+        crf: parseInt(data.get("crf")),
+        video_bitrate: data.get("video_bitrate") || "",
+        audio_codec: data.get("audio_codec"),
+        audio_bitrate: data.get("audio_bitrate"),
+    };
+    const resp = await apiCall("POST", "/api/profiles", body);
+    if (resp && resp.ok) {
+        showToast("Profile created");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to create profile", true);
+    }
+}
+
+async function editProfile(profileId) {
+    const resp = await fetch(`/api/profiles`);
+    if (!resp.ok) return;
+    const profiles = await resp.json();
+    const p = profiles.find(x => x.id === profileId);
+    if (!p) return;
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    box.style.maxWidth = "500px";
+    box.innerHTML = `
+        <h3 style="margin-bottom:1rem">Edit Profile: ${p.name}</h3>
+        <div class="form-group"><label>Description</label><input type="text" id="ep-desc" value="${p.description || ''}"></div>
+        <div class="form-row">
+            <div class="form-group"><label>Video Profile</label>
+                <select id="ep-vprofile"><option value="baseline" ${p.video_profile==='baseline'?'selected':''}>Baseline</option><option value="main" ${p.video_profile==='main'?'selected':''}>Main</option><option value="high" ${p.video_profile==='high'?'selected':''}>High</option></select>
+            </div>
+            <div class="form-group"><label>Max FPS</label><input type="number" id="ep-fps" value="${p.max_fps}"></div>
+        </div>
+        <div class="form-row">
+            <div class="form-group"><label>Max Width</label><input type="number" id="ep-w" value="${p.max_width}"></div>
+            <div class="form-group"><label>Max Height</label><input type="number" id="ep-h" value="${p.max_height}"></div>
+        </div>
+        <div class="form-row">
+            <div class="form-group"><label>CRF</label><input type="number" id="ep-crf" value="${p.crf}"></div>
+            <div class="form-group"><label>Video Bitrate</label><input type="text" id="ep-vbr" value="${p.video_bitrate || ''}"></div>
+        </div>
+        <div class="form-row">
+            <div class="form-group"><label>Audio Codec</label><input type="text" id="ep-ac" value="${p.audio_codec}"></div>
+            <div class="form-group"><label>Audio Bitrate</label><input type="text" id="ep-abr" value="${p.audio_bitrate}"></div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" id="ep-cancel">Cancel</button>
+            <button class="btn btn-primary" id="ep-save">Save</button>
+        </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    box.querySelector("#ep-cancel").onclick = () => overlay.remove();
+    box.querySelector("#ep-save").onclick = async () => {
+        const body = {
+            description: box.querySelector("#ep-desc").value,
+            video_profile: box.querySelector("#ep-vprofile").value,
+            max_width: parseInt(box.querySelector("#ep-w").value),
+            max_height: parseInt(box.querySelector("#ep-h").value),
+            max_fps: parseInt(box.querySelector("#ep-fps").value),
+            crf: parseInt(box.querySelector("#ep-crf").value),
+            video_bitrate: box.querySelector("#ep-vbr").value || "",
+            audio_codec: box.querySelector("#ep-ac").value,
+            audio_bitrate: box.querySelector("#ep-abr").value,
+        };
+        const r = await apiCall("PUT", `/api/profiles/${profileId}`, body);
+        if (r && r.ok) {
+            showToast("Profile updated");
+            overlay.remove();
+            location.reload();
+        } else if (r) {
+            const err = await r.json().catch(() => null);
+            showToast(err?.detail || "Update failed", true);
+        }
+    };
+}
+
+async function deleteProfile(profileId, name) {
+    if (!await showConfirm(`Delete profile "${name}"? All variants for this profile will be deleted.`)) return;
+    const resp = await apiCall("DELETE", `/api/profiles/${profileId}`);
+    if (resp && resp.ok) {
+        showToast("Profile deleted");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Delete failed", true);
+    }
+}
+</script>
+{% endblock %}

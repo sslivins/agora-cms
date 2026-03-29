@@ -34,6 +34,7 @@ class MessageType(str, Enum):
     DELETE_ASSET = "delete_asset"
     CONFIG = "config"
     AUTH_ASSIGNED = "auth_assigned"
+    REBOOT = "reboot"
 
 
 class BaseMessage(BaseModel):
@@ -84,6 +85,7 @@ class ScheduleEntry(BaseModel):
     id: str
     name: str
     asset: str
+    asset_checksum: Optional[str] = None  # SHA-256 of the file the device should have
     start_time: str          # "HH:MM"
     end_time: str            # "HH:MM"
     start_date: Optional[str] = None  # "YYYY-MM-DD" or null (open-ended)
@@ -97,6 +99,7 @@ class SyncMessage(BaseMessage):
     timezone: str = "UTC"
     schedules: list[ScheduleEntry] = []
     default_asset: Optional[str] = None
+    default_asset_checksum: Optional[str] = None
     splash: Optional[str] = None
 
 
@@ -134,3 +137,7 @@ class ConfigMessage(BaseMessage):
 class AuthAssignedMessage(BaseMessage):
     type: MessageType = MessageType.AUTH_ASSIGNED
     device_auth_token: str
+
+
+class RebootMessage(BaseMessage):
+    type: MessageType = MessageType.REBOOT

@@ -49,6 +49,9 @@ class Device(Base):
     storage_capacity_mb: Mapped[int] = mapped_column(Integer, default=0)
     storage_used_mb: Mapped[int] = mapped_column(Integer, default=0)
     device_type: Mapped[str] = mapped_column(String(100), default="")
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("device_profiles.id"), nullable=True
+    )
     default_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assets.id"), nullable=True
     )
@@ -61,5 +64,6 @@ class Device(Base):
     )
 
     group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
+    profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys="[Device.default_asset_id]")
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="device")

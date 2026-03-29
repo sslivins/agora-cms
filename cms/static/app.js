@@ -136,7 +136,21 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Device expand/collapse ──
 function toggleDevice(row) {
     const deviceId = row.dataset.deviceId;
-    const detail = document.querySelector(`tr[data-detail-for="${deviceId}"]`);
+    const detail = row.nextElementSibling;
+    if (!detail || detail.dataset.detailFor !== deviceId) return;
+    const isOpen = row.classList.contains("expanded");
+    if (isOpen) {
+        row.classList.remove("expanded");
+        detail.style.display = "none";
+    } else {
+        row.classList.add("expanded");
+        detail.style.display = "";
+    }
+}
+
+function toggleAsset(row) {
+    const assetId = row.dataset.assetId;
+    const detail = document.querySelector(`tr.asset-detail[data-detail-for="${assetId}"]`);
     if (!detail) return;
     const isOpen = row.classList.contains("expanded");
     if (isOpen) {
@@ -211,6 +225,16 @@ async function changeDevicePassword(deviceId, deviceName) {
     }
 }
 
+async function rebootDevice(deviceId, deviceName) {
+    if (!await showConfirm("Reboot device \"" + deviceName + "\"?")) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/reboot`);
+    if (resp && resp.ok) showToast("Reboot command sent to " + deviceName);
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to reboot device", true);
+    }
+}
+
 // ── Group actions ──
 async function createGroup() {
     const name = document.getElementById("group-name").value.trim();
@@ -269,6 +293,10 @@ async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
     if (resp && resp.ok) location.reload();
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Delete failed", true);
+    }
 }
 
 async function uploadAsset(form) {

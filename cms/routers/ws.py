@@ -12,8 +12,9 @@ from sqlalchemy.orm import selectinload
 
 from cms.auth import get_settings
 from cms.database import get_db
-from cms.models.asset import Asset
+from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceStatus
+from cms.models.device_profile import DeviceProfile
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
     AuthAssignedMessage,
@@ -34,6 +35,76 @@ router = APIRouter()
 def _hash_token(token: str) -> str:
     """SHA-256 hash of a token for storage."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def _resolve_asset_for_device(
+    asset: Asset, device: Device, base_url: str, db: AsyncSession,
+) -> FetchAssetMessage | None:
+    """Build a FetchAssetMessage using the best variant for the device's profile.
+
+    For video assets with a profile:
+      - If a READY variant exists → use variant download URL
+      - If variant exists but not ready → return None (not available yet)
+    For images or devices without a profile → use source asset directly.
+    """
+    if asset.asset_type == AssetType.VIDEO and device.profile_id:
+        result = await db.execute(
+            select(AssetVariant).where(
+                AssetVariant.source_asset_id == asset.id,
+                AssetVariant.profile_id == device.profile_id,
+            )
+        )
+        variant = result.scalar_one_or_none()
+        if variant:
+            if variant.status == VariantStatus.READY:
+                return FetchAssetMessage(
+                    asset_name=asset.filename,
+                    download_url=f"{base_url}/api/assets/variants/{variant.id}/download",
+                    checksum=variant.checksum,
+                    size_bytes=variant.size_bytes,
+                )
+            # Variant exists but not ready — skip for now
+            return None
+
+    # No profile, no variant, or image → use source
+    return FetchAssetMessage(
+        asset_name=asset.filename,
+        download_url=f"{base_url}/api/assets/{asset.id}/download",
+        checksum=asset.checksum,
+        size_bytes=asset.size_bytes,
+    )
+
+
+# Mapping of device_type substrings to built-in profile names
+_DEVICE_TYPE_PROFILE_MAP = {
+    "pi zero 2 w": "pi-zero-2w",
+    "raspberry pi zero 2 w": "pi-zero-2w",
+}
+
+
+async def _auto_assign_profile(device: Device, db: AsyncSession) -> None:
+    """Auto-assign a device profile based on device_type if not already set."""
+    if device.profile_id or not device.device_type:
+        return
+
+    dt_lower = device.device_type.lower()
+    profile_name = None
+    for pattern, name in _DEVICE_TYPE_PROFILE_MAP.items():
+        if pattern in dt_lower:
+            profile_name = name
+            break
+
+    if not profile_name:
+        return
+
+    result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.name == profile_name)
+    )
+    profile = result.scalar_one_or_none()
+    if profile:
+        device.profile_id = profile.id
+        await db.commit()
+        logger.info("Auto-assigned profile '%s' to device %s", profile_name, device.id)
 
 
 async def _generate_and_push_api_key(device: Device, websocket: WebSocket, db: AsyncSession) -> None:
@@ -107,6 +178,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             auth_msg = AuthAssignedMessage(device_auth_token=device_auth_token)
             await websocket.send_json(auth_msg.model_dump(mode="json"))
             logger.info("Auth token assigned to device %s", device_id)
+
+            # Auto-assign profile based on device_type
+            await _auto_assign_profile(device, db)
         else:
             # Known device — verify auth token if device has one stored
             if device.device_auth_token_hash:
@@ -132,6 +206,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             device.last_seen = datetime.now(timezone.utc)
             await db.commit()
 
+            # Auto-assign profile if not already set
+            await _auto_assign_profile(device, db)
+
         # ── 3. Register connection ──
         device_manager.register(device_id, websocket)
 
@@ -155,15 +232,10 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             default_asset = device.group.default_asset
 
         if device.status == DeviceStatus.APPROVED and default_asset:
-            download_url = f"{base_url}/api/assets/{default_asset.id}/download"
-            fetch = FetchAssetMessage(
-                asset_name=default_asset.filename,
-                download_url=download_url,
-                checksum=default_asset.checksum,
-                size_bytes=default_asset.size_bytes,
-            )
-            await websocket.send_json(fetch.model_dump(mode="json"))
-            logger.info("Sent fetch_asset for default asset %s to %s", default_asset.filename, device_id)
+            fetch = await _resolve_asset_for_device(default_asset, device, base_url, db)
+            if fetch:
+                await websocket.send_json(fetch.model_dump(mode="json"))
+                logger.info("Sent fetch_asset for default asset %s to %s", default_asset.filename, device_id)
 
         # ── 7. Push API key on connect (generate if missing) ──
         if device.status == DeviceStatus.APPROVED:
@@ -179,6 +251,14 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 device.last_seen = datetime.now(timezone.utc)
                 device.storage_used_mb = msg.get("storage_used_mb", device.storage_used_mb)
                 await db.commit()
+
+                # Track playback state
+                device_manager.update_status(
+                    device_id,
+                    mode=msg.get("mode", "unknown"),
+                    asset=msg.get("asset"),
+                    uptime_seconds=msg.get("uptime_seconds", 0),
+                )
 
                 # Rotate API key if due
                 if (
@@ -205,15 +285,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     )
                     asset = asset_result.scalar_one_or_none()
                     if asset:
-                        download_url = f"{base_url}/api/assets/{asset.id}/download"
-                        fetch = FetchAssetMessage(
-                            asset_name=asset.filename,
-                            download_url=download_url,
-                            checksum=asset.checksum,
-                            size_bytes=asset.size_bytes,
-                        )
-                        await websocket.send_json(fetch.model_dump(mode="json"))
-                        logger.info("Device %s requested asset %s, sending fetch", device_id, asset_name)
+                        await db.refresh(device)
+                        fetch = await _resolve_asset_for_device(asset, device, base_url, db)
+                        if fetch:
+                            await websocket.send_json(fetch.model_dump(mode="json"))
+                            logger.info("Device %s requested asset %s, sending fetch", device_id, asset_name)
+                        else:
+                            logger.info("Device %s requested asset %s, variant not ready yet", device_id, asset_name)
                     else:
                         logger.warning("Device %s requested unknown asset: %s", device_id, asset_name)
 
