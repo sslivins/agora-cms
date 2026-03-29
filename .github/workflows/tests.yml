@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx aiosqlite
+          pip install pytest pytest-asyncio pytest-timeout httpx aiosqlite
 
       - name: Run tests
         run: python -m pytest tests/ --tb=short -q

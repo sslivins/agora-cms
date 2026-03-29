@@ -74,6 +74,9 @@ async def app(db_engine, tmp_path):
     def override_get_settings():
         return settings
 
+    # Clear the lru_cache on get_settings so it doesn't return stale real settings.
+    get_settings.cache_clear()
+
     from cms.main import app as fastapi_app
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_settings] = override_get_settings
@@ -93,6 +96,7 @@ async def app(db_engine, tmp_path):
     fastapi_app.dependency_overrides.clear()
     db_mod._engine = None
     db_mod._session_factory = None
+    get_settings.cache_clear()
 
 
 @pytest_asyncio.fixture
