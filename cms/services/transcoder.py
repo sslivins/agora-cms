@@ -195,12 +195,35 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 
 
 async def convert_image_to_jpeg(source_path: Path, output_path: Path) -> bool:
-    """Convert an image file to JPEG using ffmpeg. Returns True on success."""
+    """Convert an image file to JPEG using ffmpeg. Returns True on success.
+
+    Uses -map 0:V? to prefer the primary (non-thumbnail) video stream,
+    falling back to -map 0:v:0 if no non-attached stream exists.
+    """
     try:
+        # -map 0:V? selects non-attached-pic video streams
+        # (skips embedded thumbnails common in HEIC/HEIF files)
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
             "-i", str(source_path),
-            "-vframes", "1",
+            "-map", "0:V?",
+            "-frames:v", "1",
+            str(output_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+
+        if proc.returncode == 0 and output_path.is_file():
+            return True
+
+        # Fallback: some formats don't mark streams as attached_pic,
+        # pick the first video stream instead
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y",
+            "-i", str(source_path),
+            "-map", "0:v:0",
+            "-frames:v", "1",
             str(output_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
