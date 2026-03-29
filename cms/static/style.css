@@ -150,9 +150,9 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-video { background: var(--primary); color: var(--text); }
 .badge-image { background: #8e44ad; color: var(--text); }
 .badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
-.badge-processing { background: #3498db; color: #fff; }
-.badge-ready { background: var(--success); color: #000; }
-.badge-failed { background: var(--danger); color: #fff; }
+.badge-processing { background: #3498db; color: #fff; margin-left: 0.4rem; }
+.badge-ready { background: var(--success); color: #000; margin-left: 0.4rem; }
+.badge-failed { background: var(--danger); color: #fff; margin-left: 0.4rem; }
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
 
