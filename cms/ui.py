@@ -332,25 +332,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     })
 
 
-@router.get("/api/assets/status", dependencies=[Depends(require_auth)])
-async def assets_status_json(db: AsyncSession = Depends(get_db)):
-    """Lightweight JSON endpoint for assets page polling."""
-    asset_count = (await db.execute(select(func.count(Asset.id)))).scalar() or 0
-    variant_ready = (await db.execute(
-        select(func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.READY)
-    )).scalar() or 0
-    variant_processing = (await db.execute(
-        select(func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.PROCESSING)
-    )).scalar() or 0
-    variant_failed = (await db.execute(
-        select(func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.FAILED)
-    )).scalar() or 0
-    return JSONResponse({
-        "asset_count": asset_count,
-        "variant_ready": variant_ready,
-        "variant_processing": variant_processing,
-        "variant_failed": variant_failed,
-    })
+
 
 
 # ── Schedules ──

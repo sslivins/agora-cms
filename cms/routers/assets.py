@@ -41,6 +41,28 @@ def _asset_type(filename: str) -> AssetType:
     return AssetType.IMAGE
 
 
+@router.get("/status")
+async def assets_status_json(db: AsyncSession = Depends(get_db)):
+    """Lightweight JSON for assets page polling."""
+    from sqlalchemy import func as sa_func
+    asset_count = (await db.execute(select(sa_func.count(Asset.id)))).scalar() or 0
+    variant_ready = (await db.execute(
+        select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.READY)
+    )).scalar() or 0
+    variant_processing = (await db.execute(
+        select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.PROCESSING)
+    )).scalar() or 0
+    variant_failed = (await db.execute(
+        select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.FAILED)
+    )).scalar() or 0
+    return {
+        "asset_count": asset_count,
+        "variant_ready": variant_ready,
+        "variant_processing": variant_processing,
+        "variant_failed": variant_failed,
+    }
+
+
 @router.get("", response_model=List[AssetOut])
 async def list_assets(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).order_by(Asset.uploaded_at.desc()))
