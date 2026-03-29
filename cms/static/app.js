@@ -136,8 +136,8 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Device expand/collapse ──
 function toggleDevice(row) {
     const deviceId = row.dataset.deviceId;
-    const detail = document.querySelector(`tr[data-detail-for="${deviceId}"]`);
-    if (!detail) return;
+    const detail = row.nextElementSibling;
+    if (!detail || detail.dataset.detailFor !== deviceId) return;
     const isOpen = row.classList.contains("expanded");
     if (isOpen) {
         row.classList.remove("expanded");

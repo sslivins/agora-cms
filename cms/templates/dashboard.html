@@ -3,86 +3,19 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-<div class="stats">
-    <div class="stat">
-        <div class="stat-value">{{ device_count }}</div>
-        <div class="stat-label">Total Devices</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value">{{ online_count }}</div>
-        <div class="stat-label">Online Now</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value">{{ pending_count }}</div>
-        <div class="stat-label">Pending Approval</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value">{{ asset_count }}</div>
-        <div class="stat-label">Assets</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value">{{ schedule_count }}</div>
-        <div class="stat-label">Active Schedules</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value has-tooltip">
-            {{ tc_ready }}
-            {% if tc_processing > 0 or tc_pending > 0 or tc_failed > 0 %}
-            <span class="tooltip">{{ tc_pending }} queued, {{ tc_processing }} transcoding, {{ tc_failed }} failed</span>
-            {% endif %}
-        </div>
-        <div class="stat-label">Variants Ready{% if tc_processing > 0 %} <span class="badge badge-processing" style="font-size:0.65rem">{{ tc_processing }} active</span>{% endif %}</div>
-    </div>
-</div>
-
-{% if device_states %}
-<div class="card">
-    <h2>Device Status</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>Group</th>
-                <th>State</th>
-                <th>Currently Playing</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for ds in device_states %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td>
-                    {% if not ds.is_online %}
-                    <span class="badge badge-offline">Offline</span>
-                    {% elif ds.mode == 'play' %}
-                    <span class="badge badge-online">Playing</span>
-                    {% elif ds.mode == 'splash' %}
-                    <span class="badge badge-splash">Splash</span>
-                    {% elif ds.mode == 'stop' %}
-                    <span class="badge badge-offline">Stopped</span>
-                    {% else %}
-                    <span class="badge badge-offline">{{ ds.mode | capitalize }}</span>
-                    {% endif %}
-                </td>
-                <td>{{ ds.asset or '—' }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
-
-{% if now_playing %}
-<div class="card">
-    <h2>Active Schedules</h2>
+{# ── Currently Playing ── #}
+<div class="card{{ ' card-playing' if now_playing }}">
+    <h2>Currently Playing</h2>
+    {% if now_playing %}
     <table>
         <thead>
             <tr>
                 <th>Device</th>
                 <th>Schedule</th>
                 <th>Asset</th>
-                <th>Since</th>
+                <th>Ends At</th>
+                <th>Time Remaining</th>
+                <th></th>
             </tr>
         </thead>
         <tbody>
@@ -91,14 +24,115 @@
                 <td>{{ np.device_name }}</td>
                 <td>{{ np.schedule_name }}</td>
                 <td>{{ np.asset_filename }}</td>
-                <td data-last-seen="{{ np.since }}">{{ np.since }}</td>
+                <td>{{ np.end_time }}</td>
+                <td>{{ np.remaining }}</td>
+                <td><button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}')">End Now</button></td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    {% else %}
+    <p class="text-muted empty-state">No schedules are active right now.
+    {% set has_splash = device_states | selectattr("mode", "equalto", "splash") | list %}
+    {% if has_splash %} Splash screen is showing on {{ has_splash | length }} device{{ 's' if has_splash | length != 1 else '' }}.{% endif %}
+    </p>
+    {% endif %}
 </div>
-{% endif %}
 
+{# ── Coming Up ── #}
+<div class="card">
+    <h2>Coming Up</h2>
+    {% if upcoming_today or upcoming_tomorrow %}
+    {% if upcoming_today %}
+    <h3 class="section-label">Today</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Schedule</th>
+                <th>Target</th>
+                <th>Asset</th>
+                <th>Time</th>
+                <th>Duration</th>
+                <th>Starts In</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in upcoming_today %}
+            <tr>
+                <td>{{ u.schedule_name }}</td>
+                <td>{{ u.target_name }}{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
+                <td>{{ u.asset_filename }}</td>
+                <td>{{ u.start_time }} – {{ u.end_time }}</td>
+                <td>{{ u.duration_mins }} min</td>
+                <td class="text-success">{{ u.countdown }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if upcoming_tomorrow %}
+    <h3 class="section-label">Tomorrow</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Schedule</th>
+                <th>Target</th>
+                <th>Asset</th>
+                <th>Time</th>
+                <th>Duration</th>
+                <th>Starts In</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in upcoming_tomorrow %}
+            <tr>
+                <td>{{ u.schedule_name }}</td>
+                <td>{{ u.target_name }}{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
+                <td>{{ u.asset_filename }}</td>
+                <td>{{ u.start_time }} – {{ u.end_time }}</td>
+                <td>{{ u.duration_mins }} min</td>
+                <td class="text-muted">{{ u.countdown }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    {% else %}
+    <p class="text-muted empty-state">No schedules in the next 24 hours.</p>
+    {% endif %}
+</div>
+
+{# ── Device Status ── #}
+<div class="card{{ ' card-danger' if offline_devices }}">
+    <h2>Device Status</h2>
+    {% if offline_devices %}
+    <table>
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Group</th>
+                <th>Status</th>
+                <th>Last Seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in offline_devices %}
+            <tr>
+                <td>{{ d.name or d.id }}</td>
+                <td>{{ d.group.name if d.group else '—' }}</td>
+                <td><span class="badge badge-offline">Offline</span></td>
+                <td class="text-muted">{{ d.last_seen.astimezone(tz).strftime('%Y-%m-%d %H:%M') if d.last_seen else 'Never' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-success empty-state">All devices are online and healthy.</p>
+    {% endif %}
+</div>
+
+{# ── Pending Devices ── #}
 {% if pending_devices %}
 <div class="card">
     <h2>Pending Devices</h2>
@@ -118,7 +152,7 @@
                 <td>{{ d.id }}</td>
                 <td>{{ d.firmware_version }}</td>
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
-                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%Y-%m-%d %H:%M') }}</td>
                 <td class="actions">
                     <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Reject</button>
@@ -130,92 +164,43 @@
 </div>
 {% endif %}
 
-{% if recent_devices %}
-<div class="card">
-    <h2>Recently Seen</h2>
-    <table>
-        <thead>
-            <tr>
-                <th style="width: 2rem;"></th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Group</th>
-                <th>Last Seen</th>
-            </tr>
-        </thead>
-        <tbody id="recent-devices">
-            {% for d in recent_devices %}
-            <tr class="device-row" onclick="toggleDevice(this)" data-device-id="{{ d.id }}">
-                <td class="expand-toggle">▶</td>
-                <td>{{ d.name or d.id }}</td>
-                <td>
-                    {% if d.is_online %}
-                    <span class="badge badge-online">Online</span>
-                    {% else %}
-                    <span class="badge badge-{{ d.status.value }}">{{ d.status.value | capitalize }}</span>
-                    {% endif %}
-                </td>
-                <td>{{ d.group.name if d.group else '—' }}</td>
-                <td {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</td>
-            </tr>
-            <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
-                <td></td>
-                <td colspan="4">
-                    <div class="detail-grid">
-                        <div class="detail-item">
-                            <span class="detail-label">Device ID</span>
-                            <span class="detail-value monospace">{{ d.id }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Device Type</span>
-                            <span class="detail-value">{{ d.device_type or '—' }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Firmware Version</span>
-                            <span class="detail-value">{{ d.firmware_version or '—' }}</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Storage</span>
-                            <span class="detail-value" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
-                        </div>
-                    </div>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
-
 <script>
+async function endNow(scheduleId) {
+    if (!await showConfirm('End this schedule now? It will resume at its next scheduled time.')) return;
+    try {
+        const res = await fetch(`/api/schedules/${scheduleId}/end-now`, { method: 'POST' });
+        if (res.ok) location.reload();
+        else showToast('Failed to end schedule', true);
+    } catch (e) { showToast('Failed to end schedule', true); }
+}
+
 (function() {
-    // Snapshot initial state for change detection
-    let lastState = {
-        device_count: {{ device_count }},
-        online_count: {{ online_count }},
-        pending_count: {{ pending_count }},
-        asset_count: {{ asset_count }},
-        schedule_count: {{ schedule_count }},
+    // Only track stable identifiers for change detection — no time-varying fields
+    function fingerprint(data) {
+        return JSON.stringify({
+            playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
+            devices: (data.device_states || []).map(d => d.id + ':' + d.mode).sort(),
+            pending: (data.pending_ids || []).sort(),
+            offline: (data.offline_ids || []).sort(),
+            upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label).sort(),
+        });
+    }
+
+    let lastFingerprint = fingerprint({
         now_playing: {{ now_playing | tojson }},
         device_states: {{ device_states | tojson }},
         pending_ids: {{ pending_devices | map(attribute='id') | list | tojson }},
-        recent_online: {
-            {% for d in recent_devices %}
-            "{{ d.id }}": {{ 'true' if d.is_online else 'false' }}{% if not loop.last %},{% endif %}
-            {% endfor %}
-        }
-    };
-
-    function stateChanged(a, b) {
-        return JSON.stringify(a) !== JSON.stringify(b);
-    }
+        offline_ids: {{ offline_devices | map(attribute='id') | list | tojson }},
+        upcoming: {{ (upcoming_today + upcoming_tomorrow) | tojson }},
+    });
 
     setInterval(async () => {
         try {
             const res = await fetch("/api/dashboard");
             if (!res.ok) return;
             const data = await res.json();
-            if (stateChanged(data, lastState)) {
+            const newFingerprint = fingerprint(data);
+            if (newFingerprint !== lastFingerprint) {
                 location.reload();
             }
         } catch (e) { /* ignore */ }

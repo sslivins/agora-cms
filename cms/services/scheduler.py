@@ -25,6 +25,9 @@ _last_sync_hash: dict[str, str] = {}
 # Rich now-playing info for the dashboard
 _now_playing: dict[str, dict] = {}
 
+# Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
+_skipped: dict[str, datetime] = {}
+
 EVAL_INTERVAL_SECONDS = 15
 SCHEDULE_WINDOW_DAYS = 30
 
@@ -32,6 +35,109 @@ SCHEDULE_WINDOW_DAYS = 30
 def get_now_playing() -> list[dict]:
     """Return a list of currently active schedule playbacks for the dashboard."""
     return list(_now_playing.values())
+
+
+def skip_schedule_until(schedule_id: str, until: datetime) -> None:
+    """Skip a schedule's current occurrence until the given local datetime."""
+    _skipped[schedule_id] = until
+    # Remove from now_playing immediately
+    to_remove = [did for did, info in _now_playing.items() if info.get("schedule_id") == schedule_id]
+    for did in to_remove:
+        _now_playing.pop(did, None)
+
+
+def clear_sync_hash(device_id: str) -> None:
+    """Clear the cached sync hash for a device so the next eval re-sends."""
+    _last_sync_hash.pop(device_id, None)
+
+
+def get_upcoming_schedules(schedules: list, now: datetime, tz: ZoneInfo) -> list[dict]:
+    """Return schedules starting within the next 24 hours (not currently active).
+
+    Each entry includes start/end time, duration, countdown, and whether it's
+    today or tomorrow.
+    """
+    local_now = now.astimezone(tz).replace(tzinfo=None)
+    today = local_now.date()
+    tomorrow = today + timedelta(days=1)
+    results = []
+
+    for s in schedules:
+        if not s.enabled:
+            continue
+        if _matches_now(s, now):
+            continue  # already playing
+
+        # Check today
+        today_start = datetime.combine(today, s.start_time)
+        if today_start > local_now:
+            if s.start_date and today < s.start_date.date():
+                pass  # hasn't started yet
+            elif s.end_date and today > s.end_date.date():
+                pass  # already ended
+            elif s.days_of_week and local_now.isoweekday() not in s.days_of_week:
+                pass  # not scheduled today
+            else:
+                delta = today_start - local_now
+                results.append(_upcoming_entry(s, today, "today", delta))
+                continue
+
+        # Check tomorrow
+        tomorrow_start = datetime.combine(tomorrow, s.start_time)
+        delta = tomorrow_start - local_now
+        if delta.total_seconds() > 86400:
+            continue
+        if s.start_date and tomorrow < s.start_date.date():
+            continue
+        if s.end_date and tomorrow > s.end_date.date():
+            continue
+        if s.days_of_week and tomorrow.isoweekday() not in s.days_of_week:
+            continue
+        results.append(_upcoming_entry(s, tomorrow, "tomorrow", delta))
+
+    results.sort(key=lambda e: e["starts_in_seconds"])
+    return results
+
+
+def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> dict:
+    """Build an upcoming schedule entry dict."""
+    start_dt = datetime.combine(run_date, s.start_time)
+    end_dt = datetime.combine(run_date, s.end_time)
+    if s.end_time <= s.start_time:
+        end_dt += timedelta(days=1)
+    duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+
+    total_secs = int(delta.total_seconds())
+    if total_secs < 60:
+        countdown = "less than a minute"
+    elif total_secs < 3600:
+        mins = total_secs // 60
+        countdown = f"{mins} minute{'s' if mins != 1 else ''}"
+    else:
+        hours = total_secs // 3600
+        mins = (total_secs % 3600) // 60
+        countdown = f"{hours} hour{'s' if hours != 1 else ''}"
+        if mins > 0:
+            countdown += f", {mins} minute{'s' if mins != 1 else ''}"
+
+    target_name = None
+    if s.group:
+        target_name = s.group.name
+    elif s.device:
+        target_name = s.device.name or s.device_id
+
+    return {
+        "schedule_name": s.name,
+        "asset_filename": s.asset.filename if s.asset else "—",
+        "target_name": target_name or "—",
+        "target_type": "group" if s.group_id else "device",
+        "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
+        "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
+        "duration_mins": duration_mins,
+        "countdown": countdown,
+        "starts_in_seconds": total_secs,
+        "day_label": day_label,
+    }
 
 
 def _matches_now(schedule: Schedule, now: datetime) -> bool:
@@ -177,6 +283,9 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
         target_ids = await _get_target_device_ids(s, db)
         if device_id in target_ids:
+            # Skip if this schedule's current occurrence is being skipped
+            if str(s.id) in _skipped:
+                continue
             entries.append(_schedule_to_entry(s, variant_checksums))
 
     return SyncMessage(
@@ -248,7 +357,18 @@ async def evaluate_schedules() -> None:
         )
         schedules = result.scalars().all()
 
-        active = [s for s in schedules if _matches_now(s, local_now)]
+        # Purge expired skips
+        expired = [sid for sid, until in _skipped.items() if local_now >= until]
+        for sid in expired:
+            _skipped.pop(sid, None)
+            # Clear sync hash so the schedule gets re-pushed on next eval
+            for did in connected:
+                _last_sync_hash.pop(did, None)
+
+        active = [
+            s for s in schedules
+            if _matches_now(s, local_now) and str(s.id) not in _skipped
+        ]
 
         # Find winner per device (highest priority)
         device_winner: dict[str, Schedule] = {}
@@ -282,7 +402,25 @@ async def evaluate_schedules() -> None:
                         "schedule_name": winner.name,
                         "asset_filename": winner.asset.filename,
                         "since": now.isoformat(),
+                        "end_time": winner.end_time.strftime("%I:%M %p").lstrip("0"),
                     }
+                # Always update remaining time (schedule times are local)
+                end_today = datetime.combine(local_now.date(), winner.end_time)
+                if winner.end_time <= winner.start_time:
+                    end_today += timedelta(days=1)
+                remaining_secs = max(0, int((end_today - local_now).total_seconds()))
+                _now_playing[did]["remaining_seconds"] = remaining_secs
+                if remaining_secs < 60:
+                    _now_playing[did]["remaining"] = "less than a minute"
+                elif remaining_secs < 3600:
+                    mins = remaining_secs // 60
+                    _now_playing[did]["remaining"] = f"{mins} minute{'s' if mins != 1 else ''}"
+                else:
+                    hours = remaining_secs // 3600
+                    mins = (remaining_secs % 3600) // 60
+                    _now_playing[did]["remaining"] = f"{hours} hour{'s' if hours != 1 else ''}"
+                    if mins > 0:
+                        _now_playing[did]["remaining"] += f", {mins} minute{'s' if mins != 1 else ''}"
             else:
                 _now_playing.pop(did, None)
 
