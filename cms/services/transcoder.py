@@ -195,35 +195,34 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 
 
 async def convert_image_to_jpeg(source_path: Path, output_path: Path) -> bool:
-    """Convert an image file to JPEG using ffmpeg. Returns True on success.
+    """Convert an image file to JPEG using the best available tool.
 
-    Uses -map 0:V? to prefer the primary (non-thumbnail) video stream,
-    falling back to -map 0:v:0 if no non-attached stream exists.
+    HEIC/HEIF files use heif-convert (handles grid-tiled images correctly).
+    Other formats use ffmpeg.
     """
+    ext = source_path.suffix.lower()
+
     try:
-        # -map 0:V? selects non-attached-pic video streams
-        # (skips embedded thumbnails common in HEIC/HEIF files)
+        if ext in (".heic", ".heif"):
+            # heif-convert properly assembles grid tiles into a full image
+            proc = await asyncio.create_subprocess_exec(
+                "heif-convert", "-q", "92",
+                str(source_path), str(output_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode == 0 and output_path.is_file():
+                return True
+            logger.warning("heif-convert failed for %s (exit %d), trying ffmpeg",
+                           source_path.name, proc.returncode)
+
+        # ffmpeg fallback (also primary path for AVIF, WebP, BMP, TIFF, GIF)
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
             "-i", str(source_path),
-            "-map", "0:V?",
             "-frames:v", "1",
-            str(output_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-
-        if proc.returncode == 0 and output_path.is_file():
-            return True
-
-        # Fallback: some formats don't mark streams as attached_pic,
-        # pick the first video stream instead
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y",
-            "-i", str(source_path),
-            "-map", "0:v:0",
-            "-frames:v", "1",
+            "-update", "1",
             str(output_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
