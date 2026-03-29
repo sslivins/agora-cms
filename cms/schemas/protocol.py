@@ -35,6 +35,7 @@ class MessageType(str, Enum):
     CONFIG = "config"
     AUTH_ASSIGNED = "auth_assigned"
     REBOOT = "reboot"
+    UPGRADE = "upgrade"
 
 
 class BaseMessage(BaseModel):
@@ -142,3 +143,7 @@ class AuthAssignedMessage(BaseMessage):
 
 class RebootMessage(BaseMessage):
     type: MessageType = MessageType.REBOOT
+
+
+class UpgradeMessage(BaseMessage):
+    type: MessageType = MessageType.UPGRADE

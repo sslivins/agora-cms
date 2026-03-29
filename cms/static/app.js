@@ -235,6 +235,16 @@ async function rebootDevice(deviceId, deviceName) {
     }
 }
 
+async function upgradeDevice(deviceId, deviceName) {
+    if (!await showConfirm("Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.")) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/upgrade`);
+    if (resp && resp.ok) showToast("Upgrade command sent to " + deviceName);
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to upgrade device", true);
+    }
+}
+
 async function resetAuth(deviceId, deviceName) {
     if (!await showConfirm("Reset auth for \"" + deviceName + "\"?\n\nUse this when a device has been re-flashed or its SD card replaced. The device will get a new token on its next connection.")) return;
     const resp = await apiCall("POST", `/api/devices/${deviceId}/reset-auth`);

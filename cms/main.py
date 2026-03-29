@@ -20,6 +20,7 @@ from cms.database import create_tables, dispose_db, get_db, init_db, run_migrati
 from cms.models import *  # noqa: F401,F403 — ensure all models registered with Base
 from cms.services.scheduler import scheduler_loop
 from cms.services.transcoder import transcoder_loop
+from cms.services.version_checker import version_check_loop
 
 logger = logging.getLogger("agora.cms")
 
@@ -141,6 +142,7 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(scheduler_loop())
     transcoder_task = asyncio.create_task(transcoder_loop(settings.asset_storage_path))
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
+    version_check_task = asyncio.create_task(version_check_loop())
 
     logger.info("Agora CMS %s started", __version__)
     yield
@@ -148,6 +150,7 @@ async def lifespan(app: FastAPI):
     scheduler_task.cancel()
     transcoder_task.cancel()
     backfill_task.cancel()
+    version_check_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -158,6 +161,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await backfill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await version_check_task
     except asyncio.CancelledError:
         pass
     await dispose_db()

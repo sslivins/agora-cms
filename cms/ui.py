@@ -28,6 +28,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.services.device_manager import device_manager
+from cms.services.version_checker import get_latest_device_version
 
 import json as _json
 from zoneinfo import ZoneInfo, available_timezones
@@ -310,6 +311,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "groups": groups,
         "ungrouped": ungrouped,
         "assets": assets,
+        "latest_version": get_latest_device_version(),
     })
 
 
