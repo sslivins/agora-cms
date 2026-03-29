@@ -1,0 +1,1215 @@
+openapi: 3.0.3
+info:
+  title: Agora CMS
+  description: >
+    Central management server for Agora media playback devices. Provides device
+    registration, content scheduling, asset transcoding, and fleet management
+    via a REST API, WebSocket endpoint, and admin web UI.
+  version: 0.5.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose
+
+security:
+  - sessionCookie: []
+
+tags:
+  - name: dashboard
+    description: Dashboard overview data
+  - name: devices
+    description: Device management
+  - name: groups
+    description: Device groups
+  - name: assets
+    description: Asset library and transcoding
+  - name: schedules
+    description: Content scheduling
+  - name: profiles
+    description: Device profiles for transcoding
+  - name: settings
+    description: CMS settings
+
+paths:
+  # ── Dashboard ──
+  /api/dashboard:
+    get:
+      tags: [dashboard]
+      summary: Dashboard data
+      description: Returns device states, now-playing info, pending/offline device lists, and upcoming schedules.
+      operationId: getDashboard
+      responses:
+        "200":
+          description: Dashboard data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Devices ──
+  /api/devices:
+    get:
+      tags: [devices]
+      summary: List devices
+      description: Returns all registered devices ordered by registration date.
+      operationId: listDevices
+      responses:
+        "200":
+          description: Device list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeviceOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/devices/{device_id}:
+    get:
+      tags: [devices]
+      summary: Get device
+      operationId: getDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Device details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found.
+    patch:
+      tags: [devices]
+      summary: Update device
+      description: Update device name, status, group, or default asset.
+      operationId: updateDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceUpdate"
+      responses:
+        "200":
+          description: Updated device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found.
+    delete:
+      tags: [devices]
+      summary: Delete device
+      operationId: deleteDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Device deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found.
+
+  /api/devices/{device_id}/password:
+    post:
+      tags: [devices]
+      summary: Set device web password
+      description: Push a new web UI password to the device over WebSocket.
+      operationId: setDevicePassword
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  minLength: 4
+      responses:
+        "200":
+          description: Password set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found or not connected.
+
+  /api/devices/{device_id}/reboot:
+    post:
+      tags: [devices]
+      summary: Reboot device
+      description: Send a reboot command to the device over WebSocket.
+      operationId: rebootDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Reboot command sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found or not connected.
+
+  /api/devices/{device_id}/reset-auth:
+    post:
+      tags: [devices]
+      summary: Reset device authentication
+      description: >
+        Clear the device's stored auth token hash and API key hash. Use this
+        when a device has been re-flashed with a fresh SD card and needs to
+        re-register. The device will receive new credentials on next connect.
+      operationId: resetDeviceAuth
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Auth credentials cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found.
+
+  # ── Device Groups ──
+  /api/devices/groups/:
+    get:
+      tags: [groups]
+      summary: List groups
+      description: Returns all device groups with device counts.
+      operationId: listGroups
+      responses:
+        "200":
+          description: Group list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeviceGroupOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [groups]
+      summary: Create group
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceGroupCreate"
+      responses:
+        "201":
+          description: Group created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceGroupOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/devices/groups/{group_id}:
+    patch:
+      tags: [groups]
+      summary: Update group
+      operationId: updateGroup
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceGroupUpdate"
+      responses:
+        "200":
+          description: Updated group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceGroupOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Group not found.
+    delete:
+      tags: [groups]
+      summary: Delete group
+      operationId: deleteGroup
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Group deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Group not found.
+
+  # ── Assets ──
+  /api/assets:
+    get:
+      tags: [assets]
+      summary: List assets
+      description: Returns all assets ordered by upload date.
+      operationId: listAssets
+      responses:
+        "200":
+          description: Asset list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AssetOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/assets/status:
+    get:
+      tags: [assets]
+      summary: Asset and variant stats
+      description: Returns counts of assets and transcoding variant statuses.
+      operationId: getAssetStatus
+      responses:
+        "200":
+          description: Asset statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/assets/upload:
+    post:
+      tags: [assets]
+      summary: Upload asset
+      description: >
+        Upload a media file (up to 2 GB). Images in HEIC, AVIF, WebP, BMP,
+        TIFF, or GIF format are auto-converted to JPEG. Videos are queued for
+        transcoding against all device profiles.
+      operationId: uploadAsset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Asset uploaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetOut"
+        "400":
+          description: Invalid file type or filename.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/assets/{asset_id}:
+    get:
+      tags: [assets]
+      summary: Get asset details
+      description: Returns asset metadata including transcoding variant statuses.
+      operationId: getAsset
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      responses:
+        "200":
+          description: Asset details with variants.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Asset not found.
+    delete:
+      tags: [assets]
+      summary: Delete asset
+      description: Delete an asset. Fails if the asset is referenced by any schedule.
+      operationId: deleteAsset
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      responses:
+        "200":
+          description: Asset deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Asset is in use by one or more schedules.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Asset not found.
+
+  /api/assets/{asset_id}/preview:
+    get:
+      tags: [assets]
+      summary: Preview source file
+      description: Download the original source file for preview.
+      operationId: previewAsset
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      responses:
+        "200":
+          description: Source file stream.
+          content:
+            application/octet-stream: {}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Asset not found.
+
+  /api/assets/{asset_id}/download:
+    get:
+      tags: [assets]
+      summary: Download source asset
+      description: Download source asset file. No authentication required (used by devices).
+      security: []
+      operationId: downloadAsset
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      responses:
+        "200":
+          description: Asset file stream.
+          content:
+            application/octet-stream: {}
+        "404":
+          description: Asset not found.
+
+  /api/assets/variants/{variant_id}/download:
+    get:
+      tags: [assets]
+      summary: Download transcoded variant
+      description: Download a transcoded variant. Only available when variant status is READY. No authentication required.
+      security: []
+      operationId: downloadVariant
+      parameters:
+        - name: variant_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Variant file stream.
+          content:
+            application/octet-stream: {}
+        "404":
+          description: Variant not found or not ready.
+
+  # ── Schedules ──
+  /api/schedules:
+    get:
+      tags: [schedules]
+      summary: List schedules
+      description: Returns all schedules ordered by priority (desc) then name.
+      operationId: listSchedules
+      responses:
+        "200":
+          description: Schedule list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduleOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [schedules]
+      summary: Create schedule
+      description: >
+        Create a new schedule targeting a device or group. Exactly one of
+        device_id or group_id must be set. Triggers sync push to affected devices.
+      operationId: createSchedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleCreate"
+      responses:
+        "201":
+          description: Schedule created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleOut"
+        "400":
+          description: Validation error (e.g., must set exactly one target).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/schedules/{schedule_id}:
+    get:
+      tags: [schedules]
+      summary: Get schedule
+      operationId: getSchedule
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      responses:
+        "200":
+          description: Schedule details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Schedule not found.
+    patch:
+      tags: [schedules]
+      summary: Update schedule
+      description: Update schedule fields. Triggers sync push to affected devices.
+      operationId: updateSchedule
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleUpdate"
+      responses:
+        "200":
+          description: Updated schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Schedule not found.
+    delete:
+      tags: [schedules]
+      summary: Delete schedule
+      description: Delete a schedule and sync affected devices.
+      operationId: deleteSchedule
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      responses:
+        "200":
+          description: Schedule deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Schedule not found.
+
+  /api/schedules/{schedule_id}/end-now:
+    post:
+      tags: [schedules]
+      summary: End current occurrence
+      description: Skip the current occurrence of a schedule until its end time.
+      operationId: endScheduleNow
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      responses:
+        "200":
+          description: Schedule skipped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Schedule not found.
+
+  # ── Profiles ──
+  /api/profiles:
+    get:
+      tags: [profiles]
+      summary: List profiles
+      description: Returns all device profiles with device counts and variant statistics.
+      operationId: listProfiles
+      responses:
+        "200":
+          description: Profile list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProfileOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [profiles]
+      summary: Create profile
+      description: Create a device profile. Queues transcoding for all existing video assets.
+      operationId: createProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProfileCreate"
+      responses:
+        "201":
+          description: Profile created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/profiles/{profile_id}:
+    put:
+      tags: [profiles]
+      summary: Update profile
+      operationId: updateProfile
+      parameters:
+        - name: profile_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProfileUpdate"
+      responses:
+        "200":
+          description: Updated profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Profile not found.
+    delete:
+      tags: [profiles]
+      summary: Delete profile
+      description: Delete a profile. Fails if it is built-in or has devices assigned.
+      operationId: deleteProfile
+      parameters:
+        - name: profile_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Profile deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Cannot delete built-in profile or profile with assigned devices.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Profile not found.
+
+  # ── Settings ──
+  /settings/password:
+    post:
+      tags: [settings]
+      summary: Change admin password
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+      responses:
+        "303":
+          description: Redirect to settings page.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /settings/timezone:
+    post:
+      tags: [settings]
+      summary: Set CMS timezone
+      operationId: setTimezone
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [timezone]
+              properties:
+                timezone:
+                  type: string
+                  example: America/New_York
+      responses:
+        "303":
+          description: Redirect to settings page.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: agora_cms_session
+      description: Signed session cookie (set after web login).
+
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Device identifier (CPU serial or UUID).
+    AssetId:
+      name: asset_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ScheduleId:
+      name: schedule_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Authentication required.
+
+  schemas:
+    OkResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    DeviceStatus:
+      type: string
+      enum: [pending, approved, offline]
+
+    AssetType:
+      type: string
+      enum: [video, image]
+
+    VariantStatus:
+      type: string
+      enum: [pending, processing, ready, failed]
+
+    DeviceOut:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/DeviceStatus"
+        group_id:
+          type: string
+          format: uuid
+          nullable: true
+        group_name:
+          type: string
+          nullable: true
+        default_asset_id:
+          type: string
+          format: uuid
+          nullable: true
+        firmware_version:
+          type: string
+        device_type:
+          type: string
+        storage_capacity_mb:
+          type: integer
+        storage_used_mb:
+          type: integer
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+        registered_at:
+          type: string
+          format: date-time
+
+    DeviceUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/DeviceStatus"
+        group_id:
+          type: string
+          format: uuid
+          nullable: true
+        default_asset_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    DeviceGroupOut:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        default_asset_id:
+          type: string
+          format: uuid
+          nullable: true
+        device_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    DeviceGroupCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          default: ""
+        default_asset_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    DeviceGroupUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        default_asset_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    AssetOut:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        original_filename:
+          type: string
+          nullable: true
+        asset_type:
+          $ref: "#/components/schemas/AssetType"
+        size_bytes:
+          type: integer
+        checksum:
+          type: string
+        uploaded_at:
+          type: string
+          format: date-time
+
+    AssetVariantOut:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        profile_id:
+          type: string
+          format: uuid
+        profile_name:
+          type: string
+        filename:
+          type: string
+        size_bytes:
+          type: integer
+        checksum:
+          type: string
+        status:
+          $ref: "#/components/schemas/VariantStatus"
+        progress:
+          type: number
+          format: float
+        error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AssetStatusResponse:
+      type: object
+      properties:
+        asset_count:
+          type: integer
+        variant_ready:
+          type: integer
+        variant_processing:
+          type: integer
+        variant_failed:
+          type: integer
+
+    ScheduleOut:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        device_id:
+          type: string
+          nullable: true
+        group_id:
+          type: string
+          format: uuid
+          nullable: true
+        asset_id:
+          type: string
+          format: uuid
+        asset_filename:
+          type: string
+          nullable: true
+        device_name:
+          type: string
+          nullable: true
+        group_name:
+          type: string
+          nullable: true
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        start_time:
+          type: string
+          format: time
+          example: "14:00"
+        end_time:
+          type: string
+          format: time
+          example: "16:00"
+        days_of_week:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 7
+          nullable: true
+          description: ISO weekday numbers (1=Monday, 7=Sunday). Null means every day.
+        priority:
+          type: integer
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    ScheduleCreate:
+      type: object
+      required: [name, asset_id, start_time, end_time]
+      properties:
+        name:
+          type: string
+        device_id:
+          type: string
+          description: Target device (exactly one of device_id or group_id required).
+        group_id:
+          type: string
+          format: uuid
+          description: Target group (exactly one of device_id or group_id required).
+        asset_id:
+          type: string
+          format: uuid
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        start_time:
+          type: string
+          format: time
+          example: "14:00"
+        end_time:
+          type: string
+          format: time
+          example: "16:00"
+        days_of_week:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 7
+          nullable: true
+        priority:
+          type: integer
+          default: 0
+        enabled:
+          type: boolean
+          default: true
+
+    ScheduleUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        device_id:
+          type: string
+        group_id:
+          type: string
+          format: uuid
+        asset_id:
+          type: string
+          format: uuid
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        start_time:
+          type: string
+          format: time
+        end_time:
+          type: string
+          format: time
+        days_of_week:
+          type: array
+          items:
+            type: integer
+          nullable: true
+        priority:
+          type: integer
+        enabled:
+          type: boolean
+
+    ProfileOut:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        video_codec:
+          type: string
+        video_profile:
+          type: string
+        max_width:
+          type: integer
+        max_height:
+          type: integer
+        max_fps:
+          type: integer
+        video_bitrate:
+          type: string
+        crf:
+          type: integer
+        audio_codec:
+          type: string
+        audio_bitrate:
+          type: string
+        builtin:
+          type: boolean
+        device_count:
+          type: integer
+        total_variants:
+          type: integer
+        ready_variants:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    ProfileCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          default: ""
+        video_codec:
+          type: string
+          default: h264
+        video_profile:
+          type: string
+          default: main
+        max_width:
+          type: integer
+          default: 1920
+        max_height:
+          type: integer
+          default: 1080
+        max_fps:
+          type: integer
+          default: 30
+        video_bitrate:
+          type: string
+          default: ""
+        crf:
+          type: integer
+          default: 23
+        audio_codec:
+          type: string
+          default: aac
+        audio_bitrate:
+          type: string
+          default: 128k
+
+    ProfileUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        video_profile:
+          type: string
+        max_width:
+          type: integer
+        max_height:
+          type: integer
+        max_fps:
+          type: integer
+        video_bitrate:
+          type: string
+        crf:
+          type: integer
+        audio_codec:
+          type: string
+        audio_bitrate:
+          type: string
+
+    DashboardResponse:
+      type: object
+      properties:
+        now_playing:
+          type: object
+          description: Map of device_id to current playback info.
+        pending_ids:
+          type: array
+          items:
+            type: string
+        offline_ids:
+          type: array
+          items:
+            type: string
+        device_states:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              mode:
+                type: string
+              asset:
+                type: string
+                nullable: true
+        upcoming:
+          type: array
+          items:
+            type: object
+          description: Upcoming schedules in the next 24 hours.
