@@ -81,10 +81,13 @@ async def app(db_engine, tmp_path):
     from cms.main import app as fastapi_app
 
     # Replace the real lifespan (which connects to PostgreSQL and runs the
-    # scheduler) with a lightweight no-op version for tests.
+    # scheduler) with a lightweight version for tests that disposes the
+    # engine on shutdown — preventing aiosqlite connection cleanup from
+    # deadlocking the anyio portal thread during TestClient teardown.
     @asynccontextmanager
     async def _test_lifespan(app):
         yield
+        await db_engine.dispose()
 
     original_router_lifespan = fastapi_app.router.lifespan_context
     fastapi_app.router.lifespan_context = _test_lifespan
