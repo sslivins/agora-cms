@@ -149,6 +149,30 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-online { background: var(--success); color: #000; }
 .badge-video { background: var(--primary); color: var(--text); }
 .badge-image { background: #8e44ad; color: var(--text); }
+.badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
+.badge-processing { background: #3498db; color: #fff; }
+.badge-ready { background: var(--success); color: #000; }
+.badge-failed { background: var(--danger); color: #fff; }
+.text-success { color: var(--success); }
+.text-muted { color: var(--text-muted); }
+
+/* Progress bar */
+.progress-bar {
+    display: inline-block;
+    width: 80px;
+    height: 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    overflow: hidden;
+    vertical-align: middle;
+    margin-right: 0.3rem;
+}
+.progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.3s;
+}
 
 /* Buttons */
 .btn {

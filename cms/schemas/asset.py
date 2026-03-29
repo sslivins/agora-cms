@@ -2,10 +2,27 @@
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel
 
-from cms.models.asset import AssetType
+from cms.models.asset import AssetType, VariantStatus
+
+
+class AssetVariantOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    profile_id: uuid.UUID
+    profile_name: str = ""
+    filename: str
+    size_bytes: int
+    checksum: str
+    status: VariantStatus
+    progress: float
+    error_message: str = ""
+    created_at: datetime
+    completed_at: Optional[datetime] = None
 
 
 class AssetOut(BaseModel):

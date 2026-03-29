@@ -23,8 +23,9 @@ from cms.auth import (
 )
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.asset import Asset
+from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.services.device_manager import device_manager
 
@@ -177,6 +178,20 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
     now_playing = get_now_playing()
 
+    # Transcoding queue counts
+    tc_pending = (await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.status == VariantStatus.PENDING)
+    )).scalar() or 0
+    tc_processing = (await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.status == VariantStatus.PROCESSING)
+    )).scalar() or 0
+    tc_ready = (await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.status == VariantStatus.READY)
+    )).scalar() or 0
+    tc_failed = (await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.status == VariantStatus.FAILED)
+    )).scalar() or 0
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_tab": "dashboard",
         "device_count": device_count,
@@ -187,6 +202,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "pending_devices": pending_devices,
         "recent_devices": recent_devices,
         "now_playing": now_playing,
+        "tc_pending": tc_pending,
+        "tc_processing": tc_processing,
+        "tc_ready": tc_ready,
+        "tc_failed": tc_failed,
     })
 
 
@@ -240,6 +259,9 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         "now_playing": now_playing,
         "pending_ids": pending_ids,
         "recent_online": recent_online,
+        "tc_processing": (await db.execute(
+            select(func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.PROCESSING)
+        )).scalar() or 0,
     })
 
 
@@ -285,8 +307,24 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/assets", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Asset).order_by(Asset.uploaded_at.desc()))
+
+    result = await db.execute(
+        select(Asset)
+        .options(selectinload(Asset.variants))
+        .order_by(Asset.uploaded_at.desc())
+    )
     assets = result.scalars().all()
+
+    # Annotate each asset with variant summary
+    for a in assets:
+        total = len(a.variants)
+        ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
+        processing = sum(1 for v in a.variants if v.status == VariantStatus.PROCESSING)
+        failed = sum(1 for v in a.variants if v.status == VariantStatus.FAILED)
+        a.variant_total = total
+        a.variant_ready = ready
+        a.variant_processing = processing
+        a.variant_failed = failed
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
@@ -344,6 +382,62 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "tz_options": tz_options,
+    })
+
+
+# ── Profiles ──
+
+
+@router.get("/profiles", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def profiles_page(request: Request, db: AsyncSession = Depends(get_db)):
+
+    result = await db.execute(
+        select(DeviceProfile).order_by(DeviceProfile.name)
+    )
+    profiles = result.scalars().all()
+
+    # Annotate each profile with device/variant counts
+    annotated = []
+    for p in profiles:
+        dev_count = (await db.execute(
+            select(func.count(Device.id)).where(Device.profile_id == p.id)
+        )).scalar() or 0
+        total_var = (await db.execute(
+            select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == p.id)
+        )).scalar() or 0
+        ready_var = (await db.execute(
+            select(func.count(AssetVariant.id)).where(
+                AssetVariant.profile_id == p.id,
+                AssetVariant.status == VariantStatus.READY,
+            )
+        )).scalar() or 0
+
+        p.device_count = dev_count
+        p.total_variants = total_var
+        p.ready_variants = ready_var
+        annotated.append(p)
+
+    # Active transcoding queue
+    queue_result = await db.execute(
+        select(AssetVariant)
+        .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
+        .order_by(AssetVariant.created_at)
+        .limit(50)
+    )
+    queue_variants = queue_result.scalars().all()
+
+    # Load relationships for display
+    transcode_queue = []
+    for v in queue_variants:
+        await db.refresh(v, ["source_asset", "profile"])
+        v.source_filename = v.source_asset.filename if v.source_asset else "?"
+        v.profile_name = v.profile.name if v.profile else "?"
+        transcode_queue.append(v)
+
+    return templates.TemplateResponse(request, "profiles.html", {
+        "active_tab": "profiles",
+        "profiles": annotated,
+        "transcode_queue": transcode_queue,
     })
 
 

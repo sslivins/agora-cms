@@ -34,3 +34,33 @@ async def get_db() -> AsyncSession:
 async def create_tables():
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def run_migrations():
+    """Apply incremental schema changes that create_all won't handle.
+
+    create_all only creates new tables; it won't add columns to existing ones.
+    This function adds missing columns/tables manually.
+    """
+    from sqlalchemy import text, inspect as sa_inspect
+
+    async with _engine.begin() as conn:
+        # Helper to check if a column exists in a table
+        def _has_column(connection, table_name, column_name):
+            insp = sa_inspect(connection)
+            if not insp.has_table(table_name):
+                return True  # table doesn't exist; create_all will handle it
+            columns = [c["name"] for c in insp.get_columns(table_name)]
+            return column_name in columns
+
+        # -- devices.profile_id --
+        has_profile_id = await conn.run_sync(lambda c: _has_column(c, "devices", "profile_id"))
+        if not has_profile_id:
+            await conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN profile_id UUID "
+                "REFERENCES device_profiles(id) ON DELETE SET NULL"
+            ))
+
+    # Let create_all handle brand-new tables (device_profiles, asset_variants)
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

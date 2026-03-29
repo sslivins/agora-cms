@@ -24,6 +24,15 @@
         <div class="stat-value">{{ schedule_count }}</div>
         <div class="stat-label">Active Schedules</div>
     </div>
+    <div class="stat">
+        <div class="stat-value has-tooltip">
+            {{ tc_ready }}
+            {% if tc_processing > 0 or tc_pending > 0 or tc_failed > 0 %}
+            <span class="tooltip">{{ tc_pending }} queued, {{ tc_processing }} transcoding, {{ tc_failed }} failed</span>
+            {% endif %}
+        </div>
+        <div class="stat-label">Variants Ready{% if tc_processing > 0 %} <span class="badge badge-processing" style="font-size:0.65rem">{{ tc_processing }} active</span>{% endif %}</div>
+    </div>
 </div>
 
 {% if now_playing %}

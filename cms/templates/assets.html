@@ -8,9 +8,9 @@
     <form id="upload-form" onsubmit="event.preventDefault(); uploadAsset(this)" enctype="multipart/form-data">
         <div class="upload-area" id="drop-zone">
             <p id="drop-label">Drag &amp; drop a file here, or</p>
-            <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem">Accepts .mp4, .jpg, .jpeg, .png</p>
+            <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem">Accepts video (mp4, mov, mkv, avi, webm) and image (jpg, png, heif, avif, webp, gif, bmp, tiff) files</p>
             <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Choose File</button>
-            <input type="file" id="file-input" name="file" accept=".mp4,.jpg,.jpeg,.png" required style="display:none">
+            <input type="file" id="file-input" name="file" accept=".mp4,.mov,.mkv,.avi,.webm,.ts,.m4v,.jpg,.jpeg,.png,.heif,.heic,.avif,.webp,.gif,.bmp,.tiff,.tif" required style="display:none">
         </div>
         <div id="upload-status" class="form-status"></div>
         <button type="submit" class="btn btn-primary">Upload</button>
@@ -25,6 +25,7 @@
                 <th>Filename</th>
                 <th>Type</th>
                 <th>Size</th>
+                <th>Variants</th>
                 <th>Uploaded</th>
                 <th>Actions</th>
             </tr>
@@ -35,6 +36,27 @@
                 <td class="wrap">{{ a.filename }}</td>
                 <td><span class="badge badge-{{ a.asset_type.value }}">{{ a.asset_type.value | capitalize }}</span></td>
                 <td data-storage-mb="{{ (a.size_bytes / 1048576) | round(1) }}">{{ "%.1f"|format(a.size_bytes / 1048576) }} MB</td>
+                <td>
+                    {% if a.variant_total > 0 %}
+                    <span class="has-tooltip">
+                        {{ a.variant_ready }}/{{ a.variant_total }}
+                        <span class="tooltip">{{ a.variant_ready }} ready, {{ a.variant_processing }} processing, {{ a.variant_failed }} failed</span>
+                    </span>
+                    {% if a.variant_failed > 0 %}
+                        <span class="badge badge-failed">error</span>
+                    {% elif a.variant_processing > 0 %}
+                        <span class="badge badge-processing">transcoding</span>
+                    {% elif a.variant_ready == a.variant_total %}
+                        <span class="badge badge-ready">ready</span>
+                    {% else %}
+                        <span class="badge badge-pending">queued</span>
+                    {% endif %}
+                    {% elif a.asset_type.value == 'image' %}
+                    —
+                    {% else %}
+                    <span class="text-muted">none</span>
+                    {% endif %}
+                </td>
                 <td data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
                 <td>
                     <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
@@ -42,7 +64,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="5" class="empty">No assets uploaded yet</td></tr>
+            <tr><td colspan="6" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
