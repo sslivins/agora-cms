@@ -160,6 +160,26 @@ async def reboot_device(
     return {"ok": True}
 
 
+@router.post("/{device_id}/reset-auth")
+async def reset_device_auth(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Clear the device's stored auth token hash.
+
+    Use this when a device has been re-flashed or its SD card replaced.
+    The device will be assigned a new token on its next connection.
+    """
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    device.device_auth_token_hash = None
+    device.device_api_key_hash = None
+    device.api_key_rotated_at = None
+    await db.commit()
+
+    return {"ok": True}
+
+
 @router.delete("/{device_id}")
 async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Device).where(Device.id == device_id))
