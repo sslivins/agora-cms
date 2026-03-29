@@ -43,6 +43,8 @@ async def db_session(db_engine):
 @pytest_asyncio.fixture
 async def app(db_engine, tmp_path):
     """Create a test FastAPI app with SQLite DB and temp storage."""
+    from unittest.mock import patch
+
     from cms.auth import get_settings
     from cms.config import Settings
     from cms.database import get_db
@@ -69,9 +71,16 @@ async def app(db_engine, tmp_path):
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_settings] = override_get_settings
 
+    # Patch lifespan DB calls so TestClient doesn't hit real PostgreSQL
+    import cms.database as db_mod
+    db_mod._engine = db_engine
+    db_mod._session_factory = factory
+
     yield fastapi_app
 
     fastapi_app.dependency_overrides.clear()
+    db_mod._engine = None
+    db_mod._session_factory = None
 
 
 @pytest_asyncio.fixture
