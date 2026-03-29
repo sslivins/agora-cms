@@ -7,6 +7,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import JSON, event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from cms.database import Base
 
@@ -28,6 +29,7 @@ async def db_engine(tmp_path):
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{db_path}",
         echo=False,
+        poolclass=NullPool,
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
