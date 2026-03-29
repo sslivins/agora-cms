@@ -235,6 +235,16 @@ async function rebootDevice(deviceId, deviceName) {
     }
 }
 
+async function resetAuth(deviceId, deviceName) {
+    if (!await showConfirm("Reset auth for \"" + deviceName + "\"?\n\nUse this when a device has been re-flashed or its SD card replaced. The device will get a new token on its next connection.")) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/reset-auth`);
+    if (resp && resp.ok) showToast("Auth reset for " + deviceName + " — device can now reconnect");
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to reset auth", true);
+    }
+}
+
 // ── Group actions ──
 async function createGroup() {
     const name = document.getElementById("group-name").value.trim();
