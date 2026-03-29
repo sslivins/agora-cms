@@ -178,6 +178,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             "is_online": d.is_online,
             "mode": state["mode"] if state else "offline",
             "asset": state["asset"] if state else None,
+            "cpu_temp_c": state["cpu_temp_c"] if state else None,
         })
 
     # Upcoming schedules (next 24h)
@@ -240,6 +241,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
             "id": did,
             "mode": live_states[did]["mode"] if did in live_states else "offline",
             "asset": live_states[did]["asset"] if did in live_states else None,
+            "cpu_temp_c": live_states[did]["cpu_temp_c"] if did in live_states else None,
         }
         for did in all_device_ids
     ]
@@ -275,8 +277,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
     )
     devices = result.scalars().all()
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     for d in devices:
         d.is_online = device_manager.is_connected(d.id)
+        state = live_states.get(d.id)
+        d.cpu_temp_c = state["cpu_temp_c"] if state else None
 
     groups_q = await db.execute(
         select(DeviceGroup)
@@ -290,6 +295,8 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         g.device_count = len(g.devices)
         for d in g.devices:
             d.is_online = device_manager.is_connected(d.id)
+            state = live_states.get(d.id)
+            d.cpu_temp_c = state["cpu_temp_c"] if state else None
 
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]

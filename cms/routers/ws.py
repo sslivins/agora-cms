@@ -258,6 +258,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     mode=msg.get("mode", "unknown"),
                     asset=msg.get("asset"),
                     uptime_seconds=msg.get("uptime_seconds", 0),
+                    cpu_temp_c=msg.get("cpu_temp_c"),
                 )
 
                 # Rotate API key if due
