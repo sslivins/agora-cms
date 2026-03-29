@@ -14,6 +14,10 @@ class ConnectedDevice:
         self.device_id = device_id
         self.websocket = websocket
         self.connected_at = datetime.now(timezone.utc)
+        # Playback state from last STATUS message
+        self.mode: str = "unknown"
+        self.asset: Optional[str] = None
+        self.uptime_seconds: int = 0
 
     async def send_json(self, data: dict):
         await self.websocket.send_json(data)
@@ -63,6 +67,25 @@ class DeviceManager:
     async def broadcast(self, message: dict):
         for device_id in list(self._connections.keys()):
             await self.send_to_device(device_id, message)
+
+    def update_status(self, device_id: str, mode: str, asset: str | None, uptime_seconds: int = 0):
+        conn = self._connections.get(device_id)
+        if conn:
+            conn.mode = mode
+            conn.asset = asset
+            conn.uptime_seconds = uptime_seconds
+
+    def get_all_states(self) -> list[dict]:
+        return [
+            {
+                "device_id": c.device_id,
+                "mode": c.mode,
+                "asset": c.asset,
+                "uptime_seconds": c.uptime_seconds,
+                "connected_at": c.connected_at.isoformat(),
+            }
+            for c in self._connections.values()
+        ]
 
 
 # Singleton — shared across the application

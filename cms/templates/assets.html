@@ -22,20 +22,25 @@
     <table>
         <thead>
             <tr>
+                <th style="width:2rem"></th>
                 <th>Filename</th>
                 <th>Type</th>
                 <th>Size</th>
                 <th>Variants</th>
-                <th>Uploaded</th>
+                <th>Duration</th>
                 <th>Actions</th>
             </tr>
         </thead>
         <tbody>
             {% for a in assets %}
-            <tr>
-                <td class="wrap">{{ a.filename }}</td>
+            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
+                <td class="expand-toggle">▶</td>
+                <td class="wrap">{{ a.original_filename or a.filename }}</td>
                 <td><span class="badge badge-{{ a.asset_type.value }}">{{ a.asset_type.value | capitalize }}</span></td>
-                <td data-storage-mb="{{ (a.size_bytes / 1048576) | round(1) }}">{{ "%.1f"|format(a.size_bytes / 1048576) }} MB</td>
+                <td>
+                    {% set mb = a.size_bytes / 1048576 %}
+                    {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
+                </td>
                 <td>
                     {% if a.variant_total > 0 %}
                     <span class="has-tooltip">
@@ -57,14 +62,135 @@
                     <span class="text-muted">none</span>
                     {% endif %}
                 </td>
-                <td data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
                 <td>
+                    {% if a.duration_seconds %}
+                        {% set h = (a.duration_seconds // 3600) | int %}
+                        {% set m = ((a.duration_seconds % 3600) // 60) | int %}
+                        {% set s = (a.duration_seconds % 60) | int %}
+                        {{ "%02d:%02d:%02d"|format(h, m, s) }}
+                    {% elif a.asset_type.value == 'image' %}
+                    —
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td class="actions" onclick="event.stopPropagation()">
                     <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
+                    {% if a.schedule_count > 0 %}
+                    <span class="has-tooltip" style="pointer-events:auto; display:inline-block">
+                        <button class="btn btn-danger btn-sm" disabled>Delete</button>
+                        <span class="tooltip">Used by {{ a.schedule_count }} schedule{{ 's' if a.schedule_count != 1 }}. Remove from all schedules before deleting.</span>
+                    </span>
+                    {% else %}
                     <button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr class="asset-detail" data-detail-for="{{ a.id }}" style="display: none;">
+                <td></td>
+                <td colspan="6">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Uploaded</span>
+                            <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        </div>
+                        {% if a.width and a.height %}
+                        <div class="detail-item">
+                            <span class="detail-label">Resolution</span>
+                            <span class="detail-value">{{ a.width }}×{{ a.height }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.video_codec %}
+                        <div class="detail-item">
+                            <span class="detail-label">Video Codec</span>
+                            <span class="detail-value">{{ a.video_codec }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.audio_codec %}
+                        <div class="detail-item">
+                            <span class="detail-label">Audio Codec</span>
+                            <span class="detail-value">{{ a.audio_codec }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.frame_rate %}
+                        <div class="detail-item">
+                            <span class="detail-label">Frame Rate</span>
+                            <span class="detail-value">{{ a.frame_rate }} fps</span>
+                        </div>
+                        {% endif %}
+                        {% if a.bitrate %}
+                        <div class="detail-item">
+                            <span class="detail-label">Bitrate</span>
+                            <span class="detail-value">{{ "%.1f"|format(a.bitrate / 1000000) }} Mbps</span>
+                        </div>
+                        {% endif %}
+                        {% if a.color_space %}
+                        <div class="detail-item">
+                            <span class="detail-label">Color Space</span>
+                            <span class="detail-value">{{ a.color_space }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.original_filename %}
+                        <div class="detail-item">
+                            <span class="detail-label">Stored As</span>
+                            <span class="detail-value monospace">{{ a.filename }}</span>
+                        </div>
+                        {% endif %}
+                        <div class="detail-item">
+                            <span class="detail-label">Checksum</span>
+                            <span class="detail-value monospace">{{ a.checksum[:16] }}…</span>
+                        </div>
+                    </div>
+                    {% if a.variants | length > 0 %}
+                    <div style="margin-top: 0.5rem;">
+                        <span class="detail-label">Variants</span>
+                        <table class="variants-table" style="margin-top: 0.35rem; font-size: 0.85rem;">
+                            <thead>
+                                <tr>
+                                    <th>Profile</th>
+                                    <th>Status</th>
+                                    <th>Resolution</th>
+                                    <th>Codec</th>
+                                    <th>Bitrate</th>
+                                    <th>FPS</th>
+                                    <th>Size</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for v in a.variants %}
+                                <tr>
+                                    <td>{{ v.profile.name if v.profile else '—' }}</td>
+                                    <td>
+                                        {% if v.status.value == 'ready' %}
+                                        <span class="badge badge-ready">Ready</span>
+                                        {% elif v.status.value == 'processing' %}
+                                        <span class="badge badge-processing">{{ "%.0f"|format(v.progress) }}%</span>
+                                        {% elif v.status.value == 'failed' %}
+                                        <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ v.error_message[:120] if v.error_message else 'Unknown error' }}</span></span>
+                                        {% else %}
+                                        <span class="badge badge-pending">Queued</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ ("%d×%d"|format(v.width, v.height)) if v.width and v.height else '—' }}</td>
+                                    <td>{{ v.video_codec or '—' }}</td>
+                                    <td>{{ ("%.1f Mbps"|format(v.bitrate / 1000000)) if v.bitrate else '—' }}</td>
+                                    <td>{{ (v.frame_rate ~ " fps") if v.frame_rate else '—' }}</td>
+                                    <td>
+                                        {% if v.size_bytes > 0 %}
+                                            {% set vmb = v.size_bytes / 1048576 %}
+                                            {% if vmb >= 1 %}{{ "%.1f"|format(vmb) }} MB{% else %}{{ "%.0f"|format(v.size_bytes / 1024) }} KB{% endif %}
+                                        {% else %}—{% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="6" class="empty">No assets uploaded yet</td></tr>
+            <tr><td colspan="7" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
         </tbody>
     </table>

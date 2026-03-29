@@ -68,6 +68,37 @@ async def run_migrations():
                 "ALTER TABLE assets ADD COLUMN original_filename VARCHAR(255)"
             ))
 
+        # -- media metadata columns on assets --
+        for col, col_type in [
+            ("width", "INTEGER"),
+            ("height", "INTEGER"),
+            ("duration_seconds", "DOUBLE PRECISION"),
+            ("video_codec", "VARCHAR(64)"),
+            ("audio_codec", "VARCHAR(64)"),
+            ("bitrate", "INTEGER"),
+            ("frame_rate", "VARCHAR(16)"),
+            ("color_space", "VARCHAR(64)"),
+        ]:
+            has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "assets", _c))
+            if not has_col:
+                await conn.execute(text(f"ALTER TABLE assets ADD COLUMN {col} {col_type}"))
+
+        # -- media metadata columns on asset_variants --
+        for col, col_type in [
+            ("width", "INTEGER"),
+            ("height", "INTEGER"),
+            ("duration_seconds", "DOUBLE PRECISION"),
+            ("video_codec", "VARCHAR(64)"),
+            ("audio_codec", "VARCHAR(64)"),
+            ("bitrate", "INTEGER"),
+            ("frame_rate", "VARCHAR(16)"),
+            ("color_space", "VARCHAR(64)"),
+        ]:
+            has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "asset_variants", _c))
+            if not has_col:
+                await conn.execute(text(f"ALTER TABLE asset_variants ADD COLUMN {col} {col_type}"))
+
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

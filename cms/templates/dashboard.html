@@ -35,9 +35,47 @@
     </div>
 </div>
 
+{% if device_states %}
+<div class="card">
+    <h2>Device Status</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Group</th>
+                <th>State</th>
+                <th>Currently Playing</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ds in device_states %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td>
+                    {% if not ds.is_online %}
+                    <span class="badge badge-offline">Offline</span>
+                    {% elif ds.mode == 'play' %}
+                    <span class="badge badge-online">Playing</span>
+                    {% elif ds.mode == 'splash' %}
+                    <span class="badge badge-splash">Splash</span>
+                    {% elif ds.mode == 'stop' %}
+                    <span class="badge badge-offline">Stopped</span>
+                    {% else %}
+                    <span class="badge badge-offline">{{ ds.mode | capitalize }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ ds.asset or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% if now_playing %}
 <div class="card">
-    <h2>Now Playing</h2>
+    <h2>Active Schedules</h2>
     <table>
         <thead>
             <tr>
@@ -159,6 +197,7 @@
         asset_count: {{ asset_count }},
         schedule_count: {{ schedule_count }},
         now_playing: {{ now_playing | tojson }},
+        device_states: {{ device_states | tojson }},
         pending_ids: {{ pending_devices | map(attribute='id') | list | tojson }},
         recent_online: {
             {% for d in recent_devices %}

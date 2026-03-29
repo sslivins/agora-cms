@@ -147,6 +147,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-approved { background: var(--success); color: #000; }
 .badge-offline { background: var(--text-muted); color: #000; }
 .badge-online { background: var(--success); color: #000; }
+.badge-splash { background: #f39c12; color: #000; }
 .badge-video { background: var(--primary); color: var(--text); }
 .badge-image { background: #8e44ad; color: var(--text); }
 .badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
@@ -192,6 +193,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn-warn { background: var(--warning); color: #000; }
 .btn-secondary { background: var(--primary); color: var(--text); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.btn:disabled, .btn[disabled] { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
 .inline-edit { background: transparent; border: 1px solid transparent; color: var(--text); padding: 0.2rem 0.4rem; border-radius: 4px; width: 100%; font-size: 0.9rem; min-width: 8rem; }
 .inline-edit:hover { border-color: var(--border); }
 .inline-edit:focus { border-color: var(--accent); outline: none; background: var(--bg); }
@@ -412,6 +414,16 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 /* Expandable device rows */
 .device-row { cursor: pointer; }
 .device-row:hover td { background: rgba(255,255,255,0.04); }
+
+/* Expandable asset rows */
+.asset-row { cursor: pointer; }
+.asset-row:hover td { background: rgba(255,255,255,0.04); }
+.asset-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
+.asset-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.asset-detail td:first-child { padding: 0; }
+.variants-table { width: 100%; border-collapse: collapse; }
+.variants-table th { text-align: left; font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
+.variants-table td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 .expand-toggle {
     font-size: 0.7rem;
     color: var(--text-muted);

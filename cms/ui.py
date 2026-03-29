@@ -178,6 +178,20 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
     now_playing = get_now_playing()
 
+    # Build device status list (all approved devices with live playback state)
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    device_states = []
+    for d in recent_devices:
+        state = live_states.get(d.id)
+        device_states.append({
+            "id": d.id,
+            "name": d.name or d.id,
+            "group_name": d.group.name if d.group else None,
+            "is_online": d.is_online,
+            "mode": state["mode"] if state else "offline",
+            "asset": state["asset"] if state else None,
+        })
+
     # Transcoding queue counts
     tc_pending = (await db.execute(
         select(func.count(AssetVariant.id)).where(AssetVariant.status == VariantStatus.PENDING)
@@ -202,6 +216,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "pending_devices": pending_devices,
         "recent_devices": recent_devices,
         "now_playing": now_playing,
+        "device_states": device_states,
         "tc_pending": tc_pending,
         "tc_processing": tc_processing,
         "tc_ready": tc_ready,
@@ -239,7 +254,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     )
     pending_ids = [r[0] for r in pending_q.all()]
 
-    # Online device IDs
+    # Online device IDs and live state
     recent_q = await db.execute(
         select(Device.id, Device.name)
         .where(Device.status != DeviceStatus.PENDING)
@@ -250,6 +265,16 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         r[0]: device_manager.is_connected(r[0]) for r in recent_q.all()
     }
 
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    device_states = [
+        {
+            "id": did,
+            "mode": live_states[did]["mode"] if did in live_states else "offline",
+            "asset": live_states[did]["asset"] if did in live_states else None,
+        }
+        for did in recent_online
+    ]
+
     return JSONResponse({
         "device_count": device_count,
         "online_count": online_count,
@@ -259,6 +284,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         "now_playing": now_playing,
         "pending_ids": pending_ids,
         "recent_online": recent_online,
+        "device_states": device_states,
         "tc_processing": (await db.execute(
             select(func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.PROCESSING)
         )).scalar() or 0,
@@ -310,12 +336,18 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(
         select(Asset)
-        .options(selectinload(Asset.variants))
+        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
         .order_by(Asset.uploaded_at.desc())
     )
     assets = result.scalars().all()
 
-    # Annotate each asset with variant summary
+    # Count schedules per asset
+    sched_counts_q = await db.execute(
+        select(Schedule.asset_id, func.count()).group_by(Schedule.asset_id)
+    )
+    sched_counts = dict(sched_counts_q.all())
+
+    # Annotate each asset with variant summary + schedule count
     for a in assets:
         total = len(a.variants)
         ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
@@ -325,6 +357,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.variant_ready = ready
         a.variant_processing = processing
         a.variant_failed = failed
+        a.schedule_count = sched_counts.get(a.id, 0)
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",

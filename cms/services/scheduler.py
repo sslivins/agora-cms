@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from cms import database as _db
-from cms.models.asset import Asset
+from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.setting import CMSSetting
@@ -70,12 +70,18 @@ async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
     return []
 
 
-def _schedule_to_entry(s: Schedule) -> ScheduleEntry:
+def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = None) -> ScheduleEntry:
     """Convert a Schedule ORM model to a protocol ScheduleEntry."""
+    checksum = None
+    if variant_checksums and s.asset.filename in variant_checksums:
+        checksum = variant_checksums[s.asset.filename]
+    elif s.asset:
+        checksum = s.asset.checksum or None
     return ScheduleEntry(
         id=str(s.id),
         name=s.name,
         asset=s.asset.filename,
+        asset_checksum=checksum,
         start_time=s.start_time.strftime("%H:%M"),
         end_time=s.end_time.strftime("%H:%M"),
         start_date=s.start_date.date().isoformat() if s.start_date else None,
@@ -120,10 +126,31 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
     # Resolve default asset (device → group fallback)
     default_asset_name = None
+    default_asset_checksum = None
     if dev.default_asset:
         default_asset_name = dev.default_asset.filename
+        default_asset_checksum = dev.default_asset.checksum
     elif dev.group and dev.group.default_asset:
         default_asset_name = dev.group.default_asset.filename
+        default_asset_checksum = dev.group.default_asset.checksum
+
+    # Build variant checksum map for this device's profile
+    # (maps source asset filename → variant checksum)
+    variant_checksums: dict[str, str] = {}
+    if dev.profile_id:
+        var_result = await db.execute(
+            select(AssetVariant)
+            .options(selectinload(AssetVariant.source_asset))
+            .where(
+                AssetVariant.profile_id == dev.profile_id,
+                AssetVariant.status == VariantStatus.READY,
+            )
+        )
+        for v in var_result.scalars().all():
+            variant_checksums[v.source_asset.filename] = v.checksum
+        # Also override default_asset_checksum if there's a variant
+        if default_asset_name and default_asset_name in variant_checksums:
+            default_asset_checksum = variant_checksums[default_asset_name]
 
     # Load all enabled schedules targeting this device (directly or via group)
     result = await db.execute(
@@ -150,12 +177,13 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
         target_ids = await _get_target_device_ids(s, db)
         if device_id in target_ids:
-            entries.append(_schedule_to_entry(s))
+            entries.append(_schedule_to_entry(s, variant_checksums))
 
     return SyncMessage(
         timezone=tz_name,
         schedules=entries,
         default_asset=default_asset_name,
+        default_asset_checksum=default_asset_checksum or None,
     )
 
 

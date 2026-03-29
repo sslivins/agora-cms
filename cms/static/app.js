@@ -148,6 +148,20 @@ function toggleDevice(row) {
     }
 }
 
+function toggleAsset(row) {
+    const assetId = row.dataset.assetId;
+    const detail = document.querySelector(`tr.asset-detail[data-detail-for="${assetId}"]`);
+    if (!detail) return;
+    const isOpen = row.classList.contains("expanded");
+    if (isOpen) {
+        row.classList.remove("expanded");
+        detail.style.display = "none";
+    } else {
+        row.classList.add("expanded");
+        detail.style.display = "";
+    }
+}
+
 // ── API helpers ──
 async function apiCall(method, url, body = null) {
     const opts = { method, headers: {} };
@@ -279,6 +293,10 @@ async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
     if (resp && resp.ok) location.reload();
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Delete failed", true);
+    }
 }
 
 async function uploadAsset(form) {

@@ -8,14 +8,16 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.auth import get_settings, require_auth
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+from cms.models.asset import Asset, AssetType, AssetVariant, DeviceAsset, VariantStatus
+from cms.models.device import Device, DeviceGroup
 from cms.models.device_profile import DeviceProfile
+from cms.models.schedule import Schedule
 from cms.schemas.asset import AssetOut
 
 router = APIRouter(prefix="/api/assets", dependencies=[Depends(require_auth)])
@@ -137,6 +139,15 @@ async def upload_asset(
     await db.commit()
     await db.refresh(asset)
 
+    # Probe media metadata in background
+    from cms.services.transcoder import probe_media
+    stored_path = settings.asset_storage_path / final_filename
+    meta = await probe_media(stored_path)
+    for key, val in meta.items():
+        if val is not None:
+            setattr(asset, key, val)
+    await db.commit()
+
     # Queue video transcoding for all profiles
     if asset_type == AssetType.VIDEO:
         await _enqueue_transcoding(asset, db)
@@ -238,6 +249,16 @@ async def delete_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
+    # Block deletion if any schedule references this asset
+    sched_count = await db.scalar(
+        select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset_id)
+    )
+    if sched_count:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete — asset is used by {sched_count} schedule(s). Remove it from all schedules first.",
+        )
+
     # Remove source file
     file_path = settings.asset_storage_path / asset.filename
     if file_path.is_file():
@@ -248,6 +269,21 @@ async def delete_asset(
         orig_path = settings.asset_storage_path / "originals" / asset.original_filename
         if orig_path.is_file():
             orig_path.unlink()
+
+    # Remove device-asset tracking records
+    da_result = await db.execute(
+        select(DeviceAsset).where(DeviceAsset.asset_id == asset_id)
+    )
+    for da in da_result.scalars().all():
+        await db.delete(da)
+
+    # Clear default_asset_id on devices/groups referencing this asset
+    await db.execute(
+        update(Device).where(Device.default_asset_id == asset_id).values(default_asset_id=None)
+    )
+    await db.execute(
+        update(DeviceGroup).where(DeviceGroup.default_asset_id == asset_id).values(default_asset_id=None)
+    )
 
     # Remove variant files
     variants_dir = settings.asset_storage_path / "variants"

@@ -44,11 +44,13 @@ def _build_ffmpeg_args_safe(
 
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2
+    # Also force SDR BT.709 — Pi V4L2 decoder can't handle HDR/BT.2020 metadata
     scale_filter = (
         f"scale=w='if(gt(iw,{max_w}),{max_w},iw)':h='if(gt(ih,{max_h}),{max_h},ih)'"
         f":force_original_aspect_ratio=decrease,"
         f"pad=ceil(iw/2)*2:ceil(ih/2)*2,"
-        f"format=yuv420p"
+        f"format=yuv420p,"
+        f"setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
     )
 
     args = [
@@ -62,6 +64,13 @@ def _build_ffmpeg_args_safe(
 
     args.extend(["-vf", scale_filter])
     args.extend(["-r", str(profile.max_fps)])
+
+    # Force SDR BT.709 color space — Pi hardware decoder can't handle HDR/BT.2020
+    args.extend([
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+    ])
 
     if profile.video_bitrate:
         args.extend(["-b:v", profile.video_bitrate])
@@ -93,6 +102,70 @@ async def _get_duration(source_path: Path) -> float | None:
         return float(stdout.decode().strip())
     except (ValueError, OSError):
         return None
+
+
+async def probe_media(file_path: Path) -> dict:
+    """Extract media metadata from a file using ffprobe. Returns a dict with
+    width, height, duration_seconds, video_codec, audio_codec, bitrate,
+    frame_rate, color_space — any of which may be None."""
+    import json as _json
+
+    result: dict = {
+        "width": None, "height": None, "duration_seconds": None,
+        "video_codec": None, "audio_codec": None, "bitrate": None,
+        "frame_rate": None, "color_space": None,
+    }
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,width,height,r_frame_rate,bit_rate,color_space,color_transfer,color_primaries",
+            "-show_entries", "format=duration,bit_rate",
+            "-of", "json",
+            str(file_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        data = _json.loads(stdout.decode())
+    except (OSError, ValueError, _json.JSONDecodeError):
+        return result
+
+    # Format-level info
+    fmt = data.get("format", {})
+    try:
+        result["duration_seconds"] = float(fmt.get("duration", 0)) or None
+    except (ValueError, TypeError):
+        pass
+    try:
+        result["bitrate"] = int(fmt.get("bit_rate", 0)) or None
+    except (ValueError, TypeError):
+        pass
+
+    # Stream-level info
+    for stream in data.get("streams", []):
+        codec_type = stream.get("codec_type")
+        if codec_type == "video" and result["video_codec"] is None:
+            result["video_codec"] = stream.get("codec_name")
+            result["width"] = stream.get("width")
+            result["height"] = stream.get("height")
+            # Frame rate: r_frame_rate is like "30/1" or "30000/1001"
+            rfr = stream.get("r_frame_rate", "")
+            if "/" in rfr:
+                num, den = rfr.split("/", 1)
+                try:
+                    fps = float(num) / float(den)
+                    result["frame_rate"] = f"{fps:.2f}".rstrip("0").rstrip(".")
+                except (ValueError, ZeroDivisionError):
+                    pass
+            # Color space
+            cs = stream.get("color_space") or stream.get("color_primaries") or stream.get("color_transfer")
+            if cs:
+                result["color_space"] = cs
+        elif codec_type == "audio" and result["audio_codec"] is None:
+            result["audio_codec"] = stream.get("codec_name")
+
+    return result
 
 
 async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Path) -> None:
@@ -183,6 +256,13 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         variant.status = VariantStatus.READY
         variant.progress = 100.0
         variant.completed_at = datetime.now(timezone.utc)
+
+        # Probe variant media metadata
+        meta = await probe_media(output_path)
+        for key, val in meta.items():
+            if val is not None:
+                setattr(variant, key, val)
+
         await db.commit()
         logger.info("Transcode complete: %s (%d bytes)", variant.filename, variant.size_bytes)
 

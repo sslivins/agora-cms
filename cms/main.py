@@ -71,6 +71,56 @@ async def _seed_profiles(db):
             logger.info("Enqueued %d missing variants for profile %s", count, profile.name)
 
 
+async def _backfill_media_metadata(settings):
+    """One-shot: probe existing assets/variants that have no metadata yet."""
+    from sqlalchemy import select
+    from cms.models.asset import Asset, AssetVariant
+    from cms.services.transcoder import probe_media
+
+    try:
+        async for db in get_db():
+            # Backfill source assets
+            result = await db.execute(
+                select(Asset).where(Asset.width.is_(None))
+            )
+            assets = result.scalars().all()
+            for asset in assets:
+                file_path = settings.asset_storage_path / asset.filename
+                if not file_path.is_file():
+                    continue
+                meta = await probe_media(file_path)
+                for key, val in meta.items():
+                    if val is not None:
+                        setattr(asset, key, val)
+            if assets:
+                await db.commit()
+                logger.info("Backfilled metadata for %d assets", len(assets))
+
+            # Backfill variants
+            result = await db.execute(
+                select(AssetVariant).where(
+                    AssetVariant.width.is_(None),
+                    AssetVariant.status == "ready",
+                )
+            )
+            variants = result.scalars().all()
+            for variant in variants:
+                file_path = settings.asset_storage_path / "variants" / variant.filename
+                if not file_path.is_file():
+                    continue
+                meta = await probe_media(file_path)
+                for key, val in meta.items():
+                    if val is not None:
+                        setattr(variant, key, val)
+            if variants:
+                await db.commit()
+                logger.info("Backfilled metadata for %d variants", len(variants))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Metadata backfill failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -90,18 +140,24 @@ async def lifespan(app: FastAPI):
     # Start background scheduler
     scheduler_task = asyncio.create_task(scheduler_loop())
     transcoder_task = asyncio.create_task(transcoder_loop(settings.asset_storage_path))
+    backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
 
     logger.info("Agora CMS %s started", __version__)
     yield
     # Shutdown
     scheduler_task.cancel()
     transcoder_task.cancel()
+    backfill_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
         pass
     try:
         await transcoder_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await backfill_task
     except asyncio.CancelledError:
         pass
     await dispose_db()
