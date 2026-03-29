@@ -66,6 +66,10 @@ class TestWebSocket:
                 msg = ws.receive_json()
                 assert msg["type"] == "sync"
 
+                # Approved devices also receive a config message (API key push)
+                msg = ws.receive_json()
+                assert msg["type"] == "config"
+
     async def test_register_known_device_wrong_token(self, app, db_session):
         from cms.models.device import Device, DeviceStatus
 
