@@ -65,6 +65,14 @@
                 <span class="detail-value" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
             </div>
             <div class="detail-item">
+                <span class="detail-label">CPU Temperature</span>
+                {% if d.cpu_temp_c is not none %}
+                <span class="detail-value{% if d.cpu_temp_c >= 80 %} text-danger{% elif d.cpu_temp_c >= 70 %} text-warning{% endif %}">{{ d.cpu_temp_c | round(1) }}°C{% if d.cpu_temp_c >= 80 %} <span class="badge badge-temp-critical">Critical</span>{% elif d.cpu_temp_c >= 70 %} <span class="badge badge-temp-warning">Warning</span>{% endif %}</span>
+                {% else %}
+                <span class="detail-value text-muted">—</span>
+                {% endif %}
+            </div>
+            <div class="detail-item">
                 <span class="detail-label">Last Seen</span>
                 <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</span>
             </div>

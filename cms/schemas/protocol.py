@@ -62,6 +62,7 @@ class StatusMessage(BaseMessage):
     asset: Optional[str] = None
     uptime_seconds: int = 0
     storage_used_mb: int = 0
+    cpu_temp_c: Optional[float] = None
 
 
 class AssetAckMessage(BaseMessage):

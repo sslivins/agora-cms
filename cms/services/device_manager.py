@@ -18,6 +18,7 @@ class ConnectedDevice:
         self.mode: str = "unknown"
         self.asset: Optional[str] = None
         self.uptime_seconds: int = 0
+        self.cpu_temp_c: Optional[float] = None
 
     async def send_json(self, data: dict):
         await self.websocket.send_json(data)
@@ -68,12 +69,13 @@ class DeviceManager:
         for device_id in list(self._connections.keys()):
             await self.send_to_device(device_id, message)
 
-    def update_status(self, device_id: str, mode: str, asset: str | None, uptime_seconds: int = 0):
+    def update_status(self, device_id: str, mode: str, asset: str | None, uptime_seconds: int = 0, cpu_temp_c: float | None = None):
         conn = self._connections.get(device_id)
         if conn:
             conn.mode = mode
             conn.asset = asset
             conn.uptime_seconds = uptime_seconds
+            conn.cpu_temp_c = cpu_temp_c
 
     def get_all_states(self) -> list[dict]:
         return [
@@ -83,6 +85,7 @@ class DeviceManager:
                 "asset": c.asset,
                 "uptime_seconds": c.uptime_seconds,
                 "connected_at": c.connected_at.isoformat(),
+                "cpu_temp_c": c.cpu_temp_c,
             }
             for c in self._connections.values()
         ]

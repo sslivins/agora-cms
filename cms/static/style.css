@@ -166,8 +166,12 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-processing { background: #3498db; color: #fff; margin-left: 0.4rem; }
 .badge-ready { background: var(--success); color: #000; margin-left: 0.4rem; }
 .badge-failed { background: var(--danger); color: #fff; margin-left: 0.4rem; }
+.badge-temp-warning { background: var(--warning); color: #000; }
+.badge-temp-critical { background: var(--danger); color: #fff; }
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
+.text-warning { color: var(--warning); }
+.text-danger { color: var(--danger); }
 
 /* Progress bar */
 .progress-bar {

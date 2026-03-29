@@ -104,16 +104,19 @@
 </div>
 
 {# ── Device Status ── #}
-<div class="card{{ ' card-danger' if offline_devices }}">
+{% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
+{% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
+{% set has_issues = offline_devices or temp_warning %}
+<div class="card{{ ' card-danger' if has_issues }}">
     <h2>Device Status</h2>
-    {% if offline_devices %}
+    {% if has_issues %}
     <table>
         <thead>
             <tr>
                 <th>Device</th>
                 <th>Group</th>
                 <th>Status</th>
-                <th>Last Seen</th>
+                <th>Details</th>
             </tr>
         </thead>
         <tbody>
@@ -122,8 +125,25 @@
                 <td>{{ d.name or d.id }}</td>
                 <td>{{ d.group.name if d.group else '—' }}</td>
                 <td><span class="badge badge-offline">Offline</span></td>
-                <td class="text-muted">{{ d.last_seen.astimezone(tz).strftime('%Y-%m-%d %H:%M') if d.last_seen else 'Never' }}</td>
+                <td class="text-muted">Last seen {{ d.last_seen.astimezone(tz).strftime('%Y-%m-%d %H:%M') if d.last_seen else 'Never' }}</td>
             </tr>
+            {% endfor %}
+            {% for ds in temp_warning %}
+            {% if ds.cpu_temp_c >= 80 %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-temp-critical">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
+                <td class="text-danger">Critical — CPU throttling likely</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-temp-warning">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
+                <td class="text-warning">Temperature warning</td>
+            </tr>
+            {% endif %}
             {% endfor %}
         </tbody>
     </table>
@@ -177,9 +197,11 @@ async function endNow(scheduleId) {
 (function() {
     // Only track stable identifiers for change detection — no time-varying fields
     function fingerprint(data) {
+        // Bucket temperatures to avoid constant reloads from minor fluctuations
+        function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
             playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
-            devices: (data.device_states || []).map(d => d.id + ':' + d.mode).sort(),
+            devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c)).sort(),
             pending: (data.pending_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),
             upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label).sort(),
