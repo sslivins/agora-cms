@@ -101,6 +101,24 @@
     // Prevent browser from opening dropped files outside the zone
     document.addEventListener("dragover", (e) => e.preventDefault());
     document.addEventListener("drop", (e) => e.preventDefault());
+
+    // Poll for changes (variant status updates, new uploads)
+    let lastState = {
+        asset_count: {{ assets | length }},
+        variant_ready: {{ assets | sum(attribute='variant_ready') }},
+        variant_processing: {{ assets | sum(attribute='variant_processing') }},
+        variant_failed: {{ assets | sum(attribute='variant_failed') }}
+    };
+    setInterval(async () => {
+        try {
+            const res = await fetch("/api/assets/status");
+            if (!res.ok) return;
+            const data = await res.json();
+            if (JSON.stringify(data) !== JSON.stringify(lastState)) {
+                location.reload();
+            }
+        } catch (e) { /* ignore */ }
+    }, 5000);
 })();
 </script>
 {% endblock %}
