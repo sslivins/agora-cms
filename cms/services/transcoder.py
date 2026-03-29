@@ -47,7 +47,8 @@ def _build_ffmpeg_args_safe(
     scale_filter = (
         f"scale=w='if(gt(iw,{max_w}),{max_w},iw)':h='if(gt(ih,{max_h}),{max_h},ih)'"
         f":force_original_aspect_ratio=decrease,"
-        f"pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        f"pad=ceil(iw/2)*2:ceil(ih/2)*2,"
+        f"format=yuv420p"
     )
 
     args = [
