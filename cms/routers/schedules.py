@@ -1,5 +1,6 @@
 """Schedule CRUD API routes."""
 
+import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,7 @@ from cms.auth import require_auth
 from cms.database import get_db
 from cms.models.schedule import Schedule
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
+from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids
 
 router = APIRouter(prefix="/api/schedules", dependencies=[Depends(require_auth)])
 
@@ -48,11 +50,13 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule.id)
     )
-    return _schedule_to_out(result.scalar_one())
+    schedule = result.scalar_one()
+    await push_sync_to_affected_devices(schedule, db)
+    return _schedule_to_out(schedule)
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOut)
-async def get_schedule(schedule_id: str, db: AsyncSession = Depends(get_db)):
+async def get_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
     )
@@ -64,7 +68,7 @@ async def get_schedule(schedule_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.patch("/{schedule_id}", response_model=ScheduleOut)
 async def update_schedule(
-    schedule_id: str,
+    schedule_id: uuid.UUID,
     data: ScheduleUpdate,
     db: AsyncSession = Depends(get_db),
 ):
@@ -80,15 +84,24 @@ async def update_schedule(
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule.id)
     )
-    return _schedule_to_out(result.scalar_one())
+    schedule = result.scalar_one()
+    await push_sync_to_affected_devices(schedule, db)
+    return _schedule_to_out(schedule)
 
 
 @router.delete("/{schedule_id}")
-async def delete_schedule(schedule_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
+async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
+    )
     schedule = result.scalar_one_or_none()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    # Resolve target devices before deleting the schedule
+    target_ids = await _get_target_device_ids(schedule, db)
     await db.delete(schedule)
     await db.commit()
+    # Push updated sync (without the deleted schedule) to affected devices
+    for did in target_ids:
+        await push_sync_to_device(did, db)
     return {"deleted": str(schedule_id)}

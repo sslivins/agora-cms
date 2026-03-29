@@ -22,3 +22,4 @@ class Settings(BaseSettings):
 
     # Device defaults
     default_device_storage_mb: int = 500  # assumed device flash budget for assets
+    api_key_rotation_hours: int = 24  # rotate device API keys every N hours

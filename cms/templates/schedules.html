@@ -8,11 +8,11 @@
     <form onsubmit="return createSchedule(this)">
         <div class="form-row">
             <div class="form-group">
-                <label>Name</label>
+                <label><span class="has-tooltip">Name<span class="tooltip">A friendly name for this schedule, e.g. &ldquo;Morning Promo&rdquo; or &ldquo;Weekend Loop&rdquo;</span></span></label>
                 <input type="text" name="name" required placeholder="e.g. Morning Promo">
             </div>
             <div class="form-group">
-                <label>Asset</label>
+                <label><span class="has-tooltip">Asset<span class="tooltip">The media file to play when this schedule is active</span></span></label>
                 <select name="asset_id" required>
                     <option value="">Select asset...</option>
                     {% for a in assets %}
@@ -23,14 +23,14 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>Target Type</label>
+                <label><span class="has-tooltip">Target Type<span class="tooltip">Choose whether to target a single device or an entire group of devices</span></span></label>
                 <select name="target_type" id="target_type" onchange="updateTargetOptions()">
                     <option value="device">Device</option>
                     <option value="group">Group</option>
                 </select>
             </div>
             <div class="form-group">
-                <label>Target</label>
+                <label><span class="has-tooltip">Target<span class="tooltip">The specific device or group this schedule applies to</span></span></label>
                 <select name="target_id" id="target_id" required>
                     {% for d in devices %}
                     <option value="{{ d.id }}" data-type="device">{{ d.name or d.id }}</option>
@@ -43,30 +43,56 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>Start Time</label>
-                <input type="time" name="start_time" required>
+                <label><span class="has-tooltip">Start Time<span class="tooltip">Time of day the schedule becomes active</span></span></label>
+                <div style="display:flex; gap:0.3rem; align-items:center;">
+                    <input type="number" name="start_hour" min="1" max="12" placeholder="12" required style="width:3.5rem; text-align:center;">
+                    <span>:</span>
+                    <input type="number" name="start_minute" min="0" max="59" placeholder="00" required style="width:3.5rem; text-align:center;" step="1">
+                    <select name="start_period" style="width:4.5rem;">
+                        <option value="AM">AM</option>
+                        <option value="PM">PM</option>
+                    </select>
+                </div>
             </div>
             <div class="form-group">
-                <label>End Time</label>
-                <input type="time" name="end_time" required>
+                <label><span class="has-tooltip">End Time<span class="tooltip">Time of day the schedule stops. The asset will stop playing at this time</span></span></label>
+                <div style="display:flex; gap:0.3rem; align-items:center;">
+                    <input type="number" name="end_hour" min="1" max="12" placeholder="12" required style="width:3.5rem; text-align:center;">
+                    <span>:</span>
+                    <input type="number" name="end_minute" min="0" max="59" placeholder="00" required style="width:3.5rem; text-align:center;" step="1">
+                    <select name="end_period" style="width:4.5rem;">
+                        <option value="AM">AM</option>
+                        <option value="PM">PM</option>
+                    </select>
+                </div>
             </div>
             <div class="form-group">
-                <label>Priority</label>
+                <label><span class="has-tooltip">Priority<span class="tooltip">Higher number = higher priority. When schedules overlap, the one with the highest priority wins. Use 0 for default</span></span></label>
                 <input type="number" name="priority" value="0" min="0" max="100">
             </div>
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>Start Date (optional)</label>
+                <label><span class="has-tooltip">Timezone<span class="tooltip">All schedule times are interpreted in this timezone</span></span></label>
+                <select name="timezone" id="create_timezone" onchange="saveTimezone(this.value)" style="max-width:340px;">
+                    {% for tz in tz_options %}
+                    <option value="{{ tz.value }}" {% if tz.value == current_timezone %}selected{% endif %}>{{ tz.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label><span class="has-tooltip">Start Date<span class="tooltip">Optional. The first date this schedule can run. Leave blank to start immediately</span></span></label>
                 <input type="date" name="start_date">
             </div>
             <div class="form-group">
-                <label>End Date (optional)</label>
+                <label><span class="has-tooltip">End Date<span class="tooltip">Optional. The last date this schedule can run. Leave blank to run indefinitely</span></span></label>
                 <input type="date" name="end_date">
             </div>
         </div>
         <div class="form-group">
-            <label>Days of Week (leave all unchecked for every day)</label>
+            <label><span class="has-tooltip">Days of Week<span class="tooltip">Select which days this schedule is active. Leave all unchecked to run every day</span></span></label>
             <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">
                 <label><input type="checkbox" name="day_1"> Mon</label>
                 <label><input type="checkbox" name="day_2"> Tue</label>
@@ -106,7 +132,7 @@
                     {% elif s.group %}{{ s.group.name }}
                     {% else %}—{% endif %}
                 </td>
-                <td>{{ s.start_time.strftime('%H:%M') }}–{{ s.end_time.strftime('%H:%M') }}</td>
+                <td>{{ s.start_time.strftime('%I:%M %p') }}–{{ s.end_time.strftime('%I:%M %p') }}</td>
                 <td>
                     {% if s.days_of_week %}
                         {{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] | select_days(s.days_of_week) }}
@@ -116,12 +142,13 @@
                 </td>
                 <td>{{ s.priority }}</td>
                 <td>
-                    <button class="btn btn-sm {% if s.enabled %}btn-primary{% else %}btn-danger{% endif %}"
+                    <button class="btn btn-sm {% if s.enabled %}btn-success{% else %}btn-danger{% endif %}"
                             onclick="toggleSchedule('{{ s.id }}', {{ 'false' if s.enabled else 'true' }})">
                         {{ 'On' if s.enabled else 'Off' }}
                     </button>
                 </td>
-                <td>
+                <td class="actions">
+                    <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
                 </td>
             </tr>
@@ -135,7 +162,48 @@
 {% endblock %}
 
 {% block scripts %}
+<input type="hidden" id="_tz" value="{{ current_timezone }}">
+<input type="hidden" id="_tzOptions" value='{{ tz_options | tojson }}'>
 <script>
+const _scheduleData = {
+    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}"}{% if not loop.last %},{% endif %}{% endfor %}],
+    devices: [{% for d in devices %}{"id":"{{ d.id }}","name":"{{ d.name or d.id }}"}{% if not loop.last %},{% endif %}{% endfor %}],
+    groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}]
+};
+
+const _tzList = JSON.parse(document.getElementById('_tzOptions').value);
+const _currentTz = document.getElementById('_tz').value;
+
+function saveTimezone(tz) {
+    fetch('/settings/timezone', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'timezone=' + encodeURIComponent(tz)
+    });
+    // Keep all timezone selects in sync
+    document.querySelectorAll('#create_timezone, #edit-timezone').forEach(sel => {
+        if (sel && sel.value !== tz) sel.value = tz;
+    });
+    document.getElementById('_tz').value = tz;
+}
+
+// Auto-detect timezone on first visit if not saved
+(function() {
+    {% if not timezone_saved %}
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const sel = document.getElementById('create_timezone');
+    if (sel) {
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === browserTz) {
+                sel.selectedIndex = i;
+                saveTimezone(browserTz);
+                break;
+            }
+        }
+    }
+    {% endif %}
+})();
+
 function updateTargetOptions() {
     const type = document.getElementById('target_type').value;
     const options = document.getElementById('target_id').options;
@@ -148,5 +216,163 @@ function updateTargetOptions() {
     }
 }
 document.addEventListener('DOMContentLoaded', updateTargetOptions);
+
+function editSchedule(s) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    const assets = _scheduleData.assets;
+    const devices = _scheduleData.devices;
+    const groups = _scheduleData.groups;
+
+    const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const daysChecks = dayNames.map((name, i) => {
+        const num = i + 1;
+        const checked = s.days_of_week.includes(num) ? "checked" : "";
+        return `<label><input type="checkbox" name="edit_day_${num}" ${checked}> ${name}</label>`;
+    }).join(" ");
+
+    const assetOpts = assets.map(a =>
+        `<option value="${a.id}" ${a.id === s.asset_id ? "selected" : ""}>${a.name}</option>`
+    ).join("");
+
+    const targetType = s.device_id ? "device" : "group";
+    const targetId = s.device_id || s.group_id;
+
+    const currentTz = document.getElementById('_tz').value;
+    const tzOptions = _tzList.map(tz =>
+        `<option value="${tz.value}" ${tz.value === currentTz ? "selected" : ""}>${tz.label}</option>`
+    ).join("");
+
+    const deviceOpts = devices.map(d =>
+        `<option value="${d.id}" data-type="device" ${targetType === "device" && d.id === targetId ? "selected" : ""} ${targetType !== "device" ? "hidden" : ""}>${d.name}</option>`
+    ).join("");
+    const groupOpts = groups.map(g =>
+        `<option value="${g.id}" data-type="group" ${targetType === "group" && g.id === targetId ? "selected" : ""} ${targetType !== "group" ? "hidden" : ""}>${g.name}</option>`
+    ).join("");
+
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    box.style.minWidth = "500px";
+    box.style.maxWidth = "600px";
+    box.innerHTML = `
+        <h3 style="margin-bottom: 1rem;">Edit Schedule</h3>
+        <div class="form-group">
+            <label><span class="has-tooltip">Name<span class="tooltip">A friendly name for this schedule</span></span></label>
+            <input type="text" id="edit-name" value="${s.name}">
+        </div>
+        <div class="form-group">
+            <label><span class="has-tooltip">Asset<span class="tooltip">The media file to play</span></span></label>
+            <select id="edit-asset">${assetOpts}</select>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Target Type</label>
+                <select id="edit-target-type" onchange="updateEditTargetOptions()">
+                    <option value="device" ${targetType === "device" ? "selected" : ""}>Device</option>
+                    <option value="group" ${targetType === "group" ? "selected" : ""}>Group</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Target</label>
+                <select id="edit-target">${deviceOpts}${groupOpts}</select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Start Time</label>
+                <div style="display:flex; gap:0.3rem; align-items:center;">
+                    <input type="number" id="edit-start-hour" min="1" max="12" value="${s.start_hour}" style="width:3.5rem; text-align:center;">
+                    <span>:</span>
+                    <input type="number" id="edit-start-minute" min="0" max="59" value="${String(s.start_minute).padStart(2,'0')}" style="width:3.5rem; text-align:center;" step="1">
+                    <select id="edit-start-period" style="width:4.5rem;">
+                        <option value="AM" ${s.start_period === "AM" ? "selected" : ""}>AM</option>
+                        <option value="PM" ${s.start_period === "PM" ? "selected" : ""}>PM</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>End Time</label>
+                <div style="display:flex; gap:0.3rem; align-items:center;">
+                    <input type="number" id="edit-end-hour" min="1" max="12" value="${s.end_hour}" style="width:3.5rem; text-align:center;">
+                    <span>:</span>
+                    <input type="number" id="edit-end-minute" min="0" max="59" value="${String(s.end_minute).padStart(2,'0')}" style="width:3.5rem; text-align:center;" step="1">
+                    <select id="edit-end-period" style="width:4.5rem;">
+                        <option value="AM" ${s.end_period === "AM" ? "selected" : ""}>AM</option>
+                        <option value="PM" ${s.end_period === "PM" ? "selected" : ""}>PM</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Priority</label>
+                <input type="number" id="edit-priority" value="${s.priority}" min="0" max="100">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="edit-start-date" value="${s.start_date}">
+            </div>
+            <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="edit-end-date" value="${s.end_date}">
+            </div>
+            <div class="form-group">
+                <label>Timezone</label>
+                <select id="edit-timezone" onchange="saveTimezone(this.value)" style="max-width:280px;">
+                    ${tzOptions}
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Days of Week</label>
+            <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">${daysChecks}</div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
+            <button class="btn btn-primary" id="edit-save">Save</button>
+        </div>
+    `;
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    box.querySelector("#edit-cancel").onclick = () => overlay.remove();
+    box.querySelector("#edit-save").onclick = async () => {
+        const days = [];
+        for (let i = 1; i <= 7; i++) {
+            const cb = box.querySelector(`[name="edit_day_${i}"]`);
+            if (cb && cb.checked) days.push(i);
+        }
+        const editTargetType = box.querySelector("#edit-target-type").value;
+        const editTargetId = box.querySelector("#edit-target").value;
+        const body = {
+            name: box.querySelector("#edit-name").value,
+            asset_id: box.querySelector("#edit-asset").value,
+            device_id: editTargetType === "device" ? editTargetId : null,
+            group_id: editTargetType === "group" ? editTargetId : null,
+            start_time: to24h(box.querySelector("#edit-start-hour").value, box.querySelector("#edit-start-minute").value, box.querySelector("#edit-start-period").value),
+            end_time: to24h(box.querySelector("#edit-end-hour").value, box.querySelector("#edit-end-minute").value, box.querySelector("#edit-end-period").value),
+            start_date: box.querySelector("#edit-start-date").value || null,
+            end_date: box.querySelector("#edit-end-date").value || null,
+            days_of_week: days.length ? days : null,
+            priority: parseInt(box.querySelector("#edit-priority").value) || 0,
+        };
+        const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
+        if (resp && resp.ok) { overlay.remove(); location.reload(); }
+        else showToast("Failed to update schedule", true);
+    };
+}
+
+function updateEditTargetOptions() {
+    const type = document.getElementById('edit-target-type').value;
+    const options = document.getElementById('edit-target').options;
+    for (let opt of options) {
+        opt.hidden = opt.dataset.type !== type;
+    }
+    for (let opt of options) {
+        if (!opt.hidden) { opt.selected = true; break; }
+    }
+}
 </script>
 {% endblock %}
