@@ -1,6 +1,5 @@
 """Shared test fixtures for Agora CMS tests."""
 
-import asyncio
 import os
 
 import pytest
@@ -50,7 +49,7 @@ async def db_session(db_engine):
 @pytest_asyncio.fixture
 async def app(db_engine, tmp_path):
     """Create a test FastAPI app with SQLite DB and temp storage."""
-    from unittest.mock import patch
+    from contextlib import asynccontextmanager
 
     from cms.auth import get_settings
     from cms.config import Settings
@@ -78,22 +77,29 @@ async def app(db_engine, tmp_path):
     get_settings.cache_clear()
 
     from cms.main import app as fastapi_app
+
+    # Replace the real lifespan (which connects to PostgreSQL and runs the
+    # scheduler) with a lightweight no-op version for tests.
+    @asynccontextmanager
+    async def _test_lifespan(app):
+        yield
+
+    original_router_lifespan = fastapi_app.router.lifespan_context
+    fastapi_app.router.lifespan_context = _test_lifespan
+
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_settings] = override_get_settings
 
-    # Point the DB module at our test SQLite engine and prevent the lifespan
-    # from overwriting it with a real PostgreSQL engine via init_db().
+    # Point the DB module at our test SQLite engine so any code that
+    # accesses database globals directly (e.g. WebSocket handler) works.
     import cms.database as db_mod
     db_mod._engine = db_engine
     db_mod._session_factory = factory
 
-    async def _noop_scheduler():
-        pass
-
-    with patch("cms.main.init_db"), patch("cms.main.scheduler_loop", _noop_scheduler):
-        yield fastapi_app
+    yield fastapi_app
 
     fastapi_app.dependency_overrides.clear()
+    fastapi_app.router.lifespan_context = original_router_lifespan
     db_mod._engine = None
     db_mod._session_factory = None
     get_settings.cache_clear()
