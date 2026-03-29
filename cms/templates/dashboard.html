@@ -96,7 +96,7 @@
                 <th>Last Seen</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="recent-devices">
             {% for d in recent_devices %}
             <tr class="device-row" onclick="toggleDevice(this)" data-device-id="{{ d.id }}">
                 <td class="expand-toggle">▶</td>
@@ -139,4 +139,39 @@
     </table>
 </div>
 {% endif %}
+
+<script>
+(function() {
+    // Snapshot initial state for change detection
+    let lastState = {
+        device_count: {{ device_count }},
+        online_count: {{ online_count }},
+        pending_count: {{ pending_count }},
+        asset_count: {{ asset_count }},
+        schedule_count: {{ schedule_count }},
+        now_playing: {{ now_playing | tojson }},
+        pending_ids: {{ pending_devices | map(attribute='id') | list | tojson }},
+        recent_online: {
+            {% for d in recent_devices %}
+            "{{ d.id }}": {{ 'true' if d.is_online else 'false' }}{% if not loop.last %},{% endif %}
+            {% endfor %}
+        }
+    };
+
+    function stateChanged(a, b) {
+        return JSON.stringify(a) !== JSON.stringify(b);
+    }
+
+    setInterval(async () => {
+        try {
+            const res = await fetch("/api/dashboard");
+            if (!res.ok) return;
+            const data = await res.json();
+            if (stateChanged(data, lastState)) {
+                location.reload();
+            }
+        } catch (e) { /* ignore */ }
+    }, 5000);
+})();
+</script>
 {% endblock %}

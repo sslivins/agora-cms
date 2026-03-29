@@ -82,11 +82,13 @@
                             <span class="detail-label">Last Seen</span>
                             <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%Y-%m-%d %H:%M') if d.last_seen else '—' }}</span>
                         </div>
-                        <div class="detail-item detail-actions">
-                            {% if d.is_online %}
-                            <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
-                            {% endif %}
-                        </div>
+                    </div>
+                    {% if d.is_online %}
+                    <div class="detail-toolbar">
+                        <span class="detail-label">Actions</span>
+                        <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
+                    </div>
+                    {% endif %}
                     </div>
                 </td>
             </tr>

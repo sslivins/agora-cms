@@ -1,6 +1,7 @@
-"""Schedule evaluator — background task that triggers playback on devices."""
+"""Schedule evaluator — background task that syncs schedules to devices."""
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -13,25 +14,19 @@ from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.setting import CMSSetting
-from cms.schemas.protocol import FetchAssetMessage, PlayMessage, StopMessage
+from cms.schemas.protocol import ScheduleEntry, SyncMessage
 from cms.services.device_manager import device_manager
 
 logger = logging.getLogger("agora.cms.scheduler")
 
-# Track what each device is currently playing via scheduler, to avoid spamming
-# Key: device_id, Value: (schedule_id, asset_id)
-_active_playback: dict[str, tuple[str, str]] = {}
+# Track last sync hash per device to avoid re-sending identical syncs
+_last_sync_hash: dict[str, str] = {}
 
 # Rich now-playing info for the dashboard
-# Key: device_id, Value: dict with schedule_name, asset_filename, device_name, since
 _now_playing: dict[str, dict] = {}
 
-# Track which assets have been pre-fetched to avoid re-sending
-# Key: (device_id, schedule_id, asset_id)
-_prefetched: set[tuple[str, str, str]] = set()
-
 EVAL_INTERVAL_SECONDS = 15
-PREFETCH_MINUTES = 5
+SCHEDULE_WINDOW_DAYS = 30
 
 
 def get_now_playing() -> list[dict]:
@@ -43,68 +38,21 @@ def _matches_now(schedule: Schedule, now: datetime) -> bool:
     """Check if a schedule is active at the given datetime."""
     if not schedule.enabled:
         return False
-
-    # Date range check
     if schedule.start_date and now < schedule.start_date:
         return False
     if schedule.end_date and now > schedule.end_date:
         return False
-
-    # Day of week check (ISO: 1=Mon, 7=Sun)
     if schedule.days_of_week:
-        iso_day = now.isoweekday()
-        if iso_day not in schedule.days_of_week:
+        if now.isoweekday() not in schedule.days_of_week:
             return False
-
-    # Time window check
     current_time = now.time()
     if schedule.start_time <= schedule.end_time:
-        # Normal range: e.g. 09:00–17:00
-        if not (schedule.start_time <= current_time <= schedule.end_time):
+        if not (schedule.start_time <= current_time < schedule.end_time):
             return False
     else:
-        # Overnight range: e.g. 22:00–06:00
-        if not (current_time >= schedule.start_time or current_time <= schedule.end_time):
+        if not (current_time >= schedule.start_time or current_time < schedule.end_time):
             return False
-
     return True
-
-
-def _starts_within(schedule: Schedule, now: datetime, minutes: int) -> bool:
-    """Check if a schedule starts within the next N minutes (but is NOT active yet)."""
-    if not schedule.enabled:
-        return False
-
-    # Date range check
-    if schedule.start_date and now < schedule.start_date:
-        # Schedule hasn't started date-wise yet — but might start within minutes today
-        # Only pre-fetch if start_date is today or earlier
-        if now.date() < schedule.start_date.date():
-            return False
-    if schedule.end_date and now > schedule.end_date:
-        return False
-
-    # Day of week check
-    if schedule.days_of_week:
-        iso_day = now.isoweekday()
-        if iso_day not in schedule.days_of_week:
-            return False
-
-    # Check if start_time is within [now, now + minutes]
-    current_time = now.time()
-    future = (now + timedelta(minutes=minutes)).time()
-
-    # Skip if already active
-    if _matches_now(schedule, now):
-        return False
-
-    # Check if start_time falls in the lookahead window
-    if current_time <= future:
-        # No midnight wrap in lookahead window
-        return current_time <= schedule.start_time <= future
-    else:
-        # Lookahead window wraps midnight
-        return schedule.start_time >= current_time or schedule.start_time <= future
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
@@ -122,41 +70,122 @@ async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
     return []
 
 
-def _get_base_url_from_connections() -> str:
-    """Derive CMS base URL from an active WebSocket connection."""
-    for did in device_manager.connected_ids:
-        conn = device_manager.get(did)
-        if conn:
-            ws_url = conn.websocket.url
-            scheme = "https" if ws_url.scheme == "wss" else "http"
-            base_url = f"{scheme}://{ws_url.hostname}"
-            if ws_url.port and ws_url.port not in (80, 443):
-                base_url += f":{ws_url.port}"
-            return base_url
-    return "http://0.0.0.0:8080"
-
-
-async def _fetch_asset_to_device(device_id: str, asset: Asset, base_url: str) -> None:
-    """Send fetch_asset only (no play) — for pre-fetching."""
-    download_url = f"{base_url}/api/assets/{asset.id}/download"
-    fetch = FetchAssetMessage(
-        asset_name=asset.filename,
-        download_url=download_url,
-        checksum=asset.checksum,
-        size_bytes=asset.size_bytes,
+def _schedule_to_entry(s: Schedule) -> ScheduleEntry:
+    """Convert a Schedule ORM model to a protocol ScheduleEntry."""
+    return ScheduleEntry(
+        id=str(s.id),
+        name=s.name,
+        asset=s.asset.filename,
+        start_time=s.start_time.strftime("%H:%M"),
+        end_time=s.end_time.strftime("%H:%M"),
+        start_date=s.start_date.date().isoformat() if s.start_date else None,
+        end_date=s.end_date.date().isoformat() if s.end_date else None,
+        days_of_week=s.days_of_week,
+        priority=s.priority,
     )
-    await device_manager.send_to_device(device_id, fetch.model_dump(mode="json"))
 
 
-async def _push_asset_and_play(device_id: str, asset: Asset, base_url: str) -> None:
-    """Send fetch_asset then play to a device."""
-    await _fetch_asset_to_device(device_id, asset, base_url)
-    play = PlayMessage(asset=asset.filename, loop=True)
-    await device_manager.send_to_device(device_id, play.model_dump(mode="json"))
+def _sync_hash(sync: SyncMessage) -> str:
+    """Compute a hash of a sync message for dedup."""
+    return hashlib.md5(sync.model_dump_json().encode()).hexdigest()
+
+
+async def build_device_sync(device_id: str, db) -> SyncMessage | None:
+    """Build a full SyncMessage for a specific device.
+
+    Used by both the scheduler loop and the on-change push.
+    Returns None if the database isn't ready.
+    """
+    # Read configured timezone
+    tz_result = await db.execute(
+        select(CMSSetting.value).where(CMSSetting.key == "timezone")
+    )
+    tz_name = tz_result.scalar_one_or_none() or "UTC"
+
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=SCHEDULE_WINDOW_DAYS)
+
+    # Load device with default asset
+    dev_result = await db.execute(
+        select(Device)
+        .options(
+            selectinload(Device.default_asset),
+            selectinload(Device.group).selectinload(DeviceGroup.default_asset),
+        )
+        .where(Device.id == device_id)
+    )
+    dev = dev_result.scalar_one_or_none()
+    if not dev:
+        return None
+
+    # Resolve default asset (device → group fallback)
+    default_asset_name = None
+    if dev.default_asset:
+        default_asset_name = dev.default_asset.filename
+    elif dev.group and dev.group.default_asset:
+        default_asset_name = dev.group.default_asset.filename
+
+    # Load all enabled schedules targeting this device (directly or via group)
+    result = await db.execute(
+        select(Schedule)
+        .options(
+            selectinload(Schedule.asset),
+            selectinload(Schedule.device),
+            selectinload(Schedule.group),
+        )
+        .where(Schedule.enabled == True)  # noqa: E712
+    )
+    all_schedules = result.scalars().all()
+
+    # Filter to schedules that target this device and are within the window
+    entries: list[ScheduleEntry] = []
+    for s in all_schedules:
+        if not s.asset:
+            continue
+        # Check date range — skip if entirely in the past or beyond the window
+        if s.end_date and s.end_date < now:
+            continue
+        if s.start_date and s.start_date > cutoff:
+            continue
+
+        target_ids = await _get_target_device_ids(s, db)
+        if device_id in target_ids:
+            entries.append(_schedule_to_entry(s))
+
+    return SyncMessage(
+        timezone=tz_name,
+        schedules=entries,
+        default_asset=default_asset_name,
+    )
+
+
+async def push_sync_to_device(device_id: str, db) -> None:
+    """Build and push a fresh sync to a single connected device."""
+    if not device_manager.is_connected(device_id):
+        return
+
+    sync = await build_device_sync(device_id, db)
+    if sync is None:
+        return
+
+    h = _sync_hash(sync)
+    if _last_sync_hash.get(device_id) == h:
+        return
+
+    await device_manager.send_to_device(device_id, sync.model_dump(mode="json"))
+    _last_sync_hash[device_id] = h
+    logger.info("Pushed full sync to device %s (%d schedules)", device_id, len(sync.schedules))
+
+
+async def push_sync_to_affected_devices(schedule: Schedule, db) -> None:
+    """Push sync to all devices affected by a schedule change."""
+    target_ids = await _get_target_device_ids(schedule, db)
+    for did in target_ids:
+        await push_sync_to_device(did, db)
 
 
 async def evaluate_schedules() -> None:
-    """Single evaluation pass: determine what each connected device should play."""
+    """Single evaluation pass: sync schedules and update now-playing dashboard."""
     if not device_manager.connected_count:
         return
 
@@ -166,14 +195,20 @@ async def evaluate_schedules() -> None:
     now = datetime.now(timezone.utc)
 
     async with _db._session_factory() as db:
-        # Read configured timezone
+        # Read timezone for now-playing evaluation
         tz_result = await db.execute(
             select(CMSSetting.value).where(CMSSetting.key == "timezone")
         )
         tz_name = tz_result.scalar_one_or_none() or "UTC"
         local_now = now.astimezone(ZoneInfo(tz_name)).replace(tzinfo=None)
 
-        # Load all enabled schedules with their relationships
+        connected = set(device_manager.connected_ids)
+
+        # Push full sync to each connected device (dedup via hash)
+        for did in connected:
+            await push_sync_to_device(did, db)
+
+        # ── Update now-playing dashboard ──
         result = await db.execute(
             select(Schedule)
             .options(
@@ -185,97 +220,43 @@ async def evaluate_schedules() -> None:
         )
         schedules = result.scalars().all()
 
-        base_url = _get_base_url_from_connections()
-
-        # ── Phase 1: Pre-fetch assets for upcoming schedules ──
-        for schedule in schedules:
-            if not schedule.asset:
-                continue
-            if not _starts_within(schedule, local_now, PREFETCH_MINUTES):
-                continue
-
-            target_ids = await _get_target_device_ids(schedule, db)
-            for did in target_ids:
-                if not device_manager.is_connected(did):
-                    continue
-                pf_key = (did, str(schedule.id), str(schedule.asset.id))
-                if pf_key in _prefetched:
-                    continue
-
-                logger.info(
-                    "Pre-fetching '%s' to device %s for schedule '%s' (starts at %s)",
-                    schedule.asset.filename, did, schedule.name, schedule.start_time,
-                )
-                await _fetch_asset_to_device(did, schedule.asset, base_url)
-                _prefetched.add(pf_key)
-
-        # ── Phase 2: Evaluate active schedules and trigger playback ──
         active = [s for s in schedules if _matches_now(s, local_now)]
 
-        # Build device → winning schedule map (highest priority wins)
-        device_schedule: dict[str, tuple[Schedule, Asset]] = {}
-
-        for schedule in active:
-            if not schedule.asset:
+        # Find winner per device (highest priority)
+        device_winner: dict[str, Schedule] = {}
+        for s in active:
+            if not s.asset:
                 continue
-
-            target_ids = await _get_target_device_ids(schedule, db)
+            target_ids = await _get_target_device_ids(s, db)
             for did in target_ids:
-                if not device_manager.is_connected(did):
+                if did not in connected:
                     continue
-                existing = device_schedule.get(did)
-                if existing is None or schedule.priority > existing[0].priority:
-                    device_schedule[did] = (schedule, schedule.asset)
+                existing = device_winner.get(did)
+                if existing is None or s.priority > existing.priority:
+                    device_winner[did] = s
 
-        # Act on each connected device
-        connected = set(device_manager.connected_ids)
-
-        # Load device names for now-playing display
+        # Load device names
         device_names: dict[str, str] = {}
         if connected:
             name_q = await db.execute(
                 select(Device.id, Device.name).where(Device.id.in_(connected))
             )
-            device_names = {row[0]: (row[1] or row[0]) for row in name_q.all()}
+            device_names = {r[0]: (r[1] or r[0]) for r in name_q.all()}
 
         for did in connected:
-            winner = device_schedule.get(did)
-
+            winner = device_winner.get(did)
             if winner:
-                schedule, asset = winner
-                key = (str(schedule.id), str(asset.id))
-
-                if _active_playback.get(did) != key:
-                    logger.info(
-                        "Schedule '%s' → device %s: playing %s (priority %d)",
-                        schedule.name, did, asset.filename, schedule.priority,
-                    )
-                    await _push_asset_and_play(did, asset, base_url)
-                    _active_playback[did] = key
-
-                # Always update now-playing (keeps "since" fresh on first set)
-                if did not in _now_playing or _now_playing[did].get("schedule_id") != str(schedule.id):
+                if did not in _now_playing or _now_playing[did].get("schedule_id") != str(winner.id):
                     _now_playing[did] = {
                         "device_id": did,
                         "device_name": device_names.get(did, did),
-                        "schedule_id": str(schedule.id),
-                        "schedule_name": schedule.name,
-                        "asset_filename": asset.filename,
+                        "schedule_id": str(winner.id),
+                        "schedule_name": winner.name,
+                        "asset_filename": winner.asset.filename,
                         "since": now.isoformat(),
                     }
             else:
-                # No active schedule — if we were previously driving this device,
-                # stop and let it fall back to default/splash
-                if did in _active_playback:
-                    logger.info("No active schedule for device %s, stopping", did)
-                    stop = StopMessage()
-                    await device_manager.send_to_device(did, stop.model_dump(mode="json"))
-                    del _active_playback[did]
                 _now_playing.pop(did, None)
-
-        # Clean up stale prefetch entries (older than 1 hour to avoid memory leak)
-        # We keep them around so we don't re-prefetch the same schedule repeatedly
-        # They'll naturally stop matching _starts_within once the schedule is active
 
 
 async def scheduler_loop() -> None:

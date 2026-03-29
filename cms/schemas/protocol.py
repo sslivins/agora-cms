@@ -23,6 +23,8 @@ class MessageType(str, Enum):
     STATUS = "status"
     ASSET_ACK = "asset_ack"
     ASSET_DELETED = "asset_deleted"
+    FETCH_REQUEST = "fetch_request"
+    FETCH_FAILED = "fetch_failed"
 
     # CMS → Device
     SYNC = "sync"
@@ -77,18 +79,23 @@ class AssetDeletedMessage(BaseMessage):
 # ── CMS → Device ──
 
 
-class ScheduleWindow(BaseModel):
+class ScheduleEntry(BaseModel):
+    """A single schedule rule pushed to the device."""
+    id: str
+    name: str
     asset: str
-    start: datetime
-    end: datetime
-    loop: bool = True
+    start_time: str          # "HH:MM"
+    end_time: str            # "HH:MM"
+    start_date: Optional[str] = None  # "YYYY-MM-DD" or null (open-ended)
+    end_date: Optional[str] = None    # "YYYY-MM-DD" or null (open-ended)
+    days_of_week: Optional[list[int]] = None  # ISO 1-7, null = every day
     priority: int = 0
 
 
 class SyncMessage(BaseMessage):
     type: MessageType = MessageType.SYNC
-    current: Optional[ScheduleWindow] = None
-    next: Optional[ScheduleWindow] = None
+    timezone: str = "UTC"
+    schedules: list[ScheduleEntry] = []
     default_asset: Optional[str] = None
     splash: Optional[str] = None
 

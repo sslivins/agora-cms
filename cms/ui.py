@@ -1,7 +1,7 @@
 """Web UI routes — Jinja2 server-rendered pages."""
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import func, select
@@ -187,6 +187,59 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "pending_devices": pending_devices,
         "recent_devices": recent_devices,
         "now_playing": now_playing,
+    })
+
+
+@router.get("/api/dashboard", dependencies=[Depends(require_auth)])
+async def dashboard_json(db: AsyncSession = Depends(get_db)):
+    """Lightweight JSON endpoint for dashboard polling."""
+    device_result = await db.execute(select(func.count(Device.id)))
+    device_count = device_result.scalar() or 0
+
+    pending_result = await db.execute(
+        select(func.count(Device.id)).where(Device.status == DeviceStatus.PENDING)
+    )
+    pending_count = pending_result.scalar() or 0
+
+    asset_result = await db.execute(select(func.count(Asset.id)))
+    asset_count = asset_result.scalar() or 0
+
+    schedule_result = await db.execute(
+        select(func.count(Schedule.id)).where(Schedule.enabled == True)
+    )
+    schedule_count = schedule_result.scalar() or 0
+
+    online_count = device_manager.connected_count
+
+    from cms.services.scheduler import get_now_playing
+    now_playing = get_now_playing()
+
+    # Pending device IDs (to detect new arrivals)
+    pending_q = await db.execute(
+        select(Device.id).where(Device.status == DeviceStatus.PENDING)
+    )
+    pending_ids = [r[0] for r in pending_q.all()]
+
+    # Online device IDs
+    recent_q = await db.execute(
+        select(Device.id, Device.name)
+        .where(Device.status != DeviceStatus.PENDING)
+        .order_by(Device.last_seen.desc().nullslast())
+        .limit(10)
+    )
+    recent_online = {
+        r[0]: device_manager.is_connected(r[0]) for r in recent_q.all()
+    }
+
+    return JSONResponse({
+        "device_count": device_count,
+        "online_count": online_count,
+        "pending_count": pending_count,
+        "asset_count": asset_count,
+        "schedule_count": schedule_count,
+        "now_playing": now_playing,
+        "pending_ids": pending_ids,
+        "recent_online": recent_online,
     })
 
 

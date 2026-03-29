@@ -24,6 +24,7 @@ from cms.schemas.protocol import (
     SyncMessage,
 )
 from cms.services.device_manager import device_manager
+from cms.services.scheduler import build_device_sync
 
 logger = logging.getLogger("agora.cms.ws")
 
@@ -134,27 +135,25 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         # ── 3. Register connection ──
         device_manager.register(device_id, websocket)
 
-        # ── 4. Resolve default asset (device-level overrides group-level) ──
-        await db.refresh(device, ["default_asset", "group"])
-        default_asset = device.default_asset
-        if not default_asset and device.group:
-            await db.refresh(device.group, ["default_asset"])
-            default_asset = device.group.default_asset
-
-        # Build base URL from WebSocket connection for asset downloads
+        # ── 4. Build base URL for asset downloads ──
         ws_url = websocket.url
         scheme = "https" if ws_url.scheme == "wss" else "http"
         base_url = f"{scheme}://{ws_url.hostname}"
         if ws_url.port and ws_url.port not in (80, 443):
             base_url += f":{ws_url.port}"
 
-        # ── 5. Send sync (with default asset if set) ──
-        sync = SyncMessage(
-            default_asset=default_asset.filename if default_asset else None,
-        )
-        await websocket.send_json(sync.model_dump(mode="json"))
+        # ── 5. Send full schedule sync ──
+        sync = await build_device_sync(device_id, db)
+        if sync:
+            await websocket.send_json(sync.model_dump(mode="json"))
 
         # ── 6. If device is approved and has a default asset, push it ──
+        await db.refresh(device, ["default_asset", "group"])
+        default_asset = device.default_asset
+        if not default_asset and device.group:
+            await db.refresh(device.group, ["default_asset"])
+            default_asset = device.group.default_asset
+
         if device.status == DeviceStatus.APPROVED and default_asset:
             download_url = f"{base_url}/api/assets/{default_asset.id}/download"
             fetch = FetchAssetMessage(
@@ -197,6 +196,33 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
 
             elif msg_type == MessageType.ASSET_DELETED:
                 logger.info("Device %s deleted asset: %s", device_id, msg.get("asset_name"))
+
+            elif msg_type == MessageType.FETCH_REQUEST:
+                asset_name = msg.get("asset", "")
+                if asset_name:
+                    asset_result = await db.execute(
+                        select(Asset).where(Asset.filename == asset_name)
+                    )
+                    asset = asset_result.scalar_one_or_none()
+                    if asset:
+                        download_url = f"{base_url}/api/assets/{asset.id}/download"
+                        fetch = FetchAssetMessage(
+                            asset_name=asset.filename,
+                            download_url=download_url,
+                            checksum=asset.checksum,
+                            size_bytes=asset.size_bytes,
+                        )
+                        await websocket.send_json(fetch.model_dump(mode="json"))
+                        logger.info("Device %s requested asset %s, sending fetch", device_id, asset_name)
+                    else:
+                        logger.warning("Device %s requested unknown asset: %s", device_id, asset_name)
+
+            elif msg_type == MessageType.FETCH_FAILED:
+                logger.warning(
+                    "Device %s failed to fetch asset %s: %s (budget=%sMB, available=%sMB, required=%sMB)",
+                    device_id, msg.get("asset"), msg.get("reason"),
+                    msg.get("budget_mb"), msg.get("available_mb"), msg.get("required_mb"),
+                )
 
             else:
                 logger.warning("Unknown message type from %s: %s", device_id, msg_type)
