@@ -100,6 +100,7 @@ async def upload_asset(
     # Convert unsupported image formats to JPEG for device compatibility
     ext = "." + file.filename.rsplit(".", 1)[-1].lower()
     final_filename = file.filename
+    original_filename = None
     if asset_type == AssetType.IMAGE and ext in IMAGE_CONVERT_EXTS:
         from cms.services.transcoder import convert_image_to_jpeg
         jpeg_filename = Path(file.filename).stem + ".jpg"
@@ -115,8 +116,11 @@ async def upload_asset(
         if not ok:
             dest.unlink(missing_ok=True)
             raise HTTPException(status_code=422, detail="Image conversion failed")
-        # Remove original, use JPEG
-        dest.unlink(missing_ok=True)
+        # Keep original in originals/ for future re-transcoding
+        originals_dir = storage_dir / "originals"
+        originals_dir.mkdir(parents=True, exist_ok=True)
+        dest.rename(originals_dir / file.filename)
+        original_filename = file.filename
         content = jpeg_path.read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
         final_filename = jpeg_filename
@@ -124,6 +128,7 @@ async def upload_asset(
     # Database record
     asset = Asset(
         filename=final_filename,
+        original_filename=original_filename,
         asset_type=asset_type,
         size_bytes=len(content),
         checksum=checksum,
@@ -237,6 +242,12 @@ async def delete_asset(
     file_path = settings.asset_storage_path / asset.filename
     if file_path.is_file():
         file_path.unlink()
+
+    # Remove original file (if converted from HEIC/AVIF/etc)
+    if asset.original_filename:
+        orig_path = settings.asset_storage_path / "originals" / asset.original_filename
+        if orig_path.is_file():
+            orig_path.unlink()
 
     # Remove variant files
     variants_dir = settings.asset_storage_path / "variants"

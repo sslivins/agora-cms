@@ -61,6 +61,13 @@ async def run_migrations():
                 "REFERENCES device_profiles(id) ON DELETE SET NULL"
             ))
 
+        # -- assets.original_filename --
+        has_orig = await conn.run_sync(lambda c: _has_column(c, "assets", "original_filename"))
+        if not has_orig:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN original_filename VARCHAR(255)"
+            ))
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
