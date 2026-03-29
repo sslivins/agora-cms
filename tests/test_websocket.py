@@ -48,6 +48,7 @@ class TestWebSocket:
         )
         db_session.add(device)
         await db_session.commit()
+        await db_session.close()
 
         from starlette.testclient import TestClient
         with TestClient(app) as tc:
@@ -78,6 +79,7 @@ class TestWebSocket:
         )
         db_session.add(device)
         await db_session.commit()
+        await db_session.close()
 
         from starlette.testclient import TestClient
         with TestClient(app) as tc:
@@ -152,4 +154,6 @@ class TestWebSocket:
                     "mode": "splash",
                     "storage_used_mb": 200,
                 })
-                # No response expected; just verify no crash
+
+                import time
+                time.sleep(0.5)  # Allow server to process status before disconnect
