@@ -58,7 +58,7 @@
             </div>
             <div class="detail-item">
                 <span class="detail-label">Firmware Version</span>
-                <span class="detail-value">{{ d.firmware_version or '—' }}</span>
+                <span class="detail-value">{{ d.firmware_version or '—' }}{% if latest_version and d.firmware_version and d.firmware_version != latest_version %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Storage</span>
@@ -81,6 +81,9 @@
         <div class="detail-toolbar">
             <span class="detail-label">Actions</span>
             <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
+            {% if latest_version and d.firmware_version and d.firmware_version != latest_version %}
+            <button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Upgrade to {{ latest_version }}</button>
+            {% endif %}
             <button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button>
             <button class="btn btn-secondary btn-sm" onclick="resetAuth('{{ d.id }}', '{{ d.name or d.id }}')">Reset Auth</button>
         </div>
