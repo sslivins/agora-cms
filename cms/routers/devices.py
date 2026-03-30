@@ -21,8 +21,12 @@ from cms.schemas.device import (
 )
 from cms.schemas.protocol import ConfigMessage, FetchAssetMessage, PlayMessage, RebootMessage, SyncMessage, UpgradeMessage
 from cms.services.device_manager import device_manager
+from cms.services.version_checker import check_now
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
+
+# Track devices with an in-flight upgrade to prevent concurrent upgrade commands
+_upgrading: set[str] = set()
 
 
 async def _push_default_asset(device_id: str, asset: Asset, base_url: str) -> None:
@@ -40,6 +44,13 @@ async def _push_default_asset(device_id: str, asset: Asset, base_url: str) -> No
 
 
 # ── Devices ──
+
+
+@router.post("/check-updates")
+async def check_for_updates():
+    """Trigger an immediate check for the latest device firmware version."""
+    latest = await check_now()
+    return {"latest_version": latest}
 
 
 @router.get("", response_model=List[DeviceOut])
@@ -174,11 +185,17 @@ async def upgrade_device(
         raise HTTPException(status_code=404, detail="Device not found")
 
     if not device_manager.is_connected(device_id):
+        _upgrading.discard(device_id)
         raise HTTPException(status_code=409, detail="Device is not connected")
 
+    if device_id in _upgrading:
+        raise HTTPException(status_code=409, detail="Upgrade already in progress for this device")
+
+    _upgrading.add(device_id)
     upgrade_msg = UpgradeMessage()
     sent = await device_manager.send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
     if not sent:
+        _upgrading.discard(device_id)
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     return {"ok": True}

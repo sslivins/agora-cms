@@ -43,11 +43,11 @@
     </td>
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
-        <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
+        <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
         {% elif d.is_online and d.update_available %}
-        <button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button>
+        <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button><span class="tooltip">Update firmware from {{ d.firmware_version }} to {{ latest_version }}</span></span>
         {% endif %}
-        <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
+        <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>
     </td>
 </tr>
 <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
@@ -90,8 +90,8 @@
         {% if d.is_online %}
         <div class="detail-toolbar">
             <span class="detail-label">Actions</span>
-            <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
-            <button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button>
+            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button><span class="tooltip">Set the password for this device's local web UI</span></span>
+            <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
         </div>
         {% endif %}
         </div>
@@ -113,7 +113,10 @@
 
 {# ── All Devices ── #}
 <div class="card">
-    <h2>Devices</h2>
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2>Devices</h2>
+        <button class="btn btn-sm" onclick="checkForUpdates()" id="check-updates-btn">Check for Updates</button>
+    </div>
     <table>
         <thead>{{ th_row }}</thead>
         <tbody>
@@ -227,6 +230,7 @@ async function dropDevice(e, groupId) {
 (function() {
     const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}";
     setInterval(async () => {
+        if (isModalOpen()) return;
         const el = document.activeElement;
         if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
         if (document.querySelector(".device-row.expanded")) return;
@@ -240,5 +244,26 @@ async function dropDevice(e, groupId) {
         } catch (e) { /* ignore */ }
     }, 5000);
 })();
+
+async function checkForUpdates() {
+    const btn = document.getElementById('check-updates-btn');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    try {
+        const resp = await fetch('/api/devices/check-updates', { method: 'POST' });
+        if (resp.ok) {
+            const data = await resp.json();
+            showToast('Latest version: ' + (data.latest_version || 'unknown'));
+            location.reload();
+        } else {
+            showToast('Failed to check for updates', true);
+        }
+    } catch (e) {
+        showToast('Failed to check for updates', true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Check for Updates';
+    }
+}
 </script>
 {% endblock %}
