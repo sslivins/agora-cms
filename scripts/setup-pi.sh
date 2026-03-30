@@ -24,7 +24,7 @@ info "Starting Agora setup on $(hostname)"
 
 # ── 1. Add Agora apt repository ──
 info "Adding Agora apt repository"
-echo "deb [trusted=yes] ${REPO_URL} stable main" > "${REPO_LIST}"
+echo "deb [arch=arm64 trusted=yes] ${REPO_URL} stable main" > "${REPO_LIST}"
 apt-get update -qq
 
 # ── 2. Install Agora ──
