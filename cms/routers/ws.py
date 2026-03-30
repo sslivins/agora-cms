@@ -210,7 +210,8 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             await _auto_assign_profile(device, db)
 
         # ── 3. Register connection ──
-        device_manager.register(device_id, websocket)
+        client_ip = raw.get("ip_address") or (websocket.client.host if websocket.client else None)
+        device_manager.register(device_id, websocket, ip_address=client_ip)
 
         # ── 4. Build base URL for asset downloads ──
         ws_url = websocket.url

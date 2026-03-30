@@ -283,6 +283,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.is_online = device_manager.is_connected(d.id)
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
+        d.ip_address = state["ip_address"] if state else None
 
     groups_q = await db.execute(
         select(DeviceGroup)
@@ -298,6 +299,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.is_online = device_manager.is_connected(d.id)
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
+            d.ip_address = state["ip_address"] if state else None
 
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]

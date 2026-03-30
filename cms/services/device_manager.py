@@ -10,9 +10,10 @@ logger = logging.getLogger("agora.cms.device_manager")
 
 
 class ConnectedDevice:
-    def __init__(self, device_id: str, websocket: WebSocket):
+    def __init__(self, device_id: str, websocket: WebSocket, ip_address: Optional[str] = None):
         self.device_id = device_id
         self.websocket = websocket
+        self.ip_address = ip_address
         self.connected_at = datetime.now(timezone.utc)
         # Playback state from last STATUS message
         self.mode: str = "unknown"
@@ -30,8 +31,8 @@ class DeviceManager:
     def __init__(self):
         self._connections: dict[str, ConnectedDevice] = {}
 
-    def register(self, device_id: str, websocket: WebSocket) -> ConnectedDevice:
-        conn = ConnectedDevice(device_id, websocket)
+    def register(self, device_id: str, websocket: WebSocket, ip_address: Optional[str] = None) -> ConnectedDevice:
+        conn = ConnectedDevice(device_id, websocket, ip_address=ip_address)
         self._connections[device_id] = conn
         logger.info("Device %s connected (%d total)", device_id, len(self._connections))
         return conn
@@ -86,6 +87,7 @@ class DeviceManager:
                 "uptime_seconds": c.uptime_seconds,
                 "connected_at": c.connected_at.isoformat(),
                 "cpu_temp_c": c.cpu_temp_c,
+                "ip_address": c.ip_address,
             }
             for c in self._connections.values()
         ]
