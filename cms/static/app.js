@@ -246,15 +246,16 @@ async function rebootDevice(deviceId, deviceName) {
 
 async function upgradeDevice(deviceId, deviceName) {
     if (!await showConfirm("Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.")) return;
-    // Disable all upgrade buttons to prevent concurrent upgrades
-    document.querySelectorAll('[onclick*="upgradeDevice"]').forEach(b => { b.disabled = true; b.textContent = 'Upgrading…'; });
+    // Disable this device's upgrade button to prevent double-clicks
+    const btn = document.querySelector(`[onclick*="upgradeDevice('${deviceId}'"]`);
+    if (btn) { btn.disabled = true; btn.textContent = 'Upgrading…'; }
     const resp = await apiCall("POST", `/api/devices/${deviceId}/upgrade`);
     if (resp && resp.ok) showToast("Upgrade command sent to " + deviceName);
     else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to upgrade device", true);
         // Re-enable on failure
-        document.querySelectorAll('[onclick*="upgradeDevice"]').forEach(b => { b.disabled = false; b.textContent = 'Update'; });
+        if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
     }
 }
 
