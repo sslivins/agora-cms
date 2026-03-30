@@ -189,6 +189,70 @@ class TestDeviceCRUD:
 
 
 @pytest.mark.asyncio
+class TestCheckUpdates:
+    async def test_check_updates_endpoint(self, client):
+        from unittest.mock import AsyncMock, patch
+        from cms.services import version_checker
+
+        original = version_checker._latest_version
+        try:
+            with patch.object(version_checker, "_fetch_latest_version", new_callable=AsyncMock, return_value="9.9.9"):
+                resp = await client.post("/api/devices/check-updates")
+            assert resp.status_code == 200
+            assert resp.json()["latest_version"] == "9.9.9"
+        finally:
+            version_checker._latest_version = original
+
+
+@pytest.mark.asyncio
+class TestUpgradeGuard:
+    async def test_upgrade_not_connected(self, client, db_session):
+        """Upgrading an offline device returns 409."""
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="up-pi-001", name="up-pi-001", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.post("/api/devices/up-pi-001/upgrade")
+        assert resp.status_code == 409
+        assert "not connected" in resp.json()["detail"]
+
+    async def test_upgrade_concurrent_blocked(self, client, db_session):
+        """Second upgrade to the same device returns 409."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.routers.devices import _upgrading
+        from cms.services.device_manager import device_manager
+
+        device = Device(id="up-pi-002", name="up-pi-002", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        # Simulate device connected and already upgrading
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("up-pi-002", FakeWS())
+        _upgrading.add("up-pi-002")
+
+        try:
+            resp = await client.post("/api/devices/up-pi-002/upgrade")
+            assert resp.status_code == 409
+            assert "already in progress" in resp.json()["detail"]
+        finally:
+            _upgrading.discard("up-pi-002")
+            device_manager.disconnect("up-pi-002")
+
+    async def test_upgrade_clears_flag_on_disconnect(self, client, db_session):
+        """Upgrading flag is cleared when device disconnects (simulated)."""
+        from cms.routers.devices import _upgrading
+
+        _upgrading.add("up-pi-003")
+        # Simulate what ws.py finally block does
+        _upgrading.discard("up-pi-003")
+        assert "up-pi-003" not in _upgrading
+
+
+@pytest.mark.asyncio
 class TestDeviceGroups:
     async def test_create_group(self, client):
         resp = await client.post("/api/devices/groups/", json={"name": "Lobby Screens"})

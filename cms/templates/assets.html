@@ -236,6 +236,7 @@
         variant_failed: {{ assets | sum(attribute='variant_failed') }}
     };
     setInterval(async () => {
+        if (isModalOpen()) return;
         try {
             const res = await fetch("/api/assets/status");
             if (!res.ok) return;

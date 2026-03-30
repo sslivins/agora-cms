@@ -227,6 +227,7 @@ async function endNow(scheduleId) {
     });
 
     setInterval(async () => {
+        if (isModalOpen()) return;
         try {
             const res = await fetch("/api/dashboard");
             if (!res.ok) return;

@@ -1,5 +1,6 @@
 """WebSocket endpoint for device connections."""
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -30,6 +31,9 @@ from cms.services.scheduler import build_device_sync
 logger = logging.getLogger("agora.cms.ws")
 
 router = APIRouter()
+
+# Device sends status every 30s; timeout at 45s to detect dead connections quickly
+WS_RECEIVE_TIMEOUT = 45
 
 
 def _hash_token(token: str) -> str:
@@ -248,7 +252,11 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         # ── 8. Message loop ──
         settings = get_settings()
         while True:
-            msg = await websocket.receive_json()
+            try:
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=WS_RECEIVE_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.info("Device %s timed out (no message in %ds)", device_id, WS_RECEIVE_TIMEOUT)
+                break
             msg_type = msg.get("type")
 
             if msg_type == MessageType.STATUS:
@@ -317,3 +325,6 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
     finally:
         if device_id:
             device_manager.disconnect(device_id)
+            # Clear upgrade-in-progress flag so the device can be upgraded again after reconnect
+            from cms.routers.devices import _upgrading
+            _upgrading.discard(device_id)

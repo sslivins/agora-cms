@@ -52,6 +52,15 @@ async def _fetch_latest_version() -> Optional[str]:
     return None
 
 
+async def check_now() -> Optional[str]:
+    """Trigger an immediate version check and update the cached value."""
+    global _latest_version
+    version = await _fetch_latest_version()
+    if version:
+        _latest_version = version
+    return _latest_version
+
+
 async def version_check_loop() -> None:
     """Background loop that checks GitHub releases periodically."""
     global _latest_version

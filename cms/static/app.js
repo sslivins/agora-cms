@@ -1,5 +1,10 @@
 /* Agora CMS — client-side JavaScript */
 
+// ── Modal guard for auto-refresh polling ──
+function isModalOpen() {
+    return !!document.querySelector(".modal-overlay");
+}
+
 // ── Modal confirm (replaces native confirm()) ──
 function showConfirm(message) {
     return new Promise((resolve) => {
@@ -241,11 +246,15 @@ async function rebootDevice(deviceId, deviceName) {
 
 async function upgradeDevice(deviceId, deviceName) {
     if (!await showConfirm("Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.")) return;
+    // Disable all upgrade buttons to prevent concurrent upgrades
+    document.querySelectorAll('[onclick*="upgradeDevice"]').forEach(b => { b.disabled = true; b.textContent = 'Upgrading…'; });
     const resp = await apiCall("POST", `/api/devices/${deviceId}/upgrade`);
     if (resp && resp.ok) showToast("Upgrade command sent to " + deviceName);
     else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to upgrade device", true);
+        // Re-enable on failure
+        document.querySelectorAll('[onclick*="upgradeDevice"]').forEach(b => { b.disabled = false; b.textContent = 'Update'; });
     }
 }
 
