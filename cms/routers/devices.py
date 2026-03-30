@@ -52,6 +52,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
         DeviceOut(
             **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
             group_name=d.group.name if d.group else None,
+            is_online=device_manager.is_connected(d.id),
         )
         for d in devices
     ]
@@ -68,6 +69,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
+        is_online=device_manager.is_connected(device.id),
     )
 
 
@@ -108,6 +110,7 @@ async def update_device(
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
+        is_online=device_manager.is_connected(device.id),
     )
 
 

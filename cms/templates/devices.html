@@ -44,7 +44,7 @@
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
         <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
-        {% elif d.is_online and latest_version and d.firmware_version and d.firmware_version != latest_version %}
+        {% elif d.is_online and d.update_available %}
         <button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button>
         {% endif %}
         <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
@@ -68,7 +68,7 @@
             </div>
             <div class="detail-item">
                 <span class="detail-label">Firmware Version</span>
-                <span class="detail-value">{{ d.firmware_version or '—' }}{% if latest_version and d.firmware_version and d.firmware_version != latest_version %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
+                <span class="detail-value">{{ d.firmware_version or '—' }}{% if d.update_available %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Storage</span>
@@ -225,7 +225,7 @@ async function dropDevice(e, groupId) {
 }
 
 (function() {
-    const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}";
+    const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}";
     setInterval(async () => {
         const el = document.activeElement;
         if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
@@ -235,7 +235,7 @@ async function dropDevice(e, groupId) {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;
             const devices = await resp.json();
-            const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",") + ":" + devices.map(d => d.firmware_version || "").join(",");
+            const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",") + ":" + devices.map(d => d.firmware_version || "").join(",") + ":" + devices.map(d => d.is_online).join(",");
             if (state !== knownState) location.reload();
         } catch (e) { /* ignore */ }
     }, 5000);

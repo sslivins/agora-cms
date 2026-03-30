@@ -19,6 +19,23 @@ def get_latest_device_version() -> Optional[str]:
     return _latest_version
 
 
+def _parse_version(v: str) -> tuple:
+    """Parse a version string like '0.7.3' into a comparable tuple of ints."""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return ()
+
+
+def is_update_available(device_version: str, latest: Optional[str] = None) -> bool:
+    """Return True only if the device is running an older version than latest."""
+    if latest is None:
+        latest = _latest_version
+    if not latest or not device_version:
+        return False
+    return _parse_version(device_version) < _parse_version(latest)
+
+
 async def _fetch_latest_version() -> Optional[str]:
     """Query the GitHub API for the latest release tag."""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"

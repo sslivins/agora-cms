@@ -28,7 +28,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.services.device_manager import device_manager
-from cms.services.version_checker import get_latest_device_version
+from cms.services.version_checker import get_latest_device_version, is_update_available
 
 import json as _json
 from zoneinfo import ZoneInfo, available_timezones
@@ -301,6 +301,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
         d.ip_address = state["ip_address"] if state else None
+        d.update_available = is_update_available(d.firmware_version)
 
     groups_q = await db.execute(
         select(DeviceGroup)
@@ -317,6 +318,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
             d.ip_address = state["ip_address"] if state else None
+            d.update_available = is_update_available(d.firmware_version)
 
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]

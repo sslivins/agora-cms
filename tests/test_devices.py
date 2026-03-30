@@ -32,6 +32,7 @@ class TestDeviceCRUD:
         assert devices[0]["id"] == "test-pi-001"
         assert devices[0]["name"] == "Living Room"
         assert devices[0]["status"] == "pending"
+        assert devices[0]["is_online"] is False
 
     async def test_update_device_name(self, client, db_session):
         from cms.models.device import Device, DeviceStatus

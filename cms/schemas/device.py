@@ -24,6 +24,7 @@ class DeviceOut(BaseModel):
     storage_used_mb: int
     last_seen: Optional[datetime] = None
     registered_at: datetime
+    is_online: bool = False
 
 
 class DeviceUpdate(BaseModel):
