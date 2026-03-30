@@ -478,7 +478,7 @@ class TestUpcomingSchedules:
 @pytest.mark.asyncio
 class TestUniqueScheduleName:
     async def _create_device_and_asset(self, db_session):
-        device = Device(id="dedup-pi", name="Dedup Test", status=DeviceStatus.APPROVED)
+        device = Device(id="dedup-pi", name="Dedup Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="dedup.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ded")
         db_session.add_all([device, asset])
         await db_session.commit()
@@ -534,7 +534,7 @@ class TestUniqueScheduleName:
 @pytest.mark.asyncio
 class TestEndNowEndpoint:
     async def _create_schedule(self, client, db_session):
-        device = Device(id="end-now-pi", name="End Now Test", status=DeviceStatus.APPROVED)
+        device = Device(id="end-now-pi", name="End Now Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="end.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="end")
         setting = CMSSetting(key="timezone", value="UTC")
         db_session.add_all([device, asset, setting])
@@ -606,7 +606,7 @@ class TestBuildDeviceSyncSkipped:
     async def _setup(self, db):
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="skip-test.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="skp")
-        device = Device(id="skip-pi-01", name="Skip Test", status=DeviceStatus.APPROVED)
+        device = Device(id="skip-pi-01", name="Skip Test", status=DeviceStatus.ADOPTED)
         db.add_all([setting, asset, device])
         await db.flush()
 

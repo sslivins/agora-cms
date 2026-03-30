@@ -268,7 +268,7 @@ class TestBuildDeviceSync:
         device = Device(
             id="sync-pi-01",
             name="Sync Test",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
         )
         if group:
             device.group = group
@@ -423,7 +423,7 @@ class TestBuildDeviceSync:
         """Schedule for a different device is not included."""
         await self._setup_tz(db)
         asset = Asset(filename="other.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="oth")
-        other_device = Device(id="other-pi", name="Other", status=DeviceStatus.APPROVED)
+        other_device = Device(id="other-pi", name="Other", status=DeviceStatus.ADOPTED)
         db.add_all([asset, other_device])
         await db.flush()
 

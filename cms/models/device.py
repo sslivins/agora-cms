@@ -13,8 +13,8 @@ from cms.database import Base
 
 class DeviceStatus(str, PyEnum):
     PENDING = "pending"
-    APPROVED = "approved"
-    OFFLINE = "offline"
+    ADOPTED = "adopted"
+    ORPHANED = "orphaned"
 
 
 class DeviceGroup(Base):

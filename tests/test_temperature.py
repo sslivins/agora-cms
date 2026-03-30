@@ -66,7 +66,7 @@ class TestDeviceManagerTemperature:
 # ── Dashboard integration tests ──
 
 
-async def _seed_device(db_session, device_id, name, status=DeviceStatus.APPROVED):
+async def _seed_device(db_session, device_id, name, status=DeviceStatus.ADOPTED):
     """Insert a device into the test DB."""
     device = Device(
         id=device_id,
@@ -240,7 +240,7 @@ class TestWebSocketStatusTemperature:
         device = Device(
             id="ws-temp-001",
             name="WS Temp Device",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
             device_auth_token_hash=token_hash,
         )
         db_session.add(device)
@@ -297,7 +297,7 @@ class TestWebSocketStatusTemperature:
         device = Device(
             id="ws-temp-002",
             name="WS No Temp Device",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
             device_auth_token_hash=token_hash,
         )
         db_session.add(device)

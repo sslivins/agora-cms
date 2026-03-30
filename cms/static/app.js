@@ -202,9 +202,13 @@ async function setGroupDefaultAsset(groupId, assetId) {
     else showToast("Update failed", true);
 }
 
-async function approveDevice(deviceId) {
-    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { status: "approved" });
+async function adoptDevice(deviceId, deviceName) {
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`);
     if (resp && resp.ok) location.reload();
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to adopt device", true);
+    }
 }
 
 async function deleteDevice(deviceId) {
@@ -242,16 +246,6 @@ async function upgradeDevice(deviceId, deviceName) {
     else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to upgrade device", true);
-    }
-}
-
-async function resetAuth(deviceId, deviceName) {
-    if (!await showConfirm("Reset auth for \"" + deviceName + "\"?\n\nUse this when a device has been re-flashed or its SD card replaced. The device will get a new token on its next connection.")) return;
-    const resp = await apiCall("POST", `/api/devices/${deviceId}/reset-auth`);
-    if (resp && resp.ok) showToast("Auth reset for " + deviceName + " — device can now reconnect");
-    else if (resp) {
-        const err = await resp.json().catch(() => null);
-        showToast(err?.detail || "Failed to reset auth", true);
     }
 }
 

@@ -28,7 +28,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.services.device_manager import device_manager
-from cms.services.version_checker import get_latest_device_version
+from cms.services.version_checker import get_latest_device_version, is_update_available
 
 import json as _json
 from zoneinfo import ZoneInfo, available_timezones
@@ -150,19 +150,28 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     for d in pending_devices:
         d.is_online = False
 
-    # All approved devices
+    # All adopted devices
     devices_q = await db.execute(
         select(Device)
         .options(selectinload(Device.group))
-        .where(Device.status != DeviceStatus.PENDING)
+        .where(Device.status == DeviceStatus.ADOPTED)
         .order_by(Device.name, Device.id)
     )
     all_devices = devices_q.scalars().all()
     for d in all_devices:
         d.is_online = device_manager.is_connected(d.id)
 
-    # Offline devices
+    # Offline devices (adopted but not connected)
     offline_devices = [d for d in all_devices if not d.is_online]
+
+    # Orphaned devices
+    orphaned_q = await db.execute(
+        select(Device)
+        .options(selectinload(Device.group))
+        .where(Device.status == DeviceStatus.ORPHANED)
+        .order_by(Device.name, Device.id)
+    )
+    orphaned_devices = orphaned_q.scalars().all()
 
     # Now Playing
     now_playing = get_now_playing()
@@ -201,6 +210,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "active_tab": "dashboard",
         "tz": tz,
         "pending_devices": pending_devices,
+        "orphaned_devices": orphaned_devices,
         "offline_devices": offline_devices,
         "all_devices": all_devices,
         "now_playing": now_playing,
@@ -226,10 +236,16 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     )
     pending_ids = [r[0] for r in pending_q.all()]
 
-    # Online status
+    # Orphaned device IDs
+    orphaned_q = await db.execute(
+        select(Device.id).where(Device.status == DeviceStatus.ORPHANED)
+    )
+    orphaned_ids = [r[0] for r in orphaned_q.all()]
+
+    # Online status (adopted devices only)
     devices_q = await db.execute(
         select(Device.id)
-        .where(Device.status != DeviceStatus.PENDING)
+        .where(Device.status == DeviceStatus.ADOPTED)
     )
     all_device_ids = [r[0] for r in devices_q.all()]
     offline_ids = [did for did in all_device_ids if not device_manager.is_connected(did)]
@@ -263,6 +279,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     return JSONResponse({
         "now_playing": now_playing,
         "pending_ids": pending_ids,
+        "orphaned_ids": orphaned_ids,
         "offline_ids": offline_ids,
         "device_states": device_states,
         "upcoming": upcoming,
@@ -284,6 +301,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
         d.ip_address = state["ip_address"] if state else None
+        d.update_available = is_update_available(d.firmware_version)
 
     groups_q = await db.execute(
         select(DeviceGroup)
@@ -300,6 +318,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
             d.ip_address = state["ip_address"] if state else None
+            d.update_available = is_update_available(d.firmware_version)
 
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]
@@ -377,7 +396,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     assets = assets_q.scalars().all()
 
     devices_q = await db.execute(
-        select(Device).where(Device.status == DeviceStatus.APPROVED).order_by(Device.name)
+        select(Device).where(Device.status == DeviceStatus.ADOPTED).order_by(Device.name)
     )
     devices = devices_q.scalars().all()
 

@@ -98,6 +98,18 @@ async def run_migrations():
             if not has_col:
                 await conn.execute(text(f"ALTER TABLE asset_variants ADD COLUMN {col} {col_type}"))
 
+        # -- Rename device status enum: approved → adopted, offline → orphaned --
+        has_approved = await conn.execute(
+            text("SELECT 1 FROM pg_enum WHERE enumlabel = 'APPROVED' AND enumtypid = 'devicestatus'::regtype")
+        )
+        if has_approved.scalar():
+            await conn.execute(text("ALTER TYPE devicestatus RENAME VALUE 'APPROVED' TO 'ADOPTED'"))
+        has_offline = await conn.execute(
+            text("SELECT 1 FROM pg_enum WHERE enumlabel = 'OFFLINE' AND enumtypid = 'devicestatus'::regtype")
+        )
+        if has_offline.scalar():
+            await conn.execute(text("ALTER TYPE devicestatus RENAME VALUE 'OFFLINE' TO 'ORPHANED'"))
+
 
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:

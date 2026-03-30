@@ -52,6 +52,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
         DeviceOut(
             **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
             group_name=d.group.name if d.group else None,
+            is_online=device_manager.is_connected(d.id),
         )
         for d in devices
     ]
@@ -68,6 +69,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
+        is_online=device_manager.is_connected(device.id),
     )
 
 
@@ -108,6 +110,7 @@ async def update_device(
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
+        is_online=device_manager.is_connected(device.id),
     )
 
 
@@ -181,23 +184,29 @@ async def upgrade_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/reset-auth")
-async def reset_device_auth(device_id: str, db: AsyncSession = Depends(get_db)):
-    """Clear the device's stored auth token hash.
+@router.post("/{device_id}/adopt")
+async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Adopt a pending device or re-adopt an orphaned one.
 
-    Use this when a device has been re-flashed or its SD card replaced.
-    The device will be assigned a new token on its next connection.
+    For pending devices: sets status to adopted and assigns an auth token on next connect.
+    For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
     """
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    device.device_auth_token_hash = None
-    device.device_api_key_hash = None
-    device.api_key_rotated_at = None
-    await db.commit()
+    if device.status == DeviceStatus.PENDING:
+        device.status = DeviceStatus.ADOPTED
+    elif device.status == DeviceStatus.ORPHANED:
+        device.device_auth_token_hash = None
+        device.device_api_key_hash = None
+        device.api_key_rotated_at = None
+        device.status = DeviceStatus.ADOPTED
+    else:
+        raise HTTPException(status_code=400, detail="Device is already adopted")
 
+    await db.commit()
     return {"ok": True}
 
 

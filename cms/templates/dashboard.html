@@ -106,7 +106,7 @@
 {# ── Device Status ── #}
 {% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
 {% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
-{% set has_issues = offline_devices or temp_warning %}
+{% set has_issues = offline_devices or orphaned_devices or temp_warning %}
 <div class="card{{ ' card-danger' if has_issues }}">
     <h2>Device Status</h2>
     {% if has_issues %}
@@ -120,6 +120,14 @@
             </tr>
         </thead>
         <tbody>
+            {% for d in orphaned_devices %}
+            <tr>
+                <td>{{ d.name or d.id }}</td>
+                <td>{{ d.group.name if d.group else '—' }}</td>
+                <td><span class="badge badge-orphaned">Orphaned</span></td>
+                <td>Authentication failed — <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button></td>
+            </tr>
+            {% endfor %}
             {% for d in offline_devices %}
             <tr>
                 <td>{{ d.name or d.id }}</td>
@@ -174,8 +182,8 @@
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
                 <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
                 <td class="actions">
-                    <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Reject</button>
+                    <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.id }}')">Adopt</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
                 </td>
             </tr>
             {% endfor %}
@@ -203,6 +211,7 @@ async function endNow(scheduleId) {
             playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
             devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c)).sort(),
             pending: (data.pending_ids || []).sort(),
+            orphaned: (data.orphaned_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),
             upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label).sort(),
         });
@@ -212,6 +221,7 @@ async function endNow(scheduleId) {
         now_playing: {{ now_playing | tojson }},
         device_states: {{ device_states | tojson }},
         pending_ids: {{ pending_devices | map(attribute='id') | list | tojson }},
+        orphaned_ids: {{ orphaned_devices | map(attribute='id') | list | tojson }},
         offline_ids: {{ offline_devices | map(attribute='id') | list | tojson }},
         upcoming: {{ (upcoming_today + upcoming_tomorrow) | tojson }},
     });

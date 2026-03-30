@@ -68,7 +68,7 @@ class TestDeviceSchemas:
         data = DeviceOut(
             id="pi-001",
             name="Kitchen",
-            status="approved",
+            status="adopted",
             firmware_version="1.0",
             storage_capacity_mb=500,
             storage_used_mb=100,

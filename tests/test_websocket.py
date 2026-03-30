@@ -43,7 +43,7 @@ class TestWebSocket:
         device = Device(
             id="ws-test-002",
             name="ws-test-002",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
             device_auth_token_hash=token_hash,
         )
         db_session.add(device)
@@ -66,7 +66,7 @@ class TestWebSocket:
                 msg = ws.receive_json()
                 assert msg["type"] == "sync"
 
-                # Approved devices also receive a config message (API key push)
+                # Adopted devices also receive a config message (API key push)
                 msg = ws.receive_json()
                 assert msg["type"] == "config"
 
@@ -78,7 +78,7 @@ class TestWebSocket:
         device = Device(
             id="ws-test-003",
             name="ws-test-003",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
             device_auth_token_hash=token_hash,
         )
         db_session.add(device)
