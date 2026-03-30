@@ -92,7 +92,7 @@
                     <div class="detail-grid">
                         <div class="detail-item">
                             <span class="detail-label">Uploaded</span>
-                            <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                            <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%b %d, %Y %I:%M %p') }}</span>
                         </div>
                         {% if a.width and a.height %}
                         <div class="detail-item">

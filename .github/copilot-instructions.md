@@ -54,6 +54,7 @@ Single application with a PostgreSQL database:
 - **Never use the native `title` attribute for tooltips.** Always use the custom CSS tooltip: `<span class="has-tooltip">Label<span class="tooltip">Tooltip text</span></span>` (styled in `cms/static/style.css`).
 - `cms/schemas/protocol.py` defines the shared CMS ↔ device message contract — **any changes here must be mirrored in the device repo** (`sslivins/agora`)
 - API version lives in `cms/__init__.py` (`__version__`)
+- **Always use 12-hour time format** (e.g. `2:30 PM`) in the web UI — both server-side (`strftime('%I:%M %p')`) and client-side (`hour12: true`). Never display 24-hour time to users.
 
 ## Bug Fixing — Test-Driven
 

@@ -254,6 +254,16 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 }
 .form-row .form-group { flex: 1; }
 
+.schedule-summary {
+    margin: 0.75rem 0 0.5rem;
+    padding: 0.6rem 0.9rem;
+    background: var(--primary);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    font-size: 0.92rem;
+    color: var(--text);
+}
+
 /* Login */
 .login-wrap {
     display: flex;

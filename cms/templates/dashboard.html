@@ -125,7 +125,7 @@
                 <td>{{ d.name or d.id }}</td>
                 <td>{{ d.group.name if d.group else '—' }}</td>
                 <td><span class="badge badge-offline">Offline</span></td>
-                <td class="text-muted">Last seen {{ d.last_seen.astimezone(tz).strftime('%Y-%m-%d %H:%M') if d.last_seen else 'Never' }}</td>
+                <td class="text-muted">Last seen {{ d.last_seen.astimezone(tz).strftime('%b %d, %Y %I:%M %p') if d.last_seen else 'Never' }}</td>
             </tr>
             {% endfor %}
             {% for ds in temp_warning %}
@@ -172,7 +172,7 @@
                 <td>{{ d.id }}</td>
                 <td>{{ d.firmware_version }}</td>
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
-                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%Y-%m-%d %H:%M') }}</td>
+                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
                 <td class="actions">
                     <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Reject</button>

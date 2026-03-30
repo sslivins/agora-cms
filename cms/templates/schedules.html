@@ -47,7 +47,7 @@
                 <div style="display:flex; gap:0.3rem; align-items:center;">
                     <input type="number" name="start_hour" min="1" max="12" placeholder="12" required style="width:3.5rem; text-align:center;">
                     <span>:</span>
-                    <input type="number" name="start_minute" min="0" max="59" placeholder="00" required style="width:3.5rem; text-align:center;" step="1">
+                    <input type="number" name="start_minute" min="0" max="59" value="0" style="width:3.5rem; text-align:center;" step="1">
                     <select name="start_period" style="width:4.5rem;">
                         <option value="AM">AM</option>
                         <option value="PM">PM</option>
@@ -59,7 +59,7 @@
                 <div style="display:flex; gap:0.3rem; align-items:center;">
                     <input type="number" name="end_hour" min="1" max="12" placeholder="12" required style="width:3.5rem; text-align:center;">
                     <span>:</span>
-                    <input type="number" name="end_minute" min="0" max="59" placeholder="00" required style="width:3.5rem; text-align:center;" step="1">
+                    <input type="number" name="end_minute" min="0" max="59" value="0" style="width:3.5rem; text-align:center;" step="1">
                     <select name="end_period" style="width:4.5rem;">
                         <option value="AM">AM</option>
                         <option value="PM">PM</option>
@@ -103,6 +103,7 @@
                 <label><input type="checkbox" name="day_7"> Sun</label>
             </div>
         </div>
+        <div id="schedule-summary" class="schedule-summary" style="display:none;"></div>
         <button type="submit" class="btn btn-primary">Create Schedule</button>
     </form>
 </div>
@@ -374,5 +375,94 @@ function updateEditTargetOptions() {
         if (!opt.hidden) { opt.selected = true; break; }
     }
 }
+
+// ── Live schedule summary ──
+function formatTime12h(hour, minute, period) {
+    const h = parseInt(hour);
+    const m = parseInt(minute);
+    if (isNaN(h) || isNaN(m)) return null;
+    return h + ":" + String(m).padStart(2, "0") + " " + period;
+}
+
+function updateScheduleSummary() {
+    const el = document.getElementById("schedule-summary");
+    const form = el.closest("form");
+
+    const name = form.querySelector('[name="name"]').value.trim();
+    const sh = form.querySelector('[name="start_hour"]').value;
+    const sm = form.querySelector('[name="start_minute"]').value;
+    const sp = form.querySelector('[name="start_period"]').value;
+    const eh = form.querySelector('[name="end_hour"]').value;
+    const em = form.querySelector('[name="end_minute"]').value;
+    const ep = form.querySelector('[name="end_period"]').value;
+
+    const startStr = formatTime12h(sh, sm, sp);
+    const endStr = formatTime12h(eh, em, ep);
+    if (!startStr || !endStr) { el.style.display = "none"; return; }
+
+    // Calculate duration
+    let startMins = (parseInt(sh) % 12 + (sp === "PM" ? 12 : 0)) * 60 + parseInt(sm);
+    let endMins = (parseInt(eh) % 12 + (ep === "PM" ? 12 : 0)) * 60 + parseInt(em);
+    if (endMins <= startMins) endMins += 24 * 60;
+    const durMins = endMins - startMins;
+    let durStr;
+    if (durMins >= 60) {
+        const h = Math.floor(durMins / 60);
+        const m = durMins % 60;
+        durStr = h + " hour" + (h !== 1 ? "s" : "");
+        if (m > 0) durStr += " " + m + " min";
+    } else {
+        durStr = durMins + " min";
+    }
+
+    // Days
+    const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const days = [];
+    for (let i = 1; i <= 7; i++) {
+        if (form.querySelector(`[name="day_${i}"]`).checked) days.push(i);
+    }
+    let dayStr;
+    if (days.length === 0 || days.length === 7) {
+        dayStr = "every day";
+    } else if (days.length === 5 && [1,2,3,4,5].every(d => days.includes(d))) {
+        dayStr = "weekdays";
+    } else if (days.length === 2 && [6,7].every(d => days.includes(d))) {
+        dayStr = "weekends";
+    } else {
+        dayStr = days.map(d => dayNames[d - 1]).join(", ");
+    }
+
+    // Dates
+    const startDate = form.querySelector('[name="start_date"]').value;
+    const endDate = form.querySelector('[name="end_date"]').value;
+    let dateStr = "";
+    if (startDate && endDate) {
+        dateStr = " from " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                + " to " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (startDate) {
+        dateStr = " starting " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (endDate) {
+        dateStr = " until " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+
+    const label = name ? `'${name}'` : "This schedule";
+    el.textContent = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
+    el.style.display = "";
+}
+
+// Attach listeners to all relevant form fields
+document.addEventListener("DOMContentLoaded", function() {
+    const form = document.querySelector("#schedule-summary").closest("form");
+    const fields = ["name", "start_hour", "start_minute", "start_period",
+                     "end_hour", "end_minute", "end_period",
+                     "start_date", "end_date"];
+    fields.forEach(n => {
+        const el = form.querySelector(`[name="${n}"]`);
+        if (el) { el.addEventListener("input", updateScheduleSummary); el.addEventListener("change", updateScheduleSummary); }
+    });
+    for (let i = 1; i <= 7; i++) {
+        form.querySelector(`[name="day_${i}"]`).addEventListener("change", updateScheduleSummary);
+    }
+});
 </script>
 {% endblock %}
