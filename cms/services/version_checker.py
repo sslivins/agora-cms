@@ -40,10 +40,16 @@ async def version_check_loop() -> None:
     global _latest_version
 
     # Initial check after a short delay (let the app start up)
-    await asyncio.sleep(10)
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        return
 
     while True:
-        version = await _fetch_latest_version()
+        try:
+            version = await _fetch_latest_version()
+        except asyncio.CancelledError:
+            return
         if version:
             if _latest_version != version:
                 logger.info("Latest device release: %s", version)
@@ -51,4 +57,4 @@ async def version_check_loop() -> None:
         try:
             await asyncio.sleep(CHECK_INTERVAL)
         except asyncio.CancelledError:
-            break
+            return
