@@ -71,3 +71,35 @@ class TestDeviceManager:
         assert not dm.is_connected("d2")
         assert dm.is_connected("d1")
         assert dm.is_connected("d3")
+
+    def test_ip_address_stored(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-1", FakeWS(), ip_address="192.168.1.100")
+        conn = dm.get("dev-1")
+        assert conn.ip_address == "192.168.1.100"
+
+    def test_ip_address_defaults_to_none(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-1", FakeWS())
+        conn = dm.get("dev-1")
+        assert conn.ip_address is None
+
+    def test_ip_address_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-1", FakeWS(), ip_address="10.0.0.1")
+        dm.register("dev-2", FakeWS(), ip_address="10.0.0.2")
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-1"]["ip_address"] == "10.0.0.1"
+        assert states["dev-2"]["ip_address"] == "10.0.0.2"
