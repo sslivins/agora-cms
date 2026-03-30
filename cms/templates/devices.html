@@ -10,10 +10,14 @@
         <input type="text" class="inline-edit" value="{{ d.name or '' }}" placeholder="{{ d.id }}" onclick="event.stopPropagation()" onchange="renameDevice('{{ d.id }}', this.value)" onfocus="this.dataset.prev = this.value">
     </td>
     <td>
-        {% if d.is_online %}
+        {% if d.status.value == 'orphaned' %}
+        <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
+        {% elif d.status.value == 'pending' %}
+        <span class="badge badge-pending">Pending</span>
+        {% elif d.is_online %}
         <span class="badge badge-online">Online</span>
         {% else %}
-        <span class="badge badge-{{ d.status.value }}">{{ d.status.value | capitalize }}</span>
+        <span class="badge badge-offline">Offline</span>
         {% endif %}
     </td>
     <td>
@@ -38,8 +42,10 @@
         {% else %}—{% endif %}
     </td>
     <td class="actions" onclick="event.stopPropagation()">
-        {% if d.status == 'pending' %}
-        <button class="btn btn-primary btn-sm" onclick="approveDevice('{{ d.id }}')">Approve</button>
+        {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
+        <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
+        {% elif d.is_online and latest_version and d.firmware_version and d.firmware_version != latest_version %}
+        <button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button>
         {% endif %}
         <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
     </td>
@@ -85,16 +91,7 @@
         <div class="detail-toolbar">
             <span class="detail-label">Actions</span>
             <button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button>
-            {% if latest_version and d.firmware_version and d.firmware_version != latest_version %}
-            <button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Upgrade to {{ latest_version }}</button>
-            {% endif %}
             <button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button>
-            <button class="btn btn-secondary btn-sm" onclick="resetAuth('{{ d.id }}', '{{ d.name or d.id }}')">Reset Auth</button>
-        </div>
-        {% else %}
-        <div class="detail-toolbar">
-            <span class="detail-label">Actions</span>
-            <button class="btn btn-secondary btn-sm" onclick="resetAuth('{{ d.id }}', '{{ d.name or d.id }}')">Reset Auth</button>
         </div>
         {% endif %}
         </div>

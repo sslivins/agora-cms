@@ -167,7 +167,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             db.add(device)
             await db.commit()
             await db.refresh(device)
-            logger.info("New device registered: %s (pending approval)", device_id)
+            logger.info("New device registered: %s (pending adoption)", device_id)
 
             # Generate and assign a device auth token immediately
             device_auth_token = secrets.token_urlsafe(32)
@@ -185,8 +185,11 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             # Known device — verify auth token if device has one stored
             if device.device_auth_token_hash:
                 if not auth_token or _hash_token(auth_token) != device.device_auth_token_hash:
-                    logger.warning("Device %s rejected: invalid device auth token", device_id)
-                    await websocket.send_json({"error": "Invalid credentials"})
+                    logger.warning("Device %s failed auth — marking as orphaned", device_id)
+                    device.status = DeviceStatus.ORPHANED
+                    device.last_seen = datetime.now(timezone.utc)
+                    await db.commit()
+                    await websocket.send_json({"error": "Invalid credentials — device marked as orphaned. An admin must re-adopt this device."})
                     await websocket.close(code=4004)
                     return
             else:
@@ -225,21 +228,21 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         if sync:
             await websocket.send_json(sync.model_dump(mode="json"))
 
-        # ── 6. If device is approved and has a default asset, push it ──
+        # ── 6. If device is adopted and has a default asset, push it ──
         await db.refresh(device, ["default_asset", "group"])
         default_asset = device.default_asset
         if not default_asset and device.group:
             await db.refresh(device.group, ["default_asset"])
             default_asset = device.group.default_asset
 
-        if device.status == DeviceStatus.APPROVED and default_asset:
+        if device.status == DeviceStatus.ADOPTED and default_asset:
             fetch = await _resolve_asset_for_device(default_asset, device, base_url, db)
             if fetch:
                 await websocket.send_json(fetch.model_dump(mode="json"))
                 logger.info("Sent fetch_asset for default asset %s to %s", default_asset.filename, device_id)
 
         # ── 7. Push API key on connect (generate if missing) ──
-        if device.status == DeviceStatus.APPROVED:
+        if device.status == DeviceStatus.ADOPTED:
             await _generate_and_push_api_key(device, websocket, db)
 
         # ── 8. Message loop ──
@@ -264,7 +267,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
 
                 # Rotate API key if due
                 if (
-                    device.status == DeviceStatus.APPROVED
+                    device.status == DeviceStatus.ADOPTED
                     and settings.api_key_rotation_hours > 0
                     and device.api_key_rotated_at
                 ):

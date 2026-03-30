@@ -156,8 +156,9 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     text-transform: uppercase;
 }
 .badge-pending { background: var(--warning); color: #000; }
-.badge-approved { background: var(--success); color: #000; }
-.badge-offline { background: var(--danger); color: #fff; }
+.badge-adopted { background: var(--success); color: #000; }
+.badge-orphaned { background: #e67e22; color: #fff; }
+.badge-offline { background: #7f8c8d; color: #fff; }
 .badge-online { background: var(--success); color: #000; }
 .badge-splash { background: #f39c12; color: #000; }
 .badge-video { background: var(--primary); color: var(--text); }

@@ -10,7 +10,7 @@ class TestScheduleCRUD:
         from cms.models.asset import Asset, AssetType
         from cms.models.device import Device, DeviceStatus
 
-        device = Device(id="sched-pi", name="Schedule Test", status=DeviceStatus.APPROVED)
+        device = Device(id="sched-pi", name="Schedule Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="aaa")
         db_session.add_all([device, asset])
         await db_session.commit()

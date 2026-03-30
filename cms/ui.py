@@ -150,19 +150,28 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     for d in pending_devices:
         d.is_online = False
 
-    # All approved devices
+    # All adopted devices
     devices_q = await db.execute(
         select(Device)
         .options(selectinload(Device.group))
-        .where(Device.status != DeviceStatus.PENDING)
+        .where(Device.status == DeviceStatus.ADOPTED)
         .order_by(Device.name, Device.id)
     )
     all_devices = devices_q.scalars().all()
     for d in all_devices:
         d.is_online = device_manager.is_connected(d.id)
 
-    # Offline devices
+    # Offline devices (adopted but not connected)
     offline_devices = [d for d in all_devices if not d.is_online]
+
+    # Orphaned devices
+    orphaned_q = await db.execute(
+        select(Device)
+        .options(selectinload(Device.group))
+        .where(Device.status == DeviceStatus.ORPHANED)
+        .order_by(Device.name, Device.id)
+    )
+    orphaned_devices = orphaned_q.scalars().all()
 
     # Now Playing
     now_playing = get_now_playing()
@@ -201,6 +210,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "active_tab": "dashboard",
         "tz": tz,
         "pending_devices": pending_devices,
+        "orphaned_devices": orphaned_devices,
         "offline_devices": offline_devices,
         "all_devices": all_devices,
         "now_playing": now_playing,
@@ -226,10 +236,16 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     )
     pending_ids = [r[0] for r in pending_q.all()]
 
-    # Online status
+    # Orphaned device IDs
+    orphaned_q = await db.execute(
+        select(Device.id).where(Device.status == DeviceStatus.ORPHANED)
+    )
+    orphaned_ids = [r[0] for r in orphaned_q.all()]
+
+    # Online status (adopted devices only)
     devices_q = await db.execute(
         select(Device.id)
-        .where(Device.status != DeviceStatus.PENDING)
+        .where(Device.status == DeviceStatus.ADOPTED)
     )
     all_device_ids = [r[0] for r in devices_q.all()]
     offline_ids = [did for did in all_device_ids if not device_manager.is_connected(did)]
@@ -263,6 +279,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     return JSONResponse({
         "now_playing": now_playing,
         "pending_ids": pending_ids,
+        "orphaned_ids": orphaned_ids,
         "offline_ids": offline_ids,
         "device_states": device_states,
         "upcoming": upcoming,
@@ -377,7 +394,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     assets = assets_q.scalars().all()
 
     devices_q = await db.execute(
-        select(Device).where(Device.status == DeviceStatus.APPROVED).order_by(Device.name)
+        select(Device).where(Device.status == DeviceStatus.ADOPTED).order_by(Device.name)
     )
     devices = devices_q.scalars().all()
 

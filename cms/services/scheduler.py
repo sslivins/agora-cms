@@ -169,7 +169,7 @@ async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
         result = await db.execute(
             select(Device.id).where(
                 Device.group_id == schedule.group_id,
-                Device.status == DeviceStatus.APPROVED,
+                Device.status == DeviceStatus.ADOPTED,
             )
         )
         return [row[0] for row in result.all()]

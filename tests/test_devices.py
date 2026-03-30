@@ -44,16 +44,51 @@ class TestDeviceCRUD:
         assert resp.status_code == 200
         assert resp.json()["name"] == "Kitchen Display"
 
-    async def test_approve_device(self, client, db_session):
+    async def test_adopt_device(self, client, db_session):
         from cms.models.device import Device, DeviceStatus
 
         device = Device(id="test-pi-003", name="test-pi-003", status=DeviceStatus.PENDING)
         db_session.add(device)
         await db_session.commit()
 
-        resp = await client.patch("/api/devices/test-pi-003", json={"status": "approved"})
+        resp = await client.post("/api/devices/test-pi-003/adopt")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "approved"
+        assert resp.json()["ok"] is True
+
+        # Verify status changed
+        resp = await client.get("/api/devices")
+        dev = [d for d in resp.json() if d["id"] == "test-pi-003"][0]
+        assert dev["status"] == "adopted"
+
+    async def test_adopt_orphaned_device(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(
+            id="test-pi-orphan", name="test-pi-orphan",
+            status=DeviceStatus.ORPHANED,
+            device_auth_token_hash="oldhash",
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.post("/api/devices/test-pi-orphan/adopt")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        # Verify status changed
+        resp = await client.get("/api/devices")
+        dev = [d for d in resp.json() if d["id"] == "test-pi-orphan"][0]
+        assert dev["status"] == "adopted"
+
+    async def test_adopt_already_adopted_device(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="test-pi-adopted", name="test-pi-adopted", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.post("/api/devices/test-pi-adopted/adopt")
+        assert resp.status_code == 400
 
     async def test_update_device_default_asset(self, client, db_session):
         from cms.models.asset import Asset, AssetType
@@ -63,7 +98,7 @@ class TestDeviceCRUD:
         db_session.add(asset)
         await db_session.flush()
 
-        device = Device(id="test-pi-004", name="test-pi-004", status=DeviceStatus.APPROVED)
+        device = Device(id="test-pi-004", name="test-pi-004", status=DeviceStatus.ADOPTED)
         db_session.add(device)
         await db_session.commit()
 
@@ -90,7 +125,7 @@ class TestDeviceCRUD:
 
         device = Device(
             id="test-pi-fallback", name="test-pi-fallback",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
             group_id=group.id,
             default_asset_id=device_asset.id,
         )
@@ -116,7 +151,7 @@ class TestDeviceCRUD:
 
         device = Device(
             id="test-pi-solo", name="test-pi-solo",
-            status=DeviceStatus.APPROVED,
+            status=DeviceStatus.ADOPTED,
             default_asset_id=asset.id,
         )
         db_session.add(device)
@@ -186,7 +221,7 @@ class TestDeviceGroups:
         resp = await client.post("/api/devices/groups/", json={"name": "Test Group"})
         group_id = resp.json()["id"]
 
-        device = Device(id="test-pi-grp", name="test-pi-grp", status=DeviceStatus.APPROVED)
+        device = Device(id="test-pi-grp", name="test-pi-grp", status=DeviceStatus.ADOPTED)
         db_session.add(device)
         await db_session.commit()
 

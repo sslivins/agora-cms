@@ -110,11 +110,11 @@
                         <span class="tooltip">{{ p.ready_variants }} ready of {{ p.total_variants }} total variants</span>
                     </span>
                     {% if p.ready_variants == p.total_variants %}
-                        <span class="badge badge-approved">done</span>
+                        <span class="badge badge-ready">done</span>
                     {% elif p.ready_variants > 0 %}
                         <span class="badge badge-pending">in progress</span>
                     {% else %}
-                        <span class="badge badge-offline">queued</span>
+                        <span class="badge badge-processing">queued</span>
                     {% endif %}
                     {% else %}
                     —
