@@ -100,34 +100,7 @@ jobs:
           IMAGE_NAME="${{ github.event.inputs.image_name || 'agora-pi' }}"
           TIMEZONE="${{ github.event.inputs.timezone || 'America/New_York' }}"
 
-          cat > /tmp/pi-gen/config <<EOF
-          IMG_NAME=${IMAGE_NAME}
-          RELEASE=bookworm
-          TARGET_HOSTNAME=agora
-          FIRST_USER_NAME=pi
-          ENABLE_SSH=1
-          LOCALE_DEFAULT=en_US.UTF-8
-          KEYBOARD_KEYMAP=us
-          KEYBOARD_LAYOUT="English (US)"
-          TIMEZONE_DEFAULT=${TIMEZONE}
-          DEPLOY_COMPRESSION=xz
-          COMPRESSION_LEVEL=9
-          EOF
-
-          # Remove leading whitespace from heredoc
-          sed -i 's/^          //' /tmp/pi-gen/config
-
-          echo "--- pi-gen config ---"
-          cat /tmp/pi-gen/config
-
-          # Skip desktop stages (3-5) — we want Lite + our stage
-          touch /tmp/pi-gen/stage3/SKIP /tmp/pi-gen/stage4/SKIP /tmp/pi-gen/stage5/SKIP
-          touch /tmp/pi-gen/stage3/SKIP_IMAGES /tmp/pi-gen/stage4/SKIP_IMAGES /tmp/pi-gen/stage5/SKIP_IMAGES
-
-          # Remove default stage2 export (we export from our custom stage instead)
-          rm -f /tmp/pi-gen/stage2/EXPORT_IMAGE /tmp/pi-gen/stage2/EXPORT_NOOBS
-
-          # Copy our custom stage and mark it for export
+          # Copy our custom stage into pi-gen tree
           cp -r pi-gen/stage-agora /tmp/pi-gen/stage-agora
           touch /tmp/pi-gen/stage-agora/EXPORT_IMAGE
 
@@ -140,6 +113,28 @@ jobs:
           PRERUN
           sed -i 's/^          //' /tmp/pi-gen/stage-agora/prerun.sh
           chmod +x /tmp/pi-gen/stage-agora/prerun.sh
+
+          # Build config — explicit STAGE_LIST with correct ordering
+          cat > /tmp/pi-gen/config <<EOF
+          IMG_NAME=${IMAGE_NAME}
+          RELEASE=bookworm
+          TARGET_HOSTNAME=agora
+          FIRST_USER_NAME=pi
+          ENABLE_SSH=1
+          LOCALE_DEFAULT=en_US.UTF-8
+          KEYBOARD_KEYMAP=us
+          KEYBOARD_LAYOUT="English (US)"
+          TIMEZONE_DEFAULT=${TIMEZONE}
+          DEPLOY_COMPRESSION=xz
+          COMPRESSION_LEVEL=9
+          STAGE_LIST="stage0 stage1 stage2 stage-agora"
+          EOF
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' /tmp/pi-gen/config
+
+          echo "--- pi-gen config ---"
+          cat /tmp/pi-gen/config
 
       - name: Build image
         run: |
