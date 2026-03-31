@@ -19,6 +19,42 @@ if ! command -v docker &>/dev/null; then
     DOCKER_JUST_INSTALLED=true
 fi
 
+# ── Install and configure Avahi for mDNS (agora-cms.local) ──
+if ! command -v avahi-daemon &>/dev/null; then
+    echo "==> Installing avahi-daemon for mDNS..."
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq avahi-daemon avahi-utils >/dev/null
+fi
+
+# Set the mDNS hostname to agora-cms (broadcasts agora-cms.local)
+AVAHI_CONF="/etc/avahi/avahi-daemon.conf"
+if ! grep -q "^host-name=agora-cms$" "$AVAHI_CONF" 2>/dev/null; then
+    echo "==> Configuring mDNS hostname: agora-cms.local"
+    sudo sed -i 's/^#\?host-name=.*/host-name=agora-cms/' "$AVAHI_CONF"
+    sudo systemctl enable --now avahi-daemon
+    sudo systemctl restart avahi-daemon
+else
+    sudo systemctl enable --now avahi-daemon
+fi
+
+# Publish an Avahi service for the CMS web UI
+AVAHI_SERVICE="/etc/avahi/services/agora-cms.service"
+if [ ! -f "$AVAHI_SERVICE" ]; then
+    echo "==> Publishing Avahi service for CMS web UI..."
+    sudo tee "$AVAHI_SERVICE" >/dev/null <<'AVAHI_EOF'
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name>Agora CMS</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>8080</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>
+AVAHI_EOF
+fi
+
 # ── Create install directory ──
 sudo mkdir -p "$INSTALL_DIR"
 sudo chown "$USER":"$USER" "$INSTALL_DIR"
@@ -86,7 +122,9 @@ echo "==> Starting Agora CMS..."
 $COMPOSE up -d
 
 echo ""
-echo "==> Done! CMS is running at http://$(hostname -I | awk '{print $1}'):8080"
+echo "==> Done! CMS is running at:"
+echo "    http://$(hostname -I | awk '{print $1}'):8080"
+echo "    http://agora-cms.local:8080  (mDNS)"
 echo "    Watchtower will auto-update the CMS image every 5 minutes."
 if [ "$DOCKER_JUST_INSTALLED" = true ]; then
     echo ""
