@@ -28,6 +28,47 @@ docker compose up -d    # Starts CMS + PostgreSQL
 
 The web UI is available at `http://localhost:8080`. Default login: `admin` / `agora`.
 
+## Production Deployment (VM)
+
+For deploying on a Linux VM with automatic updates via [Watchtower](https://containrrr.dev/watchtower/):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sslivins/agora-cms/main/setup.sh | bash
+```
+
+Or step by step:
+
+```bash
+# 1. Download the setup script
+curl -fsSL https://raw.githubusercontent.com/sslivins/agora-cms/main/setup.sh -o setup.sh
+chmod +x setup.sh
+
+# 2. Run it (installs Docker if needed, downloads compose file, creates .env)
+./setup.sh              # default: /opt/agora-cms
+./setup.sh /srv/cms     # or specify a custom directory
+
+# 3. Edit .env with real credentials
+nano /opt/agora-cms/.env
+
+# 4. Restart with final config
+cd /opt/agora-cms && docker compose up -d
+```
+
+The production compose file (`docker-compose.prod.yml`) pulls the pre-built image from `ghcr.io/sslivins/agora-cms:latest` instead of building locally. Watchtower checks for new images every 5 minutes and restarts the CMS container automatically.
+
+### Updating
+
+Updates happen automatically. When a new commit is pushed to `main`, GitHub Actions builds and publishes a new Docker image. Watchtower detects the change and restarts the CMS container with zero manual intervention.
+
+To update manually or check status:
+
+```bash
+cd /opt/agora-cms
+docker compose pull cms      # pull latest image
+docker compose up -d         # restart with new image
+docker compose logs -f watchtower  # check watchtower logs
+```
+
 ## Features
 
 ### Device Management
@@ -269,6 +310,29 @@ tests/                     # pytest + pytest-asyncio + httpx + aiosqlite
 | `device_assets` | Tracks which assets are on which device |
 | `schedules` | Schedule rules (target, asset, time window, recurrence, priority) |
 | `cms_settings` | Runtime settings (admin credentials, timezone) |
+
+## Resetting the Admin Password
+
+If you lose the admin password:
+
+1. Edit `.env` and uncomment the reset line:
+   ```
+   AGORA_CMS_RESET_PASSWORD=true
+   ```
+   The password will be reset to whatever `AGORA_CMS_ADMIN_PASSWORD` is set to in `.env`.
+
+2. Restart the CMS:
+   ```bash
+   docker compose restart cms
+   ```
+
+3. Log in with the password from `.env`, then **comment the line back out** and restart:
+   ```
+   # AGORA_CMS_RESET_PASSWORD=true
+   ```
+   ```bash
+   docker compose restart cms
+   ```
 
 ## Development
 

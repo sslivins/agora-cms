@@ -67,6 +67,9 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
 async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None:
     """On startup, seed admin credentials from env vars if not already in DB."""
     existing = await get_setting(db, SETTING_PASSWORD_HASH)
-    if not existing:
+    if not existing or settings.reset_password:
         await set_setting(db, SETTING_PASSWORD_HASH, hash_password(settings.admin_password))
         await set_setting(db, SETTING_USERNAME, settings.admin_username)
+        if settings.reset_password:
+            import logging
+            logging.getLogger(__name__).warning("Admin password reset from environment. Set AGORA_CMS_RESET_PASSWORD=false and restart.")
