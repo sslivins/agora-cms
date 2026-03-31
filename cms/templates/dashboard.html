@@ -156,7 +156,11 @@
         </tbody>
     </table>
     {% else %}
+    {% if all_devices %}
     <p class="text-success empty-state">All devices are online and healthy.</p>
+    {% else %}
+    <p class="text-muted empty-state">No devices registered yet. Devices will appear here once they connect.</p>
+    {% endif %}
     {% endif %}
 </div>
 
