@@ -33,20 +33,20 @@ if [ ! -f .env ]; then
     echo "==> Configuring environment..."
     echo ""
 
-    read -rp "  Admin username [admin]: " ADMIN_USER </dev/tty
+    read -rp "  Web UI admin username [admin]: " ADMIN_USER </dev/tty
     ADMIN_USER="${ADMIN_USER:-admin}"
 
-    read -rsp "  Admin password: " ADMIN_PASS </dev/tty
+    read -rsp "  Web UI admin password: " ADMIN_PASS </dev/tty
     echo ""
     while [ -z "$ADMIN_PASS" ]; do
-        read -rsp "  Admin password (required): " ADMIN_PASS </dev/tty
+        read -rsp "  Web UI admin password (required): " ADMIN_PASS </dev/tty
         echo ""
     done
 
-    read -rsp "  PostgreSQL password: " PG_PASS </dev/tty
+    read -rsp "  PostgreSQL database password: " PG_PASS </dev/tty
     echo ""
     while [ -z "$PG_PASS" ]; do
-        read -rsp "  PostgreSQL password (required): " PG_PASS </dev/tty
+        read -rsp "  PostgreSQL database password (required): " PG_PASS </dev/tty
         echo ""
     done
 
@@ -75,11 +75,11 @@ else
 fi
 
 # ── Start services ──
-# Use sudo if Docker was just installed (group membership not active yet)
-if [ "$DOCKER_JUST_INSTALLED" = true ]; then
-    COMPOSE="sudo docker compose"
-else
+# Use sudo if current user can't access Docker socket
+if docker info &>/dev/null; then
     COMPOSE="docker compose"
+else
+    COMPOSE="sudo docker compose"
 fi
 
 echo "==> Starting Agora CMS..."
