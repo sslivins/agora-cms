@@ -14,6 +14,10 @@ apt-get install -y agora
 # ── Ensure device boots into captive portal (no provisioned flag) ──
 rm -f /opt/agora/persist/provisioned
 
+# ── Disable Pi OS first-boot wizard (user already configured by pi-gen) ──
+systemctl disable userconfig 2>/dev/null || true
+rm -f /etc/xdg/autostart/piwiz.desktop 2>/dev/null || true
+
 # ── Enable SSH (disabled by default on Pi OS) ──
 systemctl enable ssh
 
