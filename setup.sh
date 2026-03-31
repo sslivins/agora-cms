@@ -10,12 +10,13 @@ REPO_URL="https://raw.githubusercontent.com/sslivins/agora-cms/main"
 echo "==> Agora CMS setup (install dir: $INSTALL_DIR)"
 
 # ── Install Docker if missing ──
+DOCKER_JUST_INSTALLED=false
 if ! command -v docker &>/dev/null; then
     echo "==> Installing Docker..."
     curl -fsSL https://get.docker.com | sh
     sudo systemctl enable --now docker
     sudo usermod -aG docker "$USER"
-    echo "    Docker installed. You may need to log out and back in for group changes."
+    DOCKER_JUST_INSTALLED=true
 fi
 
 # ── Create install directory ──
@@ -74,9 +75,20 @@ else
 fi
 
 # ── Start services ──
+# Use sudo if Docker was just installed (group membership not active yet)
+if [ "$DOCKER_JUST_INSTALLED" = true ]; then
+    COMPOSE="sudo docker compose"
+else
+    COMPOSE="docker compose"
+fi
+
 echo "==> Starting Agora CMS..."
-docker compose up -d
+$COMPOSE up -d
 
 echo ""
 echo "==> Done! CMS is running at http://$(hostname -I | awk '{print $1}'):8080"
 echo "    Watchtower will auto-update the CMS image every 5 minutes."
+if [ "$DOCKER_JUST_INSTALLED" = true ]; then
+    echo ""
+    echo "    Note: Log out and back in so you can run 'docker compose' without sudo."
+fi
