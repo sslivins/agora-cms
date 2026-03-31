@@ -21,6 +21,12 @@ rm -f /etc/xdg/autostart/piwiz.desktop 2>/dev/null || true
 # ── Enable SSH (disabled by default on Pi OS) ──
 systemctl enable ssh
 
+# ── DEBUG: Disable player so console stays visible on HDMI ──
+systemctl disable agora-player 2>/dev/null || true
+
+# ── DEBUG: Show boot messages on console (remove quiet/splash) ──
+sed -i 's/ quiet//g; s/ splash//g' /boot/firmware/cmdline.txt 2>/dev/null || true
+
 # ── Clean up ──
 apt-get clean
 rm -rf /var/lib/apt/lists/*
