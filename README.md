@@ -28,6 +28,47 @@ docker compose up -d    # Starts CMS + PostgreSQL
 
 The web UI is available at `http://localhost:8080`. Default login: `admin` / `agora`.
 
+## Production Deployment (VM)
+
+For deploying on a Linux VM with automatic updates via [Watchtower](https://containrrr.dev/watchtower/):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sslivins/agora-cms/main/setup.sh | bash
+```
+
+Or step by step:
+
+```bash
+# 1. Download the setup script
+curl -fsSL https://raw.githubusercontent.com/sslivins/agora-cms/main/setup.sh -o setup.sh
+chmod +x setup.sh
+
+# 2. Run it (installs Docker if needed, downloads compose file, creates .env)
+./setup.sh              # default: /opt/agora-cms
+./setup.sh /srv/cms     # or specify a custom directory
+
+# 3. Edit .env with real credentials
+nano /opt/agora-cms/.env
+
+# 4. Restart with final config
+cd /opt/agora-cms && docker compose up -d
+```
+
+The production compose file (`docker-compose.prod.yml`) pulls the pre-built image from `ghcr.io/sslivins/agora-cms:latest` instead of building locally. Watchtower checks for new images every 5 minutes and restarts the CMS container automatically.
+
+### Updating
+
+Updates happen automatically. When a new commit is pushed to `main`, GitHub Actions builds and publishes a new Docker image. Watchtower detects the change and restarts the CMS container with zero manual intervention.
+
+To update manually or check status:
+
+```bash
+cd /opt/agora-cms
+docker compose pull cms      # pull latest image
+docker compose up -d         # restart with new image
+docker compose logs -f watchtower  # check watchtower logs
+```
+
 ## Features
 
 ### Device Management
