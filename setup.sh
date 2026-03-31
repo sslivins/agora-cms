@@ -33,20 +33,20 @@ if [ ! -f .env ]; then
     echo "==> Configuring environment..."
     echo ""
 
-    read -rp "  Admin username [admin]: " ADMIN_USER
+    read -rp "  Admin username [admin]: " ADMIN_USER </dev/tty
     ADMIN_USER="${ADMIN_USER:-admin}"
 
-    read -rsp "  Admin password: " ADMIN_PASS
+    read -rsp "  Admin password: " ADMIN_PASS </dev/tty
     echo ""
     while [ -z "$ADMIN_PASS" ]; do
-        read -rsp "  Admin password (required): " ADMIN_PASS
+        read -rsp "  Admin password (required): " ADMIN_PASS </dev/tty
         echo ""
     done
 
-    read -rsp "  PostgreSQL password: " PG_PASS
+    read -rsp "  PostgreSQL password: " PG_PASS </dev/tty
     echo ""
     while [ -z "$PG_PASS" ]; do
-        read -rsp "  PostgreSQL password (required): " PG_PASS
+        read -rsp "  PostgreSQL password (required): " PG_PASS </dev/tty
         echo ""
     done
 
