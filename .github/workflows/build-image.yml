@@ -39,13 +39,13 @@ permissions:
 
 env:
   # Pin pi-gen to latest arm64 branch commit (Mar 17, 2026)
-  # Has updated Debian signing keys needed for bookworm
+  # Uses Debian trixie for the arm64 build
   PI_GEN_COMMIT: d01290946bae8acba172d99c8d4aa3fb335fcf6d
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -62,32 +62,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             coreutils quilt parted debootstrap zerofree zip \
             dosfstools libcap2-bin libarchive-tools grep rsync xz-utils \
-            curl file git kmod bc gpg pigz \
-            qemu-user-static binfmt-support
-
-      - name: Set up QEMU binfmt for arm64
-        run: |
-          # Ensure binfmt_misc is mounted
-          sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
-
-          # Re-enable all binfmt entries (ensures qemu-user-static is active)
-          sudo update-binfmts --enable
-
-          # Verify arm64 emulation works
-          if /usr/libexec/qemu-binfmt/aarch64-binfmt-P --help >/dev/null 2>&1 || \
-             /usr/bin/qemu-aarch64-static --help >/dev/null 2>&1; then
-            echo "QEMU aarch64 binary found"
-          fi
-
-          # Check binfmt registration
-          if [ -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
-            echo "binfmt qemu-aarch64 registered:"
-            cat /proc/sys/fs/binfmt_misc/qemu-aarch64
-          else
-            echo "WARNING: qemu-aarch64 not in binfmt_misc, registering manually..."
-            QEMU_BIN=$(which qemu-aarch64-static)
-            echo ":qemu-aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:${QEMU_BIN}:F" | sudo tee /proc/sys/fs/binfmt_misc/register
-          fi
+            curl file git kmod bc gpg pigz
 
       - name: Clone pi-gen
         run: |
@@ -142,15 +117,7 @@ jobs:
           cd /tmp/pi-gen
           chmod +x build-docker.sh
 
-          # Patch build-docker.sh: the Mar 2026 pi-gen switched from
-          # qemu-user-static to qemu-user-binfmt, but the static variant
-          # is what works reliably in Docker containers on GHA runners.
-          sed -i 's/qemu-aarch64)/qemu-aarch64-static)/' build-docker.sh
-          sed -i 's/qemu-user-binfmt/qemu-user-static/g' build-docker.sh
-          sed -i 's/which qemu-aarch64 /which qemu-aarch64-static /' build-docker.sh
-
           # Keepalive: print timestamp every 5 min so GHA knows the build is alive
-          # (Docker can buffer output for long periods during QEMU emulation)
           while true; do
             sleep 300
             echo "$(date -u '+%H:%M:%S') [keepalive] build still running..."
