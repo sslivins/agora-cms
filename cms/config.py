@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="change-me-in-production")
     admin_username: str = "admin"
     admin_password: str = "agora"
+    reset_password: bool = False
 
     # Storage
     asset_storage_path: Path = Path("/opt/agora-cms/assets")

@@ -311,6 +311,29 @@ tests/                     # pytest + pytest-asyncio + httpx + aiosqlite
 | `schedules` | Schedule rules (target, asset, time window, recurrence, priority) |
 | `cms_settings` | Runtime settings (admin credentials, timezone) |
 
+## Resetting the Admin Password
+
+If you lose the admin password:
+
+1. Edit `.env` and uncomment the reset line:
+   ```
+   AGORA_CMS_RESET_PASSWORD=true
+   ```
+   The password will be reset to whatever `AGORA_CMS_ADMIN_PASSWORD` is set to in `.env`.
+
+2. Restart the CMS:
+   ```bash
+   docker compose restart cms
+   ```
+
+3. Log in with the password from `.env`, then **comment the line back out** and restart:
+   ```
+   # AGORA_CMS_RESET_PASSWORD=true
+   ```
+   ```bash
+   docker compose restart cms
+   ```
+
 ## Development
 
 ### Running Tests
