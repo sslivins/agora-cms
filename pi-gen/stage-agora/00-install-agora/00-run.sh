@@ -27,6 +27,35 @@ systemctl disable agora-player 2>/dev/null || true
 # ── DEBUG: Show boot messages on console (remove quiet/splash) ──
 sed -i 's/ quiet//g; s/ splash//g' /boot/firmware/cmdline.txt 2>/dev/null || true
 
+# ── DEBUG: USB gadget Ethernet — SSH over USB cable, no dongle needed ──
+# Add dwc2 overlay to config.txt
+if ! grep -q 'dtoverlay=dwc2' /boot/firmware/config.txt; then
+  echo 'dtoverlay=dwc2' >> /boot/firmware/config.txt
+fi
+# Load g_ether module at boot
+echo 'dwc2' >> /etc/modules
+echo 'g_ether' >> /etc/modules
+# Configure static IP on usb0 so we know where to SSH
+mkdir -p /etc/NetworkManager/system-connections
+cat > /etc/NetworkManager/system-connections/usb0-static.nmconnection <<'NMEOF'
+[connection]
+id=usb0-static
+type=ethernet
+interface-name=usb0
+autoconnect=true
+
+[ipv4]
+method=manual
+addresses=10.42.0.2/24
+
+[ipv6]
+method=disabled
+NMEOF
+chmod 600 /etc/NetworkManager/system-connections/usb0-static.nmconnection
+
+# ── DEBUG: Ensure console login on HDMI ──
+systemctl enable getty@tty1 2>/dev/null || true
+
 # ── Clean up ──
 apt-get clean
 rm -rf /var/lib/apt/lists/*
