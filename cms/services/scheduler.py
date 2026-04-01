@@ -522,7 +522,7 @@ async def evaluate_schedules() -> None:
             for did in target_ids:
                 if did not in connected and did in all_adopted:
                     active_keys.add((str(s.id), did))
-        _missed_logged -= (_missed_logged - active_keys)
+        _missed_logged.difference_update(_missed_logged - active_keys)
 
         # Load device names
         device_names: dict[str, str] = {}

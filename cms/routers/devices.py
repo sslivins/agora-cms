@@ -19,7 +19,7 @@ from cms.schemas.device import (
     DeviceOut,
     DeviceUpdate,
 )
-from cms.schemas.protocol import ConfigMessage, FetchAssetMessage, PlayMessage, RebootMessage, SyncMessage, UpgradeMessage
+from cms.schemas.protocol import ConfigMessage, PlayMessage, RebootMessage, SyncMessage, UpgradeMessage
 from cms.services.device_manager import device_manager
 from cms.services.version_checker import check_now
 
@@ -29,15 +29,22 @@ router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 _upgrading: set[str] = set()
 
 
-async def _push_default_asset(device_id: str, asset: Asset, base_url: str) -> None:
-    """Send fetch_asset + play to a connected device for its default asset."""
-    download_url = f"{base_url}/api/assets/{asset.id}/download"
-    fetch = FetchAssetMessage(
-        asset_name=asset.filename,
-        download_url=download_url,
-        checksum=asset.checksum,
-        size_bytes=asset.size_bytes,
-    )
+async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: AsyncSession) -> None:
+    """Send fetch_asset + play to a connected device for its default asset.
+
+    Uses _resolve_asset_for_device to serve the correct variant for the
+    device's profile (e.g. H.264 for Pi Zero instead of the AV1 source).
+    """
+    from cms.routers.ws import _resolve_asset_for_device
+
+    device_q = await db.execute(select(Device).where(Device.id == device_id))
+    device = device_q.scalar_one_or_none()
+    if not device:
+        return
+
+    fetch = await _resolve_asset_for_device(asset, device, base_url, db)
+    if not fetch:
+        return  # variant not ready yet
     await device_manager.send_to_device(device_id, fetch.model_dump(mode="json"))
     play = PlayMessage(asset=asset.filename, loop=True)
     await device_manager.send_to_device(device_id, play.model_dump(mode="json"))
@@ -112,7 +119,7 @@ async def update_device(
             effective_asset = device.group.default_asset
 
         if effective_asset:
-            await _push_default_asset(device_id, effective_asset, base_url)
+            await _push_default_asset(device_id, effective_asset, base_url, db)
         else:
             # No default at any level — tell device to show splash
             sync = SyncMessage(default_asset=None)
