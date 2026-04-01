@@ -44,28 +44,14 @@ templates.env.filters["select_days"] = select_days
 
 def schedule_json(s):
     """Serialize a schedule ORM object to a JSON string for the edit modal."""
-    def _12h(t):
-        h = t.hour
-        period = "AM" if h < 12 else "PM"
-        if h == 0:
-            h = 12
-        elif h > 12:
-            h -= 12
-        return {"hour": h, "minute": t.minute, "period": period}
-    st = _12h(s.start_time)
-    et = _12h(s.end_time)
     data = {
         "id": str(s.id),
         "name": s.name,
         "asset_id": str(s.asset_id),
         "device_id": s.device_id,
         "group_id": str(s.group_id) if s.group_id else None,
-        "start_hour": st["hour"],
-        "start_minute": st["minute"],
-        "start_period": st["period"],
-        "end_hour": et["hour"],
-        "end_minute": et["minute"],
-        "end_period": et["period"],
+        "start_time": s.start_time.strftime("%H:%M"),
+        "end_time": s.end_time.strftime("%H:%M"),
         "start_date": s.start_date.strftime("%Y-%m-%d") if s.start_date else "",
         "end_date": s.end_date.strftime("%Y-%m-%d") if s.end_date else "",
         "days_of_week": s.days_of_week or [],

@@ -385,18 +385,14 @@ async function toggleSchedule(scheduleId, enabled) {
     if (resp && resp.ok) location.reload();
 }
 
-function to24h(hour, minute, period) {
-    let h = parseInt(hour);
-    const m = parseInt(minute);
-    if (period === "AM" && h === 12) h = 0;
-    else if (period === "PM" && h !== 12) h += 12;
-    return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":00";
-}
-
 async function createSchedule(form) {
     const data = new FormData(form);
-    const startTime = to24h(data.get("start_hour"), data.get("start_minute"), data.get("start_period"));
-    const endTime = to24h(data.get("end_hour"), data.get("end_minute"), data.get("end_period"));
+    const startTime = data.get("start_time");
+    const endTime = data.get("end_time");
+    if (!startTime || !endTime) {
+        showToast("Please select start and end times", true);
+        return false;
+    }
     if (startTime === endTime) {
         showToast("Start time and end time cannot be the same", true);
         return false;
@@ -415,8 +411,8 @@ async function createSchedule(form) {
     const body = {
         name: data.get("name"),
         asset_id: data.get("asset_id"),
-        start_time: startTime,
-        end_time: endTime,
+        start_time: startTime + ":00",
+        end_time: endTime + ":00",
         priority: parseInt(data.get("priority") || "0"),
         enabled: true,
     };

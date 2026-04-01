@@ -16,7 +16,7 @@
                 <select name="asset_id" required>
                     <option value="">Select asset...</option>
                     {% for a in assets %}
-                    <option value="{{ a.id }}">{{ a.filename }}</option>
+                    <option value="{{ a.id }}">{{ a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% endif %}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -44,27 +44,11 @@
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Start Time<span class="tooltip">Time of day the schedule becomes active</span></span></label>
-                <div style="display:flex; gap:0.3rem; align-items:center;">
-                    <input type="number" name="start_hour" min="1" max="12" placeholder="12" required style="width:3.5rem; text-align:center;">
-                    <span>:</span>
-                    <input type="number" name="start_minute" min="0" max="59" value="0" style="width:3.5rem; text-align:center;" step="1">
-                    <select name="start_period" style="width:4.5rem;">
-                        <option value="AM">AM</option>
-                        <option value="PM">PM</option>
-                    </select>
-                </div>
+                <input type="time" name="start_time" required>
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">End Time<span class="tooltip">Time of day the schedule stops. The asset will stop playing at this time</span></span></label>
-                <div style="display:flex; gap:0.3rem; align-items:center;">
-                    <input type="number" name="end_hour" min="1" max="12" placeholder="12" required style="width:3.5rem; text-align:center;">
-                    <span>:</span>
-                    <input type="number" name="end_minute" min="0" max="59" value="0" style="width:3.5rem; text-align:center;" step="1">
-                    <select name="end_period" style="width:4.5rem;">
-                        <option value="AM">AM</option>
-                        <option value="PM">PM</option>
-                    </select>
-                </div>
+                <input type="time" name="end_time" required>
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">Priority<span class="tooltip">Higher number = higher priority. When schedules overlap, the one with the highest priority wins. Use 0 for default</span></span></label>
@@ -84,7 +68,7 @@
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Start Date<span class="tooltip">Optional. The first date this schedule can run. Leave blank to start immediately</span></span></label>
-                <input type="date" name="start_date" onchange="document.querySelector('[name=end_date]').min = this.value">
+                <input type="date" name="start_date">
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">End Date<span class="tooltip">Optional. The last date this schedule can run. Leave blank to run indefinitely</span></span></label>
@@ -92,15 +76,15 @@
             </div>
         </div>
         <div class="form-group">
-            <label><span class="has-tooltip">Days of Week<span class="tooltip">Select which days this schedule is active. Leave all unchecked to run every day</span></span></label>
+            <label><span class="has-tooltip">Days of Week<span class="tooltip">Select which days this schedule is active</span></span></label>
             <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">
-                <label><input type="checkbox" name="day_1"> Mon</label>
-                <label><input type="checkbox" name="day_2"> Tue</label>
-                <label><input type="checkbox" name="day_3"> Wed</label>
-                <label><input type="checkbox" name="day_4"> Thu</label>
-                <label><input type="checkbox" name="day_5"> Fri</label>
-                <label><input type="checkbox" name="day_6"> Sat</label>
-                <label><input type="checkbox" name="day_7"> Sun</label>
+                <label><input type="checkbox" name="day_1" checked> Mon</label>
+                <label><input type="checkbox" name="day_2" checked> Tue</label>
+                <label><input type="checkbox" name="day_3" checked> Wed</label>
+                <label><input type="checkbox" name="day_4" checked> Thu</label>
+                <label><input type="checkbox" name="day_5" checked> Fri</label>
+                <label><input type="checkbox" name="day_6" checked> Sat</label>
+                <label><input type="checkbox" name="day_7" checked> Sun</label>
             </div>
         </div>
         <div id="schedule-summary" class="schedule-summary" style="display:none;"></div>
@@ -167,7 +151,7 @@
 <input type="hidden" id="_tzOptions" value='{{ tz_options | tojson }}'>
 <script>
 const _scheduleData = {
-    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}"}{% if not loop.last %},{% endif %}{% endfor %}],
+    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }}}{% if not loop.last %},{% endif %}{% endfor %}],
     devices: [{% for d in devices %}{"id":"{{ d.id }}","name":"{{ d.name or d.id }}"}{% if not loop.last %},{% endif %}{% endfor %}],
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}]
 };
@@ -181,7 +165,6 @@ function saveTimezone(tz) {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'timezone=' + encodeURIComponent(tz)
     });
-    // Keep all timezone selects in sync
     document.querySelectorAll('#create_timezone, #edit-timezone').forEach(sel => {
         if (sel && sel.value !== tz) sel.value = tz;
     });
@@ -211,13 +194,238 @@ function updateTargetOptions() {
     for (let opt of options) {
         opt.hidden = opt.dataset.type !== type;
     }
-    // Select first visible option
     for (let opt of options) {
         if (!opt.hidden) { opt.selected = true; break; }
     }
 }
-document.addEventListener('DOMContentLoaded', updateTargetOptions);
 
+// Helper: parse "HH:MM" to total minutes
+function timeToMins(str) {
+    if (!str) return null;
+    const [h, m] = str.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return null;
+    return h * 60 + m;
+}
+
+// Helper: total minutes to "HH:MM"
+function minsToTime(mins) {
+    mins = ((mins % (24 * 60)) + 24 * 60) % (24 * 60);
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+// Helper: format seconds to human-readable duration
+function formatDuration(secs) {
+    if (!secs || secs <= 0) return null;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.round(secs % 60);
+    if (h > 0) return h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    return m + ':' + String(s).padStart(2,'0');
+}
+
+// Helper: get selected asset's duration in seconds
+function getSelectedAssetDuration(form) {
+    const assetId = form.querySelector('[name="asset_id"]').value;
+    if (!assetId) return null;
+    const asset = _scheduleData.assets.find(a => a.id === assetId);
+    return asset && asset.duration ? asset.duration : null;
+}
+
+// Helper: format time for display, locale-aware
+function formatTimeDisplay(timeStr) {
+    if (!timeStr) return null;
+    const [h, m] = timeStr.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return null;
+    const d = new Date(2000, 0, 1, h, m);
+    return d.toLocaleTimeString(navigator.language, { hour: 'numeric', minute: '2-digit' });
+}
+
+// ── Create form setup ──
+document.addEventListener("DOMContentLoaded", function() {
+    updateTargetOptions();
+
+    // Auto-advance end time when start time changes
+    const startTimeEl = document.querySelector('[name="start_time"]');
+    const endTimeEl = document.querySelector('[name="end_time"]');
+    startTimeEl.addEventListener('change', function() {
+        const startMins = timeToMins(this.value);
+        const endMins = timeToMins(endTimeEl.value);
+        if (startMins !== null && (endMins === null || endMins <= startMins)) {
+            endTimeEl.value = minsToTime(startMins + 60);
+        }
+        updateScheduleSummary();
+    });
+    endTimeEl.addEventListener('change', updateScheduleSummary);
+
+    // Also update summary when asset changes (for loop info)
+    document.querySelector('[name="asset_id"]').addEventListener('change', updateScheduleSummary);
+
+    // Auto-advance end date when start date changes
+    const startDateEl = document.querySelector('[name="start_date"]');
+    const endDateEl = document.querySelector('[name="end_date"]');
+    startDateEl.addEventListener('change', function() {
+        if (!endDateEl.value || endDateEl.value < this.value) {
+            endDateEl.value = this.value;
+        }
+        endDateEl.min = this.value;
+        updateScheduleSummary();
+    });
+    endDateEl.addEventListener('change', updateScheduleSummary);
+
+    // Attach summary listeners to remaining fields
+    const form = document.querySelector("#schedule-summary").closest("form");
+    ["name"].forEach(n => {
+        const el = form.querySelector(`[name="${n}"]`);
+        if (el) { el.addEventListener("input", updateScheduleSummary); el.addEventListener("change", updateScheduleSummary); }
+    });
+    for (let i = 1; i <= 7; i++) {
+        form.querySelector(`[name="day_${i}"]`).addEventListener("change", updateScheduleSummary);
+    }
+});
+
+// ── Live schedule summary ──
+function isOneShot(form) {
+    const startDate = form.querySelector('[name="start_date"]').value;
+    const endDate = form.querySelector('[name="end_date"]').value;
+    return startDate && endDate && startDate === endDate;
+}
+
+function updateDayCheckboxes() {
+    const form = document.querySelector("#schedule-summary").closest("form");
+    const oneShot = isOneShot(form);
+    for (let i = 1; i <= 7; i++) {
+        const cb = form.querySelector(`[name="day_${i}"]`);
+        if (oneShot) {
+            cb.checked = false;
+            cb.disabled = true;
+        } else {
+            cb.disabled = false;
+        }
+    }
+}
+
+// Helper: build loop-info HTML snippet for the schedule summary
+function getLoopInfoHtml(form, durMins) {
+    const assetDur = getSelectedAssetDuration(form);
+    if (!assetDur || assetDur <= 0) return "";
+    const scheduleSecs = durMins * 60;
+    const loops = scheduleSecs / assetDur;
+    const nearestLoops = Math.round(loops);
+    // Threshold: half a minute in loop-units (accounts for 1-min time input granularity)
+    const loopThreshold = 30 / assetDur;
+    if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
+        const roundDown = Math.floor(loops);
+        const roundUp = roundDown + 1;
+        return ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`
+             + ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`
+             + ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
+    } else if (nearestLoops > 0) {
+        return ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+    }
+    return "";
+}
+
+function updateScheduleSummary() {
+    const el = document.getElementById("schedule-summary");
+    const form = el.closest("form");
+
+    const name = form.querySelector('[name="name"]').value.trim();
+    const startStr = formatTimeDisplay(form.querySelector('[name="start_time"]').value);
+    const endStr = formatTimeDisplay(form.querySelector('[name="end_time"]').value);
+    if (!startStr || !endStr) { el.style.display = "none"; return; }
+
+    // Calculate duration
+    let startMins = timeToMins(form.querySelector('[name="start_time"]').value);
+    let endMins = timeToMins(form.querySelector('[name="end_time"]').value);
+    const isOvernight = endMins <= startMins;
+    if (isOvernight) endMins += 24 * 60;
+    const durMins = endMins - startMins;
+    let durStr;
+    if (durMins >= 60) {
+        const h = Math.floor(durMins / 60), m = durMins % 60;
+        durStr = h + " hour" + (h !== 1 ? "s" : "");
+        if (m > 0) durStr += " " + m + " min";
+    } else {
+        durStr = durMins + " min";
+    }
+
+    updateDayCheckboxes();
+
+    const label = name ? `'${name}'` : "This schedule";
+    const oneShot = isOneShot(form);
+
+    if (oneShot) {
+        const dateLabel = new Date(form.querySelector('[name="start_date"]').value + "T00:00")
+            .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        let msg = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
+        if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
+        msg += getLoopInfoHtml(form, durMins);
+
+        el.innerHTML = msg;
+        el.style.display = "";
+        return;
+    }
+
+    // Days — use full names
+    const dayNamesFull = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const days = [];
+    for (let i = 1; i <= 7; i++) {
+        if (form.querySelector(`[name="day_${i}"]`).checked) days.push(i);
+    }
+    let dayStr;
+    if (days.length === 0 || days.length === 7) {
+        dayStr = "every day";
+    } else if (days.length === 5 && [1,2,3,4,5].every(d => days.includes(d))) {
+        dayStr = "weekdays";
+    } else if (days.length === 2 && [6,7].every(d => days.includes(d))) {
+        dayStr = "weekends";
+    } else {
+        dayStr = days.map(d => dayNamesFull[d - 1]).join(", ");
+    }
+
+    // Dates
+    const startDate = form.querySelector('[name="start_date"]').value;
+    const endDate = form.querySelector('[name="end_date"]').value;
+    let dateStr = "";
+    if (startDate && endDate) {
+        dateStr = " from " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                + " to " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (startDate) {
+        dateStr = " starting " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (endDate) {
+        dateStr = " until " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+
+    let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
+    if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
+    if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
+        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+    }
+
+    msg += getLoopInfoHtml(form, durMins);
+
+    el.innerHTML = msg;
+    el.style.display = "";
+}
+
+// Event delegation for round-to-loop links (survives innerHTML replacement)
+document.getElementById("schedule-summary").addEventListener('click', function(e) {
+    const link = e.target.closest('.loop-round');
+    if (!link) return;
+    e.preventDefault();
+    const form = this.closest("form");
+    const targetLoops = parseInt(link.dataset.loops);
+    const assetDur = getSelectedAssetDuration(form);
+    if (!assetDur || !targetLoops) return;
+    const startMins = timeToMins(form.querySelector('[name="start_time"]').value);
+    if (startMins === null) return;
+    const newEndMins = Math.round(startMins + (targetLoops * assetDur) / 60);
+    form.querySelector('[name="end_time"]').value = minsToTime(newEndMins);
+    updateScheduleSummary();
+});
+
+// ── Edit modal ──
 function editSchedule(s) {
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
@@ -227,15 +435,21 @@ function editSchedule(s) {
     const groups = _scheduleData.groups;
 
     const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const allDays = !s.days_of_week.length || s.days_of_week.length === 7;
     const daysChecks = dayNames.map((name, i) => {
         const num = i + 1;
-        const checked = s.days_of_week.includes(num) ? "checked" : "";
+        const checked = (allDays || s.days_of_week.includes(num)) ? "checked" : "";
         return `<label><input type="checkbox" name="edit_day_${num}" ${checked}> ${name}</label>`;
     }).join(" ");
 
-    const assetOpts = assets.map(a =>
-        `<option value="${a.id}" ${a.id === s.asset_id ? "selected" : ""}>${a.name}</option>`
-    ).join("");
+    const assetOpts = assets.map(a => {
+        let label = a.name;
+        if (a.duration) {
+            const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
+            label += ` (${m}:${String(s).padStart(2,'0')})`;
+        }
+        return `<option value="${a.id}" ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
+    }).join("");
 
     const targetType = s.device_id ? "device" : "group";
     const targetId = s.device_id || s.group_id;
@@ -282,27 +496,11 @@ function editSchedule(s) {
         <div class="form-row">
             <div class="form-group">
                 <label>Start Time</label>
-                <div style="display:flex; gap:0.3rem; align-items:center;">
-                    <input type="number" id="edit-start-hour" min="1" max="12" value="${s.start_hour}" style="width:3.5rem; text-align:center;">
-                    <span>:</span>
-                    <input type="number" id="edit-start-minute" min="0" max="59" value="${String(s.start_minute).padStart(2,'0')}" style="width:3.5rem; text-align:center;" step="1">
-                    <select id="edit-start-period" style="width:4.5rem;">
-                        <option value="AM" ${s.start_period === "AM" ? "selected" : ""}>AM</option>
-                        <option value="PM" ${s.start_period === "PM" ? "selected" : ""}>PM</option>
-                    </select>
-                </div>
+                <input type="time" id="edit-start-time" value="${s.start_time}">
             </div>
             <div class="form-group">
                 <label>End Time</label>
-                <div style="display:flex; gap:0.3rem; align-items:center;">
-                    <input type="number" id="edit-end-hour" min="1" max="12" value="${s.end_hour}" style="width:3.5rem; text-align:center;">
-                    <span>:</span>
-                    <input type="number" id="edit-end-minute" min="0" max="59" value="${String(s.end_minute).padStart(2,'0')}" style="width:3.5rem; text-align:center;" step="1">
-                    <select id="edit-end-period" style="width:4.5rem;">
-                        <option value="AM" ${s.end_period === "AM" ? "selected" : ""}>AM</option>
-                        <option value="PM" ${s.end_period === "PM" ? "selected" : ""}>PM</option>
-                    </select>
-                </div>
+                <input type="time" id="edit-end-time" value="${s.end_time}">
             </div>
             <div class="form-group">
                 <label>Priority</label>
@@ -340,42 +538,35 @@ function editSchedule(s) {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#edit-cancel").onclick = () => overlay.remove();
 
-    // Auto-advance end time/date in edit modal
-    function editGetMins(hId, mId, pId) {
-        const h = parseInt(box.querySelector(hId).value);
-        const m = parseInt(box.querySelector(mId).value);
-        if (isNaN(h) || isNaN(m)) return null;
-        return (h % 12 + (box.querySelector(pId).value === "PM" ? 12 : 0)) * 60 + m;
-    }
-    function editSetMins(mins, hId, mId, pId) {
-        mins = ((mins % (24 * 60)) + 24 * 60) % (24 * 60);
-        let h24 = Math.floor(mins / 60), m = mins % 60;
-        const period = h24 >= 12 ? "PM" : "AM";
-        let h12 = h24 % 12; if (h12 === 0) h12 = 12;
-        box.querySelector(hId).value = h12;
-        box.querySelector(mId).value = m;
-        box.querySelector(pId).value = period;
-    }
-    function onEditStartTimeChange() {
-        const startMins = editGetMins("#edit-start-hour", "#edit-start-minute", "#edit-start-period");
-        const endMins = editGetMins("#edit-end-hour", "#edit-end-minute", "#edit-end-period");
-        if (startMins === null) return;
-        if (endMins === null || endMins <= startMins) {
-            editSetMins(startMins + 60, "#edit-end-hour", "#edit-end-minute", "#edit-end-period");
+    // Auto-advance end time in edit modal
+    const editStartTimeEl = box.querySelector("#edit-start-time");
+    const editEndTimeEl = box.querySelector("#edit-end-time");
+    editStartTimeEl.addEventListener('change', function() {
+        const startMins = timeToMins(this.value);
+        const endMins = timeToMins(editEndTimeEl.value);
+        if (startMins !== null && (endMins === null || endMins <= startMins)) {
+            editEndTimeEl.value = minsToTime(startMins + 60);
         }
-    }
-    ["#edit-start-hour", "#edit-start-minute", "#edit-start-period"].forEach(id => {
-        box.querySelector(id).addEventListener("change", onEditStartTimeChange);
-    });
-    box.querySelector("#edit-start-date").addEventListener("change", function() {
-        const endEl = box.querySelector("#edit-end-date");
-        if (!endEl.value || endEl.value < this.value) endEl.value = this.value;
-        endEl.min = this.value;
     });
 
+    // Auto-advance end date in edit modal
+    const editStartDateEl = box.querySelector("#edit-start-date");
+    const editEndDateEl = box.querySelector("#edit-end-date");
+    editStartDateEl.addEventListener('change', function() {
+        if (!editEndDateEl.value || editEndDateEl.value < this.value) {
+            editEndDateEl.value = this.value;
+        }
+        editEndDateEl.min = this.value;
+    });
+    if (s.start_date) editEndDateEl.min = s.start_date;
+
     box.querySelector("#edit-save").onclick = async () => {
-        const startTime = to24h(box.querySelector("#edit-start-hour").value, box.querySelector("#edit-start-minute").value, box.querySelector("#edit-start-period").value);
-        const endTime = to24h(box.querySelector("#edit-end-hour").value, box.querySelector("#edit-end-minute").value, box.querySelector("#edit-end-period").value);
+        const startTime = box.querySelector("#edit-start-time").value;
+        const endTime = box.querySelector("#edit-end-time").value;
+        if (!startTime || !endTime) {
+            showToast("Please select start and end times", true);
+            return;
+        }
         if (startTime === endTime) {
             showToast("Start time and end time cannot be the same", true);
             return;
@@ -402,8 +593,8 @@ function editSchedule(s) {
             asset_id: box.querySelector("#edit-asset").value,
             device_id: editTargetType === "device" ? editTargetId : null,
             group_id: editTargetType === "group" ? editTargetId : null,
-            start_time: startTime,
-            end_time: endTime,
+            start_time: startTime + ":00",
+            end_time: endTime + ":00",
             start_date: startDate || null,
             end_date: endDate || null,
             days_of_week: days.length ? days : null,
@@ -428,185 +619,5 @@ function updateEditTargetOptions() {
         if (!opt.hidden) { opt.selected = true; break; }
     }
 }
-
-// ── Live schedule summary ──
-function formatTime12h(hour, minute, period) {
-    const h = parseInt(hour);
-    const m = parseInt(minute);
-    if (isNaN(h) || isNaN(m)) return null;
-    return h + ":" + String(m).padStart(2, "0") + " " + period;
-}
-
-function isOneShot(form) {
-    const startDate = form.querySelector('[name="start_date"]').value;
-    const endDate = form.querySelector('[name="end_date"]').value;
-    return startDate && endDate && startDate === endDate;
-}
-
-function updateDayCheckboxes() {
-    const form = document.querySelector("#schedule-summary").closest("form");
-    const oneShot = isOneShot(form);
-    for (let i = 1; i <= 7; i++) {
-        const cb = form.querySelector(`[name="day_${i}"]`);
-        if (oneShot) {
-            cb.checked = false;
-            cb.disabled = true;
-        } else {
-            cb.disabled = false;
-        }
-    }
-}
-
-function updateScheduleSummary() {
-    const el = document.getElementById("schedule-summary");
-    const form = el.closest("form");
-
-    const name = form.querySelector('[name="name"]').value.trim();
-    const sh = form.querySelector('[name="start_hour"]').value;
-    const sm = form.querySelector('[name="start_minute"]').value;
-    const sp = form.querySelector('[name="start_period"]').value;
-    const eh = form.querySelector('[name="end_hour"]').value;
-    const em = form.querySelector('[name="end_minute"]').value;
-    const ep = form.querySelector('[name="end_period"]').value;
-
-    const startStr = formatTime12h(sh, sm, sp);
-    const endStr = formatTime12h(eh, em, ep);
-    if (!startStr || !endStr) { el.style.display = "none"; return; }
-
-    // Calculate duration
-    let startMins = (parseInt(sh) % 12 + (sp === "PM" ? 12 : 0)) * 60 + parseInt(sm);
-    let endMins = (parseInt(eh) % 12 + (ep === "PM" ? 12 : 0)) * 60 + parseInt(em);
-    const isOvernight = endMins <= startMins;
-    if (isOvernight) endMins += 24 * 60;
-    const durMins = endMins - startMins;
-    let durStr;
-    if (durMins >= 60) {
-        const h = Math.floor(durMins / 60);
-        const m = durMins % 60;
-        durStr = h + " hour" + (h !== 1 ? "s" : "");
-        if (m > 0) durStr += " " + m + " min";
-    } else {
-        durStr = durMins + " min";
-    }
-
-    // Update day checkbox state
-    updateDayCheckboxes();
-
-    const label = name ? `'${name}'` : "This schedule";
-    const oneShot = isOneShot(form);
-
-    if (oneShot) {
-        const dateLabel = new Date(form.querySelector('[name="start_date"]').value + "T00:00")
-            .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-        let msg = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
-        if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-        el.textContent = msg;
-        el.style.display = "";
-        return;
-    }
-
-    // Days
-    const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const days = [];
-    for (let i = 1; i <= 7; i++) {
-        if (form.querySelector(`[name="day_${i}"]`).checked) days.push(i);
-    }
-    let dayStr;
-    if (days.length === 0 || days.length === 7) {
-        dayStr = "every day";
-    } else if (days.length === 5 && [1,2,3,4,5].every(d => days.includes(d))) {
-        dayStr = "weekdays";
-    } else if (days.length === 2 && [6,7].every(d => days.includes(d))) {
-        dayStr = "weekends";
-    } else {
-        dayStr = days.map(d => dayNames[d - 1]).join(", ");
-    }
-
-    // Dates
-    const startDate = form.querySelector('[name="start_date"]').value;
-    const endDate = form.querySelector('[name="end_date"]').value;
-    let dateStr = "";
-    if (startDate && endDate) {
-        dateStr = " from " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
-                + " to " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    } else if (startDate) {
-        dateStr = " starting " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    } else if (endDate) {
-        dateStr = " until " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    }
-
-    let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
-    if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-
-    // Warn if end date is in the past
-    if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
-        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
-    }
-
-    el.textContent = msg;
-    el.style.display = "";
-}
-
-// Attach listeners to all relevant form fields
-document.addEventListener("DOMContentLoaded", function() {
-    const form = document.querySelector("#schedule-summary").closest("form");
-    const fields = ["name", "start_hour", "start_minute", "start_period",
-                     "end_hour", "end_minute", "end_period",
-                     "start_date", "end_date"];
-    fields.forEach(n => {
-        const el = form.querySelector(`[name="${n}"]`);
-        if (el) { el.addEventListener("input", updateScheduleSummary); el.addEventListener("change", updateScheduleSummary); }
-    });
-    for (let i = 1; i <= 7; i++) {
-        form.querySelector(`[name="day_${i}"]`).addEventListener("change", updateScheduleSummary);
-    }
-
-    // Auto-advance end time when start time changes
-    function getTimeMins(hourEl, minEl, periodEl) {
-        const h = parseInt(hourEl.value);
-        const m = parseInt(minEl.value);
-        if (isNaN(h) || isNaN(m)) return null;
-        let h24 = h % 12 + (periodEl.value === "PM" ? 12 : 0);
-        return h24 * 60 + m;
-    }
-    function setTimeFromMins(mins, hourEl, minEl, periodEl) {
-        mins = ((mins % (24 * 60)) + 24 * 60) % (24 * 60);
-        let h24 = Math.floor(mins / 60);
-        let m = mins % 60;
-        const period = h24 >= 12 ? "PM" : "AM";
-        let h12 = h24 % 12;
-        if (h12 === 0) h12 = 12;
-        hourEl.value = h12;
-        minEl.value = m;
-        periodEl.value = period;
-    }
-    function onStartTimeChange() {
-        const sh = form.querySelector('[name="start_hour"]');
-        const sm = form.querySelector('[name="start_minute"]');
-        const sp = form.querySelector('[name="start_period"]');
-        const eh = form.querySelector('[name="end_hour"]');
-        const em = form.querySelector('[name="end_minute"]');
-        const ep = form.querySelector('[name="end_period"]');
-        const startMins = getTimeMins(sh, sm, sp);
-        const endMins = getTimeMins(eh, em, ep);
-        if (startMins === null) return;
-        if (endMins === null || endMins <= startMins) {
-            setTimeFromMins(startMins + 60, eh, em, ep);
-            updateScheduleSummary();
-        }
-    }
-    ["start_hour", "start_minute", "start_period"].forEach(n => {
-        form.querySelector(`[name="${n}"]`).addEventListener("change", onStartTimeChange);
-    });
-
-    // Auto-advance end date when start date changes
-    form.querySelector('[name="start_date"]').addEventListener("change", function() {
-        const endEl = form.querySelector('[name="end_date"]');
-        if (!endEl.value || endEl.value < this.value) {
-            endEl.value = this.value;
-            updateScheduleSummary();
-        }
-    });
-});
 </script>
 {% endblock %}
