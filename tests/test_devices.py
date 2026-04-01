@@ -362,3 +362,27 @@ class TestDeviceGroups:
         )
         assert resp.status_code == 200
         assert resp.json()["default_asset_id"] is None
+
+
+@pytest.mark.asyncio
+class TestPendingDeviceNameDisplay:
+    """Dashboard should show device friendly name, not raw ID, for pending devices."""
+
+    async def test_dashboard_pending_shows_friendly_name(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(
+            id="abc123serial", name="Living Room TV",
+            status=DeviceStatus.PENDING,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        html = resp.text
+        # The friendly name should appear in the pending devices table
+        assert "Living Room TV" in html
+        # The adopt button should pass the friendly name for display
+        assert "adoptDevice(" in html
+        assert "Living Room TV" in html

@@ -66,3 +66,23 @@ class TestDevicesPage:
         page.wait_for_load_state("networkidle")
         # Group name appears in bold in the group header
         expect(page.locator("strong", has_text="E2E Test Group")).to_be_visible()
+
+
+class TestDashboardPendingDeviceName:
+    """Dashboard should show device friendly name, not raw ID, for pending devices."""
+
+    def test_pending_device_shows_friendly_name(self, page: Page, ws_url, e2e_server):
+        """A device registered with a custom name should show that name on the dashboard."""
+
+        async def register():
+            async with FakeDevice("name-test-001", ws_url, device_name="Kitchen Display") as dev:
+                await dev.send_status()
+
+        run_async(register())
+
+        page.goto("/")
+        page.wait_for_load_state("domcontentloaded")
+
+        # The friendly name should appear in the Pending Devices section
+        pending_section = page.locator("text=Pending Devices").locator("..")
+        expect(pending_section.locator("text=Kitchen Display")).to_be_visible(timeout=5000)
