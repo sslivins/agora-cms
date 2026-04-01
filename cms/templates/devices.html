@@ -3,7 +3,7 @@
 {% block content %}
 
 {# ── Macro for a device row (reused in main table, groups, ungrouped) ── #}
-{% macro device_row(d, groups, assets, draggable=false) %}
+{% macro device_row(d, groups, assets, profiles, draggable=false) %}
 <tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}"{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td class="expand-toggle">▶</td>
     <td>
@@ -36,6 +36,14 @@
             {% endfor %}
         </select>
     </td>
+    <td>
+        <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
+            <option value="">None</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </td>
     <td data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
         {% if d.storage_capacity_mb > 0 %}
         {{ ((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int }}% free
@@ -52,7 +60,7 @@
 </tr>
 <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
     <td></td>
-    <td colspan="6">
+    <td colspan="7">
         <div class="detail-grid">
             <div class="detail-item">
                 <span class="detail-label">Device ID</span>
@@ -106,6 +114,7 @@
     <th>Status</th>
     <th>Group</th>
     <th>Default Splash Screen</th>
+    <th>Profile</th>
     <th>Storage</th>
     <th>Actions</th>
 </tr>
@@ -121,9 +130,9 @@
         <thead>{{ th_row }}</thead>
         <tbody>
             {% for d in devices %}
-            {{ device_row(d, groups, assets) }}
+            {{ device_row(d, groups, assets, profiles) }}
             {% else %}
-            <tr><td colspan="7" class="empty">No devices registered yet</td></tr>
+            <tr><td colspan="8" class="empty">No devices registered yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -159,7 +168,7 @@
                 <thead>{{ th_row }}</thead>
                 <tbody>
                     {% for d in g.devices | sort(attribute='name') %}
-                    {{ device_row(d, groups, assets) }}
+                    {{ device_row(d, groups, assets, profiles) }}
                     {% endfor %}
                 </tbody>
             </table>
@@ -191,7 +200,7 @@
         <thead>{{ th_row }}</thead>
         <tbody>
             {% for d in ungrouped %}
-            {{ device_row(d, groups, assets, draggable=true) }}
+            {{ device_row(d, groups, assets, profiles, draggable=true) }}
             {% endfor %}
         </tbody>
     </table>

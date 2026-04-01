@@ -201,6 +201,12 @@ async function setDefaultAsset(deviceId, assetId) {
     else showToast("Update failed", true);
 }
 
+async function setProfile(deviceId, profileId) {
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { profile_id: profileId || null });
+    if (resp && resp.ok) showToast("Profile updated");
+    else showToast("Profile update failed", true);
+}
+
 async function setGroupDefaultAsset(groupId, assetId) {
     const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Group default asset updated");
