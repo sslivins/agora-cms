@@ -341,21 +341,22 @@ function updateScheduleSummary() {
         if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
 
         // Loop info for one-shot
-        const assetDur = getSelectedAssetDuration(form);
-        if (assetDur && assetDur > 0) {
-            const scheduleSecs = durMins * 60;
-            const loops = scheduleSecs / assetDur;
-            const nearestLoops = Math.round(loops);
-            // Threshold: half a minute in loop-units (accounts for 1-min time input granularity)
-            const loopThreshold = 30 / assetDur;
-            if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
-                const roundDown = Math.floor(loops);
-                const roundUp = roundDown + 1;
-                msg += ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
-                msg += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
-                msg += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
-            } else if (nearestLoops > 0) {
-                msg += ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+        {
+            const assetDur = getSelectedAssetDuration(form);
+            if (assetDur && assetDur > 0) {
+                const scheduleSecs = durMins * 60;
+                const loops = scheduleSecs / assetDur;
+                const nearestLoops = Math.round(loops);
+                const loopThreshold = 30 / assetDur;
+                if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
+                    const roundDown = Math.floor(loops);
+                    const roundUp = roundDown + 1;
+                    msg += ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
+                    msg += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
+                    msg += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
+                } else if (nearestLoops > 0) {
+                    msg += ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+                }
             }
         }
 
@@ -401,21 +402,22 @@ function updateScheduleSummary() {
     }
 
     // Loop info for video assets
-    const assetDur = getSelectedAssetDuration(form);
-    if (assetDur && assetDur > 0) {
-        const scheduleSecs = durMins * 60;
-        const loops = scheduleSecs / assetDur;
-        const nearestLoops = Math.round(loops);
-        // Threshold: half a minute in loop-units (accounts for 1-min time input granularity)
-        const loopThreshold = 30 / assetDur;
-        if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
-            const roundDown = Math.floor(loops);
-            const roundUp = roundDown + 1;
-            msg += ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
-            msg += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
-            msg += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
-        } else if (nearestLoops > 0) {
-            msg += ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+    {
+        const assetDur = getSelectedAssetDuration(form);
+        if (assetDur && assetDur > 0) {
+            const scheduleSecs = durMins * 60;
+            const loops = scheduleSecs / assetDur;
+            const nearestLoops = Math.round(loops);
+            const loopThreshold = 30 / assetDur;
+            if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
+                const roundDown = Math.floor(loops);
+                const roundUp = roundDown + 1;
+                msg += ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
+                msg += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
+                msg += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
+            } else if (nearestLoops > 0) {
+                msg += ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+            }
         }
     }
 
