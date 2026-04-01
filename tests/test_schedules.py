@@ -248,6 +248,70 @@ class TestScheduleCRUD:
 
 @pytest.mark.asyncio
 class TestScheduleUI:
+    async def test_edit_schedule_modal_works(self, client, db_session):
+        """Schedules page JS must parse without errors so editSchedule() is defined.
+
+        Regression: a duplicate ``const endDate`` declaration in
+        ``updateScheduleSummary()`` caused a SyntaxError at parse time,
+        preventing **all** functions in the script block from loading —
+        including ``editSchedule()``.  The edit button silently did nothing.
+        """
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="edit-pi", name="Edit Test", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="edit.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="eee")
+        db_session.add_all([device, asset])
+        await db_session.commit()
+
+        # Create a schedule so the Edit button is rendered
+        resp = await client.post("/api/schedules", json={
+            "name": "Editable",
+            "device_id": "edit-pi",
+            "asset_id": str(asset.id),
+            "start_time": "09:00",
+            "end_time": "17:00",
+        })
+        assert resp.status_code == 201
+
+        # Render the schedules page
+        page = await client.get("/schedules")
+        assert page.status_code == 200
+        html = page.text
+
+        # The Edit button must be present with a valid onclick handler
+        assert "editSchedule(" in html
+
+        # No duplicate const declarations within the same function body —
+        # this would be a SyntaxError that silently breaks all JS on the page.
+        import re
+        for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.DOTALL):
+            # Extract function bodies and check each for duplicate const names
+            for fn_match in re.finditer(r"function\s+(\w+)\s*\([^)]*\)\s*\{", script):
+                fn_name = fn_match.group(1)
+                # Find the function body (from opening { to matching })
+                start = fn_match.end() - 1
+                depth = 0
+                end = start
+                for i in range(start, len(script)):
+                    if script[i] == "{":
+                        depth += 1
+                    elif script[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                body = script[start:end]
+                # Find top-level const declarations in this function body
+                # (skip nested function/arrow bodies for simplicity)
+                consts = re.findall(r"\bconst\s+(\w+)\b", body)
+                from collections import Counter
+                counts = Counter(consts)
+                dupes = {name: n for name, n in counts.items() if n > 1}
+                assert not dupes, (
+                    f"Duplicate const in {fn_name}() will cause SyntaxError: {dupes}"
+                )
+
     async def test_timezone_labels_no_underscores(self, client):
         """Timezone dropdown labels should use spaces, not underscores."""
         resp = await client.get("/schedules")
