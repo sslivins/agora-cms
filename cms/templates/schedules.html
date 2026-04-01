@@ -305,6 +305,27 @@ function updateDayCheckboxes() {
     }
 }
 
+// Helper: build loop-info HTML snippet for the schedule summary
+function getLoopInfoHtml(form, durMins) {
+    const assetDur = getSelectedAssetDuration(form);
+    if (!assetDur || assetDur <= 0) return "";
+    const scheduleSecs = durMins * 60;
+    const loops = scheduleSecs / assetDur;
+    const nearestLoops = Math.round(loops);
+    // Threshold: half a minute in loop-units (accounts for 1-min time input granularity)
+    const loopThreshold = 30 / assetDur;
+    if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
+        const roundDown = Math.floor(loops);
+        const roundUp = roundDown + 1;
+        return ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`
+             + ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`
+             + ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
+    } else if (nearestLoops > 0) {
+        return ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+    }
+    return "";
+}
+
 function updateScheduleSummary() {
     const el = document.getElementById("schedule-summary");
     const form = el.closest("form");
@@ -339,26 +360,7 @@ function updateScheduleSummary() {
             .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
         let msg = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
         if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-
-        // Loop info for one-shot
-        {
-            const assetDur = getSelectedAssetDuration(form);
-            if (assetDur && assetDur > 0) {
-                const scheduleSecs = durMins * 60;
-                const loops = scheduleSecs / assetDur;
-                const nearestLoops = Math.round(loops);
-                const loopThreshold = 30 / assetDur;
-                if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
-                    const roundDown = Math.floor(loops);
-                    const roundUp = roundDown + 1;
-                    msg += ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
-                    msg += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
-                    msg += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
-                } else if (nearestLoops > 0) {
-                    msg += ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
-                }
-            }
-        }
+        msg += getLoopInfoHtml(form, durMins);
 
         el.innerHTML = msg;
         el.style.display = "";
@@ -401,25 +403,7 @@ function updateScheduleSummary() {
         msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
     }
 
-    // Loop info for video assets
-    {
-        const assetDur = getSelectedAssetDuration(form);
-        if (assetDur && assetDur > 0) {
-            const scheduleSecs = durMins * 60;
-            const loops = scheduleSecs / assetDur;
-            const nearestLoops = Math.round(loops);
-            const loopThreshold = 30 / assetDur;
-            if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
-                const roundDown = Math.floor(loops);
-                const roundUp = roundDown + 1;
-                msg += ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
-                msg += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
-                msg += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
-            } else if (nearestLoops > 0) {
-                msg += ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
-            }
-        }
-    }
+    msg += getLoopInfoHtml(form, durMins);
 
     el.innerHTML = msg;
     el.style.display = "";
