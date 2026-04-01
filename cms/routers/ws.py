@@ -157,10 +157,11 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         device = result.scalar_one_or_none()
 
         if device is None:
-            # New device — create as pending
+            # New device — create as pending, prefer device_name over raw ID
+            device_name = raw.get("device_name", "") or device_id
             device = Device(
                 id=device_id,
-                name=device_id,
+                name=device_name,
                 status=DeviceStatus.PENDING,
                 firmware_version=raw.get("firmware_version", ""),
                 device_type=raw.get("device_type", ""),
@@ -211,6 +212,10 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             device.storage_capacity_mb = raw.get("storage_capacity_mb", device.storage_capacity_mb)
             device.storage_used_mb = raw.get("storage_used_mb", device.storage_used_mb)
             device.last_seen = datetime.now(timezone.utc)
+            # Update name only if user explicitly set it via captive portal
+            reg_name = raw.get("device_name", "")
+            if reg_name and raw.get("device_name_custom", False):
+                device.name = reg_name
             await db.commit()
 
             # Auto-assign profile if not already set
