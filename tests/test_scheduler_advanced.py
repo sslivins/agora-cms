@@ -508,6 +508,7 @@ class TestUniqueScheduleName:
             resp = await client.post("/api/schedules", json={
                 "name": "Repeat", "device_id": device_id, "asset_id": asset_id,
                 "start_time": "08:00", "end_time": "12:00",
+                "priority": i,
             })
             assert resp.status_code == 201
 
