@@ -108,14 +108,14 @@ class TestDeleteDeviceWithSchedules:
         assert asset_resp.status_code == 201
         asset_id = asset_resp.json()["id"]
 
-        sched_resp = api.post("/api/schedules/", json={
+        sched_resp = api.post("/api/schedules", json={
             "name": "Delete Test Schedule",
             "device_id": "del-e2e-001",
             "asset_id": asset_id,
             "start_time": "09:00",
             "end_time": "17:00",
         })
-        assert sched_resp.status_code in (200, 201)
+        assert sched_resp.status_code == 201
 
         # Go to devices page and delete the device
         page.goto("/devices")

@@ -41,7 +41,7 @@ jobs:
 
       - name: Get Playwright version
         id: pw-version
-        run: echo "version=$(python -c 'import playwright; print(playwright.__version__)')" >> $GITHUB_OUTPUT
+        run: echo "version=$(pip show playwright | grep Version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
 
       - name: Cache Playwright browsers
         id: pw-cache
