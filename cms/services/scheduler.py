@@ -13,6 +13,7 @@ from cms import database as _db
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
+from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.setting import CMSSetting
 from cms.schemas.protocol import ScheduleEntry, SyncMessage
 from cms.services.device_manager import device_manager
@@ -28,8 +29,28 @@ _now_playing: dict[str, dict] = {}
 # Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
 _skipped: dict[str, datetime] = {}
 
+# Track which schedule+device combos we've already logged as MISSED this eval cycle
+# Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
+_missed_logged: set[tuple[str, str]] = set()
+
 EVAL_INTERVAL_SECONDS = 15
 SCHEDULE_WINDOW_DAYS = 30
+
+
+async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_name: str,
+                     asset_filename: str, schedule_id=None, device_id=None, details=None):
+    """Write a schedule history log entry."""
+    entry = ScheduleLog(
+        schedule_id=schedule_id,
+        schedule_name=schedule_name,
+        device_id=device_id,
+        device_name=device_name,
+        asset_filename=asset_filename,
+        event=event,
+        details=details,
+    )
+    db.add(entry)
+    await db.flush()
 
 
 def get_now_playing() -> list[dict]:
@@ -467,6 +488,42 @@ async def evaluate_schedules() -> None:
                 if existing is None or s.priority > existing.priority:
                     device_winner[did] = s
 
+        # Detect MISSED schedules: active schedules targeting offline adopted devices
+        all_adopted_q = await db.execute(
+            select(Device.id, Device.name).where(Device.status == DeviceStatus.ADOPTED)
+        )
+        all_adopted = {r[0]: (r[1] or r[0]) for r in all_adopted_q.all()}
+
+        for s in active:
+            if not s.asset:
+                continue
+            target_ids = await _get_target_device_ids(s, db)
+            for did in target_ids:
+                if did in connected or did not in all_adopted:
+                    continue
+                key = (str(s.id), did)
+                if key not in _missed_logged:
+                    _missed_logged.add(key)
+                    await _log_event(
+                        db, ScheduleLogEvent.MISSED,
+                        schedule_name=s.name,
+                        device_name=all_adopted.get(did, did),
+                        asset_filename=s.asset.filename,
+                        schedule_id=s.id, device_id=did,
+                        details="Device offline",
+                    )
+
+        # Clear missed flags for combos that are no longer active
+        active_keys = set()
+        for s in active:
+            if not s.asset:
+                continue
+            target_ids = await _get_target_device_ids(s, db)
+            for did in target_ids:
+                if did not in connected and did in all_adopted:
+                    active_keys.add((str(s.id), did))
+        _missed_logged -= (_missed_logged - active_keys)
+
         # Load device names
         device_names: dict[str, str] = {}
         if connected:
@@ -478,7 +535,26 @@ async def evaluate_schedules() -> None:
         for did in connected:
             winner = device_winner.get(did)
             if winner:
-                if did not in _now_playing or _now_playing[did].get("schedule_id") != str(winner.id):
+                prev = _now_playing.get(did)
+                if prev is None or prev.get("schedule_id") != str(winner.id):
+                    # Log ENDED for the previous schedule if there was one
+                    if prev:
+                        await _log_event(
+                            db, ScheduleLogEvent.ENDED,
+                            schedule_name=prev["schedule_name"],
+                            device_name=prev["device_name"],
+                            asset_filename=prev["asset_filename"],
+                            schedule_id=prev.get("schedule_id"),
+                            device_id=did,
+                        )
+                    # Log STARTED for the new schedule
+                    await _log_event(
+                        db, ScheduleLogEvent.STARTED,
+                        schedule_name=winner.name,
+                        device_name=device_names.get(did, did),
+                        asset_filename=winner.asset.filename,
+                        schedule_id=winner.id, device_id=did,
+                    )
                     _now_playing[did] = {
                         "device_id": did,
                         "device_name": device_names.get(did, did),
@@ -506,7 +582,18 @@ async def evaluate_schedules() -> None:
                     if mins > 0:
                         _now_playing[did]["remaining"] += f", {mins} minute{'s' if mins != 1 else ''}"
             else:
-                _now_playing.pop(did, None)
+                prev = _now_playing.pop(did, None)
+                if prev:
+                    await _log_event(
+                        db, ScheduleLogEvent.ENDED,
+                        schedule_name=prev["schedule_name"],
+                        device_name=prev["device_name"],
+                        asset_filename=prev["asset_filename"],
+                        schedule_id=prev.get("schedule_id"),
+                        device_id=did,
+                    )
+
+        await db.commit()
 
 
 async def scheduler_loop() -> None:

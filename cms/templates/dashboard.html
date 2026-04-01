@@ -103,6 +103,50 @@
     {% endif %}
 </div>
 
+{# ── Recent Activity (last 24h) ── #}
+<div class="card">
+    <h2>Recent Activity</h2>
+    {% if recent_activity %}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Event</th>
+                <th>Schedule</th>
+                <th>Device</th>
+                <th>Asset</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in recent_activity %}
+            <tr>
+                <td data-utc="{{ log.timestamp.isoformat() }}">{{ log.timestamp.astimezone(tz).strftime('%I:%M %p').lstrip('0') }}</td>
+                <td>
+                    {% if log.event.value == 'STARTED' %}
+                    <span class="badge badge-started">Started</span>
+                    {% elif log.event.value == 'ENDED' %}
+                    <span class="badge badge-ended">Ended</span>
+                    {% elif log.event.value == 'SKIPPED' %}
+                    <span class="badge badge-skipped">Skipped</span>
+                    {% elif log.event.value == 'MISSED' %}
+                    <span class="badge badge-missed">Missed</span>
+                    {% endif %}
+                </td>
+                <td>{{ log.schedule_name }}</td>
+                <td>{{ log.device_name }}</td>
+                <td>{{ log.asset_filename }}</td>
+                <td class="text-muted">{{ log.details or '' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p style="margin-top: 0.5rem;"><a href="/history" class="text-muted">View full history →</a></p>
+    {% else %}
+    <p class="text-muted empty-state">No activity in the last 24 hours.</p>
+    {% endif %}
+</div>
+
 {# ── Device Status ── #}
 {% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
 {% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
@@ -218,6 +262,7 @@ async function endNow(scheduleId) {
             orphaned: (data.orphaned_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),
             upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label).sort(),
+            activity: data.activity_count || 0,
         });
     }
 
