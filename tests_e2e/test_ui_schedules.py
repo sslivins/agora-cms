@@ -47,12 +47,9 @@ class TestScheduleCreate:
         # Fill the create form
         page.fill('input[name="name"]', "E2E Test Schedule")
         page.select_option('select[name="asset_id"]', label=asset_name)
-        page.fill('input[name="start_hour"]', "9")
-        page.fill('input[name="start_minute"]', "0")
-        page.select_option('select[name="start_period"]', "AM")
-        page.fill('input[name="end_hour"]', "5")
-        page.fill('input[name="end_minute"]', "0")
-        page.select_option('select[name="end_period"]', "PM")
+        # Set times via native time inputs
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "17:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")

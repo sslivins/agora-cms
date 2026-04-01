@@ -3,6 +3,7 @@
     --surface: #16213e;
     --primary: #0f3460;
     --accent: #e94560;
+    --accent-hover: #d63050;
     --text: #eee;
     --text-muted: #999;
     --success: #2ecc71;
@@ -249,6 +250,20 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     font-size: 0.9rem;
     color-scheme: dark;
 }
+/* Polished time inputs */
+.form-group input[type="time"] {
+    padding: 0.6rem 0.75rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+}
+.form-group input[type="time"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+}
+.form-group input[type="time"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}
 .form-row {
     display: flex;
     gap: 1rem;
@@ -263,6 +278,38 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     border-radius: var(--radius);
     font-size: 0.92rem;
     color: var(--text);
+}
+.schedule-summary .loop-round {
+    display: inline-block;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    margin-left: 0.3rem;
+    vertical-align: middle;
+    transition: background 0.15s, transform 0.1s;
+}
+.schedule-summary .loop-round:hover {
+    background: var(--accent-hover);
+    transform: scale(1.05);
+}
+.schedule-summary .loop-round:active {
+    transform: scale(0.97);
+}
+
+/* Native date/time input styling */
+.form-group input[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+}
+.form-group input[type="date"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
 }
 
 /* Login */
