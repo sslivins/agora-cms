@@ -128,7 +128,9 @@ class TestDeleteDeviceWithSchedules:
         row.locator("button", has_text="Delete").click()
 
         # Confirm the modal
-        page.locator(".modal-confirm").click()
+        confirm_modal = page.locator(".modal-overlay")
+        expect(confirm_modal).to_be_visible(timeout=3000)
+        confirm_modal.locator("button", has_text="Confirm").click()
         page.wait_for_load_state("networkidle")
 
         # Device should be gone from all sections
