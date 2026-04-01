@@ -144,10 +144,16 @@ def _matches_now(schedule: Schedule, now: datetime) -> bool:
     """Check if a schedule is active at the given datetime."""
     if not schedule.enabled:
         return False
-    if schedule.start_date and now < schedule.start_date:
-        return False
-    if schedule.end_date and now > schedule.end_date:
-        return False
+    # Compare dates only (not timestamps) — start_date/end_date represent whole days
+    now_date = now.date() if hasattr(now, 'date') else now
+    if schedule.start_date:
+        start_d = schedule.start_date.date() if hasattr(schedule.start_date, 'date') else schedule.start_date
+        if now_date < start_d:
+            return False
+    if schedule.end_date:
+        end_d = schedule.end_date.date() if hasattr(schedule.end_date, 'date') else schedule.end_date
+        if now_date > end_d:
+            return False
     if schedule.days_of_week:
         if now.isoweekday() not in schedule.days_of_week:
             return False
@@ -159,6 +165,84 @@ def _matches_now(schedule: Schedule, now: datetime) -> bool:
         if not (current_time >= schedule.start_time or current_time < schedule.end_time):
             return False
     return True
+
+
+def _times_overlap(s1: time, e1: time, s2: time, e2: time) -> bool:
+    """Check if two time intervals overlap on a 24-hour clock.
+
+    Handles overnight spans (e.g. 22:00–06:00).
+    Zero-length windows (start == end) never overlap.
+    """
+    def to_min(t: time) -> int:
+        return t.hour * 60 + t.minute
+
+    a, b = to_min(s1), to_min(e1)
+    c, d = to_min(s2), to_min(e2)
+
+    if a == b or c == d:
+        return False
+
+    # Both non-wrapping
+    if a < b and c < d:
+        return a < d and c < b
+
+    # Both wrap around midnight — always overlap
+    if a >= b and c >= d:
+        return True
+
+    # One wraps, one doesn't — normalize so (a,b) wraps
+    if c >= d:
+        a, b, c, d = c, d, a, b
+
+    # (a,b) wraps: covers [a,1440) ∪ [0,b). (c,d) doesn't wrap: [c,d)
+    return c < b or d > a
+
+
+def _days_overlap(d1: list[int] | None, d2: list[int] | None) -> bool:
+    """Check if two days-of-week sets share any day. None means every day."""
+    if not d1 or not d2:
+        return True
+    return bool(set(d1) & set(d2))
+
+
+def _dates_overlap(
+    s1: datetime | None, e1: datetime | None,
+    s2: datetime | None, e2: datetime | None,
+) -> bool:
+    """Check if two date ranges overlap. None means unbounded."""
+    if e1 and s2:
+        e1d = e1.date() if hasattr(e1, 'date') else e1
+        s2d = s2.date() if hasattr(s2, 'date') else s2
+        if e1d < s2d:
+            return False
+    if e2 and s1:
+        e2d = e2.date() if hasattr(e2, 'date') else e2
+        s1d = s1.date() if hasattr(s1, 'date') else s1
+        if e2d < s1d:
+            return False
+    return True
+
+
+def schedules_conflict(a: Schedule, b: Schedule) -> bool:
+    """Check if two schedules conflict (same target, same priority, overlapping windows)."""
+    # Must share the same target
+    if a.device_id and b.device_id:
+        if a.device_id != b.device_id:
+            return False
+    elif a.group_id and b.group_id:
+        if a.group_id != b.group_id:
+            return False
+    else:
+        return False  # Different target types
+
+    if a.priority != b.priority:
+        return False
+
+    return (
+        _times_overlap(a.start_time, a.end_time, b.start_time, b.end_time)
+        and _days_overlap(a.days_of_week, b.days_of_week)
+        and _dates_overlap(a.start_date, a.end_date, b.start_date, b.end_date)
+    )
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:

@@ -159,3 +159,105 @@ class TestScheduleCRUD:
     async def test_requires_auth(self, unauthed_client):
         resp = await unauthed_client.get("/api/schedules")
         assert resp.status_code in (401, 303)
+
+    async def test_reject_end_date_before_start_date(self, client, db_session):
+        """Server should reject a schedule where end_date < start_date."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        resp = await client.post("/api/schedules", json={
+            "name": "Bad Dates",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "start_date": "2026-04-10T00:00:00Z",
+            "end_date": "2026-04-05T00:00:00Z",
+        })
+        assert resp.status_code == 422
+
+    async def test_reject_same_start_end_time(self, client, db_session):
+        """Server should reject a schedule where start_time == end_time."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        resp = await client.post("/api/schedules", json={
+            "name": "Zero Window",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "10:00",
+            "end_time": "10:00",
+        })
+        assert resp.status_code == 422
+
+    async def test_update_reject_end_date_before_start_date(self, client, db_session):
+        """Server should reject an update that sets end_date < start_date."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        create = await client.post("/api/schedules", json={
+            "name": "Will Edit",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+        })
+        sid = create.json()["id"]
+        resp = await client.patch(f"/api/schedules/{sid}", json={
+            "start_date": "2026-04-10T00:00:00Z",
+            "end_date": "2026-04-05T00:00:00Z",
+        })
+        assert resp.status_code == 422
+
+    async def test_reject_conflict_same_priority(self, client, db_session):
+        """Server should reject a schedule that conflicts (same device, same priority, overlapping time)."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        resp1 = await client.post("/api/schedules", json={
+            "name": "Morning",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+        })
+        assert resp1.status_code == 201
+        resp2 = await client.post("/api/schedules", json={
+            "name": "Overlap",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "10:00",
+            "end_time": "14:00",
+        })
+        assert resp2.status_code == 409
+        assert "Conflicts with" in resp2.json()["detail"]
+
+    async def test_allow_overlap_different_priority(self, client, db_session):
+        """Overlapping schedules with different priorities are allowed."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        await client.post("/api/schedules", json={
+            "name": "Low",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "priority": 0,
+        })
+        resp = await client.post("/api/schedules", json={
+            "name": "High",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "priority": 5,
+        })
+        assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+class TestScheduleUI:
+    async def test_timezone_labels_no_underscores(self, client):
+        """Timezone dropdown labels should use spaces, not underscores."""
+        resp = await client.get("/schedules")
+        assert resp.status_code == 200
+        html = resp.text
+        # Find all timezone option labels — they look like: >America/New York (UTC-04:00)<
+        import re
+        labels = re.findall(r'>([^<]+\(UTC[+-]\d{2}:\d{2}\))<', html)
+        assert len(labels) > 0, "Should find timezone options in the page"
+        for label in labels:
+            # The part before the UTC offset should not have underscores
+            name_part = label.split(" (UTC")[0]
+            assert "_" not in name_part, f"Timezone label has underscore: {label}"

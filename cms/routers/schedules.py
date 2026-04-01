@@ -12,7 +12,7 @@ from cms.auth import require_auth
 from cms.database import get_db
 from cms.models.schedule import Schedule
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
-from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_sync_hash
+from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_sync_hash, schedules_conflict
 
 router = APIRouter(prefix="/api/schedules", dependencies=[Depends(require_auth)])
 
@@ -61,11 +61,33 @@ async def _unique_name(name: str, db: AsyncSession, exclude_id=None) -> str:
         suffix += 1
 
 
+async def _check_conflicts(schedule: Schedule, db: AsyncSession, exclude_id=None):
+    """Raise 409 if an existing schedule conflicts (same target, priority, overlapping window)."""
+    q = select(Schedule).where(Schedule.enabled == True)
+    if schedule.device_id:
+        q = q.where(Schedule.device_id == schedule.device_id)
+    elif schedule.group_id:
+        q = q.where(Schedule.group_id == schedule.group_id)
+    else:
+        return
+    q = q.where(Schedule.priority == schedule.priority)
+    if exclude_id:
+        q = q.where(Schedule.id != exclude_id)
+    result = await db.execute(q)
+    for existing in result.scalars().all():
+        if schedules_conflict(schedule, existing):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Conflicts with '{existing.name}' — overlapping time on the same target at priority {schedule.priority}. Use a different priority to allow overlap.",
+            )
+
+
 @router.post("", response_model=ScheduleOut, status_code=201)
 async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_db)):
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
     schedule = Schedule(**fields)
+    await _check_conflicts(schedule, db)
     db.add(schedule)
     await db.commit()
     result = await db.execute(
@@ -100,6 +122,7 @@ async def update_schedule(
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(schedule, field, value)
+    await _check_conflicts(schedule, db, exclude_id=schedule_id)
     await db.commit()
 
     result = await db.execute(
