@@ -171,7 +171,7 @@
     <table>
         <thead>
             <tr>
-                <th>Device ID</th>
+                <th>Device</th>
                 <th>Firmware</th>
                 <th>Storage</th>
                 <th>First Seen</th>
@@ -181,12 +181,12 @@
         <tbody>
             {% for d in pending_devices %}
             <tr>
-                <td>{{ d.id }}</td>
+                <td>{{ d.name or d.id }}</td>
                 <td>{{ d.firmware_version }}</td>
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
                 <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
                 <td class="actions">
-                    <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.id }}')">Adopt</button>
+                    <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
                 </td>
             </tr>
