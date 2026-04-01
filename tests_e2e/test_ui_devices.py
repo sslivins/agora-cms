@@ -105,7 +105,7 @@ class TestDeleteDeviceWithSchedules:
 
         # Create an asset and schedule targeting this device
         asset_resp = api.create_asset()
-        assert asset_resp.status_code == 200
+        assert asset_resp.status_code == 201
         asset_id = asset_resp.json()["id"]
 
         sched_resp = api.post("/api/schedules/", json={
