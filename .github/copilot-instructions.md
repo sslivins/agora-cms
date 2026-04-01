@@ -61,6 +61,7 @@ Single application with a PostgreSQL database:
 - **Before fixing any bug, write a failing test that reproduces it.** Confirm the test fails, then implement the fix, then confirm the test passes.
 - Tests live in `tests/` and use pytest + pytest-asyncio + httpx + aiosqlite.
 - Run tests inside the Docker container: `docker exec agora-cms-cms-1 python -m pytest tests/ --tb=short -q`
+- **For any web UI bug, also add a Playwright E2E test** in `tests_e2e/` that reproduces the issue in a real browser. E2E tests use Playwright + Chromium and run in CI alongside unit tests.
 
 ## Git Workflow
 
