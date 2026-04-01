@@ -39,8 +39,24 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-e2e.txt
 
+      - name: Get Playwright version
+        id: pw-version
+        run: echo "version=$(pip show playwright | grep Version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ steps.pw-version.outputs.version }}-chromium
+
       - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: python -m playwright install --with-deps chromium
+
+      - name: Install Playwright system deps only
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: python -m playwright install-deps chromium
 
       - name: Run E2E tests
         run: python -m pytest tests_e2e/ --tb=short -q
