@@ -176,6 +176,8 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             "mode": state["mode"] if state else "offline",
             "asset": state["asset"] if state else None,
             "cpu_temp_c": state["cpu_temp_c"] if state else None,
+            "error": state["error"] if state else None,
+            "error_since": state["error_since"] if state else None,
         })
 
     # Upcoming schedules (next 24h)
@@ -258,6 +260,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
             "mode": live_states[did]["mode"] if did in live_states else "offline",
             "asset": live_states[did]["asset"] if did in live_states else None,
             "cpu_temp_c": live_states[did]["cpu_temp_c"] if did in live_states else None,
+            "error": live_states[did]["error"] if did in live_states else None,
         }
         for did in all_device_ids
     ]

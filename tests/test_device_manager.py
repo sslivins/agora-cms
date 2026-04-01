@@ -103,3 +103,84 @@ class TestDeviceManager:
         states = {s["device_id"]: s for s in dm.get_all_states()}
         assert states["dev-1"]["ip_address"] == "10.0.0.1"
         assert states["dev-2"]["ip_address"] == "10.0.0.2"
+
+
+class TestDeviceManagerErrorTracking:
+    """Error state is surfaced from device status heartbeats."""
+
+    def test_error_initially_none(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-err-1", FakeWS())
+        conn = dm.get("dev-err-1")
+        assert conn.error is None
+        assert conn.error_since is None
+
+    def test_error_set_on_status(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-err-2", FakeWS())
+        dm.update_status("dev-err-2", mode="play", asset="test.mp4", error="Pipeline error: not-linked")
+        conn = dm.get("dev-err-2")
+        assert conn.error == "Pipeline error: not-linked"
+        assert conn.error_since is not None
+
+    def test_error_cleared_when_resolved(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-err-3", FakeWS())
+        dm.update_status("dev-err-3", mode="play", asset="test.mp4", error="Pipeline error")
+        assert dm.get("dev-err-3").error is not None
+
+        # Next status has no error — should clear
+        dm.update_status("dev-err-3", mode="play", asset="test.mp4", error=None)
+        conn = dm.get("dev-err-3")
+        assert conn.error is None
+        assert conn.error_since is None
+
+    def test_error_since_preserved_across_updates(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-err-4", FakeWS())
+        dm.update_status("dev-err-4", mode="play", asset="test.mp4", error="Error A")
+        first_since = dm.get("dev-err-4").error_since
+
+        # Same device, still in error — error_since should NOT reset
+        dm.update_status("dev-err-4", mode="play", asset="test.mp4", error="Error A")
+        assert dm.get("dev-err-4").error_since == first_since
+
+    def test_error_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-err-5", FakeWS())
+        dm.update_status("dev-err-5", mode="play", asset="test.mp4", error="Pipeline error")
+
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-err-5"]["error"] == "Pipeline error"
+        assert states["dev-err-5"]["error_since"] is not None
+
+    def test_no_error_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-err-6", FakeWS())
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-err-6"]["error"] is None
+        assert states["dev-err-6"]["error_since"] is None

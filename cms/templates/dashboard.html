@@ -150,7 +150,8 @@
 {# ── Device Status ── #}
 {% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
 {% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
-{% set has_issues = offline_devices or orphaned_devices or temp_warning %}
+{% set error_devices = device_states | selectattr("error") | list %}
+{% set has_issues = offline_devices or orphaned_devices or temp_warning or error_devices %}
 <div class="card{{ ' card-danger' if has_issues }}">
     <h2>Device Status</h2>
     {% if has_issues %}
@@ -164,6 +165,14 @@
             </tr>
         </thead>
         <tbody>
+            {% for ds in error_devices %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-error">Error</span></td>
+                <td class="text-danger">{{ ds.error }}</td>
+            </tr>
+            {% endfor %}
             {% for d in orphaned_devices %}
             <tr>
                 <td>{{ d.name or d.id }}</td>
@@ -257,7 +266,7 @@ async function endNow(scheduleId) {
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
             playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
-            devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c)).sort(),
+            devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),

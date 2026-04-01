@@ -170,6 +170,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-failed { background: var(--danger); color: #fff; margin-left: 0.4rem; }
 .badge-temp-warning { background: var(--warning); color: #000; }
 .badge-temp-critical { background: var(--danger); color: #fff; }
+.badge-error { background: var(--danger); color: #fff; }
 .badge-update { background: var(--primary); color: #fff; }
 .badge-started { background: var(--success); color: #000; }
 .badge-ended { background: #7f8c8d; color: #fff; }
