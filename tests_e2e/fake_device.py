@@ -41,7 +41,7 @@ class FakeDevice:
         self.ws_url = ws_url
         self.auth_token = auth_token
         self.firmware_version = firmware_version
-        self.device_name = device_name or f"agora-node-{device_id[-4:]}"
+        self.device_name = device_name
         self.device_type = device_type
         self.storage_capacity_mb = storage_capacity_mb
         self.storage_used_mb = storage_used_mb
