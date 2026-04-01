@@ -187,6 +187,54 @@ class TestDeviceCRUD:
         resp = await client.delete("/api/devices/nonexistent")
         assert resp.status_code == 404
 
+    async def test_delete_device_with_schedules(self, client, db_session):
+        """Deleting a device that has schedules should succeed and remove the schedules."""
+        from datetime import time
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+        from cms.models.schedule import Schedule
+
+        device = Device(id="del-sched-pi", name="Del Sched", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="test.mp4", asset_type=AssetType.VIDEO, size_bytes=5000, checksum="abc")
+        db_session.add_all([device, asset])
+        await db_session.flush()
+
+        schedule = Schedule(
+            name="Test Schedule",
+            device_id="del-sched-pi",
+            asset_id=asset.id,
+            start_time=time(9, 0),
+            end_time=time(17, 0),
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        resp = await client.delete("/api/devices/del-sched-pi")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == "del-sched-pi"
+
+        # Verify device is gone
+        resp = await client.get("/api/devices")
+        assert all(d["id"] != "del-sched-pi" for d in resp.json())
+
+    async def test_delete_device_with_device_assets(self, client, db_session):
+        """Deleting a device that has device_assets should succeed."""
+        from cms.models.asset import Asset, AssetType, DeviceAsset
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="del-da-pi", name="Del DA", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="da_test.mp4", asset_type=AssetType.VIDEO, size_bytes=5000, checksum="def")
+        db_session.add_all([device, asset])
+        await db_session.flush()
+
+        da = DeviceAsset(device_id="del-da-pi", asset_id=asset.id)
+        db_session.add(da)
+        await db_session.commit()
+
+        resp = await client.delete("/api/devices/del-da-pi")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == "del-da-pi"
+
 
 @pytest.mark.asyncio
 class TestCheckUpdates:

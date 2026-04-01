@@ -86,3 +86,49 @@ class TestDashboardPendingDeviceName:
         # The friendly name should appear in the Pending Devices section
         pending_section = page.locator("text=Pending Devices").locator("..")
         expect(pending_section.locator("text=Kitchen Display")).to_be_visible(timeout=5000)
+
+
+class TestDeleteDeviceWithSchedules:
+    """Deleting a device that has schedules should work from the UI."""
+
+    def test_delete_device_with_schedule(self, page: Page, api, ws_url, e2e_server):
+        """A device with schedules can be deleted via the Delete button."""
+
+        # Register and adopt a device
+        async def register():
+            async with FakeDevice("del-e2e-001", ws_url) as dev:
+                await dev.send_status()
+
+        run_async(register())
+
+        api.post("/api/devices/del-e2e-001/adopt")
+
+        # Create an asset and schedule targeting this device
+        asset_resp = api.create_asset()
+        assert asset_resp.status_code == 200
+        asset_id = asset_resp.json()["id"]
+
+        sched_resp = api.post("/api/schedules/", json={
+            "name": "Delete Test Schedule",
+            "device_id": "del-e2e-001",
+            "asset_id": asset_id,
+            "start_time": "09:00",
+            "end_time": "17:00",
+        })
+        assert sched_resp.status_code in (200, 201)
+
+        # Go to devices page and delete the device
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+
+        # Find the device row and click Delete
+        row = page.locator('[data-device-id="del-e2e-001"]')
+        expect(row).to_be_visible(timeout=5000)
+        row.locator("button", has_text="Delete").click()
+
+        # Confirm the modal
+        page.locator(".modal-confirm").click()
+        page.wait_for_load_state("networkidle")
+
+        # Device should be gone
+        expect(page.locator('[data-device-id="del-e2e-001"]')).to_have_count(0)

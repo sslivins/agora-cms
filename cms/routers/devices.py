@@ -233,6 +233,18 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+
+    # Remove referencing rows before deleting the device
+    from cms.models.asset import DeviceAsset
+    from cms.models.schedule import Schedule
+
+    await db.execute(
+        DeviceAsset.__table__.delete().where(DeviceAsset.device_id == device_id)
+    )
+    await db.execute(
+        Schedule.__table__.delete().where(Schedule.device_id == device_id)
+    )
+
     await db.delete(device)
     await db.commit()
     return {"deleted": device_id}

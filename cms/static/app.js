@@ -217,7 +217,7 @@ async function adoptDevice(deviceId, deviceName) {
 }
 
 async function deleteDevice(deviceId) {
-    if (!await showConfirm("Delete this device?")) return;
+    if (!await showConfirm("Delete this device? Any schedules targeting only this device will also be removed.")) return;
     const resp = await apiCall("DELETE", `/api/devices/${deviceId}`);
     if (resp && resp.ok) location.reload();
 }
