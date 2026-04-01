@@ -269,13 +269,14 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 device.storage_used_mb = msg.get("storage_used_mb", device.storage_used_mb)
                 await db.commit()
 
-                # Track playback state
+                # Track playback state (including error)
                 device_manager.update_status(
                     device_id,
                     mode=msg.get("mode", "unknown"),
                     asset=msg.get("asset"),
                     uptime_seconds=msg.get("uptime_seconds", 0),
                     cpu_temp_c=msg.get("cpu_temp_c"),
+                    error=msg.get("error"),
                 )
 
                 # Rotate API key if due
