@@ -159,3 +159,20 @@ class TestScheduleCRUD:
     async def test_requires_auth(self, unauthed_client):
         resp = await unauthed_client.get("/api/schedules")
         assert resp.status_code in (401, 303)
+
+
+@pytest.mark.asyncio
+class TestScheduleUI:
+    async def test_timezone_labels_no_underscores(self, client):
+        """Timezone dropdown labels should use spaces, not underscores."""
+        resp = await client.get("/schedules")
+        assert resp.status_code == 200
+        html = resp.text
+        # Find all timezone option labels — they look like: >America/New York (UTC-04:00)<
+        import re
+        labels = re.findall(r'>([^<]+\(UTC[+-]\d{2}:\d{2}\))<', html)
+        assert len(labels) > 0, "Should find timezone options in the page"
+        for label in labels:
+            # The part before the UTC offset should not have underscores
+            name_part = label.split(" (UTC")[0]
+            assert "_" not in name_part, f"Timezone label has underscore: {label}"

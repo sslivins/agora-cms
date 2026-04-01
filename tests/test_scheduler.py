@@ -160,6 +160,36 @@ class TestMatchesNow:
         now = datetime(2026, 3, 28, 12, 0)
         assert _matches_now(s, now) is True
 
+    def test_one_shot_matches_on_date(self):
+        """One-shot schedule (same start and end date) matches on that date."""
+        s = _make_schedule(
+            time(8, 0), time(8, 30),
+            start_date=datetime(2026, 4, 1),
+            end_date=datetime(2026, 4, 1),
+        )
+        now = datetime(2026, 4, 1, 8, 15)
+        assert _matches_now(s, now) is True
+
+    def test_one_shot_no_match_different_date(self):
+        """One-shot schedule does not match on a different date."""
+        s = _make_schedule(
+            time(8, 0), time(8, 30),
+            start_date=datetime(2026, 4, 1),
+            end_date=datetime(2026, 4, 1),
+        )
+        now = datetime(2026, 4, 2, 8, 15)
+        assert _matches_now(s, now) is False
+
+    def test_one_shot_no_match_before_date(self):
+        """One-shot schedule does not match before its date."""
+        s = _make_schedule(
+            time(8, 0), time(8, 30),
+            start_date=datetime(2026, 4, 1),
+            end_date=datetime(2026, 4, 1),
+        )
+        now = datetime(2026, 3, 31, 8, 15)
+        assert _matches_now(s, now) is False
+
     def test_one_minute_window(self):
         """13:20-13:21 should only match at 13:20."""
         s = _make_schedule(time(13, 20), time(13, 21))

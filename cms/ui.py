@@ -414,7 +414,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         total_sec = int(offset.total_seconds())
         sign = "+" if total_sec >= 0 else "-"
         h, m = divmod(abs(total_sec) // 60, 60)
-        label = f"{tz_name} (UTC{sign}{h:02d}:{m:02d})"
+        label = f"{tz_name.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
         tz_options.append({"value": tz_name, "label": label})
 
     return templates.TemplateResponse(request, "schedules.html", {

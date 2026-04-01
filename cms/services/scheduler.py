@@ -144,10 +144,16 @@ def _matches_now(schedule: Schedule, now: datetime) -> bool:
     """Check if a schedule is active at the given datetime."""
     if not schedule.enabled:
         return False
-    if schedule.start_date and now < schedule.start_date:
-        return False
-    if schedule.end_date and now > schedule.end_date:
-        return False
+    # Compare dates only (not timestamps) — start_date/end_date represent whole days
+    now_date = now.date() if hasattr(now, 'date') else now
+    if schedule.start_date:
+        start_d = schedule.start_date.date() if hasattr(schedule.start_date, 'date') else schedule.start_date
+        if now_date < start_d:
+            return False
+    if schedule.end_date:
+        end_d = schedule.end_date.date() if hasattr(schedule.end_date, 'date') else schedule.end_date
+        if now_date > end_d:
+            return False
     if schedule.days_of_week:
         if now.isoweekday() not in schedule.days_of_week:
             return False

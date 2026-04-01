@@ -384,6 +384,26 @@ function formatTime12h(hour, minute, period) {
     return h + ":" + String(m).padStart(2, "0") + " " + period;
 }
 
+function isOneShot(form) {
+    const startDate = form.querySelector('[name="start_date"]').value;
+    const endDate = form.querySelector('[name="end_date"]').value;
+    return startDate && endDate && startDate === endDate;
+}
+
+function updateDayCheckboxes() {
+    const form = document.querySelector("#schedule-summary").closest("form");
+    const oneShot = isOneShot(form);
+    for (let i = 1; i <= 7; i++) {
+        const cb = form.querySelector(`[name="day_${i}"]`);
+        if (oneShot) {
+            cb.checked = false;
+            cb.disabled = true;
+        } else {
+            cb.disabled = false;
+        }
+    }
+}
+
 function updateScheduleSummary() {
     const el = document.getElementById("schedule-summary");
     const form = el.closest("form");
@@ -413,6 +433,20 @@ function updateScheduleSummary() {
         if (m > 0) durStr += " " + m + " min";
     } else {
         durStr = durMins + " min";
+    }
+
+    // Update day checkbox state
+    updateDayCheckboxes();
+
+    const label = name ? `'${name}'` : "This schedule";
+    const oneShot = isOneShot(form);
+
+    if (oneShot) {
+        const dateLabel = new Date(form.querySelector('[name="start_date"]').value + "T00:00")
+            .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        el.textContent = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
+        el.style.display = "";
+        return;
     }
 
     // Days
@@ -445,7 +479,6 @@ function updateScheduleSummary() {
         dateStr = " until " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     }
 
-    const label = name ? `'${name}'` : "This schedule";
     el.textContent = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
     el.style.display = "";
 }
