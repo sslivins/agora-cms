@@ -121,8 +121,9 @@ class TestDeleteDeviceWithSchedules:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        # Find the device row and click Delete
-        row = page.locator('[data-device-id="del-e2e-001"]')
+        # Find the device row and click Delete (use .first since the device
+        # may appear in both the main table and the ungrouped section)
+        row = page.locator('[data-device-id="del-e2e-001"]').first
         expect(row).to_be_visible(timeout=5000)
         row.locator("button", has_text="Delete").click()
 
@@ -130,5 +131,5 @@ class TestDeleteDeviceWithSchedules:
         page.locator(".modal-confirm").click()
         page.wait_for_load_state("networkidle")
 
-        # Device should be gone
+        # Device should be gone from all sections
         expect(page.locator('[data-device-id="del-e2e-001"]')).to_have_count(0)
