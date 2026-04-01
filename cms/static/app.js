@@ -407,6 +407,11 @@ async function createSchedule(form) {
         showToast("End date cannot be before start date", true);
         return false;
     }
+    // Warn if end date is in the past
+    if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
+        const ok = await showConfirm("The end date is in the past \u2014 this schedule will never play. Continue anyway?");
+        if (!ok) return false;
+    }
     const body = {
         name: data.get("name"),
         asset_id: data.get("asset_id"),

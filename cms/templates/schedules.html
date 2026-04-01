@@ -84,7 +84,7 @@
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Start Date<span class="tooltip">Optional. The first date this schedule can run. Leave blank to start immediately</span></span></label>
-                <input type="date" name="start_date">
+                <input type="date" name="start_date" onchange="document.querySelector('[name=end_date]').min = this.value">
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">End Date<span class="tooltip">Optional. The last date this schedule can run. Leave blank to run indefinitely</span></span></label>
@@ -370,6 +370,7 @@ function editSchedule(s) {
     box.querySelector("#edit-start-date").addEventListener("change", function() {
         const endEl = box.querySelector("#edit-end-date");
         if (!endEl.value || endEl.value < this.value) endEl.value = this.value;
+        endEl.min = this.value;
     });
 
     box.querySelector("#edit-save").onclick = async () => {
@@ -384,6 +385,10 @@ function editSchedule(s) {
         if (startDate && endDate && endDate < startDate) {
             showToast("End date cannot be before start date", true);
             return;
+        }
+        if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
+            const ok = await showConfirm("The end date is in the past \u2014 this schedule will never play. Continue anyway?");
+            if (!ok) return;
         }
         const days = [];
         for (let i = 1; i <= 7; i++) {
@@ -406,7 +411,10 @@ function editSchedule(s) {
         };
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
         if (resp && resp.ok) { overlay.remove(); location.reload(); }
-        else showToast("Failed to update schedule", true);
+        else {
+            const err = await resp.json().catch(() => null);
+            showToast((err && err.detail) || "Failed to update schedule", true);
+        }
     };
 }
 
@@ -468,7 +476,8 @@ function updateScheduleSummary() {
     // Calculate duration
     let startMins = (parseInt(sh) % 12 + (sp === "PM" ? 12 : 0)) * 60 + parseInt(sm);
     let endMins = (parseInt(eh) % 12 + (ep === "PM" ? 12 : 0)) * 60 + parseInt(em);
-    if (endMins <= startMins) endMins += 24 * 60;
+    const isOvernight = endMins <= startMins;
+    if (isOvernight) endMins += 24 * 60;
     const durMins = endMins - startMins;
     let durStr;
     if (durMins >= 60) {
@@ -489,7 +498,9 @@ function updateScheduleSummary() {
     if (oneShot) {
         const dateLabel = new Date(form.querySelector('[name="start_date"]').value + "T00:00")
             .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-        el.textContent = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
+        let msg = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
+        if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
+        el.textContent = msg;
         el.style.display = "";
         return;
     }
@@ -524,7 +535,16 @@ function updateScheduleSummary() {
         dateStr = " until " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     }
 
-    el.textContent = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
+    let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
+    if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
+
+    // Warn if end date is in the past
+    const endDate = form.querySelector('[name="end_date"]').value;
+    if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
+        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+    }
+
+    el.textContent = msg;
     el.style.display = "";
 }
 

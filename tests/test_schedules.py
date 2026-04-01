@@ -203,6 +203,48 @@ class TestScheduleCRUD:
         })
         assert resp.status_code == 422
 
+    async def test_reject_conflict_same_priority(self, client, db_session):
+        """Server should reject a schedule that conflicts (same device, same priority, overlapping time)."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        resp1 = await client.post("/api/schedules", json={
+            "name": "Morning",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+        })
+        assert resp1.status_code == 201
+        resp2 = await client.post("/api/schedules", json={
+            "name": "Overlap",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "10:00",
+            "end_time": "14:00",
+        })
+        assert resp2.status_code == 409
+        assert "Conflicts with" in resp2.json()["detail"]
+
+    async def test_allow_overlap_different_priority(self, client, db_session):
+        """Overlapping schedules with different priorities are allowed."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        await client.post("/api/schedules", json={
+            "name": "Low",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "priority": 0,
+        })
+        resp = await client.post("/api/schedules", json={
+            "name": "High",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "priority": 5,
+        })
+        assert resp.status_code == 201
+
 
 @pytest.mark.asyncio
 class TestScheduleUI:

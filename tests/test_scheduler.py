@@ -14,6 +14,10 @@ from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
     _matches_now,
     _schedule_to_entry,
+    _times_overlap,
+    _days_overlap,
+    _dates_overlap,
+    schedules_conflict,
     build_device_sync,
 )
 
@@ -471,3 +475,143 @@ class TestBuildDeviceSync:
 
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.schedules == []
+
+
+# ── Overlap helper tests ──
+
+
+class TestTimesOverlap:
+    def test_no_overlap(self):
+        assert _times_overlap(time(9, 0), time(12, 0), time(13, 0), time(17, 0)) is False
+
+    def test_adjacent_no_overlap(self):
+        """End of one == start of next — no overlap (end is exclusive)."""
+        assert _times_overlap(time(9, 0), time(12, 0), time(12, 0), time(17, 0)) is False
+
+    def test_overlap(self):
+        assert _times_overlap(time(9, 0), time(14, 0), time(12, 0), time(17, 0)) is True
+
+    def test_contained(self):
+        assert _times_overlap(time(9, 0), time(17, 0), time(10, 0), time(12, 0)) is True
+
+    def test_identical(self):
+        assert _times_overlap(time(9, 0), time(17, 0), time(9, 0), time(17, 0)) is True
+
+    def test_overnight_vs_daytime(self):
+        """22:00-06:00 overlaps with 05:00-08:00."""
+        assert _times_overlap(time(22, 0), time(6, 0), time(5, 0), time(8, 0)) is True
+
+    def test_overnight_vs_daytime_no_overlap(self):
+        """22:00-06:00 does not overlap 08:00-12:00."""
+        assert _times_overlap(time(22, 0), time(6, 0), time(8, 0), time(12, 0)) is False
+
+    def test_both_overnight(self):
+        """Two overnight spans always overlap."""
+        assert _times_overlap(time(22, 0), time(4, 0), time(23, 0), time(6, 0)) is True
+
+    def test_zero_length_no_overlap(self):
+        assert _times_overlap(time(9, 0), time(9, 0), time(8, 0), time(10, 0)) is False
+
+
+class TestDaysOverlap:
+    def test_none_means_every_day(self):
+        assert _days_overlap(None, [1, 2, 3]) is True
+        assert _days_overlap([1, 2], None) is True
+        assert _days_overlap(None, None) is True
+
+    def test_shared_day(self):
+        assert _days_overlap([1, 2, 3], [3, 4, 5]) is True
+
+    def test_no_shared_day(self):
+        assert _days_overlap([1, 2, 3], [4, 5, 6]) is False
+
+
+class TestDatesOverlap:
+    def test_both_unbounded(self):
+        assert _dates_overlap(None, None, None, None) is True
+
+    def test_one_ends_before_other_starts(self):
+        assert _dates_overlap(
+            datetime(2026, 1, 1), datetime(2026, 1, 31),
+            datetime(2026, 3, 1), datetime(2026, 3, 31),
+        ) is False
+
+    def test_overlapping_ranges(self):
+        assert _dates_overlap(
+            datetime(2026, 1, 1), datetime(2026, 3, 15),
+            datetime(2026, 3, 1), datetime(2026, 3, 31),
+        ) is True
+
+    def test_same_day(self):
+        assert _dates_overlap(
+            datetime(2026, 4, 1), datetime(2026, 4, 1),
+            datetime(2026, 4, 1), datetime(2026, 4, 1),
+        ) is True
+
+    def test_one_unbounded_end(self):
+        assert _dates_overlap(
+            datetime(2026, 1, 1), None,
+            datetime(2026, 6, 1), datetime(2026, 6, 30),
+        ) is True
+
+
+class TestSchedulesConflict:
+    def _make(self, device_id="dev-1", group_id=None, priority=0,
+              start_time=time(9, 0), end_time=time(17, 0),
+              start_date=None, end_date=None, days_of_week=None):
+        return Schedule(
+            name="test",
+            asset_id=uuid.uuid4(),
+            device_id=device_id,
+            group_id=group_id,
+            enabled=True,
+            start_time=start_time,
+            end_time=end_time,
+            start_date=start_date,
+            end_date=end_date,
+            days_of_week=days_of_week,
+            priority=priority,
+        )
+
+    def test_conflict_same_target_same_priority(self):
+        a = self._make()
+        b = self._make()
+        assert schedules_conflict(a, b) is True
+
+    def test_no_conflict_different_priority(self):
+        a = self._make(priority=0)
+        b = self._make(priority=1)
+        assert schedules_conflict(a, b) is False
+
+    def test_no_conflict_different_device(self):
+        a = self._make(device_id="dev-1")
+        b = self._make(device_id="dev-2")
+        assert schedules_conflict(a, b) is False
+
+    def test_no_conflict_different_times(self):
+        a = self._make(start_time=time(9, 0), end_time=time(12, 0))
+        b = self._make(start_time=time(14, 0), end_time=time(17, 0))
+        assert schedules_conflict(a, b) is False
+
+    def test_no_conflict_different_days(self):
+        a = self._make(days_of_week=[1, 2, 3])
+        b = self._make(days_of_week=[4, 5, 6])
+        assert schedules_conflict(a, b) is False
+
+    def test_no_conflict_different_dates(self):
+        a = self._make(start_date=datetime(2026, 1, 1), end_date=datetime(2026, 1, 31))
+        b = self._make(start_date=datetime(2026, 3, 1), end_date=datetime(2026, 3, 31))
+        assert schedules_conflict(a, b) is False
+
+    def test_conflict_overlapping_everything(self):
+        a = self._make(
+            start_time=time(8, 0), end_time=time(12, 0),
+            days_of_week=[1, 2, 3],
+            start_date=datetime(2026, 4, 1), end_date=datetime(2026, 4, 30),
+        )
+        b = self._make(
+            start_time=time(10, 0), end_time=time(14, 0),
+            days_of_week=[3, 4, 5],
+            start_date=datetime(2026, 4, 15), end_date=datetime(2026, 5, 15),
+        )
+        assert schedules_conflict(a, b) is True
