@@ -539,7 +539,6 @@ function updateScheduleSummary() {
     if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
 
     // Warn if end date is in the past
-    const endDate = form.querySelector('[name="end_date"]').value;
     if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
         msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
     }
