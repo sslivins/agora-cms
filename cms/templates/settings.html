@@ -11,6 +11,18 @@
 {% endif %}
 
 <div class="card">
+    <h2>System Info</h2>
+    <table>
+        <tbody>
+            <tr><td>CMS Version</td><td>{{ version }}</td></tr>
+            <tr><td>Admin Username</td><td>{{ username }}</td></tr>
+            <tr><td>Connected Devices</td><td>{{ online_count }}</td></tr>
+            <tr><td>Asset Storage</td><td>{{ asset_storage }}</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
     <h2>Change Password</h2>
     <form method="POST" action="/settings/password" class="settings-form">
         <div class="form-group">
@@ -27,17 +39,5 @@
         </div>
         <button type="submit" class="btn btn-primary">Update Password</button>
     </form>
-</div>
-
-<div class="card">
-    <h2>System Info</h2>
-    <table>
-        <tbody>
-            <tr><td>CMS Version</td><td>{{ version }}</td></tr>
-            <tr><td>Admin Username</td><td>{{ username }}</td></tr>
-            <tr><td>Connected Devices</td><td>{{ online_count }}</td></tr>
-            <tr><td>Asset Storage</td><td>{{ asset_storage }}</td></tr>
-        </tbody>
-    </table>
 </div>
 {% endblock %}
