@@ -434,3 +434,178 @@ class TestPendingDeviceNameDisplay:
         # The adopt button should pass the friendly name for display
         assert "adoptDevice(" in html
         assert "Living Room TV" in html
+
+
+@pytest.mark.asyncio
+class TestDefaultAssetVariantResolution:
+    """Regression test: setting a device's default asset must use the transcoded
+    variant when the device has a profile, not the original source file.
+
+    Bug: _push_default_asset() previously built FetchAssetMessage directly with
+    the source asset URL, bypassing _resolve_asset_for_device(). This caused
+    devices with H.264-only pipelines to receive AV1/VP9 source files → black screen.
+    """
+
+    async def test_default_asset_sends_variant_url_not_source(self, client, db_session):
+        """PATCH default_asset_id on a profiled device must send variant download URL."""
+        from unittest.mock import AsyncMock, patch
+        from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+        from cms.models.device import Device, DeviceStatus
+        from cms.models.device_profile import DeviceProfile
+        from cms.services.device_manager import device_manager
+
+        # Create a profile (e.g. pi-zero-2w: H.264)
+        profile = DeviceProfile(name="pi-zero-2w", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        # Create source video asset (e.g. AV1 original)
+        source = Asset(
+            filename="Sony_4k60_AV1.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=30_000_000, checksum="source_av1_checksum",
+        )
+        db_session.add(source)
+        await db_session.flush()
+
+        # Create READY variant (H.264 transcode)
+        variant = AssetVariant(
+            source_asset_id=source.id, profile_id=profile.id,
+            status=VariantStatus.READY,
+            filename="Sony_4k60_AV1_pi-zero-2w.mp4",
+            size_bytes=42_000_000, checksum="variant_h264_checksum",
+        )
+        db_session.add(variant)
+        await db_session.flush()
+
+        # Create adopted device with profile assigned
+        device = Device(
+            id="test-variant-pi", name="Variant Test Pi",
+            status=DeviceStatus.ADOPTED, profile_id=profile.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        # Mock the device as connected and capture sent messages
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("test-variant-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                "/api/devices/test-variant-pi",
+                json={"default_asset_id": str(source.id)},
+            )
+            assert resp.status_code == 200
+
+            # Should have sent fetch_asset + play
+            assert len(sent_messages) == 2
+            fetch_msg = sent_messages[0]
+            assert fetch_msg["type"] == "fetch_asset"
+
+            # CRITICAL: URL must point to variant download, NOT source asset download
+            assert f"/api/assets/variants/{variant.id}/download" in fetch_msg["download_url"]
+            assert f"/api/assets/{source.id}/download" not in fetch_msg["download_url"]
+
+            # Checksum and size must be the variant's, not the source's
+            assert fetch_msg["checksum"] == "variant_h264_checksum"
+            assert fetch_msg["size_bytes"] == 42_000_000
+
+            # asset_name should still be the source filename (device saves under this name)
+            assert fetch_msg["asset_name"] == "Sony_4k60_AV1.mp4"
+        finally:
+            device_manager.disconnect("test-variant-pi")
+
+    async def test_default_asset_image_bypasses_variant(self, client, db_session):
+        """Images should use source URL directly even when device has a profile."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+        from cms.models.device_profile import DeviceProfile
+        from cms.services.device_manager import device_manager
+
+        profile = DeviceProfile(name="pi-zero-img", video_codec="h264")
+        db_session.add(profile)
+        await db_session.flush()
+
+        image = Asset(
+            filename="splash.png", asset_type=AssetType.IMAGE,
+            size_bytes=1024, checksum="img_checksum",
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        device = Device(
+            id="test-img-pi", name="Image Test",
+            status=DeviceStatus.ADOPTED, profile_id=profile.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("test-img-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                "/api/devices/test-img-pi",
+                json={"default_asset_id": str(image.id)},
+            )
+            assert resp.status_code == 200
+
+            fetch_msg = sent_messages[0]
+            assert fetch_msg["type"] == "fetch_asset"
+            # Image should use source URL (no variant for images)
+            assert f"/api/assets/{image.id}/download" in fetch_msg["download_url"]
+            assert fetch_msg["checksum"] == "img_checksum"
+        finally:
+            device_manager.disconnect("test-img-pi")
+
+    async def test_default_asset_no_profile_uses_source(self, client, db_session):
+        """Device without a profile should get the source asset URL."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        video = Asset(
+            filename="test.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=5_000_000, checksum="src_checksum",
+        )
+        db_session.add(video)
+        await db_session.flush()
+
+        device = Device(
+            id="test-noprof-pi", name="No Profile",
+            status=DeviceStatus.ADOPTED,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("test-noprof-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                "/api/devices/test-noprof-pi",
+                json={"default_asset_id": str(video.id)},
+            )
+            assert resp.status_code == 200
+
+            fetch_msg = sent_messages[0]
+            assert fetch_msg["type"] == "fetch_asset"
+            # No profile → source URL directly
+            assert f"/api/assets/{video.id}/download" in fetch_msg["download_url"]
+            assert fetch_msg["checksum"] == "src_checksum"
+        finally:
+            device_manager.disconnect("test-noprof-pi")
