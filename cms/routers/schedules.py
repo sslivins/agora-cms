@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from cms.auth import require_auth
 from cms.database import get_db
 from cms.models.schedule import Schedule
+from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_sync_hash, schedules_conflict
 
@@ -185,8 +186,27 @@ async def end_schedule_now(schedule_id: uuid.UUID, db: AsyncSession = Depends(ge
 
     skip_schedule_until(str(schedule.id), end_today)
 
-    # Clear sync hash and re-push so devices drop this schedule immediately
+    # Log SKIPPED event for each target device
+    from cms.models.device import Device
     target_ids = await _get_target_device_ids(schedule, db)
+    if target_ids:
+        name_q = await db.execute(
+            select(Device.id, Device.name).where(Device.id.in_(target_ids))
+        )
+        dev_names = {r[0]: (r[1] or r[0]) for r in name_q.all()}
+        for did in target_ids:
+            db.add(ScheduleLog(
+                schedule_id=schedule.id,
+                schedule_name=schedule.name,
+                device_id=did,
+                device_name=dev_names.get(did, did),
+                asset_filename=schedule.asset.filename,
+                event=ScheduleLogEvent.SKIPPED,
+                details="Ended early by admin",
+            ))
+        await db.commit()
+
+    # Clear sync hash and re-push so devices drop this schedule immediately
     for did in target_ids:
         clear_sync_hash(did)
         await push_sync_to_device(did, db)

@@ -27,6 +27,7 @@ from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
+from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.services.device_manager import device_manager
 from cms.services.version_checker import get_latest_device_version, is_update_available
 
@@ -192,6 +193,17 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
+    # Recent activity (last 24h)
+    from datetime import timedelta
+    cutoff_24h = now - timedelta(hours=24)
+    recent_q = await db.execute(
+        select(ScheduleLog)
+        .where(ScheduleLog.timestamp >= cutoff_24h)
+        .order_by(ScheduleLog.timestamp.desc())
+        .limit(50)
+    )
+    recent_activity = recent_q.scalars().all()
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_tab": "dashboard",
         "tz": tz,
@@ -203,6 +215,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "device_states": device_states,
         "upcoming_today": upcoming_today,
         "upcoming_tomorrow": upcoming_tomorrow,
+        "recent_activity": recent_activity,
     })
 
 
@@ -262,6 +275,14 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     all_schedules = sched_q.scalars().all()
     upcoming = get_upcoming_schedules(all_schedules, now, tz)
 
+    # Recent activity count for change detection
+    from datetime import timedelta
+    cutoff_24h = now - timedelta(hours=24)
+    activity_count_q = await db.execute(
+        select(func.count(ScheduleLog.id)).where(ScheduleLog.timestamp >= cutoff_24h)
+    )
+    activity_count = activity_count_q.scalar() or 0
+
     return JSONResponse({
         "now_playing": now_playing,
         "pending_ids": pending_ids,
@@ -269,6 +290,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         "offline_ids": offline_ids,
         "device_states": device_states,
         "upcoming": upcoming,
+        "activity_count": activity_count,
     })
 
 
@@ -588,4 +610,28 @@ async def change_timezone(
         "timezones": timezones,
         "success": f"Timezone set to {tz_name}",
         "error": None,
+    })
+
+
+# ── History ──
+
+
+@router.get("/history", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def history_page(request: Request, db: AsyncSession = Depends(get_db)):
+    from datetime import datetime as _dt, timezone as _tz
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+
+    result = await db.execute(
+        select(ScheduleLog)
+        .order_by(ScheduleLog.timestamp.desc())
+        .limit(200)
+    )
+    logs = result.scalars().all()
+
+    return templates.TemplateResponse(request, "history.html", {
+        "active_tab": "history",
+        "tz": tz,
+        "logs": logs,
     })
