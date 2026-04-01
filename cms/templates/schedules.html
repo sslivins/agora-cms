@@ -339,7 +339,52 @@ function editSchedule(s) {
     document.body.appendChild(overlay);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#edit-cancel").onclick = () => overlay.remove();
+
+    // Auto-advance end time/date in edit modal
+    function editGetMins(hId, mId, pId) {
+        const h = parseInt(box.querySelector(hId).value);
+        const m = parseInt(box.querySelector(mId).value);
+        if (isNaN(h) || isNaN(m)) return null;
+        return (h % 12 + (box.querySelector(pId).value === "PM" ? 12 : 0)) * 60 + m;
+    }
+    function editSetMins(mins, hId, mId, pId) {
+        mins = ((mins % (24 * 60)) + 24 * 60) % (24 * 60);
+        let h24 = Math.floor(mins / 60), m = mins % 60;
+        const period = h24 >= 12 ? "PM" : "AM";
+        let h12 = h24 % 12; if (h12 === 0) h12 = 12;
+        box.querySelector(hId).value = h12;
+        box.querySelector(mId).value = m;
+        box.querySelector(pId).value = period;
+    }
+    function onEditStartTimeChange() {
+        const startMins = editGetMins("#edit-start-hour", "#edit-start-minute", "#edit-start-period");
+        const endMins = editGetMins("#edit-end-hour", "#edit-end-minute", "#edit-end-period");
+        if (startMins === null) return;
+        if (endMins === null || endMins <= startMins) {
+            editSetMins(startMins + 60, "#edit-end-hour", "#edit-end-minute", "#edit-end-period");
+        }
+    }
+    ["#edit-start-hour", "#edit-start-minute", "#edit-start-period"].forEach(id => {
+        box.querySelector(id).addEventListener("change", onEditStartTimeChange);
+    });
+    box.querySelector("#edit-start-date").addEventListener("change", function() {
+        const endEl = box.querySelector("#edit-end-date");
+        if (!endEl.value || endEl.value < this.value) endEl.value = this.value;
+    });
+
     box.querySelector("#edit-save").onclick = async () => {
+        const startTime = to24h(box.querySelector("#edit-start-hour").value, box.querySelector("#edit-start-minute").value, box.querySelector("#edit-start-period").value);
+        const endTime = to24h(box.querySelector("#edit-end-hour").value, box.querySelector("#edit-end-minute").value, box.querySelector("#edit-end-period").value);
+        if (startTime === endTime) {
+            showToast("Start time and end time cannot be the same", true);
+            return;
+        }
+        const startDate = box.querySelector("#edit-start-date").value;
+        const endDate = box.querySelector("#edit-end-date").value;
+        if (startDate && endDate && endDate < startDate) {
+            showToast("End date cannot be before start date", true);
+            return;
+        }
         const days = [];
         for (let i = 1; i <= 7; i++) {
             const cb = box.querySelector(`[name="edit_day_${i}"]`);
@@ -352,10 +397,10 @@ function editSchedule(s) {
             asset_id: box.querySelector("#edit-asset").value,
             device_id: editTargetType === "device" ? editTargetId : null,
             group_id: editTargetType === "group" ? editTargetId : null,
-            start_time: to24h(box.querySelector("#edit-start-hour").value, box.querySelector("#edit-start-minute").value, box.querySelector("#edit-start-period").value),
-            end_time: to24h(box.querySelector("#edit-end-hour").value, box.querySelector("#edit-end-minute").value, box.querySelector("#edit-end-period").value),
-            start_date: box.querySelector("#edit-start-date").value || null,
-            end_date: box.querySelector("#edit-end-date").value || null,
+            start_time: startTime,
+            end_time: endTime,
+            start_date: startDate || null,
+            end_date: endDate || null,
             days_of_week: days.length ? days : null,
             priority: parseInt(box.querySelector("#edit-priority").value) || 0,
         };
@@ -496,6 +541,53 @@ document.addEventListener("DOMContentLoaded", function() {
     for (let i = 1; i <= 7; i++) {
         form.querySelector(`[name="day_${i}"]`).addEventListener("change", updateScheduleSummary);
     }
+
+    // Auto-advance end time when start time changes
+    function getTimeMins(hourEl, minEl, periodEl) {
+        const h = parseInt(hourEl.value);
+        const m = parseInt(minEl.value);
+        if (isNaN(h) || isNaN(m)) return null;
+        let h24 = h % 12 + (periodEl.value === "PM" ? 12 : 0);
+        return h24 * 60 + m;
+    }
+    function setTimeFromMins(mins, hourEl, minEl, periodEl) {
+        mins = ((mins % (24 * 60)) + 24 * 60) % (24 * 60);
+        let h24 = Math.floor(mins / 60);
+        let m = mins % 60;
+        const period = h24 >= 12 ? "PM" : "AM";
+        let h12 = h24 % 12;
+        if (h12 === 0) h12 = 12;
+        hourEl.value = h12;
+        minEl.value = m;
+        periodEl.value = period;
+    }
+    function onStartTimeChange() {
+        const sh = form.querySelector('[name="start_hour"]');
+        const sm = form.querySelector('[name="start_minute"]');
+        const sp = form.querySelector('[name="start_period"]');
+        const eh = form.querySelector('[name="end_hour"]');
+        const em = form.querySelector('[name="end_minute"]');
+        const ep = form.querySelector('[name="end_period"]');
+        const startMins = getTimeMins(sh, sm, sp);
+        const endMins = getTimeMins(eh, em, ep);
+        if (startMins === null) return;
+        if (endMins === null || endMins <= startMins) {
+            setTimeFromMins(startMins + 60, eh, em, ep);
+            updateScheduleSummary();
+        }
+    }
+    ["start_hour", "start_minute", "start_period"].forEach(n => {
+        form.querySelector(`[name="${n}"]`).addEventListener("change", onStartTimeChange);
+    });
+
+    // Auto-advance end date when start date changes
+    form.querySelector('[name="start_date"]').addEventListener("change", function() {
+        const endEl = form.querySelector('[name="end_date"]');
+        if (!endEl.value || endEl.value < this.value) {
+            endEl.value = this.value;
+            updateScheduleSummary();
+        }
+    });
 });
 </script>
 {% endblock %}

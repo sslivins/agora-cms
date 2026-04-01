@@ -395,11 +395,23 @@ function to24h(hour, minute, period) {
 
 async function createSchedule(form) {
     const data = new FormData(form);
+    const startTime = to24h(data.get("start_hour"), data.get("start_minute"), data.get("start_period"));
+    const endTime = to24h(data.get("end_hour"), data.get("end_minute"), data.get("end_period"));
+    if (startTime === endTime) {
+        showToast("Start time and end time cannot be the same", true);
+        return false;
+    }
+    const startDate = data.get("start_date");
+    const endDate = data.get("end_date");
+    if (startDate && endDate && endDate < startDate) {
+        showToast("End date cannot be before start date", true);
+        return false;
+    }
     const body = {
         name: data.get("name"),
         asset_id: data.get("asset_id"),
-        start_time: to24h(data.get("start_hour"), data.get("start_minute"), data.get("start_period")),
-        end_time: to24h(data.get("end_hour"), data.get("end_minute"), data.get("end_period")),
+        start_time: startTime,
+        end_time: endTime,
         priority: parseInt(data.get("priority") || "0"),
         enabled: true,
     };

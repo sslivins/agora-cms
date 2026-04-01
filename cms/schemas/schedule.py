@@ -28,6 +28,15 @@ class ScheduleCreate(BaseModel):
             raise ValueError("Set device_id or group_id, not both")
         return self
 
+    @model_validator(mode="after")
+    def check_dates_and_times(self):
+        if self.start_time == self.end_time:
+            raise ValueError("Start time and end time cannot be the same")
+        if self.start_date and self.end_date:
+            if self.end_date.date() < self.start_date.date():
+                raise ValueError("End date cannot be before start date")
+        return self
+
 
 class ScheduleUpdate(BaseModel):
     name: Optional[str] = None
@@ -41,6 +50,16 @@ class ScheduleUpdate(BaseModel):
     days_of_week: Optional[list[int]] = None
     priority: Optional[int] = None
     enabled: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def check_dates_and_times(self):
+        if self.start_time is not None and self.end_time is not None:
+            if self.start_time == self.end_time:
+                raise ValueError("Start time and end time cannot be the same")
+        if self.start_date is not None and self.end_date is not None:
+            if self.end_date.date() < self.start_date.date():
+                raise ValueError("End date cannot be before start date")
+        return self
 
 
 class ScheduleOut(BaseModel):
