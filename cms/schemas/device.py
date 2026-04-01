@@ -32,6 +32,7 @@ class DeviceUpdate(BaseModel):
     status: Optional[DeviceStatus] = None
     group_id: Optional[uuid.UUID] = None
     default_asset_id: Optional[uuid.UUID] = None
+    profile_id: Optional[uuid.UUID] = None
 
 
 class DeviceGroupOut(BaseModel):

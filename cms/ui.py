@@ -334,12 +334,16 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     assets_q = await db.execute(select(Asset).order_by(Asset.filename))
     assets = assets_q.scalars().all()
 
+    profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
+    profiles = profiles_q.scalars().all()
+
     return templates.TemplateResponse(request, "devices.html", {
         "active_tab": "devices",
         "devices": devices,
         "groups": groups,
         "ungrouped": ungrouped,
         "assets": assets,
+        "profiles": profiles,
         "latest_version": get_latest_device_version(),
     })
 
