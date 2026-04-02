@@ -456,6 +456,45 @@ class TestBuildDeviceSync:
         assert len(sync.schedules) == 1
         assert sync.schedules[0].name == "Naive Dates"
 
+    async def test_end_date_uses_local_timezone_not_utc(self, db):
+        """Schedule ending today in local TZ must not be filtered out when UTC date is tomorrow.
+
+        Scenario: CMS timezone is America/Los_Angeles (UTC-7).
+        It's 9 PM PDT April 1st (= 4 AM UTC April 2nd).
+        Schedule has end_date=April 1st.
+        The schedule should still be included because it's still April 1st locally.
+        """
+        from unittest.mock import patch
+        await self._setup_tz(db, tz="America/Los_Angeles")
+        asset = Asset(filename="tz-test.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="tz")
+        db.add(asset)
+        await db.flush()
+
+        await self._setup_device(db)
+
+        sched = Schedule(
+            name="TZ End Date",
+            device_id="sync-pi-01",
+            asset_id=asset.id,
+            start_time=time(20, 0),
+            end_time=time(22, 0),
+            start_date=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            end_date=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        db.add(sched)
+        await db.commit()
+
+        # 4 AM UTC April 2nd = 9 PM PDT April 1st
+        fake_now = datetime(2026, 4, 2, 4, 0, 0, tzinfo=timezone.utc)
+        with patch("cms.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            sync = await build_device_sync("sync-pi-01", db)
+
+        assert len(sync.schedules) == 1
+        assert sync.schedules[0].name == "TZ End Date"
+
     async def test_disabled_schedule_excluded(self, db):
         """Disabled schedule is excluded from sync."""
         await self._setup_tz(db)

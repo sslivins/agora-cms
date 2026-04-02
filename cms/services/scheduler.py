@@ -321,6 +321,11 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(days=SCHEDULE_WINDOW_DAYS)
+    # Convert to local time for date comparisons — schedule dates represent
+    # days in the CMS timezone, not UTC (e.g. a schedule ending April 1st
+    # PDT is still valid at 9 PM PDT even though it's April 2nd UTC).
+    local_now = now.astimezone(ZoneInfo(tz_name))
+    local_cutoff = cutoff.astimezone(ZoneInfo(tz_name))
 
     # Load device with default asset
     dev_result = await db.execute(
@@ -381,9 +386,9 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
         if not s.asset:
             continue
         # Check date range — skip if entirely in the past or beyond the window
-        # Use .date() comparisons to avoid naive/aware datetime mismatches (aiosqlite)
-        today = now.date()
-        cutoff_date = cutoff.date()
+        # Use .date() on local time — schedule dates represent days in the CMS timezone
+        today = local_now.date()
+        cutoff_date = local_cutoff.date()
         if s.end_date:
             end_d = s.end_date.date() if hasattr(s.end_date, 'date') else s.end_date
             if end_d < today:
