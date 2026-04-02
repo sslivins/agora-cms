@@ -277,6 +277,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     uptime_seconds=msg.get("uptime_seconds", 0),
                     cpu_temp_c=msg.get("cpu_temp_c"),
                     error=msg.get("error"),
+                    pipeline_state=msg.get("pipeline_state", "NULL"),
+                    started_at=msg.get("started_at"),
+                    playback_position_ms=msg.get("playback_position_ms"),
                 )
 
                 # Rotate API key if due

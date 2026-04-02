@@ -136,6 +136,17 @@ document.addEventListener("DOMContentLoaded", () => {
         const cap = parseInt(el.dataset.storageMb);
         el.textContent = used ? humanStorage(used) + " / " + humanStorage(cap) : humanStorage(cap);
     });
+    // Playback position (ms → h:mm:ss)
+    document.querySelectorAll("[data-position-ms]").forEach(el => {
+        const ms = parseInt(el.dataset.positionMs);
+        if (isNaN(ms) || ms < 0) return;
+        const totalSec = Math.floor(ms / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        const pad = n => String(n).padStart(2, "0");
+        el.textContent = h > 0 ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
+    });
 });
 
 // ── Device expand/collapse ──

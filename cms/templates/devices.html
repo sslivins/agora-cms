@@ -94,6 +94,27 @@
                 <span class="detail-label">Last Seen</span>
                 <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
             </div>
+            {% if d.is_online %}
+            <div class="detail-item">
+                <span class="detail-label">Playback</span>
+                <span class="detail-value">
+                    {% if d.playback_mode == 'play' and d.playback_asset %}
+                        <span class="badge badge-online">Playing</span> {{ d.playback_asset }}
+                        {% if d.playback_position_ms is not none %}
+                        <span class="text-muted" data-position-ms="{{ d.playback_position_ms }}"></span>
+                        {% endif %}
+                    {% elif d.playback_mode == 'splash' %}
+                        <span class="badge badge-pending">Splash</span>
+                    {% else %}
+                        <span class="text-muted">{{ d.playback_mode or '—' }}</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Pipeline State</span>
+                <span class="detail-value">{{ d.pipeline_state or '—' }}</span>
+            </div>
+            {% endif %}
         </div>
         {% if d.is_online %}
         <div class="detail-toolbar">

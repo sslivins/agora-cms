@@ -312,6 +312,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
         d.ip_address = state["ip_address"] if state else None
+        d.playback_mode = state["mode"] if state else None
+        d.playback_asset = state["asset"] if state else None
+        d.pipeline_state = state["pipeline_state"] if state else None
+        d.started_at = state["started_at"] if state else None
+        d.playback_position_ms = state["playback_position_ms"] if state else None
         d.update_available = is_update_available(d.firmware_version)
 
     groups_q = await db.execute(
@@ -329,6 +334,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
             d.ip_address = state["ip_address"] if state else None
+            d.playback_mode = state["mode"] if state else None
+            d.playback_asset = state["asset"] if state else None
+            d.pipeline_state = state["pipeline_state"] if state else None
+            d.started_at = state["started_at"] if state else None
+            d.playback_position_ms = state["playback_position_ms"] if state else None
             d.update_available = is_update_available(d.firmware_version)
 
     # Devices not assigned to any group

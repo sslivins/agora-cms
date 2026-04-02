@@ -63,6 +63,9 @@ class StatusMessage(BaseMessage):
     device_id: str
     mode: str  # "play", "stop", "splash"
     asset: Optional[str] = None
+    pipeline_state: str = "NULL"
+    started_at: Optional[str] = None
+    playback_position_ms: Optional[int] = None
     uptime_seconds: int = 0
     storage_used_mb: int = 0
     cpu_temp_c: Optional[float] = None
