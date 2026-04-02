@@ -1,5 +1,8 @@
 """Playwright tests for the Devices page."""
 
+import asyncio
+import threading
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -135,3 +138,78 @@ class TestDeleteDeviceWithSchedules:
 
         # Device should be gone from all sections
         expect(page.locator('[data-device-id="del-e2e-001"]')).to_have_count(0)
+
+
+class TestPlaybackAssetTooltip:
+    """Tooltip on the playback asset name should show the full filename."""
+
+    def test_tooltip_shows_full_filename(self, page: Page, ws_url, e2e_server):
+        """Hovering over a truncated playback asset name should show the
+        full filename in the tooltip, not '?' or nothing."""
+
+        asset_name = "my_really_long_test_video_filename.mp4"
+        stop_event = threading.Event()
+        ready_event = threading.Event()
+
+        async def run_device():
+            dev = FakeDevice("tooltip-dev-001", ws_url)
+            await dev.connect()
+            await dev.send_status(mode="play", asset=asset_name)
+            ready_event.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.2)
+            await dev.disconnect()
+
+        thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
+        thread.start()
+        ready_event.wait(timeout=15)
+
+        try:
+            page.goto("/devices")
+            page.wait_for_load_state("domcontentloaded")
+
+            # Expand the device detail row
+            row = page.locator('[data-device-id="tooltip-dev-001"]').first
+            expect(row).to_be_visible(timeout=5000)
+            row.locator(".expand-toggle").click()
+
+            # The detail row should now be visible
+            detail = page.locator('[data-detail-for="tooltip-dev-001"]').first
+            expect(detail).to_be_visible(timeout=3000)
+
+            # Find the tooltip trigger (the .has-tooltip span with the asset name)
+            tooltip_trigger = detail.locator(".has-tooltip", has_text=asset_name).first
+            expect(tooltip_trigger).to_be_visible(timeout=3000)
+
+            # Hover to reveal the tooltip
+            tooltip_trigger.hover()
+
+            # The .tooltip child should become visible and contain the full filename
+            tooltip = tooltip_trigger.locator(".tooltip")
+            expect(tooltip).to_be_visible(timeout=3000)
+            expect(tooltip).to_contain_text(asset_name)
+
+            # Verify the tooltip is not clipped by overflow:hidden ancestors.
+            # A clipped tooltip would have a zero or near-zero visible height.
+            clip_info = page.evaluate("""(el) => {
+                const rect = el.getBoundingClientRect();
+                let ancestor = el.parentElement;
+                while (ancestor) {
+                    const style = window.getComputedStyle(ancestor);
+                    if (style.overflow === 'hidden' || style.overflowY === 'hidden') {
+                        const aRect = ancestor.getBoundingClientRect();
+                        // Check if tooltip extends outside the overflow container
+                        if (rect.top < aRect.top || rect.bottom > aRect.bottom) {
+                            return { clipped: true, tooltipTop: rect.top, ancestorTop: aRect.top };
+                        }
+                    }
+                    ancestor = ancestor.parentElement;
+                }
+                return { clipped: false };
+            }""", tooltip.element_handle())
+            assert not clip_info["clipped"], (
+                f"Tooltip is clipped by an overflow:hidden ancestor: {clip_info}"
+            )
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
