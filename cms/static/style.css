@@ -533,6 +533,8 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 .detail-item { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .detail-label { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
 .detail-value { font-size: 0.9rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-value:has(.has-tooltip) { overflow: visible; }
+.asset-name-truncate { display: inline-block; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .detail-value.monospace { font-family: monospace; font-size: 0.8rem; word-break: break-all; white-space: normal; }
 .detail-toolbar { padding: 0.75rem 0 0; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.75rem; }
 
