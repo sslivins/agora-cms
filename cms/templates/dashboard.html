@@ -4,7 +4,8 @@
 <h1>Dashboard</h1>
 
 {# ── Currently Playing ── #}
-<div class="card{{ ' card-playing' if now_playing }}">
+{% set has_mismatch = now_playing | selectattr("mismatch") | list %}
+<div class="card{{ ' card-playing-mismatch' if has_mismatch else ' card-playing' if now_playing }}">
     <h2>Currently Playing</h2>
     {% if now_playing %}
     <table>
@@ -13,6 +14,7 @@
                 <th>Device</th>
                 <th>Schedule</th>
                 <th>Asset</th>
+                <th>Status</th>
                 <th>Ends At</th>
                 <th>Time Remaining</th>
                 <th></th>
@@ -24,6 +26,13 @@
                 <td>{{ np.device_name }}</td>
                 <td>{{ np.schedule_name }}</td>
                 <td>{{ np.asset_filename }}</td>
+                <td>
+                    {% if np.mismatch %}
+                    <span class="has-tooltip"><span class="badge badge-missed">Not Playing</span><span class="tooltip">Device is {{ np.actual_mode }}{% if np.actual_asset %} ({{ np.actual_asset }}){% endif %} instead of {{ np.asset_filename }}</span></span>
+                    {% else %}
+                    <span class="badge badge-started">Playing</span>
+                    {% endif %}
+                </td>
                 <td>{{ np.end_time }}</td>
                 <td>{{ np.remaining }}</td>
                 <td><button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}')">End Now</button></td>
@@ -265,7 +274,7 @@ async function endNow(scheduleId) {
         // Bucket temperatures to avoid constant reloads from minor fluctuations
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
-            playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
+            playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.mismatch ? '!' : '')).sort(),
             devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
