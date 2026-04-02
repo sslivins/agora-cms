@@ -386,6 +386,7 @@ class TestBuildDeviceSync:
 
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.default_asset == "splash.png"
+        assert sync.splash == "splash.png"
 
     async def test_default_asset_group_fallback(self, db):
         """Group default asset is used when device has none."""
@@ -401,6 +402,16 @@ class TestBuildDeviceSync:
 
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.default_asset == "group-splash.png"
+        assert sync.splash == "group-splash.png"
+
+    async def test_splash_none_when_no_default(self, db):
+        """splash is None when device has no default asset at any level."""
+        await self._setup_tz(db)
+        await self._setup_device(db)
+
+        sync = await build_device_sync("sync-pi-01", db)
+        assert sync.default_asset is None
+        assert sync.splash is None
 
     async def test_nonexistent_device_returns_none(self, db):
         await self._setup_tz(db)
