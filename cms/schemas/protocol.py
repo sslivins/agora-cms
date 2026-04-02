@@ -101,6 +101,7 @@ class ScheduleEntry(BaseModel):
     end_date: Optional[str] = None    # "YYYY-MM-DD" or null (open-ended)
     days_of_week: Optional[list[int]] = None  # ISO 1-7, null = every day
     priority: int = 0
+    loop_count: Optional[int] = None  # None = infinite, N = play exactly N times
 
 
 class SyncMessage(BaseMessage):
@@ -116,6 +117,7 @@ class PlayMessage(BaseMessage):
     type: MessageType = MessageType.PLAY
     asset: str
     loop: bool = True
+    loop_count: Optional[int] = None
 
 
 class StopMessage(BaseMessage):

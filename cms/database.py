@@ -98,6 +98,11 @@ async def run_migrations():
             if not has_col:
                 await conn.execute(text(f"ALTER TABLE asset_variants ADD COLUMN {col} {col_type}"))
 
+        # -- schedules.loop_count --
+        has_loop_count = await conn.run_sync(lambda c: _has_column(c, "schedules", "loop_count"))
+        if not has_loop_count:
+            await conn.execute(text("ALTER TABLE schedules ADD COLUMN loop_count INTEGER"))
+
         # -- Rename device status enum: approved → adopted, offline → orphaned --
         # Guard: only run if the enum type exists (skip on fresh databases)
         enum_exists = await conn.execute(

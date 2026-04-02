@@ -19,6 +19,7 @@ class ScheduleCreate(BaseModel):
     days_of_week: Optional[list[int]] = None
     priority: int = 0
     enabled: bool = True
+    loop_count: Optional[int] = None
 
     @field_validator("start_date", "end_date", mode="before")
     @classmethod
@@ -61,6 +62,7 @@ class ScheduleUpdate(BaseModel):
     days_of_week: Optional[list[int]] = None
     priority: Optional[int] = None
     enabled: Optional[bool] = None
+    loop_count: Optional[int] = None
 
     @field_validator("start_date", "end_date", mode="before")
     @classmethod
@@ -102,4 +104,5 @@ class ScheduleOut(BaseModel):
     days_of_week: Optional[list[int]] = None
     priority: int
     enabled: bool
+    loop_count: Optional[int] = None
     created_at: datetime

@@ -464,6 +464,10 @@ async function createSchedule(form) {
     }
     if (days.length > 0 && days.length < 7) body.days_of_week = days;
 
+    // Explicit loop count (from round-to-loops)
+    const loopCountVal = data.get("loop_count");
+    if (loopCountVal) body.loop_count = parseInt(loopCountVal);
+
     const resp = await apiCall("POST", "/api/schedules", body);
     if (resp && resp.ok) {
         location.reload();

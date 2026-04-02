@@ -60,6 +60,7 @@ def schedule_json(s):
         "days_of_week": s.days_of_week or [],
         "priority": s.priority,
         "enabled": s.enabled,
+        "loop_count": s.loop_count,
     }
     return _json.dumps(data)
 

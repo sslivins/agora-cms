@@ -299,6 +299,7 @@ def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = N
         end_date=s.end_date.date().isoformat() if s.end_date else None,
         days_of_week=s.days_of_week,
         priority=s.priority,
+        loop_count=s.loop_count,
     )
 
 
