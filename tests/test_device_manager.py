@@ -184,3 +184,76 @@ class TestDeviceManagerErrorTracking:
         states = {s["device_id"]: s for s in dm.get_all_states()}
         assert states["dev-err-6"]["error"] is None
         assert states["dev-err-6"]["error_since"] is None
+
+
+class TestDeviceManagerPlaybackState:
+    """Playback state fields are stored and surfaced from device status heartbeats."""
+
+    def test_playback_fields_default_values(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-pb-1", FakeWS())
+        conn = dm.get("dev-pb-1")
+        assert conn.pipeline_state == "NULL"
+        assert conn.started_at is None
+        assert conn.playback_position_ms is None
+
+    def test_playback_fields_updated_on_status(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-pb-2", FakeWS())
+        dm.update_status(
+            "dev-pb-2",
+            mode="play",
+            asset="video.mp4",
+            pipeline_state="PLAYING",
+            started_at="2026-04-01T12:00:00+00:00",
+            playback_position_ms=30000,
+        )
+        conn = dm.get("dev-pb-2")
+        assert conn.pipeline_state == "PLAYING"
+        assert conn.started_at == "2026-04-01T12:00:00+00:00"
+        assert conn.playback_position_ms == 30000
+
+    def test_playback_fields_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-pb-3", FakeWS())
+        dm.update_status(
+            "dev-pb-3",
+            mode="play",
+            asset="video.mp4",
+            pipeline_state="PLAYING",
+            started_at="2026-04-01T12:00:00+00:00",
+            playback_position_ms=15000,
+        )
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-pb-3"]["pipeline_state"] == "PLAYING"
+        assert states["dev-pb-3"]["started_at"] == "2026-04-01T12:00:00+00:00"
+        assert states["dev-pb-3"]["playback_position_ms"] == 15000
+
+    def test_playback_position_none_when_not_playing(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-pb-4", FakeWS())
+        dm.update_status(
+            "dev-pb-4",
+            mode="splash",
+            asset=None,
+            pipeline_state="PLAYING",
+            playback_position_ms=None,
+        )
+        conn = dm.get("dev-pb-4")
+        assert conn.playback_position_ms is None

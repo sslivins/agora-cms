@@ -18,6 +18,9 @@ class ConnectedDevice:
         # Playback state from last STATUS message
         self.mode: str = "unknown"
         self.asset: Optional[str] = None
+        self.pipeline_state: str = "NULL"
+        self.started_at: Optional[str] = None
+        self.playback_position_ms: Optional[int] = None
         self.uptime_seconds: int = 0
         self.cpu_temp_c: Optional[float] = None
         # Error state from last STATUS message
@@ -73,11 +76,25 @@ class DeviceManager:
         for device_id in list(self._connections.keys()):
             await self.send_to_device(device_id, message)
 
-    def update_status(self, device_id: str, mode: str, asset: str | None, uptime_seconds: int = 0, cpu_temp_c: float | None = None, error: str | None = None):
+    def update_status(
+        self,
+        device_id: str,
+        mode: str,
+        asset: str | None,
+        uptime_seconds: int = 0,
+        cpu_temp_c: float | None = None,
+        error: str | None = None,
+        pipeline_state: str = "NULL",
+        started_at: str | None = None,
+        playback_position_ms: int | None = None,
+    ):
         conn = self._connections.get(device_id)
         if conn:
             conn.mode = mode
             conn.asset = asset
+            conn.pipeline_state = pipeline_state
+            conn.started_at = started_at
+            conn.playback_position_ms = playback_position_ms
             conn.uptime_seconds = uptime_seconds
             conn.cpu_temp_c = cpu_temp_c
             if error and not conn.error:
@@ -92,6 +109,9 @@ class DeviceManager:
                 "device_id": c.device_id,
                 "mode": c.mode,
                 "asset": c.asset,
+                "pipeline_state": c.pipeline_state,
+                "started_at": c.started_at,
+                "playback_position_ms": c.playback_position_ms,
                 "uptime_seconds": c.uptime_seconds,
                 "connected_at": c.connected_at.isoformat(),
                 "cpu_temp_c": c.cpu_temp_c,
