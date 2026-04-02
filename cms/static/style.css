@@ -182,6 +182,10 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-missed { background: var(--danger); color: #fff; }
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
+
+/* Expired schedules table */
+.table-expired tbody tr { opacity: 0.55; }
+.table-expired tbody tr:hover { opacity: 0.85; }
 .text-warning { color: var(--warning); }
 .text-danger { color: var(--danger); }
 

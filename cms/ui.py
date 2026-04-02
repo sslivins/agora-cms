@@ -58,6 +58,7 @@ def schedule_json(s):
         "end_date": s.end_date.strftime("%Y-%m-%d") if s.end_date else "",
         "days_of_week": s.days_of_week or [],
         "priority": s.priority,
+        "enabled": s.enabled,
     }
     return _json.dumps(data)
 
@@ -447,7 +448,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         )
         .order_by(Schedule.priority.desc(), Schedule.name)
     )
-    schedules = schedules_q.scalars().all()
+    all_schedules = schedules_q.scalars().all()
 
     assets_q = await db.execute(select(Asset).order_by(Asset.filename))
     assets = assets_q.scalars().all()
@@ -465,6 +466,16 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     from datetime import datetime, timezone as _tz
     now_utc = datetime.now(_tz.utc)
+    today_local = now_utc.astimezone(ZoneInfo(current_timezone)).date()
+
+    active_schedules = []
+    expired_schedules = []
+    for s in all_schedules:
+        if s.end_date and s.end_date.date() < today_local:
+            expired_schedules.append(s)
+        else:
+            active_schedules.append(s)
+
     tz_options = []
     for tz_name in sorted(available_timezones()):
         offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
@@ -476,7 +487,8 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     return templates.TemplateResponse(request, "schedules.html", {
         "active_tab": "schedules",
-        "schedules": schedules,
+        "schedules": active_schedules,
+        "expired_schedules": expired_schedules,
         "assets": assets,
         "devices": devices,
         "groups": groups,

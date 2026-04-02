@@ -136,6 +136,44 @@
     </table>
 </div>
 
+{% if expired_schedules %}
+<div class="card">
+    <h2>Expired Schedules</h2>
+    <p class="text-muted" style="margin-top:0;">These schedules have passed their end date and will no longer run.</p>
+    <table class="table-expired">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Asset</th>
+                <th>Target</th>
+                <th>Schedule</th>
+                <th>Priority</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in expired_schedules %}
+            <tr>
+                <td>{{ s.name }}</td>
+                <td>{{ s.asset.filename if s.asset else '—' }}</td>
+                <td>
+                    {% if s.device %}{{ s.device.name or s.device.id }}
+                    {% elif s.group %}{{ s.group.name }}
+                    {% else %}—{% endif %}
+                </td>
+                <td class="schedule-desc" data-schedule='{{ s | schedule_json }}'></td>
+                <td>{{ s.priority }}</td>
+                <td class="actions">
+                    <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
