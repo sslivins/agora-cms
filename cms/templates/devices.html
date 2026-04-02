@@ -52,6 +52,8 @@
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
+        {% elif d.is_upgrading %}
+        <span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
         {% elif d.is_online and d.update_available %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button><span class="tooltip">Update firmware from {{ d.firmware_version }} to {{ latest_version }}</span></span>
         {% endif %}
@@ -258,7 +260,7 @@ async function dropDevice(e, groupId) {
 }
 
 (function() {
-    const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}";
+    const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}:{{ devices | map(attribute='is_upgrading') | join(',') }}";
     setInterval(async () => {
         if (isModalOpen()) return;
         const el = document.activeElement;
@@ -269,7 +271,7 @@ async function dropDevice(e, groupId) {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;
             const devices = await resp.json();
-            const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",") + ":" + devices.map(d => d.firmware_version || "").join(",") + ":" + devices.map(d => d.is_online).join(",");
+            const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",") + ":" + devices.map(d => d.firmware_version || "").join(",") + ":" + devices.map(d => d.is_online).join(",") + ":" + devices.map(d => d.is_upgrading).join(",");
             if (state !== knownState) location.reload();
         } catch (e) { /* ignore */ }
     }, 5000);
