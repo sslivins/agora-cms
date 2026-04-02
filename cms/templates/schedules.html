@@ -685,8 +685,8 @@ function editSchedule(s) {
     box.querySelector("#edit-name").addEventListener('input', updateEditSummary);
     box.querySelector("#edit-asset").addEventListener('change', updateEditSummary);
     for (let i = 1; i <= 7; i++) {
-        const cb = box.querySelector(`[name="edit_day_${i}"]`);
-        if (cb) cb.addEventListener('change', updateEditSummary);
+        const dayCb = box.querySelector(`[name="edit_day_${i}"]`);
+        if (dayCb) dayCb.addEventListener('change', updateEditSummary);
     }
 
     // Event delegation for round-to-loop links in edit modal
@@ -697,9 +697,9 @@ function editSchedule(s) {
         const targetLoops = parseInt(link.dataset.loops);
         const assetDur = getSelectedAssetDuration(box);
         if (!assetDur || !targetLoops) return;
-        const startMins = timeToMins(editStartTimeEl.value);
-        if (startMins === null) return;
-        const newEndMins = Math.round(startMins + (targetLoops * assetDur) / 60);
+        const loopStart = timeToMins(editStartTimeEl.value);
+        if (loopStart === null) return;
+        const newEndMins = Math.round(loopStart + (targetLoops * assetDur) / 60);
         editEndTimeEl.value = minsToTime(newEndMins);
         updateEditSummary();
     });
