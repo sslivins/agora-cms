@@ -100,8 +100,7 @@
                 <th>Name</th>
                 <th>Asset</th>
                 <th>Target</th>
-                <th>Time</th>
-                <th>Days</th>
+                <th>Schedule</th>
                 <th>Priority</th>
                 <th>Enabled</th>
                 <th>Actions</th>
@@ -117,14 +116,7 @@
                     {% elif s.group %}{{ s.group.name }}
                     {% else %}—{% endif %}
                 </td>
-                <td>{{ s.start_time.strftime('%I:%M %p') }}–{{ s.end_time.strftime('%I:%M %p') }}</td>
-                <td>
-                    {% if s.days_of_week %}
-                        {{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] | select_days(s.days_of_week) }}
-                    {% else %}
-                        Every day
-                    {% endif %}
-                </td>
+                <td class="schedule-desc" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
                 <td>
                     <button class="btn btn-sm {% if s.enabled %}btn-success{% else %}btn-danger{% endif %}"
@@ -138,7 +130,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="8" class="empty">No schedules yet</td></tr>
+            <tr><td colspan="7" class="empty">No schedules yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -242,8 +234,9 @@ function formatDuration(secs) {
 }
 
 // Helper: get selected asset's duration in seconds
-function getSelectedAssetDuration(form) {
-    const assetId = form.querySelector('[name="asset_id"]').value;
+function getSelectedAssetDuration(container) {
+    const sel = container.querySelector('[name="asset_id"]') || container.querySelector('#edit-asset');
+    const assetId = sel ? sel.value : null;
     if (!assetId) return null;
     const asset = _scheduleData.assets.find(a => a.id === assetId);
     return asset && asset.duration ? asset.duration : null;
@@ -261,6 +254,14 @@ function formatTimeDisplay(timeStr) {
 // ── Create form setup ──
 document.addEventListener("DOMContentLoaded", function() {
     updateTargetOptions();
+
+    // Populate schedule descriptions in the Active Schedules table
+    document.querySelectorAll('td.schedule-desc').forEach(td => {
+        try {
+            const data = JSON.parse(td.getAttribute('data-schedule'));
+            td.textContent = describeScheduleCompact(data);
+        } catch(e) { /* leave empty if parse fails */ }
+    });
 
     // Auto-advance end time when start time changes
     const startTimeEl = document.querySelector('[name="start_time"]');
@@ -301,18 +302,159 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 });
 
-// ── Live schedule summary ──
-function isOneShot(form) {
-    const startDate = form.querySelector('[name="start_date"]').value;
-    const endDate = form.querySelector('[name="end_date"]').value;
+// ── Schedule description (shared by create banner, edit banner, and table rows) ──
+
+/**
+ * Build a human-readable schedule description from a plain data object.
+ * @param {Object} d - {start_time, end_time, start_date, end_date, days_of_week, name?}
+ *   start_time/end_time: "HH:MM" strings
+ *   start_date/end_date: "YYYY-MM-DD" strings or falsy
+ *   days_of_week: array of ISO weekday ints (1-7), empty/null = every day
+ *   name: optional schedule name
+ * @param {Object} opts - {loopHtml?} extra HTML to append (e.g. loop-round links)
+ * @returns {string} HTML string
+ */
+function describeSchedule(d, opts) {
+    opts = opts || {};
+    const startStr = formatTimeDisplay(d.start_time);
+    const endStr = formatTimeDisplay(d.end_time);
+    if (!startStr || !endStr) return "";
+
+    // Duration
+    let startMins = timeToMins(d.start_time);
+    let endMins = timeToMins(d.end_time);
+    const isOvernight = endMins <= startMins;
+    if (isOvernight) endMins += 24 * 60;
+    const durMins = endMins - startMins;
+    let durStr;
+    if (durMins >= 60) {
+        const h = Math.floor(durMins / 60), m = durMins % 60;
+        durStr = h + " hr" + (h !== 1 ? "s" : "");
+        if (m > 0) durStr += " " + m + " min";
+    } else {
+        durStr = durMins + " min";
+    }
+
+    const label = d.name ? `\u2018${d.name}\u2019` : "This schedule";
+    const oneShot = d.start_date && d.end_date && d.start_date === d.end_date;
+
+    if (oneShot) {
+        const dateLabel = new Date(d.start_date + "T00:00")
+            .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        let msg = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
+        if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
+        if (opts.loopHtml) msg += opts.loopHtml;
+        return msg;
+    }
+
+    // Days
+    const dayNamesFull = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const days = Array.isArray(d.days_of_week) ? d.days_of_week : [];
+    let dayStr;
+    if (days.length === 0 || days.length === 7) {
+        dayStr = "every day";
+    } else if (days.length === 5 && [1,2,3,4,5].every(n => days.includes(n))) {
+        dayStr = "weekdays";
+    } else if (days.length === 2 && [6,7].every(n => days.includes(n))) {
+        dayStr = "weekends";
+    } else {
+        dayStr = days.map(n => dayNamesFull[n - 1]).join(", ");
+    }
+
+    // Date range
+    let dateStr = "";
+    if (d.start_date && d.end_date) {
+        dateStr = " from " + new Date(d.start_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                + " to " + new Date(d.end_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (d.start_date) {
+        dateStr = " starting " + new Date(d.start_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (d.end_date) {
+        dateStr = " until " + new Date(d.end_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+
+    let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
+    if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
+    if (d.end_date && d.end_date < new Date().toLocaleDateString('en-CA')) {
+        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+    }
+    if (opts.loopHtml) msg += opts.loopHtml;
+    return msg;
+}
+
+/**
+ * Build a compact description for the Active Schedules table (no name prefix).
+ */
+function describeScheduleCompact(d) {
+    const startStr = formatTimeDisplay(d.start_time);
+    const endStr = formatTimeDisplay(d.end_time);
+    if (!startStr || !endStr) return "";
+
+    let startMins = timeToMins(d.start_time);
+    let endMins = timeToMins(d.end_time);
+    const isOvernight = endMins <= startMins;
+    if (isOvernight) endMins += 24 * 60;
+    const durMins = endMins - startMins;
+    let durStr;
+    if (durMins >= 60) {
+        const h = Math.floor(durMins / 60), m = durMins % 60;
+        durStr = h + " hr" + (h !== 1 ? "s" : "");
+        if (m > 0) durStr += " " + m + " min";
+    } else {
+        durStr = durMins + " min";
+    }
+
+    const oneShot = d.start_date && d.end_date && d.start_date === d.end_date;
+    if (oneShot) {
+        const dateLabel = new Date(d.start_date + "T00:00")
+            .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        let msg = `Once on ${dateLabel}, ${startStr}\u2013${endStr} (${durStr})`;
+        if (isOvernight) msg += " \u26a0\ufe0f";
+        return msg;
+    }
+
+    const dayNamesShort = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const days = Array.isArray(d.days_of_week) ? d.days_of_week : [];
+    let dayStr;
+    if (days.length === 0 || days.length === 7) {
+        dayStr = "Every day";
+    } else if (days.length === 5 && [1,2,3,4,5].every(n => days.includes(n))) {
+        dayStr = "Weekdays";
+    } else if (days.length === 2 && [6,7].every(n => days.includes(n))) {
+        dayStr = "Weekends";
+    } else {
+        dayStr = days.map(n => dayNamesShort[n - 1]).join(", ");
+    }
+
+    let dateStr = "";
+    if (d.start_date && d.end_date) {
+        dateStr = ", " + new Date(d.start_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                + "\u2013" + new Date(d.end_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (d.start_date) {
+        dateStr = ", from " + new Date(d.start_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } else if (d.end_date) {
+        dateStr = ", until " + new Date(d.end_date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+
+    let msg = `${dayStr}, ${startStr}\u2013${endStr} (${durStr})${dateStr}`;
+    if (isOvernight) msg += " \u26a0\ufe0f";
+    return msg;
+}
+
+// ── Live schedule summary (create form) ──
+
+function isOneShot(container) {
+    const startEl = container.querySelector('[name="start_date"]') || container.querySelector('#edit-start-date');
+    const endEl = container.querySelector('[name="end_date"]') || container.querySelector('#edit-end-date');
+    const startDate = startEl ? startEl.value : "";
+    const endDate = endEl ? endEl.value : "";
     return startDate && endDate && startDate === endDate;
 }
 
-function updateDayCheckboxes() {
-    const form = document.querySelector("#schedule-summary").closest("form");
+function updateDayCheckboxes(form) {
     const oneShot = isOneShot(form);
     for (let i = 1; i <= 7; i++) {
-        const cb = form.querySelector(`[name="day_${i}"]`);
+        const cb = form.querySelector(`[name="day_${i}"]`) || form.querySelector(`[name="edit_day_${i}"]`);
+        if (!cb) continue;
         if (oneShot) {
             cb.checked = false;
             cb.disabled = true;
@@ -343,87 +485,44 @@ function getLoopInfoHtml(form, durMins) {
     return "";
 }
 
+/** Read form values into a data object and render via describeSchedule(). */
+function _readFormData(form, dayPrefix) {
+    dayPrefix = dayPrefix || "day_";
+    const days = [];
+    for (let i = 1; i <= 7; i++) {
+        const cb = form.querySelector(`[name="${dayPrefix}${i}"]`);
+        if (cb && cb.checked) days.push(i);
+    }
+    return {
+        name: (form.querySelector('[name="name"]') || form.querySelector('#edit-name') || {}).value || "",
+        start_time: (form.querySelector('[name="start_time"]') || form.querySelector('#edit-start-time')).value,
+        end_time: (form.querySelector('[name="end_time"]') || form.querySelector('#edit-end-time')).value,
+        start_date: (form.querySelector('[name="start_date"]') || form.querySelector('#edit-start-date')).value,
+        end_date: (form.querySelector('[name="end_date"]') || form.querySelector('#edit-end-date')).value,
+        days_of_week: days,
+    };
+}
+
+function _updateSummaryEl(el, form, dayPrefix) {
+    const data = _readFormData(form, dayPrefix);
+    if (!data.start_time || !data.end_time) { el.style.display = "none"; return; }
+    updateDayCheckboxes(form);
+
+    // Compute loop info
+    let startMins = timeToMins(data.start_time);
+    let endMins = timeToMins(data.end_time);
+    if (endMins <= startMins) endMins += 24 * 60;
+    const durMins = endMins - startMins;
+    const loopHtml = getLoopInfoHtml(form, durMins);
+
+    el.innerHTML = describeSchedule(data, { loopHtml: loopHtml });
+    el.style.display = "";
+}
+
 function updateScheduleSummary() {
     const el = document.getElementById("schedule-summary");
     const form = el.closest("form");
-
-    const name = form.querySelector('[name="name"]').value.trim();
-    const startStr = formatTimeDisplay(form.querySelector('[name="start_time"]').value);
-    const endStr = formatTimeDisplay(form.querySelector('[name="end_time"]').value);
-    if (!startStr || !endStr) { el.style.display = "none"; return; }
-
-    // Calculate duration
-    let startMins = timeToMins(form.querySelector('[name="start_time"]').value);
-    let endMins = timeToMins(form.querySelector('[name="end_time"]').value);
-    const isOvernight = endMins <= startMins;
-    if (isOvernight) endMins += 24 * 60;
-    const durMins = endMins - startMins;
-    let durStr;
-    if (durMins >= 60) {
-        const h = Math.floor(durMins / 60), m = durMins % 60;
-        durStr = h + " hour" + (h !== 1 ? "s" : "");
-        if (m > 0) durStr += " " + m + " min";
-    } else {
-        durStr = durMins + " min";
-    }
-
-    updateDayCheckboxes();
-
-    const label = name ? `'${name}'` : "This schedule";
-    const oneShot = isOneShot(form);
-
-    if (oneShot) {
-        const dateLabel = new Date(form.querySelector('[name="start_date"]').value + "T00:00")
-            .toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-        let msg = `${label} will play once on ${dateLabel} from ${startStr}\u2013${endStr} (${durStr}).`;
-        if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-        msg += getLoopInfoHtml(form, durMins);
-
-        el.innerHTML = msg;
-        el.style.display = "";
-        return;
-    }
-
-    // Days — use full names
-    const dayNamesFull = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-    const days = [];
-    for (let i = 1; i <= 7; i++) {
-        if (form.querySelector(`[name="day_${i}"]`).checked) days.push(i);
-    }
-    let dayStr;
-    if (days.length === 0 || days.length === 7) {
-        dayStr = "every day";
-    } else if (days.length === 5 && [1,2,3,4,5].every(d => days.includes(d))) {
-        dayStr = "weekdays";
-    } else if (days.length === 2 && [6,7].every(d => days.includes(d))) {
-        dayStr = "weekends";
-    } else {
-        dayStr = days.map(d => dayNamesFull[d - 1]).join(", ");
-    }
-
-    // Dates
-    const startDate = form.querySelector('[name="start_date"]').value;
-    const endDate = form.querySelector('[name="end_date"]').value;
-    let dateStr = "";
-    if (startDate && endDate) {
-        dateStr = " from " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
-                + " to " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    } else if (startDate) {
-        dateStr = " starting " + new Date(startDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    } else if (endDate) {
-        dateStr = " until " + new Date(endDate + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    }
-
-    let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
-    if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-    if (endDate && endDate < new Date().toLocaleDateString('en-CA')) {
-        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
-    }
-
-    msg += getLoopInfoHtml(form, durMins);
-
-    el.innerHTML = msg;
-    el.style.display = "";
+    _updateSummaryEl(el, form, "day_");
 }
 
 // Event delegation for round-to-loop links (survives innerHTML replacement)
@@ -537,6 +636,7 @@ function editSchedule(s) {
             <label>Days of Week</label>
             <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">${daysChecks}</div>
         </div>
+        <div id="edit-schedule-summary" class="schedule-summary" style="display:none;"></div>
         <div class="modal-actions">
             <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
             <button class="btn btn-primary" id="edit-save">Save</button>
@@ -549,6 +649,12 @@ function editSchedule(s) {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#edit-cancel").onclick = () => overlay.remove();
 
+    // Edit modal summary helper
+    const editSummaryEl = box.querySelector("#edit-schedule-summary");
+    function updateEditSummary() {
+        _updateSummaryEl(editSummaryEl, box, "edit_day_");
+    }
+
     // Auto-advance end time in edit modal
     const editStartTimeEl = box.querySelector("#edit-start-time");
     const editEndTimeEl = box.querySelector("#edit-end-time");
@@ -558,7 +664,9 @@ function editSchedule(s) {
         if (startMins !== null && (endMins === null || endMins <= startMins)) {
             editEndTimeEl.value = minsToTime(startMins + 60);
         }
+        updateEditSummary();
     });
+    editEndTimeEl.addEventListener('change', updateEditSummary);
 
     // Auto-advance end date in edit modal
     const editStartDateEl = box.querySelector("#edit-start-date");
@@ -568,8 +676,36 @@ function editSchedule(s) {
             editEndDateEl.value = this.value;
         }
         editEndDateEl.min = this.value;
+        updateEditSummary();
     });
+    editEndDateEl.addEventListener('change', updateEditSummary);
     if (s.start_date) editEndDateEl.min = s.start_date;
+
+    // Attach edit summary listeners to name, asset, and day checkboxes
+    box.querySelector("#edit-name").addEventListener('input', updateEditSummary);
+    box.querySelector("#edit-asset").addEventListener('change', updateEditSummary);
+    for (let i = 1; i <= 7; i++) {
+        const dayCb = box.querySelector(`[name="edit_day_${i}"]`);
+        if (dayCb) dayCb.addEventListener('change', updateEditSummary);
+    }
+
+    // Event delegation for round-to-loop links in edit modal
+    editSummaryEl.addEventListener('click', function(e) {
+        const link = e.target.closest('.loop-round');
+        if (!link) return;
+        e.preventDefault();
+        const targetLoops = parseInt(link.dataset.loops);
+        const assetDur = getSelectedAssetDuration(box);
+        if (!assetDur || !targetLoops) return;
+        const loopStart = timeToMins(editStartTimeEl.value);
+        if (loopStart === null) return;
+        const newEndMins = Math.round(loopStart + (targetLoops * assetDur) / 60);
+        editEndTimeEl.value = minsToTime(newEndMins);
+        updateEditSummary();
+    });
+
+    // Show initial summary
+    updateEditSummary();
 
     box.querySelector("#edit-save").onclick = async () => {
         const startTime = box.querySelector("#edit-start-time").value;
