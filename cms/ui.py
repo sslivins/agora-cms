@@ -33,6 +33,7 @@ from cms.services.version_checker import get_latest_device_version, is_update_av
 from cms.routers.devices import _upgrading as _devices_upgrading
 
 import json as _json
+from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo, available_timezones
 
 templates = Jinja2Templates(directory="cms/templates")
@@ -464,17 +465,24 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
 
-    from datetime import datetime, timezone as _tz
     now_utc = datetime.now(_tz.utc)
-    today_local = now_utc.astimezone(ZoneInfo(current_timezone)).date()
+    local_now = now_utc.astimezone(ZoneInfo(current_timezone))
+    today_local = local_now.date()
+    local_now_time = local_now.time()
 
     active_schedules = []
     expired_schedules = []
     for s in all_schedules:
-        if s.end_date and s.end_date.date() < today_local:
-            expired_schedules.append(s)
-        else:
-            active_schedules.append(s)
+        if s.end_date:
+            end_local = s.end_date.astimezone(ZoneInfo(current_timezone)).date()
+            if end_local < today_local:
+                expired_schedules.append(s)
+                continue
+            # Same-day: expired if time window already closed (non-overnight only)
+            if end_local == today_local and s.start_time < s.end_time and s.end_time <= local_now_time:
+                expired_schedules.append(s)
+                continue
+        active_schedules.append(s)
 
     tz_options = []
     for tz_name in sorted(available_timezones()):
