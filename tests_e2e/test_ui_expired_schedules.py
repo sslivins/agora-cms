@@ -1,0 +1,145 @@
+"""Playwright tests for the Expired Schedules panel on the Schedules page."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from playwright.sync_api import Page, expect
+
+from tests_e2e.conftest import run_async
+from tests_e2e.fake_device import FakeDevice
+
+
+def _ensure_device_and_asset(api, ws_url, device_id):
+    """Register + adopt a device and ensure at least one asset exists."""
+    async def register():
+        async with FakeDevice(device_id, ws_url) as dev:
+            await dev.send_status()
+
+    run_async(register())
+    api.post(f"/api/devices/{device_id}/adopt")
+
+    assets = api.get("/api/assets")
+    if not assets.json():
+        api.create_asset("e2e-expired-test.mp4")
+        assets = api.get("/api/assets")
+        if not assets.json():
+            pytest.skip("Could not create test asset")
+
+    return assets.json()[0]
+
+
+class TestExpiredSchedulesPanel:
+    """Expired schedules panel visibility and behaviour."""
+
+    def test_expired_schedule_in_expired_panel(self, page: Page, api, ws_url):
+        """A schedule with past end_date appears under 'Expired Schedules'."""
+        asset = _ensure_device_and_asset(api, ws_url, "exp-e2e-001")
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
+        resp = api.post("/api/schedules", json={
+            "name": "E2E Past Event",
+            "device_id": "exp-e2e-001",
+            "asset_id": asset["id"],
+            "start_time": "09:00",
+            "end_time": "17:00",
+            "start_date": week_ago,
+            "end_date": yesterday,
+        })
+        assert resp.status_code == 201
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        expired_card = page.locator(".card", has_text="Expired Schedules")
+        expect(expired_card).to_be_visible()
+        expect(expired_card.locator("td", has_text="E2E Past Event")).to_be_visible()
+
+        # Should NOT appear in the Active Schedules card
+        active_card = page.locator(".card", has_text="Active Schedules")
+        expect(active_card.locator("td", has_text="E2E Past Event")).not_to_be_visible()
+
+    def test_no_expired_panel_without_expired_schedules(self, page: Page, api, ws_url):
+        """Panel should not appear when all schedules are active."""
+        _ensure_device_and_asset(api, ws_url, "exp-e2e-002")
+
+        # Clean up any existing schedules
+        for s in api.get("/api/schedules").json():
+            api.delete(f"/api/schedules/{s['id']}")
+
+        # Create only an active schedule (no end date)
+        asset = api.get("/api/assets").json()[0]
+        api.post("/api/schedules", json={
+            "name": "E2E Active Only",
+            "device_id": "exp-e2e-002",
+            "asset_id": asset["id"],
+            "start_time": "08:00",
+            "end_time": "20:00",
+        })
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        expect(page.locator(".card", has_text="Active Schedules")).to_be_visible()
+        expect(page.locator(".card", has_text="Expired Schedules")).not_to_be_visible()
+
+    def test_expired_schedule_edit_button_works(self, page: Page, api, ws_url):
+        """Clicking Edit on an expired schedule should open the edit modal."""
+        asset = _ensure_device_and_asset(api, ws_url, "exp-e2e-003")
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        api.post("/api/schedules", json={
+            "name": "E2E Editable Expired",
+            "device_id": "exp-e2e-003",
+            "asset_id": asset["id"],
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "start_date": yesterday,
+            "end_date": yesterday,
+        })
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        expired_card = page.locator(".card", has_text="Expired Schedules")
+        row = expired_card.locator("tr", has_text="E2E Editable Expired")
+        row.locator("button", has_text="Edit").click()
+
+        # The edit modal should appear
+        modal = page.locator(".modal-overlay")
+        expect(modal).to_be_visible(timeout=3000)
+
+    def test_expired_schedule_delete(self, page: Page, api, ws_url):
+        """Deleting an expired schedule should remove it from the panel."""
+        asset = _ensure_device_and_asset(api, ws_url, "exp-e2e-004")
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        resp = api.post("/api/schedules", json={
+            "name": "E2E Delete Expired",
+            "device_id": "exp-e2e-004",
+            "asset_id": asset["id"],
+            "start_time": "14:00",
+            "end_time": "15:00",
+            "start_date": yesterday,
+            "end_date": yesterday,
+        })
+        assert resp.status_code == 201
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        expired_card = page.locator(".card", has_text="Expired Schedules")
+        row = expired_card.locator("tr", has_text="E2E Delete Expired")
+
+        row.locator("button", has_text="Delete").click()
+
+        # Confirm the custom modal
+        confirm_modal = page.locator(".modal-overlay")
+        expect(confirm_modal).to_be_visible(timeout=3000)
+        confirm_modal.locator("button", has_text="Confirm").click()
+        page.wait_for_load_state("networkidle")
+
+        # Schedule should be gone from the API
+        schedules = api.get("/api/schedules").json()
+        names = [s["name"] for s in schedules]
+        assert "E2E Delete Expired" not in names
