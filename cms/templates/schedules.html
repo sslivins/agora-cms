@@ -188,15 +188,32 @@ function saveTimezone(tz) {
     {% endif %}
 })();
 
+function _populateTargetSelect(selectEl, type, selectedId) {
+    const items = type === 'group' ? _scheduleData.groups : _scheduleData.devices;
+    selectEl.innerHTML = '';
+    if (items.length === 0) {
+        const ph = document.createElement('option');
+        ph.value = '';
+        ph.textContent = type === 'group' ? 'No groups available' : 'No devices available';
+        ph.disabled = true;
+        ph.selected = true;
+        selectEl.appendChild(ph);
+        return;
+    }
+    for (const item of items) {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        opt.textContent = item.name;
+        opt.dataset.type = type;
+        if (selectedId && item.id === selectedId) opt.selected = true;
+        selectEl.appendChild(opt);
+    }
+}
+
 function updateTargetOptions() {
     const type = document.getElementById('target_type').value;
-    const options = document.getElementById('target_id').options;
-    for (let opt of options) {
-        opt.hidden = opt.dataset.type !== type;
-    }
-    for (let opt of options) {
-        if (!opt.hidden) { opt.selected = true; break; }
-    }
+    const selectEl = document.getElementById('target_id');
+    _populateTargetSelect(selectEl, type);
 }
 
 // Helper: parse "HH:MM" to total minutes
@@ -459,13 +476,6 @@ function editSchedule(s) {
         `<option value="${tz.value}" ${tz.value === currentTz ? "selected" : ""}>${tz.label}</option>`
     ).join("");
 
-    const deviceOpts = devices.map(d =>
-        `<option value="${d.id}" data-type="device" ${targetType === "device" && d.id === targetId ? "selected" : ""} ${targetType !== "device" ? "hidden" : ""}>${d.name}</option>`
-    ).join("");
-    const groupOpts = groups.map(g =>
-        `<option value="${g.id}" data-type="group" ${targetType === "group" && g.id === targetId ? "selected" : ""} ${targetType !== "group" ? "hidden" : ""}>${g.name}</option>`
-    ).join("");
-
     const box = document.createElement("div");
     box.className = "modal-box";
     box.style.minWidth = "500px";
@@ -490,7 +500,7 @@ function editSchedule(s) {
             </div>
             <div class="form-group">
                 <label>Target</label>
-                <select id="edit-target">${deviceOpts}${groupOpts}</select>
+                <select id="edit-target"></select>
             </div>
         </div>
         <div class="form-row">
@@ -535,6 +545,7 @@ function editSchedule(s) {
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
+    _populateTargetSelect(document.getElementById('edit-target'), targetType, targetId);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#edit-cancel").onclick = () => overlay.remove();
 
@@ -612,13 +623,8 @@ function editSchedule(s) {
 
 function updateEditTargetOptions() {
     const type = document.getElementById('edit-target-type').value;
-    const options = document.getElementById('edit-target').options;
-    for (let opt of options) {
-        opt.hidden = opt.dataset.type !== type;
-    }
-    for (let opt of options) {
-        if (!opt.hidden) { opt.selected = true; break; }
-    }
+    const selectEl = document.getElementById('edit-target');
+    _populateTargetSelect(selectEl, type);
 }
 </script>
 {% endblock %}

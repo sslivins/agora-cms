@@ -551,3 +551,91 @@ class TestScheduleEditWithDates:
         # Page should have reloaded (save went through)
         page.wait_for_load_state("networkidle")
         expect(page.locator("td", has_text="Date Today Test")).to_be_visible()
+
+
+class TestScheduleTargetDropdown:
+    """Target dropdown must update when switching between device/group."""
+
+    def test_switch_to_group_hides_device_options(self, page: Page, api, ws_url):
+        """Switching target type to 'group' must hide device options and show
+        group options.  The selected value must change to a group."""
+        _ensure_device_and_asset(api, ws_url, "target-dd-001")
+        api.post("/api/devices/groups/", json={"name": "Target Test Group"})
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        target_sel = page.locator("#target_id")
+
+        # Sanity: device option is visible initially
+        expect(target_sel.locator("option[data-type='device']:not([hidden])")).to_have_count(
+            target_sel.locator("option[data-type='device']").count()
+        )
+
+        # Switch to group
+        page.select_option("#target_type", "group")
+
+        # All device options must be hidden
+        visible_device_opts = target_sel.locator("option[data-type='device']:not([hidden])")
+        expect(visible_device_opts).to_have_count(0)
+
+        # At least one group option must be visible
+        visible_group_opts = target_sel.locator("option[data-type='group']:not([hidden])")
+        assert visible_group_opts.count() > 0, "No group options visible after switching to group"
+
+        # The selected value must be a group option
+        selected_type = target_sel.locator("option:checked").get_attribute("data-type")
+        assert selected_type == "group", (
+            f"Expected selected option to be a group, got data-type='{selected_type}'"
+        )
+
+    def test_switch_to_group_no_groups_shows_empty(self, page: Page, api, ws_url):
+        """When no groups exist, switching to 'group' target type must not
+        leave a device option selected — the select value must not be a
+        device ID that would be submitted with the form."""
+        _ensure_device_and_asset(api, ws_url, "target-dd-002")
+
+        # Delete all groups through the API to ensure none exist
+        groups = api.get("/api/devices/groups/").json()
+        for g in groups:
+            api.delete(f"/api/devices/groups/{g['id']}")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        # Remember a device ID so we can verify it's NOT selected after switch
+        device_value = page.locator("#target_id").input_value()
+        assert device_value, "Expected a device to be pre-selected"
+
+        # Switch to group
+        page.select_option("#target_type", "group")
+
+        # The select's submitted value must NOT be the device ID
+        current_value = page.locator("#target_id").input_value()
+        assert current_value != device_value, (
+            f"Device option '{device_value}' is still the select value after switching to group"
+        )
+
+    def test_switch_back_to_device_restores_options(self, page: Page, api, ws_url):
+        """Switching from group back to device must show device options again."""
+        _ensure_device_and_asset(api, ws_url, "target-dd-003")
+        api.post("/api/devices/groups/", json={"name": "Switchback Group"})
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        # Switch to group, then back to device
+        page.select_option("#target_type", "group")
+        page.select_option("#target_type", "device")
+
+        target_sel = page.locator("#target_id")
+
+        # Device options must be visible
+        visible_device_opts = target_sel.locator("option[data-type='device']:not([hidden])")
+        assert visible_device_opts.count() > 0, "No device options visible after switching back"
+
+        # Selected must be a device
+        selected_type = target_sel.locator("option:checked").get_attribute("data-type")
+        assert selected_type == "device", (
+            f"Expected selected option to be a device, got data-type='{selected_type}'"
+        )
