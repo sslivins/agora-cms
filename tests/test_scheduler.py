@@ -430,6 +430,32 @@ class TestBuildDeviceSync:
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.schedules == []
 
+    async def test_naive_datetime_does_not_crash(self, db):
+        """Naive end_date (as returned by aiosqlite) must not crash build_device_sync."""
+        await self._setup_tz(db)
+        asset = Asset(filename="naive.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="nv")
+        db.add(asset)
+        await db.flush()
+
+        await self._setup_device(db)
+
+        # Naive datetime — no tzinfo, mimics what aiosqlite returns
+        sched = Schedule(
+            name="Naive Dates",
+            device_id="sync-pi-01",
+            asset_id=asset.id,
+            start_time=time(9, 0),
+            end_time=time(17, 0),
+            start_date=datetime(2025, 1, 1),
+            end_date=datetime(2099, 12, 31),
+        )
+        db.add(sched)
+        await db.commit()
+
+        sync = await build_device_sync("sync-pi-01", db)
+        assert len(sync.schedules) == 1
+        assert sync.schedules[0].name == "Naive Dates"
+
     async def test_disabled_schedule_excluded(self, db):
         """Disabled schedule is excluded from sync."""
         await self._setup_tz(db)

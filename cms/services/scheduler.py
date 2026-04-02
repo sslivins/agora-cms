@@ -381,10 +381,17 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
         if not s.asset:
             continue
         # Check date range — skip if entirely in the past or beyond the window
-        if s.end_date and s.end_date < now:
-            continue
-        if s.start_date and s.start_date > cutoff:
-            continue
+        # Use .date() comparisons to avoid naive/aware datetime mismatches (aiosqlite)
+        today = now.date()
+        cutoff_date = cutoff.date()
+        if s.end_date:
+            end_d = s.end_date.date() if hasattr(s.end_date, 'date') else s.end_date
+            if end_d < today:
+                continue
+        if s.start_date:
+            start_d = s.start_date.date() if hasattr(s.start_date, 'date') else s.start_date
+            if start_d > cutoff_date:
+                continue
 
         target_ids = await _get_target_device_ids(s, db)
         if device_id in target_ids:
