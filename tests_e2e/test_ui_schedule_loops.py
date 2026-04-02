@@ -140,8 +140,8 @@ class TestRoundButtons:
         end_time = page.input_value('input[name="end_time"]')
         assert end_time == "10:20", f"Expected 10:20 but got {end_time}"
 
-        # Summary should now say exactly 8 loops
-        expect(summary).to_contain_text("exactly 8 loops")
+        # Summary should now say exact 8 loops (locked with loop_count)
+        expect(summary).to_contain_text("exact 8 loops")
 
     def test_round_up_adjusts_end_time(self, page: Page, api, ws_url):
         """Clicking 'Round up' should extend the window to fit
@@ -167,8 +167,8 @@ class TestRoundButtons:
         end_time = page.input_value('input[name="end_time"]')
         assert end_time == "10:30", f"Expected 10:30 but got {end_time}"
 
-        # Summary should now say exactly 9 loops
-        expect(summary).to_contain_text("exactly 9 loops")
+        # Summary should now say exact 9 loops (locked with loop_count)
+        expect(summary).to_contain_text("exact 9 loops")
 
     def test_round_down_then_no_buttons(self, page: Page, api, ws_url):
         """After rounding, the buttons should disappear since loops are exact."""
@@ -229,7 +229,7 @@ class TestOneShotLoopSummary:
 
         end_time = page.input_value('input[name="end_time"]')
         assert end_time == "10:30", f"Expected 10:30 but got {end_time}"
-        expect(summary).to_contain_text("exactly 9 loops")
+        expect(summary).to_contain_text("exact 9 loops")
 
 
 class TestAssetDurationDisplay:
@@ -294,8 +294,11 @@ class TestNoJsErrors:
         summary = page.locator("#schedule-summary")
         expect(summary).to_be_visible()
 
-        # Click round up
+        # Click round up — this sets an explicit loop_count
         summary.locator(".loop-round", has_text="Round up").click()
+
+        # Clear the locked loop count so round buttons reappear
+        summary.locator(".loop-clear").click()
 
         # Change times again
         page.fill('input[name="end_time"]', "10:15")

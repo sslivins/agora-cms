@@ -88,6 +88,7 @@
             </div>
         </div>
         <div id="schedule-summary" class="schedule-summary" style="display:none;"></div>
+        <input type="hidden" name="loop_count" value="">
         <button type="submit" class="btn btn-primary">Create Schedule</button>
     </form>
 </div>
@@ -509,6 +510,15 @@ function getLoopInfoHtml(form, durMins) {
     const scheduleSecs = durMins * 60;
     const loops = scheduleSecs / assetDur;
     const nearestLoops = Math.round(loops);
+
+    // Check if an explicit loop count is set
+    const lcInput = form.querySelector('[name="loop_count"]') || form.querySelector('#edit-loop-count');
+    const lc = lcInput ? parseInt(lcInput.value) : NaN;
+    if (lc > 0) {
+        return ` \u2014 <strong>exact ${lc} loop${lc !== 1 ? 's' : ''}</strong> of ${formatDuration(assetDur)}.`
+             + ` <a href="#" class="loop-clear">\u2715 Clear</a>`;
+    }
+
     // Threshold: half a minute in loop-units (accounts for 1-min time input granularity)
     const loopThreshold = 30 / assetDur;
     if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
@@ -566,9 +576,17 @@ function updateScheduleSummary() {
 // Event delegation for round-to-loop links (survives innerHTML replacement)
 document.getElementById("schedule-summary").addEventListener('click', function(e) {
     const link = e.target.closest('.loop-round');
+    const clearLink = e.target.closest('.loop-clear');
+    const form = this.closest("form");
+    const lcInput = form.querySelector('[name="loop_count"]');
+    if (clearLink) {
+        e.preventDefault();
+        if (lcInput) lcInput.value = "";
+        updateScheduleSummary();
+        return;
+    }
     if (!link) return;
     e.preventDefault();
-    const form = this.closest("form");
     const targetLoops = parseInt(link.dataset.loops);
     const assetDur = getSelectedAssetDuration(form);
     if (!assetDur || !targetLoops) return;
@@ -576,6 +594,8 @@ document.getElementById("schedule-summary").addEventListener('click', function(e
     if (startMins === null) return;
     const newEndMins = Math.round(startMins + (targetLoops * assetDur) / 60);
     form.querySelector('[name="end_time"]').value = minsToTime(newEndMins);
+    // Set explicit loop count
+    if (lcInput) lcInput.value = targetLoops;
     updateScheduleSummary();
 });
 
@@ -675,6 +695,7 @@ function editSchedule(s) {
             <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">${daysChecks}</div>
         </div>
         <div id="edit-schedule-summary" class="schedule-summary" style="display:none;"></div>
+        <input type="hidden" id="edit-loop-count" value="${s.loop_count || ''}">
         <div class="modal-actions">
             <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
             <button class="btn btn-primary" id="edit-save">Save</button>
@@ -730,6 +751,14 @@ function editSchedule(s) {
     // Event delegation for round-to-loop links in edit modal
     editSummaryEl.addEventListener('click', function(e) {
         const link = e.target.closest('.loop-round');
+        const clearLink = e.target.closest('.loop-clear');
+        const lcInput = box.querySelector('#edit-loop-count');
+        if (clearLink) {
+            e.preventDefault();
+            if (lcInput) lcInput.value = "";
+            updateEditSummary();
+            return;
+        }
         if (!link) return;
         e.preventDefault();
         const targetLoops = parseInt(link.dataset.loops);
@@ -739,6 +768,8 @@ function editSchedule(s) {
         if (loopStart === null) return;
         const newEndMins = Math.round(loopStart + (targetLoops * assetDur) / 60);
         editEndTimeEl.value = minsToTime(newEndMins);
+        // Set explicit loop count
+        if (lcInput) lcInput.value = targetLoops;
         updateEditSummary();
     });
 
@@ -786,6 +817,9 @@ function editSchedule(s) {
             days_of_week: days.length ? days : null,
             priority: parseInt(box.querySelector("#edit-priority").value) || 0,
         };
+        // Explicit loop count
+        const editLoopCount = box.querySelector('#edit-loop-count').value;
+        body.loop_count = editLoopCount ? parseInt(editLoopCount) : null;
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
         if (resp && resp.ok) { overlay.remove(); location.reload(); }
         else {

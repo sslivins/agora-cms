@@ -314,6 +314,20 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 .schedule-summary .loop-round:active {
     transform: scale(0.97);
 }
+.schedule-summary .loop-clear {
+    color: var(--danger, #e74c3c);
+    font-size: 0.78rem;
+    cursor: pointer;
+    margin-left: 0.3rem;
+    vertical-align: middle;
+    text-decoration: none;
+    opacity: 0.8;
+    transition: opacity 0.15s;
+}
+.schedule-summary .loop-clear:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
 
 /* Native date/time input styling */
 .form-group input[type="date"]::-webkit-calendar-picker-indicator {

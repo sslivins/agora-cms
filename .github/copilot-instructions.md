@@ -70,6 +70,7 @@ Single application with a PostgreSQL database:
 - Branch naming: `feature/<short-description>`, `fix/<short-description>`, `chore/<short-description>`.
 - **Never merge a PR** unless the user explicitly asks you to. Creating PRs is fine; merging requires explicit approval.
 - Bump the version in `cms/__init__.py` when shipping user-facing changes.
+- **After creating a PR, always check CI status** using `gh pr checks <number>` or `gh run list`. Monitor until all checks pass. If any fail, inspect the logs with `gh run view <run-id> --log-failed`, fix issues, push fixes, and re-check until green.
 
 ## Protocol Contract (CMS ↔ Device)
 
