@@ -639,3 +639,121 @@ class TestScheduleTargetDropdown:
         assert selected_type == "device", (
             f"Expected selected option to be a device, got data-type='{selected_type}'"
         )
+
+
+class TestScheduleDescriptionColumn:
+    """The Schedule column must show human-readable descriptions."""
+
+    def test_every_day_schedule_shows_every_day(self, page: Page, api, ws_url):
+        """A schedule with all days and no date range should say 'Every day'."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "desc-col-001")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "Desc Every Day", asset_name, "desc-col-001", "09:00", "17:00")
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # Find the schedule row and check the description cell
+        row = page.locator("tr", has_text="Desc Every Day")
+        desc_cell = row.locator("td.schedule-desc")
+        text = desc_cell.text_content()
+        assert "Every day" in text, f"Expected 'Every day' in description, got: {text}"
+        assert "AM" in text or "PM" in text, f"Expected time in description, got: {text}"
+
+    def test_one_shot_schedule_shows_once(self, page: Page, api, ws_url):
+        """A schedule with same start/end date should say 'Once on ...'."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "desc-col-002")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "Desc One Shot", asset_name, "desc-col-002", "14:00", "16:00")
+        # Set both dates to the same future date
+        page.fill('input[name="start_date"]', "2027-06-15")
+        page.fill('input[name="end_date"]', "2027-06-15")
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        row = page.locator("tr", has_text="Desc One Shot")
+        desc_cell = row.locator("td.schedule-desc")
+        text = desc_cell.text_content()
+        assert "Once on" in text, f"Expected 'Once on' in description, got: {text}"
+
+    def test_weekday_schedule_shows_weekdays(self, page: Page, api, ws_url):
+        """A schedule with Mon-Fri should say 'Weekdays'."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "desc-col-003")
+
+        # Create via API with specific days
+        assets = api.get("/api/assets").json()
+        asset_id = assets[0]["id"]
+        api.post("/api/schedules", json={
+            "name": "Desc Weekdays",
+            "asset_id": asset_id,
+            "device_id": "desc-col-003",
+            "start_time": "08:00:00",
+            "end_time": "17:00:00",
+            "days_of_week": [1, 2, 3, 4, 5],
+            "priority": 0,
+        })
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Desc Weekdays")
+        desc_cell = row.locator("td.schedule-desc")
+        text = desc_cell.text_content()
+        assert "Weekdays" in text, f"Expected 'Weekdays' in description, got: {text}"
+
+
+class TestScheduleEditSummaryBanner:
+    """The edit modal must show a live schedule summary banner."""
+
+    def test_edit_modal_shows_summary(self, page: Page, api, ws_url):
+        """Opening the edit modal must display the schedule summary banner."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "edit-sum-001")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "Edit Summary Test", asset_name, "edit-sum-001", "10:00", "12:00")
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # Click edit on the schedule
+        row = page.locator("tr", has_text="Edit Summary Test")
+        row.locator("button", has_text="Edit").click()
+
+        # The edit modal summary should be visible
+        summary = page.locator("#edit-schedule-summary")
+        expect(summary).to_be_visible()
+        text = summary.text_content()
+        assert "will play" in text, f"Expected summary text, got: {text}"
+
+    def test_edit_modal_summary_updates_on_time_change(self, page: Page, api, ws_url):
+        """Changing times in the edit modal must update the summary banner."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "edit-sum-002")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "Edit Summary Update", asset_name, "edit-sum-002", "10:00", "12:00")
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        row = page.locator("tr", has_text="Edit Summary Update")
+        row.locator("button", has_text="Edit").click()
+
+        summary = page.locator("#edit-schedule-summary")
+        expect(summary).to_be_visible()
+        initial_text = summary.text_content()
+
+        # Change the end time
+        page.fill("#edit-end-time", "18:00")
+        page.locator("#edit-end-time").dispatch_event("change")
+
+        updated_text = summary.text_content()
+        assert updated_text != initial_text, (
+            f"Summary did not update after time change. Still: {initial_text}"
+        )
