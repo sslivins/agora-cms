@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -109,16 +110,45 @@ class AgoraPlayer:
 
     @staticmethod
     def _has_audio(path: Path) -> bool:
-        """Return True if the video file contains an audio stream."""
-        gi.require_version("GstPbutils", "1.0")
-        from gi.repository import GstPbutils
+        """Return True if the video file contains an audio stream.
+
+        Uses qtdemux to inspect container pads instead of GstPbutils Discoverer,
+        which allocates a v4l2 hardware decoder and exhausts the single decoder
+        slot on Pi Zero 2W, causing 'Failed to allocate required memory' errors.
+        """
+        import time
 
         try:
-            discoverer = GstPbutils.Discoverer.new(5 * Gst.SECOND)
-            info = discoverer.discover_uri(path.as_uri())
-            return len(info.get_audio_streams()) > 0
+            pipe = Gst.parse_launch(
+                f'filesrc location="{path}" ! qtdemux name=dmux'
+            )
+            dmux = pipe.get_by_name("dmux")
+
+            found_audio = [False]
+            no_more = [False]
+
+            def on_pad_added(_element, pad):
+                if "audio" in pad.get_name():
+                    found_audio[0] = True
+
+            def on_no_more_pads(_element):
+                no_more[0] = True
+
+            dmux.connect("pad-added", on_pad_added)
+            dmux.connect("no-more-pads", on_no_more_pads)
+
+            pipe.set_state(Gst.State.PAUSED)
+
+            start = time.monotonic()
+            ctx = GLib.MainContext.default()
+            while not no_more[0] and (time.monotonic() - start) < 3:
+                ctx.iteration(False)
+                time.sleep(0.01)
+
+            pipe.set_state(Gst.State.NULL)
+            return found_audio[0]
         except Exception:
-            # If discovery fails, assume audio exists (safer default)
+            logger.warning("Audio detection failed, assuming audio present")
             return True
 
     def _teardown(self) -> None:
@@ -145,8 +175,27 @@ class AgoraPlayer:
         bus.add_signal_watch()
         bus.connect("message::eos", self._on_eos)
         bus.connect("message::error", self._on_error)
+        bus.connect("message::state-changed", self._on_state_changed)
 
         return pipeline
+
+    def _on_state_changed(self, bus, message) -> None:
+        """Track pipeline state transitions and update current.json."""
+        # Only react to pipeline-level state changes, not individual elements
+        if message.src != self.pipeline:
+            return
+        old, new, _pending = message.parse_state_changed()
+        new_name = new.value_nick.upper()
+        logger.debug("Pipeline state: %s -> %s", old.value_nick, new_name)
+
+        if new == Gst.State.PLAYING and self.current_desired:
+            started = datetime.now(timezone.utc)
+            mode = self.current_desired.mode
+            asset = self.current_desired.asset
+            self._update_current(
+                mode=mode, asset=asset, started_at=started,
+            )
+            logger.info("Pipeline reached PLAYING for %s", asset)
 
     def _on_eos(self, bus, message) -> None:
         logger.info("EOS received")
@@ -191,11 +240,24 @@ class AgoraPlayer:
 
     # ── State management ──
 
+    def _query_position_ms(self) -> Optional[int]:
+        """Query current playback position from the GStreamer pipeline."""
+        if not self.pipeline:
+            return None
+        try:
+            ok, pos = self.pipeline.query_position(Gst.Format.TIME)
+            if ok and pos >= 0:
+                return pos // 1_000_000  # nanoseconds → milliseconds
+        except Exception:
+            pass
+        return None
+
     def _update_current(
         self,
         mode: PlaybackMode = PlaybackMode.STOP,
         asset: Optional[str] = None,
         error: Optional[str] = None,
+        started_at: Optional[datetime] = None,
     ) -> None:
         pipeline_state = "NULL"
         if self.pipeline:
@@ -209,10 +271,31 @@ class AgoraPlayer:
             mode=mode,
             asset=asset,
             loop=self.current_desired.loop if self.current_desired else False,
+            started_at=started_at,
+            playback_position_ms=self._query_position_ms(),
             pipeline_state=pipeline_state,
             error=error,
         )
         write_state(self.current_path, state)
+
+    def _update_position(self) -> bool:
+        """Periodic callback to update playback position in current.json."""
+        if (
+            not self.pipeline
+            or not self.current_desired
+            or self.current_desired.mode != PlaybackMode.PLAY
+        ):
+            return False  # Stop the timer
+        try:
+            current = read_state(self.current_path, CurrentState)
+            pos = self._query_position_ms()
+            if pos is not None and current.playback_position_ms != pos:
+                current.playback_position_ms = pos
+                current.updated_at = datetime.now(timezone.utc)
+                write_state(self.current_path, current)
+        except Exception:
+            logger.debug("Failed to update playback position")
+        return True  # Keep the timer running
 
     def apply_desired(self) -> None:
         """Read desired state and apply it to the player."""
@@ -271,6 +354,8 @@ class AgoraPlayer:
             GLib.timeout_add_seconds(
                 5, self._check_pipeline_health, desired.asset,
             )
+            # Periodic position updates for CMS status reporting
+            GLib.timeout_add_seconds(10, self._update_position)
 
     def _check_pipeline_health(self, asset_name: str) -> bool:
         """Verify the pipeline reached PLAYING state. Returns False (no repeat)."""
@@ -290,11 +375,11 @@ class AgoraPlayer:
                 "Pipeline health check failed for %s: state is %s (expected PLAYING)",
                 asset_name, state.value_nick if state else "NULL",
             )
+            self._teardown()
             self._update_current(
-                mode=PlaybackMode.PLAY,
-                asset=asset_name,
                 error=f"Pipeline failed to reach PLAYING state ({state.value_nick if state else 'NULL'})",
             )
+            GLib.timeout_add_seconds(3, self._show_splash)
         return False
 
     # ── State file watcher ──
