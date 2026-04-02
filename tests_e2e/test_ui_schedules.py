@@ -4,6 +4,7 @@ Covers: create, edit modal, toggle, delete, validation, and JS error detection.
 """
 
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -12,50 +13,109 @@ from tests_e2e.conftest import run_async
 from tests_e2e.fake_device import FakeDevice
 
 
+def _ensure_device_and_asset(api, ws_url, device_id):
+    """Register + adopt a device and ensure at least one asset exists.
+
+    Returns the asset filename for use in the schedule form.
+    """
+    async def register():
+        async with FakeDevice(device_id, ws_url) as dev:
+            await dev.send_status()
+
+    run_async(register())
+    api.post(f"/api/devices/{device_id}/adopt")
+
+    assets = api.get("/api/assets")
+    if not assets.json():
+        api.create_asset("e2e-shared-test.mp4")
+        assets = api.get("/api/assets")
+        if not assets.json():
+            pytest.skip("Could not create test asset (ffprobe not available)")
+
+    return assets.json()[0]["filename"]
+
+
+def _fill_create_form(page, name, asset_name, device_id, start, end):
+    """Fill the schedule create form, explicitly targeting a specific device."""
+    page.fill('input[name="name"]', name)
+    page.select_option('select[name="asset_id"]', label=asset_name)
+    page.select_option('select[name="target_id"]', value=device_id)
+    page.fill('input[name="start_time"]', start)
+    page.fill('input[name="end_time"]', end)
+
+
 class TestScheduleCreate:
     """Creating schedules via the form."""
 
-    def test_create_schedule(self, page: Page, api, ws_url):
-        """Create a schedule and verify it appears in the table."""
-        # We need a device and an asset first — connect a fake device
-        async def register_device():
-            async with FakeDevice("sched-test-001", ws_url) as dev:
-                await dev.send_status()
-                return dev.device_id
+    def test_create_schedule_appears_in_active_table(self, page: Page, api, ws_url):
+        """Create a schedule and verify it appears in the Active Schedules table."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "sched-test-001")
 
-        run_async(register_device())
-
-        # Adopt the device via API
-        api.post("/api/devices/sched-test-001/adopt")
-
-        # Upload a test asset (a minimal valid MP4 isn't required — the server
-        # accepts the upload and the schedule form just needs the asset ID)
-        resp = api.create_asset("schedule-test.mp4")
-        # May fail with 500 if ffprobe can't read fake content — that's OK,
-        # the asset still gets created in the DB in some code paths.
-        # Let's check the assets list instead.
-        assets_resp = api.get("/api/assets")
-        if assets_resp.status_code != 200 or not assets_resp.json():
-            pytest.skip("Could not create test asset (ffprobe not available)")
-
-        asset_name = assets_resp.json()[0]["filename"]
-
-        # Navigate to schedules page
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        # Fill the create form
-        page.fill('input[name="name"]', "E2E Test Schedule")
-        page.select_option('select[name="asset_id"]', label=asset_name)
-        # Set times via native time inputs
-        page.fill('input[name="start_time"]', "09:00")
-        page.fill('input[name="end_time"]', "17:00")
+        _fill_create_form(page, "E2E Active Check", asset_name, "sched-test-001", "09:00", "17:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
-        # Verify schedule appears in table
-        expect(page.locator("td", has_text="E2E Test Schedule")).to_be_visible()
+        # Must appear in the Active Schedules table (the second card)
+        active_card = page.locator(".card", has_text="Active Schedules")
+        expect(active_card.locator("td", has_text="E2E Active Check")).to_be_visible()
+
+    def test_create_schedule_exists_in_api(self, page: Page, api, ws_url):
+        """After form submit, the schedule must exist in the REST API."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "sched-api-001")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "E2E API Verify", asset_name, "sched-api-001", "10:00", "11:00")
+
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # Verify through the API — NOT just the DOM
+        schedules = api.get("/api/schedules").json()
+        names = [s["name"] for s in schedules]
+        assert "E2E API Verify" in names, (
+            f"Schedule not found in API after form submit. Got: {names}"
+        )
+
+    def test_create_upcoming_schedule_on_dashboard(self, page: Page, api, ws_url):
+        """A schedule starting later today must appear in the dashboard Coming Up panel.
+
+        Regression coverage: if the form silently fails (e.g. GET instead of
+        POST), the schedule won't exist and won't appear on the dashboard.
+        """
+        asset_name = _ensure_device_and_asset(api, ws_url, "sched-dash-001")
+
+        # Pick a start time 2 hours from now (UTC) so it's "upcoming today"
+        now_utc = datetime.now(timezone.utc)
+        start = (now_utc + timedelta(hours=2)).strftime("%H:%M")
+        end = (now_utc + timedelta(hours=3)).strftime("%H:%M")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "E2E Dashboard Check", asset_name, "sched-dash-001", start, end)
+
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # Confirm it's in Active Schedules first
+        active_card = page.locator(".card", has_text="Active Schedules")
+        expect(active_card.locator("td", has_text="E2E Dashboard Check")).to_be_visible()
+
+        # Now navigate to the dashboard
+        page.goto("/")
+        page.wait_for_load_state("domcontentloaded")
+
+        # The "Coming Up" card should list our schedule
+        coming_up_card = page.locator(".card", has_text="Coming Up")
+        expect(
+            coming_up_card.locator("td", has_text="E2E Dashboard Check")
+        ).to_be_visible(timeout=5000)
 
     def test_create_form_uses_post_not_get(self, page: Page, api, ws_url):
         """Form submission must send a POST via JS, not a native GET.
@@ -65,21 +125,7 @@ class TestScheduleCreate:
         browser fell through to the default GET submission.  The JS POST
         could race the navigation and sometimes succeed, hiding the bug.
         """
-        async def register_device():
-            async with FakeDevice("create-post-001", ws_url) as dev:
-                await dev.send_status()
-
-        run_async(register_device())
-        api.post("/api/devices/create-post-001/adopt")
-
-        assets = api.get("/api/assets")
-        if not assets.json():
-            resp = api.create_asset("create-post-test.mp4")
-            assets = api.get("/api/assets")
-            if not assets.json():
-                pytest.skip("Could not create test asset")
-
-        asset_name = assets.json()[0]["filename"]
+        asset_name = _ensure_device_and_asset(api, ws_url, "create-post-001")
 
         # Track all requests to /schedules
         requests_log = []
@@ -89,10 +135,7 @@ class TestScheduleCreate:
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        page.fill('input[name="name"]', "POST Not GET Test")
-        page.select_option('select[name="asset_id"]', label=asset_name)
-        page.fill('input[name="start_time"]', "08:00")
-        page.fill('input[name="end_time"]', "18:00")
+        _fill_create_form(page, "POST Not GET Test", asset_name, "create-post-001", "08:00", "18:00")
 
         # Clear log to only capture the submit request
         requests_log.clear()
@@ -112,8 +155,13 @@ class TestScheduleCreate:
             f"Form fell through to native GET submission: {bad_gets[0].url}"
         )
 
-        # Verify the schedule was actually created
+        # Verify through both DOM and API
         expect(page.locator("td", has_text="POST Not GET Test")).to_be_visible()
+
+        schedules = api.get("/api/schedules").json()
+        assert any(s["name"] == "POST Not GET Test" for s in schedules), (
+            "Schedule created via form not found in API"
+        )
 
 
 class TestScheduleEditModal:
