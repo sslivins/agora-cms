@@ -194,6 +194,11 @@ async function apiCall(method, url, body = null) {
 }
 
 // ── Device actions ──
+function isDevicePlaying(deviceId) {
+    const row = document.querySelector(`tr.device-row[data-device-id="${deviceId}"]`);
+    return row && row.dataset.playing === "true";
+}
+
 async function renameDevice(deviceId, newName) {
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { name: newName.trim() });
     if (resp && resp.ok) showToast("Device renamed");
@@ -206,7 +211,13 @@ async function assignGroup(deviceId, groupId) {
     else showToast("Group update failed", true);
 }
 
-async function setDefaultAsset(deviceId, assetId) {
+async function setDefaultAsset(deviceId, assetId, selectEl) {
+    if (isDevicePlaying(deviceId)) {
+        if (!await showConfirm("This device is currently playing.\n\nChanging the default asset will interrupt playback. Continue?")) {
+            if (selectEl) selectEl.value = selectEl.dataset.prev || "";
+            return;
+        }
+    }
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Default asset updated");
     else showToast("Update failed", true);
@@ -234,7 +245,9 @@ async function adoptDevice(deviceId, deviceName) {
 }
 
 async function deleteDevice(deviceId) {
-    if (!await showConfirm("Delete this device? Any schedules targeting only this device will also be removed.")) return;
+    let msg = "Delete this device? Any schedules targeting only this device will also be removed.";
+    if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
+    if (!await showConfirm(msg)) return;
     const resp = await apiCall("DELETE", `/api/devices/${deviceId}`);
     if (resp && resp.ok) location.reload();
 }
@@ -252,7 +265,9 @@ async function changeDevicePassword(deviceId, deviceName) {
 }
 
 async function rebootDevice(deviceId, deviceName) {
-    if (!await showConfirm("Reboot device \"" + deviceName + "\"?")) return;
+    let msg = "Reboot device \"" + deviceName + "\"?";
+    if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
+    if (!await showConfirm(msg)) return;
     const resp = await apiCall("POST", `/api/devices/${deviceId}/reboot`);
     if (resp && resp.ok) showToast("Reboot command sent to " + deviceName);
     else if (resp) {
@@ -262,7 +277,9 @@ async function rebootDevice(deviceId, deviceName) {
 }
 
 async function upgradeDevice(deviceId, deviceName) {
-    if (!await showConfirm("Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.")) return;
+    let msg = "Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.";
+    if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
+    if (!await showConfirm(msg)) return;
     // Disable this device's upgrade button to prevent double-clicks
     const btn = document.querySelector(`[onclick*="upgradeDevice('${deviceId}'"]`);
     if (btn) { btn.disabled = true; btn.textContent = 'Upgrading…'; }
