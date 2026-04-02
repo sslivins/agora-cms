@@ -71,6 +71,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
             **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
             group_name=d.group.name if d.group else None,
             is_online=device_manager.is_connected(d.id),
+            is_upgrading=d.id in _upgrading,
         )
         for d in devices
     ]

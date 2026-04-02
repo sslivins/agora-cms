@@ -30,6 +30,7 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.services.device_manager import device_manager
 from cms.services.version_checker import get_latest_device_version, is_update_available
+from cms.routers.devices import _upgrading as _devices_upgrading
 
 import json as _json
 from zoneinfo import ZoneInfo, available_timezones
@@ -335,6 +336,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.started_at = state["started_at"] if state else None
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.update_available = is_update_available(d.firmware_version)
+        d.is_upgrading = d.id in _devices_upgrading
 
     groups_q = await db.execute(
         select(DeviceGroup)
@@ -357,6 +359,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.started_at = state["started_at"] if state else None
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.update_available = is_update_available(d.firmware_version)
+            d.is_upgrading = d.id in _devices_upgrading
 
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]

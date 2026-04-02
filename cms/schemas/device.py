@@ -25,6 +25,7 @@ class DeviceOut(BaseModel):
     last_seen: Optional[datetime] = None
     registered_at: datetime
     is_online: bool = False
+    is_upgrading: bool = False
 
 
 class DeviceUpdate(BaseModel):
