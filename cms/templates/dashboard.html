@@ -29,6 +29,8 @@
                 <td>
                     {% if np.mismatch %}
                     <span class="has-tooltip"><span class="badge badge-missed">Not Playing</span><span class="tooltip">Device is {{ np.actual_mode }}{% if np.actual_asset %} ({{ np.actual_asset }}){% endif %} instead of {{ np.asset_filename }}</span></span>
+                    {% elif np.starting %}
+                    <span class="has-tooltip"><span class="badge badge-processing">Starting…</span><span class="tooltip">Schedule just activated — waiting for device to begin playback</span></span>
                     {% else %}
                     <span class="badge badge-started">Playing</span>
                     {% endif %}
@@ -274,7 +276,7 @@ async function endNow(scheduleId) {
         // Bucket temperatures to avoid constant reloads from minor fluctuations
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
-            playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.mismatch ? '!' : '')).sort(),
+            playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
             devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
