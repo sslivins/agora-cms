@@ -4,6 +4,7 @@ Covers: create, edit modal, toggle, delete, validation, and JS error detection.
 """
 
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -12,50 +13,155 @@ from tests_e2e.conftest import run_async
 from tests_e2e.fake_device import FakeDevice
 
 
+def _ensure_device_and_asset(api, ws_url, device_id):
+    """Register + adopt a device and ensure at least one asset exists.
+
+    Returns the asset filename for use in the schedule form.
+    """
+    async def register():
+        async with FakeDevice(device_id, ws_url) as dev:
+            await dev.send_status()
+
+    run_async(register())
+    api.post(f"/api/devices/{device_id}/adopt")
+
+    assets = api.get("/api/assets")
+    if not assets.json():
+        api.create_asset("e2e-shared-test.mp4")
+        assets = api.get("/api/assets")
+        if not assets.json():
+            pytest.skip("Could not create test asset (ffprobe not available)")
+
+    return assets.json()[0]["filename"]
+
+
+def _fill_create_form(page, name, asset_name, device_id, start, end):
+    """Fill the schedule create form, explicitly targeting a specific device."""
+    page.fill('input[name="name"]', name)
+    page.select_option('select[name="asset_id"]', label=asset_name)
+    page.select_option('select[name="target_id"]', value=device_id)
+    page.fill('input[name="start_time"]', start)
+    page.fill('input[name="end_time"]', end)
+
+
 class TestScheduleCreate:
     """Creating schedules via the form."""
 
-    def test_create_schedule(self, page: Page, api, ws_url):
-        """Create a schedule and verify it appears in the table."""
-        # We need a device and an asset first — connect a fake device
-        async def register_device():
-            async with FakeDevice("sched-test-001", ws_url) as dev:
-                await dev.send_status()
-                return dev.device_id
+    def test_create_schedule_appears_in_active_table(self, page: Page, api, ws_url):
+        """Create a schedule and verify it appears in the Active Schedules table."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "sched-test-001")
 
-        run_async(register_device())
-
-        # Adopt the device via API
-        api.post("/api/devices/sched-test-001/adopt")
-
-        # Upload a test asset (a minimal valid MP4 isn't required — the server
-        # accepts the upload and the schedule form just needs the asset ID)
-        resp = api.create_asset("schedule-test.mp4")
-        # May fail with 500 if ffprobe can't read fake content — that's OK,
-        # the asset still gets created in the DB in some code paths.
-        # Let's check the assets list instead.
-        assets_resp = api.get("/api/assets")
-        if assets_resp.status_code != 200 or not assets_resp.json():
-            pytest.skip("Could not create test asset (ffprobe not available)")
-
-        asset_name = assets_resp.json()[0]["filename"]
-
-        # Navigate to schedules page
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        # Fill the create form
-        page.fill('input[name="name"]', "E2E Test Schedule")
-        page.select_option('select[name="asset_id"]', label=asset_name)
-        # Set times via native time inputs
-        page.fill('input[name="start_time"]', "09:00")
-        page.fill('input[name="end_time"]', "17:00")
+        _fill_create_form(page, "E2E Active Check", asset_name, "sched-test-001", "09:00", "17:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
-        # Verify schedule appears in table
-        expect(page.locator("td", has_text="E2E Test Schedule")).to_be_visible()
+        # Must appear in the Active Schedules table (the second card)
+        active_card = page.locator(".card", has_text="Active Schedules")
+        expect(active_card.locator("td", has_text="E2E Active Check")).to_be_visible()
+
+    def test_create_schedule_exists_in_api(self, page: Page, api, ws_url):
+        """After form submit, the schedule must exist in the REST API."""
+        asset_name = _ensure_device_and_asset(api, ws_url, "sched-api-001")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "E2E API Verify", asset_name, "sched-api-001", "10:00", "11:00")
+
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # Verify through the API — NOT just the DOM
+        schedules = api.get("/api/schedules").json()
+        names = [s["name"] for s in schedules]
+        assert "E2E API Verify" in names, (
+            f"Schedule not found in API after form submit. Got: {names}"
+        )
+
+    def test_create_upcoming_schedule_on_dashboard(self, page: Page, api, ws_url):
+        """A schedule starting later today must appear in the dashboard Coming Up panel.
+
+        Regression coverage: if the form silently fails (e.g. GET instead of
+        POST), the schedule won't exist and won't appear on the dashboard.
+        """
+        asset_name = _ensure_device_and_asset(api, ws_url, "sched-dash-001")
+
+        # Pick a start time 2 hours from now (UTC) so it's "upcoming today"
+        now_utc = datetime.now(timezone.utc)
+        start = (now_utc + timedelta(hours=2)).strftime("%H:%M")
+        end = (now_utc + timedelta(hours=3)).strftime("%H:%M")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "E2E Dashboard Check", asset_name, "sched-dash-001", start, end)
+
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # Confirm it's in Active Schedules first
+        active_card = page.locator(".card", has_text="Active Schedules")
+        expect(active_card.locator("td", has_text="E2E Dashboard Check")).to_be_visible()
+
+        # Now navigate to the dashboard
+        page.goto("/")
+        page.wait_for_load_state("domcontentloaded")
+
+        # The "Coming Up" card should list our schedule
+        coming_up_card = page.locator(".card", has_text="Coming Up")
+        expect(
+            coming_up_card.locator("td", has_text="E2E Dashboard Check")
+        ).to_be_visible(timeout=5000)
+
+    def test_create_form_uses_post_not_get(self, page: Page, api, ws_url):
+        """Form submission must send a POST via JS, not a native GET.
+
+        Regression: ``async function createSchedule`` returned a Promise
+        (truthy) from ``onsubmit="return createSchedule(this)"``, so the
+        browser fell through to the default GET submission.  The JS POST
+        could race the navigation and sometimes succeed, hiding the bug.
+        """
+        asset_name = _ensure_device_and_asset(api, ws_url, "create-post-001")
+
+        # Track all requests to /schedules
+        requests_log = []
+        page.on("request", lambda req: requests_log.append(req)
+                if "/schedules" in req.url else None)
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        _fill_create_form(page, "POST Not GET Test", asset_name, "create-post-001", "08:00", "18:00")
+
+        # Clear log to only capture the submit request
+        requests_log.clear()
+
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # There should be a POST to /api/schedules (the JS fetch)
+        post_reqs = [r for r in requests_log
+                     if r.method == "POST" and "/api/schedules" in r.url]
+        assert post_reqs, "Expected a POST to /api/schedules but none was sent"
+
+        # There must NOT be a GET to /schedules with form query params
+        bad_gets = [r for r in requests_log
+                    if r.method == "GET" and "name=" in r.url]
+        assert not bad_gets, (
+            f"Form fell through to native GET submission: {bad_gets[0].url}"
+        )
+
+        # Verify through both DOM and API
+        expect(page.locator("td", has_text="POST Not GET Test")).to_be_visible()
+
+        schedules = api.get("/api/schedules").json()
+        assert any(s["name"] == "POST Not GET Test" for s in schedules), (
+            "Schedule created via form not found in API"
+        )
 
 
 class TestScheduleEditModal:
@@ -292,3 +398,156 @@ class TestScheduleDelete:
 
         # Schedule should be gone
         expect(page.locator("td", has_text="Delete Me Please")).not_to_be_visible()
+
+
+class TestScheduleEditWithDates:
+    """Editing schedules with date fields — regression tests for naive datetime
+    and UTC date comparison bugs."""
+
+    def _setup_schedule(self, page, api, ws_url, device_id, name):
+        """Helper: register device and create a schedule."""
+        async def register():
+            async with FakeDevice(device_id, ws_url) as dev:
+                await dev.send_status()
+
+        run_async(register())
+        api.post(f"/api/devices/{device_id}/adopt")
+
+        assets = api.get("/api/assets")
+        if not assets.json():
+            pytest.skip("No assets available")
+
+        api.post("/api/schedules", json={
+            "name": name,
+            "device_id": device_id,
+            "asset_id": assets.json()[0]["id"],
+            "start_time": "09:00",
+            "end_time": "17:00",
+        })
+
+    def test_edit_with_dates_saves_successfully(self, page: Page, api, ws_url):
+        """Editing a schedule to add start/end dates must not cause a 500 error.
+
+        Regression: naive datetime strings from the browser caused
+        'TypeError: can't compare offset-naive and offset-aware datetimes'
+        in the scheduler when push_sync_to_affected_devices ran after the
+        PATCH.
+        """
+        self._setup_schedule(page, api, ws_url, "edit-dates-001", "Add Dates")
+
+        js_errors = []
+        page.on("pageerror", lambda err: js_errors.append(str(err)))
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Add Dates")
+        row.locator("button", has_text="Edit").click()
+
+        modal = page.locator(".modal-overlay")
+        expect(modal).to_be_visible(timeout=3000)
+
+        # Set start and end dates
+        modal.locator("#edit-start-date").fill("2026-05-01")
+        modal.locator("#edit-end-date").fill("2026-05-31")
+
+        # Click Save
+        modal.locator("#edit-save").click()
+
+        # Page should reload successfully (not show an error toast)
+        page.wait_for_load_state("networkidle")
+
+        # The schedule should still be visible (save succeeded)
+        expect(page.locator("td", has_text="Add Dates")).to_be_visible()
+
+        # No JS errors
+        assert not js_errors, f"JS errors: {js_errors}"
+
+        # No error toast visible
+        toast = page.locator(".toast.error")
+        expect(toast).not_to_be_visible()
+
+    def test_edit_all_fields(self, page: Page, api, ws_url):
+        """Full create → edit flow: change name, times, dates, priority.
+
+        This exercises the exact same code path as the browser's edit modal
+        Save button, including the PATCH request with all fields.
+        """
+        self._setup_schedule(page, api, ws_url, "edit-all-001", "Edit All Fields")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Edit All Fields")
+        row.locator("button", has_text="Edit").click()
+
+        modal = page.locator(".modal-overlay")
+        expect(modal).to_be_visible(timeout=3000)
+
+        # Change name
+        modal.locator("#edit-name").fill("Fully Edited")
+
+        # Change times
+        modal.locator("#edit-start-time").fill("14:00")
+        modal.locator("#edit-end-time").fill("18:00")
+
+        # Set dates
+        modal.locator("#edit-start-date").fill("2026-06-01")
+        modal.locator("#edit-end-date").fill("2026-06-30")
+
+        # Change priority
+        modal.locator("#edit-priority").fill("8")
+
+        # Save
+        modal.locator("#edit-save").click()
+        page.wait_for_load_state("networkidle")
+
+        # Verify updated name appears
+        expect(page.locator("td", has_text="Fully Edited")).to_be_visible()
+
+        # Verify via API that all fields were saved
+        schedules = api.get("/api/schedules").json()
+        edited = next(s for s in schedules if s["name"] == "Fully Edited")
+        assert edited["priority"] == 8
+        assert "2026-06-01" in edited["start_date"]
+        assert "2026-06-30" in edited["end_date"]
+
+    def test_end_date_today_not_flagged_as_past(self, page: Page, api, ws_url):
+        """Setting end date to today must NOT trigger the 'in the past' warning.
+
+        Regression: the JS used new Date().toISOString().slice(0, 10) which
+        returns the UTC date. In negative UTC offsets (US timezones), after
+        the UTC day rolls over (e.g. 7 PM EDT = midnight UTC), today's local
+        date appeared to be 'in the past'.
+        """
+        self._setup_schedule(page, api, ws_url, "date-today-001", "Date Today Test")
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Date Today Test")
+        row.locator("button", has_text="Edit").click()
+
+        modal = page.locator(".modal-overlay")
+        expect(modal).to_be_visible(timeout=3000)
+
+        # Set end date to today using JS to get local date
+        today = page.evaluate("new Date().toLocaleDateString('en-CA')")
+        modal.locator("#edit-start-date").fill(today)
+        modal.locator("#edit-end-date").fill(today)
+
+        # Click Save
+        modal.locator("#edit-save").click()
+
+        # Should NOT see a confirm dialog about "in the past"
+        # If the bug is present, a confirm modal appears; if fixed, it saves directly.
+        # Wait a moment for any potential confirm dialog
+        page.wait_for_timeout(500)
+
+        # No confirm dialog should be visible (the custom showConfirm modal)
+        confirm_dialogs = page.locator(".modal-overlay .modal-box:has-text('in the past')")
+        expect(confirm_dialogs).not_to_be_visible()
+
+        # Page should have reloaded (save went through)
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("td", has_text="Date Today Test")).to_be_visible()

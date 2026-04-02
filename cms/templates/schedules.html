@@ -5,7 +5,7 @@
 
 <div class="card">
     <h2>Create Schedule</h2>
-    <form onsubmit="return createSchedule(this)">
+    <form onsubmit="event.preventDefault(); createSchedule(this)">
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Name<span class="tooltip">A friendly name for this schedule, e.g. &ldquo;Morning Promo&rdquo; or &ldquo;Weekend Loop&rdquo;</span></span></label>
@@ -399,7 +399,7 @@ function updateScheduleSummary() {
 
     let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
     if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-    if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
+    if (endDate && endDate < new Date().toLocaleDateString('en-CA')) {
         msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
     }
 
@@ -577,7 +577,8 @@ function editSchedule(s) {
             showToast("End date cannot be before start date", true);
             return;
         }
-        if (endDate && endDate < new Date().toISOString().slice(0, 10)) {
+        const todayLocal = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD in local tz
+        if (endDate && endDate < todayLocal) {
             const ok = await showConfirm("The end date is in the past \u2014 this schedule will never play. Continue anyway?");
             if (!ok) return;
         }
