@@ -66,7 +66,10 @@ class TestPlaybackInterruptConfirm:
         row = page.locator('[data-device-id="play-reboot-001"]').first
         row.click()
 
-        reboot_btn = page.locator('button', has_text="Reboot").first
+        # Scope to the visible detail row that follows the clicked row
+        detail = page.locator('[data-detail-for="play-reboot-001"]').first
+        reboot_btn = detail.locator('button', has_text="Reboot")
+        expect(reboot_btn).to_be_visible(timeout=3000)
         reboot_btn.click()
 
         # Confirm dialog should mention "currently playing"
@@ -108,7 +111,9 @@ class TestPlaybackInterruptConfirm:
         row = page.locator('[data-device-id="idle-reboot-001"]').first
         row.click()
 
-        reboot_btn = page.locator('button', has_text="Reboot").first
+        detail = page.locator('[data-detail-for="idle-reboot-001"]').first
+        reboot_btn = detail.locator('button', has_text="Reboot")
+        expect(reboot_btn).to_be_visible(timeout=3000)
         reboot_btn.click()
 
         modal = page.locator(".modal-overlay")
@@ -145,7 +150,7 @@ class TestPlaybackInterruptConfirm:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator('tr.device-row[data-device-id="play-attr-001"]')
+        row = page.locator('tr.device-row[data-device-id="play-attr-001"]').first
         expect(row).to_have_attribute("data-playing", "true")
 
         run_async(dev.disconnect())
@@ -175,7 +180,7 @@ class TestPlaybackInterruptConfirm:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator('tr.device-row[data-device-id="idle-attr-001"]')
+        row = page.locator('tr.device-row[data-device-id="idle-attr-001"]').first
         # Should not have data-playing attribute at all
         playing_attr = row.get_attribute("data-playing")
         assert playing_attr is None
