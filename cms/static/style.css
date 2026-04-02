@@ -94,6 +94,10 @@ h2 { font-size: 1.2rem; margin-bottom: 1rem; }
     border: 1px solid var(--success);
     background: linear-gradient(135deg, var(--surface) 0%, rgba(46,204,113,0.08) 100%);
 }
+.card-playing-mismatch {
+    border: 1px solid var(--warning);
+    background: linear-gradient(135deg, var(--surface) 0%, rgba(243,156,18,0.08) 100%);
+}
 .card-danger {
     border: 1px solid var(--accent);
     background: linear-gradient(135deg, var(--surface) 0%, rgba(233,69,96,0.08) 100%);

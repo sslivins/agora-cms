@@ -160,11 +160,21 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     )
     orphaned_devices = orphaned_q.scalars().all()
 
-    # Now Playing
+    # Now Playing — enrich with actual device state for mismatch detection
     now_playing = get_now_playing()
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    for np in now_playing:
+        did = np["device_id"]
+        live = live_states.get(did, {})
+        actual_mode = live.get("mode", "unknown")
+        actual_asset = live.get("asset")
+        expected_asset = np.get("asset_filename")
+        # Mismatch: schedule says play this asset, but device isn't playing it
+        np["actual_mode"] = actual_mode
+        np["actual_asset"] = actual_asset
+        np["mismatch"] = actual_mode != "play" or actual_asset != expected_asset
 
     # Build device status with live playback state
-    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     device_states = []
     for d in all_devices:
         state = live_states.get(d.id)
@@ -254,6 +264,13 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     now_playing = get_now_playing()
 
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    for np in now_playing:
+        did = np["device_id"]
+        live = live_states.get(did, {})
+        actual_mode = live.get("mode", "unknown")
+        actual_asset = live.get("asset")
+        np["mismatch"] = actual_mode != "play" or actual_asset != np.get("asset_filename")
+
     device_states = [
         {
             "id": did,
