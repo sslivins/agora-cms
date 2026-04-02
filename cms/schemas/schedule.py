@@ -1,10 +1,10 @@
 """Pydantic schemas for schedule API."""
 
 import uuid
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from typing import Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class ScheduleCreate(BaseModel):
@@ -19,6 +19,17 @@ class ScheduleCreate(BaseModel):
     days_of_week: Optional[list[int]] = None
     priority: int = 0
     enabled: bool = True
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def ensure_tz_aware(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, str):
+            v = datetime.fromisoformat(v)
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        return v
 
     @model_validator(mode="after")
     def check_target(self):
@@ -50,6 +61,17 @@ class ScheduleUpdate(BaseModel):
     days_of_week: Optional[list[int]] = None
     priority: Optional[int] = None
     enabled: Optional[bool] = None
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def ensure_tz_aware(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, str):
+            v = datetime.fromisoformat(v)
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        return v
 
     @model_validator(mode="after")
     def check_dates_and_times(self):

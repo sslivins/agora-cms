@@ -325,3 +325,106 @@ class TestScheduleUI:
             # The part before the UTC offset should not have underscores
             name_part = label.split(" (UTC")[0]
             assert "_" not in name_part, f"Timezone label has underscore: {label}"
+
+
+@pytest.mark.asyncio
+class TestScheduleNaiveDatetime:
+    """Regression: naive datetime strings from the browser caused a 500 error
+    when updating schedules because the scheduler compared them with
+    timezone-aware UTC datetimes.
+
+    TypeError: can't compare offset-naive and offset-aware datetimes
+    """
+
+    async def _create_device_and_asset(self, db_session):
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="tz-pi", name="TZ Test", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="tz.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ttt")
+        db_session.add_all([device, asset])
+        await db_session.commit()
+        return device.id, str(asset.id)
+
+    async def test_create_with_naive_date_strings(self, client, db_session):
+        """Creating a schedule with naive date strings (no timezone) should succeed."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+        resp = await client.post("/api/schedules", json={
+            "name": "Naive Dates",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-30",
+        })
+        assert resp.status_code == 201
+
+    async def test_edit_with_naive_date_strings(self, client, db_session):
+        """Editing a schedule to add naive date strings should not cause 500.
+
+        This is the exact scenario from the browser — the edit modal sends
+        dates like "2026-04-01" without timezone info.
+        """
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+
+        # Create without dates
+        create = await client.post("/api/schedules", json={
+            "name": "Edit Dates",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "09:00",
+            "end_time": "17:00",
+        })
+        assert create.status_code == 201
+        sched_id = create.json()["id"]
+
+        # Edit to add dates (naive strings, as the browser sends)
+        resp = await client.patch(f"/api/schedules/{sched_id}", json={
+            "name": "Edited With Dates",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-30",
+            "start_time": "10:00:00",
+            "end_time": "18:00:00",
+        })
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        data = resp.json()
+        assert data["name"] == "Edited With Dates"
+        assert "2026-04-01" in data["start_date"]
+        assert "2026-04-30" in data["end_date"]
+
+    async def test_create_then_full_edit(self, client, db_session):
+        """Full create → edit flow mimicking the browser's behavior."""
+        device_id, asset_id = await self._create_device_and_asset(db_session)
+
+        # Create
+        create = await client.post("/api/schedules", json={
+            "name": "Full Flow",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "priority": 5,
+        })
+        assert create.status_code == 201
+        sched_id = create.json()["id"]
+
+        # Edit everything (exactly what the edit modal sends)
+        resp = await client.patch(f"/api/schedules/{sched_id}", json={
+            "name": "Full Flow Updated",
+            "asset_id": asset_id,
+            "device_id": device_id,
+            "group_id": None,
+            "start_time": "10:00:00",
+            "end_time": "18:00:00",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-31",
+            "days_of_week": [1, 2, 3, 4, 5],
+            "priority": 10,
+        })
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        data = resp.json()
+        assert data["name"] == "Full Flow Updated"
+        assert data["priority"] == 10
+        assert data["days_of_week"] == [1, 2, 3, 4, 5]
+        assert "2026-05-01" in data["start_date"]
