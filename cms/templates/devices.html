@@ -99,7 +99,7 @@
                 <span class="detail-label">Playback</span>
                 <span class="detail-value">
                     {% if d.playback_mode == 'play' and d.playback_asset %}
-                        <span class="badge badge-online">Playing</span> {{ d.playback_asset }}
+                        <span class="badge badge-online">Playing</span> <span class="has-tooltip asset-name-truncate">{{ d.playback_asset }}<span class="tooltip">{{ d.playback_asset }}</span></span>
                         {% if d.playback_position_ms is not none %}
                         <span class="text-muted" data-position-ms="{{ d.playback_position_ms }}"></span>
                         {% endif %}
