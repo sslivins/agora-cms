@@ -410,6 +410,7 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
         schedules=entries,
         default_asset=default_asset_name,
         default_asset_checksum=default_asset_checksum or None,
+        splash=default_asset_name,
     )
 
 
