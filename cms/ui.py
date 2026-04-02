@@ -174,6 +174,13 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         np["actual_mode"] = actual_mode
         np["actual_asset"] = actual_asset
         np["mismatch"] = actual_mode != "play" or actual_asset != expected_asset
+        # Grace period: suppress mismatch for ~45s after schedule activation
+        # (device needs time to receive sync, evaluate, and start playback)
+        if np["mismatch"] and np.get("since"):
+            since = _dt.fromisoformat(np["since"])
+            if (now - since).total_seconds() < 45:
+                np["mismatch"] = False
+                np["starting"] = True
 
     # Build device status with live playback state
     device_states = []
@@ -271,6 +278,11 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         actual_mode = live.get("mode", "unknown")
         actual_asset = live.get("asset")
         np["mismatch"] = actual_mode != "play" or actual_asset != np.get("asset_filename")
+        if np["mismatch"] and np.get("since"):
+            since = _dt.fromisoformat(np["since"])
+            if (now - since).total_seconds() < 45:
+                np["mismatch"] = False
+                np["starting"] = True
 
     device_states = [
         {
