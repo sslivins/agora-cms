@@ -5,7 +5,7 @@
 
 <div class="card">
     <h2>Create Schedule</h2>
-    <form onsubmit="return createSchedule(this)">
+    <form onsubmit="event.preventDefault(); createSchedule(this)">
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Name<span class="tooltip">A friendly name for this schedule, e.g. &ldquo;Morning Promo&rdquo; or &ldquo;Weekend Loop&rdquo;</span></span></label>

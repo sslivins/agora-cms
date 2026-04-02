@@ -57,6 +57,64 @@ class TestScheduleCreate:
         # Verify schedule appears in table
         expect(page.locator("td", has_text="E2E Test Schedule")).to_be_visible()
 
+    def test_create_form_uses_post_not_get(self, page: Page, api, ws_url):
+        """Form submission must send a POST via JS, not a native GET.
+
+        Regression: ``async function createSchedule`` returned a Promise
+        (truthy) from ``onsubmit="return createSchedule(this)"``, so the
+        browser fell through to the default GET submission.  The JS POST
+        could race the navigation and sometimes succeed, hiding the bug.
+        """
+        async def register_device():
+            async with FakeDevice("create-post-001", ws_url) as dev:
+                await dev.send_status()
+
+        run_async(register_device())
+        api.post("/api/devices/create-post-001/adopt")
+
+        assets = api.get("/api/assets")
+        if not assets.json():
+            resp = api.create_asset("create-post-test.mp4")
+            assets = api.get("/api/assets")
+            if not assets.json():
+                pytest.skip("Could not create test asset")
+
+        asset_name = assets.json()[0]["filename"]
+
+        # Track all requests to /schedules
+        requests_log = []
+        page.on("request", lambda req: requests_log.append(req)
+                if "/schedules" in req.url else None)
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        page.fill('input[name="name"]', "POST Not GET Test")
+        page.select_option('select[name="asset_id"]', label=asset_name)
+        page.fill('input[name="start_time"]', "08:00")
+        page.fill('input[name="end_time"]', "18:00")
+
+        # Clear log to only capture the submit request
+        requests_log.clear()
+
+        page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")
+
+        # There should be a POST to /api/schedules (the JS fetch)
+        post_reqs = [r for r in requests_log
+                     if r.method == "POST" and "/api/schedules" in r.url]
+        assert post_reqs, "Expected a POST to /api/schedules but none was sent"
+
+        # There must NOT be a GET to /schedules with form query params
+        bad_gets = [r for r in requests_log
+                    if r.method == "GET" and "name=" in r.url]
+        assert not bad_gets, (
+            f"Form fell through to native GET submission: {bad_gets[0].url}"
+        )
+
+        # Verify the schedule was actually created
+        expect(page.locator("td", has_text="POST Not GET Test")).to_be_visible()
+
 
 class TestScheduleEditModal:
     """The edit modal must open and function correctly."""
