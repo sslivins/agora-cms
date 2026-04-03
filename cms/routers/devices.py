@@ -21,6 +21,7 @@ from cms.schemas.device import (
 )
 from cms.schemas.protocol import ConfigMessage, PlayMessage, RebootMessage, SyncMessage, UpgradeMessage
 from cms.services.device_manager import device_manager
+from cms.services.scheduler import push_sync_to_device
 from cms.services.version_checker import check_now
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
@@ -232,6 +233,11 @@ async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Device is already adopted")
 
     await db.commit()
+
+    # Push a fresh sync so the device learns its new status immediately
+    # (e.g. the OOBE screen advances from "waiting for adoption" to "adopted").
+    await push_sync_to_device(device_id, db)
+
     return {"ok": True}
 
 

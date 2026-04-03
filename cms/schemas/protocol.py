@@ -106,6 +106,7 @@ class ScheduleEntry(BaseModel):
 
 class SyncMessage(BaseMessage):
     type: MessageType = MessageType.SYNC
+    device_status: Optional[str] = None  # "pending", "adopted", "orphaned", etc.
     timezone: str = "UTC"
     schedules: list[ScheduleEntry] = []
     default_asset: Optional[str] = None

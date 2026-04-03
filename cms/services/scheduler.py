@@ -507,6 +507,7 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
             entries.append(_schedule_to_entry(s, variant_checksums))
 
     return SyncMessage(
+        device_status=dev.status.value if dev.status else None,
         timezone=tz_name,
         schedules=entries,
         default_asset=default_asset_name,
