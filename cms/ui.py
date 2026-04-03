@@ -474,12 +474,17 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     expired_schedules = []
     for s in all_schedules:
         if s.end_date:
-            end_local = s.end_date.astimezone(ZoneInfo(current_timezone)).date()
-            if end_local < today_local:
+            # Use the calendar date (UTC date portion) — this matches the date
+            # the user picked in the date picker, which is stored as midnight
+            # UTC.  Converting to local time would shift the date backwards for
+            # timezones behind UTC, causing a false-expired off-by-one.
+            # This is consistent with _matches_now() and get_upcoming_schedules().
+            end_cal = s.end_date.date()
+            if end_cal < today_local:
                 expired_schedules.append(s)
                 continue
             # Same-day: expired if time window already closed (non-overnight only)
-            if end_local == today_local and s.start_time < s.end_time and s.end_time <= local_now_time:
+            if end_cal == today_local and s.start_time < s.end_time and s.end_time <= local_now_time:
                 expired_schedules.append(s)
                 continue
         active_schedules.append(s)
