@@ -54,7 +54,8 @@ class TestLoopSummaryDisplay:
 
     def test_exact_loops_shown(self, page: Page, api, ws_url):
         """When the time window is an exact multiple of asset duration,
-        the summary should say 'exactly N loops'."""
+        the summary should say 'N loops' (without 'exactly' — that word is
+        reserved for an explicit loop_count set via round up/down)."""
         asset_id = _setup_device_and_asset(page, api, ws_url, "loop-exact-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
@@ -67,7 +68,9 @@ class TestLoopSummaryDisplay:
 
         summary = page.locator("#schedule-summary")
         expect(summary).to_be_visible()
-        expect(summary).to_contain_text("exactly 6 loops of 10:00")
+        expect(summary).to_contain_text("6 loops of 10:00")
+        # Should NOT say "exactly" for a natural alignment
+        expect(summary).not_to_contain_text("exactly")
         # Should NOT show round buttons for exact loops
         expect(summary.locator(".loop-round")).to_have_count(0)
 
@@ -263,7 +266,8 @@ class TestAssetDurationDisplay:
         page.dispatch_event('input[name="end_time"]', "change")
 
         summary = page.locator("#schedule-summary")
-        expect(summary).to_contain_text("exactly 6 loops")
+        expect(summary).to_contain_text("6 loops")
+        expect(summary).not_to_contain_text("exactly")
 
         # Change to "Select asset..." (no asset)
         page.select_option('select[name="asset_id"]', value="")
@@ -308,3 +312,176 @@ class TestNoJsErrors:
         summary.locator(".loop-round", has_text="Round down").click()
 
         assert not js_errors, f"JavaScript errors during loop interaction: {js_errors}"
+
+
+def _create_schedule_via_api(api, device_id, asset_id, start_time="09:00:00",
+                              end_time="10:25:00", name="Edit Test",
+                              loop_count=None):
+    """Create a schedule via REST API and return the schedule dict."""
+    body = {
+        "name": name,
+        "device_id": device_id,
+        "asset_id": asset_id,
+        "start_time": start_time,
+        "end_time": end_time,
+        "priority": 0,
+        "enabled": True,
+    }
+    if loop_count is not None:
+        body["loop_count"] = loop_count
+    resp = api.post("/api/schedules", json=body)
+    assert resp.status_code == 201, f"Failed to create schedule: {resp.text}"
+    return resp.json()
+
+
+def _open_edit_modal(page, schedule_name):
+    """Navigate to schedules page and open the edit modal for the given schedule."""
+    page.goto("/schedules")
+    page.wait_for_load_state("domcontentloaded")
+    # Find the row with this schedule and click its Edit button
+    row = page.locator(f"tr:has(td:text('{schedule_name}'))")
+    row.locator("button", has_text="Edit").click()
+    # Wait for modal to appear
+    page.wait_for_selector(".modal-overlay")
+
+
+class TestEditPreserveDuration:
+    """Edit modal preserves original duration when changing start or end time."""
+
+    def test_edit_start_preserves_duration(self, page: Page, api, ws_url):
+        """Changing start time in edit should shift end time by same duration."""
+        device_id = "edit-dur-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        sched = _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="09:00:00", end_time="11:00:00",
+            name="Preserve Duration Start",
+        )
+
+        _open_edit_modal(page, "Preserve Duration Start")
+
+        # Change start time from 09:00 to 10:00
+        page.fill("#edit-start-time", "10:00")
+        page.dispatch_event("#edit-start-time", "change")
+
+        # End time should auto-adjust to 12:00 (preserving 2h duration)
+        end_time = page.input_value("#edit-end-time")
+        assert end_time == "12:00", f"Expected 12:00 (2h preserved) but got {end_time}"
+
+    def test_edit_end_preserves_duration(self, page: Page, api, ws_url):
+        """Changing end time in edit should shift start time by same duration."""
+        device_id = "edit-dur-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        sched = _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="09:00:00", end_time="11:00:00",
+            name="Preserve Duration End",
+        )
+
+        _open_edit_modal(page, "Preserve Duration End")
+
+        # Change end time from 11:00 to 13:00
+        page.fill("#edit-end-time", "13:00")
+        page.dispatch_event("#edit-end-time", "change")
+
+        # Start time should auto-adjust to 11:00 (preserving 2h duration)
+        start_time = page.input_value("#edit-start-time")
+        assert start_time == "11:00", f"Expected 11:00 (2h preserved) but got {start_time}"
+
+    def test_edit_both_times_no_constraint(self, page: Page, api, ws_url):
+        """Changing both start and end should not auto-adjust."""
+        device_id = "edit-dur-003"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        sched = _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="09:00:00", end_time="11:00:00",
+            name="Both Times Changed",
+        )
+
+        _open_edit_modal(page, "Both Times Changed")
+
+        # Change start time first
+        page.fill("#edit-start-time", "10:00")
+        page.dispatch_event("#edit-start-time", "change")
+
+        # Now change end time — should NOT auto-adjust start since start was already touched
+        page.fill("#edit-end-time", "14:00")
+        page.dispatch_event("#edit-end-time", "change")
+
+        start_time = page.input_value("#edit-start-time")
+        end_time = page.input_value("#edit-end-time")
+        assert start_time == "10:00", f"Start should stay at 10:00, got {start_time}"
+        assert end_time == "14:00", f"End should stay at 14:00, got {end_time}"
+
+
+class TestEditClearLoopCount:
+    """Editing times clears stale loop_count when duration changes."""
+
+    def test_edit_loop_count_cleared_on_duration_change(self, page: Page, api, ws_url):
+        """When both times are changed (duration changes), loop_count should be cleared."""
+        device_id = "edit-lc-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        # Create a schedule with explicit loop_count=8
+        sched = _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="09:00:00", end_time="10:20:00",
+            name="Clear Loop Count",
+            loop_count=8,
+        )
+
+        _open_edit_modal(page, "Clear Loop Count")
+        # Re-inject duration into JS data (modal reload context)
+        page.evaluate(
+            """([assetId, dur]) => {
+                const a = _scheduleData.assets.find(x => x.id === assetId);
+                if (a) a.duration = dur;
+            }""",
+            [asset_id, ASSET_DURATION],
+        )
+        page.dispatch_event("#edit-end-time", "change")
+
+        summary = page.locator("#edit-schedule-summary")
+        expect(summary).to_be_visible()
+        # Should show "exact 8 loops" initially (from saved loop_count)
+        expect(summary).to_contain_text("exact 8 loops")
+
+        # Change start time (end auto-adjusts preserving duration — loop_count stays)
+        page.fill("#edit-start-time", "10:00")
+        page.dispatch_event("#edit-start-time", "change")
+
+        # Now change end time too (both touched — duration changes — loop_count cleared)
+        page.fill("#edit-end-time", "15:00")
+        page.dispatch_event("#edit-end-time", "change")
+
+        # Should no longer say "exact 8 loops"
+        expect(summary).not_to_contain_text("exact 8 loops")
+
+    def test_create_loop_count_cleared_on_time_change(self, page: Page, api, ws_url):
+        """On the create form, changing time clears a stale loop_count."""
+        device_id = "create-lc-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "Create Clear LC")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:25")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+
+        # Click round down to lock loop_count=8
+        summary.locator(".loop-round", has_text="Round down").click()
+        expect(summary).to_contain_text("exact 8 loops")
+
+        # Now change end time — should clear the locked loop count
+        page.fill('input[name="end_time"]', "11:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Should no longer say "exact 8 loops"
+        expect(summary).not_to_contain_text("exact 8 loops")
+        # Should show natural loop info instead
+        expect(summary).to_contain_text("loops")
