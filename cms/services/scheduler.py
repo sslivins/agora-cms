@@ -72,8 +72,15 @@ def clear_sync_hash(device_id: str) -> None:
     _last_sync_hash.pop(device_id, None)
 
 
-def get_upcoming_schedules(schedules: list, now: datetime, tz: ZoneInfo) -> list[dict]:
-    """Return schedules starting within the next 24 hours (not currently active).
+def get_upcoming_schedules(
+    schedules: list, now: datetime, tz: ZoneInfo,
+    now_playing: list[dict] | None = None,
+) -> list[dict]:
+    """Return schedules starting within the next 24 hours.
+
+    Schedules currently in their time window but preempted by a higher-priority
+    schedule on the same target are included with ``preempted=True`` and a
+    ``resumes_at`` hint when possible.
 
     Each entry includes start/end time, duration, countdown, and whether it's
     today or tomorrow.
@@ -83,11 +90,27 @@ def get_upcoming_schedules(schedules: list, now: datetime, tz: ZoneInfo) -> list
     tomorrow = today + timedelta(days=1)
     results = []
 
+    # Build set of currently-winning schedule IDs from now_playing
+    _winning_sids: set[str] = set()
+    if now_playing is not None:
+        _winning_sids = {np["schedule_id"] for np in now_playing}
+
     for s in schedules:
         if not s.enabled:
             continue
-        if _matches_now(s, now):
-            continue  # already playing
+        if _matches_now(s, local_now):
+            if now_playing is None:
+                continue  # legacy: no preemption info available
+            if str(s.id) in _winning_sids:
+                continue  # currently winning — shown in Now Playing
+            if str(s.id) in _skipped:
+                continue  # deliberately ended via End Now
+            # Check if genuinely preempted (higher-priority schedule active on same target)
+            resume_at = _find_resume_time(s, schedules, local_now)
+            if resume_at is None:
+                continue  # not preempted, just not playing (device offline, etc.)
+            results.append(_preempted_entry(s, local_now, resume_at))
+            continue
 
         # Check today
         today_start = datetime.combine(today, s.start_time)
@@ -158,6 +181,83 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
         "countdown": countdown,
         "starts_in_seconds": total_secs,
         "day_label": day_label,
+    }
+
+
+def _find_resume_time(preempted: Schedule, all_schedules: list, local_now: datetime) -> time | None:
+    """Find when a preempted schedule will resume playing.
+
+    Returns the end_time of the latest-ending higher-priority schedule that is
+    currently active on the same target, or ``None`` if no preempting schedule
+    can be identified (e.g. device offline, cross-target preemption).
+    """
+    latest_end_dt = None
+    for other in all_schedules:
+        if other.id == preempted.id or not other.enabled:
+            continue
+        if other.priority <= preempted.priority:
+            continue
+        if not _matches_now(other, local_now):
+            continue
+        # Must target the same device or group
+        same_target = (
+            (preempted.device_id and other.device_id == preempted.device_id)
+            or (preempted.group_id and other.group_id == preempted.group_id)
+        )
+        if not same_target:
+            continue
+        end_dt = datetime.combine(local_now.date(), other.end_time)
+        if other.end_time <= other.start_time:
+            end_dt += timedelta(days=1)
+        if latest_end_dt is None or end_dt > latest_end_dt:
+            latest_end_dt = end_dt
+    return latest_end_dt.time() if latest_end_dt else None
+
+
+def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
+    """Build an entry for a schedule that is currently preempted."""
+    start_dt = datetime.combine(local_now.date(), s.start_time)
+    end_dt = datetime.combine(local_now.date(), s.end_time)
+    if s.end_time <= s.start_time:
+        end_dt += timedelta(days=1)
+    duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+
+    target_name = None
+    if s.group:
+        target_name = s.group.name
+    elif s.device:
+        target_name = s.device.name or s.device_id
+
+    resume_dt = datetime.combine(local_now.date(), resume_at)
+    if resume_at <= local_now.time():
+        resume_dt += timedelta(days=1)
+    resume_secs = max(0, int((resume_dt - local_now).total_seconds()))
+
+    if resume_secs < 60:
+        countdown = "resumes in less than a minute"
+    elif resume_secs < 3600:
+        mins = resume_secs // 60
+        countdown = f"resumes in {mins} minute{'s' if mins != 1 else ''}"
+    else:
+        hours = resume_secs // 3600
+        mins = (resume_secs % 3600) // 60
+        countdown = f"resumes in {hours} hour{'s' if hours != 1 else ''}"
+        if mins > 0:
+            countdown += f", {mins} minute{'s' if mins != 1 else ''}"
+
+    return {
+        "schedule_name": s.name,
+        "asset_filename": s.asset.filename if s.asset else "—",
+        "target_name": target_name or "—",
+        "target_type": "group" if s.group_id else "device",
+        "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
+        "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
+        "duration_mins": duration_mins,
+        "countdown": countdown,
+        "starts_in_seconds": resume_secs,
+        "day_label": "today",
+        "preempted": True,
+        "resumes_at": resume_at.strftime("%I:%M %p").lstrip("0"),
     }
 
 
