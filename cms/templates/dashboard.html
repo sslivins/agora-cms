@@ -69,13 +69,13 @@
         </thead>
         <tbody>
             {% for u in upcoming_today %}
-            <tr>
-                <td>{{ u.schedule_name }}</td>
+            <tr{% if u.preempted %} class="preempted-row"{% endif %}>
+                <td>{{ u.schedule_name }}{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% endif %}</td>
                 <td>{{ u.target_name }}{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
                 <td>{{ u.asset_filename }}</td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
                 <td>{{ u.duration_mins }} min</td>
-                <td class="text-success">{{ u.countdown }}</td>
+                <td class="{% if u.preempted %}text-warning{% else %}text-success{% endif %}">{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -97,13 +97,13 @@
         </thead>
         <tbody>
             {% for u in upcoming_tomorrow %}
-            <tr>
-                <td>{{ u.schedule_name }}</td>
+            <tr{% if u.preempted %} class="preempted-row"{% endif %}>
+                <td>{{ u.schedule_name }}{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% endif %}</td>
                 <td>{{ u.target_name }}{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
                 <td>{{ u.asset_filename }}</td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
                 <td>{{ u.duration_mins }} min</td>
-                <td class="text-muted">{{ u.countdown }}</td>
+                <td class="{% if u.preempted %}text-warning{% else %}text-muted{% endif %}">{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>

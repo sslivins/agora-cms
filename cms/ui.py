@@ -212,7 +212,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         .where(Schedule.enabled == True)
     )
     all_schedules = sched_q.scalars().all()
-    upcoming = get_upcoming_schedules(all_schedules, now, tz)
+    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
@@ -309,7 +309,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         .where(Schedule.enabled == True)
     )
     all_schedules = sched_q.scalars().all()
-    upcoming = get_upcoming_schedules(all_schedules, now, tz)
+    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
 
     # Recent activity count for change detection
     from datetime import timedelta
