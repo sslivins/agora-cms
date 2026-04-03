@@ -335,11 +335,14 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
 
 @router.get("/devices", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
+    from cms.services.scheduler import get_now_playing
+
     result = await db.execute(
         select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
     )
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
     for d in devices:
         d.is_online = device_manager.is_connected(d.id)
         state = live_states.get(d.id)
@@ -352,6 +355,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.update_available = is_update_available(d.firmware_version)
         d.is_upgrading = d.id in _devices_upgrading
+        d.has_active_schedule = d.id in scheduled_device_ids
 
     groups_q = await db.execute(
         select(DeviceGroup)
@@ -375,6 +379,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.update_available = is_update_available(d.firmware_version)
             d.is_upgrading = d.id in _devices_upgrading
+            d.has_active_schedule = d.id in scheduled_device_ids
 
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]
