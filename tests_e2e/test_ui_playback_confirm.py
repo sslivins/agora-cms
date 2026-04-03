@@ -48,8 +48,9 @@ def _adopt_device(page: Page, device_id: str):
 class TestPlaybackInterruptConfirm:
     """Actions on a playing device should show a playback-interrupt warning."""
 
-    def test_reboot_playing_device_shows_warning(self, page: Page, ws_url, e2e_server):
-        """Reboot confirm on a playing device includes playback warning."""
+    def test_reboot_playing_default_asset_no_warning(self, page: Page, ws_url, e2e_server):
+        """Reboot confirm on a device playing its default asset (no schedule) should NOT
+        include a playback warning — only active schedules count."""
         stop, thread = _run_device_background(ws_url, "play-reboot-001", mode="play", asset="video.mp4")
         try:
             _adopt_device(page, "play-reboot-001")
@@ -68,10 +69,10 @@ class TestPlaybackInterruptConfirm:
             expect(reboot_btn).to_be_visible(timeout=3000)
             reboot_btn.click()
 
-            # Confirm dialog should mention "currently playing"
+            # Confirm dialog should NOT mention "currently playing" — no schedule active
             modal = page.locator(".modal-overlay")
             expect(modal).to_be_visible(timeout=3000)
-            expect(modal).to_contain_text("currently playing")
+            expect(modal).not_to_contain_text("currently playing")
 
             # Cancel
             modal.locator("button", has_text="Cancel").click()
@@ -109,8 +110,12 @@ class TestPlaybackInterruptConfirm:
             stop.set()
             thread.join(timeout=5)
 
-    def test_data_playing_attribute_set(self, page: Page, ws_url, e2e_server):
-        """Device row should have data-playing='true' when device is playing."""
+    def test_data_playing_attribute_absent_when_no_schedule(self, page: Page, ws_url, e2e_server):
+        """Device in play mode but with no active schedule should NOT have data-playing.
+
+        A device playing its default asset (custom splash) reports mode='play',
+        but this should not be treated as schedule-based playback.
+        """
         stop, thread = _run_device_background(ws_url, "play-attr-001", mode="play", asset="test.mp4")
         try:
             _adopt_device(page, "play-attr-001")
@@ -119,7 +124,8 @@ class TestPlaybackInterruptConfirm:
             page.wait_for_load_state("domcontentloaded")
 
             row = page.locator('tr.device-row[data-device-id="play-attr-001"]').first
-            expect(row).to_have_attribute("data-playing", "true")
+            playing_attr = row.get_attribute("data-playing")
+            assert playing_attr is None
         finally:
             stop.set()
             thread.join(timeout=5)

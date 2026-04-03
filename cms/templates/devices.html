@@ -4,7 +4,7 @@
 
 {# ── Macro for a device row (reused in main table, groups, ungrouped) ── #}
 {% macro device_row(d, groups, assets, profiles, draggable=false) %}
-<tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}"{% if d.is_online and d.playback_mode == 'play' %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
+<tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td class="expand-toggle">▶</td>
     <td>
         <input type="text" class="inline-edit" value="{{ d.name or '' }}" placeholder="{{ d.id }}" onclick="event.stopPropagation()" onchange="renameDevice('{{ d.id }}', this.value)" onfocus="this.dataset.prev = this.value">
