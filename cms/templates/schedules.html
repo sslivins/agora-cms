@@ -311,9 +311,17 @@ document.addEventListener("DOMContentLoaded", function() {
         if (startMins !== null && (endMins === null || endMins <= startMins)) {
             endTimeEl.value = minsToTime(startMins + 60);
         }
+        // Clear stale explicit loop count when duration changes
+        const lcInput = document.querySelector('[name="loop_count"]');
+        if (lcInput) lcInput.value = "";
         updateScheduleSummary();
     });
-    endTimeEl.addEventListener('change', updateScheduleSummary);
+    endTimeEl.addEventListener('change', function() {
+        // Clear stale explicit loop count when duration changes
+        const lcInput = document.querySelector('[name="loop_count"]');
+        if (lcInput) lcInput.value = "";
+        updateScheduleSummary();
+    });
 
     // Also update summary when asset changes (for loop info)
     document.querySelector('[name="asset_id"]').addEventListener('change', updateScheduleSummary);
@@ -528,7 +536,7 @@ function getLoopInfoHtml(form, durMins) {
              + ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`
              + ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
     } else if (nearestLoops > 0) {
-        return ` \u2014 exactly ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+        return ` \u2014 ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
     }
     return "";
 }
@@ -714,18 +722,40 @@ function editSchedule(s) {
         _updateSummaryEl(editSummaryEl, box, "edit_day_");
     }
 
-    // Auto-advance end time in edit modal
+    // Preserve original duration when editing times (instead of resetting to +1h)
     const editStartTimeEl = box.querySelector("#edit-start-time");
     const editEndTimeEl = box.querySelector("#edit-end-time");
+    const _origStartMins = timeToMins(s.start_time);
+    let _origEndMins = timeToMins(s.end_time);
+    if (_origEndMins <= _origStartMins) _origEndMins += 24 * 60;
+    const _origDurMins = _origEndMins - _origStartMins;
+    let _startTouched = false, _endTouched = false;
+    let _roundingInProgress = false;
+    const editLcInput = box.querySelector('#edit-loop-count');
     editStartTimeEl.addEventListener('change', function() {
+        if (_roundingInProgress) return;
+        _startTouched = true;
         const startMins = timeToMins(this.value);
-        const endMins = timeToMins(editEndTimeEl.value);
-        if (startMins !== null && (endMins === null || endMins <= startMins)) {
-            editEndTimeEl.value = minsToTime(startMins + 60);
+        if (startMins !== null && !_endTouched) {
+            // Preserve original duration
+            editEndTimeEl.value = minsToTime(startMins + _origDurMins);
         }
+        // Clear stale loop count when duration changes
+        if (_startTouched && _endTouched && editLcInput) editLcInput.value = "";
         updateEditSummary();
     });
-    editEndTimeEl.addEventListener('change', updateEditSummary);
+    editEndTimeEl.addEventListener('change', function() {
+        if (_roundingInProgress) return;
+        _endTouched = true;
+        const endMins = timeToMins(this.value);
+        if (endMins !== null && !_startTouched) {
+            // Preserve original duration
+            editStartTimeEl.value = minsToTime(endMins - _origDurMins);
+        }
+        // Clear stale loop count when duration changes
+        if (_startTouched && _endTouched && editLcInput) editLcInput.value = "";
+        updateEditSummary();
+    });
 
     // Auto-advance end date in edit modal
     const editStartDateEl = box.querySelector("#edit-start-date");
@@ -752,10 +782,9 @@ function editSchedule(s) {
     editSummaryEl.addEventListener('click', function(e) {
         const link = e.target.closest('.loop-round');
         const clearLink = e.target.closest('.loop-clear');
-        const lcInput = box.querySelector('#edit-loop-count');
         if (clearLink) {
             e.preventDefault();
-            if (lcInput) lcInput.value = "";
+            if (editLcInput) editLcInput.value = "";
             updateEditSummary();
             return;
         }
@@ -766,10 +795,12 @@ function editSchedule(s) {
         if (!assetDur || !targetLoops) return;
         const loopStart = timeToMins(editStartTimeEl.value);
         if (loopStart === null) return;
+        _roundingInProgress = true;
         const newEndMins = Math.round(loopStart + (targetLoops * assetDur) / 60);
         editEndTimeEl.value = minsToTime(newEndMins);
         // Set explicit loop count
-        if (lcInput) lcInput.value = targetLoops;
+        if (editLcInput) editLcInput.value = targetLoops;
+        _roundingInProgress = false;
         updateEditSummary();
     });
 
