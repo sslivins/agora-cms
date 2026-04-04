@@ -45,8 +45,15 @@ def _asset_type(filename: str) -> AssetType:
 
 @router.get("/status")
 async def assets_status_json(db: AsyncSession = Depends(get_db)):
-    """Lightweight JSON for assets page polling."""
+    """Lightweight JSON for assets page polling.
+
+    Returns global variant counts for structural-change detection, plus
+    per-asset variant summaries so the UI can update badges and expanded
+    detail panels in-place without a full page reload.
+    """
     from sqlalchemy import func as sa_func
+    from sqlalchemy.orm import selectinload
+
     asset_count = (await db.execute(select(sa_func.count(Asset.id)))).scalar() or 0
     variant_ready = (await db.execute(
         select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.READY)
@@ -57,11 +64,53 @@ async def assets_status_json(db: AsyncSession = Depends(get_db)):
     variant_failed = (await db.execute(
         select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.FAILED)
     )).scalar() or 0
+
+    # Per-asset variant details for in-place UI updates
+    result = await db.execute(
+        select(Asset)
+        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+        .order_by(Asset.uploaded_at.desc())
+    )
+    assets_detail = []
+    for a in result.scalars().all():
+        variants = []
+        a_ready = a_processing = a_failed = 0
+        for v in a.variants:
+            vd = {
+                "id": str(v.id),
+                "profile_name": v.profile.name if v.profile else "",
+                "status": v.status.value,
+                "progress": v.progress,
+                "error_message": v.error_message or "",
+                "width": v.width,
+                "height": v.height,
+                "video_codec": v.video_codec,
+                "bitrate": v.bitrate,
+                "frame_rate": v.frame_rate,
+                "size_bytes": v.size_bytes,
+            }
+            variants.append(vd)
+            if v.status == VariantStatus.READY:
+                a_ready += 1
+            elif v.status == VariantStatus.PROCESSING:
+                a_processing += 1
+            elif v.status == VariantStatus.FAILED:
+                a_failed += 1
+        assets_detail.append({
+            "id": str(a.id),
+            "variant_total": len(a.variants),
+            "variant_ready": a_ready,
+            "variant_processing": a_processing,
+            "variant_failed": a_failed,
+            "variants": variants,
+        })
+
     return {
         "asset_count": asset_count,
         "variant_ready": variant_ready,
         "variant_processing": variant_processing,
         "variant_failed": variant_failed,
+        "assets": assets_detail,
     }
 
 

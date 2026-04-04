@@ -109,23 +109,34 @@
             </div>
             {% if d.is_online %}
             <div class="detail-item">
-                <span class="detail-label">Playback</span>
-                <span class="detail-value">
-                    {% if d.playback_mode == 'play' and d.playback_asset %}
-                        <span class="badge badge-online">Playing</span> <span class="has-tooltip"><span class="asset-name-truncate">{{ d.playback_asset }}</span><span class="tooltip">{{ d.playback_asset }}</span></span>
-                        {% if d.playback_position_ms is not none %}
-                        <span class="text-muted" data-position-ms="{{ d.playback_position_ms }}"></span>
-                        {% endif %}
+                <span class="detail-label">Asset</span>
+                <span class="detail-value" data-live-asset="{{ d.id }}">
+                    {% if d.playback_asset %}
+                        <span class="has-tooltip"><span class="asset-name-truncate">{{ d.playback_asset }}</span><span class="tooltip">{{ d.playback_asset }}</span></span>
                     {% elif d.playback_mode == 'splash' %}
-                        <span class="badge badge-pending">Splash</span>
+                        <span class="text-muted">Splash screen</span>
                     {% else %}
-                        <span class="text-muted">{{ d.playback_mode or '—' }}</span>
+                        <span class="text-muted">—</span>
                     {% endif %}
                 </span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Pipeline State</span>
-                <span class="detail-value">{{ d.pipeline_state or '—' }}</span>
+                <span class="detail-value" data-live-pipeline="{{ d.id }}">
+                    {% if d.pipeline_state == 'PLAYING' %}
+                        <span class="badge badge-online">Playing</span>
+                    {% elif d.pipeline_state == 'PAUSED' %}
+                        <span class="badge badge-pending">Paused</span>
+                    {% elif d.pipeline_state == 'READY' %}
+                        <span class="badge badge-pending">Ready</span>
+                    {% elif d.pipeline_state == 'NULL' and d.playback_mode == 'splash' %}
+                        <span class="badge badge-pending">Splash</span>
+                    {% elif d.pipeline_state == 'ERROR' %}
+                        <span class="badge badge-offline">Error</span>
+                    {% else %}
+                        <span class="text-muted">{{ d.pipeline_state or '—' }}</span>
+                    {% endif %}
+                </span>
             </div>
             {% endif %}
         </div>
@@ -271,19 +282,63 @@ async function dropDevice(e, groupId) {
 }
 
 (function() {
-    const knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}:{{ devices | map(attribute='is_upgrading') | join(',') }}";
+    let knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}:{{ devices | map(attribute='is_upgrading') | join(',') }}";
+
+    function buildPipelineBadge(device) {
+        if (device.pipeline_state === "PLAYING") return '<span class="badge badge-online">Playing</span>';
+        if (device.pipeline_state === "PAUSED") return '<span class="badge badge-pending">Paused</span>';
+        if (device.pipeline_state === "READY") return '<span class="badge badge-pending">Ready</span>';
+        if (device.pipeline_state === "NULL" && device.playback_mode === "splash") return '<span class="badge badge-pending">Splash</span>';
+        if (device.pipeline_state === "ERROR") return '<span class="badge badge-offline">Error</span>';
+        return '<span class="text-muted">' + (device.pipeline_state || '—') + '</span>';
+    }
+
+    function buildAssetDisplay(device) {
+        if (device.playback_asset) {
+            const escaped = device.playback_asset.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return '<span class="has-tooltip"><span class="asset-name-truncate">' + escaped + '</span><span class="tooltip">' + escaped + '</span></span>';
+        }
+        if (device.playback_mode === "splash") return '<span class="text-muted">Splash screen</span>';
+        return '<span class="text-muted">—</span>';
+    }
+
+    function updateLiveFields(devices) {
+        for (const d of devices) {
+            // Update data-playing on device rows
+            const rows = document.querySelectorAll(`tr.device-row[data-device-id="${d.id}"]`);
+            for (const row of rows) {
+                if (d.has_active_schedule) row.dataset.playing = "true";
+                else delete row.dataset.playing;
+            }
+            // Update expanded detail panels
+            const pipelineEl = document.querySelector(`[data-live-pipeline="${d.id}"]`);
+            if (pipelineEl) pipelineEl.innerHTML = buildPipelineBadge(d);
+            const assetEl = document.querySelector(`[data-live-asset="${d.id}"]`);
+            if (assetEl) assetEl.innerHTML = buildAssetDisplay(d);
+        }
+    }
+
     setInterval(async () => {
         if (isModalOpen()) return;
         const el = document.activeElement;
         if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
-        if (document.querySelector(".device-row.expanded")) return;
-        if (document.querySelector(".group-panel.expanded")) return;
         try {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;
             const devices = await resp.json();
             const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",") + ":" + devices.map(d => d.firmware_version || "").join(",") + ":" + devices.map(d => d.is_online).join(",") + ":" + devices.map(d => d.is_upgrading).join(",");
-            if (state !== knownState) location.reload();
+
+            // Always update live fields in-place (asset, pipeline badges)
+            updateLiveFields(devices);
+
+            // Full reload only when structural state changes and no panel is open
+            if (state !== knownState) {
+                if (document.querySelector(".device-row.expanded") || document.querySelector(".group-panel.expanded")) {
+                    knownState = state;  // acknowledge change, reload when panel closes
+                } else {
+                    location.reload();
+                }
+            }
         } catch (e) { /* ignore */ }
     }, 5000);
 })();

@@ -27,6 +27,10 @@ class DeviceOut(BaseModel):
     registered_at: datetime
     is_online: bool = False
     is_upgrading: bool = False
+    playback_mode: Optional[str] = None
+    playback_asset: Optional[str] = None
+    pipeline_state: Optional[str] = None
+    has_active_schedule: bool = False
 
 
 class DeviceUpdate(BaseModel):

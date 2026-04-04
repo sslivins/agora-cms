@@ -10,6 +10,79 @@ def _make_upload(filename: str, content: bytes = b"fakecontent"):
 
 
 @pytest.mark.asyncio
+class TestAssetStatus:
+    async def test_status_empty(self, client):
+        resp = await client.get("/api/assets/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["asset_count"] == 0
+        assert data["variant_ready"] == 0
+        assert data["variant_processing"] == 0
+        assert data["variant_failed"] == 0
+        assert data["assets"] == []
+
+    async def test_status_returns_per_asset_variants(self, client, db_session):
+        """Status endpoint should include per-asset variant details."""
+        from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        profile = DeviceProfile(name="Pi Zero Test")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(
+            filename="status_test.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=5000, checksum="abc123",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        # Add variants in different states
+        v_ready = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="status_test_pizero.mp4", size_bytes=3000,
+            status=VariantStatus.READY, progress=100.0, checksum="def",
+            width=1280, height=720, video_codec="h264", bitrate=5000000,
+            frame_rate="30",
+        )
+        v_processing = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="status_test_pizero2.mp4", size_bytes=0,
+            status=VariantStatus.PROCESSING, progress=45.0, checksum="",
+        )
+        db_session.add_all([v_ready, v_processing])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["asset_count"] == 1
+        assert data["variant_ready"] == 1
+        assert data["variant_processing"] == 1
+        assert len(data["assets"]) == 1
+
+        asset_data = data["assets"][0]
+        assert asset_data["id"] == str(asset.id)
+        assert asset_data["variant_total"] == 2
+        assert asset_data["variant_ready"] == 1
+        assert asset_data["variant_processing"] == 1
+        assert len(asset_data["variants"]) == 2
+
+        # Find the processing variant and verify fields
+        proc_variant = [v for v in asset_data["variants"] if v["status"] == "processing"][0]
+        assert proc_variant["progress"] == 45.0
+        assert proc_variant["profile_name"] == "Pi Zero Test"
+
+        # Find the ready variant and verify metadata
+        ready_variant = [v for v in asset_data["variants"] if v["status"] == "ready"][0]
+        assert ready_variant["width"] == 1280
+        assert ready_variant["height"] == 720
+        assert ready_variant["video_codec"] == "h264"
+        assert ready_variant["size_bytes"] == 3000
+
+
+@pytest.mark.asyncio
 class TestAssetUpload:
     async def test_upload_mp4(self, client):
         resp = await client.post("/api/assets/upload", files=_make_upload("test.mp4"))
@@ -146,3 +219,24 @@ class TestAssetPreview:
 
         resp = await unauthed_client.get(f"/api/assets/{asset_id}/preview")
         assert resp.status_code in (401, 303)
+
+
+@pytest.mark.asyncio
+class TestImageDuration:
+    async def test_image_with_duration_shows_dash(self, client, db_session):
+        """An image asset with duration_seconds set (e.g. HEIC) should show
+        '—' in the assets page, not '00:00:00'."""
+        from cms.models.asset import Asset, AssetType
+
+        asset = Asset(
+            filename="photo.jpg", original_filename="photo.heic",
+            asset_type=AssetType.IMAGE, size_bytes=50000, checksum="img123",
+            duration_seconds=0.04,  # ffprobe artefact from HEIC
+        )
+        db_session.add(asset)
+        await db_session.commit()
+
+        resp = await client.get("/assets")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "00:00:00" not in html

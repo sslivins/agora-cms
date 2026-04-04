@@ -278,6 +278,105 @@ class TestCheckUpdates:
 
 
 @pytest.mark.asyncio
+class TestDevicePlaybackFields:
+    """Verify playback_mode, playback_asset, pipeline_state, has_active_schedule
+    are returned by GET /api/devices based on live device_manager state and
+    scheduler _now_playing state.
+    """
+
+    async def test_playback_fields_default_when_offline(self, client, db_session):
+        """Offline devices should have null playback fields and no active schedule."""
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="pb-offline", name="pb-offline", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.get("/api/devices")
+        assert resp.status_code == 200
+        dev = [d for d in resp.json() if d["id"] == "pb-offline"][0]
+        assert dev["playback_mode"] is None
+        assert dev["playback_asset"] is None
+        assert dev["pipeline_state"] is None
+        assert dev["has_active_schedule"] is False
+
+    async def test_playback_fields_from_live_state(self, client, db_session):
+        """Connected device should expose playback fields from device_manager state."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        device = Device(id="pb-live", name="pb-live", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("pb-live", FakeWS())
+        device_manager.update_status(
+            "pb-live", mode="play", asset="demo.mp4", pipeline_state="PLAYING",
+        )
+
+        try:
+            resp = await client.get("/api/devices")
+            dev = [d for d in resp.json() if d["id"] == "pb-live"][0]
+            assert dev["playback_mode"] == "play"
+            assert dev["playback_asset"] == "demo.mp4"
+            assert dev["pipeline_state"] == "PLAYING"
+        finally:
+            device_manager.disconnect("pb-live")
+
+    async def test_has_active_schedule_from_scheduler(self, client, db_session):
+        """Device with an active schedule in _now_playing should have has_active_schedule=True."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services import scheduler
+
+        device = Device(id="pb-sched", name="pb-sched", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        # Inject into scheduler _now_playing dict
+        scheduler._now_playing["pb-sched"] = {
+            "device_id": "pb-sched",
+            "schedule_id": "fake-sched-id",
+            "asset": "scheduled.mp4",
+        }
+
+        try:
+            resp = await client.get("/api/devices")
+            dev = [d for d in resp.json() if d["id"] == "pb-sched"][0]
+            assert dev["has_active_schedule"] is True
+        finally:
+            scheduler._now_playing.pop("pb-sched", None)
+
+    async def test_splash_mode_fields(self, client, db_session):
+        """Device showing splash should report mode=splash and no asset."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        device = Device(id="pb-splash", name="pb-splash", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("pb-splash", FakeWS())
+        device_manager.update_status(
+            "pb-splash", mode="splash", asset=None, pipeline_state="NULL",
+        )
+
+        try:
+            resp = await client.get("/api/devices")
+            dev = [d for d in resp.json() if d["id"] == "pb-splash"][0]
+            assert dev["playback_mode"] == "splash"
+            assert dev["playback_asset"] is None
+            assert dev["pipeline_state"] == "NULL"
+        finally:
+            device_manager.disconnect("pb-splash")
+
+
+@pytest.mark.asyncio
 class TestUpgradeGuard:
     async def test_upgrade_not_connected(self, client, db_session):
         """Upgrading an offline device returns 409."""
