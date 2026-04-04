@@ -96,6 +96,17 @@
                 <span class="detail-label">Last Seen</span>
                 <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
             </div>
+            <div class="detail-item">
+                <span class="detail-label">Timezone</span>
+                <span class="detail-value">
+                    <select class="inline-edit" onclick="event.stopPropagation()" onchange="setDeviceTimezone('{{ d.id }}', this.value)">
+                        <option value=""{% if not d.timezone %} selected{% endif %}>CMS default</option>
+                        {% for tz in timezones %}
+                        <option value="{{ tz }}"{% if d.timezone == tz %} selected{% endif %}>{{ tz }}</option>
+                        {% endfor %}
+                    </select>
+                </span>
+            </div>
             {% if d.is_online %}
             <div class="detail-item">
                 <span class="detail-label">Playback</span>

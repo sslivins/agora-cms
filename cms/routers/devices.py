@@ -127,6 +127,10 @@ async def update_device(
             sync = SyncMessage(default_asset=None)
             await device_manager.send_to_device(device_id, sync.model_dump(mode="json"))
 
+    # If timezone was changed, push a fresh sync so the device applies it
+    if "timezone" in updates:
+        await push_sync_to_device(device_id, db)
+
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,

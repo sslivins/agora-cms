@@ -552,6 +552,29 @@ class TestBuildDeviceSync:
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.schedules == []
 
+    async def test_per_device_timezone_overrides_cms(self, db):
+        """Device with its own timezone should override the CMS global timezone."""
+        await self._setup_tz(db, "America/Los_Angeles")
+        device = Device(
+            id="sync-pi-01",
+            name="Sync Test",
+            status=DeviceStatus.ADOPTED,
+            timezone="Europe/London",
+        )
+        db.add(device)
+        await db.commit()
+
+        sync = await build_device_sync("sync-pi-01", db)
+        assert sync.timezone == "Europe/London"
+
+    async def test_device_without_timezone_uses_cms_default(self, db):
+        """Device without a timezone set should use the CMS global timezone."""
+        await self._setup_tz(db, "America/Los_Angeles")
+        await self._setup_device(db)
+
+        sync = await build_device_sync("sync-pi-01", db)
+        assert sync.timezone == "America/Los_Angeles"
+
 
 # ── Overlap helper tests ──
 

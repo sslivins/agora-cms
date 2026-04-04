@@ -36,6 +36,16 @@ import json as _json
 from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo, available_timezones
 
+# Common timezones for the device timezone dropdown — sorted for readability.
+# Uses well-known IANA zone names; excludes deprecated / obscure entries.
+COMMON_TIMEZONES = sorted([
+    tz for tz in available_timezones()
+    if tz.startswith(("Africa/", "America/", "Asia/", "Atlantic/", "Australia/",
+                      "Europe/", "Indian/", "Pacific/"))
+    and not tz.startswith(("America/Argentina/", "America/Indiana/",
+                           "America/Kentucky/", "America/North_Dakota/"))
+] + ["Etc/UTC"])
+
 templates = Jinja2Templates(directory="cms/templates")
 
 # Custom Jinja2 filter for days of week
@@ -397,6 +407,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "ungrouped": ungrouped,
         "assets": assets,
         "profiles": profiles,
+        "timezones": COMMON_TIMEZONES,
         "latest_version": get_latest_device_version(),
     })
 
