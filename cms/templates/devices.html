@@ -112,7 +112,7 @@
                 <span class="detail-label">Asset</span>
                 <span class="detail-value" data-live-asset="{{ d.id }}">
                     {% if d.playback_asset %}
-                        <span class="has-tooltip"><span class="asset-name-truncate">{{ d.playback_asset }}</span><span class="tooltip">{{ d.playback_asset }}</span></span>
+                        <span class="asset-name-truncate">{{ d.playback_asset }}</span>
                     {% elif d.playback_mode == 'splash' %}
                         <span class="text-muted">Splash screen</span>
                     {% else %}
@@ -281,6 +281,27 @@ async function dropDevice(e, groupId) {
     }
 }
 
+function applyAssetTooltips() {
+    document.querySelectorAll('.asset-name-truncate').forEach(span => {
+        const parent = span.parentElement;
+        if (span.scrollWidth > span.clientWidth) {
+            if (!parent.classList.contains('has-tooltip')) {
+                parent.classList.add('has-tooltip');
+                const tip = document.createElement('span');
+                tip.className = 'tooltip';
+                tip.textContent = span.textContent;
+                parent.appendChild(tip);
+            }
+        } else {
+            if (parent.classList.contains('has-tooltip')) {
+                parent.classList.remove('has-tooltip');
+                const tip = parent.querySelector('.tooltip');
+                if (tip) tip.remove();
+            }
+        }
+    });
+}
+
 (function() {
     let knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}:{{ devices | map(attribute='is_upgrading') | join(',') }}";
 
@@ -296,7 +317,7 @@ async function dropDevice(e, groupId) {
     function buildAssetDisplay(device) {
         if (device.playback_asset) {
             const escaped = device.playback_asset.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            return '<span class="has-tooltip"><span class="asset-name-truncate">' + escaped + '</span><span class="tooltip">' + escaped + '</span></span>';
+            return '<span class="asset-name-truncate">' + escaped + '</span>';
         }
         if (device.playback_mode === "splash") return '<span class="text-muted">Splash screen</span>';
         return '<span class="text-muted">—</span>';
@@ -316,6 +337,7 @@ async function dropDevice(e, groupId) {
             const assetEl = document.querySelector(`[data-live-asset="${d.id}"]`);
             if (assetEl) assetEl.innerHTML = buildAssetDisplay(d);
         }
+        requestAnimationFrame(applyAssetTooltips);
     }
 
     setInterval(async () => {

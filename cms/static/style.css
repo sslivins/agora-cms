@@ -601,6 +601,9 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     position: relative;
     cursor: help;
 }
+.has-tooltip .btn, .has-tooltip button {
+    cursor: pointer;
+}
 .has-tooltip .tooltip {
     position: absolute;
     bottom: calc(100% + 10px);

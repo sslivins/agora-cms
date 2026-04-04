@@ -161,6 +161,7 @@ function toggleDevice(row) {
     } else {
         row.classList.add("expanded");
         detail.style.display = "";
+        if (typeof applyAssetTooltips === "function") requestAnimationFrame(applyAssetTooltips);
     }
 }
 
