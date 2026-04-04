@@ -453,7 +453,7 @@ async function createSchedule(form) {
     }
     // Warn if end date is in the past
     if (endDate && endDate < new Date().toLocaleDateString('en-CA')) {
-        const ok = await showConfirm("The end date is in the past \u2014 this schedule will never play. Continue anyway?");
+        const ok = await showConfirm("\u26a0\ufe0f The end date is in the past \u2014 this schedule will never play. Continue anyway?");
         if (!ok) return false;
     }
     const body = {

@@ -339,7 +339,7 @@ def _open_edit_modal(page, schedule_name):
     page.goto("/schedules")
     page.wait_for_load_state("domcontentloaded")
     # Find the row with this schedule and click its Edit button
-    row = page.locator(f"tr:has(td:text('{schedule_name}'))")
+    row = page.locator("tr", has_text=schedule_name)
     row.locator("button", has_text="Edit").click()
     # Wait for modal to appear
     page.wait_for_selector(".modal-overlay")
