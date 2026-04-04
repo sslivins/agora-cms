@@ -95,7 +95,16 @@
 
 <div class="card">
     <h2>Active Schedules</h2>
-    <table>
+    <table class="table-schedules">
+        <colgroup>
+            <col style="width: 14%">
+            <col style="width: 15%">
+            <col style="width: 11%">
+            <col style="width: 26%">
+            <col style="width: 7%">
+            <col style="width: 7%">
+            <col style="width: 20%">
+        </colgroup>
         <thead>
             <tr>
                 <th>Name</th>
@@ -110,14 +119,14 @@
         <tbody>
             {% for s in schedules %}
             <tr>
-                <td>{{ s.name }}</td>
-                <td>{{ s.asset.filename if s.asset else '—' }}</td>
+                <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
+                <td class="cell-truncate"><span class="cell-text">{{ s.asset.filename if s.asset else '—' }}</span></td>
                 <td>
                     {% if s.device %}{{ s.device.name or s.device.id }}
                     {% elif s.group %}{{ s.group.name }}
                     {% else %}—{% endif %}
                 </td>
-                <td class="schedule-desc" data-schedule='{{ s | schedule_json }}'></td>
+                <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
                 <td>
                     <button class="btn btn-sm {% if s.enabled %}btn-success{% else %}btn-danger{% endif %}"
@@ -141,7 +150,15 @@
 <div class="card">
     <h2>Expired Schedules</h2>
     <p class="text-muted" style="margin-top:0;">These schedules have passed their end date and will no longer run.</p>
-    <table class="table-expired">
+    <table class="table-schedules table-expired">
+        <colgroup>
+            <col style="width: 15%">
+            <col style="width: 17%">
+            <col style="width: 12%">
+            <col style="width: 28%">
+            <col style="width: 8%">
+            <col style="width: 20%">
+        </colgroup>
         <thead>
             <tr>
                 <th>Name</th>
@@ -155,14 +172,14 @@
         <tbody>
             {% for s in expired_schedules %}
             <tr>
-                <td>{{ s.name }}</td>
-                <td>{{ s.asset.filename if s.asset else '—' }}</td>
+                <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
+                <td class="cell-truncate"><span class="cell-text">{{ s.asset.filename if s.asset else '—' }}</span></td>
                 <td>
                     {% if s.device %}{{ s.device.name or s.device.id }}
                     {% elif s.group %}{{ s.group.name }}
                     {% else %}—{% endif %}
                 </td>
-                <td class="schedule-desc" data-schedule='{{ s | schedule_json }}'></td>
+                <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
                 <td class="actions">
                     <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
@@ -298,8 +315,26 @@ document.addEventListener("DOMContentLoaded", function() {
     document.querySelectorAll('td.schedule-desc').forEach(td => {
         try {
             const data = JSON.parse(td.getAttribute('data-schedule'));
-            td.textContent = describeScheduleCompact(data);
+            const desc = describeScheduleCompact(data);
+            const textSpan = document.createElement('span');
+            textSpan.className = 'cell-text';
+            textSpan.textContent = desc;
+            td.appendChild(textSpan);
         } catch(e) { /* leave empty if parse fails */ }
+    });
+
+    // Add tooltips to any truncated cells
+    requestAnimationFrame(() => {
+        document.querySelectorAll('.table-schedules .cell-truncate .cell-text').forEach(span => {
+            if (span.scrollWidth > span.clientWidth) {
+                const td = span.closest('td');
+                td.classList.add('has-tooltip');
+                const tip = document.createElement('span');
+                tip.className = 'tooltip';
+                tip.textContent = span.textContent;
+                td.appendChild(tip);
+            }
+        });
     });
 
     // Auto-advance end time when start time changes
@@ -826,7 +861,7 @@ function editSchedule(s) {
         }
         const todayLocal = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD in local tz
         if (endDate && endDate < todayLocal) {
-            const ok = await showConfirm("The end date is in the past \u2014 this schedule will never play. Continue anyway?");
+            const ok = await showConfirm("\u26a0\ufe0f The end date is in the past \u2014 this schedule will never play. Continue anyway?");
             if (!ok) return;
         }
         const days = [];

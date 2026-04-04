@@ -88,6 +88,7 @@ async def assets_status_json(db: AsyncSession = Depends(get_db)):
                 "bitrate": v.bitrate,
                 "frame_rate": v.frame_rate,
                 "size_bytes": v.size_bytes,
+                "checksum": v.checksum or "",
             }
             variants.append(vd)
             if v.status == VariantStatus.READY:

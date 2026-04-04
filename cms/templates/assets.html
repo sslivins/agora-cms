@@ -138,7 +138,13 @@
                         {% endif %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">Checksum</span>
-                            <span class="detail-value monospace">{{ a.checksum }}</span>
+                            <span class="detail-value">
+                                <span class="checksum-wrap has-tooltip">
+                                    <span class="checksum-text">{{ a.checksum }}</span>
+                                    <button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, '{{ a.checksum }}')" type="button">Copy</button>
+                                    <span class="tooltip">{{ a.checksum }}</span>
+                                </span>
+                            </span>
                         </div>
                     </div>
                     {% if a.variants | length > 0 %}
@@ -154,6 +160,7 @@
                                     <th>Bitrate</th>
                                     <th>FPS</th>
                                     <th>Size</th>
+                                    <th>Checksum</th>
                                 </tr>
                             </thead>
                             <tbody data-live-variant-table="{{ a.id }}">
@@ -179,6 +186,15 @@
                                         {% if v.size_bytes > 0 %}
                                             {% set vmb = v.size_bytes / 1048576 %}
                                             {% if vmb >= 1 %}{{ "%.1f"|format(vmb) }} MB{% else %}{{ "%.0f"|format(v.size_bytes / 1024) }} KB{% endif %}
+                                        {% else %}—{% endif %}
+                                    </td>
+                                    <td>
+                                        {% if v.checksum %}
+                                        <span class="checksum-wrap has-tooltip">
+                                            <span class="checksum-text">{{ v.checksum }}</span>
+                                            <button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, '{{ v.checksum }}')" type="button">Copy</button>
+                                            <span class="tooltip">{{ v.checksum }}</span>
+                                        </span>
                                         {% else %}—{% endif %}
                                     </td>
                                 </tr>
@@ -283,7 +299,18 @@
             // FPS
             cells[5].textContent = v.frame_rate ? v.frame_rate + ' fps' : '—';
             // Size
-            cells[6].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '—';
+            cells[6].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '\u2014';
+            // Checksum
+            if (cells[7]) {
+                if (v.checksum) {
+                    cells[7].innerHTML = '<span class="checksum-wrap has-tooltip">' +
+                        '<span class="checksum-text">' + v.checksum.replace(/</g, '&lt;') + '</span>' +
+                        '<button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, \'' + v.checksum + '\')" type="button">Copy</button>' +
+                        '<span class="tooltip">' + v.checksum.replace(/</g, '&lt;') + '</span></span>';
+                } else {
+                    cells[7].textContent = '\u2014';
+                }
+            }
         });
     }
 
@@ -325,5 +352,13 @@
         } catch (e) { /* ignore */ }
     }, 5000);
 })();
+
+function copyChecksum(btn, checksum) {
+    navigator.clipboard.writeText(checksum).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = '\u2713';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
+}
 </script>
 {% endblock %}
