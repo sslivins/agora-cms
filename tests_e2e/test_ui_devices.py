@@ -215,6 +215,66 @@ class TestPlaybackAssetTooltip:
             stop_event.set()
             thread.join(timeout=5)
 
+    def test_short_filename_no_help_cursor(self, page: Page, ws_url, e2e_server):
+        """A short asset name that fits without truncation should not show
+        cursor:help (the '?' cursor) — no tooltip wrapper should be added."""
+
+        asset_name = "clip.mp4"  # well under 18ch limit
+        stop_event = threading.Event()
+        ready_event = threading.Event()
+
+        async def run_device():
+            dev = FakeDevice("tooltip-dev-002", ws_url)
+            await dev.connect()
+            await dev.send_status(mode="play", asset=asset_name)
+            ready_event.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.2)
+            await dev.disconnect()
+
+        thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
+        thread.start()
+        ready_event.wait(timeout=15)
+
+        try:
+            page.goto("/devices")
+            page.wait_for_load_state("domcontentloaded")
+
+            row = page.locator('[data-device-id="tooltip-dev-002"]').first
+            expect(row).to_be_visible(timeout=5000)
+            row.locator(".expand-toggle").click()
+
+            detail = page.locator('[data-detail-for="tooltip-dev-002"]').first
+            expect(detail).to_be_visible(timeout=3000)
+
+            # The asset-name-truncate span should be visible with the short name
+            asset_span = detail.locator(".asset-name-truncate", has_text=asset_name).first
+            expect(asset_span).to_be_visible(timeout=3000)
+
+            # Wait a frame for applyAssetTooltips to run
+            page.wait_for_timeout(200)
+
+            # The parent should NOT have has-tooltip class (no truncation)
+            parent_has_tooltip = page.evaluate(
+                "(el) => el.parentElement.classList.contains('has-tooltip')",
+                asset_span.element_handle(),
+            )
+            assert not parent_has_tooltip, (
+                "Short filename should not have has-tooltip class (no ? cursor)"
+            )
+
+            # Verify cursor is not 'help'
+            cursor = page.evaluate(
+                "(el) => window.getComputedStyle(el.parentElement).cursor",
+                asset_span.element_handle(),
+            )
+            assert cursor != "help", (
+                f"Short filename parent should not have cursor:help, got {cursor}"
+            )
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
+
 
 class TestDetailPanelPipelineBadge:
     """Detail panel should show the correct pipeline state badge and asset name."""
