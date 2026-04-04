@@ -565,7 +565,7 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 .detail-item { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .detail-label { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
 .detail-value { font-size: 0.9rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.detail-value:has(.has-tooltip) { overflow: visible; }
+.detail-value:has(.has-tooltip), .detail-value.has-tooltip { overflow: visible; }
 .asset-name-truncate { display: inline-block; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .asset-filename-cell { max-width: 0; width: 40%; }
 .asset-filename-truncate { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
