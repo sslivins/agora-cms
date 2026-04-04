@@ -45,6 +45,31 @@ class TestDeviceCRUD:
         assert resp.status_code == 200
         assert resp.json()["name"] == "Kitchen Display"
 
+    async def test_update_device_timezone(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="test-pi-tz", name="test-pi-tz", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.patch("/api/devices/test-pi-tz", json={"timezone": "Europe/Berlin"})
+        assert resp.status_code == 200
+        assert resp.json()["timezone"] == "Europe/Berlin"
+
+    async def test_clear_device_timezone(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(
+            id="test-pi-tz2", name="test-pi-tz2",
+            status=DeviceStatus.ADOPTED, timezone="Europe/Berlin",
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.patch("/api/devices/test-pi-tz2", json={"timezone": None})
+        assert resp.status_code == 200
+        assert resp.json()["timezone"] is None
+
     async def test_adopt_device(self, client, db_session):
         from cms.models.device import Device, DeviceStatus
 

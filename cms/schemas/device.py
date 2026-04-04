@@ -18,6 +18,7 @@ class DeviceOut(BaseModel):
     group_id: Optional[uuid.UUID] = None
     group_name: Optional[str] = None
     default_asset_id: Optional[uuid.UUID] = None
+    timezone: Optional[str] = None
     firmware_version: str
     device_type: str = ""
     storage_capacity_mb: int
@@ -34,6 +35,7 @@ class DeviceUpdate(BaseModel):
     group_id: Optional[uuid.UUID] = None
     default_asset_id: Optional[uuid.UUID] = None
     profile_id: Optional[uuid.UUID] = None
+    timezone: Optional[str] = None
 
 
 class DeviceGroupOut(BaseModel):

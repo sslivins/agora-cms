@@ -121,6 +121,13 @@ async def run_migrations():
                 await conn.execute(text("ALTER TYPE devicestatus RENAME VALUE 'OFFLINE' TO 'ORPHANED'"))
 
 
+        # -- devices.timezone --
+        has_tz = await conn.run_sync(lambda c: _has_column(c, "devices", "timezone"))
+        if not has_tz:
+            await conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN timezone VARCHAR(64)"
+            ))
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -229,6 +229,12 @@ async function setProfile(deviceId, profileId) {
     else showToast("Profile update failed", true);
 }
 
+async function setDeviceTimezone(deviceId, tz) {
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { timezone: tz || null });
+    if (resp && resp.ok) showToast("Timezone updated");
+    else showToast("Timezone update failed", true);
+}
+
 async function setGroupDefaultAsset(groupId, assetId) {
     const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Group default asset updated");

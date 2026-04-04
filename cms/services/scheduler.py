@@ -419,19 +419,19 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
     Used by both the scheduler loop and the on-change push.
     Returns None if the database isn't ready.
     """
-    # Read configured timezone
+    # Read configured timezone (per-device overrides CMS global)
     tz_result = await db.execute(
         select(CMSSetting.value).where(CMSSetting.key == "timezone")
     )
-    tz_name = tz_result.scalar_one_or_none() or "UTC"
+    cms_tz = tz_result.scalar_one_or_none() or "UTC"
 
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(days=SCHEDULE_WINDOW_DAYS)
     # Convert to local time for date comparisons — schedule dates represent
     # days in the CMS timezone, not UTC (e.g. a schedule ending April 1st
     # PDT is still valid at 9 PM PDT even though it's April 2nd UTC).
-    local_now = now.astimezone(ZoneInfo(tz_name))
-    local_cutoff = cutoff.astimezone(ZoneInfo(tz_name))
+    local_now = now.astimezone(ZoneInfo(cms_tz))
+    local_cutoff = cutoff.astimezone(ZoneInfo(cms_tz))
 
     # Load device with default asset
     dev_result = await db.execute(
@@ -511,9 +511,12 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
                 continue
             entries.append(_schedule_to_entry(s, variant_checksums))
 
+    # Per-device timezone overrides the CMS global timezone
+    device_tz = dev.timezone or cms_tz
+
     return SyncMessage(
         device_status=dev.status.value if dev.status else None,
-        timezone=tz_name,
+        timezone=device_tz,
         schedules=entries,
         default_asset=default_asset_name,
         default_asset_checksum=default_asset_checksum or None,
