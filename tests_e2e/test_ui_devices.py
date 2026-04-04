@@ -229,7 +229,7 @@ class TestDetailPanelPipelineBadge:
         async def run_device():
             dev = FakeDevice("badge-dev-001", ws_url)
             await dev.connect()
-            await dev.send_status(mode="play", asset=asset_name)
+            await dev.send_status(mode="play", asset=asset_name, pipeline_state="PLAYING")
             ready_event.set()
             while not stop_event.is_set():
                 await asyncio.sleep(0.2)
@@ -326,11 +326,11 @@ class TestDetailPanelLiveRefresh:
                 await asyncio.sleep(0.2)
                 await dev.send_status(mode="splash", asset=None)
             # Switch to playing
-            await dev.send_status(mode="play", asset="switched.mp4")
+            await dev.send_status(mode="play", asset="switched.mp4", pipeline_state="PLAYING")
             # Keep sending playing status so the poll picks it up
             while not stop_event.is_set():
                 await asyncio.sleep(0.5)
-                await dev.send_status(mode="play", asset="switched.mp4")
+                await dev.send_status(mode="play", asset="switched.mp4", pipeline_state="PLAYING")
             await dev.disconnect()
 
         thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)

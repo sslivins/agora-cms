@@ -128,7 +128,7 @@ class FakeDevice:
         except websockets.exceptions.ConnectionClosed:
             pass
 
-    async def send_status(self, mode: str = "splash", asset: str = None):
+    async def send_status(self, mode: str = "splash", asset: str = None, pipeline_state: str = "NULL"):
         """Send a heartbeat status message."""
         msg = {
             "type": "status",
@@ -139,6 +139,7 @@ class FakeDevice:
             "uptime_seconds": 120,
             "storage_used_mb": self.storage_used_mb,
             "cpu_temp_c": 45.0,
+            "pipeline_state": pipeline_state,
         }
         await self.ws.send(json.dumps(msg))
 
