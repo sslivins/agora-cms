@@ -54,8 +54,13 @@ async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_nam
 
 
 def get_now_playing() -> list[dict]:
-    """Return a list of currently active schedule playbacks for the dashboard."""
-    return list(_now_playing.values())
+    """Return a list of currently active schedule playbacks for the dashboard.
+
+    Returns shallow copies so callers (dashboard routes) can annotate entries
+    with transient keys like ``mismatch`` / ``starting`` without polluting
+    the canonical scheduler state.
+    """
+    return [d.copy() for d in _now_playing.values()]
 
 
 def skip_schedule_until(schedule_id: str, until: datetime) -> None:

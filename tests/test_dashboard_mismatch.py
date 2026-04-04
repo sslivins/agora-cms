@@ -216,3 +216,48 @@ class TestDashboardStartingGrace:
         finally:
             device_manager.disconnect("mismatch-01")
             _sched._now_playing.pop("mismatch-01", None)
+
+    async def test_starting_clears_after_device_begins_playing(self, app, db_session, client):
+        """Starting badge must clear once the device transitions to playing.
+
+        Regression: get_now_playing() returned references to the global
+        _now_playing dicts.  The dashboard route set starting=True on the
+        shared dict during the grace period.  On subsequent requests — after
+        the device began playing correctly — mismatch was False so the
+        ``if np["mismatch"]`` block was skipped, leaving starting=True from
+        the previous request.  The fingerprint never changed and the page
+        stayed stuck on 'Starting…'.
+        """
+        await _seed_device(db_session)
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            # 1) Device not playing yet → "Starting…" during grace period
+            _fake_connect("mismatch-01", mode="splash", asset=None)
+            resp1 = await client.get("/api/dashboard")
+            np1 = resp1.json()["now_playing"][0]
+            assert np1["starting"] is True
+            assert np1["mismatch"] is False
+
+            # 2) Device starts playing the correct asset
+            device_manager.update_status("mismatch-01", mode="play", asset="sony-clip.mp4")
+
+            resp2 = await client.get("/api/dashboard")
+            np2 = resp2.json()["now_playing"][0]
+            # Must show Playing, not Starting
+            assert np2.get("starting") is not True, (
+                "starting flag stuck from previous request — "
+                "get_now_playing() must return copies"
+            )
+            assert np2["mismatch"] is False
+
+            # 3) Full page should show 'Playing' badge, not 'Starting…'
+            resp3 = await client.get("/")
+            html = resp3.text
+            assert "badge-started" in html
+            assert "Starting" not in html
+        finally:
+            device_manager.disconnect("mismatch-01")
+            _sched._now_playing.pop("mismatch-01", None)
