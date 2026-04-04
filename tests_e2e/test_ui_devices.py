@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -210,6 +211,161 @@ class TestPlaybackAssetTooltip:
             assert not clip_info["clipped"], (
                 f"Tooltip is clipped by an overflow:hidden ancestor: {clip_info}"
             )
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
+
+
+class TestDetailPanelPipelineBadge:
+    """Detail panel should show the correct pipeline state badge and asset name."""
+
+    def test_playing_badge_and_asset_shown(self, page: Page, ws_url, e2e_server):
+        """A playing device should show a green 'Playing' badge and the asset filename."""
+
+        asset_name = "demo_clip.mp4"
+        stop_event = threading.Event()
+        ready_event = threading.Event()
+
+        async def run_device():
+            dev = FakeDevice("badge-dev-001", ws_url)
+            await dev.connect()
+            await dev.send_status(mode="play", asset=asset_name, pipeline_state="PLAYING")
+            ready_event.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.2)
+            await dev.disconnect()
+
+        thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
+        thread.start()
+        ready_event.wait(timeout=15)
+
+        try:
+            page.goto("/devices")
+            page.wait_for_load_state("domcontentloaded")
+
+            row = page.locator('[data-device-id="badge-dev-001"]').first
+            expect(row).to_be_visible(timeout=5000)
+            row.locator(".expand-toggle").click()
+
+            detail = page.locator('[data-detail-for="badge-dev-001"]').first
+            expect(detail).to_be_visible(timeout=3000)
+
+            # Pipeline State badge should say "Playing" with badge-online class
+            pipeline_el = detail.locator('[data-live-pipeline="badge-dev-001"]')
+            expect(pipeline_el.locator(".badge-online")).to_be_visible(timeout=3000)
+            expect(pipeline_el.locator(".badge-online")).to_have_text("Playing")
+
+            # Asset should show the filename
+            asset_el = detail.locator('[data-live-asset="badge-dev-001"]')
+            expect(asset_el).to_contain_text(asset_name)
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
+
+    def test_splash_badge_shown(self, page: Page, ws_url, e2e_server):
+        """A device in splash mode should show a 'Splash' badge."""
+
+        stop_event = threading.Event()
+        ready_event = threading.Event()
+
+        async def run_device():
+            dev = FakeDevice("badge-dev-002", ws_url)
+            await dev.connect()
+            await dev.send_status(mode="splash", asset=None)
+            ready_event.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.2)
+            await dev.disconnect()
+
+        thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
+        thread.start()
+        ready_event.wait(timeout=15)
+
+        try:
+            page.goto("/devices")
+            page.wait_for_load_state("domcontentloaded")
+
+            row = page.locator('[data-device-id="badge-dev-002"]').first
+            expect(row).to_be_visible(timeout=5000)
+            row.locator(".expand-toggle").click()
+
+            detail = page.locator('[data-detail-for="badge-dev-002"]').first
+            expect(detail).to_be_visible(timeout=3000)
+
+            # Pipeline State badge should say "Splash"
+            pipeline_el = detail.locator('[data-live-pipeline="badge-dev-002"]')
+            expect(pipeline_el.locator(".badge-pending")).to_be_visible(timeout=3000)
+            expect(pipeline_el.locator(".badge-pending")).to_have_text("Splash")
+
+            # Asset should show "Splash screen"
+            asset_el = detail.locator('[data-live-asset="badge-dev-002"]')
+            expect(asset_el).to_contain_text("Splash screen")
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
+
+
+class TestDetailPanelLiveRefresh:
+    """Auto-refresh should update the detail panel in-place when it's open."""
+
+    def test_pipeline_badge_updates_in_place(self, page: Page, ws_url, e2e_server):
+        """Pipeline badge should change from Splash to Playing without closing the panel."""
+
+        stop_event = threading.Event()
+        ready_event = threading.Event()
+        switch_event = threading.Event()
+
+        async def run_device():
+            dev = FakeDevice("live-dev-001", ws_url)
+            await dev.connect()
+            # Start in splash mode
+            await dev.send_status(mode="splash", asset=None)
+            ready_event.set()
+            # Wait for test to open the panel and verify splash
+            while not switch_event.is_set():
+                await asyncio.sleep(0.2)
+                await dev.send_status(mode="splash", asset=None)
+            # Switch to playing
+            await dev.send_status(mode="play", asset="switched.mp4", pipeline_state="PLAYING")
+            # Keep sending playing status so the poll picks it up
+            while not stop_event.is_set():
+                await asyncio.sleep(0.5)
+                await dev.send_status(mode="play", asset="switched.mp4", pipeline_state="PLAYING")
+            await dev.disconnect()
+
+        thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
+        thread.start()
+        ready_event.wait(timeout=15)
+
+        try:
+            page.goto("/devices")
+            page.wait_for_load_state("domcontentloaded")
+
+            row = page.locator('[data-device-id="live-dev-001"]').first
+            expect(row).to_be_visible(timeout=5000)
+            row.locator(".expand-toggle").click()
+
+            detail = page.locator('[data-detail-for="live-dev-001"]').first
+            expect(detail).to_be_visible(timeout=3000)
+
+            # Verify initial splash state
+            pipeline_el = detail.locator('[data-live-pipeline="live-dev-001"]')
+            expect(pipeline_el.locator(".badge-pending")).to_have_text("Splash", timeout=3000)
+
+            # Now switch the device to playing
+            switch_event.set()
+
+            # Wait for auto-refresh (5s interval) to pick up the change
+            # The badge should update to "Playing" without a full page reload.
+            # The detail panel should still be visible (no reload closed it).
+            expect(pipeline_el.locator(".badge-online")).to_have_text("Playing", timeout=15000)
+
+            # Asset should also update in-place
+            asset_el = detail.locator('[data-live-asset="live-dev-001"]')
+            expect(asset_el).to_contain_text("switched.mp4", timeout=5000)
+
+            # Panel should still be expanded (no full reload)
+            expect(detail).to_be_visible()
         finally:
             stop_event.set()
             thread.join(timeout=5)

@@ -23,7 +23,7 @@
         <thead>
             <tr>
                 <th style="width:2rem"></th>
-                <th>Filename</th>
+                <th class="col-filename">Filename</th>
                 <th>Type</th>
                 <th>Size</th>
                 <th>Variants</th>
@@ -35,13 +35,13 @@
             {% for a in assets %}
             <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
                 <td class="expand-toggle">▶</td>
-                <td class="wrap">{{ a.original_filename or a.filename }}</td>
+                <td class="wrap asset-filename-cell"><span class="has-tooltip"><span class="asset-filename-truncate">{{ a.original_filename or a.filename }}</span><span class="tooltip">{{ a.original_filename or a.filename }}</span></span></td>
                 <td><span class="badge badge-{{ a.asset_type.value }}">{{ a.asset_type.value | capitalize }}</span></td>
                 <td>
                     {% set mb = a.size_bytes / 1048576 %}
                     {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
                 </td>
-                <td>
+                <td data-live-variants="{{ a.id }}">
                     {% if a.variant_total > 0 %}
                     <span class="has-tooltip">
                         {{ a.variant_ready }}/{{ a.variant_total }}
@@ -63,13 +63,13 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if a.duration_seconds %}
+                    {% if a.asset_type.value == 'image' %}
+                    —
+                    {% elif a.duration_seconds %}
                         {% set h = (a.duration_seconds // 3600) | int %}
                         {% set m = ((a.duration_seconds % 3600) // 60) | int %}
                         {% set s = (a.duration_seconds % 60) | int %}
                         {{ "%02d:%02d:%02d"|format(h, m, s) }}
-                    {% elif a.asset_type.value == 'image' %}
-                    —
                     {% else %}
                     <span class="text-muted">—</span>
                     {% endif %}
@@ -136,13 +136,13 @@
                             <span class="detail-value monospace">{{ a.filename }}</span>
                         </div>
                         {% endif %}
-                        <div class="detail-item">
+                        <div class="detail-item detail-item-wide">
                             <span class="detail-label">Checksum</span>
-                            <span class="detail-value monospace">{{ a.checksum[:16] }}…</span>
+                            <span class="detail-value monospace">{{ a.checksum }}</span>
                         </div>
                     </div>
                     {% if a.variants | length > 0 %}
-                    <div style="margin-top: 0.5rem;">
+                    <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
                         <span class="detail-label">Variants</span>
                         <table class="variants-table" style="margin-top: 0.35rem; font-size: 0.85rem;">
                             <thead>
@@ -156,7 +156,7 @@
                                     <th>Size</th>
                                 </tr>
                             </thead>
-                            <tbody>
+                            <tbody data-live-variant-table="{{ a.id }}">
                                 {% for v in a.variants %}
                                 <tr>
                                     <td>{{ v.profile.name if v.profile else '—' }}</td>
@@ -235,15 +235,93 @@
         variant_processing: {{ assets | sum(attribute='variant_processing') }},
         variant_failed: {{ assets | sum(attribute='variant_failed') }}
     };
+
+    function buildVariantBadge(a) {
+        if (a.variant_total === 0) return '<span class="text-muted">none</span>';
+        let html = '<span class="has-tooltip">' + a.variant_ready + '/' + a.variant_total +
+            '<span class="tooltip">' + a.variant_ready + ' ready, ' + a.variant_processing + ' processing, ' + a.variant_failed + ' failed</span></span> ';
+        if (a.variant_failed > 0) html += '<span class="badge badge-failed">error</span>';
+        else if (a.variant_processing > 0) html += '<span class="badge badge-processing">transcoding</span>';
+        else if (a.variant_ready === a.variant_total) html += '<span class="badge badge-ready">ready</span>';
+        else html += '<span class="badge badge-pending">queued</span>';
+        return html;
+    }
+
+    function buildVariantStatusCell(v) {
+        if (v.status === 'ready') return '<span class="badge badge-ready">Ready</span>';
+        if (v.status === 'processing') return '<span class="badge badge-processing">' + Math.round(v.progress) + '%</span>';
+        if (v.status === 'failed') {
+            const msg = (v.error_message || 'Unknown error').substring(0, 120).replace(/</g, '&lt;');
+            return '<span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">' + msg + '</span></span>';
+        }
+        return '<span class="badge badge-pending">Queued</span>';
+    }
+
+    function formatSize(bytes) {
+        const mb = bytes / 1048576;
+        if (mb >= 1) return mb.toFixed(1) + ' MB';
+        return Math.round(bytes / 1024) + ' KB';
+    }
+
+    function updateVariantTable(assetId, variants) {
+        const tbody = document.querySelector('[data-live-variant-table="' + assetId + '"]');
+        if (!tbody) return;
+        const rows = tbody.querySelectorAll('tr');
+        // Update each row's status cell (2nd column, index 1) and size (last col)
+        variants.forEach((v, i) => {
+            if (i >= rows.length) return;
+            const cells = rows[i].querySelectorAll('td');
+            if (cells.length < 2) return;
+            // Status cell
+            cells[1].innerHTML = buildVariantStatusCell(v);
+            // Resolution
+            cells[2].textContent = (v.width && v.height) ? v.width + '×' + v.height : '—';
+            // Codec
+            cells[3].textContent = v.video_codec || '—';
+            // Bitrate
+            cells[4].textContent = v.bitrate ? (v.bitrate / 1000000).toFixed(1) + ' Mbps' : '—';
+            // FPS
+            cells[5].textContent = v.frame_rate ? v.frame_rate + ' fps' : '—';
+            // Size
+            cells[6].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '—';
+        });
+    }
+
+    function updateLiveAssets(assets) {
+        for (const a of assets) {
+            // Update main table variant badge
+            const variantCell = document.querySelector('[data-live-variants="' + a.id + '"]');
+            if (variantCell) variantCell.innerHTML = buildVariantBadge(a);
+            // Update expanded detail panel variant table
+            updateVariantTable(a.id, a.variants);
+        }
+    }
+
     setInterval(async () => {
         if (isModalOpen()) return;
         try {
             const res = await fetch("/api/assets/status");
             if (!res.ok) return;
             const data = await res.json();
-            if (JSON.stringify(data) !== JSON.stringify(lastState)) {
-                location.reload();
+            const newState = {
+                asset_count: data.asset_count,
+                variant_ready: data.variant_ready,
+                variant_processing: data.variant_processing,
+                variant_failed: data.variant_failed
+            };
+
+            // Always update live fields in-place
+            if (data.assets) updateLiveAssets(data.assets);
+
+            // Full reload only for structural changes (asset added/removed)
+            // and only when no detail panel is open
+            if (newState.asset_count !== lastState.asset_count) {
+                if (!document.querySelector(".asset-row.expanded")) {
+                    location.reload();
+                    return;
+                }
             }
+            lastState = newState;
         } catch (e) { /* ignore */ }
     }, 5000);
 })();

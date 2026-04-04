@@ -63,16 +63,24 @@ async def check_for_updates():
 
 @router.get("", response_model=List[DeviceOut])
 async def list_devices(db: AsyncSession = Depends(get_db)):
+    from cms.services.scheduler import get_now_playing
+
     result = await db.execute(
         select(Device).options(selectinload(Device.group)).order_by(Device.registered_at)
     )
     devices = result.scalars().all()
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
     return [
         DeviceOut(
             **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
             group_name=d.group.name if d.group else None,
             is_online=device_manager.is_connected(d.id),
             is_upgrading=d.id in _upgrading,
+            playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
+            playback_asset=live_states[d.id]["asset"] if d.id in live_states else None,
+            pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
+            has_active_schedule=d.id in scheduled_device_ids,
         )
         for d in devices
     ]

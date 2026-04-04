@@ -271,8 +271,12 @@ async function changeDevicePassword(deviceId, deviceName) {
 }
 
 async function rebootDevice(deviceId, deviceName) {
-    let msg = "Reboot device \"" + deviceName + "\"?";
-    if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
+    let msg;
+    if (isDevicePlaying(deviceId)) {
+        msg = "\u26A0\uFE0F Device \"" + deviceName + "\" is currently playing. Are you sure you want to reboot it?";
+    } else {
+        msg = "Reboot device \"" + deviceName + "\"?";
+    }
     if (!await showConfirm(msg)) return;
     const resp = await apiCall("POST", `/api/devices/${deviceId}/reboot`);
     if (resp && resp.ok) showToast("Reboot command sent to " + deviceName);
@@ -283,8 +287,12 @@ async function rebootDevice(deviceId, deviceName) {
 }
 
 async function upgradeDevice(deviceId, deviceName) {
-    let msg = "Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.";
-    if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
+    let msg;
+    if (isDevicePlaying(deviceId)) {
+        msg = "\u26A0\uFE0F Device \"" + deviceName + "\" is currently playing. Are you sure you want to upgrade it?\n\nThe device will update its software and reboot.";
+    } else {
+        msg = "Upgrade device \"" + deviceName + "\"?\n\nThe device will update its software and reboot.";
+    }
     if (!await showConfirm(msg)) return;
     // Disable this device's upgrade button to prevent double-clicks
     const btn = document.querySelector(`[onclick*="upgradeDevice('${deviceId}'"]`);
