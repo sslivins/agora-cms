@@ -90,6 +90,8 @@
                 <th>Resolution</th>
                 <th>FPS</th>
                 <th>CRF / Bitrate</th>
+                <th>Pixel Format</th>
+                <th>Color Space</th>
                 <th>Devices</th>
                 <th>Variants</th>
                 <th>Actions</th>
@@ -106,6 +108,8 @@
                 <td>{{ p.max_width }}×{{ p.max_height }}</td>
                 <td>{{ p.max_fps }}</td>
                 <td>{% if p.video_bitrate %}{{ p.video_bitrate }}{% else %}CRF {{ p.crf }}{% endif %}</td>
+                <td><span class="text-muted">yuv420p</span></td>
+                <td><span class="text-muted">BT.709 (SDR)</span></td>
                 <td>{{ p.device_count }}</td>
                 <td>
                     {% if p.total_variants > 0 %}
@@ -132,7 +136,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="8" class="empty">No profiles configured</td></tr>
+            <tr><td colspan="10" class="empty">No profiles configured</td></tr>
             {% endfor %}
         </tbody>
     </table>
