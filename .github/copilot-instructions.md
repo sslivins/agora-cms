@@ -100,4 +100,4 @@ Protocol version: **1**
 
 ## Hardware Target (Devices)
 
-Raspberry Pi Zero 2 W — ARM Cortex-A53, limited RAM/flash. CMS must be mindful of device constraints when distributing assets. Design for ~30 concurrent device connections.
+Raspberry Pi Zero 2 W — ARM Cortex-A53, limited RAM/flash. CMS must be mindful of device constraints when distributing assets.

@@ -144,8 +144,11 @@
         <div class="detail-toolbar">
             <span class="detail-label">Actions</span>
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button><span class="tooltip">Set the password for this device's local web UI</span></span>
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', true)">Enable SSH</button><span class="tooltip">Enable SSH access on this device</span></span>
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', false)">Disable SSH</button><span class="tooltip">Disable SSH access on this device</span></span>
+            {% if d.ssh_enabled %}
+            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>
+            {% else %}
+            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', true)">Enable SSH</button><span class="tooltip">SSH is currently disabled — click to enable</span></span>
+            {% endif %}
             <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
         </div>
         {% endif %}
