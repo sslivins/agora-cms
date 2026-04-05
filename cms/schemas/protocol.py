@@ -144,6 +144,7 @@ class ConfigMessage(BaseMessage):
     device_name: Optional[str] = None
     web_password: Optional[str] = None
     api_key: Optional[str] = None
+    ssh_enabled: Optional[bool] = None
 
 
 class AuthAssignedMessage(BaseMessage):
