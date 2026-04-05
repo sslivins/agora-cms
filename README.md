@@ -1,6 +1,6 @@
 # Agora CMS — Central Management System
 
-Agora CMS is the central control server for a fleet of [Agora](https://github.com/sslivins/agora) media playback devices (Raspberry Pi Zero 2 W). It manages device registration, content scheduling, asset transcoding, and distribution across up to ~30 devices on a network.
+Agora CMS is the central control server for a fleet of [Agora](https://github.com/sslivins/agora) media playback devices (Raspberry Pi Zero 2 W). It manages device registration, content scheduling, asset transcoding, and distribution.
 
 ## How It Works
 

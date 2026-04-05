@@ -71,6 +71,7 @@ class StatusMessage(BaseMessage):
     cpu_temp_c: Optional[float] = None
     error: Optional[str] = None
     error_timestamp: Optional[str] = None
+    ssh_enabled: Optional[bool] = None
 
 
 class AssetAckMessage(BaseMessage):

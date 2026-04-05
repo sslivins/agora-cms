@@ -72,6 +72,11 @@ def skip_schedule_until(schedule_id: str, until: datetime) -> None:
         _now_playing.pop(did, None)
 
 
+def clear_schedule_skip(schedule_id: str) -> None:
+    """Remove any active skip for a schedule so it can be re-evaluated."""
+    _skipped.pop(schedule_id, None)
+
+
 def clear_sync_hash(device_id: str) -> None:
     """Clear the cached sync hash for a device so the next eval re-sends."""
     _last_sync_hash.pop(device_id, None)

@@ -428,3 +428,70 @@ class TestScheduleNaiveDatetime:
         assert data["priority"] == 10
         assert data["days_of_week"] == [1, 2, 3, 4, 5]
         assert "2026-05-01" in data["start_date"]
+
+
+@pytest.mark.asyncio
+class TestEndNowClearedOnEdit:
+    """Editing a schedule that was ended early should clear the skip."""
+
+    async def _seed(self, db_session):
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="end-now-pi", name="End Now Test", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="bbb")
+        db_session.add_all([device, asset])
+        await db_session.commit()
+        return device.id, str(asset.id)
+
+    async def test_patch_clears_end_now_skip(self, client, db_session):
+        """PATCH /api/schedules/<id> should clear any active End Now skip."""
+        from cms.services.scheduler import _skipped
+
+        device_id, asset_id = await self._seed(db_session)
+
+        # Create a schedule
+        create = await client.post("/api/schedules", json={
+            "name": "End Now Test",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "17:00",
+        })
+        assert create.status_code == 201
+        sched_id = create.json()["id"]
+
+        # End it now
+        resp = await client.post(f"/api/schedules/{sched_id}/end-now")
+        assert resp.status_code == 200
+        assert sched_id in _skipped
+
+        # Edit the schedule (even without real changes)
+        resp = await client.patch(f"/api/schedules/{sched_id}", json={"name": "End Now Test"})
+        assert resp.status_code == 200
+
+        # The skip should be cleared
+        assert sched_id not in _skipped
+
+    async def test_toggle_enabled_clears_skip(self, client, db_session):
+        """Toggling enabled on a skipped schedule should clear the skip."""
+        from cms.services.scheduler import _skipped
+
+        device_id, asset_id = await self._seed(db_session)
+
+        create = await client.post("/api/schedules", json={
+            "name": "Toggle Skip Test",
+            "device_id": device_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "end_time": "17:00",
+        })
+        sched_id = create.json()["id"]
+
+        # End it now
+        await client.post(f"/api/schedules/{sched_id}/end-now")
+        assert sched_id in _skipped
+
+        # Toggle enabled off then on
+        await client.patch(f"/api/schedules/{sched_id}", json={"enabled": False})
+        assert sched_id not in _skipped

@@ -23,6 +23,7 @@ class ConnectedDevice:
         self.playback_position_ms: Optional[int] = None
         self.uptime_seconds: int = 0
         self.cpu_temp_c: Optional[float] = None
+        self.ssh_enabled: Optional[bool] = None
         # Error state from last STATUS message
         self.error: Optional[str] = None
         self.error_since: Optional[datetime] = None
@@ -87,6 +88,7 @@ class DeviceManager:
         pipeline_state: str = "NULL",
         started_at: str | None = None,
         playback_position_ms: int | None = None,
+        ssh_enabled: bool | None = None,
     ):
         conn = self._connections.get(device_id)
         if conn:
@@ -97,6 +99,8 @@ class DeviceManager:
             conn.playback_position_ms = playback_position_ms
             conn.uptime_seconds = uptime_seconds
             conn.cpu_temp_c = cpu_temp_c
+            if ssh_enabled is not None:
+                conn.ssh_enabled = ssh_enabled
             if error and not conn.error:
                 conn.error_since = datetime.now(timezone.utc)
             elif not error:
@@ -118,6 +122,7 @@ class DeviceManager:
                 "ip_address": c.ip_address,
                 "error": c.error,
                 "error_since": c.error_since.isoformat() if c.error_since else None,
+                "ssh_enabled": c.ssh_enabled,
             }
             for c in self._connections.values()
         ]

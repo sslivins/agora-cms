@@ -13,7 +13,7 @@ from cms.database import get_db
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
-from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_sync_hash, schedules_conflict
+from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict
 
 router = APIRouter(prefix="/api/schedules", dependencies=[Depends(require_auth)])
 
@@ -125,6 +125,9 @@ async def update_schedule(
         setattr(schedule, field, value)
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
     await db.commit()
+
+    # Clear any active "End Now" skip so the schedule is re-evaluated
+    clear_schedule_skip(str(schedule_id))
 
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule.id)

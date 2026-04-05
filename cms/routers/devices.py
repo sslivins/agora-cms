@@ -245,6 +245,11 @@ async def toggle_device_ssh(
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
+    # Track the SSH state immediately so the UI reflects it
+    conn = device_manager.get_connection(device_id)
+    if conn:
+        conn.ssh_enabled = enabled
+
     return {"ok": True}
 
 

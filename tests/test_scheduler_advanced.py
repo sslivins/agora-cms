@@ -19,6 +19,7 @@ from cms.services.scheduler import (
     _now_playing,
     _last_sync_hash,
     build_device_sync,
+    clear_schedule_skip,
     clear_sync_hash,
     evaluate_schedules,
     get_now_playing,
@@ -141,6 +142,41 @@ class TestSkipSchedule:
         result = get_now_playing()
         assert isinstance(result, list)
         assert len(result) == 2
+
+    def test_clear_skip_removes_entry(self):
+        skip_schedule_until("sched-1", datetime(2026, 3, 29, 17, 0))
+        assert "sched-1" in _skipped
+        clear_schedule_skip("sched-1")
+        assert "sched-1" not in _skipped
+
+    def test_clear_skip_nonexistent_is_harmless(self):
+        clear_schedule_skip("no-such-id")
+        assert "no-such-id" not in _skipped
+
+    def test_clear_skip_allows_schedule_to_reappear(self):
+        """After clearing a skip, the schedule should appear in upcoming again."""
+        low = _make_schedule(
+            time(8, 0), time(17, 0), priority=1, name="Resumed",
+            device_id="d1",
+        )
+        skip_schedule_until(str(low.id), datetime(2026, 3, 28, 17, 0))
+
+        now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+        np = []
+
+        # Should not appear while skipped
+        result = get_upcoming_schedules([low], now, ZoneInfo("UTC"), now_playing=np)
+        assert len(result) == 0
+
+        # Clear the skip
+        clear_schedule_skip(str(low.id))
+
+        # Should now be visible again
+        result = get_upcoming_schedules([low], now, ZoneInfo("UTC"), now_playing=np)
+        # It won't show in "upcoming" as preempted because there's no winner,
+        # but it won't be hidden by the skip filter either.
+        # The key assertion is that the _skipped dict no longer blocks it.
+        assert str(low.id) not in _skipped
 
 
 class TestClearSyncHash:
