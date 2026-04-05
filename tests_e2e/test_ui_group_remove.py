@@ -39,9 +39,9 @@ class TestGroupRemoveButtons:
         page.wait_for_load_state("domcontentloaded")
         expect(page.locator("strong", has_text="Remove Test Group")).to_be_visible(timeout=5000)
 
-        # Click the Remove button on the group header
+        # Click the Remove button on the group header (not the per-device Remove buttons)
         group_panel = page.locator('[data-group-id="' + group_id + '"]')
-        remove_btn = group_panel.locator("button", has_text="Remove")
+        remove_btn = group_panel.locator(".group-actions button", has_text="Remove")
         remove_btn.click()
 
         # Confirm the modal
