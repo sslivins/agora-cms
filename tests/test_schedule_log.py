@@ -258,3 +258,27 @@ class TestHistoryUI:
     async def test_history_requires_auth(self, unauthed_client):
         resp = await unauthed_client.get("/history", follow_redirects=False)
         assert resp.status_code in (401, 303)
+
+    async def test_history_pagination(self, client, db_session):
+        """History page should paginate at 50 per page."""
+        for i in range(55):
+            db_session.add(ScheduleLog(
+                schedule_name=f"Sched {i}",
+                device_name="Dev",
+                asset_filename="a.mp4",
+                event=ScheduleLogEvent.STARTED,
+            ))
+        await db_session.commit()
+
+        # Page 1 should show pagination controls
+        resp = await client.get("/history")
+        assert resp.status_code == 200
+        assert "Page 1 of 2" in resp.text
+        assert "55 events" in resp.text
+        assert "Next" in resp.text
+
+        # Page 2 should have remaining entries and Prev link
+        resp2 = await client.get("/history?page=2")
+        assert resp2.status_code == 200
+        assert "Page 2 of 2" in resp2.text
+        assert "Prev" in resp2.text
