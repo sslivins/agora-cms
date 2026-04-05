@@ -122,6 +122,52 @@ async def _backfill_media_metadata(settings):
         logger.warning("Metadata backfill failed: %s", e)
 
 
+async def _migrate_variant_filenames(db, settings):
+    """One-shot migration: rename legacy variant files to UUID-based names.
+
+    Old scheme: {source_stem}_{profile_name}.mp4
+    New scheme: {variant_uuid}.mp4
+
+    Renames files on disk and updates the DB filename column.  Skips variants
+    whose filename already looks like a UUID.
+    """
+    import re
+    from sqlalchemy import select
+    from cms.models.asset import AssetVariant
+
+    _UUID_FILENAME = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$"
+    )
+
+    try:
+        result = await db.execute(select(AssetVariant))
+        variants = result.scalars().all()
+        variants_dir = settings.asset_storage_path / "variants"
+        migrated = 0
+
+        for v in variants:
+            if _UUID_FILENAME.match(v.filename):
+                continue  # already migrated
+
+            new_filename = f"{v.id}.mp4"
+            old_path = variants_dir / v.filename
+            new_path = variants_dir / new_filename
+
+            if old_path.is_file():
+                old_path.rename(new_path)
+
+            v.filename = new_filename
+            migrated += 1
+
+        if migrated:
+            await db.commit()
+            logger.info("Migrated %d variant filename(s) to UUID scheme", migrated)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Variant filename migration failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -137,6 +183,10 @@ async def lifespan(app: FastAPI):
     # Seed built-in device profiles
     async for db in get_db():
         await _seed_profiles(db)
+
+    # Migrate variant files from legacy names to UUID-based names
+    async for db in get_db():
+        await _migrate_variant_filenames(db, settings)
 
     # Start background scheduler
     scheduler_task = asyncio.create_task(scheduler_loop())

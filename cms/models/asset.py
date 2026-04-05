@@ -63,7 +63,7 @@ class AssetVariant(Base):
     profile_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("device_profiles.id", ondelete="CASCADE"), nullable=False
     )
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)  # e.g. "video_pi-zero-2w.mp4"
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)  # "{uuid}.mp4" — UUID-based, no profile/asset name
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     checksum: Mapped[str] = mapped_column(String(64), default="")
 

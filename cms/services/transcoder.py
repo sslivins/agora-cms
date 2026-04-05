@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -362,11 +363,12 @@ async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
         if existing.scalar_one_or_none():
             continue
 
-        variant_filename = f"{Path(asset.filename).stem}_{profile.name}.mp4"
+        variant_id = uuid.uuid4()
         variant = AssetVariant(
+            id=variant_id,
             source_asset_id=asset.id,
             profile_id=profile_id,
-            filename=variant_filename,
+            filename=f"{variant_id}.mp4",
         )
         db.add(variant)
         count += 1

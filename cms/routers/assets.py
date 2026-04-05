@@ -210,11 +210,12 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     result = await db.execute(select(DeviceProfile))
     profiles = result.scalars().all()
     for profile in profiles:
-        variant_filename = f"{Path(asset.filename).stem}_{profile.name}.mp4"
+        variant_id = uuid.uuid4()
         variant = AssetVariant(
+            id=variant_id,
             source_asset_id=asset.id,
             profile_id=profile.id,
-            filename=variant_filename,
+            filename=f"{variant_id}.mp4",
         )
         db.add(variant)
     await db.commit()
@@ -372,8 +373,12 @@ async def download_variant(
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Variant file not found on disk")
 
+    # Serve with a human-readable download name: {source_stem}_{profile_name}.mp4
+    await db.refresh(variant, ["source_asset", "profile"])
+    download_name = f"{Path(variant.source_asset.filename).stem}_{variant.profile.name}.mp4"
+
     return FileResponse(
         path=file_path,
-        filename=variant.filename,
+        filename=download_name,
         media_type="application/octet-stream",
     )
