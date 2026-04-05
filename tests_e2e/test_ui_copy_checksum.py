@@ -1,5 +1,7 @@
 """Playwright tests for checksum copy buttons on the Assets page."""
 
+import uuid
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -8,20 +10,22 @@ class TestCopyChecksumButton:
     """Copy checksum buttons should work on the assets page."""
 
     def _upload_asset(self, api):
-        """Upload a test asset and return its data."""
-        resp = api.create_asset(filename="copy-test.mp4", content=b"fake-mp4")
-        assert resp.status_code == 201
+        """Upload a test asset with a unique name and return its data."""
+        fname = f"copy-test-{uuid.uuid4().hex[:8]}.mp4"
+        resp = api.create_asset(filename=fname, content=b"fake-mp4")
+        assert resp.status_code == 201, f"Upload failed {resp.status_code}: {resp.text}"
         return resp.json()
 
     def test_asset_checksum_copy_button_exists(self, page: Page, api):
         """The Copy button should appear next to the asset checksum."""
         asset = self._upload_asset(api)
+        fname = asset["filename"]
 
         page.goto("/assets")
         page.wait_for_load_state("domcontentloaded")
 
         # Expand the asset detail row
-        row = page.locator("tr", has_text="copy-test.mp4").first
+        row = page.locator("tr", has_text=fname).first
         expect(row).to_be_visible(timeout=5000)
         row.locator(".expand-toggle").click()
 
@@ -33,6 +37,7 @@ class TestCopyChecksumButton:
     def test_asset_checksum_copy_shows_checkmark(self, page: Page, api, context):
         """Clicking Copy should change the button text to a checkmark."""
         asset = self._upload_asset(api)
+        fname = asset["filename"]
 
         # Grant clipboard permissions for the test context
         context.grant_permissions(["clipboard-read", "clipboard-write"])
@@ -41,7 +46,7 @@ class TestCopyChecksumButton:
         page.wait_for_load_state("domcontentloaded")
 
         # Expand the asset detail row
-        row = page.locator("tr", has_text="copy-test.mp4").first
+        row = page.locator("tr", has_text=fname).first
         expect(row).to_be_visible(timeout=5000)
         row.locator(".expand-toggle").click()
 
@@ -56,13 +61,14 @@ class TestCopyChecksumButton:
     def test_asset_checksum_copy_reverts_text(self, page: Page, api, context):
         """After showing the checkmark, the button should revert to 'Copy'."""
         asset = self._upload_asset(api)
+        fname = asset["filename"]
 
         context.grant_permissions(["clipboard-read", "clipboard-write"])
 
         page.goto("/assets")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator("tr", has_text="copy-test.mp4").first
+        row = page.locator("tr", has_text=fname).first
         expect(row).to_be_visible(timeout=5000)
         row.locator(".expand-toggle").click()
 
@@ -77,6 +83,7 @@ class TestCopyChecksumButton:
     def test_checksum_copy_writes_correct_value(self, page: Page, api, context):
         """The copied text should match the asset's checksum."""
         asset = self._upload_asset(api)
+        fname = asset["filename"]
         expected_checksum = asset["checksum"]
 
         context.grant_permissions(["clipboard-read", "clipboard-write"])
@@ -84,7 +91,7 @@ class TestCopyChecksumButton:
         page.goto("/assets")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator("tr", has_text="copy-test.mp4").first
+        row = page.locator("tr", has_text=fname).first
         expect(row).to_be_visible(timeout=5000)
         row.locator(".expand-toggle").click()
 

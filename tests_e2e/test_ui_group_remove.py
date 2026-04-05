@@ -26,8 +26,8 @@ class TestGroupRemoveButtons:
         self._register_and_adopt(api, ws_url, "grp-rm-002", "Device B")
 
         # Create a group
-        resp = api.post("/api/devices/groups", json={"name": "Remove Test Group"})
-        assert resp.status_code == 201
+        resp = api.post("/api/devices/groups/", json={"name": "Remove Test Group"})
+        assert resp.status_code == 201, f"Group create failed {resp.status_code}: {resp.text}"
         group_id = resp.json()["id"]
 
         # Assign both devices to the group
@@ -64,8 +64,8 @@ class TestGroupRemoveButtons:
         self._register_and_adopt(api, ws_url, "grp-rm-004", "Device D")
 
         # Create a group
-        resp = api.post("/api/devices/groups", json={"name": "Single Remove Group"})
-        assert resp.status_code == 201
+        resp = api.post("/api/devices/groups/", json={"name": "Single Remove Group"})
+        assert resp.status_code == 201, f"Group create failed {resp.status_code}: {resp.text}"
         group_id = resp.json()["id"]
 
         # Assign both devices to the group
