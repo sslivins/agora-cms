@@ -36,6 +36,7 @@ class MessageType(str, Enum):
     AUTH_ASSIGNED = "auth_assigned"
     REBOOT = "reboot"
     UPGRADE = "upgrade"
+    FACTORY_RESET = "factory_reset"
 
 
 class BaseMessage(BaseModel):
@@ -146,6 +147,7 @@ class ConfigMessage(BaseMessage):
     web_password: Optional[str] = None
     api_key: Optional[str] = None
     ssh_enabled: Optional[bool] = None
+    local_api_enabled: Optional[bool] = None
 
 
 class AuthAssignedMessage(BaseMessage):
@@ -155,6 +157,10 @@ class AuthAssignedMessage(BaseMessage):
 
 class RebootMessage(BaseMessage):
     type: MessageType = MessageType.REBOOT
+
+
+class FactoryResetMessage(BaseMessage):
+    type: MessageType = MessageType.FACTORY_RESET
 
 
 class UpgradeMessage(BaseMessage):

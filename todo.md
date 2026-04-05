@@ -2,6 +2,10 @@
 
 ## Backlog
 
+### Security hardening
+- [ ] Move device WebSocket connections to WSS (TLS) — auth tokens currently travel in plaintext over the wire. Low risk on trusted LAN but needed for internet-exposed deployments.
+- [ ] Consider disabling the device-side REST API when CMS-managed — the CMS never calls it (all communication is over WebSocket), so it's extra attack surface. Could be a CMS-pushed config flag.
+
 - [x] mDNS broadcast — CMS advertises itself via Avahi/mDNS as `agora-cms.local` (configured in setup.sh)
 
 ### Reduce `location.reload()` usage

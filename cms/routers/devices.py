@@ -19,7 +19,7 @@ from cms.schemas.device import (
     DeviceOut,
     DeviceUpdate,
 )
-from cms.schemas.protocol import ConfigMessage, PlayMessage, RebootMessage, SyncMessage, UpgradeMessage
+from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage
 from cms.services.device_manager import device_manager
 from cms.services.scheduler import push_sync_to_device
 from cms.services.version_checker import check_now
@@ -31,10 +31,12 @@ _upgrading: set[str] = set()
 
 
 async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: AsyncSession) -> None:
-    """Send fetch_asset + play to a connected device for its default asset.
+    """Send fetch_asset for a default asset, then push a full sync.
 
-    Uses _resolve_asset_for_device to serve the correct variant for the
-    device's profile (e.g. H.264 for Pi Zero instead of the AV1 source).
+    The sync includes the updated default_asset and splash fields, so the
+    device evaluator will start playing it once downloaded.  We do NOT send
+    a separate play command — that caused a race where the player tried to
+    play an asset that hadn't finished downloading yet.
     """
     from cms.routers.ws import _resolve_asset_for_device
 
@@ -44,11 +46,12 @@ async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: A
         return
 
     fetch = await _resolve_asset_for_device(asset, device, base_url, db)
-    if not fetch:
-        return  # variant not ready yet
-    await device_manager.send_to_device(device_id, fetch.model_dump(mode="json"))
-    play = PlayMessage(asset=asset.filename, loop=True)
-    await device_manager.send_to_device(device_id, play.model_dump(mode="json"))
+    if fetch:
+        await device_manager.send_to_device(device_id, fetch.model_dump(mode="json"))
+
+    # Push a fresh sync so the device learns the new default_asset and splash
+    # immediately (instead of waiting up to 15s for the scheduler cycle).
+    await push_sync_to_device(device_id, db)
 
 
 # ── Devices ──
@@ -131,12 +134,12 @@ async def update_device(
         if effective_asset:
             await _push_default_asset(device_id, effective_asset, base_url, db)
         else:
-            # No default at any level — tell device to show splash
-            sync = SyncMessage(default_asset=None)
-            await device_manager.send_to_device(device_id, sync.model_dump(mode="json"))
+            # No default at any level — push a full sync so the device
+            # clears its default_asset and shows splash correctly.
+            await push_sync_to_device(device_id, db)
 
     # If timezone was changed, push a fresh sync so the device applies it
-    if "timezone" in updates:
+    elif "timezone" in updates:
         await push_sync_to_device(device_id, db)
 
     return DeviceOut(
@@ -246,9 +249,60 @@ async def toggle_device_ssh(
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     # Track the SSH state immediately so the UI reflects it
-    conn = device_manager.get_connection(device_id)
+    conn = device_manager.get(device_id)
     if conn:
         conn.ssh_enabled = enabled
+
+    return {"ok": True}
+
+
+@router.post("/{device_id}/factory-reset")
+async def factory_reset_device(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if not device_manager.is_connected(device_id):
+        raise HTTPException(status_code=409, detail="Device is not connected")
+
+    msg = FactoryResetMessage()
+    sent = await device_manager.send_to_device(device_id, msg.model_dump(mode="json"))
+    if not sent:
+        raise HTTPException(status_code=502, detail="Failed to send to device")
+
+    return {"ok": True}
+
+
+@router.post("/{device_id}/local-api")
+async def toggle_device_local_api(
+    device_id: str,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="'enabled' must be a boolean")
+
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if not device_manager.is_connected(device_id):
+        raise HTTPException(status_code=409, detail="Device is not connected")
+
+    config_msg = ConfigMessage(local_api_enabled=enabled)
+    sent = await device_manager.send_to_device(device_id, config_msg.model_dump(mode="json"))
+    if not sent:
+        raise HTTPException(status_code=502, detail="Failed to send to device")
+
+    conn = device_manager.get(device_id)
+    if conn:
+        conn.local_api_enabled = enabled
 
     return {"ok": True}
 

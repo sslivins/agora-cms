@@ -281,6 +281,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     started_at=msg.get("started_at"),
                     playback_position_ms=msg.get("playback_position_ms"),
                     ssh_enabled=msg.get("ssh_enabled"),
+                    local_api_enabled=msg.get("local_api_enabled"),
                 )
 
                 # Rotate API key if due
