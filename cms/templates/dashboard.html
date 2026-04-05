@@ -3,6 +3,104 @@
 {% block content %}
 <h1>Dashboard</h1>
 
+{# ── Compute device issue flags (used by alert banner below) ── #}
+{% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
+{% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
+{% set error_devices = device_states | selectattr("error") | list %}
+{% set has_issues = offline_devices or orphaned_devices or temp_warning or error_devices %}
+
+{# ── Device Status (alert banner — only shown when something needs attention) ── #}
+{% if has_issues %}
+<div class="card card-danger">
+    <h2>Device Status</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Group</th>
+                <th>Status</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ds in error_devices %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-error">Error</span></td>
+                <td class="text-danger">{{ ds.error }}</td>
+            </tr>
+            {% endfor %}
+            {% for d in orphaned_devices %}
+            <tr>
+                <td>{{ d.name or d.id }}</td>
+                <td>{{ d.group.name if d.group else '—' }}</td>
+                <td><span class="badge badge-orphaned">Orphaned</span></td>
+                <td>Authentication failed — <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button></td>
+            </tr>
+            {% endfor %}
+            {% for d in offline_devices %}
+            <tr>
+                <td>{{ d.name or d.id }}</td>
+                <td>{{ d.group.name if d.group else '—' }}</td>
+                <td><span class="badge badge-offline">Offline</span></td>
+                <td class="text-muted">Last seen {{ d.last_seen.astimezone(tz).strftime('%b %d, %Y %I:%M %p') if d.last_seen else 'Never' }}</td>
+            </tr>
+            {% endfor %}
+            {% for ds in temp_warning %}
+            {% if ds.cpu_temp_c >= 80 %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-temp-critical">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
+                <td class="text-danger">Critical — CPU throttling likely</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-temp-warning">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
+                <td class="text-warning">Temperature warning</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{# ── Pending Devices ── #}
+{% if pending_devices %}
+<div class="card">
+    <h2>Pending Devices</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Firmware</th>
+                <th>Storage</th>
+                <th>First Seen</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in pending_devices %}
+            <tr>
+                <td>{{ d.name or d.id }}</td>
+                <td>{{ d.firmware_version }}</td>
+                <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
+                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
+                <td class="actions">
+                    <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {# ── Currently Playing ── #}
 {% set has_mismatch = now_playing | selectattr("mismatch") | list %}
 <div class="card{{ ' card-playing-mismatch' if has_mismatch else ' card-playing' if now_playing }}">
@@ -158,107 +256,6 @@
     {% endif %}
 </div>
 
-{# ── Device Status ── #}
-{% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
-{% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
-{% set error_devices = device_states | selectattr("error") | list %}
-{% set has_issues = offline_devices or orphaned_devices or temp_warning or error_devices %}
-<div class="card{{ ' card-danger' if has_issues }}">
-    <h2>Device Status</h2>
-    {% if has_issues %}
-    <table>
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>Group</th>
-                <th>Status</th>
-                <th>Details</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for ds in error_devices %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-error">Error</span></td>
-                <td class="text-danger">{{ ds.error }}</td>
-            </tr>
-            {% endfor %}
-            {% for d in orphaned_devices %}
-            <tr>
-                <td>{{ d.name or d.id }}</td>
-                <td>{{ d.group.name if d.group else '—' }}</td>
-                <td><span class="badge badge-orphaned">Orphaned</span></td>
-                <td>Authentication failed — <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button></td>
-            </tr>
-            {% endfor %}
-            {% for d in offline_devices %}
-            <tr>
-                <td>{{ d.name or d.id }}</td>
-                <td>{{ d.group.name if d.group else '—' }}</td>
-                <td><span class="badge badge-offline">Offline</span></td>
-                <td class="text-muted">Last seen {{ d.last_seen.astimezone(tz).strftime('%b %d, %Y %I:%M %p') if d.last_seen else 'Never' }}</td>
-            </tr>
-            {% endfor %}
-            {% for ds in temp_warning %}
-            {% if ds.cpu_temp_c >= 80 %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-temp-critical">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
-                <td class="text-danger">Critical — CPU throttling likely</td>
-            </tr>
-            {% else %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-temp-warning">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
-                <td class="text-warning">Temperature warning</td>
-            </tr>
-            {% endif %}
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    {% if all_devices %}
-    <p class="text-success empty-state">All devices are online and healthy.</p>
-    {% else %}
-    <p class="text-muted empty-state">No devices registered yet. Devices will appear here once they connect.</p>
-    {% endif %}
-    {% endif %}
-</div>
-
-{# ── Pending Devices ── #}
-{% if pending_devices %}
-<div class="card">
-    <h2>Pending Devices</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>Firmware</th>
-                <th>Storage</th>
-                <th>First Seen</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for d in pending_devices %}
-            <tr>
-                <td>{{ d.name or d.id }}</td>
-                <td>{{ d.firmware_version }}</td>
-                <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
-                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
-                <td class="actions">
-                    <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
 
 <script>
 async function endNow(scheduleId) {

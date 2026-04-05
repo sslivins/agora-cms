@@ -233,7 +233,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         select(ScheduleLog)
         .where(ScheduleLog.timestamp >= cutoff_24h)
         .order_by(ScheduleLog.timestamp.desc())
-        .limit(50)
+        .limit(10)
     )
     recent_activity = recent_q.scalars().all()
 

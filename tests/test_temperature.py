@@ -94,7 +94,7 @@ class TestDashboardTemperature:
     """Test that high CPU temperatures surface on the dashboard."""
 
     async def test_normal_temp_shows_healthy(self, app, db_session, client):
-        """A device at normal temperature should show 'All devices are online and healthy'."""
+        """A device at normal temperature should not trigger the Device Status alert banner."""
         await _seed_device(db_session, "dev-normal", "Normal Device")
         _simulate_connected(device_manager, "dev-normal", cpu_temp_c=45.0)
 
@@ -102,7 +102,7 @@ class TestDashboardTemperature:
             resp = await client.get("/")
             assert resp.status_code == 200
             html = resp.text
-            assert "All devices are online and healthy" in html
+            assert "card-danger" not in html
             assert "badge-temp-warning" not in html
             assert "badge-temp-critical" not in html
         finally:
@@ -179,7 +179,7 @@ class TestDashboardTemperature:
             html = resp.text
             assert "badge-temp-warning" not in html
             assert "badge-temp-critical" not in html
-            assert "All devices are online and healthy" in html
+            assert "card-danger" not in html
         finally:
             device_manager.disconnect("dev-69")
 
@@ -193,7 +193,7 @@ class TestDashboardTemperature:
             html = resp.text
             assert "badge-temp-warning" not in html
             assert "badge-temp-critical" not in html
-            assert "All devices are online and healthy" in html
+            assert "card-danger" not in html
         finally:
             device_manager.disconnect("dev-null")
 
