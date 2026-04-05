@@ -1,10 +1,15 @@
 """Pydantic schemas for device profile API."""
 
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+
+# Profile names become part of download filenames, so restrict to safe chars
+_PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
 class ProfileOut(BaseModel):
@@ -42,9 +47,19 @@ class ProfileCreate(BaseModel):
     audio_codec: str = "aac"
     audio_bitrate: str = "128k"
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not _PROFILE_NAME_RE.match(v):
+            raise ValueError(
+                "Profile name must start with a letter or digit, "
+                "contain only letters, digits, hyphens, and underscores, "
+                "and be 1–64 characters long"
+            )
+        return v
+
 
 class ProfileUpdate(BaseModel):
-    name: Optional[str] = None
     description: Optional[str] = None
     video_profile: Optional[str] = None
     max_width: Optional[int] = None
