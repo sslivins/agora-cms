@@ -149,7 +149,13 @@
             {% else %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', true)">Enable SSH</button><span class="tooltip">SSH is currently disabled — click to enable</span></span>
             {% endif %}
+            {% if d.local_api_enabled is not none and not d.local_api_enabled %}
+            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', true)">Enable Local API</button><span class="tooltip">Device REST API is disabled — click to re-enable</span></span>
+            {% else %}
+            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', false)">Disable Local API</button><span class="tooltip">Disable the device's local REST API</span></span>
+            {% endif %}
             <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
+            <span class="has-tooltip"><button class="btn btn-warn btn-sm" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')">Factory Reset</button><span class="tooltip">Wipe all data and return device to setup mode</span></span>
         </div>
         {% endif %}
         </div>

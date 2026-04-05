@@ -321,6 +321,33 @@ async function upgradeDevice(deviceId, deviceName) {
     }
 }
 
+async function factoryResetDevice(deviceId, deviceName) {
+    const msg = "\u26A0\uFE0F FACTORY RESET device \"" + deviceName + "\"?\n\n"
+        + "This will wipe ALL data (assets, schedules, Wi-Fi credentials) "
+        + "and the device will reboot into AP mode.\n\n"
+        + "You will need physical access to the device to set it up again.";
+    if (!await showConfirm(msg)) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/factory-reset`);
+    if (resp && resp.ok) showToast("Factory reset command sent to " + deviceName);
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to factory reset device", true);
+    }
+}
+
+async function toggleLocalApi(deviceId, enabled) {
+    const action = enabled ? "enable" : "disable";
+    if (!await showConfirm("Are you sure you want to " + action + " the local REST API on this device?")) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/local-api`, { enabled });
+    if (resp && resp.ok) {
+        showToast("Local API " + action + "d");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to " + action + " local API", true);
+    }
+}
+
 // ── Group actions ──
 async function createGroup() {
     const name = document.getElementById("group-name").value.trim();
