@@ -14,7 +14,7 @@ PAGES = [
     ("/devices", "Devices"),
     ("/assets", "Assets"),
     ("/schedules", "Schedules"),
-    ("/profiles", "Profiles"),
+    ("/profiles", "Playback Profiles"),
     ("/settings", "Settings"),
 ]
 
@@ -42,8 +42,11 @@ class TestPageLoads:
         page.goto(path)
         page.wait_for_load_state("domcontentloaded")
 
-        for nav_text in ["Dashboard", "Devices", "Assets", "Schedules", "Profiles", "Settings"]:
+        for nav_text in ["Dashboard", "Devices", "Assets", "Schedules", "History"]:
             expect(page.locator(f"nav >> text={nav_text}")).to_be_visible()
+        # Settings and Logout are now header icons
+        expect(page.locator("a.header-icon[href='/settings']")).to_be_visible()
+        expect(page.locator("a.header-icon[href='/logout']")).to_be_visible()
 
     @pytest.mark.parametrize("path,title", PAGES)
     def test_page_no_console_errors(self, page: Page, path, title):

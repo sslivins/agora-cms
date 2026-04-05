@@ -578,7 +578,7 @@ async def profiles_page(request: Request, db: AsyncSession = Depends(get_db)):
         transcode_queue.append(v)
 
     return templates.TemplateResponse(request, "profiles.html", {
-        "active_tab": "profiles",
+        "active_tab": "assets",
         "profiles": annotated,
         "transcode_queue": transcode_queue,
     })

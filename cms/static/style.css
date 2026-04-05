@@ -35,13 +35,26 @@ header {
     font-weight: 600;
     color: var(--accent);
 }
-.logout-link {
-    color: var(--text-muted);
-    text-decoration: none;
-    font-size: 0.9rem;
-    transition: color 0.2s;
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
 }
-.logout-link:hover { color: var(--text); }
+.header-icon {
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius);
+    transition: color 0.2s, background 0.2s;
+    cursor: pointer;
+}
+.header-icon:hover {
+    color: var(--text);
+    background: rgba(255,255,255,0.08);
+}
 
 nav {
     background: var(--surface);
@@ -64,6 +77,27 @@ nav {
 }
 .nav-tab:hover { color: var(--text); }
 .nav-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* Sub-tabs (Assets > Library / Playback Profiles) */
+.sub-tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--primary);
+}
+.sub-tab {
+    padding: 0.5rem 1rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.85rem;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+}
+.sub-tab:hover { color: var(--text); }
+.sub-tab.active {
     color: var(--accent);
     border-bottom-color: var(--accent);
 }
