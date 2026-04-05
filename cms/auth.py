@@ -13,7 +13,7 @@ from cms.database import get_db
 from cms.models.setting import CMSSetting
 
 COOKIE_NAME = "agora_cms_session"
-MAX_AGE = 86400  # 24 hours
+MAX_AGE = 604800  # 7 days
 
 SETTING_PASSWORD_HASH = "admin_password_hash"
 SETTING_USERNAME = "admin_username"

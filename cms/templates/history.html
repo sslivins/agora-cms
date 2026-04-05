@@ -39,6 +39,17 @@
             {% endfor %}
         </tbody>
     </table>
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="/history?page={{ page - 1 }}" class="btn btn-secondary btn-sm">&laquo; Prev</a>
+        {% endif %}
+        <span class="pagination-info">Page {{ page }} of {{ total_pages }} ({{ total }} events)</span>
+        {% if page < total_pages %}
+        <a href="/history?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
     {% else %}
     <p class="text-muted empty-state">No schedule history yet. Events will appear here as schedules run.</p>
     {% endif %}

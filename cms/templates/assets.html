@@ -47,18 +47,16 @@
                 </td>
                 <td data-live-variants="{{ a.id }}">
                     {% if a.variant_total > 0 %}
-                    <span class="has-tooltip">
-                        {{ a.variant_ready }}/{{ a.variant_total }}
-                        <span class="tooltip">{{ a.variant_ready }} ready, {{ a.variant_processing }} processing, {{ a.variant_failed }} failed</span>
-                    </span>
-                    {% if a.variant_failed > 0 %}
-                        <span class="badge badge-failed">error</span>
+                    {% if a.variant_failed > 0 and a.variant_ready > 0 %}
+                        <span class="has-tooltip"><span class="badge badge-partial">Partial</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_failed }} failed</span></span>
+                    {% elif a.variant_failed > 0 %}
+                        <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ a.variant_failed }} of {{ a.variant_total }} failed</span></span>
                     {% elif a.variant_processing > 0 %}
-                        <span class="badge badge-processing">transcoding</span>
+                        <span class="has-tooltip"><span class="badge badge-processing">Transcoding</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_processing }} processing</span></span>
                     {% elif a.variant_ready == a.variant_total %}
-                        <span class="badge badge-ready">ready</span>
+                        <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">{{ a.variant_total }} variant{{ 's' if a.variant_total != 1 else '' }}</span></span>
                     {% else %}
-                        <span class="badge badge-pending">queued</span>
+                        <span class="badge badge-pending">Queued</span>
                     {% endif %}
                     {% elif a.asset_type.value == 'image' %}
                     —
@@ -258,13 +256,24 @@
 
     function buildVariantBadge(a) {
         if (a.variant_total === 0) return '<span class="text-muted">none</span>';
-        let html = '<span class="has-tooltip">' + a.variant_ready + '/' + a.variant_total +
-            '<span class="tooltip">' + a.variant_ready + ' ready, ' + a.variant_processing + ' processing, ' + a.variant_failed + ' failed</span></span> ';
-        if (a.variant_failed > 0) html += '<span class="badge badge-failed">error</span>';
-        else if (a.variant_processing > 0) html += '<span class="badge badge-processing">transcoding</span>';
-        else if (a.variant_ready === a.variant_total) html += '<span class="badge badge-ready">ready</span>';
-        else html += '<span class="badge badge-pending">queued</span>';
-        return html;
+        if (a.variant_failed > 0 && a.variant_ready > 0) {
+            return '<span class="has-tooltip"><span class="badge badge-partial">Partial</span>' +
+                '<span class="tooltip">' + a.variant_ready + ' of ' + a.variant_total + ' ready, ' + a.variant_failed + ' failed</span></span>';
+        }
+        if (a.variant_failed > 0) {
+            return '<span class="has-tooltip"><span class="badge badge-failed">Failed</span>' +
+                '<span class="tooltip">' + a.variant_failed + ' of ' + a.variant_total + ' failed</span></span>';
+        }
+        if (a.variant_processing > 0) {
+            return '<span class="has-tooltip"><span class="badge badge-processing">Transcoding</span>' +
+                '<span class="tooltip">' + a.variant_ready + ' of ' + a.variant_total + ' ready, ' + a.variant_processing + ' processing</span></span>';
+        }
+        if (a.variant_ready === a.variant_total) {
+            const s = a.variant_total !== 1 ? 's' : '';
+            return '<span class="has-tooltip"><span class="badge badge-ready">Ready</span>' +
+                '<span class="tooltip">' + a.variant_total + ' variant' + s + '</span></span>';
+        }
+        return '<span class="badge badge-pending">Queued</span>';
     }
 
     function buildVariantStatusCell(v) {

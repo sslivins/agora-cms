@@ -1,6 +1,6 @@
 """Web UI routes — Jinja2 server-rendered pages."""
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeTimedSerializer
@@ -708,16 +708,28 @@ async def change_timezone(
 
 
 @router.get("/history", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
-async def history_page(request: Request, db: AsyncSession = Depends(get_db)):
+async def history_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
     from datetime import datetime as _dt, timezone as _tz
 
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     tz = ZoneInfo(tz_name)
 
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    count_result = await db.execute(select(func.count()).select_from(ScheduleLog))
+    total = count_result.scalar()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
     result = await db.execute(
         select(ScheduleLog)
         .order_by(ScheduleLog.timestamp.desc())
-        .limit(200)
+        .limit(per_page)
+        .offset(offset)
     )
     logs = result.scalars().all()
 
@@ -725,4 +737,7 @@ async def history_page(request: Request, db: AsyncSession = Depends(get_db)):
         "active_tab": "history",
         "tz": tz,
         "logs": logs,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
     })

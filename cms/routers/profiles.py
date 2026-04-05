@@ -190,3 +190,56 @@ async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_d
     await db.delete(profile)
     await db.commit()
     return {"deleted": profile.name}
+
+
+@router.get("/status")
+async def profiles_status_json(db: AsyncSession = Depends(get_db)):
+    """Lightweight JSON for profiles page polling — queue status + profile variant counts."""
+
+    # Profile variant summaries
+    result = await db.execute(
+        select(DeviceProfile).order_by(DeviceProfile.name)
+    )
+    profiles_out = []
+    for p in result.scalars().all():
+        total_var = (await db.execute(
+            select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == p.id)
+        )).scalar() or 0
+        ready_var = (await db.execute(
+            select(func.count(AssetVariant.id)).where(
+                AssetVariant.profile_id == p.id,
+                AssetVariant.status == VariantStatus.READY,
+            )
+        )).scalar() or 0
+        profiles_out.append({
+            "id": str(p.id),
+            "total_variants": total_var,
+            "ready_variants": ready_var,
+        })
+
+    # Transcode queue (pending / processing / failed)
+    queue_result = await db.execute(
+        select(AssetVariant)
+        .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
+        .order_by(AssetVariant.created_at)
+        .limit(50)
+    )
+    queue_variants = queue_result.scalars().all()
+
+    queue_out = []
+    for v in queue_variants:
+        await db.refresh(v, ["source_asset", "profile"])
+        queue_out.append({
+            "id": str(v.id),
+            "source_filename": v.source_asset.filename if v.source_asset else "?",
+            "profile_name": v.profile.name if v.profile else "?",
+            "status": v.status.value,
+            "progress": v.progress,
+            "error_message": v.error_message or "",
+        })
+
+    return {
+        "profiles": profiles_out,
+        "queue": queue_out,
+        "queue_count": len(queue_out),
+    }
