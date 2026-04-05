@@ -367,11 +367,28 @@
 })();
 
 function copyChecksum(btn, checksum) {
-    navigator.clipboard.writeText(checksum).then(() => {
+    function onSuccess() {
         const orig = btn.textContent;
         btn.textContent = '\u2713';
         setTimeout(() => { btn.textContent = orig; }, 1500);
-    });
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(checksum).then(onSuccess).catch(() => fallbackCopy(checksum, onSuccess));
+    } else {
+        fallbackCopy(checksum, onSuccess);
+    }
+}
+
+function fallbackCopy(text, onSuccess) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); onSuccess(); }
+    catch (e) { showToast('Copy failed', true); }
+    finally { document.body.removeChild(ta); }
 }
 </script>
 {% endblock %}

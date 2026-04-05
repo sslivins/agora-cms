@@ -5,7 +5,7 @@ info:
     Central management server for Agora media playback devices. Provides device
     registration, content scheduling, asset transcoding, and fleet management
     via a REST API, WebSocket endpoint, and admin web UI.
-  version: 0.5.0
+  version: 0.9.30
   license:
     name: MIT
 
@@ -202,6 +202,56 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: Device not found.
+
+  /api/devices/{device_id}/ssh:
+    post:
+      tags: [devices]
+      summary: Toggle SSH access
+      description: Enable or disable SSH on a connected device.
+      operationId: toggleDeviceSsh
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: SSH state updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found or not connected.
+
+  /api/devices/{device_id}/upgrade:
+    post:
+      tags: [devices]
+      summary: Trigger firmware upgrade
+      description: Send an upgrade command to the device over WebSocket.
+      operationId: upgradeDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Upgrade command sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found or not connected.
 
   # ── Device Groups ──
   /api/devices/groups/:

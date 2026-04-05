@@ -77,7 +77,7 @@ docker compose logs -f watchtower  # check watchtower logs
 - **Device groups**: Organize devices by location or purpose for bulk scheduling
 - **Device profiles**: Hardware capability templates (codec, resolution, bitrate) for transcoding
 - **Live status**: See each device's playback state, uptime, and storage in real time
-- **Remote control**: Play, stop, reboot, set password, and push config updates to any device
+- **Remote control**: Play, stop, reboot, set password, toggle SSH, and push config updates
 - **Reset Auth**: Clear auth credentials for re-flashed devices without database access
 - **API key rotation**: Device API keys are automatically rotated on a configurable interval
 
@@ -89,6 +89,7 @@ docker compose logs -f watchtower  # check watchtower logs
   - Hardware-friendly: H.264 Main profile, BT.709 color space (Pi V4L2 compatible)
   - Scale-to-fit with aspect ratio preservation
   - Progress tracking in the UI
+  - UUID-based variant filenames to avoid collisions
 - **Media metadata**: Resolution, duration, codecs, bitrate, frame rate extracted via ffprobe
 - **Preview**: Stream source files directly from the library
 
@@ -121,95 +122,22 @@ docker compose logs -f watchtower  # check watchtower logs
 | Profiles | Device profiles for transcoding (built-in Pi Zero 2 W + custom) |
 | Settings | Admin password, timezone configuration |
 
-## API Endpoints
+## API
 
-All `/api/` endpoints require session authentication unless noted.
-
-### Dashboard
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/dashboard` | Device states, now-playing, upcoming schedules |
-
-### Devices
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/devices` | List all devices |
-| `GET` | `/api/devices/{id}` | Get device details |
-| `PATCH` | `/api/devices/{id}` | Update name, status, group, default asset |
-| `DELETE` | `/api/devices/{id}` | Delete device |
-| `POST` | `/api/devices/{id}/password` | Set device web password |
-| `POST` | `/api/devices/{id}/reboot` | Reboot device |
-| `POST` | `/api/devices/{id}/reset-auth` | Clear auth tokens (for re-flashed devices) |
-
-### Device Groups
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/devices/groups/` | List groups with device counts |
-| `POST` | `/api/devices/groups/` | Create group |
-| `PATCH` | `/api/devices/groups/{id}` | Update group |
-| `DELETE` | `/api/devices/groups/{id}` | Delete group |
-
-### Assets
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/assets` | List all assets |
-| `GET` | `/api/assets/status` | Asset counts and variant stats |
-| `POST` | `/api/assets/upload` | Upload asset (up to 2 GB) |
-| `GET` | `/api/assets/{id}` | Get asset details with variants |
-| `GET` | `/api/assets/{id}/preview` | Download source file |
-| `DELETE` | `/api/assets/{id}` | Delete asset (blocked if in use by schedules) |
-| `GET` | `/api/assets/{id}/download` | Download source (no auth — device use) |
-| `GET` | `/api/assets/variants/{id}/download` | Download transcoded variant (no auth) |
-
-### Schedules
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/schedules` | List schedules |
-| `POST` | `/api/schedules` | Create schedule |
-| `GET` | `/api/schedules/{id}` | Get schedule |
-| `PATCH` | `/api/schedules/{id}` | Update schedule |
-| `DELETE` | `/api/schedules/{id}` | Delete schedule |
-| `POST` | `/api/schedules/{id}/end-now` | Skip current occurrence |
-
-### Device Profiles
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/profiles` | List profiles with variant stats |
-| `POST` | `/api/profiles` | Create profile (queues transcoding) |
-| `PUT` | `/api/profiles/{id}` | Update profile |
-| `DELETE` | `/api/profiles/{id}` | Delete profile |
-
-### Settings
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/settings/password` | Change admin password |
-| `POST` | `/settings/timezone` | Set CMS timezone |
-
-### WebSocket
-
-| Path | Description |
-|------|-------------|
-| `GET` | `/ws/device` | Device WebSocket endpoint (protocol v1) |
+The full REST API is documented in [docs/openapi.yaml](docs/openapi.yaml). You can explore it interactively using the [Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/sslivins/agora-cms/main/docs/openapi.yaml).
 
 ## Protocol (CMS ↔ Device)
 
 Protocol version: **1**
 
-All WebSocket messages are JSON with a `type` field.
+All WebSocket messages are JSON with a `type` field. Full schema in [cms/schemas/protocol.py](cms/schemas/protocol.py).
 
 ### Device → CMS
 
 | Type | Description |
 |------|-------------|
 | `register` | Device ID, auth token, firmware version, storage capacity |
-| `status` | Heartbeat: playback state, disk usage, uptime (every 30s) |
+| `status` | Heartbeat: playback state, disk usage, uptime, CPU temp (every 30s) |
 | `fetch_request` | Request an asset by filename |
 | `fetch_failed` | Download failed with reason and budget info |
 | `asset_ack` | Confirm asset downloaded with checksum |
@@ -225,8 +153,9 @@ All WebSocket messages are JSON with a `type` field.
 | `stop` | Stop playback |
 | `fetch_asset` | Download URL + checksum + size |
 | `delete_asset` | Remove local asset |
-| `config` | Update splash, password, API key, device name |
+| `config` | Update splash, password, API key, device name, SSH access |
 | `reboot` | Reboot device |
+| `upgrade` | Trigger firmware upgrade |
 
 ### Connection Flow
 
@@ -267,22 +196,22 @@ Environment variables (prefix `AGORA_CMS_`), set in `.env`:
 ```
 cms/
   __init__.py              # Version
-  main.py                  # FastAPI app entry point
+  main.py                  # FastAPI app, startup migrations, background tasks
   config.py                # Pydantic settings
   auth.py                  # Session auth, password hashing
   database.py              # SQLAlchemy engine and session
   ui.py                    # Web UI routes (Jinja2)
   models/
     device.py              # Device, DeviceGroup, DeviceProfile
-    asset.py               # Asset, AssetVariant
+    asset.py               # Asset, AssetVariant, DeviceAsset
     schedule.py            # Schedule
     setting.py             # CMSSetting (admin credentials, timezone)
   schemas/
     device.py              # Device CRUD schemas
     asset.py               # Asset response schemas
     schedule.py            # Schedule CRUD schemas
-    profile.py             # Profile CRUD schemas
-    protocol.py            # WebSocket message types (shared contract)
+    profile.py             # Profile CRUD schemas (name validation, immutable on update)
+    protocol.py            # WebSocket message types (shared contract with device repo)
   routers/
     devices.py             # Device management API
     assets.py              # Asset library API
@@ -293,9 +222,13 @@ cms/
     scheduler.py           # Schedule evaluation, sync pushing
     transcoder.py          # Video transcoding, media probing
     device_manager.py      # Connection registry, state tracking
+    version_checker.py     # Firmware version polling
   static/                  # CSS, JS
   templates/               # Jinja2 admin UI templates
+scripts/
+  variant-lookup.sh        # SSH debugging tool for variant queries
 tests/                     # pytest + pytest-asyncio + httpx + aiosqlite
+tests_e2e/                 # Playwright E2E browser tests
 ```
 
 ## Data Model
@@ -306,7 +239,7 @@ tests/                     # pytest + pytest-asyncio + httpx + aiosqlite
 | `device_groups` | Groups for bulk scheduling |
 | `device_profiles` | Hardware capability templates for transcoding |
 | `assets` | Source media library with metadata |
-| `asset_variants` | Transcoded formats per device profile (status, progress) |
+| `asset_variants` | Transcoded formats per device profile (UUID filenames, status, progress) |
 | `device_assets` | Tracks which assets are on which device |
 | `schedules` | Schedule rules (target, asset, time window, recurrence, priority) |
 | `cms_settings` | Runtime settings (admin credentials, timezone) |

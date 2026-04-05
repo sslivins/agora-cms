@@ -222,6 +222,32 @@ async def upgrade_device(
     return {"ok": True}
 
 
+@router.post("/{device_id}/ssh")
+async def toggle_device_ssh(
+    device_id: str,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="'enabled' must be a boolean")
+
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if not device_manager.is_connected(device_id):
+        raise HTTPException(status_code=409, detail="Device is not connected")
+
+    config_msg = ConfigMessage(ssh_enabled=enabled)
+    sent = await device_manager.send_to_device(device_id, config_msg.model_dump(mode="json"))
+    if not sent:
+        raise HTTPException(status_code=502, detail="Failed to send to device")
+
+    return {"ok": True}
+
+
 @router.post("/{device_id}/adopt")
 async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
     """Adopt a pending device or re-adopt an orphaned one.

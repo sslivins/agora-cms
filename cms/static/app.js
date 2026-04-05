@@ -287,6 +287,17 @@ async function rebootDevice(deviceId, deviceName) {
     }
 }
 
+async function toggleSsh(deviceId, enabled) {
+    const action = enabled ? "enable" : "disable";
+    if (!await showConfirm("Are you sure you want to " + action + " SSH on this device?")) return;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/ssh`, { enabled });
+    if (resp && resp.ok) showToast("SSH " + action + "d");
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to " + action + " SSH", true);
+    }
+}
+
 async function upgradeDevice(deviceId, deviceName) {
     let msg;
     if (isDevicePlaying(deviceId)) {
