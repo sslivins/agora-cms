@@ -111,18 +111,14 @@
                 <td><span class="text-muted">yuv420p</span></td>
                 <td><span class="text-muted">BT.709 (SDR)</span></td>
                 <td>{{ p.device_count }}</td>
-                <td>
+                <td data-profile-variants="{{ p.id }}">
                     {% if p.total_variants > 0 %}
-                    <span class="has-tooltip">
-                        {{ p.ready_variants }}/{{ p.total_variants }}
-                        <span class="tooltip">{{ p.ready_variants }} ready of {{ p.total_variants }} total variants</span>
-                    </span>
                     {% if p.ready_variants == p.total_variants %}
-                        <span class="badge badge-ready">done</span>
+                        <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">{{ p.total_variants }} variant{{ 's' if p.total_variants != 1 else '' }}</span></span>
                     {% elif p.ready_variants > 0 %}
-                        <span class="badge badge-pending">in progress</span>
+                        <span class="has-tooltip"><span class="badge badge-processing">In Progress</span><span class="tooltip">{{ p.ready_variants }} of {{ p.total_variants }} ready</span></span>
                     {% else %}
-                        <span class="badge badge-processing">queued</span>
+                        <span class="has-tooltip"><span class="badge badge-pending">Queued</span><span class="tooltip">{{ p.total_variants }} variant{{ 's' if p.total_variants != 1 else '' }} queued</span></span>
                     {% endif %}
                     {% else %}
                     —
@@ -143,8 +139,7 @@
     </div>
 </div>
 
-{% if transcode_queue %}
-<div class="card">
+<div class="card" id="queue-card"{% if not transcode_queue %} style="display:none"{% endif %}>
     <h2>Transcoding Queue</h2>
     <div class="table-wrap">
     <table>
@@ -157,7 +152,7 @@
                 <th>Error</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="queue-body">
             {% for v in transcode_queue %}
             <tr>
                 <td class="wrap">{{ v.source_filename }}</td>
@@ -180,7 +175,6 @@
     </table>
     </div>
 </div>
-{% endif %}
 
 {% endblock %}
 
@@ -288,5 +282,71 @@ async function deleteProfile(profileId, name) {
         showToast(err?.detail || "Delete failed", true);
     }
 }
+
+// ── Live polling for transcode queue and profile variants ──
+(function() {
+    let lastQueueCount = {{ transcode_queue | length }};
+
+    function buildProfileVariantBadge(p) {
+        if (p.total_variants === 0) return '\u2014';
+        if (p.ready_variants === p.total_variants) {
+            const s = p.total_variants !== 1 ? 's' : '';
+            return '<span class="has-tooltip"><span class="badge badge-ready">Ready</span>' +
+                '<span class="tooltip">' + p.total_variants + ' variant' + s + '</span></span>';
+        }
+        if (p.ready_variants > 0) {
+            return '<span class="has-tooltip"><span class="badge badge-processing">In Progress</span>' +
+                '<span class="tooltip">' + p.ready_variants + ' of ' + p.total_variants + ' ready</span></span>';
+        }
+        const s = p.total_variants !== 1 ? 's' : '';
+        return '<span class="has-tooltip"><span class="badge badge-pending">Queued</span>' +
+            '<span class="tooltip">' + p.total_variants + ' variant' + s + ' queued</span></span>';
+    }
+
+    function buildQueueRow(v) {
+        let statusBadge = '<span class="badge badge-' + v.status + '">' + v.status + '</span>';
+        let progress = '\u2014';
+        if (v.status === 'processing') {
+            progress = '<div class="progress-bar"><div class="progress-fill" style="width:' + v.progress + '%"></div></div>' +
+                '<span class="text-muted">' + v.progress.toFixed(1) + '%</span>';
+        } else if (v.status === 'ready') {
+            progress = '100%';
+        }
+        const err = v.error_message || '\u2014';
+        return '<tr>' +
+            '<td class="wrap">' + v.source_filename.replace(/</g, '&lt;') + '</td>' +
+            '<td>' + v.profile_name.replace(/</g, '&lt;') + '</td>' +
+            '<td>' + statusBadge + '</td>' +
+            '<td>' + progress + '</td>' +
+            '<td class="wrap text-muted">' + err.replace(/</g, '&lt;') + '</td>' +
+            '</tr>';
+    }
+
+    setInterval(async () => {
+        if (isModalOpen()) return;
+        try {
+            const res = await fetch("/api/profiles/status");
+            if (!res.ok) return;
+            const data = await res.json();
+
+            // Update profile variant cells
+            for (const p of data.profiles) {
+                const cell = document.querySelector('[data-profile-variants="' + p.id + '"]');
+                if (cell) cell.innerHTML = buildProfileVariantBadge(p);
+            }
+
+            // Update transcode queue
+            const queueCard = document.getElementById('queue-card');
+            const queueBody = document.getElementById('queue-body');
+            if (data.queue.length > 0) {
+                queueCard.style.display = '';
+                queueBody.innerHTML = data.queue.map(buildQueueRow).join('');
+            } else {
+                queueCard.style.display = 'none';
+            }
+            lastQueueCount = data.queue_count;
+        } catch (e) { /* ignore */ }
+    }, 5000);
+})();
 </script>
 {% endblock %}
