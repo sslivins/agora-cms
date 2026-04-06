@@ -149,7 +149,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     )
     pending_devices = pending_q.scalars().all()
     for d in pending_devices:
-        d.is_online = False
+        d.is_online = device_manager.is_connected(d.id)
 
     # All adopted devices
     devices_q = await db.execute(
@@ -413,6 +413,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "profiles": profiles,
         "timezones": COMMON_TIMEZONES,
         "latest_version": get_latest_device_version(),
+        "pending_ttl_hours": get_settings().pending_device_ttl_hours,
     })
 
 

@@ -13,7 +13,11 @@
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
         {% elif d.status.value == 'pending' %}
+        {% if d.is_online %}
         <span class="badge badge-pending">Pending</span>
+        {% else %}
+        <span class="has-tooltip"><span class="badge badge-offline">Pending (Offline)</span><span class="tooltip">This device registered but hasn't been seen recently. Stale pending devices are automatically removed after {{ pending_ttl_hours }} hours.</span></span>
+        {% endif %}
         {% elif d.is_online %}
         <span class="badge badge-online">Online</span>
         {% else %}
@@ -173,7 +177,11 @@
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">Re-flashed device — needs re-adoption</span></span>
         {% elif d.status.value == 'pending' %}
+        {% if d.is_online %}
         <span class="badge badge-pending">Pending</span>
+        {% else %}
+        <span class="has-tooltip"><span class="badge badge-offline">Pending (Offline)</span><span class="tooltip">This device registered but hasn't been seen recently. Stale pending devices are automatically removed after {{ pending_ttl_hours }} hours.</span></span>
+        {% endif %}
         {% elif d.is_online %}
         <span class="badge badge-online">Online</span>
         {% else %}
