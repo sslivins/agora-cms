@@ -58,22 +58,26 @@ def _build_ffmpeg_args_safe(
     max_w = profile.max_width
     max_h = profile.max_height
 
-    pix_fmt = profile.pixel_format or "yuv420p"
-    cs_key = profile.color_space or "bt709"
-    cs = COLOR_SPACE_MAP.get(cs_key, COLOR_SPACE_MAP["bt709"])
+    pix_fmt = profile.pixel_format or "auto"
+    cs_key = profile.color_space or "auto"
+    cs = COLOR_SPACE_MAP.get(cs_key) if cs_key != "auto" else None
 
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2
-    # Force pixel format and color space from profile
-    scale_filter = (
+    scale_parts = [
         f"scale=w='if(gt(iw,{max_w}),{max_w},iw)':h='if(gt(ih,{max_h}),{max_h},ih)'"
-        f":force_original_aspect_ratio=decrease,"
-        f"pad=ceil(iw/2)*2:ceil(ih/2)*2,"
-        f"format={pix_fmt},"
-        f"setparams=colorspace={cs['colorspace']}"
-        f":color_primaries={cs['color_primaries']}"
-        f":color_trc={cs['color_trc']}"
-    )
+        f":force_original_aspect_ratio=decrease",
+        "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+    ]
+    if pix_fmt != "auto":
+        scale_parts.append(f"format={pix_fmt}")
+    if cs:
+        scale_parts.append(
+            f"setparams=colorspace={cs['colorspace']}"
+            f":color_primaries={cs['color_primaries']}"
+            f":color_trc={cs['color_trc']}"
+        )
+    scale_filter = ",".join(scale_parts)
 
     encoder = CODEC_ENCODER_MAP.get(profile.video_codec, "libx264")
 
@@ -90,15 +94,20 @@ def _build_ffmpeg_args_safe(
     args.extend(["-vf", scale_filter])
     args.extend(["-r", str(profile.max_fps)])
 
-    # Force color space from profile
-    args.extend([
-        "-colorspace", cs["colorspace"],
-        "-color_primaries", cs["color_primaries"],
-        "-color_trc", cs["color_trc"],
-    ])
+    # Force color space when explicitly set (not pass-through)
+    if cs:
+        args.extend([
+            "-colorspace", cs["colorspace"],
+            "-color_primaries", cs["color_primaries"],
+            "-color_trc", cs["color_trc"],
+        ])
 
     if profile.video_bitrate:
-        args.extend(["-b:v", profile.video_bitrate])
+        # Bitrate is stored as a number (Mbps) — append "M" for ffmpeg
+        bitrate = profile.video_bitrate
+        if bitrate and not bitrate[-1].isalpha():
+            bitrate = f"{bitrate}M"
+        args.extend(["-b:v", bitrate])
     else:
         args.extend(["-crf", str(profile.crf)])
 

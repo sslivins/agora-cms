@@ -46,8 +46,8 @@ class ProfileCreate(BaseModel):
     max_fps: int = 30
     video_bitrate: str = ""
     crf: int = 23
-    pixel_format: str = "yuv420p"
-    color_space: str = "bt709"
+    pixel_format: str = "auto"
+    color_space: str = "auto"
     audio_codec: str = "aac"
     audio_bitrate: str = "128k"
 

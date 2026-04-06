@@ -123,8 +123,8 @@ async def run_migrations():
 
         # -- device_profiles.pixel_format and color_space --
         for col, col_type, default in [
-            ("pixel_format", "VARCHAR(20)", "yuv420p"),
-            ("color_space", "VARCHAR(20)", "bt709"),
+            ("pixel_format", "VARCHAR(20)", "auto"),
+            ("color_space", "VARCHAR(20)", "auto"),
         ]:
             has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "device_profiles", _c))
             if not has_col:
