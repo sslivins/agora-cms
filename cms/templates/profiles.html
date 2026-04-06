@@ -26,6 +26,7 @@
                 <select name="video_codec">
                     <option value="h264" selected>H.264</option>
                     <option value="h265">H.265 (HEVC)</option>
+                    <option value="av1">AV1 (SVT-AV1)</option>
                 </select>
             </div>
             <div class="form-group">
@@ -84,6 +85,7 @@
                 <select name="audio_codec">
                     <option value="aac" selected>AAC</option>
                     <option value="mp3">MP3</option>
+                    <option value="libopus">Opus</option>
                 </select>
             </div>
             <div class="form-group">
@@ -262,7 +264,9 @@ async function editProfile(profileId) {
             </div>
         </div>
         <div class="form-row">
-            <div class="form-group"><label>Audio Codec</label><input type="text" id="ep-ac" value="${p.audio_codec}"></div>
+            <div class="form-group"><label>Audio Codec</label>
+                <select id="ep-ac"><option value="aac" ${p.audio_codec==='aac'?'selected':''}>AAC</option><option value="mp3" ${p.audio_codec==='mp3'?'selected':''}>MP3</option><option value="libopus" ${p.audio_codec==='libopus'?'selected':''}>Opus</option></select>
+            </div>
             <div class="form-group"><label>Audio Bitrate</label><input type="text" id="ep-abr" value="${p.audio_bitrate}"></div>
         </div>
         <div class="modal-actions">

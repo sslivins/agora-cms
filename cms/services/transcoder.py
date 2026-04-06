@@ -33,6 +33,7 @@ POLL_INTERVAL_SECONDS = 10
 CODEC_ENCODER_MAP: dict[str, str] = {
     "h264": "libx264",
     "h265": "libx265",
+    "av1": "libsvtav1",
 }
 
 
@@ -71,7 +72,8 @@ def _build_ffmpeg_args_safe(
         "-c:v", encoder,
     ]
 
-    if profile.video_profile:
+    # -profile:v only applies to H.264/H.265, not AV1
+    if profile.video_profile and profile.video_codec in ("h264", "h265"):
         args.extend(["-profile:v", profile.video_profile])
 
     args.extend(["-vf", scale_filter])
