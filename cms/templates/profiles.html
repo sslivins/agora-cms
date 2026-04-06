@@ -66,7 +66,7 @@
             <div class="form-group">
                 <label>Pixel Format</label>
                 <select name="pixel_format">
-                    <option value="auto" selected>Auto (pass-through)</option>
+                    <option value="auto" selected>Auto (keep source format)</option>
                     <option value="yuv420p">yuv420p (8-bit)</option>
                     <option value="yuv420p10le">yuv420p10le (10-bit)</option>
                     <option value="yuv422p">yuv422p (8-bit)</option>
@@ -252,8 +252,8 @@ function applyCodecConstraints(codecSelect, pixFmtSelect) {
         // Update the "auto" label to clarify behavior per encoder
         if (opt.value === 'auto') {
             opt.textContent = codec === 'av1'
-                ? 'Auto (force yuv420p — AV1 requires 4:2:0)'
-                : 'Auto (pass-through)';
+                ? 'Auto (will use yuv420p — AV1 only supports 4:2:0)'
+                : 'Auto (keep source format)';
         }
     });
 }
@@ -326,10 +326,10 @@ async function editProfile(profileId) {
         </div>
         <div class="form-row">
             <div class="form-group"><label>Pixel Format</label>
-                <select id="ep-pf"><option value="auto" ${p.pixel_format==='auto'?'selected':''}>Auto (pass-through)</option><option value="yuv420p" ${p.pixel_format==='yuv420p'?'selected':''}>yuv420p (8-bit)</option><option value="yuv420p10le" ${p.pixel_format==='yuv420p10le'?'selected':''}>yuv420p10le (10-bit)</option><option value="yuv422p" ${p.pixel_format==='yuv422p'?'selected':''}>yuv422p (8-bit)</option><option value="yuv422p10le" ${p.pixel_format==='yuv422p10le'?'selected':''}>yuv422p10le (10-bit)</option><option value="yuv444p" ${p.pixel_format==='yuv444p'?'selected':''}>yuv444p (8-bit)</option><option value="yuv444p10le" ${p.pixel_format==='yuv444p10le'?'selected':''}>yuv444p10le (10-bit)</option></select>
+                <select id="ep-pf"><option value="auto" ${p.pixel_format==='auto'?'selected':''}>Auto (keep source format)</option><option value="yuv420p" ${p.pixel_format==='yuv420p'?'selected':''}>yuv420p (8-bit)</option><option value="yuv420p10le" ${p.pixel_format==='yuv420p10le'?'selected':''}>yuv420p10le (10-bit)</option><option value="yuv422p" ${p.pixel_format==='yuv422p'?'selected':''}>yuv422p (8-bit)</option><option value="yuv422p10le" ${p.pixel_format==='yuv422p10le'?'selected':''}>yuv422p10le (10-bit)</option><option value="yuv444p" ${p.pixel_format==='yuv444p'?'selected':''}>yuv444p (8-bit)</option><option value="yuv444p10le" ${p.pixel_format==='yuv444p10le'?'selected':''}>yuv444p10le (10-bit)</option></select>
             </div>
             <div class="form-group"><label>Color Space</label>
-                <select id="ep-cs"><option value="auto" ${p.color_space==='auto'?'selected':''}>Auto (pass-through)</option><option value="bt709" ${p.color_space==='bt709'?'selected':''}>BT.709 (SDR)</option><option value="smpte170m" ${p.color_space==='smpte170m'?'selected':''}>SMPTE 170M (SD)</option><option value="bt2020-pq" ${p.color_space==='bt2020-pq'?'selected':''}>BT.2020 PQ (HDR10)</option><option value="bt2020-hlg" ${p.color_space==='bt2020-hlg'?'selected':''}>BT.2020 HLG</option></select>
+                <select id="ep-cs"><option value="auto" ${p.color_space==='auto'?'selected':''}>Auto (keep source format)</option><option value="bt709" ${p.color_space==='bt709'?'selected':''}>BT.709 (SDR)</option><option value="smpte170m" ${p.color_space==='smpte170m'?'selected':''}>SMPTE 170M (SD)</option><option value="bt2020-pq" ${p.color_space==='bt2020-pq'?'selected':''}>BT.2020 PQ (HDR10)</option><option value="bt2020-hlg" ${p.color_space==='bt2020-hlg'?'selected':''}>BT.2020 HLG</option></select>
             </div>
         </div>
         <div class="form-row">
