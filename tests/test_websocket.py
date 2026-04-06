@@ -34,6 +34,8 @@ class TestWebSocket:
                 msg = ws.receive_json()
                 assert msg["type"] == "sync"
 
+                ws.close()
+
     async def test_register_known_device_valid_token(self, app, db_session):
         from cms.models.device import Device, DeviceStatus
 
@@ -69,6 +71,8 @@ class TestWebSocket:
                 # Adopted devices also receive a config message (API key push)
                 msg = ws.receive_json()
                 assert msg["type"] == "config"
+
+                ws.close()
 
     async def test_register_known_device_wrong_token(self, app, db_session):
         from cms.models.device import Device, DeviceStatus
@@ -162,6 +166,8 @@ class TestWebSocket:
                 import time
                 time.sleep(0.5)  # Allow server to process status before disconnect
 
+                ws.close()
+
     async def test_reflashed_device_empty_token_gets_readopted(self, app, db_session):
         """A known device with a token hash that connects with empty token
         (simulating a re-flash / factory reset) should be reset to PENDING
@@ -201,6 +207,8 @@ class TestWebSocket:
                 # Should receive sync
                 msg = ws.receive_json()
                 assert msg["type"] == "sync"
+
+                ws.close()
 
     async def test_known_device_wrong_nonmempty_token_rejected(self, app, db_session):
         """A known device that sends a WRONG (non-empty) token should still

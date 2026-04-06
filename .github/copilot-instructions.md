@@ -67,10 +67,32 @@ Single application with a PostgreSQL database:
 
 - **`main` is sacred** — never commit directly to `main`.
 - All changes must be made on a feature branch and merged via pull request.
-- Branch naming: `feature/<short-description>`, `fix/<short-description>`, `chore/<short-description>`.
+- Branch naming: `feat/<short-description>`, `fix/<short-description>`, `chore/<short-description>`, `perf/<short-description>`, `refactor/<short-description>`, `docs/<short-description>`, `test/<short-description>`, `ci/<short-description>`.
 - **Never merge a PR** unless the user explicitly asks you to. Creating PRs is fine; merging requires explicit approval.
 - Bump the version in `cms/__init__.py` when shipping user-facing changes.
 - **After creating a PR, always check CI status** using `gh pr checks <number>` or `gh run list`. Monitor until all checks pass. If any fail, inspect the logs with `gh run view <run-id> --log-failed`, fix issues, push fixes, and re-check until green.
+
+## Commit Messages — Conventional Commits
+
+All commit messages **must** use [Conventional Commits](https://www.conventionalcommits.org/) format. The release workflow auto-generates changelogs from these prefixes.
+
+**Format:** `<type>(<optional scope>): <description>`
+
+| Prefix | When to use | Example |
+|---|---|---|
+| `feat:` | New feature or capability | `feat: add device group scheduling` |
+| `fix:` | Bug fix | `fix: prevent stale device state on reconnect` |
+| `perf:` | Performance improvement | `perf: batch WebSocket sync messages` |
+| `refactor:` | Code restructuring (no behavior change) | `refactor: extract scheduler evaluation logic` |
+| `test:` | Adding or updating tests only | `test: add E2E tests for schedule creation` |
+| `docs:` | Documentation only | `docs: update protocol contract for v2` |
+| `ci:` | CI/CD workflow changes | `ci: add changelog generation to release workflow` |
+| `chore:` | Maintenance, deps, tooling | `chore: bump SQLAlchemy to 2.1` |
+
+- Use the **imperative mood** in descriptions: "add" not "added", "fix" not "fixes".
+- Optional scope in parentheses: `fix(scheduler): handle overlapping time windows`.
+- Keep the first line under 72 characters.
+- Add a blank line + body for complex changes.
 
 ## Protocol Contract (CMS ↔ Device)
 
