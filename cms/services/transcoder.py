@@ -36,6 +36,14 @@ CODEC_ENCODER_MAP: dict[str, str] = {
     "av1": "libsvtav1",
 }
 
+# Map profile color_space value → ffmpeg colorspace, color_primaries, color_trc
+COLOR_SPACE_MAP: dict[str, dict[str, str]] = {
+    "bt709":      {"colorspace": "bt709",    "color_primaries": "bt709",  "color_trc": "bt709"},
+    "smpte170m":  {"colorspace": "smpte170m","color_primaries": "smpte170m","color_trc": "smpte170m"},
+    "bt2020-pq":  {"colorspace": "bt2020nc", "color_primaries": "bt2020", "color_trc": "smpte2084"},
+    "bt2020-hlg": {"colorspace": "bt2020nc", "color_primaries": "bt2020", "color_trc": "arib-std-b67"},
+}
+
 
 def _build_ffmpeg_args_safe(
     source_path: Path,
@@ -51,7 +59,8 @@ def _build_ffmpeg_args_safe(
     max_h = profile.max_height
 
     pix_fmt = profile.pixel_format or "yuv420p"
-    cs = profile.color_space or "bt709"
+    cs_key = profile.color_space or "bt709"
+    cs = COLOR_SPACE_MAP.get(cs_key, COLOR_SPACE_MAP["bt709"])
 
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2
@@ -61,7 +70,9 @@ def _build_ffmpeg_args_safe(
         f":force_original_aspect_ratio=decrease,"
         f"pad=ceil(iw/2)*2:ceil(ih/2)*2,"
         f"format={pix_fmt},"
-        f"setparams=colorspace={cs}:color_primaries={cs}:color_trc={cs}"
+        f"setparams=colorspace={cs['colorspace']}"
+        f":color_primaries={cs['color_primaries']}"
+        f":color_trc={cs['color_trc']}"
     )
 
     encoder = CODEC_ENCODER_MAP.get(profile.video_codec, "libx264")
@@ -81,9 +92,9 @@ def _build_ffmpeg_args_safe(
 
     # Force color space from profile
     args.extend([
-        "-colorspace", cs,
-        "-color_primaries", cs,
-        "-color_trc", cs,
+        "-colorspace", cs["colorspace"],
+        "-color_primaries", cs["color_primaries"],
+        "-color_trc", cs["color_trc"],
     ])
 
     if profile.video_bitrate:
