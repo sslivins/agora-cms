@@ -63,6 +63,23 @@
         </div>
         <div class="form-row">
             <div class="form-group">
+                <label>Pixel Format</label>
+                <select name="pixel_format">
+                    <option value="yuv420p" selected>yuv420p</option>
+                    <option value="yuv422p">yuv422p</option>
+                    <option value="yuv444p">yuv444p</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Color Space</label>
+                <select name="color_space">
+                    <option value="bt709" selected>BT.709 (SDR)</option>
+                    <option value="smpte170m">SMPTE 170M (SD)</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
                 <label>Audio Codec</label>
                 <select name="audio_codec">
                     <option value="aac" selected>AAC</option>
@@ -108,8 +125,8 @@
                 <td>{{ p.max_width }}×{{ p.max_height }}</td>
                 <td>{{ p.max_fps }}</td>
                 <td>{% if p.video_bitrate %}{{ p.video_bitrate }}{% else %}CRF {{ p.crf }}{% endif %}</td>
-                <td><span class="text-muted">yuv420p</span></td>
-                <td><span class="text-muted">BT.709 (SDR)</span></td>
+                <td>{{ p.pixel_format }}</td>
+                <td>{{ p.color_space }}{% if p.color_space == 'bt709' %} (SDR){% endif %}</td>
                 <td>{{ p.device_count }}</td>
                 <td data-profile-variants="{{ p.id }}">
                     {% if p.total_variants > 0 %}
@@ -192,6 +209,8 @@ async function createProfile(form) {
         max_fps: parseInt(data.get("max_fps")),
         crf: parseInt(data.get("crf")),
         video_bitrate: data.get("video_bitrate") || "",
+        pixel_format: data.get("pixel_format"),
+        color_space: data.get("color_space"),
         audio_codec: data.get("audio_codec"),
         audio_bitrate: data.get("audio_bitrate"),
     };
@@ -235,6 +254,14 @@ async function editProfile(profileId) {
             <div class="form-group"><label>Video Bitrate</label><input type="text" id="ep-vbr" value="${p.video_bitrate || ''}"></div>
         </div>
         <div class="form-row">
+            <div class="form-group"><label>Pixel Format</label>
+                <select id="ep-pf"><option value="yuv420p" ${p.pixel_format==='yuv420p'?'selected':''}>yuv420p</option><option value="yuv422p" ${p.pixel_format==='yuv422p'?'selected':''}>yuv422p</option><option value="yuv444p" ${p.pixel_format==='yuv444p'?'selected':''}>yuv444p</option></select>
+            </div>
+            <div class="form-group"><label>Color Space</label>
+                <select id="ep-cs"><option value="bt709" ${p.color_space==='bt709'?'selected':''}>BT.709 (SDR)</option><option value="smpte170m" ${p.color_space==='smpte170m'?'selected':''}>SMPTE 170M (SD)</option></select>
+            </div>
+        </div>
+        <div class="form-row">
             <div class="form-group"><label>Audio Codec</label><input type="text" id="ep-ac" value="${p.audio_codec}"></div>
             <div class="form-group"><label>Audio Bitrate</label><input type="text" id="ep-abr" value="${p.audio_bitrate}"></div>
         </div>
@@ -256,6 +283,8 @@ async function editProfile(profileId) {
             max_fps: parseInt(box.querySelector("#ep-fps").value),
             crf: parseInt(box.querySelector("#ep-crf").value),
             video_bitrate: box.querySelector("#ep-vbr").value || "",
+            pixel_format: box.querySelector("#ep-pf").value,
+            color_space: box.querySelector("#ep-cs").value,
             audio_codec: box.querySelector("#ep-ac").value,
             audio_bitrate: box.querySelector("#ep-abr").value,
         };

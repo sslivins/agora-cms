@@ -29,6 +29,12 @@ _transcode_semaphore = asyncio.Semaphore(1)
 
 POLL_INTERVAL_SECONDS = 10
 
+# Map profile video_codec value → ffmpeg encoder name
+CODEC_ENCODER_MAP: dict[str, str] = {
+    "h264": "libx264",
+    "h265": "libx265",
+}
+
 
 def _build_ffmpeg_args_safe(
     source_path: Path,
@@ -43,21 +49,26 @@ def _build_ffmpeg_args_safe(
     max_w = profile.max_width
     max_h = profile.max_height
 
+    pix_fmt = profile.pixel_format or "yuv420p"
+    cs = profile.color_space or "bt709"
+
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2
-    # Also force SDR BT.709 — Pi V4L2 decoder can't handle HDR/BT.2020 metadata
+    # Force pixel format and color space from profile
     scale_filter = (
         f"scale=w='if(gt(iw,{max_w}),{max_w},iw)':h='if(gt(ih,{max_h}),{max_h},ih)'"
         f":force_original_aspect_ratio=decrease,"
         f"pad=ceil(iw/2)*2:ceil(ih/2)*2,"
-        f"format=yuv420p,"
-        f"setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
+        f"format={pix_fmt},"
+        f"setparams=colorspace={cs}:color_primaries={cs}:color_trc={cs}"
     )
+
+    encoder = CODEC_ENCODER_MAP.get(profile.video_codec, "libx264")
 
     args = [
         "ffmpeg", "-y",
         "-i", str(source_path),
-        "-c:v", "libx264",
+        "-c:v", encoder,
     ]
 
     if profile.video_profile:
@@ -66,11 +77,11 @@ def _build_ffmpeg_args_safe(
     args.extend(["-vf", scale_filter])
     args.extend(["-r", str(profile.max_fps)])
 
-    # Force SDR BT.709 color space — Pi hardware decoder can't handle HDR/BT.2020
+    # Force color space from profile
     args.extend([
-        "-colorspace", "bt709",
-        "-color_primaries", "bt709",
-        "-color_trc", "bt709",
+        "-colorspace", cs,
+        "-color_primaries", cs,
+        "-color_trc", cs,
     ])
 
     if profile.video_bitrate:

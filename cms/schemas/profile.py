@@ -25,6 +25,8 @@ class ProfileOut(BaseModel):
     max_fps: int
     video_bitrate: str
     crf: int
+    pixel_format: str
+    color_space: str
     audio_codec: str
     audio_bitrate: str
     builtin: bool
@@ -44,6 +46,8 @@ class ProfileCreate(BaseModel):
     max_fps: int = 30
     video_bitrate: str = ""
     crf: int = 23
+    pixel_format: str = "yuv420p"
+    color_space: str = "bt709"
     audio_codec: str = "aac"
     audio_bitrate: str = "128k"
 
@@ -67,5 +71,7 @@ class ProfileUpdate(BaseModel):
     max_fps: Optional[int] = None
     video_bitrate: Optional[str] = None
     crf: Optional[int] = None
+    pixel_format: Optional[str] = None
+    color_space: Optional[str] = None
     audio_codec: Optional[str] = None
     audio_bitrate: Optional[str] = None

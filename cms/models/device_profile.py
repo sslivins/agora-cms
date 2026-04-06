@@ -25,6 +25,8 @@ class DeviceProfile(Base):
     max_fps: Mapped[int] = mapped_column(Integer, default=30)
     video_bitrate: Mapped[str] = mapped_column(String(20), default="")  # e.g. "5M", empty = use CRF
     crf: Mapped[int] = mapped_column(Integer, default=23)
+    pixel_format: Mapped[str] = mapped_column(String(20), default="yuv420p")
+    color_space: Mapped[str] = mapped_column(String(20), default="bt709")
     audio_codec: Mapped[str] = mapped_column(String(20), default="aac")
     audio_bitrate: Mapped[str] = mapped_column(String(20), default="128k")
 
