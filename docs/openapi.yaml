@@ -5,7 +5,7 @@ info:
     Central management server for Agora media playback devices. Provides device
     registration, content scheduling, asset transcoding, and fleet management
     via a REST API, WebSocket endpoint, and admin web UI.
-  version: 0.9.30
+  version: 1.0.0
   license:
     name: MIT
 
@@ -51,6 +51,27 @@ paths:
           $ref: "#/components/responses/Unauthorized"
 
   # ── Devices ──
+  /api/devices/check-updates:
+    post:
+      tags: [devices]
+      summary: Check for firmware updates
+      description: Trigger an immediate check for new device firmware releases on GitHub.
+      operationId: checkUpdates
+      responses:
+        "200":
+          description: Update check result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  latest_version:
+                    type: string
+                    nullable: true
+                    description: Latest firmware version, or null if check failed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /api/devices:
     get:
       tags: [devices]
@@ -180,20 +201,41 @@ paths:
         "404":
           description: Device not found or not connected.
 
-  /api/devices/{device_id}/reset-auth:
+  /api/devices/{device_id}/adopt:
     post:
       tags: [devices]
-      summary: Reset device authentication
+      summary: Adopt device
       description: >
-        Clear the device's stored auth token hash and API key hash. Use this
-        when a device has been re-flashed with a fresh SD card and needs to
-        re-register. The device will receive new credentials on next connect.
-      operationId: resetDeviceAuth
+        Adopt a pending or orphaned device. Pending devices are set to adopted.
+        Orphaned devices have their auth credentials cleared and are set to adopted.
+      operationId: adoptDevice
       parameters:
         - $ref: "#/components/parameters/DeviceId"
       responses:
         "200":
-          description: Auth credentials cleared.
+          description: Device adopted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Device is already adopted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found.
+
+  /api/devices/{device_id}/factory-reset:
+    post:
+      tags: [devices]
+      summary: Factory reset device
+      description: Send a factory reset command to a connected device over WebSocket.
+      operationId: factoryResetDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Factory reset command sent.
           content:
             application/json:
               schema:
@@ -202,6 +244,42 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: Device not found.
+        "409":
+          description: Device not connected.
+
+  /api/devices/{device_id}/local-api:
+    post:
+      tags: [devices]
+      summary: Toggle local API
+      description: Enable or disable the local REST API on a connected device.
+      operationId: toggleDeviceLocalApi
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Local API state updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request (enabled must be a boolean).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Device not found.
+        "409":
+          description: Device not connected.
 
   /api/devices/{device_id}/ssh:
     post:
@@ -725,6 +803,22 @@ paths:
         "404":
           description: Profile not found.
 
+  /api/profiles/status:
+    get:
+      tags: [profiles]
+      summary: Profile variant status
+      description: Returns per-profile variant counts and the transcoding job queue.
+      operationId: getProfileStatus
+      responses:
+        "200":
+          description: Profile status with transcode queue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Settings ──
   /settings/password:
     post:
@@ -816,7 +910,7 @@ components:
 
     DeviceStatus:
       type: string
-      enum: [pending, approved, offline]
+      enum: [pending, adopted, orphaned]
 
     AssetType:
       type: string
@@ -1231,6 +1325,43 @@ components:
           type: string
         audio_bitrate:
           type: string
+
+    ProfileStatusResponse:
+      type: object
+      properties:
+        profiles:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              total_variants:
+                type: integer
+              ready_variants:
+                type: integer
+        queue:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              source_filename:
+                type: string
+              profile_name:
+                type: string
+              status:
+                $ref: "#/components/schemas/VariantStatus"
+              progress:
+                type: number
+                nullable: true
+              error_message:
+                type: string
+        queue_count:
+          type: integer
 
     DashboardResponse:
       type: object
