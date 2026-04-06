@@ -189,7 +189,27 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         else:
             # Known device — verify auth token if device has one stored
             if device.device_auth_token_hash:
-                if not auth_token or _hash_token(auth_token) != device.device_auth_token_hash:
+                if not auth_token:
+                    # Empty token = device was re-flashed / factory reset.
+                    # Reset to PENDING and assign a new auth token so the
+                    # device can re-register without admin intervention.
+                    logger.info(
+                        "Device %s connected with empty token (likely re-flashed) "
+                        "— resetting to pending", device_id,
+                    )
+                    device.status = DeviceStatus.PENDING
+                    device.device_auth_token_hash = None
+                    device.last_seen = datetime.now(timezone.utc)
+                    await db.commit()
+
+                    device_auth_token = secrets.token_urlsafe(32)
+                    device.device_auth_token_hash = _hash_token(device_auth_token)
+                    await db.commit()
+
+                    auth_msg = AuthAssignedMessage(device_auth_token=device_auth_token)
+                    await websocket.send_json(auth_msg.model_dump(mode="json"))
+                    logger.info("New auth token assigned to re-flashed device %s", device_id)
+                elif _hash_token(auth_token) != device.device_auth_token_hash:
                     logger.warning("Device %s failed auth — marking as orphaned", device_id)
                     device.status = DeviceStatus.ORPHANED
                     device.last_seen = datetime.now(timezone.utc)
