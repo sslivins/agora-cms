@@ -391,7 +391,7 @@ async def _wait_for_cms_adoption(
                     shown_pending = True
                     logger.info("CMS connected — waiting for adoption")
 
-            elif state == "error":
+            elif state == "error" or (state == "disconnected" and status.get("error")):
                 _stop_spinner(spinner_stop, spinner_thread)
                 consecutive_errors += 1
                 error_msg = status.get("error", "")
@@ -407,7 +407,8 @@ async def _wait_for_cms_adoption(
                     display.show_cms_failed(cms_host, error_msg)
 
             elif state in ("connecting", "disconnected", ""):
-                consecutive_errors = 0
+                # Only reset error counter for clean connecting/disconnected
+                # (no error field — e.g. initial startup before first attempt)
                 if not shown_connecting and display and display.available:
                     spinner_stop = threading.Event()
                     spinner_thread = threading.Thread(
@@ -452,7 +453,7 @@ async def _run_reconfigure_server(
         logger.error("Cannot determine device IP for reconfigure server")
         return False
 
-    url = f"http://{device_ip}"
+    url = f"http://{device_ip}/reconfigure"
     logger.info("Starting reconfigure server at %s", url)
 
     if display and display.available:
@@ -492,11 +493,24 @@ async def _run_reconfigure_server(
                 server.should_exit = True
                 return
 
-    await asyncio.gather(
-        server.serve(),
-        _watch_shutdown(),
-        _watch_reconfigure(),
-    )
+    tasks = [
+        asyncio.create_task(server.serve()),
+        asyncio.create_task(_watch_shutdown()),
+        asyncio.create_task(_watch_reconfigure()),
+    ]
+    # Wait until any task completes (server exits or reconfigure/shutdown)
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+    for t in pending:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    # Re-raise any exception from completed tasks
+    for t in done:
+        if t.exception():
+            raise t.exception()
 
     return reconfigured
 
@@ -615,9 +629,6 @@ async def run_service(force_oobe: bool = False) -> None:
 
             if connected:
                 logger.info("Wi-Fi connected successfully")
-                # Write provisioning flag
-                PROVISION_FLAG.parent.mkdir(parents=True, exist_ok=True)
-                PROVISION_FLAG.write_text("1")
 
                 # Restart the CMS client so it reconnects immediately
                 # (it may have hit exponential backoff while Wi-Fi was down)
@@ -629,18 +640,17 @@ async def run_service(force_oobe: bool = False) -> None:
                 await proc.wait()
                 logger.info("CMS client restarted")
 
-                # Pre-start the API and player services in the background
-                # while waiting for CMS adoption.  By the time OOBE finishes
-                # they'll have completed their slow Python/GStreamer imports
-                # and be ready to serve immediately.
-                for svc in ("agora-api", "agora-player"):
-                    proc = await asyncio.create_subprocess_exec(
-                        "sudo", "systemctl", "start", svc,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await proc.wait()
-                    logger.info("Pre-started %s", svc)
+                # Pre-start the API service in the background while waiting
+                # for CMS adoption.  The player is NOT started here — it will
+                # steal the DRM display from the OOBE framebuffer.  The player
+                # is started after Phase 2 completes successfully.
+                proc = await asyncio.create_subprocess_exec(
+                    "sudo", "systemctl", "start", "agora-api",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+                logger.info("Pre-started agora-api")
 
                 # Try mDNS auto-discovery if no CMS was explicitly configured
                 if not _get_cms_host():
@@ -661,11 +671,15 @@ async def run_service(force_oobe: bool = False) -> None:
 
         # ── Phase 2: CMS adoption (loops with reconfigure) ──────────
         logger.info("Entering CMS adoption phase")
+        adoption_success = False
         while not shutdown_event.is_set():
             result = await _wait_for_cms_adoption(display, shutdown_event)
             logger.info("CMS adoption result: %s", result)
 
-            if result in ("adopted", "no_cms", "shutdown"):
+            if result == "adopted":
+                adoption_success = True
+                break
+            elif result in ("no_cms", "shutdown"):
                 break
             elif result in ("failed", "timeout"):
                 # CMS failed — offer reconfiguration via QR code
@@ -674,21 +688,35 @@ async def run_service(force_oobe: bool = False) -> None:
                     shutdown_event, display,
                 )
                 if reconfigured:
-                    logger.info("CMS reconfigured — retrying connection")
+                    logger.info("CMS reconfigured — restarting CMS client and retrying")
+                    proc = await asyncio.create_subprocess_exec(
+                        "sudo", "systemctl", "restart", "agora-cms-client",
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
                     continue
-                # Shutdown or gave up — proceed anyway
-                break
+                # Shutdown triggered — loop will exit on next iteration
 
-        if not shutdown_event.is_set():
+        # Mark provisioned only after successful OOBE completion.
+        # If we wrote this unconditionally, a CMS failure + reboot would
+        # skip the OOBE on next boot.
+        if not shutdown_event.is_set() and adoption_success:
+            PROVISION_FLAG.parent.mkdir(parents=True, exist_ok=True)
+            PROVISION_FLAG.write_text("1")
+            logger.info("Provisioning flag written")
             display.show_adopted()
             await asyncio.sleep(OOBE_DISPLAY_HOLD)
+        elif not shutdown_event.is_set() and result == "no_cms":
+            # Standalone mode (no CMS configured) — mark provisioned
+            PROVISION_FLAG.parent.mkdir(parents=True, exist_ok=True)
+            PROVISION_FLAG.write_text("1")
+            logger.info("Provisioning flag written (standalone mode)")
 
         display.close()
 
         # Restart Plymouth so the animated boot splash covers the gap while
         # the player process imports GStreamer and builds its first pipeline.
-        # The player was pre-started during CMS adoption wait so it should
-        # already be warm — Plymouth covers any remaining init time.
         # The player calls `plymouth quit --retain-splash` before claiming
         # the DRM device, so the handoff is seamless.
         logger.info("Starting Plymouth splash for player handoff")
@@ -706,7 +734,8 @@ async def run_service(force_oobe: bool = False) -> None:
         await proc.wait()
         logger.info("Plymouth splash active")
 
-        # Ensure the player is running (no-op if already pre-started)
+        # Start the player now that OOBE is complete and the framebuffer
+        # has been released.  Plymouth covers the startup time.
         proc = await asyncio.create_subprocess_exec(
             "sudo", "systemctl", "start", "agora-player",
             stdout=asyncio.subprocess.DEVNULL,
