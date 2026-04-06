@@ -249,6 +249,12 @@ function applyCodecConstraints(codecSelect, pixFmtSelect) {
         } else {
             opt.disabled = false;
         }
+        // Update the "auto" label to clarify behavior per encoder
+        if (opt.value === 'auto') {
+            opt.textContent = codec === 'av1'
+                ? 'Auto (force yuv420p — AV1 requires 4:2:0)'
+                : 'Auto (pass-through)';
+        }
     });
 }
 

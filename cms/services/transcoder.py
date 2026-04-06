@@ -62,6 +62,10 @@ def _build_ffmpeg_args_safe(
     cs_key = profile.color_space or "auto"
     cs = COLOR_SPACE_MAP.get(cs_key) if cs_key != "auto" else None
 
+    # SVT-AV1 only supports yuv420p / yuv420p10le — force yuv420p on auto
+    if pix_fmt == "auto" and profile.video_codec == "av1":
+        pix_fmt = "yuv420p"
+
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2
     scale_parts = [
