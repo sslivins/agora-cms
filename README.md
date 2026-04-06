@@ -1,6 +1,20 @@
-# Agora CMS — Central Management System
+# Agora CMS — Central Management Server
 
-Agora CMS is the central control server for a fleet of [Agora](https://github.com/sslivins/agora) media playback devices (Raspberry Pi Zero 2 W). It manages device registration, content scheduling, asset transcoding, and distribution.
+**Manage a fleet of digital signage displays from a single dashboard.**
+
+Agora CMS is the command center for [Agora](https://github.com/sslivins/agora) media playback devices running on Raspberry Pi Zero 2 W. Upload content once, build time-based schedules, and the CMS handles the rest — transcoding video for each device's hardware, distributing assets when needed, and pushing live updates over WebSocket. No manual device configuration required.
+
+**One server. Dozens of screens. Fully self-hosted.**
+
+### Highlights
+
+- **Plug-and-play device management** — Devices auto-register over WebSocket; approve them from the dashboard and they start playing
+- **Smart scheduling** — Time-based, date-ranged, recurring schedules with priority levels and per-device or per-group targeting
+- **Automatic video transcoding** — Uploads are transcoded to hardware-friendly H.264 for each device profile using ffmpeg
+- **Flash-aware asset distribution** — CMS tracks each device's SD card budget, pre-fetches upcoming assets, and cleans up old ones
+- **Real-time fleet monitoring** — Live playback state, CPU temperature, storage usage, firmware versions, and error reporting
+- **Remote control** — Play, stop, reboot, factory reset, toggle SSH, push config changes — all from the web UI
+- **Zero-touch updates** — Docker image auto-updates via Watchtower; device firmware upgrades pushed over-the-air
 
 ## How It Works
 
@@ -190,6 +204,7 @@ Environment variables (prefix `AGORA_CMS_`), set in `.env`:
 | `ASSET_STORAGE_PATH` | `/opt/agora-cms/assets` | Asset storage root |
 | `DEFAULT_DEVICE_STORAGE_MB` | `500` | Default device flash budget |
 | `API_KEY_ROTATION_HOURS` | `24` | Device API key rotation interval |
+| `PENDING_DEVICE_TTL_HOURS` | `24` | Auto-purge pending devices not seen for N hours |
 
 ## Project Structure
 
@@ -223,6 +238,7 @@ cms/
     transcoder.py          # Video transcoding, media probing
     device_manager.py      # Connection registry, state tracking
     version_checker.py     # Firmware version polling
+    device_purge.py        # Stale pending device cleanup
   static/                  # CSS, JS
   templates/               # Jinja2 admin UI templates
 scripts/
