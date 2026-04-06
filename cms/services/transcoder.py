@@ -62,9 +62,16 @@ def _build_ffmpeg_args_safe(
     cs_key = profile.color_space or "auto"
     cs = COLOR_SPACE_MAP.get(cs_key) if cs_key != "auto" else None
 
-    # SVT-AV1 only supports yuv420p / yuv420p10le — force yuv420p on auto
-    if pix_fmt == "auto" and profile.video_codec == "av1":
-        pix_fmt = "yuv420p"
+    # When pixel format is "auto", force yuv420p for codecs/profiles that
+    # only support 4:2:0 — passing through a 4:2:2 source would fail.
+    if pix_fmt == "auto":
+        _420_only_profiles = {
+            "h264": {"baseline", "main", "high", "high10"},
+            "h265": {"main", "main10"},
+        }
+        restricted = _420_only_profiles.get(profile.video_codec, set())
+        if profile.video_codec == "av1" or profile.video_profile in restricted:
+            pix_fmt = "yuv420p"
 
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2

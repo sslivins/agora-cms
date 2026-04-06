@@ -72,15 +72,39 @@ class TestVideoProfile:
 # ── Pixel format (auto / explicit) ───────────────────────────────────
 
 class TestPixelFormat:
-    def test_auto_h264_no_format_filter(self):
-        """Auto + H.264 should NOT add a format= filter (pass-through)."""
+    def test_auto_h264_main_forces_format(self):
+        """Auto + H.264 main should add format=yuv420p (main only supports 4:2:0)."""
         args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="auto", video_codec="h264"))
         vf = args[args.index("-vf") + 1]
-        assert "format=" not in vf
+        assert "format=yuv420p" in vf
 
     def test_auto_av1_forces_yuv420p(self):
         """Auto + AV1 must force yuv420p because SVT-AV1 only supports 4:2:0."""
         args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="auto", video_codec="av1"))
+        vf = args[args.index("-vf") + 1]
+        assert "format=yuv420p" in vf
+
+    def test_auto_h264_main_forces_yuv420p(self):
+        """Auto + H.264 main must force yuv420p (main doesn't support 4:2:2)."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="auto", video_codec="h264", video_profile="main"))
+        vf = args[args.index("-vf") + 1]
+        assert "format=yuv420p" in vf
+
+    def test_auto_h264_baseline_forces_yuv420p(self):
+        """Auto + H.264 baseline must force yuv420p."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="auto", video_codec="h264", video_profile="baseline"))
+        vf = args[args.index("-vf") + 1]
+        assert "format=yuv420p" in vf
+
+    def test_auto_h264_high422_no_force(self):
+        """Auto + H.264 high422 should NOT force yuv420p (supports 4:2:2)."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="auto", video_codec="h264", video_profile="high422"))
+        vf = args[args.index("-vf") + 1]
+        assert "format=" not in vf
+
+    def test_auto_h265_main_forces_yuv420p(self):
+        """Auto + H.265 main must force yuv420p."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="auto", video_codec="h265", video_profile="main"))
         vf = args[args.index("-vf") + 1]
         assert "format=yuv420p" in vf
 
@@ -94,11 +118,11 @@ class TestPixelFormat:
         vf = args[args.index("-vf") + 1]
         assert "format=yuv420p10le" in vf
 
-    def test_empty_string_treated_as_auto(self):
-        """Empty pixel_format should behave like auto."""
-        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="", video_codec="h264"))
+    def test_empty_string_h264_main_forces_yuv420p(self):
+        """Empty pixel_format + H.264 main should force yuv420p (like auto)."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(pixel_format="", video_codec="h264", video_profile="main"))
         vf = args[args.index("-vf") + 1]
-        assert "format=" not in vf
+        assert "format=yuv420p" in vf
 
 
 # ── Color space (auto / explicit) ────────────────────────────────────
@@ -244,12 +268,12 @@ class TestCombinedScenarios:
         assert "-crf" not in args  # bitrate takes precedence
 
     def test_h265_auto_everything_crf(self):
-        """H.265 with both auto pass-through and CRF."""
+        """H.265 main with auto pixel format forces yuv420p, auto colorspace is pass-through."""
         args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
             video_codec="h265", pixel_format="auto", color_space="auto", crf=20,
         ))
         vf = args[args.index("-vf") + 1]
-        assert "format=" not in vf
+        assert "format=yuv420p" in vf  # main profile forces 4:2:0
         assert "setparams" not in vf
         assert "-colorspace" not in args
         assert args[args.index("-crf") + 1] == "20"

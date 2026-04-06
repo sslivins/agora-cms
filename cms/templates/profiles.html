@@ -236,12 +236,18 @@ function toggleBitrateEdit() {
     }
 }
 
-// ── Encoder-aware pixel format constraints (SVT-AV1 only supports 420) ──
+// ── Encoder-aware pixel format constraints ──
 const AV1_ALLOWED_PIX_FMT = ['auto', 'yuv420p', 'yuv420p10le'];
+const PROFILES_420_ONLY = {
+    h264: ['baseline', 'main', 'high', 'high10'],
+    h265: ['main', 'main10'],
+};
 
-function applyCodecConstraints(codecSelect, pixFmtSelect) {
+function applyCodecConstraints(codecSelect, pixFmtSelect, profileValue) {
     const codec = codecSelect.value;
     const opts = pixFmtSelect.querySelectorAll('option');
+    const forces420 = codec === 'av1'
+        || (PROFILES_420_ONLY[codec] || []).includes(profileValue);
     opts.forEach(opt => {
         if (codec === 'av1' && !AV1_ALLOWED_PIX_FMT.includes(opt.value)) {
             opt.disabled = true;
@@ -249,10 +255,10 @@ function applyCodecConstraints(codecSelect, pixFmtSelect) {
         } else {
             opt.disabled = false;
         }
-        // Update the "auto" label to clarify behavior per encoder
+        // Update the "auto" label to clarify behavior per encoder/profile
         if (opt.value === 'auto') {
-            opt.textContent = codec === 'av1'
-                ? 'Auto (will use yuv420p — AV1 only supports 4:2:0)'
+            opt.textContent = forces420
+                ? 'Auto (will use yuv420p for this codec/profile)'
                 : 'Auto (keep source format)';
         }
     });
@@ -263,8 +269,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const form = document.querySelector('form');
     const codecSel = form.querySelector('[name="video_codec"]');
     const pfSel = form.querySelector('[name="pixel_format"]');
-    codecSel.addEventListener('change', () => applyCodecConstraints(codecSel, pfSel));
-    applyCodecConstraints(codecSel, pfSel);
+    const profSel = form.querySelector('[name="video_profile"]');
+    const refresh = () => applyCodecConstraints(codecSel, pfSel, profSel.value);
+    codecSel.addEventListener('change', refresh);
+    profSel.addEventListener('change', refresh);
+    refresh();
     toggleBitrateCreate(form);
 });
 
@@ -351,7 +360,7 @@ async function editProfile(profileId) {
     // Apply encoder constraints for pixel format in edit modal
     const epCodec = document.createElement('input');
     epCodec.type = 'hidden'; epCodec.value = p.video_codec;
-    applyCodecConstraints(epCodec, box.querySelector("#ep-pf"));
+    applyCodecConstraints(epCodec, box.querySelector("#ep-pf"), p.video_profile);
     toggleBitrateEdit();
 
     box.querySelector("#ep-save").onclick = async () => {
