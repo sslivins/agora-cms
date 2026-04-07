@@ -17,6 +17,63 @@ from cms.services.transcoder import enqueue_for_new_profile
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
 
+# ── Codec/profile compatibility rules ────────────────────────────────
+
+# Profiles restricted to 4:2:0 chroma subsampling
+_PROFILES_420_ONLY: dict[str, set[str]] = {
+    "h264": {"baseline", "main", "high", "high10"},
+    "h265": {"main", "main10"},
+}
+
+# 8-bit-only profiles: cannot use 10-bit pixel formats or HDR color spaces
+_PROFILES_8BIT_ONLY: dict[str, set[str]] = {
+    "h264": {"baseline", "main", "high"},
+    "h265": {"main"},
+}
+
+_PIX_FMT_422_OR_444 = {"yuv422p", "yuv422p10le", "yuv444p", "yuv444p10le"}
+_PIX_FMT_10BIT = {"yuv420p10le", "yuv422p10le", "yuv444p10le"}
+_AV1_ALLOWED_PIX_FMT = {"auto", "yuv420p", "yuv420p10le"}
+_HDR_COLOR_SPACES = {"bt2020-pq", "bt2020-hlg"}
+
+
+def _validate_profile_compat(
+    video_codec: str, video_profile: str,
+    pixel_format: str, color_space: str,
+) -> None:
+    """Raise HTTPException 422 if pixel_format or color_space is
+    incompatible with the codec/profile combination."""
+    forces_420 = (
+        video_codec == "av1"
+        or video_profile in _PROFILES_420_ONLY.get(video_codec, set())
+    )
+    is_8bit_only = video_profile in _PROFILES_8BIT_ONLY.get(video_codec, set())
+
+    # Pixel format checks
+    if pixel_format != "auto":
+        if video_codec == "av1" and pixel_format not in _AV1_ALLOWED_PIX_FMT:
+            raise HTTPException(
+                status_code=422,
+                detail=f"AV1 only supports pixel formats: {', '.join(sorted(_AV1_ALLOWED_PIX_FMT - {'auto'}))}",
+            )
+        if forces_420 and pixel_format in _PIX_FMT_422_OR_444:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{video_codec}/{video_profile} only supports 4:2:0 pixel formats",
+            )
+        if is_8bit_only and pixel_format in _PIX_FMT_10BIT:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{video_codec}/{video_profile} is 8-bit only — 10-bit pixel formats are not supported",
+            )
+
+    # Color space checks
+    if color_space in _HDR_COLOR_SPACES and is_8bit_only:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{video_codec}/{video_profile} is 8-bit only — HDR color space '{color_space}' requires a 10-bit profile",
+        )
+
 
 @router.get("", response_model=List[ProfileOut])
 async def list_profiles(db: AsyncSession = Depends(get_db)):
@@ -66,6 +123,12 @@ async def list_profiles(db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=ProfileOut, status_code=201)
 async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)):
+    # Validate codec/profile compatibility
+    _validate_profile_compat(
+        data.video_codec, data.video_profile,
+        data.pixel_format, data.color_space,
+    )
+
     # Check duplicate name
     existing = await db.execute(
         select(DeviceProfile).where(DeviceProfile.name == data.name)
@@ -126,6 +189,14 @@ async def update_profile(
         raise HTTPException(status_code=404, detail="Profile not found")
 
     updates = data.model_dump(exclude_unset=True)
+
+    # Validate codec/profile compatibility with the merged state
+    _validate_profile_compat(
+        video_codec=profile.video_codec,  # codec is immutable
+        video_profile=updates.get("video_profile", profile.video_profile),
+        pixel_format=updates.get("pixel_format", profile.pixel_format),
+        color_space=updates.get("color_space", profile.color_space),
+    )
 
     # Detect whether any transcoding-relevant field actually changed
     transcode_changed = any(
