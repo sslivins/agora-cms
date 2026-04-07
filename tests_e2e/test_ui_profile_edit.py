@@ -5,6 +5,93 @@ from playwright.sync_api import Page, expect
 
 
 @pytest.mark.e2e
+class TestProfileTableAutoDisplay:
+    """Profile table should display 'Auto' (not 'Pass-through') for auto values."""
+
+    def test_auto_pixel_format_shows_auto_in_table(self, page: Page, api, e2e_server):
+        """When pixel_format is 'auto', table column should say 'Auto'."""
+        resp = api.post("/api/profiles", json={
+            "name": "auto-pf-test",
+            "video_codec": "h264",
+            "pixel_format": "auto",
+            "color_space": "bt709",
+        })
+        assert resp.status_code == 201
+
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="auto-pf-test")
+        # Pixel Format is the 6th column (0-indexed: 5)
+        pf_cell = row.locator("td").nth(5)
+        expect(pf_cell).to_have_text("Auto")
+
+    def test_auto_color_space_shows_auto_in_table(self, page: Page, api, e2e_server):
+        """When color_space is 'auto', table column should say 'Auto'."""
+        resp = api.post("/api/profiles", json={
+            "name": "auto-cs-test",
+            "video_codec": "h264",
+            "pixel_format": "yuv420p",
+            "color_space": "auto",
+        })
+        assert resp.status_code == 201
+
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="auto-cs-test")
+        # Color Space is the 7th column (0-indexed: 6)
+        cs_cell = row.locator("td").nth(6)
+        expect(cs_cell).to_have_text("Auto")
+
+    def test_both_auto_shows_auto_after_edit(self, page: Page, api, e2e_server):
+        """Edit a profile to set both fields to 'auto', table should show 'Auto'."""
+        resp = api.post("/api/profiles", json={
+            "name": "edit-auto-test",
+            "video_codec": "h264",
+            "pixel_format": "yuv420p",
+            "color_space": "bt709",
+        })
+        assert resp.status_code == 201
+
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="edit-auto-test")
+        row.locator("button", has_text="Edit").click()
+
+        modal = page.locator(".modal-box")
+        expect(modal).to_be_visible(timeout=3000)
+
+        # Change both to Auto
+        modal.locator("#ep-pf").select_option("auto")
+        modal.locator("#ep-cs").select_option("auto")
+
+        # Click Save — may trigger retranscode confirmation if variants exist
+        # from assets uploaded by earlier test files
+        modal.locator("#ep-save").click()
+
+        # Handle retranscode confirmation modal if it appears
+        confirm = page.locator(".modal-overlay .modal-box", has_text="re-transcode")
+        try:
+            confirm.wait_for(state="visible", timeout=2000)
+            confirm.locator("button", has_text="Confirm").click()
+        except Exception:
+            pass  # No retranscode confirmation needed
+
+        # Wait for save to complete and page to reload
+        expect(page.locator(".modal-overlay")).to_have_count(0, timeout=10000)
+        page.wait_for_load_state("domcontentloaded")
+
+        # Verify the table shows "Auto" for both columns
+        row = page.locator("tr", has_text="edit-auto-test")
+        pf_cell = row.locator("td").nth(5)
+        cs_cell = row.locator("td").nth(6)
+        expect(pf_cell).to_have_text("Auto")
+        expect(cs_cell).to_have_text("Auto")
+
+
+@pytest.mark.e2e
 class TestProfileEditCodecDisplay:
     """Edit modal should show the video codec (read-only)."""
 
