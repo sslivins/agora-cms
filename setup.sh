@@ -51,6 +51,10 @@ if [ ! -f "$AVAHI_SERVICE" ]; then
     <port>8080</port>
     <txt-record>path=/</txt-record>
   </service>
+  <service>
+    <type>_ntp._udp</type>
+    <port>123</port>
+  </service>
 </service-group>
 AVAHI_EOF
 fi
