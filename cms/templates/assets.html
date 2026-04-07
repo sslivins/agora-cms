@@ -250,8 +250,11 @@
     });
 
     fileInput.addEventListener("change", () => {
+        const label = document.getElementById("drop-label");
         if (fileInput.files.length) {
-            document.getElementById("drop-label").textContent = fileInput.files[0].name;
+            label.textContent = fileInput.files[0].name;
+        } else {
+            label.textContent = "Drag \u0026 drop a file here, or";
         }
     });
 
