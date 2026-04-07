@@ -316,13 +316,17 @@ async function editProfile(profileId) {
     const box = document.createElement("div");
     box.className = "modal-box";
     box.style.maxWidth = "500px";
+    const CODEC_LABELS = {h264: 'H.264', h265: 'H.265 (HEVC)', av1: 'AV1 (SVT-AV1)'};
     box.innerHTML = `
         <h3 style="margin-bottom:1rem">Edit Profile: ${p.name}</h3>
         <div class="form-group"><label>Description</label><input type="text" id="ep-desc" value="${p.description || ''}"></div>
         <div class="form-row">
+            <div class="form-group"><label>Video Codec</label><input type="text" value="${CODEC_LABELS[p.video_codec] || p.video_codec}" disabled style="opacity:0.7;cursor:not-allowed"></div>
             <div class="form-group"><label>Video Profile</label>
                 <select id="ep-vprofile"><option value="baseline" ${p.video_profile==='baseline'?'selected':''}>Baseline</option><option value="main" ${p.video_profile==='main'?'selected':''}>Main</option><option value="high" ${p.video_profile==='high'?'selected':''}>High</option></select>
             </div>
+        </div>
+        <div class="form-row">
             <div class="form-group"><label>Max FPS</label><input type="number" id="ep-fps" value="${p.max_fps}"></div>
         </div>
         <div class="form-row">
@@ -377,6 +381,14 @@ async function editProfile(profileId) {
             audio_codec: box.querySelector("#ep-ac").value,
             audio_bitrate: box.querySelector("#ep-abr").value,
         };
+
+        // Check if any transcoding-relevant fields changed
+        const transFields = ['video_profile','max_width','max_height','max_fps','crf','video_bitrate','pixel_format','color_space','audio_codec','audio_bitrate'];
+        const changed = transFields.some(f => String(body[f]) !== String(p[f] ?? ''));
+        if (changed && p.total_variants > 0) {
+            if (!await showConfirm('Changing these settings will re-transcode all existing variants for this profile. This may take a while depending on the number of assets.')) return;
+        }
+
         const r = await apiCall("PUT", `/api/profiles/${profileId}`, body);
         if (r && r.ok) {
             showToast("Profile updated");

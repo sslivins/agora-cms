@@ -60,8 +60,37 @@ Single application with a PostgreSQL database:
 
 - **Before fixing any bug, write a failing test that reproduces it.** Confirm the test fails, then implement the fix, then confirm the test passes.
 - Tests live in `tests/` and use pytest + pytest-asyncio + httpx + aiosqlite.
-- Run tests inside the Docker container: `docker exec agora-cms-cms-1 python -m pytest tests/ --tb=short -q`
 - **For any web UI bug, also add a Playwright E2E test** in `tests_e2e/` that reproduces the issue in a real browser. E2E tests use Playwright + Chromium and run in CI alongside unit tests.
+
+### Running Tests in Docker
+
+Tests **must** run inside the Docker container (`agora-cms-cms-1`). The VS Code terminal tool's idle detection will prematurely kill long-running `docker exec` commands, so follow these patterns:
+
+**Targeted tests (individual files — preferred for local verification):**
+Run as a background terminal with `await_terminal` (timeout ≥ 60 000 ms). Individual test files finish in < 30 s:
+```sh
+docker exec agora-cms-cms-1 python -m pytest tests/test_foo.py -v --tb=short
+```
+
+**Full test suite (detached + sentinel poll):**
+The full suite takes ~3–5 min. Use a detached exec so idle detection cannot kill it, then poll a sentinel file:
+```sh
+# 1. Clean up previous run
+docker exec agora-cms-cms-1 rm -f /tmp/pytest_done /tmp/pytest_out.txt
+
+# 2. Start tests detached
+docker exec -d agora-cms-cms-1 sh -c \
+  "python -m pytest tests/ --tb=short -q >/tmp/pytest_out.txt 2>&1; echo DONE >/tmp/pytest_done"
+
+# 3. Poll until sentinel appears (run repeatedly)
+docker exec agora-cms-cms-1 sh -c "cat /tmp/pytest_done 2>/dev/null || echo WAITING"
+
+# 4. Read results once DONE
+docker exec agora-cms-cms-1 tail -5 /tmp/pytest_out.txt
+```
+
+**Alternative — rely on CI:**
+For full-suite regression checking, CI is often more reliable than local Docker polling. Run targeted tests locally, then let CI verify the full suite after pushing.
 
 ## Git Workflow
 
