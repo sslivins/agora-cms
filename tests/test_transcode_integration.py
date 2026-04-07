@@ -915,10 +915,25 @@ class TestProbeMedia:
         assert meta["video_codec"] == "hevc"
 
     def test_probe_jpeg_image(self, tmp_path):
-        """probe_media on a JPEG should detect codec and dimensions."""
+        """probe_media on a JPEG should return friendly format and null video fields."""
         src = gen_image(tmp_path / "test.jpg", width=800, height=600)
 
         meta = asyncio.get_event_loop().run_until_complete(probe_media(src))
 
         assert meta["width"] == 800
         assert meta["height"] == 600
+        assert meta["video_codec"] == "jpeg"
+        assert meta["frame_rate"] is None
+        assert meta["bitrate"] is None
+        assert meta["duration_seconds"] is None
+
+    def test_probe_png_image(self, tmp_path):
+        """probe_media on a PNG should return 'png' and null video fields."""
+        src = gen_image(tmp_path / "test.png", width=640, height=480, fmt="png")
+
+        meta = asyncio.get_event_loop().run_until_complete(probe_media(src))
+
+        assert meta["video_codec"] == "png"
+        assert meta["frame_rate"] is None
+        assert meta["bitrate"] is None
+        assert meta["duration_seconds"] is None

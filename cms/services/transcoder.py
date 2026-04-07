@@ -217,6 +217,38 @@ async def probe_media(file_path: Path) -> dict:
         elif codec_type == "audio" and result["audio_codec"] is None:
             result["audio_codec"] = stream.get("codec_name")
 
+    # Map still-image codecs to friendly format names.
+    # Codecs like mjpeg/png/bmp/tiff/webp are unambiguously images.
+    # hevc and av1 are ambiguous (H.265 video vs HEIC image, AV1 video vs AVIF image)
+    # so we also check the container format for those.
+    _IMAGE_CODEC_MAP = {
+        "mjpeg": "jpeg",
+        "png": "png",
+        "bmp": "bmp",
+        "tiff": "tiff",
+        "webp": "webp",
+    }
+    format_name = fmt.get("format_name", "")
+    _IMAGE_CONTAINER_CODEC_MAP = {
+        "hevc": ("heic", {"heif"}),
+        "av1": ("avif", {"avif"}),
+    }
+    codec = result["video_codec"]
+    if codec in _IMAGE_CODEC_MAP:
+        result["video_codec"] = _IMAGE_CODEC_MAP[codec]
+        result["frame_rate"] = None
+        result["bitrate"] = None
+        result["duration_seconds"] = None
+    elif codec in _IMAGE_CONTAINER_CODEC_MAP:
+        friendly, containers = _IMAGE_CONTAINER_CODEC_MAP[codec]
+        # format_name can be comma-separated list, e.g. "mov,mp4,m4a,3gp,3g2,mj2"
+        fmts = {f.strip() for f in format_name.split(",")}
+        if fmts & containers:
+            result["video_codec"] = friendly
+            result["frame_rate"] = None
+            result["bitrate"] = None
+            result["duration_seconds"] = None
+
     return result
 
 

@@ -102,25 +102,32 @@
                             <span class="detail-value">{{ a.width }}×{{ a.height }}</span>
                         </div>
                         {% endif %}
+                        <div class="detail-item">
+                            <span class="detail-label">Size</span>
+                            <span class="detail-value">
+                                {% set mb = a.size_bytes / 1048576 %}
+                                {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
+                            </span>
+                        </div>
                         {% if a.video_codec %}
                         <div class="detail-item">
-                            <span class="detail-label">Video Codec</span>
+                            <span class="detail-label">{% if a.asset_type.value == 'image' %}Format{% else %}Video Codec{% endif %}</span>
                             <span class="detail-value">{{ a.video_codec }}</span>
                         </div>
                         {% endif %}
-                        {% if a.audio_codec %}
+                        {% if a.asset_type.value != 'image' and a.audio_codec %}
                         <div class="detail-item">
                             <span class="detail-label">Audio Codec</span>
                             <span class="detail-value">{{ a.audio_codec }}</span>
                         </div>
                         {% endif %}
-                        {% if a.frame_rate %}
+                        {% if a.asset_type.value != 'image' and a.frame_rate %}
                         <div class="detail-item">
                             <span class="detail-label">Frame Rate</span>
                             <span class="detail-value">{{ a.frame_rate }} fps</span>
                         </div>
                         {% endif %}
-                        {% if a.bitrate %}
+                        {% if a.asset_type.value != 'image' and a.bitrate %}
                         <div class="detail-item">
                             <span class="detail-label">Bitrate</span>
                             <span class="detail-value">{{ "%.1f"|format(a.bitrate / 1000000) }} Mbps</span>
@@ -158,14 +165,18 @@
                                     <th>Profile</th>
                                     <th>Status</th>
                                     <th>Resolution</th>
+                                    {% if a.asset_type.value != 'image' %}
                                     <th>Codec</th>
                                     <th>Bitrate</th>
                                     <th>FPS</th>
+                                    {% else %}
+                                    <th>Format</th>
+                                    {% endif %}
                                     <th>Size</th>
                                     <th>Checksum</th>
                                 </tr>
                             </thead>
-                            <tbody data-live-variant-table="{{ a.id }}">
+                            <tbody data-live-variant-table="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">
                                 {% for v in a.variants %}
                                 <tr>
                                     <td>{{ v.profile.name if v.profile else '—' }}</td>
@@ -182,8 +193,10 @@
                                     </td>
                                     <td>{{ ("%d×%d"|format(v.width, v.height)) if v.width and v.height else '—' }}</td>
                                     <td>{{ v.video_codec or '—' }}</td>
+                                    {% if a.asset_type.value != 'image' %}
                                     <td>{{ ("%.1f Mbps"|format(v.bitrate / 1000000)) if v.bitrate else '—' }}</td>
                                     <td>{{ (v.frame_rate ~ " fps") if v.frame_rate else '—' }}</td>
+                                    {% endif %}
                                     <td>
                                         {% if v.size_bytes > 0 %}
                                             {% set vmb = v.size_bytes / 1048576 %}
@@ -295,6 +308,7 @@
     function updateVariantTable(assetId, variants) {
         const tbody = document.querySelector('[data-live-variant-table="' + assetId + '"]');
         if (!tbody) return;
+        const isImage = tbody.getAttribute('data-asset-type') === 'image';
         const rows = tbody.querySelectorAll('tr');
         // Update each row's status cell (2nd column, index 1) and size (last col)
         variants.forEach((v, i) => {
@@ -305,23 +319,33 @@
             cells[1].innerHTML = buildVariantStatusCell(v);
             // Resolution
             cells[2].textContent = (v.width && v.height) ? v.width + '×' + v.height : '—';
-            // Codec
+            // Codec / Format
             cells[3].textContent = v.video_codec || '—';
-            // Bitrate
-            cells[4].textContent = v.bitrate ? (v.bitrate / 1000000).toFixed(1) + ' Mbps' : '—';
-            // FPS
-            cells[5].textContent = v.frame_rate ? v.frame_rate + ' fps' : '—';
-            // Size
-            cells[6].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '\u2014';
-            // Checksum
-            if (cells[7]) {
-                if (v.checksum) {
-                    cells[7].innerHTML = '<span class="checksum-wrap has-tooltip">' +
+            if (isImage) {
+                // Image layout: Profile | Status | Resolution | Format | Size | Checksum
+                cells[4].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '\u2014';
+                if (cells[5] && v.checksum) {
+                    cells[5].innerHTML = '<span class="checksum-wrap has-tooltip">' +
                         '<span class="checksum-text">' + v.checksum.replace(/</g, '&lt;') + '</span>' +
                         '<button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, \'' + v.checksum + '\')" type="button">Copy</button>' +
                         '<span class="tooltip">' + v.checksum.replace(/</g, '&lt;') + '</span></span>';
-                } else {
-                    cells[7].textContent = '\u2014';
+                } else if (cells[5]) {
+                    cells[5].textContent = '\u2014';
+                }
+            } else {
+                // Video layout: Profile | Status | Resolution | Codec | Bitrate | FPS | Size | Checksum
+                cells[4].textContent = v.bitrate ? (v.bitrate / 1000000).toFixed(1) + ' Mbps' : '—';
+                cells[5].textContent = v.frame_rate ? v.frame_rate + ' fps' : '—';
+                cells[6].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '\u2014';
+                if (cells[7]) {
+                    if (v.checksum) {
+                        cells[7].innerHTML = '<span class="checksum-wrap has-tooltip">' +
+                            '<span class="checksum-text">' + v.checksum.replace(/</g, '&lt;') + '</span>' +
+                            '<button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, \'' + v.checksum + '\')" type="button">Copy</button>' +
+                            '<span class="tooltip">' + v.checksum.replace(/</g, '&lt;') + '</span></span>';
+                    } else {
+                        cells[7].textContent = '\u2014';
+                    }
                 }
             }
         });
