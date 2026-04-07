@@ -134,8 +134,8 @@
                 <td>{{ p.max_width }}×{{ p.max_height }}</td>
                 <td>{{ p.max_fps }}</td>
                 <td>{% if p.video_bitrate %}{{ p.video_bitrate }} Mbps{% else %}CRF {{ p.crf }}{% endif %}</td>
-                <td>{% if p.pixel_format == 'auto' %}Pass-through{% else %}{{ p.pixel_format }}{% endif %}</td>
-                <td>{% if p.color_space == 'auto' %}Pass-through{% else %}{{ p.color_space }}{% if p.color_space == 'bt709' %} (SDR){% elif p.color_space == 'bt2020-pq' %} (HDR10){% elif p.color_space == 'bt2020-hlg' %} (HLG){% elif p.color_space == 'smpte170m' %} (SD){% endif %}{% endif %}</td>
+                <td>{% if p.pixel_format == 'auto' %}Auto{% else %}{{ p.pixel_format }}{% endif %}</td>
+                <td>{% if p.color_space == 'auto' %}Auto{% else %}{{ p.color_space }}{% if p.color_space == 'bt709' %} (SDR){% elif p.color_space == 'bt2020-pq' %} (HDR10){% elif p.color_space == 'bt2020-hlg' %} (HLG){% elif p.color_space == 'smpte170m' %} (SD){% endif %}{% endif %}</td>
                 <td>{{ p.device_count }}</td>
                 <td data-profile-variants="{{ p.id }}">
                     {% if p.total_variants > 0 %}
