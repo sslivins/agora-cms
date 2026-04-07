@@ -45,10 +45,19 @@ COLOR_SPACE_MAP: dict[str, dict[str, str]] = {
 }
 
 
+# Transfer characteristics that indicate HDR content
+_HDR_TRCS = {"smpte2084", "arib-std-b67"}
+
+# Target color spaces that are HDR (no tone mapping needed when targeting these)
+_HDR_TARGET_CS = {"bt2020-pq", "bt2020-hlg"}
+
+
 def _build_ffmpeg_args_safe(
     source_path: Path,
     output_path: Path,
     profile: DeviceProfile,
+    *,
+    source_color_trc: str | None = None,
 ) -> list[str]:
     """Build ffmpeg command-line arguments for a given profile.
 
@@ -62,16 +71,28 @@ def _build_ffmpeg_args_safe(
     cs_key = profile.color_space or "auto"
     cs = COLOR_SPACE_MAP.get(cs_key) if cs_key != "auto" else None
 
+    # Determine if we need HDR → SDR tone mapping:
+    # Source is HDR (PQ or HLG) and target is not an HDR color space.
+    needs_tonemap = (
+        source_color_trc in _HDR_TRCS
+        and cs_key not in _HDR_TARGET_CS
+    )
+
     # When pixel format is "auto", force yuv420p for codecs/profiles that
     # only support 4:2:0 — passing through a 4:2:2 source would fail.
+    # Also force yuv420p when tone-mapping HDR → SDR (output is always 8-bit).
     if pix_fmt == "auto":
         _420_only_profiles = {
             "h264": {"baseline", "main", "high", "high10"},
             "h265": {"main", "main10"},
         }
         restricted = _420_only_profiles.get(profile.video_codec, set())
-        if profile.video_codec == "av1" or profile.video_profile in restricted:
+        if needs_tonemap or profile.video_codec == "av1" or profile.video_profile in restricted:
             pix_fmt = "yuv420p"
+
+    # When tone-mapping HDR → SDR, force BT.709 output regardless of profile setting
+    if needs_tonemap:
+        cs = COLOR_SPACE_MAP["bt709"]
 
     # Scale filter: only shrink (never upscale), maintain aspect ratio,
     # ensure dimensions are divisible by 2
@@ -80,6 +101,16 @@ def _build_ffmpeg_args_safe(
         f":force_original_aspect_ratio=decrease",
         "pad=ceil(iw/2)*2:ceil(ih/2)*2",
     ]
+
+    # HDR → SDR tone-mapping filter chain (must come after scale, before format)
+    if needs_tonemap:
+        scale_parts.extend([
+            "zscale=t=linear:npl=100",
+            "format=gbrpf32le",
+            "tonemap=hable",
+            "zscale=p=bt709:t=bt709:m=bt709:r=tv",
+        ])
+
     if pix_fmt != "auto":
         scale_parts.append(f"format={pix_fmt}")
     if cs:
@@ -165,7 +196,7 @@ async def probe_media(file_path: Path) -> dict:
     result: dict = {
         "width": None, "height": None, "duration_seconds": None,
         "video_codec": None, "audio_codec": None, "bitrate": None,
-        "frame_rate": None, "color_space": None,
+        "frame_rate": None, "color_space": None, "color_transfer": None,
     }
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -214,6 +245,9 @@ async def probe_media(file_path: Path) -> dict:
             cs = stream.get("color_space") or stream.get("color_primaries") or stream.get("color_transfer")
             if cs:
                 result["color_space"] = cs
+            ct = stream.get("color_transfer")
+            if ct:
+                result["color_transfer"] = ct
         elif codec_type == "audio" and result["audio_codec"] is None:
             result["audio_codec"] = stream.get("codec_name")
 
@@ -326,7 +360,13 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     # Get source duration for progress tracking
     duration = await _get_duration(source_path)
 
-    args = _build_ffmpeg_args_safe(source_path, output_path, profile)
+    # Probe source for HDR detection (tone mapping)
+    source_meta = await probe_media(source_path)
+
+    args = _build_ffmpeg_args_safe(
+        source_path, output_path, profile,
+        source_color_trc=source_meta.get("color_transfer"),
+    )
 
     try:
         # Run ffmpeg with low priority

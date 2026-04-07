@@ -284,3 +284,109 @@ class TestCombinedScenarios:
         assert args[args.index("-crf") + 1] == "20"
         assert args[args.index("-c:v") + 1] == "libx265"
         assert "-profile:v" in args  # H.265 still gets profile flag
+
+
+# ── HDR → SDR tone mapping (issue #82) ──────────────────────────────
+
+class TestHdrToneMapping:
+    """When source is HDR and target profile is SDR, the transcoder must
+    insert zscale + tonemap filters to avoid washed-out output."""
+
+    def test_pq_source_auto_colorspace_inserts_tonemap(self):
+        """PQ (HDR10) source + auto color space → must tone-map to SDR."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ), source_color_trc="smpte2084")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" in vf
+        assert "zscale" in vf
+
+    def test_hlg_source_auto_colorspace_inserts_tonemap(self):
+        """HLG source + auto color space → must tone-map to SDR."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ), source_color_trc="arib-std-b67")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" in vf
+        assert "zscale" in vf
+
+    def test_pq_source_bt709_target_inserts_tonemap(self):
+        """PQ source + explicit BT.709 target → must tone-map."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="bt709",
+        ), source_color_trc="smpte2084")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" in vf
+
+    def test_pq_source_smpte170m_target_inserts_tonemap(self):
+        """PQ source + SMPTE 170M (SD) target → must tone-map."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="smpte170m",
+        ), source_color_trc="smpte2084")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" in vf
+
+    def test_pq_source_bt2020_pq_target_no_tonemap(self):
+        """PQ source + PQ target → no tone mapping needed (HDR pass-through)."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="bt2020-pq",
+        ), source_color_trc="smpte2084")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" not in vf
+
+    def test_hlg_source_bt2020_hlg_target_no_tonemap(self):
+        """HLG source + HLG target → no tone mapping needed."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="bt2020-hlg",
+        ), source_color_trc="arib-std-b67")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" not in vf
+
+    def test_sdr_source_no_tonemap(self):
+        """SDR source (bt709 TRC) + auto target → no tone mapping."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ), source_color_trc="bt709")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" not in vf
+
+    def test_no_source_trc_no_tonemap(self):
+        """No source TRC info (None) → no tone mapping (backward compat)."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ), source_color_trc=None)
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" not in vf
+
+    def test_no_source_trc_arg_no_tonemap(self):
+        """Calling without source_color_trc at all → no tone mapping."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ))
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap" not in vf
+
+    def test_tonemap_sets_bt709_output_color(self):
+        """When tone mapping, output must be tagged BT.709."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ), source_color_trc="smpte2084")
+        assert args[args.index("-colorspace") + 1] == "bt709"
+        assert args[args.index("-color_primaries") + 1] == "bt709"
+        assert args[args.index("-color_trc") + 1] == "bt709"
+
+    def test_tonemap_forces_yuv420p(self):
+        """HDR → SDR tone mapping must output yuv420p (8-bit SDR)."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            pixel_format="auto", color_space="auto",
+        ), source_color_trc="smpte2084")
+        vf = args[args.index("-vf") + 1]
+        assert "format=yuv420p" in vf
+
+    def test_tonemap_uses_hable(self):
+        """Tone mapping should use the hable algorithm."""
+        args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile(
+            color_space="auto",
+        ), source_color_trc="smpte2084")
+        vf = args[args.index("-vf") + 1]
+        assert "tonemap=hable" in vf
