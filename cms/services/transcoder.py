@@ -125,9 +125,16 @@ def _build_ffmpeg_args_safe(
     args.extend([
         "-c:a", profile.audio_codec,
         "-b:a", profile.audio_bitrate,
-        "-movflags", "+faststart",
-        str(output_path),
     ])
+
+    # Opus is not supported in MP4 containers — use MKV instead.
+    # Only add -movflags +faststart for MP4 outputs.
+    ext = output_path.suffix.lower()
+    if ext != ".mkv":
+        args.append("-movflags")
+        args.append("+faststart")
+
+    args.append(str(output_path))
 
     return args
 
@@ -408,11 +415,13 @@ async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
             continue
 
         variant_id = uuid.uuid4()
+        # Opus audio is not supported in MP4; use MKV container.
+        ext = ".mkv" if profile.audio_codec == "libopus" else ".mp4"
         variant = AssetVariant(
             id=variant_id,
             source_asset_id=asset.id,
             profile_id=profile_id,
-            filename=f"{variant_id}.mp4",
+            filename=f"{variant_id}{ext}",
         )
         db.add(variant)
         count += 1

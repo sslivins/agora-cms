@@ -19,8 +19,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # BtbN static build — includes libsvtav1, libaom-av1, libx265, libopus, etc.
+          curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz | \
+            sudo tar -xJ --strip-components=1 -C /usr/local
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg libheif-examples
+          sudo apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265
 
       - name: Install dependencies
         run: |
@@ -28,7 +31,7 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout httpx aiosqlite
 
       - name: Run tests
-        run: python -m pytest tests/ --tb=short -q
+        run: python -m pytest tests/ --tb=short -q -rs
 
   e2e:
     runs-on: ubuntu-latest

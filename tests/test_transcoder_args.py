@@ -239,6 +239,11 @@ class TestGeneralStructure:
         assert "-movflags" in args
         assert args[args.index("-movflags") + 1] == "+faststart"
 
+    def test_movflags_omitted_for_mkv(self):
+        mkv_out = Path("/output/video.mkv")
+        args = _build_ffmpeg_args_safe(SRC, mkv_out, _make_profile())
+        assert "-movflags" not in args
+
 
 # ── Combined scenarios ────────────────────────────────────────────────
 

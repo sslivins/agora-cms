@@ -180,7 +180,9 @@ def gen_heic(path: Path, *, width: int = 320, height: int = 240) -> Path:
     if result.returncode == 0 and path.is_file():
         return path
 
-    pytest.skip("Cannot generate HEIC test file (heif-enc encoder plugin and ffmpeg HEIF muxer both unavailable)")
+    # Last resort: write the embedded 8×8 HEIC constant
+    path.write_bytes(base64.b64decode(_TINY_HEIC_B64))
+    return path
 
 
 # Minimal 8×8 pixel HEIC file (454 bytes) — generated with heif-enc,
@@ -259,19 +261,10 @@ class TestVideoTranscoding:
 
     def test_h264_to_av1(self, tmp_path):
         """H.264 source → AV1 output."""
-        if shutil.which("SvtAv1EncApp") is None:
-            # libsvtav1 may not be compiled in; try anyway
-            pass
         src = gen_video(tmp_path / "src.mp4", vcodec="libx264")
         out = tmp_path / "out.mp4"
 
-        profile = _make_profile(video_codec="av1")
-        args = _build_ffmpeg_args_safe(src, out, profile)
-
-        result = subprocess.run(args, capture_output=True, text=True)
-        if result.returncode != 0 and "libsvtav1" in result.stderr:
-            pytest.skip("libsvtav1 encoder not available in this ffmpeg build")
-        assert result.returncode == 0, f"ffmpeg failed:\n{result.stderr[-500:]}"
+        self._transcode(src, out, _make_profile(video_codec="av1"))
 
         info = _ffprobe_json(out)
         vs = _video_stream(info)
@@ -310,13 +303,7 @@ class TestVideoTranscoding:
         src = gen_video(tmp_path / "src.mp4", pix_fmt="yuv422p")
         out = tmp_path / "out.mp4"
 
-        profile = _make_profile(video_codec="av1", pixel_format="auto")
-        args = _build_ffmpeg_args_safe(src, out, profile)
-
-        result = subprocess.run(args, capture_output=True, text=True)
-        if result.returncode != 0 and "libsvtav1" in result.stderr:
-            pytest.skip("libsvtav1 encoder not available")
-        assert result.returncode == 0, f"ffmpeg failed:\n{result.stderr[-500:]}"
+        self._transcode(src, out, _make_profile(video_codec="av1", pixel_format="auto"))
 
         info = _ffprobe_json(out)
         vs = _video_stream(info)
@@ -392,16 +379,13 @@ class TestVideoTranscoding:
     def test_opus_audio(self, tmp_path):
         """Output should have Opus audio when profile specifies opus."""
         src = gen_video(tmp_path / "src.mp4")
-        out = tmp_path / "out.mp4"
+        out = tmp_path / "out.mkv"
 
-        # Opus in MP4 requires special handling; use webm if mp4 fails
         profile = _make_profile(audio_codec="libopus")
         args = _build_ffmpeg_args_safe(src, out, profile)
-        result = subprocess.run(args, capture_output=True, text=True)
 
-        if result.returncode != 0:
-            # Some ffmpeg builds don't support opus in mp4 well
-            pytest.skip("Opus in MP4 not supported by this ffmpeg build")
+        result = subprocess.run(args, capture_output=True, text=True)
+        assert result.returncode == 0, f"ffmpeg failed:\n{result.stderr[-500:]}"
 
         info = _ffprobe_json(out)
         a = _audio_stream(info)
@@ -634,7 +618,7 @@ class TestImageConversion:
         """AVIF → JPEG conversion (if supported by ffmpeg build)."""
         # Generate AVIF — requires libsvtav1 or libaom
         avif_path = tmp_path / "test.avif"
-        result = subprocess.run(
+        subprocess.run(
             [
                 "ffmpeg", "-y",
                 "-f", "lavfi", "-i", "color=c=blue:size=320x240:duration=1",
@@ -642,10 +626,8 @@ class TestImageConversion:
                 "-still-picture", "1",
                 str(avif_path),
             ],
-            capture_output=True, text=True,
+            capture_output=True, check=True,
         )
-        if result.returncode != 0 or not avif_path.is_file():
-            pytest.skip("Cannot generate AVIF (libaom-av1 unavailable)")
 
         out = tmp_path / "output.jpg"
         success = asyncio.get_event_loop().run_until_complete(
