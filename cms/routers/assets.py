@@ -198,8 +198,8 @@ async def upload_asset(
             setattr(asset, key, val)
     await db.commit()
 
-    # Queue video transcoding for all profiles
-    if asset_type == AssetType.VIDEO:
+    # Queue transcoding for all profiles (video and image assets)
+    if asset_type in (AssetType.VIDEO, AssetType.IMAGE):
         await _enqueue_transcoding(asset, db)
 
     return asset
@@ -211,11 +211,17 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     profiles = result.scalars().all()
     for profile in profiles:
         variant_id = uuid.uuid4()
+        if asset.asset_type == AssetType.IMAGE:
+            ext = ".jpg"
+        elif profile.audio_codec == "libopus":
+            ext = ".mkv"
+        else:
+            ext = ".mp4"
         variant = AssetVariant(
             id=variant_id,
             source_asset_id=asset.id,
             profile_id=profile.id,
-            filename=f"{variant_id}.mp4",
+            filename=f"{variant_id}{ext}",
         )
         db.add(variant)
     await db.commit()
@@ -373,9 +379,10 @@ async def download_variant(
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Variant file not found on disk")
 
-    # Serve with a human-readable download name: {source_stem}_{profile_name}.mp4
+    # Serve with a human-readable download name
     await db.refresh(variant, ["source_asset", "profile"])
-    download_name = f"{Path(variant.source_asset.filename).stem}_{variant.profile.name}.mp4"
+    variant_ext = Path(variant.filename).suffix
+    download_name = f"{Path(variant.source_asset.filename).stem}_{variant.profile.name}{variant_ext}"
 
     return FileResponse(
         path=file_path,

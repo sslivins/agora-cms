@@ -20,7 +20,7 @@ jobs:
       - name: Install system dependencies
         run: |
           # BtbN static build — includes libsvtav1, libaom-av1, libx265, libopus, etc.
-          curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz | \
+          curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-06-13-14/ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz | \
             sudo tar -xJ --strip-components=1 -C /usr/local
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265

@@ -529,9 +529,11 @@ class TestVideoTranscoding:
 class TestImageConversion:
     """Test convert_image_to_jpeg with real images."""
 
+    # ----- Format conversion tests -----
+
     def test_png_to_jpeg(self, tmp_path):
-        """PNG → JPEG conversion."""
-        src = gen_image(tmp_path / "test.png", fmt="png")
+        """PNG → JPEG conversion preserves dimensions."""
+        src = gen_image(tmp_path / "test.png", width=640, height=480)
         out = tmp_path / "output.jpg"
 
         result = asyncio.get_event_loop().run_until_complete(
@@ -540,10 +542,12 @@ class TestImageConversion:
 
         assert result is True
         assert out.is_file()
-        # Verify it's actually a JPEG
         with open(out, "rb") as f:
-            header = f.read(3)
-        assert header[:2] == b"\xff\xd8", "Output is not a valid JPEG"
+            assert f.read(2) == b"\xff\xd8"
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) == 640
+        assert int(vs["height"]) == 480
 
     def test_webp_to_jpeg(self, tmp_path):
         """WebP → JPEG conversion."""
@@ -584,39 +588,8 @@ class TestImageConversion:
         assert result is True
         assert out.is_file()
 
-    def test_large_image_downscaled(self, tmp_path):
-        """3840×2160 image → output should be ≤ 1920×1080."""
-        src = gen_image(tmp_path / "big.png", width=3840, height=2160)
-        out = tmp_path / "output.jpg"
-
-        result = asyncio.get_event_loop().run_until_complete(
-            convert_image_to_jpeg(src, out)
-        )
-        assert result is True
-
-        info = _ffprobe_json(out)
-        vs = _video_stream(info)
-        assert int(vs["width"]) <= 1920
-        assert int(vs["height"]) <= 1080
-
-    def test_small_image_not_upscaled(self, tmp_path):
-        """320×240 image should stay ≤ 320×240 (no upscale)."""
-        src = gen_image(tmp_path / "small.png", width=320, height=240)
-        out = tmp_path / "output.jpg"
-
-        result = asyncio.get_event_loop().run_until_complete(
-            convert_image_to_jpeg(src, out)
-        )
-        assert result is True
-
-        info = _ffprobe_json(out)
-        vs = _video_stream(info)
-        assert int(vs["width"]) <= 320
-        assert int(vs["height"]) <= 240
-
     def test_avif_to_jpeg(self, tmp_path):
-        """AVIF → JPEG conversion (if supported by ffmpeg build)."""
-        # Generate AVIF — requires libsvtav1 or libaom
+        """AVIF → JPEG conversion."""
         avif_path = tmp_path / "test.avif"
         subprocess.run(
             [
@@ -636,6 +609,191 @@ class TestImageConversion:
 
         assert success is True
         assert out.is_file()
+
+    def test_jpeg_to_jpeg_passthrough(self, tmp_path):
+        """JPEG → JPEG (format-only, no scaling) preserves dimensions."""
+        src = gen_image(tmp_path / "test.jpg", width=800, height=600)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out)
+        )
+
+        assert result is True
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) == 800
+        assert int(vs["height"]) == 600
+
+    # ----- Downscale tests -----
+
+    def test_large_png_downscaled(self, tmp_path):
+        """3840×2160 PNG → output should be ≤ 1920×1080."""
+        src = gen_image(tmp_path / "big.png", width=3840, height=2160)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 1920
+        assert int(vs["height"]) <= 1080
+
+    def test_large_webp_downscaled(self, tmp_path):
+        """4K WebP → output should be ≤ 1920×1080."""
+        src = gen_image(tmp_path / "big.webp", width=3840, height=2160, fmt="webp")
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 1920
+        assert int(vs["height"]) <= 1080
+
+    def test_large_bmp_downscaled(self, tmp_path):
+        """Oversized BMP → output should be ≤ 1280×720."""
+        src = gen_image(tmp_path / "big.bmp", width=2560, height=1440, fmt="bmp")
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 1280
+        assert int(vs["height"]) <= 720
+
+    def test_custom_max_dimensions(self, tmp_path):
+        """Image downscaled to custom profile dimensions (1280×720)."""
+        src = gen_image(tmp_path / "big.png", width=3840, height=2160)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 1280
+        assert int(vs["height"]) <= 720
+
+    def test_downscale_preserves_aspect_ratio(self, tmp_path):
+        """16:9 image scaled to 1280×720 max should stay 16:9."""
+        src = gen_image(tmp_path / "wide.png", width=3840, height=2160)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        w, h = int(vs["width"]), int(vs["height"])
+        # Aspect ratio should be ~1.78 (16:9), tolerance for rounding
+        assert abs(w / h - 16 / 9) < 0.02
+
+    def test_portrait_downscale(self, tmp_path):
+        """Portrait (1080×1920) → max 720×1280 should respect height constraint."""
+        src = gen_image(tmp_path / "portrait.png", width=1080, height=1920)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=720, max_height=1280)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 720
+        assert int(vs["height"]) <= 1280
+
+    # ----- No-upscale / passthrough tests -----
+
+    def test_small_image_not_upscaled(self, tmp_path):
+        """320×240 image with 1920×1080 max should stay 320×240."""
+        src = gen_image(tmp_path / "small.png", width=320, height=240)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) == 320
+        assert int(vs["height"]) == 240
+
+    def test_exact_max_not_changed(self, tmp_path):
+        """Image exactly at max dims should not be rescaled."""
+        src = gen_image(tmp_path / "exact.png", width=1920, height=1080)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) == 1920
+        assert int(vs["height"]) == 1080
+
+    def test_no_scaling_preserves_resolution(self, tmp_path):
+        """Without max dimensions, original resolution is preserved."""
+        src = gen_image(tmp_path / "big.png", width=3840, height=2160)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) == 3840
+        assert int(vs["height"]) == 2160
+
+    def test_width_only_exceeds(self, tmp_path):
+        """Image wider than max but shorter — only width should be capped."""
+        src = gen_image(tmp_path / "wide.png", width=2560, height=720)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 1920
+        assert int(vs["height"]) <= 720  # should shrink proportionally
+
+    def test_height_only_exceeds(self, tmp_path):
+        """Image taller than max but narrower — only height should be capped."""
+        src = gen_image(tmp_path / "tall.png", width=720, height=2560)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 720
+        assert int(vs["height"]) <= 1080
 
 
 class TestHeicConversion:
@@ -688,7 +846,7 @@ class TestHeicConversion:
         out = tmp_path / "output.jpg"
 
         result = asyncio.get_event_loop().run_until_complete(
-            convert_image_to_jpeg(src, out)
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
 
@@ -696,6 +854,36 @@ class TestHeicConversion:
         vs = _video_stream(info)
         assert int(vs["width"]) <= 1920
         assert int(vs["height"]) <= 1080
+
+    def test_heic_small_not_upscaled(self, tmp_path):
+        """Small HEIC should not be upscaled when max > source dims."""
+        src = gen_heic(tmp_path / "small.heic", width=320, height=240)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 320
+        assert int(vs["height"]) <= 240
+
+    def test_heic_custom_profile_dims(self, tmp_path):
+        """HEIC downscaled to custom profile max (1280×720)."""
+        src = gen_heic(tmp_path / "big.heic", width=4000, height=3000)
+        out = tmp_path / "output.jpg"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
+        )
+        assert result is True
+
+        info = _ffprobe_json(out)
+        vs = _video_stream(info)
+        assert int(vs["width"]) <= 1280
+        assert int(vs["height"]) <= 720
 
 
 # ---------------------------------------------------------------------------

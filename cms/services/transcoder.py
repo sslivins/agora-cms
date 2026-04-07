@@ -248,6 +248,49 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         source.filename, variant.filename, profile.name,
     )
 
+    # Image assets: convert/downscale to JPEG at profile max dimensions
+    if source.asset_type == AssetType.IMAGE:
+        try:
+            ok = await convert_image_to_jpeg(
+                source_path, output_path,
+                max_width=profile.max_width,
+                max_height=profile.max_height,
+            )
+            if not ok:
+                variant.status = VariantStatus.FAILED
+                variant.error_message = "Image conversion failed"
+                variant.progress = 0.0
+                await db.commit()
+                return
+
+            file_size = output_path.stat().st_size
+            sha = hashlib.sha256()
+            with open(output_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    sha.update(chunk)
+            variant.checksum = sha.hexdigest()
+            variant.size_bytes = file_size
+            variant.status = VariantStatus.READY
+            variant.progress = 100.0
+            variant.completed_at = datetime.now(timezone.utc)
+
+            meta = await probe_media(output_path)
+            for key, val in meta.items():
+                if val is not None:
+                    setattr(variant, key, val)
+
+            await db.commit()
+            logger.info("Image variant complete: %s (%d bytes)", variant.filename, variant.size_bytes)
+            return
+        except Exception as e:
+            variant.status = VariantStatus.FAILED
+            variant.error_message = str(e)[:500]
+            variant.progress = 0.0
+            await db.commit()
+            logger.exception("Image variant error for %s", variant.filename)
+            return
+
+    # Video assets: full ffmpeg transcode
     # Get source duration for progress tracking
     duration = await _get_duration(source_path)
 
@@ -326,20 +369,29 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         logger.exception("Transcode error for %s", variant.filename)
 
 
-async def convert_image_to_jpeg(source_path: Path, output_path: Path) -> bool:
+async def convert_image_to_jpeg(
+    source_path: Path,
+    output_path: Path,
+    max_width: int | None = None,
+    max_height: int | None = None,
+) -> bool:
     """Convert an image file to JPEG using the best available tool.
 
     HEIC/HEIF files use heif-convert (handles grid-tiled images correctly),
     then ffmpeg to resize. Other formats use ffmpeg directly.
-    All images are capped at 1920×1080 for device compatibility.
+    When max_width/max_height are provided, images are capped at those
+    dimensions (never upscaled). When omitted, original resolution is kept.
     """
     ext = source_path.suffix.lower()
 
-    # Scale filter: shrink to fit 1920×1080, never upscale
-    scale_filter = (
-        "scale=w='min(iw,1920)':h='min(ih,1080)'"
-        ":force_original_aspect_ratio=decrease"
-    )
+    # Scale filter: shrink to fit max dimensions, never upscale
+    vf_args: list[str] = []
+    if max_width is not None and max_height is not None:
+        scale_filter = (
+            f"scale=w='min(iw,{max_width})':h='min(ih,{max_height})'"
+            ":force_original_aspect_ratio=decrease"
+        )
+        vf_args = ["-vf", scale_filter]
 
     try:
         ffmpeg_input = source_path
@@ -360,11 +412,11 @@ async def convert_image_to_jpeg(source_path: Path, output_path: Path) -> bool:
                 logger.warning("heif-convert failed for %s (exit %d), trying ffmpeg directly",
                                source_path.name, proc.returncode)
 
-        # ffmpeg: convert + resize to 1920×1080 max
+        # ffmpeg: convert (+ optionally resize)
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
             "-i", str(ffmpeg_input),
-            "-vf", scale_filter,
+            *vf_args,
             "-frames:v", "1",
             "-update", "1",
             "-q:v", "2",
@@ -386,12 +438,14 @@ async def convert_image_to_jpeg(source_path: Path, output_path: Path) -> bool:
 
 
 async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
-    """Create pending variants for all video assets for a new profile.
+    """Create pending variants for all video and image assets for a new profile.
 
     Returns the number of variants enqueued.
     """
     result = await db.execute(
-        select(Asset).where(Asset.asset_type == AssetType.VIDEO)
+        select(Asset).where(
+            Asset.asset_type.in_([AssetType.VIDEO, AssetType.IMAGE])
+        )
     )
     assets = result.scalars().all()
 
@@ -415,8 +469,13 @@ async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
             continue
 
         variant_id = uuid.uuid4()
-        # Opus audio is not supported in MP4; use MKV container.
-        ext = ".mkv" if profile.audio_codec == "libopus" else ".mp4"
+        if asset.asset_type == AssetType.IMAGE:
+            ext = ".jpg"
+        elif profile.audio_codec == "libopus":
+            # Opus audio is not supported in MP4; use MKV container.
+            ext = ".mkv"
+        else:
+            ext = ".mp4"
         variant = AssetVariant(
             id=variant_id,
             source_asset_id=asset.id,
