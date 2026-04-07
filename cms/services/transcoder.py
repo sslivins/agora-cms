@@ -29,6 +29,34 @@ _transcode_semaphore = asyncio.Semaphore(1)
 
 POLL_INTERVAL_SECONDS = 10
 
+# Active transcode tracking — allows profile updates to kill stale ffmpeg
+_active_process = None  # asyncio.subprocess.Process | None
+_active_profile_id: uuid.UUID | None = None
+_active_variant_id: uuid.UUID | None = None
+_cancelled_variant_ids: set[uuid.UUID] = set()
+
+
+def cancel_profile_transcodes(profile_id: uuid.UUID) -> bool:
+    """Kill the active ffmpeg process if it belongs to the given profile.
+
+    Called from the profile update endpoint when transcoding-relevant
+    fields change.  Returns True if a process was terminated.
+    """
+    global _active_process, _active_profile_id, _active_variant_id
+    if (
+        _active_process is not None
+        and _active_profile_id == profile_id
+        and _active_process.returncode is None  # still running
+    ):
+        logger.info(
+            "Cancelling active transcode for profile %s (variant %s)",
+            profile_id, _active_variant_id,
+        )
+        _cancelled_variant_ids.add(_active_variant_id)
+        _active_process.terminate()
+        return True
+    return False
+
 # Map profile video_codec value → ffmpeg encoder name
 CODEC_ENCODER_MAP: dict[str, str] = {
     "h264": "libx264",
@@ -309,6 +337,11 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     variant.progress = 0.0
     await db.commit()
 
+    # Track active transcode so profile updates can cancel it
+    global _active_process, _active_profile_id, _active_variant_id
+    _active_profile_id = variant.profile_id
+    _active_variant_id = variant.id
+
     logger.info(
         "Transcoding %s → %s (profile: %s)",
         source.filename, variant.filename, profile.name,
@@ -377,6 +410,7 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        _active_process = proc
 
         # Read stderr in chunks — ffmpeg uses \r for progress, not \n
         stderr_data = b""
@@ -402,8 +436,14 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                         last_progress_update = pct
 
         await proc.wait()
+        _active_process = None
 
         if proc.returncode != 0:
+            # Check if this was a deliberate cancellation from a profile update
+            if variant.id in _cancelled_variant_ids:
+                _cancelled_variant_ids.discard(variant.id)
+                logger.info("Transcode cancelled for %s (profile updated)", variant.filename)
+                return
             error_text = stderr_data.decode("utf-8", errors="replace")[-500:]
             variant.status = VariantStatus.FAILED
             variant.error_message = f"ffmpeg exit code {proc.returncode}: {error_text}"
@@ -434,6 +474,7 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         logger.info("Transcode complete: %s (%d bytes)", variant.filename, variant.size_bytes)
 
     except Exception as e:
+        _active_process = None
         variant.status = VariantStatus.FAILED
         variant.error_message = str(e)[:500]
         variant.progress = 0.0

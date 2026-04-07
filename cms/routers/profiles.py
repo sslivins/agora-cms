@@ -13,7 +13,7 @@ from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
 from cms.models.device_profile import DeviceProfile
 from cms.schemas.profile import ProfileCreate, ProfileOut, ProfileUpdate
-from cms.services.transcoder import enqueue_for_new_profile
+from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_profile
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
 
@@ -209,10 +209,17 @@ async def update_profile(
 
     # Reset existing variants so they get re-transcoded
     if transcode_changed:
+        # Kill any in-progress ffmpeg for this profile
+        cancel_profile_transcodes(profile_id)
+
         var_result = await db.execute(
             select(AssetVariant).where(
                 AssetVariant.profile_id == profile_id,
-                AssetVariant.status.in_([VariantStatus.READY, VariantStatus.FAILED]),
+                AssetVariant.status.in_([
+                    VariantStatus.READY,
+                    VariantStatus.FAILED,
+                    VariantStatus.PROCESSING,
+                ]),
             )
         )
         for variant in var_result.scalars().all():
