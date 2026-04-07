@@ -236,41 +236,69 @@ function toggleBitrateEdit() {
     }
 }
 
-// ── Encoder-aware pixel format constraints ──
+// ── Encoder-aware pixel format & color space constraints ──
 const AV1_ALLOWED_PIX_FMT = ['auto', 'yuv420p', 'yuv420p10le'];
 const PROFILES_420_ONLY = {
     h264: ['baseline', 'main', 'high', 'high10'],
     h265: ['main', 'main10'],
 };
+// 8-bit-only profiles: cannot use 10-bit pixel formats or HDR color spaces
+const PROFILES_8BIT_ONLY = {
+    h264: ['baseline', 'main', 'high'],
+    h265: ['main'],
+};
+const PIX_FMT_10BIT = ['yuv420p10le', 'yuv422p10le', 'yuv444p10le'];
+const PIX_FMT_422_OR_444 = ['yuv422p', 'yuv422p10le', 'yuv444p', 'yuv444p10le'];
+const HDR_COLOR_SPACES = ['bt2020-pq', 'bt2020-hlg'];
 
-function applyCodecConstraints(codecSelect, pixFmtSelect, profileValue) {
+function applyCodecConstraints(codecSelect, pixFmtSelect, profileValue, csSelect) {
     const codec = codecSelect.value;
-    const opts = pixFmtSelect.querySelectorAll('option');
     const forces420 = codec === 'av1'
         || (PROFILES_420_ONLY[codec] || []).includes(profileValue);
-    opts.forEach(opt => {
-        if (codec === 'av1' && !AV1_ALLOWED_PIX_FMT.includes(opt.value)) {
-            opt.disabled = true;
-            if (opt.selected) pixFmtSelect.value = 'auto';
-        } else {
-            opt.disabled = false;
+    const is8bitOnly = (PROFILES_8BIT_ONLY[codec] || []).includes(profileValue);
+
+    // ── Pixel format constraints ──
+    const pfOpts = pixFmtSelect.querySelectorAll('option');
+    pfOpts.forEach(opt => {
+        const v = opt.value;
+        let disabled = false;
+        if (codec === 'av1' && !AV1_ALLOWED_PIX_FMT.includes(v)) {
+            disabled = true;
+        } else if (forces420 && PIX_FMT_422_OR_444.includes(v)) {
+            disabled = true;
         }
-        // Update the "auto" label to clarify behavior per encoder/profile
-        if (opt.value === 'auto') {
+        if (is8bitOnly && PIX_FMT_10BIT.includes(v)) {
+            disabled = true;
+        }
+        opt.disabled = disabled;
+        if (disabled && opt.selected) pixFmtSelect.value = 'auto';
+
+        if (v === 'auto') {
             opt.textContent = forces420
                 ? 'Auto (will use yuv420p for this codec/profile)'
                 : 'Auto (keep source format)';
         }
     });
+
+    // ── Color space constraints ──
+    if (csSelect) {
+        const csOpts = csSelect.querySelectorAll('option');
+        csOpts.forEach(opt => {
+            const disabled = is8bitOnly && HDR_COLOR_SPACES.includes(opt.value);
+            opt.disabled = disabled;
+            if (disabled && opt.selected) csSelect.value = 'auto';
+        });
+    }
 }
 
-// Apply constraints on create form codec change
+// Apply constraints on create form codec/profile change
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.querySelector('form');
     const codecSel = form.querySelector('[name="video_codec"]');
     const pfSel = form.querySelector('[name="pixel_format"]');
     const profSel = form.querySelector('[name="video_profile"]');
-    const refresh = () => applyCodecConstraints(codecSel, pfSel, profSel.value);
+    const csSel = form.querySelector('[name="color_space"]');
+    const refresh = () => applyCodecConstraints(codecSel, pfSel, profSel.value, csSel);
     codecSel.addEventListener('change', refresh);
     profSel.addEventListener('change', refresh);
     refresh();
@@ -361,10 +389,15 @@ async function editProfile(profileId) {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#ep-cancel").onclick = () => overlay.remove();
 
-    // Apply encoder constraints for pixel format in edit modal
+    // Apply encoder constraints for pixel format and color space in edit modal
     const epCodec = document.createElement('input');
     epCodec.type = 'hidden'; epCodec.value = p.video_codec;
-    applyCodecConstraints(epCodec, box.querySelector("#ep-pf"), p.video_profile);
+    const epPfSel = box.querySelector("#ep-pf");
+    const epCsSel = box.querySelector("#ep-cs");
+    const epVpSel = box.querySelector("#ep-vprofile");
+    const refreshEditConstraints = () => applyCodecConstraints(epCodec, epPfSel, epVpSel.value, epCsSel);
+    epVpSel.addEventListener('change', refreshEditConstraints);
+    refreshEditConstraints();
     toggleBitrateEdit();
 
     box.querySelector("#ep-save").onclick = async () => {
