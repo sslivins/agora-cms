@@ -104,6 +104,14 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
     )
 
 
+# Fields that affect transcoding output — changes require re-encoding variants
+_TRANSCODE_FIELDS = {
+    "video_profile", "max_width", "max_height", "max_fps",
+    "crf", "video_bitrate", "pixel_format", "color_space",
+    "audio_codec", "audio_bitrate",
+}
+
+
 @router.put("/{profile_id}", response_model=ProfileOut)
 async def update_profile(
     profile_id: uuid.UUID,
@@ -117,8 +125,29 @@ async def update_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+
+    # Detect whether any transcoding-relevant field actually changed
+    transcode_changed = any(
+        field in _TRANSCODE_FIELDS and getattr(profile, field) != value
+        for field, value in updates.items()
+    )
+
+    for field, value in updates.items():
         setattr(profile, field, value)
+
+    # Reset existing variants so they get re-transcoded
+    if transcode_changed:
+        var_result = await db.execute(
+            select(AssetVariant).where(
+                AssetVariant.profile_id == profile_id,
+                AssetVariant.status.in_([VariantStatus.READY, VariantStatus.FAILED]),
+            )
+        )
+        for variant in var_result.scalars().all():
+            variant.status = VariantStatus.PENDING
+            variant.progress = 0.0
+            variant.error_message = ""
 
     await db.commit()
     await db.refresh(profile)
