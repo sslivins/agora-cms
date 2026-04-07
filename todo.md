@@ -2,6 +2,12 @@
 
 ## Backlog
 
+### NTP server for device clock sync
+- [x] Add a chrony NTP container to `docker-compose.yml` — serves time on UDP 123, inherits host clock
+- [x] Pi devices point `systemd-timesyncd` at CMS server (`agora-cms.local`) for proper NTP slewing
+- [x] Advertise NTP service via Avahi (`_ntp._udp` in `setup.sh`)
+- [x] No application code changes needed — NTP handles slewing correctly (no backward jumps)
+
 ### Security hardening
 - [ ] Move device WebSocket connections to WSS (TLS) — auth tokens currently travel in plaintext over the wire. Low risk on trusted LAN but needed for internet-exposed deployments.
 - [ ] Consider disabling the device-side REST API when CMS-managed — the CMS never calls it (all communication is over WebSocket), so it's extra attack surface. Could be a CMS-pushed config flag.
