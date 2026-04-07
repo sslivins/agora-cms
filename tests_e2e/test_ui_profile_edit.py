@@ -27,10 +27,10 @@ class TestProfileEditCodecDisplay:
         expect(modal).to_be_visible(timeout=3000)
 
         # Should show "Video Codec" label in the modal
-        expect(modal.locator("text=Video Codec")).to_be_visible(timeout=2000)
+        expect(modal.locator("label", has_text="Video Codec")).to_be_visible(timeout=2000)
 
-        # Should show "H.264" as the codec value
-        expect(modal.locator("text=/[Hh]\\.?264/")).to_be_visible(timeout=2000)
+        # Should show "H.264" as the codec value (disabled input)
+        expect(modal.locator("input[disabled][value='H.264']")).to_be_visible(timeout=2000)
 
     def test_edit_modal_shows_h265_codec(self, page: Page, api, e2e_server):
         """Edit modal should display H.265 codec correctly."""
@@ -50,8 +50,8 @@ class TestProfileEditCodecDisplay:
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
 
-        # Should show H.265/HEVC
-        expect(modal.locator("text=/[Hh]\\.?265|HEVC/")).to_be_visible(timeout=2000)
+        # Should show H.265/HEVC (disabled input)
+        expect(modal.locator("input[disabled][value='H.265 (HEVC)']")).to_be_visible(timeout=2000)
 
 
 @pytest.mark.e2e
