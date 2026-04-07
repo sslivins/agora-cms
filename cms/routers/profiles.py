@@ -287,7 +287,11 @@ async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_d
             detail="Cannot delete profile with assigned devices",
         )
 
-    # Delete associated variants (cascade will handle, but clean files too)
+    # Cancel any active transcode for this profile
+    from cms.services.transcoder import cancel_profile_transcodes
+    cancel_profile_transcodes(profile_id)
+
+    # Delete associated variants (files + DB rows) before removing profile
     from cms.auth import get_settings
     settings = get_settings()
     variants_dir = settings.asset_storage_path / "variants"
@@ -299,6 +303,7 @@ async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_d
         vpath = variants_dir / variant.filename
         if vpath.is_file():
             vpath.unlink()
+        await db.delete(variant)
 
     await db.delete(profile)
     await db.commit()
