@@ -2,15 +2,19 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# BtbN static FFmpeg 8.1 build (GPL, linux64)
-ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-06-13-14/ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz
+# BtbN static FFmpeg 8.1 build (GPL) — auto-select arch
+ARG TARGETARCH
+ARG FFMPEG_VERSION=n8.1-7-ga3475e2554
+ARG FFMPEG_RELEASE=autobuild-2026-04-06-13-14
 
 # libheif-examples for HEIC grid assembly, curl + xz-utils to fetch FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif-examples \
     curl \
     xz-utils \
-    && curl -fsSL "$FFMPEG_URL" | tar -xJ --strip-components=1 -C /usr/local \
+    && ARCH=$(case "$TARGETARCH" in arm64) echo linuxarm64;; *) echo linux64;; esac) \
+    && curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE}/ffmpeg-${FFMPEG_VERSION}-${ARCH}-gpl-8.1.tar.xz" \
+       | tar -xJ --strip-components=1 -C /usr/local \
     && apt-get purge -y curl xz-utils && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
