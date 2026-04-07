@@ -342,6 +342,10 @@ async def delete_asset(
         update(DeviceGroup).where(DeviceGroup.default_asset_id == asset_id).values(default_asset_id=None)
     )
 
+    # Cancel any active transcode for this asset
+    from cms.services.transcoder import cancel_asset_transcodes
+    cancel_asset_transcodes(asset_id)
+
     # Remove variant files
     variants_dir = settings.asset_storage_path / "variants"
     var_result = await db.execute(

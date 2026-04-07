@@ -1,0 +1,239 @@
+"""Tests for variant cleanup on profile/asset deletion.
+
+Verifies that:
+- Deleting a profile removes variant DB records and variant files on disk.
+- Deleting an asset removes variant DB records and variant files on disk.
+- Active transcodes are cancelled when the parent profile or source asset
+  is deleted.
+"""
+
+import uuid
+from unittest.mock import patch
+
+import pytest
+from sqlalchemy import select
+
+from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+from cms.models.device_profile import DeviceProfile
+
+
+# ── Profile deletion: variant DB + file cleanup ──
+
+
+@pytest.mark.asyncio
+class TestDeleteProfileCleansVariants:
+    """DELETE /api/profiles/{id} should remove all variant records and files."""
+
+    async def test_variant_records_deleted(self, client, db_session):
+        """Variant DB rows should be removed when profile is deleted."""
+        profile = DeviceProfile(name="del-prof", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(filename="dp-test.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=100, checksum="aaa")
+        db_session.add(asset)
+        await db_session.flush()
+
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.READY,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        resp = await client.delete(f"/api/profiles/{profile.id}")
+        assert resp.status_code == 200
+
+        result = await db_session.execute(
+            select(AssetVariant).where(AssetVariant.id == vid)
+        )
+        assert result.scalar_one_or_none() is None
+
+    async def test_variant_files_deleted(self, client, db_session):
+        """Variant files on disk should be removed when profile is deleted."""
+        profile = DeviceProfile(name="del-prof-files", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(filename="dp-file-test.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=100, checksum="bbb")
+        db_session.add(asset)
+        await db_session.flush()
+
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.READY,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        # Create the variant file on disk
+        from cms.auth import get_settings
+        settings = get_settings()
+        variants_dir = settings.asset_storage_path / "variants"
+        variants_dir.mkdir(parents=True, exist_ok=True)
+        vfile = variants_dir / variant.filename
+        vfile.write_bytes(b"fake-variant-data")
+        assert vfile.is_file()
+
+        resp = await client.delete(f"/api/profiles/{profile.id}")
+        assert resp.status_code == 200
+        assert not vfile.is_file(), "Variant file should be deleted from disk"
+
+    async def test_delete_profile_cancels_active_transcode(self, client, db_session):
+        """Deleting a profile should cancel an active transcode for that profile."""
+        profile = DeviceProfile(name="del-cancel", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(filename="dc-test.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=100, checksum="ccc")
+        db_session.add(asset)
+        await db_session.flush()
+
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.PROCESSING,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        with patch("cms.services.transcoder.cancel_profile_transcodes") as mock_cancel:
+            mock_cancel.return_value = True
+            resp = await client.delete(f"/api/profiles/{profile.id}")
+            assert resp.status_code == 200
+            mock_cancel.assert_called_once_with(profile.id)
+
+
+# ── Asset deletion: variant DB + file cleanup ──
+
+
+@pytest.mark.asyncio
+class TestDeleteAssetCleansVariants:
+    """DELETE /api/assets/{id} should remove all variant records and files."""
+
+    async def _create_asset(self, db_session, filename, storage_path):
+        """Create an asset directly in the DB and write a fake file on disk."""
+        asset = Asset(filename=filename, asset_type=AssetType.VIDEO,
+                      size_bytes=100, checksum=uuid.uuid4().hex[:8])
+        db_session.add(asset)
+        await db_session.flush()
+        # Write a dummy source file so the delete endpoint can unlink it
+        fpath = storage_path / filename
+        fpath.write_bytes(b"fake-source")
+        return asset
+
+    async def test_variant_records_deleted(self, client, db_session, app):
+        """Variant DB rows should be removed when source asset is deleted."""
+        from cms.auth import get_settings
+        settings = app.dependency_overrides[get_settings]()
+
+        profile = DeviceProfile(name="da-prof", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = await self._create_asset(db_session, "da-test.mp4", settings.asset_storage_path)
+
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.READY,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        resp = await client.delete(f"/api/assets/{asset.id}")
+        assert resp.status_code == 200
+
+        result = await db_session.execute(
+            select(AssetVariant).where(AssetVariant.id == vid)
+        )
+        assert result.scalar_one_or_none() is None
+
+    async def test_variant_files_deleted(self, client, db_session, app):
+        """Variant files on disk should be removed when source asset is deleted."""
+        from cms.auth import get_settings
+        settings = app.dependency_overrides[get_settings]()
+
+        profile = DeviceProfile(name="da-prof-files", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = await self._create_asset(db_session, "da-file-test.mp4", settings.asset_storage_path)
+
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.READY,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        # Create the variant file on disk
+        variants_dir = settings.asset_storage_path / "variants"
+        variants_dir.mkdir(parents=True, exist_ok=True)
+        vfile = variants_dir / variant.filename
+        vfile.write_bytes(b"fake-variant-data")
+        assert vfile.is_file()
+
+        resp = await client.delete(f"/api/assets/{asset.id}")
+        assert resp.status_code == 200
+        assert not vfile.is_file(), "Variant file should be deleted from disk"
+
+    async def test_delete_asset_cancels_active_transcode(self, client, db_session, app):
+        """Deleting an asset should cancel an active transcode for that asset."""
+        from cms.auth import get_settings
+        settings = app.dependency_overrides[get_settings]()
+
+        profile = DeviceProfile(name="da-cancel", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = await self._create_asset(db_session, "da-cancel.mp4", settings.asset_storage_path)
+
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.PROCESSING,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        with patch("cms.services.transcoder.cancel_asset_transcodes") as mock_cancel:
+            mock_cancel.return_value = True
+            resp = await client.delete(f"/api/assets/{asset.id}")
+            assert resp.status_code == 200
+            mock_cancel.assert_called_once_with(asset.id)
+
+    async def test_multiple_variants_all_cleaned(self, client, db_session, app):
+        """All variants across multiple profiles should be deleted."""
+        from cms.auth import get_settings
+        settings = app.dependency_overrides[get_settings]()
+
+        p1 = DeviceProfile(name="multi-p1", video_codec="h264", video_profile="main")
+        p2 = DeviceProfile(name="multi-p2", video_codec="h265", video_profile="main")
+        db_session.add_all([p1, p2])
+        await db_session.flush()
+
+        asset = await self._create_asset(db_session, "multi-v.mp4", settings.asset_storage_path)
+
+        v1_id, v2_id = uuid.uuid4(), uuid.uuid4()
+        v1 = AssetVariant(id=v1_id, source_asset_id=asset.id, profile_id=p1.id,
+                          filename=f"{v1_id}.mp4", status=VariantStatus.READY)
+        v2 = AssetVariant(id=v2_id, source_asset_id=asset.id, profile_id=p2.id,
+                          filename=f"{v2_id}.mp4", status=VariantStatus.PENDING)
+        db_session.add_all([v1, v2])
+        await db_session.commit()
+
+        resp = await client.delete(f"/api/assets/{asset.id}")
+        assert resp.status_code == 200
+
+        for vid in (v1_id, v2_id):
+            result = await db_session.execute(
+                select(AssetVariant).where(AssetVariant.id == vid)
+            )
+            assert result.scalar_one_or_none() is None

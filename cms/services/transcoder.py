@@ -29,9 +29,10 @@ _transcode_semaphore = asyncio.Semaphore(1)
 
 POLL_INTERVAL_SECONDS = 10
 
-# Active transcode tracking — allows profile updates to kill stale ffmpeg
+# Active transcode tracking — allows profile/asset updates to kill stale ffmpeg
 _active_process = None  # asyncio.subprocess.Process | None
 _active_profile_id: uuid.UUID | None = None
+_active_source_asset_id: uuid.UUID | None = None
 _active_variant_id: uuid.UUID | None = None
 _cancelled_variant_ids: set[uuid.UUID] = set()
 
@@ -39,8 +40,9 @@ _cancelled_variant_ids: set[uuid.UUID] = set()
 def cancel_profile_transcodes(profile_id: uuid.UUID) -> bool:
     """Kill the active ffmpeg process if it belongs to the given profile.
 
-    Called from the profile update endpoint when transcoding-relevant
-    fields change.  Returns True if a process was terminated.
+    Called from the profile update/delete endpoint when transcoding-relevant
+    fields change or the profile is removed.  Returns True if a process was
+    terminated.
     """
     global _active_process, _active_profile_id, _active_variant_id
     if (
@@ -51,6 +53,28 @@ def cancel_profile_transcodes(profile_id: uuid.UUID) -> bool:
         logger.info(
             "Cancelling active transcode for profile %s (variant %s)",
             profile_id, _active_variant_id,
+        )
+        _cancelled_variant_ids.add(_active_variant_id)
+        _active_process.terminate()
+        return True
+    return False
+
+
+def cancel_asset_transcodes(asset_id: uuid.UUID) -> bool:
+    """Kill the active ffmpeg process if it belongs to the given source asset.
+
+    Called from the asset delete endpoint before removing variants.
+    Returns True if a process was terminated.
+    """
+    global _active_process, _active_source_asset_id, _active_variant_id
+    if (
+        _active_process is not None
+        and _active_source_asset_id == asset_id
+        and _active_process.returncode is None  # still running
+    ):
+        logger.info(
+            "Cancelling active transcode for asset %s (variant %s)",
+            asset_id, _active_variant_id,
         )
         _cancelled_variant_ids.add(_active_variant_id)
         _active_process.terminate()
@@ -337,9 +361,10 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     variant.progress = 0.0
     await db.commit()
 
-    # Track active transcode so profile updates can cancel it
-    global _active_process, _active_profile_id, _active_variant_id
+    # Track active transcode so profile/asset updates can cancel it
+    global _active_process, _active_profile_id, _active_source_asset_id, _active_variant_id
     _active_profile_id = variant.profile_id
+    _active_source_asset_id = variant.source_asset_id
     _active_variant_id = variant.id
 
     logger.info(
