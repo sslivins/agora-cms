@@ -46,12 +46,12 @@ async def _resolve_asset_for_device(
 ) -> FetchAssetMessage | None:
     """Build a FetchAssetMessage using the best variant for the device's profile.
 
-    For video assets with a profile:
+    For video and image assets with a profile:
       - If a READY variant exists → use variant download URL
       - If variant exists but not ready → return None (not available yet)
-    For images or devices without a profile → use source asset directly.
+    For devices without a profile → use source asset directly.
     """
-    if asset.asset_type == AssetType.VIDEO and device.profile_id:
+    if asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE) and device.profile_id:
         result = await db.execute(
             select(AssetVariant).where(
                 AssetVariant.source_asset_id == asset.id,
@@ -70,7 +70,7 @@ async def _resolve_asset_for_device(
             # Variant exists but not ready — skip for now
             return None
 
-    # No profile, no variant, or image → use source
+    # No profile or no variant → use source
     return FetchAssetMessage(
         asset_name=asset.filename,
         download_url=f"{base_url}/api/assets/{asset.id}/download",

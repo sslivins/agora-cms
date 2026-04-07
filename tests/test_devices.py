@@ -643,8 +643,8 @@ class TestDefaultAssetVariantResolution:
         finally:
             device_manager.disconnect("test-variant-pi")
 
-    async def test_default_asset_image_bypasses_variant(self, client, db_session):
-        """Images should use source URL directly even when device has a profile."""
+    async def test_default_asset_image_no_variant_uses_source(self, client, db_session):
+        """Image without a ready variant should fall through to source URL."""
         from cms.models.asset import Asset, AssetType
         from cms.models.device import Device, DeviceStatus
         from cms.models.device_profile import DeviceProfile
@@ -685,11 +685,70 @@ class TestDefaultAssetVariantResolution:
 
             fetch_msg = sent_messages[0]
             assert fetch_msg["type"] == "fetch_asset"
-            # Image should use source URL (no variant for images)
+            # No variant exists, so image falls through to source URL
             assert f"/api/assets/{image.id}/download" in fetch_msg["download_url"]
             assert fetch_msg["checksum"] == "img_checksum"
         finally:
             device_manager.disconnect("test-img-pi")
+
+    async def test_default_asset_image_with_variant(self, client, db_session):
+        """Image with a READY variant should use variant URL."""
+        from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+        from cms.models.device import Device, DeviceStatus
+        from cms.models.device_profile import DeviceProfile
+        from cms.services.device_manager import device_manager
+
+        profile = DeviceProfile(name="pi-zero-imgv", video_codec="h264")
+        db_session.add(profile)
+        await db_session.flush()
+
+        image = Asset(
+            filename="photo.jpg", asset_type=AssetType.IMAGE,
+            size_bytes=2048, checksum="img_src",
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        variant = AssetVariant(
+            source_asset_id=image.id,
+            profile_id=profile.id,
+            filename="variant.jpg",
+            status=VariantStatus.READY,
+            size_bytes=1024,
+            checksum="img_variant_cksum",
+        )
+        db_session.add(variant)
+        await db_session.flush()
+
+        device = Device(
+            id="test-imgv-pi", name="Image Variant Test",
+            status=DeviceStatus.ADOPTED, profile_id=profile.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("test-imgv-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                "/api/devices/test-imgv-pi",
+                json={"default_asset_id": str(image.id)},
+            )
+            assert resp.status_code == 200
+
+            fetch_msg = sent_messages[0]
+            assert fetch_msg["type"] == "fetch_asset"
+            # Image with READY variant should use variant URL
+            assert f"/api/assets/variants/{variant.id}/download" in fetch_msg["download_url"]
+            assert fetch_msg["checksum"] == "img_variant_cksum"
+        finally:
+            device_manager.disconnect("test-imgv-pi")
 
     async def test_default_asset_no_profile_uses_source(self, client, db_session):
         """Device without a profile should get the source asset URL."""

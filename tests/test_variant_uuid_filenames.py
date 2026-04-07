@@ -8,7 +8,7 @@ import pytest_asyncio
 
 
 _UUID_FILENAME = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$"
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(mp4|mkv|jpg)$"
 )
 
 
@@ -93,6 +93,92 @@ class TestVariantUUIDFilenames:
         v = (await db_session.execute(select(AssetVariant))).scalar_one()
         assert "my-special-profile" not in v.filename
         assert "source" not in v.filename
+
+    async def test_enqueue_transcoding_image_produces_jpg(self, db_session):
+        """_enqueue_transcoding should create .jpg variants for IMAGE assets."""
+        from cms.models.asset import Asset, AssetType, AssetVariant
+        from cms.models.device_profile import DeviceProfile
+        from cms.routers.assets import _enqueue_transcoding
+
+        profile = DeviceProfile(name="pi-img-test", video_codec="h264")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(
+            filename="photo.jpg", asset_type=AssetType.IMAGE,
+            size_bytes=2048, checksum="img1",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        await _enqueue_transcoding(asset, db_session)
+
+        from sqlalchemy import select
+        result = await db_session.execute(select(AssetVariant))
+        v = result.scalar_one()
+        assert v.filename.endswith(".jpg"), f"Image variant should be .jpg, got: {v.filename}"
+        assert v.filename == f"{v.id}.jpg"
+
+    async def test_enqueue_for_new_profile_image_produces_jpg(self, db_session):
+        """enqueue_for_new_profile should create .jpg variants for IMAGE assets."""
+        from cms.models.asset import Asset, AssetType, AssetVariant
+        from cms.models.device_profile import DeviceProfile
+        from cms.services.transcoder import enqueue_for_new_profile
+
+        asset = Asset(
+            filename="banner.png", asset_type=AssetType.IMAGE,
+            size_bytes=4096, checksum="img2",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        profile = DeviceProfile(name="pi-img-prof", video_codec="h264")
+        db_session.add(profile)
+        await db_session.flush()
+
+        count = await enqueue_for_new_profile(profile.id, db_session)
+        assert count == 1
+
+        from sqlalchemy import select
+        result = await db_session.execute(select(AssetVariant))
+        v = result.scalar_one()
+        assert v.filename.endswith(".jpg"), f"Image variant should be .jpg, got: {v.filename}"
+        assert v.filename == f"{v.id}.jpg"
+
+    async def test_enqueue_for_new_profile_mixed_assets(self, db_session):
+        """enqueue_for_new_profile should create variants for both VIDEO and IMAGE assets."""
+        from cms.models.asset import Asset, AssetType, AssetVariant
+        from cms.models.device_profile import DeviceProfile
+        from cms.services.transcoder import enqueue_for_new_profile
+
+        video = Asset(
+            filename="clip.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=5000, checksum="vid1",
+        )
+        image = Asset(
+            filename="poster.jpg", asset_type=AssetType.IMAGE,
+            size_bytes=3000, checksum="img3",
+        )
+        db_session.add_all([video, image])
+        await db_session.flush()
+
+        profile = DeviceProfile(name="pi-mixed", video_codec="h264")
+        db_session.add(profile)
+        await db_session.flush()
+
+        count = await enqueue_for_new_profile(profile.id, db_session)
+        assert count == 2
+
+        from sqlalchemy import select
+        result = await db_session.execute(
+            select(AssetVariant).order_by(AssetVariant.filename)
+        )
+        variants = result.scalars().all()
+        assert len(variants) == 2
+
+        exts = {v.filename.rsplit(".", 1)[-1] for v in variants}
+        assert "mp4" in exts
+        assert "jpg" in exts
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import time
 
 import pytest
 import pytest_asyncio
@@ -33,6 +34,8 @@ class TestWebSocket:
                 # Should receive sync
                 msg = ws.receive_json()
                 assert msg["type"] == "sync"
+
+                time.sleep(0.5)  # Allow server to finish before disconnect
 
                 ws.close()
 
@@ -71,6 +74,8 @@ class TestWebSocket:
                 # Adopted devices also receive a config message (API key push)
                 msg = ws.receive_json()
                 assert msg["type"] == "config"
+
+                time.sleep(0.5)  # Allow server to finish before disconnect
 
                 ws.close()
 
@@ -163,7 +168,6 @@ class TestWebSocket:
                     "storage_used_mb": 200,
                 })
 
-                import time
                 time.sleep(0.5)  # Allow server to process status before disconnect
 
                 ws.close()
@@ -207,6 +211,8 @@ class TestWebSocket:
                 # Should receive sync
                 msg = ws.receive_json()
                 assert msg["type"] == "sync"
+
+                time.sleep(0.5)  # Allow server to finish before disconnect
 
                 ws.close()
 

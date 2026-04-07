@@ -17,13 +17,21 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install system dependencies
+        run: |
+          # BtbN static build — includes libsvtav1, libaom-av1, libx265, libopus, etc.
+          curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-06-13-14/ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz | \
+            sudo tar -xJ --strip-components=1 -C /usr/local
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pytest pytest-asyncio pytest-timeout httpx aiosqlite
 
       - name: Run tests
-        run: python -m pytest tests/ --tb=short -q
+        run: python -m pytest tests/ --tb=short -q -rs
 
   e2e:
     runs-on: ubuntu-latest

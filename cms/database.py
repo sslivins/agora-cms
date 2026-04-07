@@ -121,6 +121,17 @@ async def run_migrations():
                 await conn.execute(text("ALTER TYPE devicestatus RENAME VALUE 'OFFLINE' TO 'ORPHANED'"))
 
 
+        # -- device_profiles.pixel_format and color_space --
+        for col, col_type, default in [
+            ("pixel_format", "VARCHAR(20)", "auto"),
+            ("color_space", "VARCHAR(20)", "auto"),
+        ]:
+            has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "device_profiles", _c))
+            if not has_col:
+                await conn.execute(text(
+                    f"ALTER TABLE device_profiles ADD COLUMN {col} {col_type} DEFAULT '{default}'"
+                ))
+
         # -- devices.timezone --
         has_tz = await conn.run_sync(lambda c: _has_column(c, "devices", "timezone"))
         if not has_tz:

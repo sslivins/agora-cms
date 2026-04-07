@@ -26,6 +26,7 @@
                 <select name="video_codec">
                     <option value="h264" selected>H.264</option>
                     <option value="h265">H.265 (HEVC)</option>
+                    <option value="av1">AV1 (SVT-AV1)</option>
                 </select>
             </div>
             <div class="form-group">
@@ -54,11 +55,35 @@
         <div class="form-row">
             <div class="form-group">
                 <label>CRF (quality)</label>
-                <input type="number" name="crf" value="23" min="0" max="51">
+                <input type="number" name="crf" value="23" min="0" max="51" oninput="toggleBitrateCreate(this.form)">
             </div>
             <div class="form-group">
-                <label>Video Bitrate (empty=use CRF)</label>
-                <input type="text" name="video_bitrate" placeholder="e.g. 5M">
+                <label>Video Bitrate (Mbps)</label>
+                <input type="number" name="video_bitrate" min="0" step="0.1" placeholder="Empty = use CRF" oninput="toggleBitrateCreate(this.form)">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Pixel Format</label>
+                <select name="pixel_format">
+                    <option value="auto" selected>Auto (keep source format)</option>
+                    <option value="yuv420p">yuv420p (8-bit)</option>
+                    <option value="yuv420p10le">yuv420p10le (10-bit)</option>
+                    <option value="yuv422p">yuv422p (8-bit)</option>
+                    <option value="yuv422p10le">yuv422p10le (10-bit)</option>
+                    <option value="yuv444p">yuv444p (8-bit)</option>
+                    <option value="yuv444p10le">yuv444p10le (10-bit)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Color Space</label>
+                <select name="color_space">
+                    <option value="auto" selected>Auto (pass-through)</option>
+                    <option value="bt709">BT.709 (SDR)</option>
+                    <option value="smpte170m">SMPTE 170M (SD)</option>
+                    <option value="bt2020-pq">BT.2020 PQ (HDR10)</option>
+                    <option value="bt2020-hlg">BT.2020 HLG</option>
+                </select>
             </div>
         </div>
         <div class="form-row">
@@ -67,6 +92,7 @@
                 <select name="audio_codec">
                     <option value="aac" selected>AAC</option>
                     <option value="mp3">MP3</option>
+                    <option value="libopus">Opus</option>
                 </select>
             </div>
             <div class="form-group">
@@ -107,9 +133,9 @@
                 <td>{{ p.video_codec }} / {{ p.video_profile }}</td>
                 <td>{{ p.max_width }}×{{ p.max_height }}</td>
                 <td>{{ p.max_fps }}</td>
-                <td>{% if p.video_bitrate %}{{ p.video_bitrate }}{% else %}CRF {{ p.crf }}{% endif %}</td>
-                <td><span class="text-muted">yuv420p</span></td>
-                <td><span class="text-muted">BT.709 (SDR)</span></td>
+                <td>{% if p.video_bitrate %}{{ p.video_bitrate }} Mbps{% else %}CRF {{ p.crf }}{% endif %}</td>
+                <td>{% if p.pixel_format == 'auto' %}Pass-through{% else %}{{ p.pixel_format }}{% endif %}</td>
+                <td>{% if p.color_space == 'auto' %}Pass-through{% else %}{{ p.color_space }}{% if p.color_space == 'bt709' %} (SDR){% elif p.color_space == 'bt2020-pq' %} (HDR10){% elif p.color_space == 'bt2020-hlg' %} (HLG){% elif p.color_space == 'smpte170m' %} (SD){% endif %}{% endif %}</td>
                 <td>{{ p.device_count }}</td>
                 <td data-profile-variants="{{ p.id }}">
                     {% if p.total_variants > 0 %}
@@ -180,6 +206,77 @@
 
 {% block scripts %}
 <script>
+// ── CRF / Bitrate mutual exclusion (create form) ──
+function toggleBitrateCreate(form) {
+    const crf = form.querySelector('[name="crf"]');
+    const vbr = form.querySelector('[name="video_bitrate"]');
+    if (vbr.value) {
+        crf.disabled = true;
+        crf.style.opacity = '0.5';
+    } else {
+        crf.disabled = false;
+        crf.style.opacity = '1';
+    }
+    if (crf.value && !crf.disabled) {
+        // Don't disable bitrate when CRF has default value — only disable CRF when bitrate is set
+    }
+}
+
+// ── CRF / Bitrate mutual exclusion (edit modal) ──
+function toggleBitrateEdit() {
+    const crf = document.getElementById('ep-crf');
+    const vbr = document.getElementById('ep-vbr');
+    if (!crf || !vbr) return;
+    if (vbr.value) {
+        crf.disabled = true;
+        crf.style.opacity = '0.5';
+    } else {
+        crf.disabled = false;
+        crf.style.opacity = '1';
+    }
+}
+
+// ── Encoder-aware pixel format constraints ──
+const AV1_ALLOWED_PIX_FMT = ['auto', 'yuv420p', 'yuv420p10le'];
+const PROFILES_420_ONLY = {
+    h264: ['baseline', 'main', 'high', 'high10'],
+    h265: ['main', 'main10'],
+};
+
+function applyCodecConstraints(codecSelect, pixFmtSelect, profileValue) {
+    const codec = codecSelect.value;
+    const opts = pixFmtSelect.querySelectorAll('option');
+    const forces420 = codec === 'av1'
+        || (PROFILES_420_ONLY[codec] || []).includes(profileValue);
+    opts.forEach(opt => {
+        if (codec === 'av1' && !AV1_ALLOWED_PIX_FMT.includes(opt.value)) {
+            opt.disabled = true;
+            if (opt.selected) pixFmtSelect.value = 'auto';
+        } else {
+            opt.disabled = false;
+        }
+        // Update the "auto" label to clarify behavior per encoder/profile
+        if (opt.value === 'auto') {
+            opt.textContent = forces420
+                ? 'Auto (will use yuv420p for this codec/profile)'
+                : 'Auto (keep source format)';
+        }
+    });
+}
+
+// Apply constraints on create form codec change
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.querySelector('form');
+    const codecSel = form.querySelector('[name="video_codec"]');
+    const pfSel = form.querySelector('[name="pixel_format"]');
+    const profSel = form.querySelector('[name="video_profile"]');
+    const refresh = () => applyCodecConstraints(codecSel, pfSel, profSel.value);
+    codecSel.addEventListener('change', refresh);
+    profSel.addEventListener('change', refresh);
+    refresh();
+    toggleBitrateCreate(form);
+});
+
 async function createProfile(form) {
     const data = new FormData(form);
     const body = {
@@ -190,8 +287,10 @@ async function createProfile(form) {
         max_width: parseInt(data.get("max_width")),
         max_height: parseInt(data.get("max_height")),
         max_fps: parseInt(data.get("max_fps")),
-        crf: parseInt(data.get("crf")),
+        crf: parseInt(data.get("crf")) || 23,
         video_bitrate: data.get("video_bitrate") || "",
+        pixel_format: data.get("pixel_format"),
+        color_space: data.get("color_space"),
         audio_codec: data.get("audio_codec"),
         audio_bitrate: data.get("audio_bitrate"),
     };
@@ -231,11 +330,21 @@ async function editProfile(profileId) {
             <div class="form-group"><label>Max Height</label><input type="number" id="ep-h" value="${p.max_height}"></div>
         </div>
         <div class="form-row">
-            <div class="form-group"><label>CRF</label><input type="number" id="ep-crf" value="${p.crf}"></div>
-            <div class="form-group"><label>Video Bitrate</label><input type="text" id="ep-vbr" value="${p.video_bitrate || ''}"></div>
+            <div class="form-group"><label>CRF</label><input type="number" id="ep-crf" value="${p.crf}" min="0" max="51" oninput="toggleBitrateEdit()"></div>
+            <div class="form-group"><label>Video Bitrate (Mbps)</label><input type="number" id="ep-vbr" value="${p.video_bitrate || ''}" min="0" step="0.1" oninput="toggleBitrateEdit()"></div>
         </div>
         <div class="form-row">
-            <div class="form-group"><label>Audio Codec</label><input type="text" id="ep-ac" value="${p.audio_codec}"></div>
+            <div class="form-group"><label>Pixel Format</label>
+                <select id="ep-pf"><option value="auto" ${p.pixel_format==='auto'?'selected':''}>Auto (keep source format)</option><option value="yuv420p" ${p.pixel_format==='yuv420p'?'selected':''}>yuv420p (8-bit)</option><option value="yuv420p10le" ${p.pixel_format==='yuv420p10le'?'selected':''}>yuv420p10le (10-bit)</option><option value="yuv422p" ${p.pixel_format==='yuv422p'?'selected':''}>yuv422p (8-bit)</option><option value="yuv422p10le" ${p.pixel_format==='yuv422p10le'?'selected':''}>yuv422p10le (10-bit)</option><option value="yuv444p" ${p.pixel_format==='yuv444p'?'selected':''}>yuv444p (8-bit)</option><option value="yuv444p10le" ${p.pixel_format==='yuv444p10le'?'selected':''}>yuv444p10le (10-bit)</option></select>
+            </div>
+            <div class="form-group"><label>Color Space</label>
+                <select id="ep-cs"><option value="auto" ${p.color_space==='auto'?'selected':''}>Auto (keep source format)</option><option value="bt709" ${p.color_space==='bt709'?'selected':''}>BT.709 (SDR)</option><option value="smpte170m" ${p.color_space==='smpte170m'?'selected':''}>SMPTE 170M (SD)</option><option value="bt2020-pq" ${p.color_space==='bt2020-pq'?'selected':''}>BT.2020 PQ (HDR10)</option><option value="bt2020-hlg" ${p.color_space==='bt2020-hlg'?'selected':''}>BT.2020 HLG</option></select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group"><label>Audio Codec</label>
+                <select id="ep-ac"><option value="aac" ${p.audio_codec==='aac'?'selected':''}>AAC</option><option value="mp3" ${p.audio_codec==='mp3'?'selected':''}>MP3</option><option value="libopus" ${p.audio_codec==='libopus'?'selected':''}>Opus</option></select>
+            </div>
             <div class="form-group"><label>Audio Bitrate</label><input type="text" id="ep-abr" value="${p.audio_bitrate}"></div>
         </div>
         <div class="modal-actions">
@@ -247,6 +356,13 @@ async function editProfile(profileId) {
     document.body.appendChild(overlay);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#ep-cancel").onclick = () => overlay.remove();
+
+    // Apply encoder constraints for pixel format in edit modal
+    const epCodec = document.createElement('input');
+    epCodec.type = 'hidden'; epCodec.value = p.video_codec;
+    applyCodecConstraints(epCodec, box.querySelector("#ep-pf"), p.video_profile);
+    toggleBitrateEdit();
+
     box.querySelector("#ep-save").onclick = async () => {
         const body = {
             description: box.querySelector("#ep-desc").value,
@@ -254,8 +370,10 @@ async function editProfile(profileId) {
             max_width: parseInt(box.querySelector("#ep-w").value),
             max_height: parseInt(box.querySelector("#ep-h").value),
             max_fps: parseInt(box.querySelector("#ep-fps").value),
-            crf: parseInt(box.querySelector("#ep-crf").value),
+            crf: parseInt(box.querySelector("#ep-crf").value) || 23,
             video_bitrate: box.querySelector("#ep-vbr").value || "",
+            pixel_format: box.querySelector("#ep-pf").value,
+            color_space: box.querySelector("#ep-cs").value,
             audio_codec: box.querySelector("#ep-ac").value,
             audio_bitrate: box.querySelector("#ep-abr").value,
         };
