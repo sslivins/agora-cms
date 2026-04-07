@@ -564,14 +564,23 @@ function getLoopInfoHtml(form, durMins) {
 
     // Threshold: half a minute in loop-units (accounts for 1-min time input granularity)
     const loopThreshold = 30 / assetDur;
-    if (nearestLoops > 0 && Math.abs(loops - nearestLoops) > loopThreshold) {
+    if (nearestLoops > 0 && Math.abs(loops - nearestLoops) <= loopThreshold) {
+        // Clean loop count — just display it
+        return ` \u2014 ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+    }
+    if (loops > 0) {
+        // Fractional loops — offer rounding options
         const roundDown = Math.floor(loops);
         const roundUp = roundDown + 1;
-        return ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`
-             + ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`
-             + ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
-    } else if (nearestLoops > 0) {
-        return ` \u2014 ${nearestLoops} loop${nearestLoops !== 1 ? 's' : ''} of ${formatDuration(assetDur)}.`;
+        const cutMsg = loops < 1
+            ? ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (won\u2019t complete a full play).`
+            : ` \u2014 ${loops.toFixed(1)} loops of ${formatDuration(assetDur)} (last loop cut short).`;
+        let roundLinks = "";
+        if (roundDown >= 1) {
+            roundLinks += ` <a href="#" class="loop-round" data-loops="${roundDown}">\u25bc Round down (${roundDown})</a>`;
+        }
+        roundLinks += ` <a href="#" class="loop-round" data-loops="${roundUp}">\u25b2 Round up (${roundUp})</a>`;
+        return cutMsg + roundLinks;
     }
     return "";
 }

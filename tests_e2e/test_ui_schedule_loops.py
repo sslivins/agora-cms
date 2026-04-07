@@ -485,3 +485,67 @@ class TestEditClearLoopCount:
         expect(summary).not_to_contain_text("exact 8 loops")
         # Should show natural loop info instead
         expect(summary).to_contain_text("loops")
+
+
+class TestSubOneLoop:
+    """Schedule duration shorter than asset duration (< 1 loop)."""
+
+    # Use an 11-minute (660s) video so 8-min schedule = 0.73 loops
+    LONG_ASSET = 660
+
+    def test_short_duration_shows_loop_info(self, page: Page, api, ws_url):
+        """When schedule is shorter than half the asset, loop info should
+        still be displayed (not silently empty)."""
+        asset_id = _setup_device_and_asset(page, api, ws_url, "sub1-short-001")
+        _go_to_schedules_and_inject_duration(page, asset_id, self.LONG_ASSET)
+
+        page.fill('input[name="name"]', "Short Duration Test")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "09:05")  # 5 min / 11 min = 0.45 loops
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        # Should show some loop info, not be empty
+        expect(summary).to_contain_text("loop")
+
+    def test_sub_one_loop_no_round_down_to_zero(self, page: Page, api, ws_url):
+        """When loops < 1, 'Round down (0)' must never appear."""
+        asset_id = _setup_device_and_asset(page, api, ws_url, "sub1-no0-001")
+        _go_to_schedules_and_inject_duration(page, asset_id, self.LONG_ASSET)
+
+        page.fill('input[name="name"]', "No Zero Round Test")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "09:08")  # 8 min / 11 min = 0.73 loops
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        # Should NOT offer "Round down (0)"
+        expect(summary).not_to_contain_text("Round down (0)")
+        # Should offer Round up (1)
+        expect(summary).to_contain_text("Round up (1)")
+
+    def test_sub_one_loop_round_up_to_one(self, page: Page, api, ws_url):
+        """Clicking Round up (1) for a sub-one-loop schedule should set
+        end time to start + 1 full asset duration."""
+        asset_id = _setup_device_and_asset(page, api, ws_url, "sub1-rup-001")
+        _go_to_schedules_and_inject_duration(page, asset_id, self.LONG_ASSET)
+
+        page.fill('input[name="name"]', "Sub-One Round Up")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "09:08")  # 8 min / 11 min = 0.73 loops
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        summary = page.locator("#schedule-summary")
+        round_up = summary.locator(".loop-round", has_text="Round up")
+        expect(round_up).to_be_visible()
+        round_up.click()
+
+        # End time = 09:00 + 11 min = 09:11
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:11", f"Expected 09:11 but got {end_time}"
+        expect(summary).to_contain_text("exact 1 loop")
