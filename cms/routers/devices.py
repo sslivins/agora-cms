@@ -18,6 +18,9 @@ from cms.schemas.device import (
     DeviceGroupUpdate,
     DeviceOut,
     DeviceUpdate,
+    LogRequest,
+    SetPasswordRequest,
+    ToggleRequest,
 )
 from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage
 from cms.services.device_manager import device_manager
@@ -152,10 +155,10 @@ async def update_device(
 @router.post("/{device_id}/password")
 async def set_device_password(
     device_id: str,
-    data: dict,
+    body: SetPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    password = data.get("password", "").strip()
+    password = body.password.strip()
     if not password:
         raise HTTPException(status_code=400, detail="Password cannot be empty")
     if len(password) < 4:
@@ -228,12 +231,10 @@ async def upgrade_device(
 @router.post("/{device_id}/ssh")
 async def toggle_device_ssh(
     device_id: str,
-    data: dict,
+    body: ToggleRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    enabled = data.get("enabled")
-    if not isinstance(enabled, bool):
-        raise HTTPException(status_code=400, detail="'enabled' must be a boolean")
+    enabled = body.enabled
 
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
@@ -280,12 +281,10 @@ async def factory_reset_device(
 @router.post("/{device_id}/local-api")
 async def toggle_device_local_api(
     device_id: str,
-    data: dict,
+    body: ToggleRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    enabled = data.get("enabled")
-    if not isinstance(enabled, bool):
-        raise HTTPException(status_code=400, detail="'enabled' must be a boolean")
+    enabled = body.enabled
 
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
@@ -364,8 +363,7 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/{device_id}/logs")
 async def request_device_logs(
     device_id: str,
-    services: list[str] | None = None,
-    since: str = "24h",
+    body: LogRequest = LogRequest(),
     db: AsyncSession = Depends(get_db),
 ):
     """Request logs from a connected device via WebSocket.
@@ -381,7 +379,7 @@ async def request_device_logs(
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     try:
-        logs = await device_manager.request_logs(device_id, services=services, since=since)
+        logs = await device_manager.request_logs(device_id, services=body.services, since=body.since)
     except TimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))
     except ValueError as e:

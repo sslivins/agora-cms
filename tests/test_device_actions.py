@@ -96,7 +96,7 @@ class TestLocalApiToggle:
         await db_session.commit()
 
         resp = await client.post("/api/devices/la-003/local-api", json={"enabled": "yes"})
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     async def test_device_not_connected(self, client, db_session):
         device = Device(id="la-004", name="Offline", status=DeviceStatus.ADOPTED)
