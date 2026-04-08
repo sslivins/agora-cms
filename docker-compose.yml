@@ -10,6 +10,17 @@ services:
     volumes:
       - cms-assets:/opt/agora-cms/assets
 
+  mcp:
+    build: ./mcp
+    ports:
+      - "8000:8000"
+    environment:
+      - CMS_BASE_URL=http://cms:8080
+      - CMS_USERNAME=${AGORA_CMS_ADMIN_USERNAME:-admin}
+      - CMS_PASSWORD=${AGORA_CMS_ADMIN_PASSWORD:-agora}
+    depends_on:
+      - cms
+
   db:
     image: postgres:16-alpine
     env_file: .env
