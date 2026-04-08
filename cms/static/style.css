@@ -569,10 +569,15 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 .settings-form { max-width: 400px; }
 .mcp-toggle-row {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     cursor: pointer;
     font-weight: 500;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.mcp-toggle-row input[type="checkbox"] {
+    width: auto;
+    margin: 0;
 }
 .flash {
     padding: 0.75rem 1rem;

@@ -47,15 +47,13 @@
         Allow AI agents (e.g. GitHub Copilot) to manage the CMS via the Model Context Protocol.
     </p>
 
-    <div class="form-group" style="max-width: 400px;">
-        <label class="mcp-toggle-row">
-            <span>Enable MCP Server</span>
-            <input type="checkbox" id="mcp-enabled" {% if mcp_enabled %}checked{% endif %}>
-        </label>
-        <p id="mcp-offline-warning" class="text-muted" style="font-size: 0.8rem; margin-top: 0.3rem; display:none; color: var(--warning);">
-            ⚠ MCP container is not running. Start it with <code>docker compose up mcp -d</code>
-        </p>
-    </div>
+    <label class="mcp-toggle-row">
+        <input type="checkbox" id="mcp-enabled" {% if mcp_enabled %}checked{% endif %}>
+        <span>Enable MCP Server</span>
+    </label>
+    <p id="mcp-offline-warning" class="text-muted" style="font-size: 0.8rem; margin-top: -0.5rem; display:none; color: var(--warning);">
+        ⚠ MCP container is not running. Start it with <code>docker compose up mcp -d</code>
+    </p>
 
     <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
         <div class="form-group">
@@ -74,20 +72,6 @@
             </div>
         </div>
 
-        <details style="margin-top: 0.75rem;">
-            <summary class="text-muted" style="cursor: pointer; font-size: 0.85rem;">VS Code configuration</summary>
-            <pre style="margin-top: 0.5rem; padding: 0.75rem; background: var(--bg); border-radius: var(--radius); font-size: 0.8rem; overflow-x: auto;">{
-  "servers": {
-    "agora-cms": {
-      "type": "sse",
-      "url": "http://&lt;cms-host&gt;:8000/sse",
-      "headers": {
-        "Authorization": "Bearer <span id="mcp-key-preview">{{ mcp_api_key or '&lt;generate a key&gt;' }}</span>"
-      }
-    }
-  }
-}</pre>
-        </details>
     </div>
 </div>
 
@@ -155,7 +139,6 @@
             if (!resp.ok) throw new Error("Generate failed");
             const data = await resp.json();
             document.getElementById("mcp-api-key").value = data.key;
-            document.getElementById("mcp-key-preview").textContent = data.key;
             generateBtn.textContent = "Regenerate";
             showToast("New API key generated — copy it now");
         } catch {
