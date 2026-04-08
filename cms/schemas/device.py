@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from cms.models.device import DeviceStatus
 
@@ -63,3 +63,16 @@ class DeviceGroupUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     default_asset_id: Optional[uuid.UUID] = None
+
+
+class SetPasswordRequest(BaseModel):
+    password: str
+
+
+class ToggleRequest(BaseModel):
+    enabled: StrictBool
+
+
+class LogRequest(BaseModel):
+    services: Optional[list[str]] = None
+    since: str = "24h"

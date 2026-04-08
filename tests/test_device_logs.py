@@ -132,7 +132,7 @@ class TestDeviceLogsAPI:
     async def test_request_logs_device_offline(self, client, device_in_db):
         resp = await client.post(
             "/api/devices/log-test-device/logs",
-            params={"since": "1h"},
+            json={"since": "1h"},
         )
         assert resp.status_code == 409
         assert "not connected" in resp.json()["detail"]
@@ -158,7 +158,7 @@ class TestDeviceLogsAPI:
             task = asyncio.create_task(fake_resolve())
             resp = await client.post(
                 "/api/devices/log-test-device/logs",
-                params={"since": "1h"},
+                json={"since": "1h"},
             )
             await task
             assert resp.status_code == 200
