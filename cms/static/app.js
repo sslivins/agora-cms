@@ -1,5 +1,26 @@
 /* Agora CMS — client-side JavaScript */
 
+// ── Clipboard helper (works on non-HTTPS / non-localhost) ──
+function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text).then(() => showToast("Copied to clipboard"));
+    }
+    // Fallback for insecure contexts (HTTP + non-localhost)
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+        document.execCommand("copy");
+        showToast("Copied to clipboard");
+    } catch {
+        showToast("Copy failed — select and copy manually", true);
+    }
+    document.body.removeChild(ta);
+}
+
 // ── Modal guard for auto-refresh polling ──
 function isModalOpen() {
     return !!document.querySelector(".modal-overlay");
