@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from cms_client import CMSClient
 
@@ -22,7 +23,12 @@ logger = logging.getLogger(__name__)
 
 CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
 
-mcp = FastMCP("Agora CMS")
+mcp = FastMCP(
+    "Agora CMS",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 client = CMSClient()
 
 
