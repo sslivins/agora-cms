@@ -20,7 +20,7 @@ class TestBuiltinProfileUI:
         page.goto("/profiles")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator("tr", has_text="pi-zero-2w")
+        row = page.locator("tr", has=page.locator(".badge-builtin"))
         expect(row).to_be_visible()
         expect(row.locator("button", has_text="Edit")).to_have_count(0)
 
@@ -29,7 +29,7 @@ class TestBuiltinProfileUI:
         page.goto("/profiles")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator("tr", has_text="pi-zero-2w")
+        row = page.locator("tr", has=page.locator(".badge-builtin"))
         expect(row.locator("button", has_text="Delete")).to_have_count(0)
 
     def test_builtin_has_copy_button(self, page: Page, e2e_server):
@@ -37,7 +37,7 @@ class TestBuiltinProfileUI:
         page.goto("/profiles")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator("tr", has_text="pi-zero-2w")
+        row = page.locator("tr", has=page.locator(".badge-builtin"))
         expect(row.locator("button", has_text="Copy")).to_be_visible()
 
     def test_custom_profile_has_all_buttons(self, page: Page, api, e2e_server):
@@ -79,7 +79,7 @@ class TestCopyProfileUI:
         page.wait_for_load_state("domcontentloaded")
 
         # The copied profile should appear
-        copy_row = page.locator("tr", has_text="Copy of e2e-to-copy")
+        copy_row = page.locator("tr", has_text="Copy of e2e-to-copy").first
         expect(copy_row).to_be_visible()
 
         # The copy should NOT be built-in (should have Edit and Delete)
@@ -91,12 +91,12 @@ class TestCopyProfileUI:
         page.goto("/profiles")
         page.wait_for_load_state("domcontentloaded")
 
-        builtin_row = page.locator("tr", has_text="pi-zero-2w").first
+        builtin_row = page.locator("tr", has=page.locator(".badge-builtin"))
         builtin_row.locator("button", has_text="Copy").click()
 
         page.wait_for_load_state("domcontentloaded")
 
-        copy_row = page.locator("tr", has_text="Copy of pi-zero-2w")
+        copy_row = page.locator("tr", has_text="Copy of pi-zero-2w").first
         expect(copy_row).to_be_visible()
         # The copy should be editable (has Edit button)
         expect(copy_row.locator("button", has_text="Edit")).to_be_visible()
