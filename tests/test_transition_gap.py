@@ -192,3 +192,47 @@ class TestPreemptionTransitionGap:
         assert "duration_mins" in entry
         assert "day_label" in entry
         assert entry["day_label"] == "today"
+
+
+class TestGroupScheduleTransitionGap:
+    """Group-targeted schedules must also show 'starting' during the
+    transition gap — they have device_id=None."""
+
+    def setup_method(self):
+        _skipped.clear()
+
+    def teardown_method(self):
+        _skipped.clear()
+
+    def test_group_schedule_not_yet_in_now_playing_stays_visible(self):
+        """A group schedule entering its window should show as 'starting'."""
+        group_id = uuid.uuid4()
+        s = _make_schedule(
+            time(10, 0), time(11, 0), name="Group Show",
+            device_id=None, group_id=group_id,
+        )
+        now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
+        now_playing = []
+
+        result = get_upcoming_schedules([s], now, UTC, now_playing=now_playing)
+        assert len(result) == 1
+        assert result[0]["schedule_name"] == "Group Show"
+        assert result[0].get("starting") is True
+
+    def test_group_schedule_disappears_once_in_now_playing(self):
+        """Once the scheduler processes a group schedule (appears in
+        now_playing for its devices), it should leave upcoming."""
+        group_id = uuid.uuid4()
+        s = _make_schedule(
+            time(10, 0), time(11, 0), name="Group Show",
+            device_id=None, group_id=group_id,
+        )
+        now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
+        # Scheduler expanded group to d1, d2 — both entries use same schedule_id
+        now_playing = [
+            _now_playing_entry(s, "d1"),
+            _now_playing_entry(s, "d2"),
+        ]
+
+        result = get_upcoming_schedules([s], now, UTC, now_playing=now_playing)
+        assert len(result) == 0

@@ -127,20 +127,19 @@ def get_upcoming_schedules(
             resume_at = _find_resume_time(s, schedules, local_now)
             if resume_at is not None:
                 results.append(_preempted_entry(s, local_now, resume_at))
-            elif s.device_id and s.device_id not in _winning_by_did:
-                # Target device has no winner yet — scheduler hasn't evaluated.
-                # Show as "starting" so the schedule doesn't vanish from the
-                # dashboard during the transition gap.
-                results.append(_starting_entry(s, local_now))
             elif s.device_id and s.device_id in _winning_by_did:
-                # Device already has a winner. Check if this schedule has
-                # higher priority — if so, it's about to preempt and should
-                # show as "starting" during the transition.
+                # Device already has a winner. Only show "starting" if this
+                # schedule has higher priority (about to preempt).
                 current_winner = _winning_by_did[s.device_id]
                 current_priority = _sched_priority.get(current_winner["schedule_id"], 0)
                 if s.priority > current_priority:
                     results.append(_starting_entry(s, local_now))
                 # else: same or lower priority → genuinely lost → hide
+            else:
+                # No winner yet for this target (device or group) — scheduler
+                # hasn't evaluated.  Show as "starting" so the schedule
+                # doesn't vanish from the dashboard during the transition.
+                results.append(_starting_entry(s, local_now))
             continue
 
         # Check today
