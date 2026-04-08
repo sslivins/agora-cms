@@ -239,7 +239,8 @@ class TestDeviceOffline:
     """Schedules on offline devices should not appear as preempted."""
 
     def test_no_winner_no_preemption(self):
-        """If no device is connected (empty now_playing), active schedules stay hidden."""
+        """If no device is connected (empty now_playing), active schedules
+        show as starting (scheduler hasn't processed them yet)."""
         s = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Offline",
             device_id="d1",
@@ -247,7 +248,8 @@ class TestDeviceOffline:
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
 
         result = get_upcoming_schedules([s], now, UTC, now_playing=[])
-        assert len(result) == 0
+        assert len(result) == 1
+        assert result[0]["starting"] is True
 
     def test_sole_schedule_on_connected_device_not_preempted(self):
         """A single active schedule that IS the winner should not be in upcoming."""
