@@ -102,8 +102,16 @@ def get_upcoming_schedules(
 
     # Build set of currently-winning schedule IDs from now_playing
     _winning_sids: set[str] = set()
+    _winning_by_did: dict[str, dict] = {}  # device_id → now_playing entry
     if now_playing is not None:
         _winning_sids = {np["schedule_id"] for np in now_playing}
+        for np in now_playing:
+            _winning_by_did[np["device_id"]] = np
+
+    # Build a priority lookup for the currently-winning schedules
+    _sched_priority: dict[str, int] = {}
+    for sched in schedules:
+        _sched_priority[str(sched.id)] = sched.priority
 
     for s in schedules:
         if not s.enabled:
@@ -117,9 +125,22 @@ def get_upcoming_schedules(
                 continue  # deliberately ended via End Now
             # Check if genuinely preempted (higher-priority schedule active on same target)
             resume_at = _find_resume_time(s, schedules, local_now)
-            if resume_at is None:
-                continue  # not preempted, just not playing (device offline, etc.)
-            results.append(_preempted_entry(s, local_now, resume_at))
+            if resume_at is not None:
+                results.append(_preempted_entry(s, local_now, resume_at))
+            elif s.device_id and s.device_id not in _winning_by_did:
+                # Target device has no winner yet — scheduler hasn't evaluated.
+                # Show as "starting" so the schedule doesn't vanish from the
+                # dashboard during the transition gap.
+                results.append(_starting_entry(s, local_now))
+            elif s.device_id and s.device_id in _winning_by_did:
+                # Device already has a winner. Check if this schedule has
+                # higher priority — if so, it's about to preempt and should
+                # show as "starting" during the transition.
+                current_winner = _winning_by_did[s.device_id]
+                current_priority = _sched_priority.get(current_winner["schedule_id"], 0)
+                if s.priority > current_priority:
+                    results.append(_starting_entry(s, local_now))
+                # else: same or lower priority → genuinely lost → hide
             continue
 
         # Check today
@@ -268,6 +289,35 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
         "day_label": "today",
         "preempted": True,
         "resumes_at": resume_at.strftime("%I:%M %p").lstrip("0"),
+    }
+
+
+def _starting_entry(s: Schedule, local_now: datetime) -> dict:
+    """Build an entry for a schedule that is in its window but not yet in now_playing."""
+    start_dt = datetime.combine(local_now.date(), s.start_time)
+    end_dt = datetime.combine(local_now.date(), s.end_time)
+    if s.end_time <= s.start_time:
+        end_dt += timedelta(days=1)
+    duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+
+    target_name = None
+    if s.group:
+        target_name = s.group.name
+    elif s.device:
+        target_name = s.device.name or s.device_id
+
+    return {
+        "schedule_name": s.name,
+        "asset_filename": s.asset.filename if s.asset else "—",
+        "target_name": target_name or "—",
+        "target_type": "group" if s.group_id else "device",
+        "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
+        "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
+        "duration_mins": duration_mins,
+        "countdown": "starting",
+        "starts_in_seconds": 0,
+        "day_label": "today",
+        "starting": True,
     }
 
 
