@@ -178,9 +178,11 @@ class TestPlaybackAssetTooltip:
             detail = page.locator('[data-detail-for="tooltip-dev-001"]').first
             expect(detail).to_be_visible(timeout=3000)
 
-            # Find the tooltip trigger (the .has-tooltip span with the asset name)
+            # Find the tooltip trigger (the .has-tooltip span with the asset name).
+            # The asset text may not appear until the JS poll fires (5 s interval)
+            # and applyAssetTooltips wraps it, so use a generous timeout.
             tooltip_trigger = detail.locator(".has-tooltip", has_text=asset_name).first
-            expect(tooltip_trigger).to_be_visible(timeout=3000)
+            expect(tooltip_trigger).to_be_visible(timeout=10_000)
 
             # Hover to reveal the tooltip
             tooltip_trigger.hover()
