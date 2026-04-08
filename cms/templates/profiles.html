@@ -151,7 +151,10 @@
                     {% endif %}
                 </td>
                 <td>
+                    {% if not p.builtin %}
                     <button class="btn btn-secondary btn-sm" onclick="editProfile('{{ p.id }}')">Edit</button>
+                    {% endif %}
+                    <button class="btn btn-secondary btn-sm" onclick="copyProfile('{{ p.id }}', '{{ p.name }}')">Copy</button>
                     {% if not p.builtin %}
                     <button class="btn btn-danger btn-sm" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
                     {% endif %}
@@ -439,6 +442,17 @@ async function deleteProfile(profileId, name) {
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Delete failed", true);
+    }
+}
+
+async function copyProfile(profileId, name) {
+    const resp = await apiCall("POST", `/api/profiles/${profileId}/copy`);
+    if (resp && resp.ok) {
+        showToast(`Copied profile "${name}"`);
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Copy failed", true);
     }
 }
 
