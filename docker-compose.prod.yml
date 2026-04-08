@@ -24,7 +24,7 @@ services:
       retries: 5
 
   mcp:
-    build: ./mcp
+    image: ghcr.io/sslivins/agora-cms-mcp:latest
     ports:
       - "8000:8000"
     environment:
@@ -34,6 +34,8 @@ services:
     depends_on:
       - cms
     restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
 
   ntp:
     image: alpine:3.21
