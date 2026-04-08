@@ -51,9 +51,6 @@
         <input type="checkbox" id="mcp-enabled" {% if mcp_enabled %}checked{% endif %}>
         <span>Enable MCP Server</span>
     </label>
-    <p id="mcp-offline-warning" class="text-muted" style="font-size: 0.8rem; margin-top: -0.5rem; display:none; color: var(--warning);">
-        ⚠ MCP container is not running. Start it with <code>docker compose up mcp -d</code>
-    </p>
 
     <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
         <div class="form-group">
@@ -80,7 +77,6 @@
     const toggle = document.getElementById("mcp-enabled");
     const keySection = document.getElementById("mcp-key-section");
     const statusBadge = document.getElementById("mcp-status-badge");
-    const offlineWarning = document.getElementById("mcp-offline-warning");
     const generateBtn = document.getElementById("mcp-generate-key");
 
     // Check MCP container health
@@ -92,14 +88,12 @@
                 statusBadge.textContent = "online";
                 statusBadge.className = "badge badge-online";
                 toggle.disabled = false;
-                offlineWarning.style.display = "none";
             } else {
                 statusBadge.textContent = "offline";
                 statusBadge.className = "badge badge-offline";
                 if (!toggle.checked) {
                     toggle.disabled = true;
                 }
-                offlineWarning.style.display = "";
             }
         } catch {
             statusBadge.textContent = "offline";
@@ -107,7 +101,6 @@
             if (!toggle.checked) {
                 toggle.disabled = true;
             }
-            offlineWarning.style.display = "";
         }
     }
 
