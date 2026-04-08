@@ -200,7 +200,7 @@ async def create_schedule(
     name: str,
     asset_id: str,
     start_time: str,
-    end_time: str,
+    end_time: str | None = None,
     device_id: str | None = None,
     group_id: str | None = None,
     start_date: str | None = None,
@@ -215,11 +215,14 @@ async def create_schedule(
     Assigns an asset to play on a device or group during a time window.
     Either device_id or group_id must be provided (not both).
 
+    When loop_count is set, end_time is auto-computed from the asset's
+    duration (loop_count × duration). You can omit end_time in that case.
+
     Args:
         name: Schedule display name.
         asset_id: UUID of the asset to play.
         start_time: Start time in HH:MM:SS format (e.g. "08:00:00").
-        end_time: End time in HH:MM:SS format (e.g. "17:00:00").
+        end_time: End time in HH:MM:SS format. Optional when loop_count is set (auto-computed).
         device_id: Target device ID (provide this OR group_id).
         group_id: Target group UUID (provide this OR device_id).
         start_date: Optional start date in ISO format (e.g. "2026-04-10T00:00:00Z").
@@ -233,10 +236,11 @@ async def create_schedule(
         "name": name,
         "asset_id": asset_id,
         "start_time": start_time,
-        "end_time": end_time,
         "priority": priority,
         "enabled": enabled,
     }
+    if end_time:
+        data["end_time"] = end_time
     if device_id:
         data["device_id"] = device_id
     if group_id:

@@ -15,7 +15,7 @@ class ScheduleCreate(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     start_time: time
-    end_time: time
+    end_time: Optional[time] = None
     days_of_week: Optional[list[int]] = None
     priority: int = 0
     enabled: bool = True
@@ -42,8 +42,10 @@ class ScheduleCreate(BaseModel):
 
     @model_validator(mode="after")
     def check_dates_and_times(self):
-        if self.start_time == self.end_time:
+        if self.end_time is not None and self.start_time == self.end_time:
             raise ValueError("Start time and end time cannot be the same")
+        if self.end_time is None and self.loop_count is None:
+            raise ValueError("end_time is required when loop_count is not set")
         if self.start_date and self.end_date:
             if self.end_date.date() < self.start_date.date():
                 raise ValueError("End date cannot be before start date")

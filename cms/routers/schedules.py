@@ -1,6 +1,7 @@
 """Schedule CRUD API routes."""
 
 import uuid
+from datetime import timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from cms.auth import require_auth
 from cms.database import get_db
+from cms.models.asset import Asset
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
@@ -87,6 +89,28 @@ async def _check_conflicts(schedule: Schedule, db: AsyncSession, exclude_id=None
 async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_db)):
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
+
+    # Auto-compute end_time when loop_count is set
+    if data.loop_count is not None:
+        asset = await db.get(Asset, data.asset_id)
+        if not asset:
+            raise HTTPException(status_code=422, detail="Asset not found")
+        if asset.duration_seconds:
+            # Compute end_time from loops × duration (overrides any provided value)
+            total_seconds = int(data.loop_count * asset.duration_seconds)
+            start_dt = timedelta(hours=data.start_time.hour, minutes=data.start_time.minute, seconds=data.start_time.second)
+            end_dt = start_dt + timedelta(seconds=total_seconds)
+            end_seconds = int(end_dt.total_seconds()) % 86400
+            h, remainder = divmod(end_seconds, 3600)
+            m, s = divmod(remainder, 60)
+            from datetime import time as dt_time
+            fields["end_time"] = dt_time(h, m, s)
+        elif fields.get("end_time") is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot compute end_time: asset has no duration. Provide end_time explicitly.",
+            )
+
     schedule = Schedule(**fields)
     await _check_conflicts(schedule, db)
     db.add(schedule)

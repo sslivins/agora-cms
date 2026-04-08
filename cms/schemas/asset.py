@@ -34,4 +34,5 @@ class AssetOut(BaseModel):
     asset_type: AssetType
     size_bytes: int
     checksum: str
+    duration_seconds: Optional[float] = None
     uploaded_at: datetime
