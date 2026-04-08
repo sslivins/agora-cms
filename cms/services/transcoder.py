@@ -81,6 +81,15 @@ def cancel_asset_transcodes(asset_id: uuid.UUID) -> bool:
         return True
     return False
 
+def _image_variant_ext(asset: Asset) -> str:
+    """Return the correct file extension for an image variant.
+
+    PNG sources keep .png to preserve transparency; everything else
+    (JPEG, HEIC→JPG, AVIF→JPG, etc.) uses .jpg.
+    """
+    return ".png" if asset.filename.lower().endswith(".png") else ".jpg"
+
+
 # Map profile video_codec value → ffmpeg encoder name
 CODEC_ENCODER_MAP: dict[str, str] = {
     "h264": "libx264",
@@ -345,10 +354,27 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     source = variant.source_asset
     profile = variant.profile
 
-    source_path = asset_dir / source.filename
+    # Use original source file (e.g. HEIC) when available, not the
+    # intermediate JPEG created during upload.
+    if source.original_filename:
+        original_path = asset_dir / "originals" / source.original_filename
+        if original_path.is_file():
+            source_path = original_path
+        else:
+            source_path = asset_dir / source.filename
+    else:
+        source_path = asset_dir / source.filename
+
     variants_dir = asset_dir / "variants"
     variants_dir.mkdir(parents=True, exist_ok=True)
-    output_path = variants_dir / variant.filename
+
+    # For image assets, force the correct output extension regardless of
+    # what the variant.filename says (fixes legacy .mp4 variants).
+    if source.asset_type == AssetType.IMAGE:
+        correct_ext = _image_variant_ext(source)
+        output_path = variants_dir / (variant.filename.rsplit(".", 1)[0] + correct_ext)
+    else:
+        output_path = variants_dir / variant.filename
 
     if not source_path.is_file():
         variant.status = VariantStatus.FAILED
@@ -372,10 +398,10 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         source.filename, variant.filename, profile.name,
     )
 
-    # Image assets: convert/downscale to JPEG at profile max dimensions
+    # Image assets: convert/downscale at profile max dimensions
     if source.asset_type == AssetType.IMAGE:
         try:
-            ok = await convert_image_to_jpeg(
+            ok = await convert_image(
                 source_path, output_path,
                 max_width=profile.max_width,
                 max_height=profile.max_height,
@@ -507,16 +533,20 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         logger.exception("Transcode error for %s", variant.filename)
 
 
-async def convert_image_to_jpeg(
+async def convert_image(
     source_path: Path,
     output_path: Path,
     max_width: int | None = None,
     max_height: int | None = None,
 ) -> bool:
-    """Convert an image file to JPEG using the best available tool.
+    """Convert an image file, preserving format when possible.
 
-    HEIC/HEIF files use heif-convert (handles grid-tiled images correctly),
-    then ffmpeg to resize. Other formats use ffmpeg directly.
+    Output format is determined by the output_path extension:
+    - .png → lossless PNG output
+    - .jpg/.jpeg → JPEG output (quality ~93, -q:v 2)
+
+    HEIC/HEIF source files use heif-convert (handles grid-tiled images
+    correctly), then ffmpeg to resize. Other formats use ffmpeg directly.
     When max_width/max_height are provided, images are capped at those
     dimensions (never upscaled). When omitted, original resolution is kept.
     """
@@ -550,6 +580,13 @@ async def convert_image_to_jpeg(
                 logger.warning("heif-convert failed for %s (exit %d), trying ffmpeg directly",
                                source_path.name, proc.returncode)
 
+        # Determine output codec args based on output extension
+        out_ext = output_path.suffix.lower()
+        if out_ext == ".png":
+            codec_args = ["-c:v", "png"]
+        else:
+            codec_args = ["-q:v", "2"]
+
         # ffmpeg: convert (+ optionally resize)
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
@@ -557,7 +594,7 @@ async def convert_image_to_jpeg(
             *vf_args,
             "-frames:v", "1",
             "-update", "1",
-            "-q:v", "2",
+            *codec_args,
             str(output_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -573,6 +610,43 @@ async def convert_image_to_jpeg(
     except OSError:
         logger.exception("Image conversion failed: %s", source_path)
         return False
+
+
+# Backward-compatible alias — existing callers (upload path) still use this name.
+convert_image_to_jpeg = convert_image
+
+
+async def fix_image_variant_extensions(db: AsyncSession) -> int:
+    """Fix image variants that have incorrect .mp4 extensions.
+
+    Resets them to PENDING with the correct extension so the transcoder
+    re-processes them.  Returns the number of variants fixed.
+    """
+    result = await db.execute(
+        select(AssetVariant).join(Asset, AssetVariant.source_asset_id == Asset.id).where(
+            Asset.asset_type == AssetType.IMAGE,
+            AssetVariant.filename.like("%.mp4"),
+        )
+    )
+    broken = result.scalars().all()
+
+    for variant in broken:
+        # Load source asset to determine correct extension
+        await db.refresh(variant, ["source_asset"])
+        correct_ext = _image_variant_ext(variant.source_asset)
+        stem = variant.filename.rsplit(".", 1)[0]
+        variant.filename = f"{stem}{correct_ext}"
+        variant.status = VariantStatus.PENDING
+        variant.size_bytes = 0
+        variant.checksum = ""
+        variant.progress = 0.0
+        variant.error_message = ""
+
+    if broken:
+        await db.commit()
+        logger.info("Fixed %d image variant(s) with incorrect .mp4 extension", len(broken))
+
+    return len(broken)
 
 
 async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
@@ -608,7 +682,7 @@ async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
 
         variant_id = uuid.uuid4()
         if asset.asset_type == AssetType.IMAGE:
-            ext = ".jpg"
+            ext = _image_variant_ext(asset)
         elif profile.audio_codec == "libopus":
             # Opus audio is not supported in MP4; use MKV container.
             ext = ".mkv"
