@@ -14,6 +14,9 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--bg);
