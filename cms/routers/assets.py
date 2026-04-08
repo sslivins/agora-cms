@@ -212,7 +212,8 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     for profile in profiles:
         variant_id = uuid.uuid4()
         if asset.asset_type == AssetType.IMAGE:
-            ext = ".jpg"
+            from cms.services.transcoder import _image_variant_ext
+            ext = _image_variant_ext(asset)
         elif profile.audio_codec == "libopus":
             ext = ".mkv"
         else:

@@ -205,6 +205,11 @@ async def lifespan(app: FastAPI):
     async for db in get_db():
         await _migrate_variant_filenames(db, settings)
 
+    # Fix image variants that were incorrectly created with .mp4 extensions
+    async for db in get_db():
+        from cms.services.transcoder import fix_image_variant_extensions
+        await fix_image_variant_extensions(db)
+
     # Start background scheduler
     scheduler_task = asyncio.create_task(scheduler_loop())
     transcoder_task = asyncio.create_task(transcoder_loop(settings.asset_storage_path))

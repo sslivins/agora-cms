@@ -119,17 +119,22 @@ class TestVariantUUIDFilenames:
         assert v.filename.endswith(".jpg"), f"Image variant should be .jpg, got: {v.filename}"
         assert v.filename == f"{v.id}.jpg"
 
-    async def test_enqueue_for_new_profile_image_produces_jpg(self, db_session):
-        """enqueue_for_new_profile should create .jpg variants for IMAGE assets."""
+    async def test_enqueue_for_new_profile_image_preserves_format(self, db_session):
+        """enqueue_for_new_profile should create .png variants for PNG assets
+        and .jpg variants for JPEG assets."""
         from cms.models.asset import Asset, AssetType, AssetVariant
         from cms.models.device_profile import DeviceProfile
         from cms.services.transcoder import enqueue_for_new_profile
 
-        asset = Asset(
+        png_asset = Asset(
             filename="banner.png", asset_type=AssetType.IMAGE,
             size_bytes=4096, checksum="img2",
         )
-        db_session.add(asset)
+        jpg_asset = Asset(
+            filename="photo.jpg", asset_type=AssetType.IMAGE,
+            size_bytes=3000, checksum="img3",
+        )
+        db_session.add_all([png_asset, jpg_asset])
         await db_session.flush()
 
         profile = DeviceProfile(name="pi-img-prof", video_codec="h264")
@@ -137,13 +142,19 @@ class TestVariantUUIDFilenames:
         await db_session.flush()
 
         count = await enqueue_for_new_profile(profile.id, db_session)
-        assert count == 1
+        assert count == 2
 
         from sqlalchemy import select
         result = await db_session.execute(select(AssetVariant))
-        v = result.scalar_one()
-        assert v.filename.endswith(".jpg"), f"Image variant should be .jpg, got: {v.filename}"
-        assert v.filename == f"{v.id}.jpg"
+        variants = {v.source_asset_id: v for v in result.scalars().all()}
+
+        png_v = variants[png_asset.id]
+        assert png_v.filename.endswith(".png"), f"PNG asset should get .png variant, got: {png_v.filename}"
+        assert png_v.filename == f"{png_v.id}.png"
+
+        jpg_v = variants[jpg_asset.id]
+        assert jpg_v.filename.endswith(".jpg"), f"JPG asset should get .jpg variant, got: {jpg_v.filename}"
+        assert jpg_v.filename == f"{jpg_v.id}.jpg"
 
     async def test_enqueue_for_new_profile_mixed_assets(self, db_session):
         """enqueue_for_new_profile should create variants for both VIDEO and IMAGE assets."""
