@@ -139,6 +139,11 @@ class CMSClient:
     async def end_schedule_now(self, schedule_id: str) -> str:
         return await self._post(f"/api/schedules/{schedule_id}/end-now")
 
+    # ── Profiles ──
+
+    async def list_profiles(self) -> list:
+        return await self._get("/api/profiles")
+
     # ── Dashboard ──
 
     async def get_dashboard(self) -> dict:

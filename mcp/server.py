@@ -2,6 +2,16 @@
 
 import json
 import logging
+import os
+
+import httpx
+import uvicorn
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 from mcp.server.fastmcp import FastMCP
 
@@ -10,7 +20,9 @@ from cms_client import CMSClient
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("Agora CMS", host="0.0.0.0", port=8000)
+CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
+
+mcp = FastMCP("Agora CMS")
 client = CMSClient()
 
 
@@ -324,6 +336,16 @@ async def end_schedule_now(schedule_id: str) -> str:
     return f"Schedule {schedule_id} ended for current occurrence"
 
 
+# ── Profiles ──
+
+
+@mcp.tool()
+async def list_profiles() -> str:
+    """List all transcode profiles (codec settings used when preparing video assets for devices)."""
+    profiles = await client.list_profiles()
+    return _json_result(profiles)
+
+
 # ── Dashboard ──
 
 
@@ -334,5 +356,67 @@ async def get_dashboard() -> str:
     return _json_result(dashboard)
 
 
+# ── Health check endpoint (used by CMS to detect if container is running) ──
+
+async def health_endpoint(request: Request) -> Response:
+    return JSONResponse({"status": "ok"})
+
+
+# ── Bearer token auth middleware ──
+
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    """Validate bearer tokens against the CMS /api/mcp/auth endpoint.
+
+    Allows /health through without auth (used by CMS health check).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        token = request.headers.get("authorization", "")
+        if not token:
+            return JSONResponse(
+                {"error": "Missing Authorization header"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as http:
+                resp = await http.get(
+                    f"{CMS_BASE_URL}/api/mcp/auth",
+                    headers={"Authorization": token},
+                )
+                if resp.status_code != 200:
+                    detail = resp.json().get("detail", "Access denied")
+                    return JSONResponse(
+                        {"error": detail},
+                        status_code=resp.status_code,
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+        except Exception as e:
+            logger.error("Failed to validate token with CMS: %s", e)
+            return JSONResponse(
+                {"error": "Auth service unavailable"},
+                status_code=503,
+            )
+
+        return await call_next(request)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    # Build the SSE app from FastMCP, then wrap it with auth
+    sse_app = mcp.sse_app()
+
+    app = Starlette(
+        routes=[
+            Route("/health", health_endpoint),
+        ],
+        middleware=[
+            Middleware(BearerAuthMiddleware),
+        ],
+    )
+    app.mount("/", sse_app)
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

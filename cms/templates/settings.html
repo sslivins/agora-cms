@@ -40,4 +40,112 @@
         <button type="submit" class="btn btn-primary">Update Password</button>
     </form>
 </div>
+
+<div class="card" id="mcp-card">
+    <h2>MCP Server <span id="mcp-status-badge" class="badge badge-offline">checking…</span></h2>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Allow AI agents (e.g. GitHub Copilot) to manage the CMS via the Model Context Protocol.
+    </p>
+
+    <label class="mcp-toggle-row">
+        <input type="checkbox" id="mcp-enabled" {% if mcp_enabled %}checked{% endif %}>
+        <span>Enable MCP Server</span>
+    </label>
+    <p id="mcp-offline-warning" class="text-muted" style="font-size: 0.8rem; margin-top: -0.5rem; display:none; color: var(--warning);">
+        ⚠ MCP container is not running. Start it with <code>docker compose up mcp -d</code>
+    </p>
+
+    <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
+        <div class="form-group">
+            <label>API Key</label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <input type="text" id="mcp-api-key" value="{{ mcp_api_key }}" readonly
+                       style="flex:1; font-family: monospace; font-size: 0.85rem;"
+                       placeholder="No key generated yet">
+                <button type="button" class="btn btn-secondary" id="mcp-copy-key"
+                        onclick="navigator.clipboard.writeText(document.getElementById('mcp-api-key').value).then(() => showToast('API key copied'))">
+                    Copy
+                </button>
+                <button type="button" class="btn btn-primary" id="mcp-generate-key">
+                    {{ 'Regenerate' if mcp_api_key else 'Generate' }}
+                </button>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+(function() {
+    const toggle = document.getElementById("mcp-enabled");
+    const keySection = document.getElementById("mcp-key-section");
+    const statusBadge = document.getElementById("mcp-status-badge");
+    const offlineWarning = document.getElementById("mcp-offline-warning");
+    const generateBtn = document.getElementById("mcp-generate-key");
+
+    // Check MCP container health
+    async function checkMcpHealth() {
+        try {
+            const resp = await fetch("/api/mcp/status");
+            const data = await resp.json();
+            if (data.online) {
+                statusBadge.textContent = "online";
+                statusBadge.className = "badge badge-online";
+                toggle.disabled = false;
+                offlineWarning.style.display = "none";
+            } else {
+                statusBadge.textContent = "offline";
+                statusBadge.className = "badge badge-offline";
+                if (!toggle.checked) {
+                    toggle.disabled = true;
+                }
+                offlineWarning.style.display = "";
+            }
+        } catch {
+            statusBadge.textContent = "offline";
+            statusBadge.className = "badge badge-offline";
+            if (!toggle.checked) {
+                toggle.disabled = true;
+            }
+            offlineWarning.style.display = "";
+        }
+    }
+
+    checkMcpHealth();
+
+    // Toggle MCP on/off
+    toggle.addEventListener("change", async function() {
+        try {
+            const resp = await fetch("/api/mcp/toggle", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled: toggle.checked}),
+            });
+            if (!resp.ok) throw new Error("Toggle failed");
+            keySection.style.display = toggle.checked ? "" : "none";
+            showToast(toggle.checked ? "MCP server enabled" : "MCP server disabled");
+        } catch {
+            toggle.checked = !toggle.checked;
+            showToast("Failed to update MCP setting", true);
+        }
+    });
+
+    // Generate API key
+    generateBtn.addEventListener("click", async function() {
+        const ok = await showConfirm("Generate a new API key? Any existing key will stop working.");
+        if (!ok) return;
+        try {
+            const resp = await fetch("/api/mcp/generate-key", {method: "POST"});
+            if (!resp.ok) throw new Error("Generate failed");
+            const data = await resp.json();
+            document.getElementById("mcp-api-key").value = data.key;
+            generateBtn.textContent = "Regenerate";
+            showToast("New API key generated — copy it now");
+        } catch {
+            showToast("Failed to generate API key", true);
+        }
+    });
+})();
+</script>
+
 {% endblock %}

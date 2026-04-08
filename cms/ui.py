@@ -11,6 +11,8 @@ from sqlalchemy.orm import selectinload
 from cms.auth import (
     COOKIE_NAME,
     MAX_AGE,
+    SETTING_MCP_API_KEY,
+    SETTING_MCP_ENABLED,
     SETTING_PASSWORD_HASH,
     SETTING_TIMEZONE,
     SETTING_USERNAME,
@@ -601,6 +603,8 @@ async def settings_page(
     from cms import __version__
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
+    mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
+    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
     return templates.TemplateResponse(request, "settings.html", {
         "active_tab": "settings",
@@ -608,6 +612,8 @@ async def settings_page(
         "username": username,
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
+        "mcp_enabled": mcp_enabled,
+        "mcp_api_key": mcp_api_key,
         "success": None,
         "error": None,
     })
@@ -662,6 +668,42 @@ async def change_password(
 
     ctx["success"] = "Password updated successfully"
     return templates.TemplateResponse(request, "settings.html", ctx)
+
+
+# ── MCP Settings (JSON API used by settings page JS) ──
+
+
+@router.get("/api/mcp/status", dependencies=[Depends(require_auth)])
+async def mcp_health_check():
+    """Check if the MCP container is reachable."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get("http://mcp:8000/health")
+            return {"online": resp.status_code == 200}
+    except Exception:
+        return {"online": False}
+
+
+@router.post("/api/mcp/toggle", dependencies=[Depends(require_auth)])
+async def mcp_toggle(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Enable or disable the MCP server."""
+    body = await request.json()
+    enabled = body.get("enabled", False)
+    await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
+    return {"enabled": enabled}
+
+
+@router.post("/api/mcp/generate-key", dependencies=[Depends(require_auth)])
+async def mcp_generate_key(db: AsyncSession = Depends(get_db)):
+    """Generate a new MCP API key (replaces any existing key)."""
+    import secrets
+    key = secrets.token_urlsafe(32)
+    await set_setting(db, SETTING_MCP_API_KEY, key)
+    return {"key": key}
 
 
 @router.post("/settings/timezone", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
