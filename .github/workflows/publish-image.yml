@@ -38,3 +38,12 @@ jobs:
           tags: |
             ghcr.io/sslivins/agora-cms:latest
             ghcr.io/sslivins/agora-cms:${{ steps.version.outputs.version }}
+
+      - name: Build and push MCP image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./mcp
+          push: true
+          tags: |
+            ghcr.io/sslivins/agora-cms-mcp:latest
+            ghcr.io/sslivins/agora-cms-mcp:${{ steps.version.outputs.version }}
