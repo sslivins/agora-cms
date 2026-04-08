@@ -332,6 +332,16 @@ async def end_schedule_now(schedule_id: str) -> str:
     return f"Schedule {schedule_id} ended for current occurrence"
 
 
+# ── Profiles ──
+
+
+@mcp.tool()
+async def list_profiles() -> str:
+    """List all transcode profiles (codec settings used when preparing video assets for devices)."""
+    profiles = await client.list_profiles()
+    return _json_result(profiles)
+
+
 # ── Dashboard ──
 
 
