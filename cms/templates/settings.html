@@ -60,7 +60,7 @@
                        style="flex:1; font-family: monospace; font-size: 0.85rem;"
                        placeholder="No key generated yet">
                 <button type="button" class="btn btn-secondary" id="mcp-copy-key"
-                        onclick="navigator.clipboard.writeText(document.getElementById('mcp-api-key').value).then(() => showToast('API key copied'))">
+                        onclick="copyToClipboard(document.getElementById('mcp-api-key').value)">
                     Copy
                 </button>
                 <button type="button" class="btn btn-primary" id="mcp-generate-key">
