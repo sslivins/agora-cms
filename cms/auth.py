@@ -18,6 +18,8 @@ MAX_AGE = 604800  # 7 days
 SETTING_PASSWORD_HASH = "admin_password_hash"
 SETTING_USERNAME = "admin_username"
 SETTING_TIMEZONE = "timezone"
+SETTING_MCP_ENABLED = "mcp_enabled"
+SETTING_MCP_API_KEY = "mcp_api_key"
 
 
 @lru_cache

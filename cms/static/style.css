@@ -567,6 +567,13 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 
 /* Settings page */
 .settings-form { max-width: 400px; }
+.mcp-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    font-weight: 500;
+}
 .flash {
     padding: 0.75rem 1rem;
     border-radius: var(--radius);
