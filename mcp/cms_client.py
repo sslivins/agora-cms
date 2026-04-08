@@ -144,6 +144,16 @@ class CMSClient:
     async def list_profiles(self) -> list:
         return await self._get("/api/profiles")
 
+    # ── Logs ──
+
+    async def request_device_logs(
+        self, device_id: str, services: list[str] | None = None, since: str = "24h",
+    ) -> dict:
+        params = {"since": since}
+        if services:
+            params["services"] = services
+        return await self._post(f"/api/devices/{device_id}/logs", params)
+
     # ── Dashboard ──
 
     async def get_dashboard(self) -> dict:

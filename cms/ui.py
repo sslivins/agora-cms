@@ -606,6 +606,15 @@ async def settings_page(
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
     mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
+    # Device list for log download panel
+    from cms.models.device import Device
+    result = await db.execute(select(Device).order_by(Device.name))
+    devices = result.scalars().all()
+    device_list = [
+        {"id": d.id, "name": d.name, "connected": device_manager.is_connected(d.id)}
+        for d in devices
+    ]
+
     return templates.TemplateResponse(request, "settings.html", {
         "active_tab": "settings",
         "version": __version__,
@@ -614,6 +623,7 @@ async def settings_page(
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
         "mcp_api_key": mcp_api_key,
+        "devices": device_list,
         "success": None,
         "error": None,
     })

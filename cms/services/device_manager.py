@@ -1,6 +1,8 @@
 """Device connection registry — tracks live WebSocket connections."""
 
+import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -38,6 +40,7 @@ class DeviceManager:
 
     def __init__(self):
         self._connections: dict[str, ConnectedDevice] = {}
+        self._pending_log_requests: dict[str, asyncio.Future] = {}
 
     def register(self, device_id: str, websocket: WebSocket, ip_address: Optional[str] = None) -> ConnectedDevice:
         conn = ConnectedDevice(device_id, websocket, ip_address=ip_address)
@@ -110,6 +113,53 @@ class DeviceManager:
             elif not error:
                 conn.error_since = None
             conn.error = error
+
+    async def request_logs(
+        self,
+        device_id: str,
+        services: list[str] | None = None,
+        since: str = "24h",
+        timeout: float = 30.0,
+    ) -> dict:
+        """Send a request_logs command to a device and wait for the response.
+
+        Returns the logs dict {service_name: log_text} or raises TimeoutError/ValueError.
+        """
+        conn = self._connections.get(device_id)
+        if not conn:
+            raise ValueError(f"Device {device_id} is not connected")
+
+        request_id = str(uuid.uuid4())
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_log_requests[request_id] = fut
+
+        from cms.schemas.protocol import RequestLogsMessage
+        msg = RequestLogsMessage(
+            request_id=request_id,
+            services=services,
+            since=since,
+        )
+        try:
+            await conn.send_json(msg.model_dump(mode="json"))
+        except Exception:
+            self._pending_log_requests.pop(request_id, None)
+            raise ValueError(f"Failed to send request to device {device_id}")
+
+        try:
+            result = await asyncio.wait_for(fut, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            self._pending_log_requests.pop(request_id, None)
+            raise TimeoutError(f"Device {device_id} did not respond within {timeout}s")
+
+    def resolve_log_request(self, request_id: str, logs: dict[str, str], error: str | None = None):
+        """Called by the WS handler when a logs_response arrives."""
+        fut = self._pending_log_requests.pop(request_id, None)
+        if fut and not fut.done():
+            if error:
+                fut.set_exception(RuntimeError(error))
+            else:
+                fut.set_result(logs)
 
     def get_all_states(self) -> list[dict]:
         return [

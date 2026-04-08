@@ -2,12 +2,28 @@
 
 import asyncio
 import logging
+from collections import deque
 from contextlib import asynccontextmanager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
+# ── In-memory log buffer for log download feature ──
+_log_buffer: deque[str] = deque(maxlen=50_000)
+
+
+class _BufferHandler(logging.Handler):
+    """Appends formatted log lines to an in-memory ring buffer."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            _log_buffer.append(self.format(record))
+        except Exception:
+            pass
+
+
+_fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
+logging.basicConfig(level=logging.INFO, format=_fmt)
+_buf_handler = _BufferHandler(logging.INFO)
+_buf_handler.setFormatter(logging.Formatter(_fmt))
+logging.getLogger().addHandler(_buf_handler)
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import HTTPException
@@ -276,6 +292,7 @@ app.mount("/static", StaticFiles(directory="cms/static"), name="static")
 from cms.routers.assets import device_router as assets_device_router  # noqa: E402
 from cms.routers.assets import router as assets_router  # noqa: E402
 from cms.routers.devices import router as devices_router  # noqa: E402
+from cms.routers.logs import router as logs_router  # noqa: E402
 from cms.routers.mcp import router as mcp_router  # noqa: E402
 from cms.routers.profiles import router as profiles_router  # noqa: E402
 from cms.routers.schedules import router as schedules_router  # noqa: E402
@@ -287,6 +304,7 @@ app.include_router(assets_router)
 app.include_router(assets_device_router)
 app.include_router(schedules_router)
 app.include_router(profiles_router)
+app.include_router(logs_router)
 app.include_router(mcp_router)
 app.include_router(ws_router)
 app.include_router(ui_router)

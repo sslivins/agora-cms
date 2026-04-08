@@ -148,4 +148,138 @@
 })();
 </script>
 
+<div class="card" id="logs-card">
+    <h2>Download Logs</h2>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Collect logs from selected devices and the CMS, then download as a zip file.
+    </p>
+
+    <div class="form-group">
+        <label>Time Range</label>
+        <select id="logs-since">
+            <option value="1h">Last 1 hour</option>
+            <option value="6h">Last 6 hours</option>
+            <option value="24h" selected>Last 24 hours</option>
+            <option value="48h">Last 48 hours</option>
+            <option value="7d">Last 7 days</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>Devices</label>
+        <div id="logs-device-list" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem;">
+            {% for device in devices %}
+            <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; cursor: pointer;">
+                <input type="checkbox" name="log_device" value="{{ device.id }}"
+                       {% if device.connected %}checked{% endif %}
+                       style="width: auto; margin: 0;">
+                <span>{{ device.name }}</span>
+                {% if device.connected %}
+                    <span class="badge badge-online" style="font-size: 0.7rem;">online</span>
+                {% else %}
+                    <span class="badge badge-offline" style="font-size: 0.7rem;">offline</span>
+                {% endif %}
+            </label>
+            {% endfor %}
+            {% if not devices %}
+            <p class="text-muted" style="margin: 0; font-size: 0.85rem;">No devices registered.</p>
+            {% endif %}
+        </div>
+        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; font-size: 0.85rem;">
+            <a href="#" id="logs-select-all">Select all</a>
+            <a href="#" id="logs-select-none">Select none</a>
+            <a href="#" id="logs-select-online">Select online only</a>
+        </div>
+    </div>
+
+    <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; cursor: pointer;">
+        <input type="checkbox" id="logs-include-cms" checked style="width: auto; margin: 0;">
+        <span>Include CMS logs</span>
+    </label>
+
+    <button type="button" class="btn btn-primary" id="logs-download-btn">
+        Download Logs
+    </button>
+    <span id="logs-status" class="text-muted" style="margin-left: 1rem; font-size: 0.85rem;"></span>
+</div>
+
+<script>
+(function() {
+    const downloadBtn = document.getElementById("logs-download-btn");
+    const statusSpan = document.getElementById("logs-status");
+    const checkboxes = () => document.querySelectorAll('input[name="log_device"]');
+
+    document.getElementById("logs-select-all").addEventListener("click", (e) => {
+        e.preventDefault();
+        checkboxes().forEach(cb => cb.checked = true);
+    });
+    document.getElementById("logs-select-none").addEventListener("click", (e) => {
+        e.preventDefault();
+        checkboxes().forEach(cb => cb.checked = false);
+    });
+    document.getElementById("logs-select-online").addEventListener("click", (e) => {
+        e.preventDefault();
+        checkboxes().forEach(cb => {
+            const badge = cb.closest("label").querySelector(".badge");
+            cb.checked = badge && badge.classList.contains("badge-online");
+        });
+    });
+
+    downloadBtn.addEventListener("click", async () => {
+        const deviceIds = [...checkboxes()]
+            .filter(cb => cb.checked)
+            .map(cb => cb.value);
+        const includeCms = document.getElementById("logs-include-cms").checked;
+        const since = document.getElementById("logs-since").value;
+
+        if (deviceIds.length === 0 && !includeCms) {
+            showToast("Select at least one device or include CMS logs", true);
+            return;
+        }
+
+        downloadBtn.disabled = true;
+        statusSpan.textContent = "Collecting logs…";
+
+        try {
+            const resp = await fetch("/api/logs/download", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    device_ids: deviceIds,
+                    include_cms: includeCms,
+                    since: since,
+                }),
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || "Download failed");
+            }
+
+            const blob = await resp.blob();
+            const disposition = resp.headers.get("content-disposition") || "";
+            const match = disposition.match(/filename="(.+)"/);
+            const filename = match ? match[1] : "agora-logs.zip";
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+
+            statusSpan.textContent = "";
+            showToast("Logs downloaded");
+        } catch (err) {
+            showToast(err.message || "Failed to download logs", true);
+            statusSpan.textContent = "";
+        } finally {
+            downloadBtn.disabled = false;
+        }
+    });
+})();
+</script>
+
 {% endblock %}
