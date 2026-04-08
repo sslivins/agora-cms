@@ -187,6 +187,8 @@ async def update_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if profile.builtin:
+        raise HTTPException(status_code=400, detail="Cannot edit built-in profile")
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -308,6 +310,77 @@ async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_d
     await db.delete(profile)
     await db.commit()
     return {"deleted": profile.name}
+
+
+@router.post("/{profile_id}/copy", response_model=ProfileOut, status_code=201)
+async def copy_profile(
+    profile_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Generate a unique copy name
+    base_name = f"Copy of {source.name}"
+    copy_name = base_name
+    suffix = 2
+    while True:
+        dup = await db.execute(
+            select(DeviceProfile).where(DeviceProfile.name == copy_name)
+        )
+        if not dup.scalar_one_or_none():
+            break
+        copy_name = f"{base_name} {suffix}"
+        suffix += 1
+
+    profile = DeviceProfile(
+        name=copy_name,
+        description=source.description,
+        video_codec=source.video_codec,
+        video_profile=source.video_profile,
+        max_width=source.max_width,
+        max_height=source.max_height,
+        max_fps=source.max_fps,
+        video_bitrate=source.video_bitrate,
+        crf=source.crf,
+        pixel_format=source.pixel_format,
+        color_space=source.color_space,
+        audio_codec=source.audio_codec,
+        audio_bitrate=source.audio_bitrate,
+        builtin=False,
+    )
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+
+    # Enqueue transcoding for all existing video assets
+    count = await enqueue_for_new_profile(profile.id, db)
+
+    return ProfileOut(
+        id=profile.id,
+        name=profile.name,
+        description=profile.description,
+        video_codec=profile.video_codec,
+        video_profile=profile.video_profile,
+        max_width=profile.max_width,
+        max_height=profile.max_height,
+        max_fps=profile.max_fps,
+        video_bitrate=profile.video_bitrate,
+        crf=profile.crf,
+        pixel_format=profile.pixel_format,
+        color_space=profile.color_space,
+        audio_codec=profile.audio_codec,
+        audio_bitrate=profile.audio_bitrate,
+        builtin=profile.builtin,
+        device_count=0,
+        total_variants=count,
+        ready_variants=0,
+        created_at=profile.created_at,
+    )
 
 
 @router.get("/status")

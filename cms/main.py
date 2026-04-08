@@ -63,6 +63,22 @@ async def _seed_profiles(db):
             count = await enqueue_for_new_profile(profile.id, db)
             if count:
                 logger.info("Enqueued %d variants for new profile %s", count, d["name"])
+        else:
+            # Reset built-in profile to canonical defaults
+            result = await db.execute(
+                select(DeviceProfile).where(DeviceProfile.name == d["name"])
+            )
+            profile = result.scalar_one()
+            changed = False
+            for field, value in d.items():
+                if field == "name":
+                    continue
+                if getattr(profile, field) != value:
+                    setattr(profile, field, value)
+                    changed = True
+            if changed:
+                await db.commit()
+                logger.info("Reset built-in profile to defaults: %s", d["name"])
 
     # Ensure all video assets have variants for all profiles (handles gaps)
     from cms.services.transcoder import enqueue_for_new_profile
