@@ -346,6 +346,30 @@ async def list_profiles() -> str:
     return _json_result(profiles)
 
 
+# ── Logs ──
+
+
+@mcp.tool()
+async def get_device_logs(
+    device_id: str,
+    services: list[str] | None = None,
+    since: str = "24h",
+) -> str:
+    """Request logs from a connected device via its WebSocket connection.
+
+    Returns journalctl output from the device's agora services.
+    The device must be online (connected via WebSocket).
+
+    Args:
+        device_id: ID of the device to get logs from.
+        services: Optional list of systemd service names to filter (e.g. ["agora-player", "agora-api"]).
+                  If omitted, returns logs from all agora services.
+        since: Time range for logs (e.g. "1h", "24h", "7d"). Default "24h".
+    """
+    result = await client.request_device_logs(device_id, services=services, since=since)
+    return _json_result(result)
+
+
 # ── Dashboard ──
 
 

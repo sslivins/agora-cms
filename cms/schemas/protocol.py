@@ -37,6 +37,10 @@ class MessageType(str, Enum):
     REBOOT = "reboot"
     UPGRADE = "upgrade"
     FACTORY_RESET = "factory_reset"
+    REQUEST_LOGS = "request_logs"
+
+    # Device → CMS (response)
+    LOGS_RESPONSE = "logs_response"
 
 
 class BaseMessage(BaseModel):
@@ -165,3 +169,18 @@ class FactoryResetMessage(BaseMessage):
 
 class UpgradeMessage(BaseMessage):
     type: MessageType = MessageType.UPGRADE
+
+
+class RequestLogsMessage(BaseMessage):
+    type: MessageType = MessageType.REQUEST_LOGS
+    request_id: str
+    services: Optional[list[str]] = None  # e.g. ["agora-player", "agora-api"]; None = all
+    since: str = "24h"  # journalctl --since format, e.g. "24h", "1h", "2026-04-08"
+
+
+class LogsResponseMessage(BaseMessage):
+    type: MessageType = MessageType.LOGS_RESPONSE
+    request_id: str
+    device_id: str
+    logs: dict[str, str] = {}  # service_name -> log text
+    error: Optional[str] = None

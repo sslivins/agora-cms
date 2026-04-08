@@ -346,6 +346,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     msg.get("budget_mb"), msg.get("available_mb"), msg.get("required_mb"),
                 )
 
+            elif msg_type == MessageType.LOGS_RESPONSE:
+                request_id = msg.get("request_id", "")
+                logs = msg.get("logs", {})
+                error = msg.get("error")
+                logger.info("Device %s sent logs (request %s, %d services)", device_id, request_id, len(logs))
+                device_manager.resolve_log_request(request_id, logs, error)
+
             else:
                 logger.warning("Unknown message type from %s: %s", device_id, msg_type)
 

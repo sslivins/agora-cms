@@ -361,6 +361,35 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
     return {"deleted": device_id}
 
 
+@router.post("/{device_id}/logs")
+async def request_device_logs(
+    device_id: str,
+    services: list[str] | None = None,
+    since: str = "24h",
+    db: AsyncSession = Depends(get_db),
+):
+    """Request logs from a connected device via WebSocket.
+
+    Returns a dict of {service_name: log_text}.
+    """
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if not device_manager.is_connected(device_id):
+        raise HTTPException(status_code=409, detail="Device is not connected")
+
+    try:
+        logs = await device_manager.request_logs(device_id, services=services, since=since)
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {"device_id": device_id, "logs": logs}
+
+
 # ── Groups ──
 
 
