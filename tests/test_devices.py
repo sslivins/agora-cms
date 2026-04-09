@@ -377,6 +377,79 @@ class TestDevicePlaybackFields:
 
 
 @pytest.mark.asyncio
+class TestGetSingleDevice:
+    """Tests for GET /api/devices/{device_id} endpoint."""
+
+    async def test_get_device_playback_fields_from_live_state(self, client, db_session):
+        """Single device endpoint should include live playback state fields."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        device = Device(id="single-live", name="single-live", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("single-live", FakeWS())
+        device_manager.update_status(
+            "single-live", mode="play", asset="beach.mp4", pipeline_state="PLAYING",
+            display_connected=True,
+        )
+
+        try:
+            resp = await client.get("/api/devices/single-live")
+            assert resp.status_code == 200
+            dev = resp.json()
+            assert dev["playback_mode"] == "play"
+            assert dev["playback_asset"] == "beach.mp4"
+            assert dev["pipeline_state"] == "PLAYING"
+            assert dev["display_connected"] is True
+        finally:
+            device_manager.disconnect("single-live")
+
+    async def test_get_device_has_active_schedule(self, client, db_session):
+        """Single device endpoint should include has_active_schedule from scheduler."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services import scheduler
+
+        device = Device(id="single-sched", name="single-sched", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        scheduler._now_playing["single-sched"] = {
+            "device_id": "single-sched",
+            "schedule_id": "fake-sched-id",
+            "asset": "scheduled.mp4",
+        }
+
+        try:
+            resp = await client.get("/api/devices/single-sched")
+            assert resp.status_code == 200
+            assert resp.json()["has_active_schedule"] is True
+        finally:
+            scheduler._now_playing.pop("single-sched", None)
+
+    async def test_get_device_offline_defaults(self, client, db_session):
+        """Offline device via single endpoint should have null playback fields."""
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="single-offline", name="single-offline", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.get("/api/devices/single-offline")
+        assert resp.status_code == 200
+        dev = resp.json()
+        assert dev["playback_mode"] is None
+        assert dev["playback_asset"] is None
+        assert dev["pipeline_state"] is None
+        assert dev["display_connected"] is None
+        assert dev["has_active_schedule"] is False
+
+
+@pytest.mark.asyncio
 class TestUpgradeGuard:
     async def test_upgrade_not_connected(self, client, db_session):
         """Upgrading an offline device returns 409."""
