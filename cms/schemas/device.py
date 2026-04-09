@@ -30,6 +30,7 @@ class DeviceOut(BaseModel):
     playback_mode: Optional[str] = None
     playback_asset: Optional[str] = None
     pipeline_state: Optional[str] = None
+    display_connected: Optional[bool] = None
     has_active_schedule: bool = False
 
 

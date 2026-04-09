@@ -77,6 +77,8 @@ class StatusMessage(BaseMessage):
     error: Optional[str] = None
     error_timestamp: Optional[str] = None
     ssh_enabled: Optional[bool] = None
+    local_api_enabled: Optional[bool] = None
+    display_connected: Optional[bool] = None
 
 
 class AssetAckMessage(BaseMessage):

@@ -257,3 +257,95 @@ class TestDeviceManagerPlaybackState:
         )
         conn = dm.get("dev-pb-4")
         assert conn.playback_position_ms is None
+
+
+class TestDeviceManagerDisplayConnected:
+    """Display connection state is stored and surfaced from device status heartbeats."""
+
+    def test_display_connected_initially_none(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-1", FakeWS())
+        conn = dm.get("dev-dc-1")
+        assert conn.display_connected is None
+
+    def test_display_connected_set_on_status(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-2", FakeWS())
+        dm.update_status("dev-dc-2", mode="play", asset="test.mp4", display_connected=True)
+        assert dm.get("dev-dc-2").display_connected is True
+
+    def test_display_disconnected_on_status(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-3", FakeWS())
+        dm.update_status("dev-dc-3", mode="play", asset="test.mp4", display_connected=False)
+        assert dm.get("dev-dc-3").display_connected is False
+
+    def test_display_connected_transitions(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-4", FakeWS())
+        dm.update_status("dev-dc-4", mode="play", asset="test.mp4", display_connected=True)
+        assert dm.get("dev-dc-4").display_connected is True
+
+        dm.update_status("dev-dc-4", mode="play", asset="test.mp4", display_connected=False)
+        assert dm.get("dev-dc-4").display_connected is False
+
+        dm.update_status("dev-dc-4", mode="play", asset="test.mp4", display_connected=True)
+        assert dm.get("dev-dc-4").display_connected is True
+
+    def test_display_connected_none_when_unavailable(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-5", FakeWS())
+        dm.update_status("dev-dc-5", mode="play", asset="test.mp4", display_connected=None)
+        assert dm.get("dev-dc-5").display_connected is None
+
+    def test_display_connected_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-6", FakeWS())
+        dm.update_status("dev-dc-6", mode="play", asset="test.mp4", display_connected=True)
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-dc-6"]["display_connected"] is True
+
+    def test_display_disconnected_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-7", FakeWS())
+        dm.update_status("dev-dc-7", mode="play", asset="test.mp4", display_connected=False)
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-dc-7"]["display_connected"] is False
+
+    def test_display_none_in_get_all_states(self):
+        dm = DeviceManager()
+
+        class FakeWS:
+            pass
+
+        dm.register("dev-dc-8", FakeWS())
+        states = {s["device_id"]: s for s in dm.get_all_states()}
+        assert states["dev-dc-8"]["display_connected"] is None
