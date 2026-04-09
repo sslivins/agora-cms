@@ -40,6 +40,13 @@ SCHEDULE_WINDOW_DAYS = 30
 async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_name: str,
                      asset_filename: str, schedule_id=None, device_id=None, details=None):
     """Write a schedule history log entry."""
+    import uuid as _uuid
+    # Ensure schedule_id is a proper UUID (may arrive as string from _now_playing)
+    if isinstance(schedule_id, str):
+        try:
+            schedule_id = _uuid.UUID(schedule_id)
+        except ValueError:
+            schedule_id = None
     entry = ScheduleLog(
         schedule_id=schedule_id,
         schedule_name=schedule_name,
@@ -51,6 +58,20 @@ async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_nam
     )
     db.add(entry)
     await db.flush()
+
+
+async def _resolve_schedule_id(db, schedule_id_str: str | None):
+    """Convert a schedule_id string to UUID, returning None if the schedule
+    was deleted (to avoid FK violations in schedule_logs)."""
+    import uuid as _uuid
+    if not schedule_id_str:
+        return None
+    try:
+        sid = _uuid.UUID(schedule_id_str) if isinstance(schedule_id_str, str) else schedule_id_str
+    except ValueError:
+        return None
+    exists = await db.execute(select(Schedule.id).where(Schedule.id == sid))
+    return sid if exists.scalar_one_or_none() is not None else None
 
 
 def get_now_playing() -> list[dict]:
@@ -721,7 +742,7 @@ async def evaluate_schedules() -> None:
                             schedule_name=prev["schedule_name"],
                             device_name=prev["device_name"],
                             asset_filename=prev["asset_filename"],
-                            schedule_id=prev.get("schedule_id"),
+                            schedule_id=await _resolve_schedule_id(db, prev.get("schedule_id")),
                             device_id=did,
                         )
                     # Log STARTED for the new schedule
@@ -766,7 +787,7 @@ async def evaluate_schedules() -> None:
                         schedule_name=prev["schedule_name"],
                         device_name=prev["device_name"],
                         asset_filename=prev["asset_filename"],
-                        schedule_id=prev.get("schedule_id"),
+                        schedule_id=await _resolve_schedule_id(db, prev.get("schedule_id")),
                         device_id=did,
                     )
 
