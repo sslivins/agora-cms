@@ -1,7 +1,6 @@
 """HTTP client for Agora CMS REST API.
 
-Handles session-cookie authentication and provides typed methods
-for every API operation the MCP tools expose.
+Supports API key authentication (preferred) or session-cookie fallback.
 """
 
 import logging
@@ -12,6 +11,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
+CMS_API_KEY = os.environ.get("CMS_API_KEY", "")
+# Legacy fallback — used only if CMS_API_KEY is not set
 CMS_USERNAME = os.environ.get("CMS_USERNAME", "admin")
 CMS_PASSWORD = os.environ.get("CMS_PASSWORD", "agora")
 
@@ -22,17 +23,24 @@ class CMSClient:
     def __init__(
         self,
         base_url: str = CMS_BASE_URL,
+        api_key: str = CMS_API_KEY,
         username: str = CMS_USERNAME,
         password: str = CMS_PASSWORD,
     ):
         self.base_url = base_url.rstrip("/")
+        self._api_key = api_key
         self._username = username
         self._password = password
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
-        self._authenticated = False
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url, timeout=30.0, headers=headers,
+        )
+        self._authenticated = bool(self._api_key)
 
     async def _ensure_auth(self) -> None:
-        """Login once and store the session cookie."""
+        """Login via session cookie if no API key is configured."""
         if self._authenticated:
             return
         resp = await self._client.post(

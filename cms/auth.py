@@ -1,5 +1,6 @@
-"""Authentication — session-based for web UI."""
+"""Authentication — session-based for web UI, API key for programmatic access."""
 
+import hashlib
 from functools import lru_cache
 
 import bcrypt
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.config import Settings
 from cms.database import get_db
+from cms.models.api_key import APIKey
 from cms.models.setting import CMSSetting
 
 COOKIE_NAME = "agora_cms_session"
@@ -39,7 +41,33 @@ def get_serializer(settings: Settings = Depends(get_settings)) -> URLSafeTimedSe
     return URLSafeTimedSerializer(settings.secret_key)
 
 
-def require_auth(request: Request, settings: Settings = Depends(get_settings)):
+def _hash_api_key(key: str) -> str:
+    """Hash an API key with SHA-256 for storage/comparison."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+async def require_auth(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    # Check for API key first (programmatic access)
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        key_hash = _hash_api_key(api_key)
+        result = await db.execute(
+            select(APIKey).where(APIKey.key_hash == key_hash)
+        )
+        key_row = result.scalar_one_or_none()
+        if key_row is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        # Update last_used_at
+        from datetime import datetime, timezone
+        key_row.last_used_at = datetime.now(timezone.utc)
+        await db.commit()
+        return
+
+    # Fall back to session cookie (web UI)
     cookie = request.cookies.get(COOKIE_NAME)
     if not cookie:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
