@@ -95,16 +95,26 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
 
 @router.get("/{device_id}", response_model=DeviceOut)
 async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
+    from cms.services.scheduler import get_now_playing
+
     result = await db.execute(
         select(Device).options(selectinload(Device.group)).where(Device.id == device_id)
     )
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
         is_online=device_manager.is_connected(device.id),
+        is_upgrading=device.id in _upgrading,
+        playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
+        playback_asset=live_states[device.id]["asset"] if device.id in live_states else None,
+        pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
+        display_connected=live_states[device.id]["display_connected"] if device.id in live_states else None,
+        has_active_schedule=device.id in scheduled_device_ids,
     )
 
 
