@@ -1,5 +1,7 @@
 # Agora CMS — Central Management Server
 
+[![Tests](https://github.com/sslivins/agora-cms/actions/workflows/tests.yml/badge.svg)](https://github.com/sslivins/agora-cms/actions/workflows/tests.yml)
+
 **Manage a fleet of digital signage displays from a single dashboard.**
 
 Agora CMS is the command center for [Agora](https://github.com/sslivins/agora) media playback devices running on Raspberry Pi Zero 2 W. Upload content once, build time-based schedules, and the CMS handles the rest — transcoding video for each device's hardware, distributing assets when needed, and pushing live updates over WebSocket. No manual device configuration required.
