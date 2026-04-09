@@ -27,6 +27,7 @@ class ConnectedDevice:
         self.cpu_temp_c: Optional[float] = None
         self.ssh_enabled: Optional[bool] = None
         self.local_api_enabled: Optional[bool] = None
+        self.display_connected: Optional[bool] = None
         # Error state from last STATUS message
         self.error: Optional[str] = None
         self.error_since: Optional[datetime] = None
@@ -94,6 +95,7 @@ class DeviceManager:
         playback_position_ms: int | None = None,
         ssh_enabled: bool | None = None,
         local_api_enabled: bool | None = None,
+        display_connected: bool | None = None,
     ):
         conn = self._connections.get(device_id)
         if conn:
@@ -108,6 +110,7 @@ class DeviceManager:
                 conn.ssh_enabled = ssh_enabled
             if local_api_enabled is not None:
                 conn.local_api_enabled = local_api_enabled
+            conn.display_connected = display_connected
             if error and not conn.error:
                 conn.error_since = datetime.now(timezone.utc)
             elif not error:
@@ -178,6 +181,7 @@ class DeviceManager:
                 "error_since": c.error_since.isoformat() if c.error_since else None,
                 "ssh_enabled": c.ssh_enabled,
                 "local_api_enabled": c.local_api_enabled,
+                "display_connected": c.display_connected,
             }
             for c in self._connections.values()
         ]

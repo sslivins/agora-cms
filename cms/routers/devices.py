@@ -86,6 +86,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
             playback_asset=live_states[d.id]["asset"] if d.id in live_states else None,
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
+            display_connected=live_states[d.id]["display_connected"] if d.id in live_states else None,
             has_active_schedule=d.id in scheduled_device_ids,
         )
         for d in devices

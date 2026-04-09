@@ -125,6 +125,18 @@
                 </span>
             </div>
             <div class="detail-item">
+                <span class="detail-label">Display</span>
+                <span class="detail-value" data-live-display="{{ d.id }}">
+                    {% if d.display_connected is none %}
+                        <span class="text-muted">—</span>
+                    {% elif d.display_connected %}
+                        <span class="badge badge-online">Connected</span>
+                    {% else %}
+                        <span class="badge badge-offline">Disconnected</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
                 <span class="detail-label">Pipeline State</span>
                 <span class="detail-value" data-live-pipeline="{{ d.id }}">
                     {% if d.pipeline_state == 'PLAYING' %}
@@ -393,6 +405,12 @@ function applyAssetTooltips() {
                 else delete row.dataset.playing;
             }
             // Update expanded detail panels
+            const displayEl = document.querySelector(`[data-live-display="${d.id}"]`);
+            if (displayEl) {
+                if (d.display_connected === null || d.display_connected === undefined) displayEl.innerHTML = '<span class="text-muted">—</span>';
+                else if (d.display_connected) displayEl.innerHTML = '<span class="badge badge-online">Connected</span>';
+                else displayEl.innerHTML = '<span class="badge badge-offline">Disconnected</span>';
+            }
             const pipelineEl = document.querySelector(`[data-live-pipeline="${d.id}"]`);
             if (pipelineEl) pipelineEl.innerHTML = buildPipelineBadge(d);
             const assetEl = document.querySelector(`[data-live-asset="${d.id}"]`);

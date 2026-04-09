@@ -7,7 +7,8 @@
 {% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
 {% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
 {% set error_devices = device_states | selectattr("error") | list %}
-{% set has_issues = offline_devices or orphaned_devices or temp_warning or error_devices %}
+{% set display_disconnected = device_states | selectattr("is_online") | rejectattr("display_connected", "none") | rejectattr("display_connected") | list %}
+{% set has_issues = offline_devices or orphaned_devices or temp_warning or error_devices or display_disconnected %}
 
 {# ── Device Status (alert banner — only shown when something needs attention) ── #}
 {% if has_issues %}
@@ -63,6 +64,14 @@
                 <td class="text-warning">Temperature warning</td>
             </tr>
             {% endif %}
+            {% endfor %}
+            {% for ds in display_disconnected %}
+            <tr>
+                <td>{{ ds.name }}</td>
+                <td>{{ ds.group_name or '—' }}</td>
+                <td><span class="badge badge-offline">No Display</span></td>
+                <td class="text-warning">HDMI display disconnected</td>
+            </tr>
             {% endfor %}
         </tbody>
     </table>
@@ -282,7 +291,7 @@ async function endNow(scheduleId) {
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
             playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
-            devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '')).sort(),
+            devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '') + ':' + (d.display_connected == null ? 'n' : d.display_connected ? 'y' : 'x')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),
