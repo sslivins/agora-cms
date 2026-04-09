@@ -356,8 +356,6 @@ async def play_now(
         asset_id: UUID of the asset to play.
         name: Optional schedule name. Defaults to "<asset_filename> — Play Now".
     """
-    from datetime import date
-
     # Look up asset name for auto-naming
     if not name:
         try:
@@ -367,7 +365,10 @@ async def play_now(
         except Exception:
             name = f"Play Now \u2014 {asset_id[:8]}"
 
-    today = date.today().isoformat()
+    # Use the server's local date (not UTC) so the schedule matches today
+    # in the scheduler's configured timezone.
+    server_time = await client.get_server_time()
+    today = server_time["local"][:10]  # e.g. "2026-04-08"
     data = {
         "name": name,
         "asset_id": asset_id,
