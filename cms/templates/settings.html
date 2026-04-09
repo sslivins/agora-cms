@@ -190,7 +190,7 @@
 </script>
 
 <div class="card" id="mcp-card">
-    <h2>MCP Server <span id="mcp-status-badge" class="badge badge-offline">checking…</span></h2>
+    <h2>MCP Server <span id="mcp-status-badge" class="badge badge-offline">checking…</span> <span id="mcp-api-badge" class="badge badge-offline" style="display:none;">API: checking…</span></h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
         Allow AI agents (e.g. GitHub Copilot) to manage the CMS via the Model Context Protocol.
     </p>
@@ -225,6 +225,7 @@
     const toggle = document.getElementById("mcp-enabled");
     const keySection = document.getElementById("mcp-key-section");
     const statusBadge = document.getElementById("mcp-status-badge");
+    const apiBadge = document.getElementById("mcp-api-badge");
     const generateBtn = document.getElementById("mcp-generate-key");
 
     // Check MCP container health
@@ -236,9 +237,19 @@
                 statusBadge.textContent = "online";
                 statusBadge.className = "badge badge-online";
                 toggle.disabled = false;
+                // Show API connection status
+                apiBadge.style.display = "";
+                if (data.api_connected) {
+                    apiBadge.textContent = "API: connected";
+                    apiBadge.className = "badge badge-online";
+                } else {
+                    apiBadge.textContent = "API: " + (data.api_error || "auth failed");
+                    apiBadge.className = "badge badge-missed";
+                }
             } else {
                 statusBadge.textContent = "offline";
                 statusBadge.className = "badge badge-offline";
+                apiBadge.style.display = "none";
                 if (!toggle.checked) {
                     toggle.disabled = true;
                 }
@@ -246,6 +257,7 @@
         } catch {
             statusBadge.textContent = "offline";
             statusBadge.className = "badge badge-offline";
+            apiBadge.style.display = "none";
             if (!toggle.checked) {
                 toggle.disabled = true;
             }

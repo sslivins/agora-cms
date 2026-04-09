@@ -707,14 +707,23 @@ async def change_password(
 
 @router.get("/api/mcp/status", dependencies=[Depends(require_auth)])
 async def mcp_health_check():
-    """Check if the MCP container is reachable."""
+    """Check if the MCP container is reachable and can talk to the CMS API."""
     import httpx
+    result = {"online": False, "api_connected": False}
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get("http://mcp:8000/health")
-            return {"online": resp.status_code == 200}
+            result["online"] = resp.status_code == 200
+            if result["online"]:
+                api_resp = await client.get("http://mcp:8000/health/api")
+                if api_resp.status_code == 200:
+                    data = api_resp.json()
+                    result["api_connected"] = data.get("status") == "ok"
+                else:
+                    result["api_error"] = api_resp.json().get("detail", "API check failed")
     except Exception:
-        return {"online": False}
+        pass
+    return result
 
 
 @router.post("/api/mcp/toggle", dependencies=[Depends(require_auth)])
