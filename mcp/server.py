@@ -233,14 +233,22 @@ async def create_schedule(
     Assigns an asset to play on a device or group during a time window.
     Either device_id or group_id must be provided (not both).
 
-    When loop_count is set, end_time is auto-computed from the asset's
-    duration (loop_count × duration). You can omit end_time in that case.
+    IMPORTANT — loop_count vs end_time:
+    When loop_count is set, end_time is IGNORED and overridden to
+    start_time + (loop_count × asset_duration). This creates a narrow
+    playback window that may already have passed. For ad-hoc playback,
+    use the play_now tool instead.
+
+    IMPORTANT — timezone:
+    All times (start_time, end_time) are interpreted in the CMS server's
+    configured timezone, NOT UTC. Use get_server_time to check the
+    server's timezone and current local time before creating schedules.
 
     Args:
         name: Schedule display name.
         asset_id: UUID of the asset to play.
-        start_time: Start time in HH:MM:SS format (e.g. "08:00:00").
-        end_time: End time in HH:MM:SS format. Optional when loop_count is set (auto-computed).
+        start_time: Start time in HH:MM:SS format (e.g. "08:00:00"), interpreted in the CMS server's timezone.
+        end_time: End time in HH:MM:SS format. IGNORED when loop_count is set (auto-computed to start_time + loop_count × asset_duration).
         device_id: Target device ID (provide this OR group_id).
         group_id: Target group UUID (provide this OR device_id).
         start_date: Optional start date in ISO format (e.g. "2026-04-10T00:00:00Z").
@@ -248,7 +256,7 @@ async def create_schedule(
         days_of_week: Optional list of ISO weekday numbers (1=Monday, 7=Sunday).
         priority: Schedule priority (higher wins when overlapping). Default 0.
         enabled: Whether the schedule is active. Default true.
-        loop_count: Optional number of times to loop the asset (null = infinite).
+        loop_count: Number of times to loop the asset. When set, end_time is IGNORED and auto-computed. Omit or set null for infinite looping within the time window.
     """
     data = {
         "name": name,
@@ -332,6 +340,54 @@ async def delete_schedule(schedule_id: str) -> str:
 
 
 @mcp.tool()
+async def play_now(
+    device_id: str,
+    asset_id: str,
+    name: str | None = None,
+) -> str:
+    """Immediately play an asset on a device. Creates a high-priority schedule
+    for today with an all-day time window so playback starts right away.
+
+    When done, call end_schedule_now with the returned schedule ID to stop
+    playback, or delete_schedule to remove it entirely.
+
+    Args:
+        device_id: The device ID to play on.
+        asset_id: UUID of the asset to play.
+        name: Optional schedule name. Defaults to "<asset_filename> — Play Now".
+    """
+    from datetime import date
+
+    # Look up asset name for auto-naming
+    if not name:
+        try:
+            asset = await client.get_asset(asset_id)
+            asset_name = asset.get("original_filename") or asset.get("filename") or asset_id
+            name = f"{asset_name} \u2014 Play Now"
+        except Exception:
+            name = f"Play Now \u2014 {asset_id[:8]}"
+
+    today = date.today().isoformat()
+    data = {
+        "name": name,
+        "asset_id": asset_id,
+        "device_id": device_id,
+        "start_time": "00:00:00",
+        "end_time": "23:59:00",
+        "start_date": f"{today}T00:00:00Z",
+        "end_date": f"{today}T23:59:59Z",
+        "priority": 10,
+        "enabled": True,
+    }
+    result = await client.create_schedule(data)
+    schedule_id = result.get("id", "unknown")
+    return _json_result({
+        "schedule": result,
+        "hint": f"Playback started. To stop, call end_schedule_now('{schedule_id}') or delete_schedule('{schedule_id}').",
+    })
+
+
+@mcp.tool()
 async def end_schedule_now(schedule_id: str) -> str:
     """End a currently-playing schedule immediately. It will resume at its next scheduled time.
 
@@ -374,6 +430,20 @@ async def get_device_logs(
     """
     result = await client.request_device_logs(device_id, services=services, since=since)
     return _json_result(result)
+
+
+# ── Server time ──
+
+
+@mcp.tool()
+async def get_server_time() -> str:
+    """Get the CMS server's configured timezone and current local time.
+
+    Use this before creating schedules to understand what timezone
+    start_time and end_time will be interpreted in.
+    """
+    data = await client.get_server_time()
+    return _json_result(data)
 
 
 # ── Dashboard ──

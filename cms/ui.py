@@ -254,6 +254,20 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     })
 
 
+@router.get("/api/server-time", dependencies=[Depends(require_auth)])
+async def server_time_json(db: AsyncSession = Depends(get_db)):
+    """Return the CMS server's configured timezone and current local time."""
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+    now_utc = datetime.now(_tz.utc)
+    now_local = now_utc.astimezone(tz)
+    return JSONResponse({
+        "timezone": tz_name,
+        "utc": now_utc.isoformat(),
+        "local": now_local.isoformat(),
+    })
+
+
 @router.get("/api/dashboard", dependencies=[Depends(require_auth)])
 async def dashboard_json(db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""

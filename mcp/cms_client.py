@@ -159,5 +159,10 @@ class CMSClient:
     async def get_dashboard(self) -> dict:
         return await self._get("/api/dashboard")
 
+    # ── Server time ──
+
+    async def get_server_time(self) -> dict:
+        return await self._get("/api/server-time")
+
     async def close(self) -> None:
         await self._client.aclose()
