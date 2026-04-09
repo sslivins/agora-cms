@@ -672,3 +672,189 @@ class TestBuildDeviceSyncSkipped:
         sync = await build_device_sync("skip-pi-01", db)
         assert len(sync.schedules) == 1
         assert sync.schedules[0].name == "Skippable"
+
+
+@pytest.mark.asyncio
+class TestNowPlayingCleanup:
+    """Test that _now_playing is cleaned up when schedules are deleted."""
+
+    def setup_method(self):
+        _now_playing.clear()
+        _last_sync_hash.clear()
+        _skipped.clear()
+
+    def teardown_method(self):
+        _now_playing.clear()
+        _last_sync_hash.clear()
+        _skipped.clear()
+
+    async def test_now_playing_cleared_when_schedule_deleted(self, app, db_session):
+        """After deleting a schedule, evaluate_schedules should remove the
+        device from _now_playing and log ENDED."""
+        from cms.services.device_manager import device_manager
+
+        # Create device, asset, timezone setting
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="test-video.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="abc123")
+        device = Device(id="np-cleanup-01", name="Cleanup Test",
+                        status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, device])
+        await db_session.flush()
+
+        # Create schedule
+        sched = Schedule(
+            name="Play Now Test",
+            device_id="np-cleanup-01",
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+        sched_id = str(sched.id)
+
+        # Register fake device
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("np-cleanup-01", FakeWS())
+
+        try:
+            # Run evaluate — should add to _now_playing
+            await evaluate_schedules()
+            assert "np-cleanup-01" in _now_playing
+            assert _now_playing["np-cleanup-01"]["schedule_id"] == sched_id
+
+            # Delete the schedule
+            await db_session.delete(sched)
+            await db_session.commit()
+
+            # Run evaluate again — should remove from _now_playing
+            await evaluate_schedules()
+            assert "np-cleanup-01" not in _now_playing, \
+                "_now_playing should be cleared after schedule deletion"
+        finally:
+            device_manager.disconnect("np-cleanup-01")
+
+    async def test_now_playing_replaced_after_delete_and_new_schedule(self, app, db_session):
+        """Delete schedule A, create schedule B — _now_playing should show B."""
+        from cms.services.device_manager import device_manager
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset_a = Asset(filename="video-a.mp4", asset_type=AssetType.VIDEO,
+                        size_bytes=1000, checksum="aaa")
+        asset_b = Asset(filename="video-b.mp4", asset_type=AssetType.VIDEO,
+                        size_bytes=2000, checksum="bbb")
+        device = Device(id="np-replace-01", name="Replace Test",
+                        status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset_a, asset_b, device])
+        await db_session.flush()
+
+        sched_a = Schedule(
+            name="Schedule A",
+            device_id="np-replace-01",
+            asset_id=asset_a.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched_a)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("np-replace-01", FakeWS())
+
+        try:
+            # Eval picks up schedule A
+            await evaluate_schedules()
+            assert _now_playing["np-replace-01"]["asset_filename"] == "video-a.mp4"
+
+            # Delete A, create B
+            await db_session.delete(sched_a)
+            sched_b = Schedule(
+                name="Schedule B",
+                device_id="np-replace-01",
+                asset_id=asset_b.id,
+                start_time=time(0, 0),
+                end_time=time(23, 59),
+                priority=10,
+                enabled=True,
+            )
+            db_session.add(sched_b)
+            await db_session.commit()
+
+            # Eval should replace A with B in _now_playing
+            await evaluate_schedules()
+            assert "np-replace-01" in _now_playing, \
+                "_now_playing should have an entry for the device"
+            assert _now_playing["np-replace-01"]["asset_filename"] == "video-b.mp4", \
+                "_now_playing should show the new schedule's asset"
+            assert _now_playing["np-replace-01"]["schedule_name"] == "Schedule B"
+        finally:
+            device_manager.disconnect("np-replace-01")
+
+    async def test_ended_log_survives_deleted_schedule_fk(self, app, db_session):
+        """When a schedule is deleted, the ENDED log event should not crash
+        due to FK violation on schedule_logs.schedule_id (Issue #126)."""
+        from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
+        from cms.services.device_manager import device_manager
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="fk-test.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="fk123")
+        device = Device(id="np-fk-01", name="FK Test",
+                        status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, device])
+        await db_session.flush()
+
+        sched = Schedule(
+            name="Will Be Deleted",
+            device_id="np-fk-01",
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("np-fk-01", FakeWS())
+
+        try:
+            # Eval picks up schedule
+            await evaluate_schedules()
+            assert "np-fk-01" in _now_playing
+
+            # Delete the schedule (simulates API delete)
+            await db_session.delete(sched)
+            await db_session.commit()
+
+            # Eval should clear _now_playing WITHOUT crashing on FK violation
+            await evaluate_schedules()
+            assert "np-fk-01" not in _now_playing
+
+            # Verify ENDED was logged with schedule_id=None (FK-safe)
+            from sqlalchemy import select as sa_select
+            logs = await db_session.execute(
+                sa_select(ScheduleLog).where(
+                    ScheduleLog.device_id == "np-fk-01",
+                    ScheduleLog.event == ScheduleLogEvent.ENDED,
+                )
+            )
+            ended_logs = logs.scalars().all()
+            assert len(ended_logs) >= 1
+            # schedule_id should be None since the schedule was deleted
+            assert ended_logs[-1].schedule_id is None
+            assert ended_logs[-1].schedule_name == "Will Be Deleted"
+        finally:
+            device_manager.disconnect("np-fk-01")

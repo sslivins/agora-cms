@@ -40,6 +40,22 @@ SCHEDULE_WINDOW_DAYS = 30
 async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_name: str,
                      asset_filename: str, schedule_id=None, device_id=None, details=None):
     """Write a schedule history log entry."""
+    import uuid as _uuid
+    # Ensure schedule_id is a proper UUID (may arrive as string from _now_playing)
+    if isinstance(schedule_id, str):
+        try:
+            schedule_id = _uuid.UUID(schedule_id)
+        except ValueError:
+            schedule_id = None
+    # If the schedule was deleted, the FK constraint would reject the insert.
+    # Check existence first; if gone, store NULL (the log is denormalized so
+    # schedule_name / asset_filename still preserve the info).
+    if schedule_id is not None:
+        exists = await db.execute(
+            select(Schedule.id).where(Schedule.id == schedule_id)
+        )
+        if exists.scalar_one_or_none() is None:
+            schedule_id = None
     entry = ScheduleLog(
         schedule_id=schedule_id,
         schedule_name=schedule_name,
