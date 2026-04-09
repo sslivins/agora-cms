@@ -261,3 +261,41 @@ class TestDashboardStartingGrace:
         finally:
             device_manager.disconnect("mismatch-01")
             _sched._now_playing.pop("mismatch-01", None)
+
+    async def test_no_starting_when_playing_different_asset(self, app, db_session, client):
+        """When device is playing (a different asset due to preemption), don't
+        show 'Starting...' — the device is working fine, _now_playing is just stale."""
+        await _seed_device(db_session)
+        _fake_connect("mismatch-01", mode="play", asset="other-video.mp4")
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            resp = await client.get("/api/dashboard")
+            np = resp.json()["now_playing"][0]
+            assert np["mismatch"] is False
+            assert np.get("starting") is not True, (
+                "starting should not be set when device is actively playing"
+            )
+        finally:
+            device_manager.disconnect("mismatch-01")
+            _sched._now_playing.pop("mismatch-01", None)
+
+    async def test_no_starting_when_playing_different_asset_html(self, app, db_session, client):
+        """HTML dashboard should not show Starting badge when device plays a different asset."""
+        await _seed_device(db_session)
+        _fake_connect("mismatch-01", mode="play", asset="other-video.mp4")
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            resp = await client.get("/")
+            html = resp.text
+            assert "Starting" not in html
+            assert "badge-processing" not in html
+            assert "badge-started" in html
+        finally:
+            device_manager.disconnect("mismatch-01")
+            _sched._now_playing.pop("mismatch-01", None)

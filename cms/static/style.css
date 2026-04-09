@@ -567,6 +567,28 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes highlightNew {
+    0%   { background-color: rgba(76, 175, 80, 0.25); }
+    100% { background-color: transparent; }
+}
+tr.highlight-new td {
+    animation: highlightNew 2.5s ease-out;
+}
+.pulse-badge {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+.cell-truncate-text {
+    display: inline-block;
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+}
 
 /* Settings page */
 .settings-form { max-width: 400px; }

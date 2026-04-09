@@ -1,5 +1,6 @@
 """Schedule CRUD API routes."""
 
+import logging
 import uuid
 from datetime import timedelta
 from typing import List
@@ -15,9 +16,19 @@ from cms.models.asset import Asset
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
-from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict
+from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict, evaluate_schedules
+
+logger = logging.getLogger("agora.cms.schedules")
 
 router = APIRouter(prefix="/api/schedules", dependencies=[Depends(require_auth)])
+
+
+async def _trigger_eval():
+    """Best-effort immediate scheduler eval for responsive dashboard updates."""
+    try:
+        await evaluate_schedules()
+    except Exception:
+        logger.debug("Immediate eval after schedule change failed (background loop will catch up)", exc_info=True)
 
 
 def _schedule_to_out(s: Schedule) -> ScheduleOut:
@@ -120,6 +131,7 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     )
     schedule = result.scalar_one()
     await push_sync_to_affected_devices(schedule, db)
+    await _trigger_eval()
     return _schedule_to_out(schedule)
 
 
@@ -158,6 +170,7 @@ async def update_schedule(
     )
     schedule = result.scalar_one()
     await push_sync_to_affected_devices(schedule, db)
+    await _trigger_eval()
     return _schedule_to_out(schedule)
 
 
@@ -176,6 +189,7 @@ async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get
     # Push updated sync (without the deleted schedule) to affected devices
     for did in target_ids:
         await push_sync_to_device(did, db)
+    await _trigger_eval()
     return {"deleted": str(schedule_id)}
 
 

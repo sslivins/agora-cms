@@ -195,7 +195,12 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             since = _dt.fromisoformat(np["since"])
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
-                np["starting"] = True
+                # Only show "starting" if the device isn't playing yet.
+                # If it's playing a different asset (e.g. higher-priority
+                # schedule preempted but _now_playing is stale), don't
+                # flip the badge — the device is working fine.
+                if actual_mode != "play":
+                    np["starting"] = True
 
     # Build device status with live playback state
     device_states = []
@@ -312,7 +317,8 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
             since = _dt.fromisoformat(np["since"])
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
-                np["starting"] = True
+                if actual_mode != "play":
+                    np["starting"] = True
 
     device_states = [
         {

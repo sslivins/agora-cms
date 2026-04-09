@@ -137,10 +137,10 @@
         </thead>
         <tbody>
             {% for np in now_playing %}
-            <tr>
-                <td>{{ np.device_name }}</td>
-                <td>{{ np.schedule_name }}</td>
-                <td>{{ np.asset_filename }}</td>
+            <tr data-schedule-id="{{ np.schedule_id }}">
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ np.device_name }}</span><span class="tooltip">{{ np.device_name }}</span></span></td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ np.schedule_name }}</span><span class="tooltip">{{ np.schedule_name }}</span></span></td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ np.asset_filename }}</span><span class="tooltip">{{ np.asset_filename }}</span></span></td>
                 <td>
                     {% if np.mismatch %}
                     <span class="has-tooltip"><span class="badge badge-missed">Not Playing</span><span class="tooltip">Device is {{ np.actual_mode }}{% if np.actual_asset %} ({{ np.actual_asset }}){% endif %} instead of {{ np.asset_filename }}</span></span>
@@ -185,12 +185,12 @@
         <tbody>
             {% for u in upcoming_today %}
             <tr{% if u.preempted %} class="preempted-row"{% elif u.starting %} class="starting-row"{% endif %}>
-                <td>{{ u.schedule_name }}{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% elif u.starting %} <span class="badge badge-processing">starting…</span>{% endif %}</td>
-                <td>{{ u.target_name }}{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
-                <td>{{ u.asset_filename }}</td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.schedule_name }}</span><span class="tooltip">{{ u.schedule_name }}</span></span>{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% endif %}</td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.target_name }}</span><span class="tooltip">{{ u.target_name }}</span></span>{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.asset_filename }}</span><span class="tooltip">{{ u.asset_filename }}</span></span></td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
-                <td>{{ u.duration_mins }} min</td>
-                <td class="{% if u.preempted %}text-warning{% elif u.starting %}text-muted{% else %}text-success{% endif %}">{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}</td>
+                <td>{% if u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
+                <td class="{% if u.preempted %}text-warning{% elif u.starting %}{% else %}text-success{% endif %}">{% if u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -213,12 +213,12 @@
         <tbody>
             {% for u in upcoming_tomorrow %}
             <tr{% if u.preempted %} class="preempted-row"{% elif u.starting %} class="starting-row"{% endif %}>
-                <td>{{ u.schedule_name }}{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% elif u.starting %} <span class="badge badge-processing">starting…</span>{% endif %}</td>
-                <td>{{ u.target_name }}{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
-                <td>{{ u.asset_filename }}</td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.schedule_name }}</span><span class="tooltip">{{ u.schedule_name }}</span></span>{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% endif %}</td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.target_name }}</span><span class="tooltip">{{ u.target_name }}</span></span>{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
+                <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.asset_filename }}</span><span class="tooltip">{{ u.asset_filename }}</span></span></td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
-                <td>{{ u.duration_mins }} min</td>
-                <td class="{% if u.preempted %}text-warning{% elif u.starting %}text-muted{% else %}text-muted{% endif %}">{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}</td>
+                <td>{% if u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
+                <td class="{% if u.preempted %}text-warning{% elif u.starting %}{% else %}text-muted{% endif %}">{% if u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -309,6 +309,12 @@ async function endNow(scheduleId) {
         upcoming: {{ (upcoming_today + upcoming_tomorrow) | tojson }},
     });
 
+    // Save current now_playing IDs before reload so we can highlight new ones
+    function savePlayingIds() {
+        const ids = {{ now_playing | map(attribute='schedule_id') | list | tojson }};
+        sessionStorage.setItem('prev_playing_ids', JSON.stringify(ids));
+    }
+
     setInterval(async () => {
         if (isModalOpen()) return;
         try {
@@ -317,10 +323,23 @@ async function endNow(scheduleId) {
             const data = await res.json();
             const newFingerprint = fingerprint(data);
             if (newFingerprint !== lastFingerprint) {
+                savePlayingIds();
                 location.reload();
             }
         } catch (e) { /* ignore */ }
     }, 5000);
+
+    // On page load, highlight rows that are new since last reload
+    (function highlightNew() {
+        const prev = JSON.parse(sessionStorage.getItem('prev_playing_ids') || '[]');
+        if (!prev.length) return;
+        document.querySelectorAll('tr[data-schedule-id]').forEach(row => {
+            if (!prev.includes(row.dataset.scheduleId)) {
+                row.classList.add('highlight-new');
+            }
+        });
+        sessionStorage.removeItem('prev_playing_ids');
+    })();
 })();
 </script>
 {% endblock %}
