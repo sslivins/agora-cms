@@ -457,10 +457,19 @@ async def get_dashboard() -> str:
     return _json_result(dashboard)
 
 
-# ── Health check endpoint (used by CMS to detect if container is running) ──
+# ── Health check endpoints ──
 
 async def health_endpoint(request: Request) -> Response:
     return JSONResponse({"status": "ok"})
+
+
+async def health_api_endpoint(request: Request) -> Response:
+    """Check if the MCP server can reach the CMS REST API with its API key."""
+    try:
+        devices = await client.list_devices()
+        return JSONResponse({"status": "ok", "device_count": len(devices)})
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=502)
 
 
 # ── Bearer token auth middleware ──
@@ -472,7 +481,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path.startswith("/health"):
             return await call_next(request)
 
         token = request.headers.get("authorization", "")
@@ -513,6 +522,7 @@ if __name__ == "__main__":
     app = Starlette(
         routes=[
             Route("/health", health_endpoint),
+            Route("/health/api", health_api_endpoint),
         ],
         middleware=[
             Middleware(BearerAuthMiddleware),
