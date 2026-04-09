@@ -716,6 +716,168 @@ async def mcp_generate_key(db: AsyncSession = Depends(get_db)):
     return {"key": key}
 
 
+# ── NTP Status ──
+
+
+@router.get("/api/ntp/status", dependencies=[Depends(require_auth)])
+async def ntp_status():
+    """Check NTP container health via a raw NTP query."""
+    import socket
+    import struct
+    import time
+
+    try:
+        # Build minimal NTP request (v3 client, mode 3)
+        msg = b"\x1b" + 47 * b"\0"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3.0)
+        sock.sendto(msg, ("ntp", 123))
+        data, _ = sock.recvfrom(48)
+        sock.close()
+
+        if len(data) < 48:
+            return {"online": False}
+
+        unpacked = struct.unpack("!BBBb11I", data)
+        stratum = unpacked[1]
+        # Transmit timestamp (seconds since 1900-01-01)
+        ntp_time = unpacked[10] + unpacked[11] / 2**32
+        # NTP epoch offset from Unix epoch
+        ntp_epoch = 2208988800
+        server_time = ntp_time - ntp_epoch
+        offset = server_time - time.time()
+
+        return {
+            "online": True,
+            "stratum": stratum,
+            "offset_ms": round(offset * 1000, 1),
+        }
+    except Exception:
+        return {"online": False}
+
+
+# ── Database Status ──
+
+
+@router.get("/api/db/status", dependencies=[Depends(require_auth)])
+async def db_status(db: AsyncSession = Depends(get_db)):
+    """Check PostgreSQL health and return key metrics."""
+    from sqlalchemy import text
+
+    try:
+        # Version
+        row = await db.execute(text("SELECT version()"))
+        full_version = row.scalar()
+        # Extract just "PostgreSQL X.Y"
+        version_short = full_version.split(",")[0] if full_version else "unknown"
+
+        # Database size
+        row = await db.execute(text(
+            "SELECT pg_size_pretty(pg_database_size(current_database()))"
+        ))
+        db_size = row.scalar()
+
+        # Active connections
+        row = await db.execute(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+        ))
+        connections = row.scalar()
+
+        # Uptime
+        row = await db.execute(text("SELECT pg_postmaster_start_time()"))
+        start_time = row.scalar()
+        uptime_str = None
+        if start_time:
+            from datetime import datetime, timezone as _tz
+            now = datetime.now(_tz.utc)
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=_tz.utc)
+            delta = now - start_time
+            days = delta.days
+            hours, rem = divmod(delta.seconds, 3600)
+            minutes = rem // 60
+            parts = []
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            parts.append(f"{minutes}m")
+            uptime_str = " ".join(parts)
+
+        # Current user
+        row = await db.execute(text("SELECT current_user"))
+        db_user = row.scalar()
+
+        return {
+            "online": True,
+            "version": version_short,
+            "size": db_size,
+            "connections": connections,
+            "uptime": uptime_str,
+            "user": db_user,
+        }
+    except Exception:
+        return {"online": False}
+
+
+@router.post("/api/db/change-password", dependencies=[Depends(require_auth)])
+async def db_change_password(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the PostgreSQL user password and reinitialize the connection."""
+    from sqlalchemy import text
+    from urllib.parse import urlparse, urlunparse
+    from cms.database import init_db, dispose_db, _engine
+
+    body = await request.json()
+    new_password = body.get("password", "").strip()
+
+    if len(new_password) < 6:
+        return JSONResponse(
+            {"detail": "Password must be at least 6 characters"},
+            status_code=400,
+        )
+
+    try:
+        # Get current user
+        row = await db.execute(text("SELECT current_user"))
+        db_user = row.scalar()
+
+        # Change password in PostgreSQL (parameterized via format to avoid
+        # SQL injection — password is validated above and we use ALTER USER)
+        await db.execute(text(
+            f"ALTER USER {db_user} PASSWORD :pwd"
+        ), {"pwd": new_password})
+        await db.commit()
+
+        # Rebuild engine with new password
+        current_url = str(_engine.url)
+        parsed = urlparse(current_url)
+        new_url = urlunparse(parsed._replace(
+            netloc=f"{parsed.username}:{new_password}@{parsed.hostname}:{parsed.port}"
+        ))
+        await dispose_db()
+        # Create a temporary settings-like object with the new URL
+        settings = get_settings()
+        settings_dict = settings.model_dump()
+        settings_dict["database_url"] = new_url
+        temp_settings = Settings(**settings_dict)
+        init_db(temp_settings)
+
+        return {
+            "success": True,
+            "warning": "Database password changed. Update POSTGRES_PASSWORD and "
+                       "AGORA_CMS_DATABASE_URL in your .env file, then restart "
+                       "for the change to persist.",
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"detail": f"Failed to change password: {e}"},
+            status_code=500,
+        )
+
+
 @router.post("/settings/timezone", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def change_timezone(
     request: Request,
