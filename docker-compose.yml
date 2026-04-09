@@ -16,6 +16,8 @@ services:
       - "8000:8000"
     environment:
       - CMS_BASE_URL=http://cms:8080
+      - CMS_API_KEY=${CMS_API_KEY:-}
+      # Legacy fallback (used if CMS_API_KEY is not set)
       - CMS_USERNAME=${AGORA_CMS_ADMIN_USERNAME:-admin}
       - CMS_PASSWORD=${AGORA_CMS_ADMIN_PASSWORD:-agora}
     depends_on:

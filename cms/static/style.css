@@ -320,6 +320,15 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     color-scheme: dark;
 }
 /* Polished time inputs */
+.form-input-dark {
+    padding: 0.5rem 0.75rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    color-scheme: dark;
+}
 .form-group input[type="time"] {
     padding: 0.6rem 0.75rem;
     font-variant-numeric: tabular-nums;
