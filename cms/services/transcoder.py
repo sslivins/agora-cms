@@ -431,6 +431,12 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 
             await db.commit()
             logger.info("Image variant complete: %s (%d bytes)", variant.filename, variant.size_bytes)
+
+            # Sync variant to cloud storage
+            from cms.services.storage import get_storage
+            storage = get_storage()
+            await storage.on_file_stored(f"variants/{variant.filename}")
+
             return
         except Exception as e:
             variant.status = VariantStatus.FAILED
@@ -523,6 +529,11 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 
         await db.commit()
         logger.info("Transcode complete: %s (%d bytes)", variant.filename, variant.size_bytes)
+
+        # Sync variant to cloud storage
+        from cms.services.storage import get_storage
+        storage = get_storage()
+        await storage.on_file_stored(f"variants/{variant.filename}")
 
     except Exception as e:
         _active_process = None

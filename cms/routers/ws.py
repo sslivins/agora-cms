@@ -27,6 +27,7 @@ from cms.schemas.protocol import (
 )
 from cms.services.device_manager import device_manager
 from cms.services.scheduler import build_device_sync
+from cms.services.storage import get_storage
 
 logger = logging.getLogger("agora.cms.ws")
 
@@ -71,6 +72,8 @@ async def _resolve_asset_for_device(
       - If variant exists but not ready → return None (not available yet)
     For devices without a profile → use source asset directly.
     """
+    storage = get_storage()
+
     if asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE) and device.profile_id:
         result = await db.execute(
             select(AssetVariant).where(
@@ -81,9 +84,13 @@ async def _resolve_asset_for_device(
         variant = result.scalar_one_or_none()
         if variant:
             if variant.status == VariantStatus.READY:
+                api_url = f"{base_url}/api/assets/variants/{variant.id}/download"
+                download_url = await storage.get_device_download_url(
+                    f"variants/{variant.filename}", api_url,
+                )
                 return FetchAssetMessage(
                     asset_name=asset.filename,
-                    download_url=f"{base_url}/api/assets/variants/{variant.id}/download",
+                    download_url=download_url,
                     checksum=variant.checksum,
                     size_bytes=variant.size_bytes,
                 )
@@ -91,9 +98,11 @@ async def _resolve_asset_for_device(
             return None
 
     # No profile or no variant → use source
+    api_url = f"{base_url}/api/assets/{asset.id}/download"
+    download_url = await storage.get_device_download_url(asset.filename, api_url)
     return FetchAssetMessage(
         asset_name=asset.filename,
-        download_url=f"{base_url}/api/assets/{asset.id}/download",
+        download_url=download_url,
         checksum=asset.checksum,
         size_bytes=asset.size_bytes,
     )
