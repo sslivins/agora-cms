@@ -245,3 +245,129 @@ class TestWebSocket:
                 # Should be rejected
                 msg = ws.receive_json()
                 assert "error" in msg
+
+    async def test_download_url_uses_host_header(self, app, db_session):
+        """fetch_asset download_url should use the Host header the device
+        connected with, not the server-side socket address (fixes #138)."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+
+        token = "dl-url-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        asset = Asset(
+            filename="test.mp4",
+            asset_type=AssetType.VIDEO,
+            size_bytes=1000,
+            checksum="abc123",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        device = Device(
+            id="ws-dl-url-001",
+            name="dl-url-device",
+            status=DeviceStatus.ADOPTED,
+            device_auth_token_hash=token_hash,
+            default_asset_id=asset.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await db_session.close()
+
+        from starlette.testclient import TestClient
+        with TestClient(app) as tc:
+            with tc.websocket_connect(
+                "/ws/device",
+                headers={"host": "192.168.1.198:8080"},
+            ) as ws:
+                ws.send_json({
+                    "type": "register",
+                    "protocol_version": 1,
+                    "device_id": "ws-dl-url-001",
+                    "auth_token": token,
+                    "firmware_version": "1.0.0",
+                    "storage_capacity_mb": 500,
+                })
+
+                # Consume sync
+                msg = ws.receive_json()
+                assert msg["type"] == "sync"
+
+                # Should receive fetch_asset for default asset
+                msg = ws.receive_json()
+                assert msg["type"] == "fetch_asset"
+                assert msg["download_url"].startswith("http://192.168.1.198:8080/")
+                assert "/api/assets/" in msg["download_url"]
+
+                # Consume config (API key push)
+                msg = ws.receive_json()
+                assert msg["type"] == "config"
+
+                time.sleep(0.5)
+                ws.close()
+
+    async def test_download_url_uses_config_override(self, app, db_session):
+        """When AGORA_CMS_ASSET_BASE_URL is set, fetch_asset download_url
+        should use that value instead of the Host header."""
+        from cms.auth import get_settings
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceStatus
+
+        token = "dl-cfg-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        asset = Asset(
+            filename="test-cfg.mp4",
+            asset_type=AssetType.VIDEO,
+            size_bytes=2000,
+            checksum="def456",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        device = Device(
+            id="ws-dl-cfg-001",
+            name="dl-cfg-device",
+            status=DeviceStatus.ADOPTED,
+            device_auth_token_hash=token_hash,
+            default_asset_id=asset.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await db_session.close()
+
+        settings = get_settings()
+        original_value = settings.asset_base_url
+        settings.asset_base_url = "https://cdn.example.com"
+
+        try:
+            from starlette.testclient import TestClient
+            with TestClient(app) as tc:
+                with tc.websocket_connect("/ws/device") as ws:
+                    ws.send_json({
+                        "type": "register",
+                        "protocol_version": 1,
+                        "device_id": "ws-dl-cfg-001",
+                        "auth_token": token,
+                        "firmware_version": "1.0.0",
+                        "storage_capacity_mb": 500,
+                    })
+
+                    # Consume sync
+                    msg = ws.receive_json()
+                    assert msg["type"] == "sync"
+
+                    # Should receive fetch_asset with CDN URL
+                    msg = ws.receive_json()
+                    assert msg["type"] == "fetch_asset"
+                    assert msg["download_url"].startswith("https://cdn.example.com/")
+
+                    # Consume config (API key push)
+                    msg = ws.receive_json()
+                    assert msg["type"] == "config"
+
+                    time.sleep(0.5)
+                    ws.close()
+        finally:
+            settings.asset_base_url = original_value
