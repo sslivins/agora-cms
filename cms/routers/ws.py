@@ -268,6 +268,8 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 if ws_url.port and ws_url.port not in (80, 443):
                     base_url += f":{ws_url.port}"
 
+        logger.info("Device %s: asset base_url = %s", device_id, base_url)
+
         # ── 5. Send full schedule sync ──
         sync = await build_device_sync(device_id, db)
         if sync:
