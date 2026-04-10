@@ -267,6 +267,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
 
         # ── 4. Build base URL for asset downloads ──
         base_url = get_asset_base_url(websocket)
+        settings = get_settings()
 
         logger.info("Device %s: asset base_url = %s", device_id, base_url)
 
