@@ -138,7 +138,8 @@ async def update_device(
 
     # If default_asset_id was changed, resolve effective default and push
     if "default_asset_id" in updates:
-        base_url = str(request.base_url).rstrip("/")
+        from cms.routers.ws import get_asset_base_url
+        base_url = get_asset_base_url(request)
         # Resolve: device default → group default → none (splash)
         effective_asset = device.default_asset
         if not effective_asset and device.group:

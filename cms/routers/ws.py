@@ -41,6 +41,26 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def get_asset_base_url(request=None) -> str:
+    """Return the base URL for asset download links.
+
+    Priority:
+    1. AGORA_CMS_ASSET_BASE_URL config override
+    2. Request Host header (what the client actually connected to)
+    3. Request base_url (server-side view — last resort)
+    """
+    settings = get_settings()
+    if settings.asset_base_url:
+        return settings.asset_base_url.rstrip("/")
+    if request is not None:
+        host = request.headers.get("host")
+        if host:
+            scheme = "https" if request.url.scheme in ("https", "wss") else "http"
+            return f"{scheme}://{host}"
+        return str(request.base_url).rstrip("/")
+    return "http://localhost:8080"
+
+
 async def _resolve_asset_for_device(
     asset: Asset, device: Device, base_url: str, db: AsyncSession,
 ) -> FetchAssetMessage | None:
@@ -246,27 +266,10 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         device_manager.register(device_id, websocket, ip_address=client_ip)
 
         # ── 4. Build base URL for asset downloads ──
+        base_url = get_asset_base_url(websocket)
         settings = get_settings()
-        if settings.asset_base_url:
-            base_url = settings.asset_base_url.rstrip("/")
-        else:
-            # Derive from the Host header the device used to connect
-            host_header = None
-            for header_name, header_value in websocket.headers.raw:
-                if header_name == b"host":
-                    host_header = header_value.decode("latin-1")
-                    break
-            if host_header:
-                ws_url = websocket.url
-                scheme = "https" if ws_url.scheme == "wss" else "http"
-                base_url = f"{scheme}://{host_header}"
-            else:
-                # Last resort: use the URL as seen by the server
-                ws_url = websocket.url
-                scheme = "https" if ws_url.scheme == "wss" else "http"
-                base_url = f"{scheme}://{ws_url.hostname}"
-                if ws_url.port and ws_url.port not in (80, 443):
-                    base_url += f":{ws_url.port}"
+
+        logger.info("Device %s: asset base_url = %s", device_id, base_url)
 
         logger.info("Device %s: asset base_url = %s", device_id, base_url)
 
