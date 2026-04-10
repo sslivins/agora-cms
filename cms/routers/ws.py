@@ -246,11 +246,27 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         device_manager.register(device_id, websocket, ip_address=client_ip)
 
         # ── 4. Build base URL for asset downloads ──
-        ws_url = websocket.url
-        scheme = "https" if ws_url.scheme == "wss" else "http"
-        base_url = f"{scheme}://{ws_url.hostname}"
-        if ws_url.port and ws_url.port not in (80, 443):
-            base_url += f":{ws_url.port}"
+        settings = get_settings()
+        if settings.asset_base_url:
+            base_url = settings.asset_base_url.rstrip("/")
+        else:
+            # Derive from the Host header the device used to connect
+            host_header = None
+            for header_name, header_value in websocket.headers.raw:
+                if header_name == b"host":
+                    host_header = header_value.decode("latin-1")
+                    break
+            if host_header:
+                ws_url = websocket.url
+                scheme = "https" if ws_url.scheme == "wss" else "http"
+                base_url = f"{scheme}://{host_header}"
+            else:
+                # Last resort: use the URL as seen by the server
+                ws_url = websocket.url
+                scheme = "https" if ws_url.scheme == "wss" else "http"
+                base_url = f"{scheme}://{ws_url.hostname}"
+                if ws_url.port and ws_url.port not in (80, 443):
+                    base_url += f":{ws_url.port}"
 
         # ── 5. Send full schedule sync ──
         sync = await build_device_sync(device_id, db)
@@ -275,7 +291,6 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             await _generate_and_push_api_key(device, websocket, db)
 
         # ── 8. Message loop ──
-        settings = get_settings()
         while True:
             try:
                 msg = await asyncio.wait_for(websocket.receive_json(), timeout=WS_RECEIVE_TIMEOUT)
