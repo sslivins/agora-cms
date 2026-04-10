@@ -447,16 +447,42 @@ async def create_group(data: DeviceGroupCreate, db: AsyncSession = Depends(get_d
 async def update_group(
     group_id: uuid.UUID,
     data: DeviceGroupUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
     group = result.scalar_one_or_none()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    for field, value in updates.items():
         setattr(group, field, value)
     await db.commit()
-    await db.refresh(group)
+    await db.refresh(group, ["default_asset"])
+
+    # When default_asset_id changes, push an immediate sync to all group
+    # members so they pick up the new asset without waiting for the next
+    # scheduler cycle (~15s).  Mirrors the per-device handler behaviour.
+    if "default_asset_id" in updates:
+        from cms.routers.ws import get_asset_base_url
+
+        base_url = get_asset_base_url(request)
+        devices_q = await db.execute(
+            select(Device)
+            .options(selectinload(Device.default_asset))
+            .where(Device.group_id == group.id)
+        )
+        for device in devices_q.scalars().all():
+            # Resolve: device default → group default → none (splash)
+            effective_asset = device.default_asset
+            if not effective_asset:
+                effective_asset = group.default_asset
+
+            if effective_asset:
+                await _push_default_asset(device.id, effective_asset, base_url, db)
+            else:
+                await push_sync_to_device(device.id, db)
+
     count_q = await db.execute(select(func.count(Device.id)).where(Device.group_id == group.id))
     return DeviceGroupOut(
         id=group.id,
