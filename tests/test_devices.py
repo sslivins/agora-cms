@@ -610,6 +610,178 @@ class TestDeviceGroups:
 
 
 @pytest.mark.asyncio
+class TestGroupDefaultAssetSync:
+    """Changing a group's default_asset_id should push an immediate sync to all
+    member devices, rather than waiting for the scheduler cycle."""
+
+    async def test_update_group_default_asset_pushes_sync_to_members(self, client, db_session):
+        """PATCH group default_asset_id should send fetch_asset + sync to every device in the group."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        asset = Asset(filename="group_new.png", asset_type=AssetType.IMAGE, size_bytes=2048, checksum="gnew1")
+        db_session.add(asset)
+        await db_session.flush()
+
+        group = DeviceGroup(name="Sync Test Group")
+        db_session.add(group)
+        await db_session.flush()
+
+        d1 = Device(id="grp-sync-pi-1", name="Pi 1", status=DeviceStatus.ADOPTED, group_id=group.id)
+        d2 = Device(id="grp-sync-pi-2", name="Pi 2", status=DeviceStatus.ADOPTED, group_id=group.id)
+        db_session.add_all([d1, d2])
+        await db_session.commit()
+
+        sent_d1, sent_d2 = [], []
+
+        class FakeWS1:
+            async def send_json(self, data):
+                sent_d1.append(data)
+
+        class FakeWS2:
+            async def send_json(self, data):
+                sent_d2.append(data)
+
+        device_manager.register("grp-sync-pi-1", FakeWS1())
+        device_manager.register("grp-sync-pi-2", FakeWS2())
+
+        try:
+            resp = await client.patch(
+                f"/api/devices/groups/{group.id}",
+                json={"default_asset_id": str(asset.id)},
+            )
+            assert resp.status_code == 200
+
+            # Both devices should have received messages
+            assert len(sent_d1) > 0, "Device 1 should have received a sync push"
+            assert len(sent_d2) > 0, "Device 2 should have received a sync push"
+
+            # First message to each should be fetch_asset
+            assert sent_d1[0]["type"] == "fetch_asset"
+            assert sent_d2[0]["type"] == "fetch_asset"
+        finally:
+            device_manager.disconnect("grp-sync-pi-1")
+            device_manager.disconnect("grp-sync-pi-2")
+
+    async def test_clear_group_default_asset_pushes_sync(self, client, db_session):
+        """Setting group default_asset_id to null should push sync (splash) to members."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        asset = Asset(filename="to_clear.png", asset_type=AssetType.IMAGE, size_bytes=1024, checksum="clr1")
+        db_session.add(asset)
+        await db_session.flush()
+
+        group = DeviceGroup(name="Clear Group", default_asset_id=asset.id)
+        db_session.add(group)
+        await db_session.flush()
+
+        device = Device(id="grp-clear-pi", name="Clear Pi", status=DeviceStatus.ADOPTED, group_id=group.id)
+        db_session.add(device)
+        await db_session.commit()
+
+        sent = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent.append(data)
+
+        device_manager.register("grp-clear-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                f"/api/devices/groups/{group.id}",
+                json={"default_asset_id": None},
+            )
+            assert resp.status_code == 200
+
+            # Device should have received a sync push (to show splash)
+            assert len(sent) > 0, "Device should have received a sync push when group default cleared"
+            assert sent[0]["type"] == "sync"
+        finally:
+            device_manager.disconnect("grp-clear-pi")
+
+    async def test_update_group_name_does_not_push_sync(self, client, db_session):
+        """Changing only the group name should NOT trigger a sync push."""
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        group = DeviceGroup(name="No Push Group")
+        db_session.add(group)
+        await db_session.flush()
+
+        device = Device(id="grp-nopush-pi", name="No Push Pi", status=DeviceStatus.ADOPTED, group_id=group.id)
+        db_session.add(device)
+        await db_session.commit()
+
+        sent = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent.append(data)
+
+        device_manager.register("grp-nopush-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                f"/api/devices/groups/{group.id}",
+                json={"name": "Renamed Group"},
+            )
+            assert resp.status_code == 200
+            assert len(sent) == 0, "Name-only update should not push to devices"
+        finally:
+            device_manager.disconnect("grp-nopush-pi")
+
+    async def test_device_default_overrides_group_default(self, client, db_session):
+        """When a device has its own default_asset_id, group update should push the device's asset, not the group's."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        group_asset = Asset(filename="group_level.png", asset_type=AssetType.IMAGE, size_bytes=2048, checksum="grplvl")
+        device_asset = Asset(filename="device_level.png", asset_type=AssetType.IMAGE, size_bytes=1024, checksum="devlvl")
+        db_session.add_all([group_asset, device_asset])
+        await db_session.flush()
+
+        group = DeviceGroup(name="Override Group")
+        db_session.add(group)
+        await db_session.flush()
+
+        device = Device(
+            id="grp-override-pi", name="Override Pi",
+            status=DeviceStatus.ADOPTED, group_id=group.id,
+            default_asset_id=device_asset.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        sent = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent.append(data)
+
+        device_manager.register("grp-override-pi", FakeWS())
+
+        try:
+            resp = await client.patch(
+                f"/api/devices/groups/{group.id}",
+                json={"default_asset_id": str(group_asset.id)},
+            )
+            assert resp.status_code == 200
+
+            # Device has its own default, so fetch_asset should use the device-level asset
+            assert len(sent) > 0
+            fetch_msg = sent[0]
+            assert fetch_msg["type"] == "fetch_asset"
+            assert fetch_msg["asset_name"] == "device_level.png"
+        finally:
+            device_manager.disconnect("grp-override-pi")
+
+
+@pytest.mark.asyncio
 class TestPendingDeviceNameDisplay:
     """Dashboard should show device friendly name, not raw ID, for pending devices."""
 
