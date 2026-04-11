@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     azure_storage_account_key: str | None = None
     azure_sas_expiry_hours: int = 1
 
+    # MCP Server
+    mcp_server_url: str = "http://mcp:8000"  # Docker default; override for Azure
+
     # Asset downloads
     asset_base_url: str | None = None  # override base URL for device asset downloads
 
