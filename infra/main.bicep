@@ -170,8 +170,8 @@ module containerApps 'modules/containerApps.bicep' = {
 }
 
 // ── Outputs ──
-output cmsUrl string = containerApps.outputs.cmsAppUrl
-output mcpUrl string = containerApps.outputs.mcpAppUrl
+output cmsUrl string = containerApps.outputs.cmsAppFqdn
+output mcpUrl string = containerApps.outputs.mcpAppFqdn
 output acrLoginServer string = acr.outputs.acrLoginServer
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output keyVaultUri string = keyVault.outputs.keyVaultUri

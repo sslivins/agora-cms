@@ -8,7 +8,6 @@
 
     Prerequisites:
       - Azure CLI (az) installed and on PATH
-      - Docker Desktop running (for image push)
 
 .PARAMETER Subscription
     Azure subscription name or ID.
@@ -184,21 +183,63 @@ if ($deletedKv) {
     Write-Ok "No soft-deleted Key Vault — clean deploy"
 }
 
-# ── Deploy Bicep templates ───────────────────────────────────────
-
-Write-Step "Deploying infrastructure (this takes 5-10 minutes)..."
+# ── Resolve paths ────────────────────────────────────────────────
 
 $scriptDir = $PSScriptRoot
 $templateFile = Join-Path $scriptDir "main.bicep"
 
 if (-not (Test-Path $templateFile)) {
-    # Fallback: user may be running from repo root
     $templateFile = Join-Path (Get-Location) "infra\main.bicep"
 }
 if (-not (Test-Path $templateFile)) {
     Write-Fail "Cannot find main.bicep. Run from the repo root or infra/ directory."
     exit 1
 }
+
+$repoRoot = Split-Path $scriptDir -Parent
+$acrName = ($Prefix -replace '-','') + "acr"
+
+# ── Pre-create ACR & push images ─────────────────────────────────
+# Container Apps need images to exist in ACR before Bicep can
+# provision them, so we create ACR and push images first.
+
+if (-not $SkipImagePush) {
+    Write-Step "Creating container registry ($acrName)"
+    az acr create --name $acrName --resource-group $ResourceGroup `
+        --sku Basic --location $Location --admin-enabled true `
+        --tags project=agora-cms managedBy=bicep -o none 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Could not create ACR '$acrName'"
+        exit 1
+    }
+    Write-Ok "ACR ready"
+
+    Write-Step "Building container images in ACR ($acrName)"
+
+    Write-Host "  Building CMS image..." -ForegroundColor Yellow
+    az acr build --registry $acrName --image agora-cms:latest `
+        --file "$repoRoot\Dockerfile" $repoRoot --no-logs 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "CMS image build failed"
+        exit 1
+    }
+    Write-Ok "CMS image built & pushed"
+
+    Write-Host "  Building MCP image..." -ForegroundColor Yellow
+    az acr build --registry $acrName --image agora-cms-mcp:latest `
+        --file "$repoRoot\mcp\Dockerfile" "$repoRoot\mcp" --no-logs 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "MCP image build failed"
+        exit 1
+    }
+    Write-Ok "MCP image built & pushed"
+} else {
+    Write-Warn "Skipping image build (-SkipImagePush)"
+}
+
+# ── Deploy Bicep templates ───────────────────────────────────────
+
+Write-Step "Deploying infrastructure (this takes 5-10 minutes)..."
 
 $deployResult = az deployment group create `
     --resource-group $ResourceGroup `
@@ -232,49 +273,23 @@ $storageName     = $outputs.storageAccountName.value
 
 Write-Ok "Infrastructure deployed"
 
-# ── Push container images to ACR ─────────────────────────────────
-
-# ── Push container images to ACR ─────────────────────────────────
-
-if (-not $SkipImagePush) {
-    Write-Step "Building container images in ACR ($acrLoginServer)"
-
-    $acrName = ($acrLoginServer -split '\.')[0]
-    $repoRoot = Split-Path $scriptDir -Parent
-
-    Write-Host "  Building CMS image..." -ForegroundColor Yellow
-    az acr build --registry $acrName --image agora-cms:latest --file "$repoRoot\Dockerfile" $repoRoot --no-logs 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "CMS image build failed"
-        exit 1
-    }
-    Write-Ok "CMS image built & pushed"
-
-    Write-Host "  Building MCP image..." -ForegroundColor Yellow
-    az acr build --registry $acrName --image agora-cms-mcp:latest --file "$repoRoot\mcp\Dockerfile" "$repoRoot\mcp" --no-logs 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "MCP image build failed"
-        exit 1
-    }
-    Write-Ok "MCP image built & pushed"
-} else {
-    Write-Warn "Skipping image build (-SkipImagePush)"
-}
-
 # ── Post-deploy: configure MCP API key ───────────────────────────
 
 Write-Step "Configuring MCP API key"
 
 $cmsAppName = "$Prefix-cms"
 $mcpAppName = "$Prefix-mcp"
+$apiKey = ""
+$mcpSseKey = ""
 
 # Wait for CMS to be healthy
 Write-Host "  Waiting for CMS to start..." -ForegroundColor Yellow
 $maxAttempts = 30
+$cmsReady = $false
 for ($i = 1; $i -le $maxAttempts; $i++) {
     try {
         $health = Invoke-WebRequest -Uri "https://$cmsUrl/login" -TimeoutSec 5 -ErrorAction SilentlyContinue -MaximumRedirection 0
-        if ($health.StatusCode -eq 200) { break }
+        if ($health.StatusCode -eq 200) { $cmsReady = $true; break }
     } catch {}
     if ($i -eq $maxAttempts) {
         Write-Warn "CMS not responding after $maxAttempts attempts — MCP key setup skipped"
@@ -283,12 +298,13 @@ for ($i = 1; $i -le $maxAttempts; $i++) {
     Start-Sleep 10
 }
 
-if ($i -le $maxAttempts) {
+if ($cmsReady) {
     # Login and create API key
     try {
+        # Login returns a 303 redirect on success; follow it to capture the session cookie
         $null = Invoke-WebRequest -Uri "https://$cmsUrl/login" -Method POST `
             -Body @{username='admin'; password=$cmsPass} `
-            -SessionVariable cmsSession -MaximumRedirection 0 -ErrorAction SilentlyContinue
+            -SessionVariable cmsSession -ErrorAction Stop
 
         # Create a CMS API key for the MCP server
         $keyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/keys" -Method POST `
