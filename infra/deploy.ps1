@@ -47,6 +47,15 @@ param(
     [Parameter(HelpMessage = "Resource group name")]
     [string]$ResourceGroup = "",
 
+    [Parameter(HelpMessage = "PostgreSQL admin password")]
+    [string]$PostgresPassword = "",
+
+    [Parameter(HelpMessage = "CMS secret key for JWT/session signing")]
+    [string]$CmsSecretKey = "",
+
+    [Parameter(HelpMessage = "CMS web admin password")]
+    [string]$CmsAdminPassword = "",
+
     [switch]$SkipImagePush
 )
 
@@ -125,20 +134,29 @@ Write-Ok "Admin principal: $adminPrincipalId"
 
 Write-Step "Collecting secrets"
 
-$postgresPassword = Read-Host -AsSecureString "  PostgreSQL admin password"
-$cmsSecretKey     = Read-Host -AsSecureString "  CMS secret key (for JWT/session signing)"
-$cmsAdminPassword = Read-Host -AsSecureString "  CMS web admin password"
-
-# Convert SecureString to plain text for az cli
-function ConvertFrom-SecureStringPlain {
-    param([System.Security.SecureString]$Secure)
-    [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure))
+if ($PostgresPassword) {
+    $pgPass = $PostgresPassword
+} else {
+    $sec = Read-Host -AsSecureString "  PostgreSQL admin password"
+    $pgPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
 }
 
-$pgPass  = ConvertFrom-SecureStringPlain $postgresPassword
-$cmsKey  = ConvertFrom-SecureStringPlain $cmsSecretKey
-$cmsPass = ConvertFrom-SecureStringPlain $cmsAdminPassword
+if ($CmsSecretKey) {
+    $cmsKey = $CmsSecretKey
+} else {
+    $sec = Read-Host -AsSecureString "  CMS secret key (for JWT/session signing)"
+    $cmsKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+}
+
+if ($CmsAdminPassword) {
+    $cmsPass = $CmsAdminPassword
+} else {
+    $sec = Read-Host -AsSecureString "  CMS web admin password"
+    $cmsPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+}
 
 if ($pgPass.Length -lt 8) {
     Write-Fail "PostgreSQL password must be at least 8 characters."
@@ -182,15 +200,17 @@ $deployResult = az deployment group create `
         cmsAdminPassword=$cmsPass `
         adminPrincipalId=$adminPrincipalId `
     --query "properties.outputs" `
-    -o json 2>&1
+    -o json 2>$null
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Bicep deployment failed:"
-    Write-Host $deployResult -ForegroundColor Red
+    Write-Fail "Bicep deployment failed. Run with verbose output:"
+    Write-Host "  az deployment group create --resource-group $ResourceGroup --template-file $templateFile ..." -ForegroundColor Red
     exit 1
 }
 
-$outputs = $deployResult | ConvertFrom-Json
+# Filter out any non-JSON lines (warnings) before parsing
+$jsonLines = ($deployResult | Where-Object { $_ -match '^\s*[\{\[\"]' -or $_ -match '^\s*\}' -or $_ -match '^\s*\]' -or $_ -match '^\s*"' }) -join "`n"
+$outputs = $jsonLines | ConvertFrom-Json
 
 $cmsUrl          = $outputs.cmsUrl.value
 $mcpUrl          = $outputs.mcpUrl.value

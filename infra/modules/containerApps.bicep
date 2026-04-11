@@ -108,12 +108,30 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       secrets: [
-        { name: 'acr-password'; value: acrPassword }
-        { name: 'cms-database-url'; value: cmsDatabaseUrl }
-        { name: 'cms-secret-key'; value: cmsSecretKey }
-        { name: 'cms-admin-username'; value: cmsAdminUsername }
-        { name: 'cms-admin-password'; value: cmsAdminPassword }
-        { name: 'storage-connection-string'; value: storageConnectionString }
+        {
+          name: 'acr-password'
+          value: acrPassword
+        }
+        {
+          name: 'cms-database-url'
+          value: cmsDatabaseUrl
+        }
+        {
+          name: 'cms-secret-key'
+          value: cmsSecretKey
+        }
+        {
+          name: 'cms-admin-username'
+          value: cmsAdminUsername
+        }
+        {
+          name: 'cms-admin-password'
+          value: cmsAdminPassword
+        }
+        {
+          name: 'storage-connection-string'
+          value: storageConnectionString
+        }
       ]
     }
     template: {
@@ -126,14 +144,38 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             memory: '2Gi'
           }
           env: [
-            { name: 'AGORA_CMS_DATABASE_URL'; secretRef: 'cms-database-url' }
-            { name: 'AGORA_CMS_SECRET_KEY'; secretRef: 'cms-secret-key' }
-            { name: 'AGORA_CMS_ADMIN_USERNAME'; secretRef: 'cms-admin-username' }
-            { name: 'AGORA_CMS_ADMIN_PASSWORD'; secretRef: 'cms-admin-password' }
-            { name: 'AGORA_CMS_API_KEY_ROTATION_HOURS'; value: cmsApiKeyRotationHours }
-            { name: 'AGORA_CMS_STORAGE_BACKEND'; value: 'azure' }
-            { name: 'AZURE_STORAGE_CONNECTION_STRING'; secretRef: 'storage-connection-string' }
-            { name: 'AZURE_STORAGE_BLOB_ENDPOINT'; value: storageBlobEndpoint }
+            {
+              name: 'AGORA_CMS_DATABASE_URL'
+              secretRef: 'cms-database-url'
+            }
+            {
+              name: 'AGORA_CMS_SECRET_KEY'
+              secretRef: 'cms-secret-key'
+            }
+            {
+              name: 'AGORA_CMS_ADMIN_USERNAME'
+              secretRef: 'cms-admin-username'
+            }
+            {
+              name: 'AGORA_CMS_ADMIN_PASSWORD'
+              secretRef: 'cms-admin-password'
+            }
+            {
+              name: 'AGORA_CMS_API_KEY_ROTATION_HOURS'
+              value: cmsApiKeyRotationHours
+            }
+            {
+              name: 'AGORA_CMS_STORAGE_BACKEND'
+              value: 'azure'
+            }
+            {
+              name: 'AGORA_CMS_AZURE_STORAGE_CONNECTION_STRING'
+              secretRef: 'storage-connection-string'
+            }
+            {
+              name: 'AGORA_CMS_AZURE_STORAGE_BLOB_ENDPOINT'
+              value: storageBlobEndpoint
+            }
           ]
           volumeMounts: [
             {
@@ -180,7 +222,10 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       secrets: [
-        { name: 'acr-password'; value: acrPassword }
+        {
+          name: 'acr-password'
+          value: acrPassword
+        }
       ]
     }
     template: {
@@ -193,9 +238,18 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
             memory: '0.5Gi'
           }
           env: [
-            { name: 'CMS_BASE_URL'; value: 'https://${cmsApp.properties.configuration.ingress.fqdn}' }
-            { name: 'CMS_USERNAME'; value: cmsAdminUsername }
-            { name: 'CMS_PASSWORD'; value: cmsAdminPassword }
+            {
+              name: 'CMS_BASE_URL'
+              value: 'https://${cmsApp.properties.configuration.ingress.fqdn}'
+            }
+            {
+              name: 'CMS_USERNAME'
+              value: cmsAdminUsername
+            }
+            {
+              name: 'CMS_PASSWORD'
+              value: cmsAdminPassword
+            }
           ]
         }
       ]

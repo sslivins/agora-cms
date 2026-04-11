@@ -14,3 +14,4 @@ tzdata>=2024.1
 
 # Azure Blob Storage (only needed when AGORA_CMS_STORAGE_BACKEND=azure)
 azure-storage-blob>=12.20,<13.0
+aiohttp>=3.9,<4.0

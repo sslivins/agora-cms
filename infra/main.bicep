@@ -129,11 +129,6 @@ var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${postgresAdminPas
 var resolvedCmsImage = !empty(cmsImage) ? cmsImage : '${acr.outputs.acrLoginServer}/agora-cms:latest'
 var resolvedMcpImage = !empty(mcpImage) ? mcpImage : '${acr.outputs.acrLoginServer}/agora-cms-mcp:latest'
 
-// ── Look up ACR credentials ──
-resource acrResource 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
-  name: acrName
-}
-
 // ── Container Apps (CMS + MCP) ──
 module containerApps 'modules/containerApps.bicep' = {
   name: 'containerApps'
@@ -160,16 +155,13 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // ACR
     acrLoginServer: acr.outputs.acrLoginServer
-    acrUsername: acrResource.listCredentials().username
-    acrPassword: acrResource.listCredentials().passwords[0].value
+    acrUsername: acr.outputs.acrUsername
+    acrPassword: acr.outputs.acrPassword
 
     // MCP
     mcpAppName: mcpAppName
     mcpImage: resolvedMcpImage
   }
-  dependsOn: [
-    acr
-  ]
 }
 
 // ── Outputs ──
