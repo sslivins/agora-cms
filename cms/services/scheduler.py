@@ -106,6 +106,7 @@ def clear_sync_hash(device_id: str) -> None:
 def get_upcoming_schedules(
     schedules: list, now: datetime, tz: ZoneInfo,
     now_playing: list[dict] | None = None,
+    offline_device_ids: set[str] | None = None,
 ) -> list[dict]:
     """Return schedules starting within the next 24 hours.
 
@@ -116,6 +117,7 @@ def get_upcoming_schedules(
     Each entry includes start/end time, duration, countdown, and whether it's
     today or tomorrow.
     """
+    _offline = offline_device_ids or set()
     local_now = now.astimezone(tz).replace(tzinfo=None)
     today = local_now.date()
     tomorrow = today + timedelta(days=1)
@@ -160,7 +162,13 @@ def get_upcoming_schedules(
                 # No winner yet for this target (device or group) — scheduler
                 # hasn't evaluated.  Show as "starting" so the schedule
                 # doesn't vanish from the dashboard during the transition.
-                results.append(_starting_entry(s, local_now))
+                # If the target device is offline, flag it so the dashboard
+                # can show a "Device Offline" badge instead of "Starting…".
+                entry = _starting_entry(s, local_now)
+                if s.device_id and s.device_id in _offline:
+                    entry["starting"] = False
+                    entry["device_offline"] = True
+                results.append(entry)
             continue
 
         # Check today

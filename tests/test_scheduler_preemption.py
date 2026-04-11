@@ -251,6 +251,38 @@ class TestDeviceOffline:
         assert len(result) == 1
         assert result[0]["starting"] is True
 
+    def test_offline_device_shows_device_offline(self):
+        """When offline_device_ids is passed, an active schedule on an offline
+        device shows device_offline=True instead of starting=True."""
+        s = _make_schedule(
+            time(8, 0), time(17, 0), priority=1, name="Offline",
+            device_id="d1",
+        )
+        now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+
+        result = get_upcoming_schedules(
+            [s], now, UTC, now_playing=[], offline_device_ids={"d1"},
+        )
+        assert len(result) == 1
+        assert result[0].get("device_offline") is True
+        assert result[0].get("starting") is not True
+
+    def test_online_device_still_shows_starting(self):
+        """When a device is NOT in offline_device_ids, active schedules
+        with no winner still show starting=True (not device_offline)."""
+        s = _make_schedule(
+            time(8, 0), time(17, 0), priority=1, name="Online",
+            device_id="d1",
+        )
+        now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+
+        result = get_upcoming_schedules(
+            [s], now, UTC, now_playing=[], offline_device_ids=set(),
+        )
+        assert len(result) == 1
+        assert result[0]["starting"] is True
+        assert result[0].get("device_offline") is not True
+
     def test_sole_schedule_on_connected_device_not_preempted(self):
         """A single active schedule that IS the winner should not be in upcoming."""
         s = _make_schedule(

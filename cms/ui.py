@@ -200,7 +200,14 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
                 # schedule preempted but _now_playing is stale), don't
                 # flip the badge — the device is working fine.
                 if actual_mode != "play":
-                    np["starting"] = True
+                    if not device_manager.is_connected(did):
+                        np["device_offline"] = True
+                    else:
+                        np["starting"] = True
+        # Outside the grace period, flag offline devices distinctly
+        if np.get("mismatch") and not device_manager.is_connected(did):
+            np["mismatch"] = False
+            np["device_offline"] = True
 
     # Build device status with live playback state
     device_states = []
@@ -230,7 +237,8 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         .where(Schedule.enabled == True)
     )
     all_schedules = sched_q.scalars().all()
-    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
+    offline_set = set(d.id for d in offline_devices)
+    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
@@ -318,7 +326,13 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
                 if actual_mode != "play":
-                    np["starting"] = True
+                    if did in offline_ids:
+                        np["device_offline"] = True
+                    else:
+                        np["starting"] = True
+        if np.get("mismatch") and did in offline_ids:
+            np["mismatch"] = False
+            np["device_offline"] = True
 
     device_states = [
         {
@@ -343,7 +357,8 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         .where(Schedule.enabled == True)
     )
     all_schedules = sched_q.scalars().all()
-    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
+    offline_set = set(offline_ids)
+    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
 
     # Recent activity count for change detection
     from datetime import timedelta

@@ -142,7 +142,9 @@
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ np.schedule_name }}</span><span class="tooltip">{{ np.schedule_name }}</span></span></td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ np.asset_filename }}</span><span class="tooltip">{{ np.asset_filename }}</span></span></td>
                 <td>
-                    {% if np.mismatch %}
+                    {% if np.device_offline %}
+                    <span class="has-tooltip"><span class="badge badge-offline">Device Offline</span><span class="tooltip">Device is not connected — playback will start when it reconnects</span></span>
+                    {% elif np.mismatch %}
                     <span class="has-tooltip"><span class="badge badge-missed">Not Playing</span><span class="tooltip">Device is {{ np.actual_mode }}{% if np.actual_asset %} ({{ np.actual_asset }}){% endif %} instead of {{ np.asset_filename }}</span></span>
                     {% elif np.starting %}
                     <span class="has-tooltip"><span class="badge badge-processing">Starting…</span><span class="tooltip">Schedule just activated — waiting for device to begin playback</span></span>
@@ -184,13 +186,13 @@
         </thead>
         <tbody>
             {% for u in upcoming_today %}
-            <tr{% if u.preempted %} class="preempted-row"{% elif u.starting %} class="starting-row"{% endif %}>
+            <tr{% if u.preempted %} class="preempted-row"{% elif u.device_offline %} class="starting-row"{% elif u.starting %} class="starting-row"{% endif %}>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.schedule_name }}</span><span class="tooltip">{{ u.schedule_name }}</span></span>{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% endif %}</td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.target_name }}</span><span class="tooltip">{{ u.target_name }}</span></span>{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.asset_filename }}</span><span class="tooltip">{{ u.asset_filename }}</span></span></td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
                 <td>{% if u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
-                <td class="{% if u.preempted %}text-warning{% elif u.starting %}{% else %}text-success{% endif %}">{% if u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
+                <td class="{% if u.preempted %}text-warning{% elif u.device_offline or u.starting %}{% else %}text-success{% endif %}">{% if u.device_offline %}<span class="badge badge-offline">Device Offline</span>{% elif u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -212,13 +214,13 @@
         </thead>
         <tbody>
             {% for u in upcoming_tomorrow %}
-            <tr{% if u.preempted %} class="preempted-row"{% elif u.starting %} class="starting-row"{% endif %}>
+            <tr{% if u.preempted %} class="preempted-row"{% elif u.device_offline %} class="starting-row"{% elif u.starting %} class="starting-row"{% endif %}>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.schedule_name }}</span><span class="tooltip">{{ u.schedule_name }}</span></span>{% if u.preempted %} <span class="badge badge-preempted">preempted</span>{% endif %}</td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.target_name }}</span><span class="tooltip">{{ u.target_name }}</span></span>{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.asset_filename }}</span><span class="tooltip">{{ u.asset_filename }}</span></span></td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
                 <td>{% if u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
-                <td class="{% if u.preempted %}text-warning{% elif u.starting %}{% else %}text-muted{% endif %}">{% if u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
+                <td class="{% if u.preempted %}text-warning{% elif u.device_offline or u.starting %}{% else %}text-muted{% endif %}">{% if u.device_offline %}<span class="badge badge-offline">Device Offline</span>{% elif u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -290,12 +292,12 @@ async function endNow(scheduleId) {
         // Bucket temperatures to avoid constant reloads from minor fluctuations
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
-            playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
+            playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.device_offline ? 'off' : p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
             devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '') + ':' + (d.display_connected == null ? 'n' : d.display_connected ? 'y' : 'x')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),
-            upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label + (u.starting ? ':starting' : u.preempted ? ':preempted' : '')).sort(),
+            upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label + (u.device_offline ? ':offline' : u.starting ? ':starting' : u.preempted ? ':preempted' : '')).sort(),
             activity: data.activity_count || 0,
         });
     }

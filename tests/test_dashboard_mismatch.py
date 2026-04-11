@@ -1,7 +1,9 @@
-"""Tests for dashboard schedule mismatch detection.
+"""Tests for dashboard schedule mismatch and device-offline detection.
 
 When a schedule is active for a device but the device is not actually playing
 the expected asset, the dashboard should show a 'Not Playing' warning badge.
+When the target device is offline, the dashboard should show a 'Device Offline'
+badge instead of 'Starting…' or 'Not Playing'.
 """
 
 import hashlib
@@ -296,6 +298,99 @@ class TestDashboardStartingGrace:
             assert "Starting" not in html
             assert "badge-processing" not in html
             assert "badge-started" in html
+        finally:
+            device_manager.disconnect("mismatch-01")
+            _sched._now_playing.pop("mismatch-01", None)
+
+
+@pytest.mark.asyncio
+class TestDashboardDeviceOffline:
+    """When a scheduled device is offline, the dashboard should show 'Device Offline'
+    instead of 'Starting…' or 'Not Playing'."""
+
+    async def test_offline_badge_in_now_playing_html(self, app, db_session, client):
+        """An offline device in now_playing shows 'Device Offline' badge, not 'Not Playing'."""
+        await _seed_device(db_session)
+        # Do NOT call _fake_connect — device stays offline
+        since = datetime.now(timezone.utc) - timedelta(seconds=60)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            resp = await client.get("/")
+            assert resp.status_code == 200
+            html = resp.text
+            assert "Device Offline" in html
+            assert "badge-offline" in html
+            assert "Not Playing" not in html
+            assert "badge-missed" not in html
+            assert "Starting" not in html
+        finally:
+            _sched._now_playing.pop("mismatch-01", None)
+
+    async def test_offline_badge_in_now_playing_json(self, app, db_session, client):
+        """JSON endpoint returns device_offline=True for offline devices."""
+        await _seed_device(db_session)
+        since = datetime.now(timezone.utc) - timedelta(seconds=60)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            resp = await client.get("/api/dashboard")
+            assert resp.status_code == 200
+            np = resp.json()["now_playing"][0]
+            assert np.get("device_offline") is True
+            assert np["mismatch"] is False
+            assert np.get("starting") is not True
+        finally:
+            _sched._now_playing.pop("mismatch-01", None)
+
+    async def test_offline_badge_during_grace_period(self, app, db_session, client):
+        """Within the 45s grace period, an offline device shows 'Device Offline' not 'Starting…'."""
+        await _seed_device(db_session)
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            resp = await client.get("/")
+            assert resp.status_code == 200
+            html = resp.text
+            assert "Device Offline" in html
+            assert "badge-offline" in html
+            assert "Starting" not in html
+            assert "badge-processing" not in html
+        finally:
+            _sched._now_playing.pop("mismatch-01", None)
+
+    async def test_offline_to_online_transition(self, app, db_session, client):
+        """When an offline device reconnects, the badge should transition from
+        'Device Offline' to 'Starting…' and then to 'Playing'."""
+        await _seed_device(db_session)
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
+        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
+                          since=since.isoformat())
+
+        try:
+            # 1) Device offline → "Device Offline" badge
+            resp1 = await client.get("/api/dashboard")
+            np1 = resp1.json()["now_playing"][0]
+            assert np1.get("device_offline") is True
+
+            # 2) Device comes online (not playing yet) → "Starting…"
+            _fake_connect("mismatch-01", mode="splash", asset=None)
+            resp2 = await client.get("/api/dashboard")
+            np2 = resp2.json()["now_playing"][0]
+            assert np2.get("device_offline") is not True
+            assert np2.get("starting") is True
+
+            # 3) Device starts playing → "Playing"
+            device_manager.update_status("mismatch-01", mode="play", asset="sony-clip.mp4")
+            resp3 = await client.get("/api/dashboard")
+            np3 = resp3.json()["now_playing"][0]
+            assert np3.get("device_offline") is not True
+            assert np3.get("starting") is not True
+            assert np3["mismatch"] is False
         finally:
             device_manager.disconnect("mismatch-01")
             _sched._now_playing.pop("mismatch-01", None)
