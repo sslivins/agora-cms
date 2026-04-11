@@ -628,6 +628,19 @@ async def settings_page(
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
     mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
+    # Timezone
+    current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
+    now_utc = datetime.now(_tz.utc)
+    tz_options = []
+    for tz_name in sorted(available_timezones()):
+        offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
+        total_sec = int(offset.total_seconds())
+        sign = "+" if total_sec >= 0 else "-"
+        h, m = divmod(abs(total_sec) // 60, 60)
+        label = f"{tz_name.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
+        tz_options.append({"value": tz_name, "label": label})
+
     # Device list for log download panel
     from cms.models.device import Device
     result = await db.execute(select(Device).order_by(Device.name))
@@ -645,6 +658,9 @@ async def settings_page(
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
         "mcp_api_key": mcp_api_key,
+        "current_timezone": current_timezone,
+        "timezone_saved": timezone_saved,
+        "timezones": tz_options,
         "devices": device_list,
         "success": None,
         "error": None,
@@ -923,19 +939,45 @@ async def change_timezone(
     tz_name = form.get("timezone", "").strip()
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
-    timezones = sorted(available_timezones())
+    mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
+    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
+
+    now_utc = datetime.now(_tz.utc)
+    tz_options = []
+    for tz in sorted(available_timezones()):
+        offset = now_utc.astimezone(ZoneInfo(tz)).utcoffset()
+        total_sec = int(offset.total_seconds())
+        sign = "+" if total_sec >= 0 else "-"
+        h, m = divmod(abs(total_sec) // 60, 60)
+        label = f"{tz.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
+        tz_options.append({"value": tz, "label": label})
+
+    from cms.models.device import Device
+    result = await db.execute(select(Device).order_by(Device.name))
+    devices = result.scalars().all()
+    device_list = [
+        {"id": d.id, "name": d.name, "connected": device_manager.is_connected(d.id)}
+        for d in devices
+    ]
+
+    base_ctx = {
+        "active_tab": "settings",
+        "version": __version__,
+        "username": username,
+        "online_count": device_manager.connected_count,
+        "asset_storage": str(settings.asset_storage_path),
+        "mcp_enabled": mcp_enabled,
+        "mcp_api_key": mcp_api_key,
+        "timezones": tz_options,
+        "devices": device_list,
+    }
 
     if tz_name not in available_timezones():
         current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
         return templates.TemplateResponse(request, "settings.html", {
-            "active_tab": "settings",
-            "version": __version__,
-            "username": username,
-            "online_count": device_manager.connected_count,
-            "asset_storage": str(settings.asset_storage_path),
+            **base_ctx,
             "current_timezone": current_timezone,
             "timezone_saved": True,
-            "timezones": timezones,
             "success": None,
             "error": f"Invalid timezone: {tz_name}",
         }, status_code=400)
@@ -943,14 +985,9 @@ async def change_timezone(
     await set_setting(db, SETTING_TIMEZONE, tz_name)
 
     return templates.TemplateResponse(request, "settings.html", {
-        "active_tab": "settings",
-        "version": __version__,
-        "username": username,
-        "online_count": device_manager.connected_count,
-        "asset_storage": str(settings.asset_storage_path),
+        **base_ctx,
         "current_timezone": tz_name,
         "timezone_saved": True,
-        "timezones": timezones,
         "success": f"Timezone set to {tz_name}",
         "error": None,
     })
