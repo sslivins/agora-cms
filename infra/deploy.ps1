@@ -164,6 +164,26 @@ Write-Step "Creating resource group: $ResourceGroup ($Location)"
 az group create --name $ResourceGroup --location $Location --tags project=agora-cms managedBy=bicep -o none
 Write-Ok "Resource group ready"
 
+# ── Recover soft-deleted Key Vault if needed ─────────────────────
+
+$kvName = "$Prefix-kv"
+Write-Step "Checking for soft-deleted Key Vault ($kvName)"
+$deletedKv = az keyvault list-deleted --query "[?name=='$kvName'].name" -o tsv 2>$null
+if ($deletedKv) {
+    Write-Warn "Found soft-deleted Key Vault '$kvName' — recovering"
+    az keyvault recover --name $kvName -o none 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Key Vault recovered"
+        # Move it to our resource group if it was in a different one
+        # (recovery restores to original location — Bicep will update it)
+    } else {
+        Write-Fail "Could not recover Key Vault. You may need to use a different prefix."
+        exit 1
+    }
+} else {
+    Write-Ok "No soft-deleted Key Vault — clean deploy"
+}
+
 # ── Deploy Bicep templates ───────────────────────────────────────
 
 Write-Step "Deploying infrastructure (this takes 5-10 minutes)..."
