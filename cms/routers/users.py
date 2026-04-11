@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,6 +12,7 @@ from cms.database import get_db
 from cms.models.user import Role, User, UserGroup
 from cms.permissions import USERS_READ, USERS_WRITE
 from cms.schemas.user import PasswordChange, UserCreate, UserMe, UserRead, UserUpdate
+from cms.services.audit_service import audit_log
 
 router = APIRouter(prefix="/api/users")
 
@@ -111,6 +112,7 @@ async def get_user(
 @router.post("", response_model=UserRead, status_code=201)
 async def create_user(
     data: UserCreate,
+    request: Request,
     _user: User = Depends(require_permission(USERS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -139,6 +141,9 @@ async def create_user(
     for gid in data.group_ids:
         db.add(UserGroup(user_id=user.id, group_id=gid))
 
+    await audit_log(db, user=_user, action="user.create", resource_type="user",
+                    resource_id=str(user.id), details={"username": data.username},
+                    request=request)
     await db.commit()
     await db.refresh(user, ["role"])
     return _user_to_read(user, data.group_ids)
@@ -148,6 +153,7 @@ async def create_user(
 async def update_user(
     user_id: uuid.UUID,
     data: UserUpdate,
+    request: Request,
     _admin: User = Depends(require_permission(USERS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -189,6 +195,10 @@ async def update_user(
         for gid in data.group_ids:
             db.add(UserGroup(user_id=user.id, group_id=gid))
 
+    await audit_log(db, user=_admin, action="user.update", resource_type="user",
+                    resource_id=str(user_id),
+                    details=data.model_dump(exclude_unset=True, exclude={"password"}),
+                    request=request)
     await db.commit()
     await db.refresh(user, ["role"])
     gids = await _get_group_ids(user.id, db)
@@ -198,6 +208,7 @@ async def update_user(
 @router.delete("/{user_id}")
 async def delete_user(
     user_id: uuid.UUID,
+    request: Request,
     _admin: User = Depends(require_permission(USERS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -214,6 +225,9 @@ async def delete_user(
     from sqlalchemy import delete
     await db.execute(delete(UserGroup).where(UserGroup.user_id == user_id))
 
+    await audit_log(db, user=_admin, action="user.delete", resource_type="user",
+                    resource_id=str(user_id), details={"username": user.username},
+                    request=request)
     await db.delete(user)
     await db.commit()
     return {"deleted": str(user_id)}

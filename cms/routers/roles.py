@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from cms.database import get_db
 from cms.models.user import Role, User
 from cms.permissions import ALL_PERMISSIONS, ROLES_READ, ROLES_WRITE
 from cms.schemas.user import RoleCreate, RoleRead, RoleUpdate
+from cms.services.audit_service import audit_log
 
 router = APIRouter(prefix="/api/roles")
 
@@ -40,6 +41,7 @@ async def get_role(
 @router.post("", response_model=RoleRead, status_code=201)
 async def create_role(
     data: RoleCreate,
+    request: Request,
     _user: User = Depends(require_permission(ROLES_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -60,6 +62,10 @@ async def create_role(
         is_builtin=False,
     )
     db.add(role)
+    await db.flush()
+    await audit_log(db, user=_user, action="role.create", resource_type="role",
+                    resource_id=str(role.id), details={"name": data.name},
+                    request=request)
     await db.commit()
     await db.refresh(role)
     return role
@@ -69,6 +75,7 @@ async def create_role(
 async def update_role(
     role_id: uuid.UUID,
     data: RoleUpdate,
+    request: Request,
     _user: User = Depends(require_permission(ROLES_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -95,6 +102,10 @@ async def update_role(
     if data.description is not None:
         role.description = data.description
 
+    await audit_log(db, user=_user, action="role.update", resource_type="role",
+                    resource_id=str(role_id),
+                    details=data.model_dump(exclude_unset=True),
+                    request=request)
     await db.commit()
     await db.refresh(role)
     return role
@@ -103,6 +114,7 @@ async def update_role(
 @router.delete("/{role_id}")
 async def delete_role(
     role_id: uuid.UUID,
+    request: Request,
     _user: User = Depends(require_permission(ROLES_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -121,6 +133,9 @@ async def delete_role(
     if user_count.scalar() > 0:
         raise HTTPException(status_code=409, detail="Cannot delete role with assigned users")
 
+    await audit_log(db, user=_user, action="role.delete", resource_type="role",
+                    resource_id=str(role_id), details={"name": role.name},
+                    request=request)
     await db.delete(role)
     await db.commit()
     return {"deleted": str(role_id)}
