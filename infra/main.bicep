@@ -52,10 +52,11 @@ param mcpImage string = ''
 @secure()
 param mcpApiKey string = 'placeholder-will-be-replaced'
 
-@description('CMS container CPU cores (valid: 0.25, 0.5, 1, 2, 4)')
+@description('CMS container CPU cores (Consumption tier: 0.25–2.0 in 0.25 steps)')
+@allowed(['0.25', '0.5', '0.75', '1.0', '1.25', '1.5', '1.75', '2.0'])
 param cmsCpu string = '1.0'
 
-@description('CMS container memory (must match CPU: 0.25→0.5Gi, 0.5→1Gi, 1→2Gi, 2→4Gi, 4→8Gi)')
+@description('CMS container memory (must be 2× CPU, e.g. 0.5→1Gi, 1.0→2Gi, 2.0→4Gi)')
 param cmsMemory string = '2Gi'
 
 @description('Object ID of the Azure AD user/principal for Key Vault admin access')
@@ -69,7 +70,7 @@ var tags = {
 // Resource names derived from prefix
 var vnetName = '${prefix}-vnet'
 var postgresServerName = '${prefix}-pg'
-var storageAccountName = replace('${prefix}storage', '-', '')
+var storageAccountName = take(replace('${prefix}stg${uniqueString(resourceGroup().id)}', '-', ''), 24)
 var acrName = replace('${prefix}acr', '-', '')
 var keyVaultName = '${prefix}-kv'
 var containerAppsEnvName = '${prefix}-env'

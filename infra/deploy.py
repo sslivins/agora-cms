@@ -29,9 +29,17 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+from urllib.request import (
+    HTTPCookieProcessor,
+    HTTPErrorProcessor,
+    Request,
+    build_opener,
+    urlopen,
+)
 
 # ── Colours ──────────────────────────────────────────────────────
 
@@ -68,15 +76,25 @@ def info(msg: str) -> None:
 def az(*args: str, capture: bool = False, check: bool = True, quiet: bool = False) -> str | None:
     """Run an az CLI command. Returns stdout when capture=True."""
     cmd = ["az", *args]
-    stderr = subprocess.DEVNULL if quiet else subprocess.PIPE
-    result = subprocess.run(
-        cmd,
-        capture_output=capture,
-        text=True,
-        stderr=stderr,
-    )
+    # On Windows, az is a .cmd file — needs shell=True to resolve
+    use_shell = sys.platform == "win32"
+    if capture:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL if quiet else subprocess.PIPE,
+            text=True,
+            shell=use_shell,
+        )
+    else:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL if quiet else None,
+            stderr=subprocess.DEVNULL if quiet else None,
+            shell=use_shell,
+        )
     if check and result.returncode != 0:
-        return None if capture else None
+        return None
     if capture:
         return result.stdout.strip() if result.returncode == 0 else None
     return None
@@ -106,52 +124,41 @@ def http_get(url: str, timeout: int = 10) -> int | None:
         return None
 
 
-def http_post(url: str, data: dict | str | None = None, headers: dict | None = None,
-              cookies: str | None = None, timeout: int = 15) -> tuple[int, str, dict[str, str]]:
-    """Simple HTTP POST. Returns (status_code, body, response_headers)."""
-    hdrs = headers or {}
-    if cookies:
-        hdrs["Cookie"] = cookies
+class HttpSession:
+    """HTTP session with automatic cookie handling (like requests.Session)."""
 
-    if isinstance(data, dict):
-        if hdrs.get("Content-Type") == "application/json":
-            body = json.dumps(data).encode()
+    def __init__(self) -> None:
+        self._jar = CookieJar()
+        self._opener = build_opener(HTTPCookieProcessor(self._jar))
+
+    def post(self, url: str, data: dict | str | None = None,
+             content_type: str | None = None, timeout: int = 15) -> tuple[int, str]:
+        """POST with automatic cookie persistence. Returns (status, body)."""
+        headers: dict[str, str] = {}
+
+        if isinstance(data, dict):
+            if content_type == "application/json":
+                body = json.dumps(data).encode()
+                headers["Content-Type"] = "application/json"
+            else:
+                body = urlencode(data).encode()
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+        elif isinstance(data, str):
+            body = data.encode()
         else:
-            # form-encoded
-            from urllib.parse import urlencode
-            body = urlencode(data).encode()
-            hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
-    elif isinstance(data, str):
-        body = data.encode()
-    else:
-        body = None
+            body = b""
 
-    req = Request(url, data=body, headers=hdrs, method="POST")
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
-            return resp.status, resp.read().decode(), resp_headers
-    except URLError as e:
-        if hasattr(e, "code"):
-            # HTTPError — still readable
-            resp_headers = {k.lower(): v for k, v in e.headers.items()}
-            return e.code, e.read().decode(), resp_headers
-        raise
+        if content_type and "Content-Type" not in headers:
+            headers["Content-Type"] = content_type
 
-
-def extract_cookies(resp_headers: dict[str, str]) -> str:
-    """Extract Set-Cookie values into a cookie header string."""
-    raw = resp_headers.get("set-cookie", "")
-    # May be multiple cookies joined by comma (if server sends multiple Set-Cookie headers,
-    # urllib joins them). Extract name=value pairs before first semicolon of each.
-    cookies = []
-    for part in raw.split(","):
-        part = part.strip()
-        if "=" in part:
-            nv = part.split(";")[0].strip()
-            if nv:
-                cookies.append(nv)
-    return "; ".join(cookies)
+        req = Request(url, data=body, headers=headers, method="POST")
+        try:
+            with self._opener.open(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode()
+        except URLError as e:
+            if hasattr(e, "code"):
+                return e.code, e.read().decode()
+            raise
 
 
 # ── Main ─────────────────────────────────────────────────────────
@@ -170,10 +177,12 @@ def main() -> int:
     parser.add_argument("--postgres-password", default="", help="PostgreSQL admin password")
     parser.add_argument("--cms-secret-key", default="", help="CMS secret key for JWT/session signing")
     parser.add_argument("--cms-admin-password", default="", help="CMS web admin password")
-    parser.add_argument("--cms-cpu", default="1", choices=["0.25", "0.5", "1", "2", "4"],
-                        help="CMS container CPU cores (default: 1)")
-    parser.add_argument("--cms-memory", default="2Gi", choices=["0.5Gi", "1Gi", "2Gi", "4Gi", "8Gi"],
-                        help="CMS container memory (default: 2Gi)")
+    parser.add_argument("--cms-cpu", default="1.0",
+                        choices=["0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"],
+                        help="CMS container CPU cores (default: 1.0, max 2.0 on Consumption tier)")
+    parser.add_argument("--cms-memory", default="2Gi",
+                        choices=["0.5Gi", "1Gi", "1.5Gi", "2Gi", "2.5Gi", "3Gi", "3.5Gi", "4Gi"],
+                        help="CMS container memory (default: 2Gi, must be 2× CPU)")
     parser.add_argument("--skip-image-push", action="store_true", help="Skip building/pushing container images")
     args = parser.parse_args()
 
@@ -340,37 +349,33 @@ def main() -> int:
 
     if cms_ready:
         try:
-            # Login (303 redirect = success, capture session cookies)
-            status, body, hdrs = http_post(
-                f"https://{cms_url}/login",
-                data={"username": "admin", "password": cms_pass},
-            )
-            cookies = extract_cookies(hdrs)
+            session = HttpSession()
+
+            # Login (follows 303 redirect, cookies auto-captured)
+            session.post(f"https://{cms_url}/login",
+                         data={"username": "admin", "password": cms_pass})
 
             # Create CMS API key for MCP server
-            status, body, _ = http_post(
+            status, body = session.post(
                 f"https://{cms_url}/api/keys",
                 data={"name": "mcp-server"},
-                headers={"Content-Type": "application/json"},
-                cookies=cookies,
+                content_type="application/json",
             )
             api_key = json.loads(body)["key"]
             ok("CMS API key created")
 
             # Enable MCP
-            http_post(
+            session.post(
                 f"https://{cms_url}/api/mcp/toggle",
                 data={"enabled": True},
-                headers={"Content-Type": "application/json"},
-                cookies=cookies,
+                content_type="application/json",
             )
             ok("MCP server enabled in CMS settings")
 
             # Generate MCP SSE auth key
-            status, body, _ = http_post(
+            status, body = session.post(
                 f"https://{cms_url}/api/mcp/generate-key",
-                headers={"Content-Type": "application/json"},
-                cookies=cookies,
+                content_type="application/json",
             )
             mcp_sse_key = json.loads(body)["key"]
             ok("MCP SSE auth key generated")

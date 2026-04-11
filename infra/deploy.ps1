@@ -55,12 +55,12 @@ param(
     [Parameter(HelpMessage = "CMS web admin password")]
     [string]$CmsAdminPassword = "",
 
-    [Parameter(HelpMessage = "CMS container CPU cores (0.25, 0.5, 1, 2, 4)")]
-    [ValidateSet("0.25", "0.5", "1", "2", "4")]
-    [string]$CmsCpu = "1",
+    [Parameter(HelpMessage = "CMS container CPU cores (0.25–2.0 in 0.25 steps)")]
+    [ValidateSet("0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0")]
+    [string]$CmsCpu = "1.0",
 
-    [Parameter(HelpMessage = "CMS container memory (must match CPU)")]
-    [ValidateSet("0.5Gi", "1Gi", "2Gi", "4Gi", "8Gi")]
+    [Parameter(HelpMessage = "CMS container memory (2× CPU: 0.5Gi–4Gi)")]
+    [ValidateSet("0.5Gi", "1Gi", "1.5Gi", "2Gi", "2.5Gi", "3Gi", "3.5Gi", "4Gi")]
     [string]$CmsMemory = "2Gi",
 
     [switch]$SkipImagePush
