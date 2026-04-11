@@ -85,6 +85,73 @@ docker compose up -d         # restart with new image
 docker compose logs -f watchtower  # check watchtower logs
 ```
 
+## Production Deployment (Azure)
+
+Deploy to Azure Container Apps with a single command. The included script provisions all infrastructure (PostgreSQL, Blob Storage, Container Registry, Key Vault, Container Apps) using Bicep templates.
+
+### Prerequisites
+
+- [Azure CLI](https://aka.ms/installazurecli) installed and logged in (`az login`)
+- An Azure subscription
+- Python 3.9+ (for `deploy.py`) or PowerShell 7+ (for `deploy.ps1`)
+
+### Deploy
+
+```bash
+# Python (cross-platform — Linux, macOS, Windows)
+python infra/deploy.py --subscription "My Subscription" --location westus3 --prefix agoracms --resource-group agora-cms-rg
+
+# PowerShell (Windows)
+.\infra\deploy.ps1 -Subscription "My Subscription" -Location westus3 -Prefix agoracms -ResourceGroup agora-cms-rg
+```
+
+You'll be prompted for three passwords (PostgreSQL admin, CMS secret key, CMS admin). Or pass them inline:
+
+```bash
+python infra/deploy.py --subscription "My Subscription" --location westus3 --prefix agoracms \
+    --postgres-password "..." --cms-secret-key "..." --cms-admin-password "..."
+```
+
+The script will:
+
+1. Create the resource group and recover any soft-deleted Key Vault
+2. Create a Container Registry and build/push the CMS + MCP images
+3. Deploy all infrastructure via Bicep (VNet, PostgreSQL, Storage, Key Vault, Container Apps)
+4. Wait for CMS startup, then auto-configure MCP API keys and enable MCP
+5. Print all URLs, credentials, and MCP SSE connection details
+
+### Multiple Environments
+
+Everything is parameterized by `-Prefix`, so you can run isolated instances side by side:
+
+```bash
+# Production
+python infra/deploy.py --subscription "..." --prefix agoracms --resource-group agora-prod
+
+# Dev
+python infra/deploy.py --subscription "..." --prefix agoradev --resource-group agora-dev
+```
+
+### Redeployment
+
+The script is idempotent. Re-running it updates existing resources. Use `-SkipImagePush` to skip rebuilding container images:
+
+```bash
+python infra/deploy.py --subscription "..." --prefix agoracms --resource-group agora-cms-rg --skip-image-push
+```
+
+### CI/CD
+
+The included GitHub Actions workflow (`.github/workflows/publish-image.yml`) automatically builds, pushes to ACR, and deploys to Container Apps on every push to `main`. Set these GitHub secrets:
+
+| Secret | Value |
+|--------|-------|
+| `AZURE_CLIENT_ID` | Azure AD app registration client ID |
+| `AZURE_TENANT_ID` | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
+
+See `infra/` for the full Bicep templates and deployment script.
+
 ## Features
 
 ### Device Management

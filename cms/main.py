@@ -35,6 +35,11 @@ from cms.auth import ensure_admin_credentials, get_settings
 from cms.database import create_tables, dispose_db, get_db, init_db, run_migrations
 from cms.models import *  # noqa: F401,F403 — ensure all models registered with Base
 from cms.services.scheduler import scheduler_loop
+from cms.services.storage import (
+    AzureStorageBackend,
+    LocalStorageBackend,
+    init_storage,
+)
 from cms.services.transcoder import transcoder_loop
 from cms.services.version_checker import version_check_loop
 from cms.services.device_purge import device_purge_loop
@@ -209,6 +214,24 @@ async def lifespan(app: FastAPI):
     await run_migrations()
     settings.asset_storage_path.mkdir(parents=True, exist_ok=True)
 
+    # Initialize storage backend
+    if settings.storage_backend == "azure":
+        if not settings.azure_storage_connection_string:
+            raise RuntimeError(
+                "AGORA_CMS_AZURE_STORAGE_CONNECTION_STRING is required "
+                "when storage_backend is 'azure'"
+            )
+        backend = AzureStorageBackend(
+            base_path=settings.asset_storage_path,
+            connection_string=settings.azure_storage_connection_string,
+            account_name=settings.azure_storage_account_name,
+            account_key=settings.azure_storage_account_key,
+            sas_expiry_hours=settings.azure_sas_expiry_hours,
+        )
+    else:
+        backend = LocalStorageBackend(base_path=settings.asset_storage_path)
+    init_storage(backend)
+
     # Seed admin credentials from env vars if not already in DB
     async for db in get_db():
         await ensure_admin_credentials(db, settings)
@@ -261,6 +284,9 @@ async def lifespan(app: FastAPI):
         await device_purge_task
     except asyncio.CancelledError:
         pass
+    # Close storage backend (Azure: close async blob client)
+    if hasattr(backend, "close"):
+        await backend.close()
     await dispose_db()
 
 

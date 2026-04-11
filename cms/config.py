@@ -20,6 +20,16 @@ class Settings(BaseSettings):
 
     # Storage
     asset_storage_path: Path = Path("/opt/agora-cms/assets")
+    storage_backend: str = "local"  # "local" or "azure"
+
+    # Azure Blob Storage (only used when storage_backend == "azure")
+    azure_storage_connection_string: str | None = None
+    azure_storage_account_name: str | None = None
+    azure_storage_account_key: str | None = None
+    azure_sas_expiry_hours: int = 1
+
+    # MCP Server
+    mcp_server_url: str = "http://mcp:8000"  # Docker default; override for Azure
 
     # Asset downloads
     asset_base_url: str | None = None  # override base URL for device asset downloads

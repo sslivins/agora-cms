@@ -709,20 +709,22 @@ async def change_password(
 async def mcp_health_check():
     """Check if the MCP container is reachable and can talk to the CMS API."""
     import httpx
+    from cms.auth import get_settings
+    mcp_url = get_settings().mcp_server_url.rstrip("/")
     result = {"online": False, "api_connected": False}
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get("http://mcp:8000/health")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{mcp_url}/health")
             result["online"] = resp.status_code == 200
             if result["online"]:
-                api_resp = await client.get("http://mcp:8000/health/api")
+                api_resp = await client.get(f"{mcp_url}/health/api")
                 if api_resp.status_code == 200:
                     data = api_resp.json()
                     result["api_connected"] = data.get("status") == "ok"
                 else:
                     result["api_error"] = api_resp.json().get("detail", "API check failed")
-    except Exception:
-        pass
+    except Exception as exc:
+        result["error"] = str(exc)
     return result
 
 

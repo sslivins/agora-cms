@@ -19,6 +19,7 @@ from cms.models.device import Device, DeviceGroup
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.schemas.asset import AssetOut
+from cms.services.storage import get_storage
 
 router = APIRouter(prefix="/api/assets", dependencies=[Depends(require_auth)])
 
@@ -153,6 +154,7 @@ async def upload_asset(
     ext = "." + file.filename.rsplit(".", 1)[-1].lower()
     final_filename = file.filename
     original_filename = None
+    storage = get_storage()
     if asset_type == AssetType.IMAGE and ext in IMAGE_CONVERT_EXTS:
         from cms.services.transcoder import convert_image_to_jpeg
         jpeg_filename = Path(file.filename).stem + ".jpg"
@@ -176,6 +178,12 @@ async def upload_asset(
         content = jpeg_path.read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
         final_filename = jpeg_filename
+        # Sync converted JPEG + original to cloud storage
+        await storage.on_file_stored(final_filename)
+        await storage.on_file_stored(f"originals/{file.filename}")
+    else:
+        # Sync source file to cloud storage
+        await storage.on_file_stored(file.filename)
 
     # Database record
     asset = Asset(
@@ -252,10 +260,9 @@ async def download_asset(
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    return FileResponse(
-        path=file_path,
-        filename=asset.filename,
-        media_type="application/octet-stream",
+    storage = get_storage()
+    return await storage.get_download_response(
+        asset.filename, asset.filename, "application/octet-stream",
     )
 
 
@@ -293,6 +300,7 @@ async def preview_asset(
     ext = "." + asset.filename.rsplit(".", 1)[-1].lower()
     media_type = MIME_TYPES.get(ext, "application/octet-stream")
 
+    # Admin preview always reads from local filesystem for speed
     return FileResponse(path=file_path, media_type=media_type)
 
 
@@ -319,14 +327,17 @@ async def delete_asset(
 
     # Remove source file
     file_path = settings.asset_storage_path / asset.filename
+    storage = get_storage()
     if file_path.is_file():
         file_path.unlink()
+    await storage.on_file_deleted(asset.filename)
 
     # Remove original file (if converted from HEIC/AVIF/etc)
     if asset.original_filename:
         orig_path = settings.asset_storage_path / "originals" / asset.original_filename
         if orig_path.is_file():
             orig_path.unlink()
+        await storage.on_file_deleted(f"originals/{asset.original_filename}")
 
     # Remove device-asset tracking records
     da_result = await db.execute(
@@ -356,6 +367,7 @@ async def delete_asset(
         vpath = variants_dir / variant.filename
         if vpath.is_file():
             vpath.unlink()
+        await storage.on_file_deleted(f"variants/{variant.filename}")
         await db.delete(variant)
 
     await db.delete(asset)
@@ -389,8 +401,7 @@ async def download_variant(
     variant_ext = Path(variant.filename).suffix
     download_name = f"{Path(variant.source_asset.filename).stem}_{variant.profile.name}{variant_ext}"
 
-    return FileResponse(
-        path=file_path,
-        filename=download_name,
-        media_type="application/octet-stream",
+    storage = get_storage()
+    return await storage.get_download_response(
+        f"variants/{variant.filename}", download_name, "application/octet-stream",
     )

@@ -56,6 +56,7 @@ async def app(db_engine, tmp_path):
     from cms.auth import get_settings
     from cms.config import Settings
     from cms.database import get_db
+    from cms.services.storage import LocalStorageBackend, init_storage
 
     settings = Settings(
         database_url="sqlite+aiosqlite://",
@@ -65,6 +66,9 @@ async def app(db_engine, tmp_path):
         asset_storage_path=tmp_path / "assets",
     )
     settings.asset_storage_path.mkdir(parents=True, exist_ok=True)
+
+    # Initialize storage backend for tests
+    init_storage(LocalStorageBackend(base_path=settings.asset_storage_path))
 
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
