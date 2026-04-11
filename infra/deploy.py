@@ -170,6 +170,10 @@ def main() -> int:
     parser.add_argument("--postgres-password", default="", help="PostgreSQL admin password")
     parser.add_argument("--cms-secret-key", default="", help="CMS secret key for JWT/session signing")
     parser.add_argument("--cms-admin-password", default="", help="CMS web admin password")
+    parser.add_argument("--cms-cpu", default="1", choices=["0.25", "0.5", "1", "2", "4"],
+                        help="CMS container CPU cores (default: 1)")
+    parser.add_argument("--cms-memory", default="2Gi", choices=["0.5Gi", "1Gi", "2Gi", "4Gi", "8Gi"],
+                        help="CMS container memory (default: 2Gi)")
     parser.add_argument("--skip-image-push", action="store_true", help="Skip building/pushing container images")
     args = parser.parse_args()
 
@@ -293,6 +297,8 @@ def main() -> int:
         f"postgresAdminPassword={pg_pass}",
         f"cmsSecretKey={cms_key}",
         f"cmsAdminPassword={cms_pass}",
+        f"cmsCpu={args.cms_cpu}",
+        f"cmsMemory={args.cms_memory}",
         f"adminPrincipalId={admin_id}",
         "--query", "properties.outputs",
         "-o", "json",

@@ -52,6 +52,12 @@ param mcpImage string = ''
 @secure()
 param mcpApiKey string = 'placeholder-will-be-replaced'
 
+@description('CMS container CPU cores (valid: 0.25, 0.5, 1, 2, 4)')
+param cmsCpu string = '1.0'
+
+@description('CMS container memory (must match CPU: 0.25→0.5Gi, 0.5→1Gi, 1→2Gi, 2→4Gi, 4→8Gi)')
+param cmsMemory string = '2Gi'
+
 @description('Object ID of the Azure AD user/principal for Key Vault admin access')
 param adminPrincipalId string
 
@@ -145,6 +151,8 @@ module containerApps 'modules/containerApps.bicep' = {
     // CMS
     cmsAppName: cmsAppName
     cmsImage: resolvedCmsImage
+    cmsCpu: cmsCpu
+    cmsMemory: cmsMemory
     cmsDatabaseUrl: databaseUrl
     cmsSecretKey: cmsSecretKey
     cmsAdminUsername: cmsAdminUsername

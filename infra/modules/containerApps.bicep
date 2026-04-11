@@ -10,6 +10,8 @@ param tags object = {}
 // ── CMS App config ──
 param cmsAppName string
 param cmsImage string
+param cmsCpu string = '1.0'
+param cmsMemory string = '2Gi'
 @secure()
 param cmsSecretKey string
 @secure()
@@ -142,8 +144,8 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'cms'
           image: cmsImage
           resources: {
-            cpu: json('1.0')
-            memory: '2Gi'
+            cpu: json(cmsCpu)
+            memory: cmsMemory
           }
           env: [
             {

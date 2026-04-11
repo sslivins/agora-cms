@@ -55,6 +55,14 @@ param(
     [Parameter(HelpMessage = "CMS web admin password")]
     [string]$CmsAdminPassword = "",
 
+    [Parameter(HelpMessage = "CMS container CPU cores (0.25, 0.5, 1, 2, 4)")]
+    [ValidateSet("0.25", "0.5", "1", "2", "4")]
+    [string]$CmsCpu = "1",
+
+    [Parameter(HelpMessage = "CMS container memory (must match CPU)")]
+    [ValidateSet("0.5Gi", "1Gi", "2Gi", "4Gi", "8Gi")]
+    [string]$CmsMemory = "2Gi",
+
     [switch]$SkipImagePush
 )
 
@@ -250,6 +258,8 @@ $deployResult = az deployment group create `
         postgresAdminPassword=$pgPass `
         cmsSecretKey=$cmsKey `
         cmsAdminPassword=$cmsPass `
+        cmsCpu=$CmsCpu `
+        cmsMemory=$CmsMemory `
         adminPrincipalId=$adminPrincipalId `
     --query "properties.outputs" `
     -o json 2>$null
