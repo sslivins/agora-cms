@@ -149,9 +149,11 @@ async def require_auth(
 ):
     """Legacy auth check — kept for backward compatibility during migration.
 
-    Delegates to get_current_user but discards the return value.
+    Delegates to get_current_user but stores the user on request.state
+    so templates can access user permissions for nav rendering.
     """
-    await get_current_user(request, settings, db)
+    user = await get_current_user(request, settings, db)
+    request.state.user = user
 
 
 def require_permission(*perms: str):

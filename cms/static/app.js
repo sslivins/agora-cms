@@ -553,3 +553,163 @@ async function createSchedule(form) {
     }
     return false;
 }
+
+// ── User & Role Management ──
+
+function showUserTab(tabId, btn) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.sub-tab').forEach(b => b.classList.remove('active'));
+    document.getElementById(tabId).classList.add('active');
+    btn.classList.add('active');
+}
+
+function closeModal(id) {
+    document.getElementById(id).style.display = 'none';
+}
+
+async function createUser(form) {
+    const data = new FormData(form);
+    const groupIds = data.getAll("group_ids");
+    const body = {
+        username: data.get("username"),
+        display_name: data.get("display_name") || "",
+        email: data.get("email") || null,
+        password: data.get("password"),
+        role_id: data.get("role_id"),
+        group_ids: groupIds,
+    };
+    const resp = await apiCall("POST", "/api/users", body);
+    if (resp && resp.ok) {
+        showToast("User created");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+function openEditUser(userId) {
+    const u = usersData[userId];
+    if (!u) return;
+    document.getElementById("edit-user-id").value = userId;
+    document.getElementById("edit-username").value = u.username;
+    document.getElementById("edit-display-name").value = u.display_name;
+    document.getElementById("edit-email").value = u.email;
+    document.getElementById("edit-password").value = "";
+    document.getElementById("edit-role").value = u.role_id;
+    document.getElementById("edit-active").checked = u.is_active;
+    // Set group checkboxes
+    document.querySelectorAll('#edit-groups input[type="checkbox"]').forEach(cb => {
+        cb.checked = u.group_ids.includes(cb.value);
+    });
+    document.getElementById("edit-user-modal").style.display = "";
+}
+
+async function updateUser(form) {
+    const data = new FormData(form);
+    const userId = data.get("user_id");
+    const groupIds = data.getAll("group_ids");
+    const body = {
+        username: data.get("username"),
+        display_name: data.get("display_name") || "",
+        email: data.get("email") || null,
+        role_id: data.get("role_id"),
+        is_active: data.get("is_active") === "on",
+        group_ids: groupIds,
+    };
+    const pw = data.get("password");
+    if (pw) body.password = pw;
+    const resp = await apiCall("PATCH", `/api/users/${userId}`, body);
+    if (resp && resp.ok) {
+        showToast("User updated");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function deleteUser(userId, username) {
+    if (!await showConfirm(`Delete user "${username}"? This cannot be undone.`)) return;
+    const resp = await apiCall("DELETE", `/api/users/${userId}`);
+    if (resp && resp.ok) {
+        showToast("User deleted");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function toggleUserActive(userId, active) {
+    const resp = await apiCall("PATCH", `/api/users/${userId}`, { is_active: active });
+    if (resp && resp.ok) {
+        showToast(active ? "User enabled" : "User disabled");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function createRole(form) {
+    const data = new FormData(form);
+    const perms = data.getAll("permissions");
+    const body = {
+        name: data.get("name"),
+        description: data.get("description") || "",
+        permissions: perms,
+    };
+    const resp = await apiCall("POST", "/api/roles", body);
+    if (resp && resp.ok) {
+        showToast("Role created");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+function openEditRole(roleId) {
+    const r = rolesData[roleId];
+    if (!r) return;
+    document.getElementById("edit-role-id").value = roleId;
+    document.getElementById("edit-role-name").value = r.name;
+    document.getElementById("edit-role-desc").value = r.description;
+    // Set permission checkboxes
+    document.querySelectorAll('#edit-role-permissions input[type="checkbox"]').forEach(cb => {
+        cb.checked = r.permissions.includes(cb.value);
+    });
+    document.getElementById("edit-role-modal").style.display = "";
+}
+
+async function updateRole(form) {
+    const data = new FormData(form);
+    const roleId = data.get("role_id");
+    const perms = data.getAll("permissions");
+    const body = {
+        name: data.get("name"),
+        description: data.get("description") || "",
+        permissions: perms,
+    };
+    const resp = await apiCall("PATCH", `/api/roles/${roleId}`, body);
+    if (resp && resp.ok) {
+        showToast("Role updated");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function deleteRole(roleId, roleName) {
+    if (!await showConfirm(`Delete role "${roleName}"? Users with this role will need to be reassigned.`)) return;
+    const resp = await apiCall("DELETE", `/api/roles/${roleId}`);
+    if (resp && resp.ok) {
+        showToast("Role deleted");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}

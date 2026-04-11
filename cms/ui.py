@@ -21,6 +21,7 @@ from cms.auth import (
     get_settings,
     hash_password,
     require_auth,
+    require_permission,
     set_setting,
     verify_password,
 )
@@ -28,6 +29,7 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
@@ -444,6 +446,61 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "timezones": COMMON_TIMEZONES,
         "latest_version": get_latest_device_version(),
         "pending_ttl_hours": get_settings().pending_device_ttl_hours,
+    })
+
+
+# ── Users & Roles ──
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_page(
+    request: Request,
+    user: User = Depends(require_permission(USERS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    request.state.user = user
+
+    # All users with roles eager-loaded
+    users_q = await db.execute(
+        select(User).options(selectinload(User.role)).order_by(User.username)
+    )
+    users = users_q.scalars().all()
+
+    # Load group memberships for each user
+    from cms.models.user import UserGroup
+    ug_q = await db.execute(select(UserGroup))
+    all_ug = ug_q.all()
+    user_groups_map: dict = {}
+    for ug in all_ug:
+        user_groups_map.setdefault(str(ug.user_id), []).append(str(ug.group_id))
+
+    # All roles
+    from cms.models.user import Role
+    roles_q = await db.execute(select(Role).order_by(Role.name))
+    roles = roles_q.scalars().all()
+
+    # All device groups (for assigning users to groups)
+    groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    groups = groups_q.scalars().all()
+
+    # All permissions for the role editor
+    from cms.permissions import ALL_PERMISSIONS
+    all_permissions = ALL_PERMISSIONS
+
+    # Check if current user can write
+    can_write = USERS_WRITE in (user.role.permissions if user.role else [])
+    can_write_roles = ROLES_WRITE in (user.role.permissions if user.role else [])
+
+    return templates.TemplateResponse(request, "users.html", {
+        "active_tab": "users",
+        "users": users,
+        "user_groups_map": user_groups_map,
+        "roles": roles,
+        "groups": groups,
+        "all_permissions": all_permissions,
+        "can_write": can_write,
+        "can_write_roles": can_write_roles,
+        "current_user_id": str(user.id),
     })
 
 
