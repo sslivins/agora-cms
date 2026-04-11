@@ -89,15 +89,6 @@ if (-not (Test-Command "az")) {
 }
 Write-Ok "Azure CLI found"
 
-if (-not $SkipImagePush) {
-    if (-not (Test-Command "docker")) {
-        Write-Warn "Docker not found — will skip image push (use -SkipImagePush to suppress)"
-        $SkipImagePush = $true
-    } else {
-        Write-Ok "Docker found"
-    }
-}
-
 # ── Authenticate & set subscription ──────────────────────────────
 
 Write-Step "Setting Azure subscription"
@@ -223,46 +214,102 @@ Write-Ok "Infrastructure deployed"
 
 # ── Push container images to ACR ─────────────────────────────────
 
+# ── Push container images to ACR ─────────────────────────────────
+
 if (-not $SkipImagePush) {
-    Write-Step "Pushing container images to ACR ($acrLoginServer)"
+    Write-Step "Building container images in ACR ($acrLoginServer)"
 
-    az acr login --name ($acrLoginServer -split '\.')[0] 2>&1 | Out-Null
+    $acrName = ($acrLoginServer -split '\.')[0]
+    $repoRoot = Split-Path $scriptDir -Parent
 
-    # Tag & push CMS image
-    $cmsImageTag = "$acrLoginServer/agora-cms:latest"
-    Write-Host "  Building & pushing CMS image..." -ForegroundColor Yellow
-    docker tag agora-cms:latest $cmsImageTag 2>$null
+    Write-Host "  Building CMS image..." -ForegroundColor Yellow
+    az acr build --registry $acrName --image agora-cms:latest --file "$repoRoot\Dockerfile" $repoRoot --no-logs 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        # No local image — try building
-        $repoRoot = Split-Path $scriptDir -Parent
-        docker build -t $cmsImageTag -f "$repoRoot\Dockerfile" $repoRoot
-    } else {
-        # Just tag the existing image
-        docker tag agora-cms:latest $cmsImageTag
+        Write-Fail "CMS image build failed"
+        exit 1
     }
-    docker push $cmsImageTag
-    Write-Ok "CMS image pushed"
+    Write-Ok "CMS image built & pushed"
 
-    # Tag & push MCP image
-    $mcpImageTag = "$acrLoginServer/agora-cms-mcp:latest"
-    Write-Host "  Building & pushing MCP image..." -ForegroundColor Yellow
-    docker tag agora-cms-mcp:latest $mcpImageTag 2>$null
+    Write-Host "  Building MCP image..." -ForegroundColor Yellow
+    az acr build --registry $acrName --image agora-cms-mcp:latest --file "$repoRoot\mcp\Dockerfile" "$repoRoot\mcp" --no-logs 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        $repoRoot = Split-Path $scriptDir -Parent
-        docker build -t $mcpImageTag -f "$repoRoot\mcp\Dockerfile" "$repoRoot\mcp"
-    } else {
-        docker tag agora-cms-mcp:latest $mcpImageTag
+        Write-Fail "MCP image build failed"
+        exit 1
     }
-    docker push $mcpImageTag
-    Write-Ok "MCP image pushed"
+    Write-Ok "MCP image built & pushed"
 } else {
-    Write-Warn "Skipping image push (-SkipImagePush)"
-    Write-Host "  Push images manually:" -ForegroundColor Yellow
-    Write-Host "    az acr login --name $($acrLoginServer -split '\.')[0]" -ForegroundColor Gray
-    Write-Host "    docker tag agora-cms:latest $acrLoginServer/agora-cms:latest" -ForegroundColor Gray
-    Write-Host "    docker push $acrLoginServer/agora-cms:latest" -ForegroundColor Gray
-    Write-Host "    docker tag agora-cms-mcp:latest $acrLoginServer/agora-cms-mcp:latest" -ForegroundColor Gray
-    Write-Host "    docker push $acrLoginServer/agora-cms-mcp:latest" -ForegroundColor Gray
+    Write-Warn "Skipping image build (-SkipImagePush)"
+}
+
+# ── Post-deploy: configure MCP API key ───────────────────────────
+
+Write-Step "Configuring MCP API key"
+
+$cmsAppName = "$Prefix-cms"
+$mcpAppName = "$Prefix-mcp"
+
+# Wait for CMS to be healthy
+Write-Host "  Waiting for CMS to start..." -ForegroundColor Yellow
+$maxAttempts = 30
+for ($i = 1; $i -le $maxAttempts; $i++) {
+    try {
+        $health = Invoke-WebRequest -Uri "https://$cmsUrl/login" -TimeoutSec 5 -ErrorAction SilentlyContinue -MaximumRedirection 0
+        if ($health.StatusCode -eq 200) { break }
+    } catch {}
+    if ($i -eq $maxAttempts) {
+        Write-Warn "CMS not responding after $maxAttempts attempts — MCP key setup skipped"
+        Write-Host "  You can configure it manually later." -ForegroundColor Yellow
+    }
+    Start-Sleep 10
+}
+
+if ($i -le $maxAttempts) {
+    # Login and create API key
+    try {
+        $null = Invoke-WebRequest -Uri "https://$cmsUrl/login" -Method POST `
+            -Body @{username='admin'; password=$cmsPass} `
+            -SessionVariable cmsSession -MaximumRedirection 0 -ErrorAction SilentlyContinue
+
+        # Create a CMS API key for the MCP server
+        $keyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/keys" -Method POST `
+            -WebSession $cmsSession `
+            -ContentType "application/json" `
+            -Body '{"name":"mcp-server"}'
+        $apiKey = $keyResp.key
+        Write-Ok "CMS API key created"
+
+        # Enable MCP in CMS settings
+        $null = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/toggle" -Method POST `
+            -WebSession $cmsSession `
+            -ContentType "application/json" `
+            -Body '{"enabled":true}'
+        Write-Ok "MCP server enabled in CMS settings"
+
+        # Generate MCP SSE auth key (for external clients like Copilot CLI)
+        $mcpKeyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/generate-key" -Method POST `
+            -WebSession $cmsSession
+        $mcpSseKey = $mcpKeyResp.key
+        Write-Ok "MCP SSE auth key generated"
+
+        # Store API key in Key Vault
+        az keyvault secret set --vault-name "$Prefix-kv" --name "mcp-api-key" --value $apiKey -o none 2>$null
+        Write-Ok "API key stored in Key Vault"
+
+        # Update MCP container with the real API key
+        az containerapp secret set --name $mcpAppName --resource-group $ResourceGroup `
+            --secrets "mcp-api-key=$apiKey" -o none 2>$null
+        # Force a new revision so it picks up the secret
+        $suffix = "mcp$(Get-Date -Format 'MMddHHmm')"
+        az containerapp update --name $mcpAppName --resource-group $ResourceGroup `
+            --revision-suffix $suffix -o none 2>$null
+        Write-Ok "MCP container updated with API key"
+
+    } catch {
+        Write-Warn "Failed to configure MCP API key: $($_.Exception.Message)"
+        Write-Host "  You can configure it manually via the CMS settings page." -ForegroundColor Yellow
+        $apiKey = ""
+        $mcpSseKey = ""
+    }
 }
 
 # ── Print summary ────────────────────────────────────────────────
@@ -272,29 +319,36 @@ Write-Host "══════════════════════�
 Write-Host "  Deployment Complete!" -ForegroundColor Green
 Write-Host "═══════════════════════════════════════════════" -ForegroundColor Green
 Write-Host ""
-Write-Host "  CMS URL:          $cmsUrl" -ForegroundColor White
-Write-Host "  MCP URL:          $mcpUrl" -ForegroundColor White
+Write-Host "  CMS URL:          https://$cmsUrl" -ForegroundColor White
+Write-Host "  MCP URL:          https://$mcpUrl" -ForegroundColor White
 Write-Host "  ACR:              $acrLoginServer" -ForegroundColor White
 Write-Host "  PostgreSQL:       $pgFqdn" -ForegroundColor White
 Write-Host "  Key Vault:        $kvUri" -ForegroundColor White
 Write-Host "  Storage Account:  $storageName" -ForegroundColor White
 Write-Host "  Resource Group:   $ResourceGroup" -ForegroundColor White
+if ($mcpSseKey) {
+    Write-Host ""
+    Write-Host "  MCP SSE Auth:     Bearer $mcpSseKey" -ForegroundColor White
+    Write-Host "  MCP SSE URL:      https://$mcpUrl/sse" -ForegroundColor White
+}
 Write-Host ""
 
 # ── Save outputs to file for reference ───────────────────────────
 
 $outputFile = Join-Path $scriptDir "deployment-outputs.json"
 $outputObj = @{
-    timestamp        = (Get-Date -Format "o")
-    subscription     = $subInfo.name
-    resourceGroup    = $ResourceGroup
-    location         = $Location
-    prefix           = $Prefix
-    cmsUrl           = $cmsUrl
-    mcpUrl           = $mcpUrl
-    acrLoginServer   = $acrLoginServer
+    timestamp          = (Get-Date -Format "o")
+    subscription       = $subInfo.name
+    resourceGroup      = $ResourceGroup
+    location           = $Location
+    prefix             = $Prefix
+    cmsUrl             = "https://$cmsUrl"
+    mcpUrl             = "https://$mcpUrl"
+    mcpSseUrl          = "https://$mcpUrl/sse"
+    mcpSseKey          = if ($mcpSseKey) { $mcpSseKey } else { "" }
+    acrLoginServer     = $acrLoginServer
     postgresServerFqdn = $pgFqdn
-    keyVaultUri      = $kvUri
+    keyVaultUri        = $kvUri
     storageAccountName = $storageName
 }
 $outputObj | ConvertTo-Json -Depth 5 | Set-Content $outputFile -Encoding UTF8
@@ -304,9 +358,9 @@ Write-Ok "Outputs saved to $outputFile"
 
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
-Write-Host "    1. Push container images (if skipped): docker push ..." -ForegroundColor Gray
-Write-Host "    2. Migrate database: pg_dump / pg_restore to $pgFqdn" -ForegroundColor Gray
-Write-Host "    3. Upload assets: azcopy to $storageName blob containers" -ForegroundColor Gray
-Write-Host "    4. Store secrets in Key Vault: $kvUri" -ForegroundColor Gray
-Write-Host "    5. Open CMS: $cmsUrl" -ForegroundColor Gray
+Write-Host "    1. Open CMS: https://$cmsUrl" -ForegroundColor Gray
+Write-Host "    2. Login with admin / <your password>" -ForegroundColor Gray
+if ($mcpSseKey) {
+    Write-Host "    3. Configure MCP in Copilot CLI using the SSE URL and key above" -ForegroundColor Gray
+}
 Write-Host ""

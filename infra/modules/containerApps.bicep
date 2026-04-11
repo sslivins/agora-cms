@@ -250,7 +250,7 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
           env: [
             {
               name: 'CMS_BASE_URL'
-              value: 'https://${cmsApp.properties.configuration.ingress.fqdn}'
+              value: 'http://${cmsAppName}:8080'
             }
             {
               name: 'CMS_API_KEY'

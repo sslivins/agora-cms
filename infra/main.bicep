@@ -48,9 +48,9 @@ param cmsImage string = ''
 @description('MCP server container image (e.g., agoracr.azurecr.io/agora-cms-mcp:latest)')
 param mcpImage string = ''
 
-@description('API key for MCP server to authenticate with CMS')
+@description('API key for MCP server to authenticate with CMS (auto-generated post-deploy if empty)')
 @secure()
-param mcpApiKey string
+param mcpApiKey string = 'placeholder-will-be-replaced'
 
 @description('Object ID of the Azure AD user/principal for Key Vault admin access')
 param adminPrincipalId string
