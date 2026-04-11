@@ -484,8 +484,9 @@ async def users_page(
     groups = groups_q.scalars().all()
 
     # All permissions for the role editor
-    from cms.permissions import ALL_PERMISSIONS
+    from cms.permissions import ALL_PERMISSIONS, PERMISSION_DESCRIPTIONS
     all_permissions = ALL_PERMISSIONS
+    perm_descriptions = PERMISSION_DESCRIPTIONS
 
     # Check if current user can write
     can_write = USERS_WRITE in (user.role.permissions if user.role else [])
@@ -498,6 +499,7 @@ async def users_page(
         "roles": roles,
         "groups": groups,
         "all_permissions": all_permissions,
+        "perm_descriptions": perm_descriptions,
         "can_write": can_write,
         "can_write_roles": can_write_roles,
         "current_user_id": str(user.id),

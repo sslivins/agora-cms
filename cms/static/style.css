@@ -805,11 +805,48 @@ tr.highlight-new td {
     accent-color: var(--accent);
 }
 
+.checkbox-field-aligned {
+    height: 38px;
+    padding: 0 0.6rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin: 0;
+}
+
 .permissions-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 0.4rem;
     padding: 0.5rem 0;
+}
+
+.permissions-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.3rem;
+}
+
+.permissions-table th {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.permissions-table td {
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+}
+
+.permissions-table tbody tr:hover {
+    background: rgba(255,255,255,0.03);
+}
+
+.permissions-table input[type="checkbox"] {
+    accent-color: var(--accent);
 }
 
 .perm-tag {

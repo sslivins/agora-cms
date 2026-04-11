@@ -65,6 +65,31 @@ ALL_PERMISSIONS: list[str] = [
     AUDIT_READ,
 ]
 
+PERMISSION_DESCRIPTIONS: dict[str, str] = {
+    DEVICES_READ: "View devices and their status",
+    DEVICES_WRITE: "Create, update, and adopt devices",
+    DEVICES_REBOOT: "Send reboot commands to devices",
+    DEVICES_DELETE: "Remove devices from the system",
+    GROUPS_READ: "View device groups",
+    GROUPS_WRITE: "Create, update, and delete device groups",
+    ASSETS_READ: "View and download media assets",
+    ASSETS_WRITE: "Upload, update, and delete media assets",
+    SCHEDULES_READ: "View playback schedules",
+    SCHEDULES_WRITE: "Create, update, and delete schedules",
+    PROFILES_READ: "View transcode profiles",
+    PROFILES_WRITE: "Create, update, and delete transcode profiles",
+    USERS_READ: "View user accounts and details",
+    USERS_WRITE: "Create, update, and delete user accounts",
+    ROLES_READ: "View roles and their permissions",
+    ROLES_WRITE: "Create, update, and delete roles",
+    SETTINGS_READ: "View system settings",
+    SETTINGS_WRITE: "Modify system settings",
+    API_KEYS_READ: "View API keys",
+    API_KEYS_WRITE: "Create, revoke, and delete API keys",
+    LOGS_READ: "View system and device logs",
+    AUDIT_READ: "View audit trail and activity history",
+}
+
 # ── Predefined role templates ──
 
 ADMIN_PERMISSIONS: list[str] = list(ALL_PERMISSIONS)

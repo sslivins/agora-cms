@@ -146,14 +146,24 @@
         </div>
         <div class="form-group">
             <label>Permissions</label>
-            <div class="permissions-grid">
-                {% for perm in all_permissions %}
-                <label class="checkbox-label">
-                    <input type="checkbox" name="permissions" value="{{ perm }}">
-                    <span class="perm-tag">{{ perm }}</span>
-                </label>
-                {% endfor %}
-            </div>
+            <table class="permissions-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40px"></th>
+                        <th>Permission</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for perm in all_permissions %}
+                    <tr>
+                        <td><input type="checkbox" name="permissions" value="{{ perm }}"></td>
+                        <td><span class="perm-tag">{{ perm }}</span></td>
+                        <td class="text-muted">{{ perm_descriptions.get(perm, '') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
         <button type="submit" class="btn btn-primary">Create Role</button>
     </form>
@@ -228,7 +238,8 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>
+                    <label>Status</label>
+                    <label class="checkbox-label checkbox-field-aligned">
                         <input type="checkbox" id="edit-active" name="is_active"> Active
                     </label>
                 </div>
@@ -276,14 +287,24 @@
             </div>
             <div class="form-group">
                 <label>Permissions</label>
-                <div class="permissions-grid" id="edit-role-permissions">
-                    {% for perm in all_permissions %}
-                    <label class="checkbox-label">
-                        <input type="checkbox" name="permissions" value="{{ perm }}">
-                        <span class="perm-tag">{{ perm }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
+                <table class="permissions-table" id="edit-role-permissions">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px"></th>
+                            <th>Permission</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for perm in all_permissions %}
+                        <tr>
+                            <td><input type="checkbox" name="permissions" value="{{ perm }}"></td>
+                            <td><span class="perm-tag">{{ perm }}</span></td>
+                            <td class="text-muted">{{ perm_descriptions.get(perm, '') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
             <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" onclick="closeModal('edit-role-modal')">Cancel</button>
