@@ -252,7 +252,7 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
           env: [
             {
               name: 'CMS_BASE_URL'
-              value: 'http://${cmsAppName}:8080'
+              value: 'http://${cmsAppName}'
             }
             {
               name: 'CMS_API_KEY'
