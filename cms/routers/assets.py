@@ -11,9 +11,10 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import get_settings, require_auth
+from cms.auth import get_settings, require_auth, require_permission
 from cms.config import Settings
 from cms.database import get_db
+from cms.permissions import ASSETS_READ, ASSETS_WRITE
 from cms.models.asset import Asset, AssetType, AssetVariant, DeviceAsset, VariantStatus
 from cms.models.device import Device, DeviceGroup
 from cms.models.device_profile import DeviceProfile
@@ -44,7 +45,7 @@ def _asset_type(filename: str) -> AssetType:
     return AssetType.IMAGE
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
 async def assets_status_json(db: AsyncSession = Depends(get_db)):
     """Lightweight JSON for assets page polling.
 
@@ -116,13 +117,13 @@ async def assets_status_json(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("", response_model=List[AssetOut])
+@router.get("", response_model=List[AssetOut], dependencies=[Depends(require_permission(ASSETS_READ))])
 async def list_assets(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).order_by(Asset.uploaded_at.desc()))
     return result.scalars().all()
 
 
-@router.post("/upload", response_model=AssetOut, status_code=201)
+@router.post("/upload", response_model=AssetOut, status_code=201, dependencies=[Depends(require_permission(ASSETS_WRITE))])
 async def upload_asset(
     file: UploadFile,
     db: AsyncSession = Depends(get_db),
@@ -236,7 +237,7 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     await db.commit()
 
 
-@router.get("/{asset_id}", response_model=AssetOut)
+@router.get("/{asset_id}", response_model=AssetOut, dependencies=[Depends(require_permission(ASSETS_READ))])
 async def get_asset(asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id))
     asset = result.scalar_one_or_none()
@@ -282,7 +283,7 @@ MIME_TYPES = {
 }
 
 
-@router.get("/{asset_id}/preview")
+@router.get("/{asset_id}/preview", dependencies=[Depends(require_permission(ASSETS_READ))])
 async def preview_asset(
     asset_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -304,7 +305,7 @@ async def preview_asset(
     return FileResponse(path=file_path, media_type=media_type)
 
 
-@router.delete("/{asset_id}")
+@router.delete("/{asset_id}", dependencies=[Depends(require_permission(ASSETS_WRITE))])
 async def delete_asset(
     asset_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

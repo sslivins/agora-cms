@@ -154,6 +154,56 @@ async def require_auth(
     await get_current_user(request, settings, db)
 
 
+def require_permission(*perms: str):
+    """Return a FastAPI dependency that enforces one or more permissions.
+
+    Usage::
+
+        @router.get("/things", dependencies=[Depends(require_permission("things:read"))])
+        async def list_things(...): ...
+
+    Or inject the user directly::
+
+        @router.post("/things")
+        async def create_thing(user: User = Depends(require_permission("things:write"))): ...
+    """
+    from cms.permissions import has_permission
+
+    async def _check(
+        request: Request,
+        settings: Settings = Depends(get_settings),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        user = await get_current_user(request, settings, db)
+        if user.role is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No role assigned")
+        for perm in perms:
+            if not has_permission(user.role.permissions, perm):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing permission: {perm}",
+                )
+        return user
+
+    return _check
+
+
+async def get_user_group_ids(user: User, db: AsyncSession) -> list | None:
+    """Return the list of group UUIDs a user is assigned to, or None for admins.
+
+    Admins (whose role has ALL permissions) return None, meaning "no filtering".
+    Non-admin users return their assigned group IDs for query scoping.
+    """
+    from cms.permissions import ALL_PERMISSIONS
+    if set(ALL_PERMISSIONS).issubset(set(user.role.permissions)):
+        return None  # Admin — no group scoping
+    from cms.models.user import UserGroup
+    result = await db.execute(
+        select(UserGroup.group_id).where(UserGroup.user_id == user.id)
+    )
+    return [row[0] for row in result.all()]
+
+
 async def get_setting(db: AsyncSession, key: str) -> str | None:
     result = await db.execute(select(CMSSetting).where(CMSSetting.key == key))
     setting = result.scalar_one_or_none()

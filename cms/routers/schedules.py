@@ -10,8 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import require_auth
+from cms.auth import require_auth, require_permission
 from cms.database import get_db
+from cms.permissions import SCHEDULES_READ, SCHEDULES_WRITE
 from cms.models.asset import Asset
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
@@ -48,7 +49,7 @@ def _eager_options():
     ]
 
 
-@router.get("", response_model=List[ScheduleOut])
+@router.get("", response_model=List[ScheduleOut], dependencies=[Depends(require_permission(SCHEDULES_READ))])
 async def list_schedules(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).order_by(Schedule.priority.desc(), Schedule.name)
@@ -96,7 +97,7 @@ async def _check_conflicts(schedule: Schedule, db: AsyncSession, exclude_id=None
             )
 
 
-@router.post("", response_model=ScheduleOut, status_code=201)
+@router.post("", response_model=ScheduleOut, status_code=201, dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
 async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_db)):
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
@@ -135,7 +136,7 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     return _schedule_to_out(schedule)
 
 
-@router.get("/{schedule_id}", response_model=ScheduleOut)
+@router.get("/{schedule_id}", response_model=ScheduleOut, dependencies=[Depends(require_permission(SCHEDULES_READ))])
 async def get_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
@@ -146,7 +147,7 @@ async def get_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return _schedule_to_out(schedule)
 
 
-@router.patch("/{schedule_id}", response_model=ScheduleOut)
+@router.patch("/{schedule_id}", response_model=ScheduleOut, dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
 async def update_schedule(
     schedule_id: uuid.UUID,
     data: ScheduleUpdate,
@@ -174,7 +175,7 @@ async def update_schedule(
     return _schedule_to_out(schedule)
 
 
-@router.delete("/{schedule_id}")
+@router.delete("/{schedule_id}", dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
 async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
@@ -193,7 +194,7 @@ async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get
     return {"deleted": str(schedule_id)}
 
 
-@router.post("/{schedule_id}/end-now")
+@router.post("/{schedule_id}/end-now", dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
 async def end_schedule_now(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """End the current occurrence of a schedule immediately.
 

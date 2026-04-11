@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from cms.auth import require_auth
+from cms.auth import require_auth, require_permission
+from cms.permissions import LOGS_READ
 from cms.services.device_manager import device_manager
 
 logger = logging.getLogger("agora.cms.logs")
@@ -25,7 +26,7 @@ class LogDownloadRequest(BaseModel):
     since: str = "24h"
 
 
-@router.post("/download")
+@router.post("/download", dependencies=[Depends(require_permission(LOGS_READ))])
 async def download_logs(req: LogDownloadRequest):
     """Collect logs from selected devices (+ optionally CMS) and return a zip file."""
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

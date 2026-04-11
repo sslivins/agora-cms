@@ -8,8 +8,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import get_settings, require_auth
+from cms.auth import get_settings, require_auth, require_permission
 from cms.database import get_db
+from cms.permissions import (
+    DEVICES_READ, DEVICES_WRITE, DEVICES_REBOOT, DEVICES_DELETE,
+    GROUPS_READ, GROUPS_WRITE,
+)
 from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.schemas.device import (
@@ -60,14 +64,14 @@ async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: A
 # ── Devices ──
 
 
-@router.post("/check-updates")
+@router.post("/check-updates", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def check_for_updates():
     """Trigger an immediate check for the latest device firmware version."""
     latest = await check_now()
     return {"latest_version": latest}
 
 
-@router.get("", response_model=List[DeviceOut])
+@router.get("", response_model=List[DeviceOut], dependencies=[Depends(require_permission(DEVICES_READ))])
 async def list_devices(db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
 
@@ -93,7 +97,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@router.get("/{device_id}", response_model=DeviceOut)
+@router.get("/{device_id}", response_model=DeviceOut, dependencies=[Depends(require_permission(DEVICES_READ))])
 async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
 
@@ -118,7 +122,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.patch("/{device_id}", response_model=DeviceOut)
+@router.patch("/{device_id}", response_model=DeviceOut, dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def update_device(
     device_id: str,
     data: DeviceUpdate,
@@ -164,7 +168,7 @@ async def update_device(
     )
 
 
-@router.post("/{device_id}/password")
+@router.post("/{device_id}/password", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def set_device_password(
     device_id: str,
     body: SetPasswordRequest,
@@ -192,7 +196,7 @@ async def set_device_password(
     return {"ok": True}
 
 
-@router.post("/{device_id}/reboot")
+@router.post("/{device_id}/reboot", dependencies=[Depends(require_permission(DEVICES_REBOOT))])
 async def reboot_device(
     device_id: str,
     db: AsyncSession = Depends(get_db),
@@ -213,7 +217,7 @@ async def reboot_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/upgrade")
+@router.post("/{device_id}/upgrade", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def upgrade_device(
     device_id: str,
     db: AsyncSession = Depends(get_db),
@@ -240,7 +244,7 @@ async def upgrade_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/ssh")
+@router.post("/{device_id}/ssh", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def toggle_device_ssh(
     device_id: str,
     body: ToggleRequest,
@@ -269,7 +273,7 @@ async def toggle_device_ssh(
     return {"ok": True}
 
 
-@router.post("/{device_id}/factory-reset")
+@router.post("/{device_id}/factory-reset", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def factory_reset_device(
     device_id: str,
     db: AsyncSession = Depends(get_db),
@@ -290,7 +294,7 @@ async def factory_reset_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/local-api")
+@router.post("/{device_id}/local-api", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def toggle_device_local_api(
     device_id: str,
     body: ToggleRequest,
@@ -318,7 +322,7 @@ async def toggle_device_local_api(
     return {"ok": True}
 
 
-@router.post("/{device_id}/adopt")
+@router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
     """Adopt a pending device or re-adopt an orphaned one.
 
@@ -349,7 +353,7 @@ async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
     return {"ok": True}
 
 
-@router.delete("/{device_id}")
+@router.delete("/{device_id}", dependencies=[Depends(require_permission(DEVICES_DELETE))])
 async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
@@ -372,7 +376,7 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
     return {"deleted": device_id}
 
 
-@router.post("/{device_id}/logs")
+@router.post("/{device_id}/logs", dependencies=[Depends(require_permission(DEVICES_READ))])
 async def request_device_logs(
     device_id: str,
     body: LogRequest = LogRequest(),
@@ -403,7 +407,7 @@ async def request_device_logs(
 # ── Groups ──
 
 
-@router.get("/groups/", response_model=List[DeviceGroupOut])
+@router.get("/groups/", response_model=List[DeviceGroupOut], dependencies=[Depends(require_permission(GROUPS_READ))])
 async def list_groups(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(
@@ -427,7 +431,7 @@ async def list_groups(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@router.post("/groups/", response_model=DeviceGroupOut, status_code=201)
+@router.post("/groups/", response_model=DeviceGroupOut, status_code=201, dependencies=[Depends(require_permission(GROUPS_WRITE))])
 async def create_group(data: DeviceGroupCreate, db: AsyncSession = Depends(get_db)):
     group = DeviceGroup(name=data.name, description=data.description, default_asset_id=data.default_asset_id)
     db.add(group)
@@ -443,7 +447,7 @@ async def create_group(data: DeviceGroupCreate, db: AsyncSession = Depends(get_d
     )
 
 
-@router.patch("/groups/{group_id}", response_model=DeviceGroupOut)
+@router.patch("/groups/{group_id}", response_model=DeviceGroupOut, dependencies=[Depends(require_permission(GROUPS_WRITE))])
 async def update_group(
     group_id: uuid.UUID,
     data: DeviceGroupUpdate,
@@ -494,7 +498,7 @@ async def update_group(
     )
 
 
-@router.delete("/groups/{group_id}")
+@router.delete("/groups/{group_id}", dependencies=[Depends(require_permission(GROUPS_WRITE))])
 async def delete_group(group_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
     group = result.scalar_one_or_none()
