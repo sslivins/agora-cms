@@ -93,18 +93,23 @@ Deploy to Azure Container Apps with a single command. The included script provis
 
 - [Azure CLI](https://aka.ms/installazurecli) installed and logged in (`az login`)
 - An Azure subscription
+- Python 3.9+ (for `deploy.py`) or PowerShell 7+ (for `deploy.ps1`)
 
 ### Deploy
 
-```powershell
+```bash
+# Python (cross-platform — Linux, macOS, Windows)
+python infra/deploy.py --subscription "My Subscription" --location westus3 --prefix agoracms --resource-group agora-cms-rg
+
+# PowerShell (Windows)
 .\infra\deploy.ps1 -Subscription "My Subscription" -Location westus3 -Prefix agoracms -ResourceGroup agora-cms-rg
 ```
 
 You'll be prompted for three passwords (PostgreSQL admin, CMS secret key, CMS admin). Or pass them inline:
 
-```powershell
-.\infra\deploy.ps1 -Subscription "My Subscription" -Location westus3 -Prefix agoracms `
-    -PostgresPassword "..." -CmsSecretKey "..." -CmsAdminPassword "..."
+```bash
+python infra/deploy.py --subscription "My Subscription" --location westus3 --prefix agoracms \
+    --postgres-password "..." --cms-secret-key "..." --cms-admin-password "..."
 ```
 
 The script will:
@@ -119,20 +124,20 @@ The script will:
 
 Everything is parameterized by `-Prefix`, so you can run isolated instances side by side:
 
-```powershell
+```bash
 # Production
-.\infra\deploy.ps1 -Subscription "..." -Prefix agoracms -ResourceGroup agora-prod
+python infra/deploy.py --subscription "..." --prefix agoracms --resource-group agora-prod
 
 # Dev
-.\infra\deploy.ps1 -Subscription "..." -Prefix agoradev -ResourceGroup agora-dev
+python infra/deploy.py --subscription "..." --prefix agoradev --resource-group agora-dev
 ```
 
 ### Redeployment
 
 The script is idempotent. Re-running it updates existing resources. Use `-SkipImagePush` to skip rebuilding container images:
 
-```powershell
-.\infra\deploy.ps1 -Subscription "..." -Prefix agoracms -ResourceGroup agora-cms-rg -SkipImagePush
+```bash
+python infra/deploy.py --subscription "..." --prefix agoracms --resource-group agora-cms-rg --skip-image-push
 ```
 
 ### CI/CD
