@@ -236,7 +236,6 @@
             if (data.online) {
                 statusBadge.textContent = "online";
                 statusBadge.className = "badge badge-online";
-                toggle.disabled = false;
                 // Show API connection status
                 apiBadge.style.display = "";
                 if (data.api_connected) {
@@ -250,17 +249,11 @@
                 statusBadge.textContent = "offline";
                 statusBadge.className = "badge badge-offline";
                 apiBadge.style.display = "none";
-                if (!toggle.checked) {
-                    toggle.disabled = true;
-                }
             }
         } catch {
             statusBadge.textContent = "offline";
             statusBadge.className = "badge badge-offline";
             apiBadge.style.display = "none";
-            if (!toggle.checked) {
-                toggle.disabled = true;
-            }
         }
     }
 
