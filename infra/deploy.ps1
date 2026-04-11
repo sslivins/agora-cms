@@ -331,14 +331,18 @@ if ($cmsReady) {
         az keyvault secret set --vault-name "$Prefix-kv" --name "mcp-api-key" --value $apiKey -o none 2>$null
         Write-Ok "API key stored in Key Vault"
 
-        # Update MCP container with the real API key
+        # Update MCP container with the real API key and restart to pick it up
         az containerapp secret set --name $mcpAppName --resource-group $ResourceGroup `
             --secrets "mcp-api-key=$apiKey" -o none 2>$null
-        # Force a new revision so it picks up the secret
         $suffix = "mcp$(Get-Date -Format 'MMddHHmm')"
         az containerapp update --name $mcpAppName --resource-group $ResourceGroup `
             --revision-suffix $suffix -o none 2>$null
-        Write-Ok "MCP container updated with API key"
+        # Secret changes require a restart to take effect
+        $activeRevision = (az containerapp revision list --name $mcpAppName `
+            --resource-group $ResourceGroup --query "[?properties.active].name" -o tsv 2>$null).Trim()
+        az containerapp revision restart --name $mcpAppName --resource-group $ResourceGroup `
+            --revision $activeRevision -o none 2>$null
+        Write-Ok "MCP container updated with API key (restarted)"
 
     } catch {
         Write-Warn "Failed to configure MCP API key: $($_.Exception.Message)"
