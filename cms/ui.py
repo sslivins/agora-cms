@@ -713,7 +713,7 @@ async def mcp_health_check():
     mcp_url = get_settings().mcp_server_url.rstrip("/")
     result = {"online": False, "api_connected": False}
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{mcp_url}/health")
             result["online"] = resp.status_code == 200
             if result["online"]:
@@ -723,8 +723,8 @@ async def mcp_health_check():
                     result["api_connected"] = data.get("status") == "ok"
                 else:
                     result["api_error"] = api_resp.json().get("detail", "API check failed")
-    except Exception:
-        pass
+    except Exception as exc:
+        result["error"] = str(exc)
     return result
 
 
