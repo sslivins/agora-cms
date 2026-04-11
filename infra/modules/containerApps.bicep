@@ -180,7 +180,7 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'AGORA_CMS_MCP_SERVER_URL'
-              value: 'https://${mcpAppName}.${containerAppsEnv.properties.defaultDomain}'
+              value: 'http://${mcpAppName}'
             }
           ]
           volumeMounts: [
