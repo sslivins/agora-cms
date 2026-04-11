@@ -65,50 +65,6 @@
     </form>
 </div>
 
-<div class="card" id="ntp-card">
-    <h2>NTP Server <span id="ntp-status-badge" class="badge badge-offline">checking…</span></h2>
-    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
-        Network Time Protocol server providing time synchronization to devices.
-    </p>
-    <table id="ntp-details" style="display: none;">
-        <tbody>
-            <tr><td>Stratum</td><td id="ntp-stratum">—</td></tr>
-            <tr><td>Clock Offset</td><td id="ntp-offset">—</td></tr>
-        </tbody>
-    </table>
-</div>
-
-<script>
-(function() {
-    const badge = document.getElementById("ntp-status-badge");
-    const details = document.getElementById("ntp-details");
-
-    async function checkNtpHealth() {
-        try {
-            const resp = await fetch("/api/ntp/status");
-            const data = await resp.json();
-            if (data.online) {
-                badge.textContent = "online";
-                badge.className = "badge badge-online";
-                details.style.display = "";
-                document.getElementById("ntp-stratum").textContent = data.stratum;
-                const ms = data.offset_ms;
-                const sign = ms >= 0 ? "+" : "";
-                document.getElementById("ntp-offset").textContent = sign + ms + " ms";
-            } else {
-                badge.textContent = "offline";
-                badge.className = "badge badge-offline";
-            }
-        } catch {
-            badge.textContent = "offline";
-            badge.className = "badge badge-offline";
-        }
-    }
-
-    checkNtpHealth();
-})();
-</script>
-
 <div class="card" id="db-card">
     <h2>Database <span id="db-status-badge" class="badge badge-offline">checking…</span></h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
