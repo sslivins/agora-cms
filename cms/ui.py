@@ -16,6 +16,7 @@ from cms.auth import (
     SETTING_PASSWORD_HASH,
     SETTING_TIMEZONE,
     SETTING_USERNAME,
+    get_current_user,
     get_setting,
     get_settings,
     hash_password,
@@ -30,6 +31,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
+from cms.models.user import User
 from cms.services.device_manager import device_manager
 from cms.services.version_checker import get_latest_device_version, is_update_available
 from cms.routers.devices import _upgrading as _devices_upgrading
@@ -99,21 +101,25 @@ async def login_submit(
     username = form.get("username", "")
     password = form.get("password", "")
 
-    stored_username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
-    stored_hash = await get_setting(db, SETTING_PASSWORD_HASH)
+    # Authenticate against the users table
+    from sqlalchemy import select as sa_select
+    result = await db.execute(
+        sa_select(User).where(User.username == username, User.is_active.is_(True))
+    )
+    user = result.scalar_one_or_none()
 
-    # Verify credentials
     valid = False
-    if username == stored_username:
-        if stored_hash:
-            valid = verify_password(password, stored_hash)
-        else:
-            # Fallback to env var if DB not seeded yet
-            valid = password == settings.admin_password
+    if user is not None:
+        valid = verify_password(password, user.password_hash)
 
     if valid:
+        # Update last_login_at
+        from datetime import datetime, timezone
+        user.last_login_at = datetime.now(timezone.utc)
+        await db.commit()
+
         serializer = URLSafeTimedSerializer(settings.secret_key)
-        token = serializer.dumps({"user": username})
+        token = serializer.dumps({"user_id": str(user.id)})
         response = RedirectResponse(url="/", status_code=303)
         response.set_cookie(
             COOKIE_NAME, token, max_age=MAX_AGE, httponly=True, samesite="lax"
@@ -651,11 +657,12 @@ async def settings_page(
     })
 
 
-@router.post("/settings/password", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+@router.post("/settings/password", response_class=HTMLResponse)
 async def change_password(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
 ):
     from cms import __version__
 
@@ -664,27 +671,20 @@ async def change_password(
     new_password = form.get("new_password", "")
     confirm_password = form.get("confirm_password", "")
 
-    username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     ctx = {
         "active_tab": "settings",
         "version": __version__,
-        "username": username,
+        "username": current_user.username,
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "success": None,
         "error": None,
     }
 
-    # Validate current password
-    stored_hash = await get_setting(db, SETTING_PASSWORD_HASH)
-    if stored_hash:
-        if not verify_password(current_password, stored_hash):
-            ctx["error"] = "Current password is incorrect"
-            return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
-    else:
-        if current_password != settings.admin_password:
-            ctx["error"] = "Current password is incorrect"
-            return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
+    # Validate current password against user record
+    if not verify_password(current_password, current_user.password_hash):
+        ctx["error"] = "Current password is incorrect"
+        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
 
     # Validate new password
     if len(new_password) < 6:
@@ -695,8 +695,10 @@ async def change_password(
         ctx["error"] = "New passwords do not match"
         return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
 
-    # Save new hash
-    await set_setting(db, SETTING_PASSWORD_HASH, hash_password(new_password))
+    # Update password on the User row and keep cms_settings in sync
+    current_user.password_hash = hash_password(new_password)
+    await db.commit()
+    await set_setting(db, SETTING_PASSWORD_HASH, current_user.password_hash)
 
     ctx["success"] = "Password updated successfully"
     return templates.TemplateResponse(request, "settings.html", ctx)

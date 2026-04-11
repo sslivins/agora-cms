@@ -139,6 +139,22 @@ async def run_migrations():
                 "ALTER TABLE devices ADD COLUMN timezone VARCHAR(64)"
             ))
 
+        # -- api_keys.user_id (RBAC) --
+        has_user_id = await conn.run_sync(lambda c: _has_column(c, "api_keys", "user_id"))
+        if not has_user_id:
+            await conn.execute(text(
+                "ALTER TABLE api_keys ADD COLUMN user_id UUID "
+                "REFERENCES users(id) ON DELETE SET NULL"
+            ))
+
+        # -- assets.owner_group_id (RBAC) --
+        has_owner = await conn.run_sync(lambda c: _has_column(c, "assets", "owner_group_id"))
+        if not has_owner:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN owner_group_id UUID "
+                "REFERENCES device_groups(id) ON DELETE SET NULL"
+            ))
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
