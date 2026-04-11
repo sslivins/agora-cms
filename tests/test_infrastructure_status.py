@@ -1,64 +1,8 @@
-"""Tests for NTP and Database infrastructure status endpoints."""
+"""Tests for Database infrastructure status endpoints."""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-
-@pytest.mark.asyncio
-class TestNtpStatus:
-    """Test the /api/ntp/status endpoint."""
-
-    async def test_ntp_offline_when_unreachable(self, client):
-        """NTP returns offline when the container is not reachable."""
-        with patch("socket.socket") as mock_socket_cls:
-            mock_socket_cls.return_value.recvfrom.side_effect = OSError("timed out")
-            resp = await client.get("/api/ntp/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["online"] is False
-
-    async def test_ntp_online_when_reachable(self, client):
-        """NTP returns online with details when server responds."""
-        import struct
-        import time
-
-        # Build a fake NTP response
-        ntp_epoch = 2208988800
-        now = time.time()
-        ntp_secs = int(now + ntp_epoch)
-        ntp_frac = 0
-        # NTP response: LI=0, VN=3, Mode=4(server), stratum=2
-        response = struct.pack(
-            "!BBBb11I",
-            0x1C,  # LI=0, VN=3, Mode=4
-            2,     # stratum
-            6,     # poll
-            -20,   # precision
-            0, 0, 0, 0, 0, 0, 0, 0, 0,  # root delay, dispersion, ref id, timestamps
-            ntp_secs, ntp_frac,  # transmit timestamp
-        )
-
-        mock_sock = AsyncMock()
-        mock_sock.sendto = lambda *a: None
-        mock_sock.recvfrom = lambda *a: (response, ("ntp", 123))
-        mock_sock.settimeout = lambda *a: None
-        mock_sock.close = lambda: None
-
-        with patch("socket.socket", return_value=mock_sock):
-            resp = await client.get("/api/ntp/status")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["online"] is True
-        assert data["stratum"] == 2
-        assert "offset_ms" in data
-
-    async def test_settings_page_shows_ntp_card(self, client):
-        resp = await client.get("/settings")
-        assert resp.status_code == 200
-        assert "NTP Server" in resp.text
-        assert "ntp-status-badge" in resp.text
 
 
 @pytest.mark.asyncio

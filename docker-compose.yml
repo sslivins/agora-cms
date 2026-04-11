@@ -34,26 +34,6 @@ services:
       timeout: 3s
       retries: 5
 
-  ntp:
-    image: alpine:3.21
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        apk add --no-cache chrony &&
-        cat > /etc/chrony/chrony.conf <<'EOF'
-        pool pool.ntp.org iburst
-        driftfile /var/lib/chrony/drift
-        makestep 1.0 3
-        rtcsync
-        allow all
-        EOF
-        rm -f /var/run/chrony/chronyd.pid && exec chronyd -d -s
-    cap_add:
-      - SYS_TIME
-    ports:
-      - "123:123/udp"
-    restart: unless-stopped
-
 volumes:
   pgdata:
   cms-assets:

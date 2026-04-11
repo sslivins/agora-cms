@@ -765,46 +765,6 @@ async def mcp_generate_key(db: AsyncSession = Depends(get_db)):
     return {"key": key}
 
 
-# ── NTP Status ──
-
-
-@router.get("/api/ntp/status", dependencies=[Depends(require_auth)])
-async def ntp_status():
-    """Check NTP container health via a raw NTP query."""
-    import socket
-    import struct
-    import time
-
-    try:
-        # Build minimal NTP request (v3 client, mode 3)
-        msg = b"\x1b" + 47 * b"\0"
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(3.0)
-        sock.sendto(msg, ("ntp", 123))
-        data, _ = sock.recvfrom(48)
-        sock.close()
-
-        if len(data) < 48:
-            return {"online": False}
-
-        unpacked = struct.unpack("!BBBb11I", data)
-        stratum = unpacked[1]
-        # Transmit timestamp (seconds since 1900-01-01)
-        ntp_time = unpacked[10] + unpacked[11] / 2**32
-        # NTP epoch offset from Unix epoch
-        ntp_epoch = 2208988800
-        server_time = ntp_time - ntp_epoch
-        offset = server_time - time.time()
-
-        return {
-            "online": True,
-            "stratum": stratum,
-            "offset_ms": round(offset * 1000, 1),
-        }
-    except Exception:
-        return {"online": False}
-
-
 # ── Database Status ──
 
 
