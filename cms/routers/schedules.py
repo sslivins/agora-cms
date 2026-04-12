@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import timedelta
+from datetime import time as dt_time, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -96,31 +96,59 @@ async def _check_conflicts(schedule: Schedule, db: AsyncSession, exclude_id=None
             )
 
 
+def _compute_end_time(start_time, loop_count: int, duration_seconds: float) -> dt_time:
+    """Compute end_time from start_time + loop_count × asset duration."""
+    total_seconds = int(loop_count * duration_seconds)
+    start_td = timedelta(
+        hours=start_time.hour, minutes=start_time.minute, seconds=start_time.second,
+    )
+    end_td = start_td + timedelta(seconds=total_seconds)
+    end_seconds = int(end_td.total_seconds()) % 86400
+    h, remainder = divmod(end_seconds, 3600)
+    m, s = divmod(remainder, 60)
+    return dt_time(h, m, s)
+
+
+async def _resolve_loop_end_time(
+    loop_count: int | None,
+    asset_id: uuid.UUID,
+    start_time,
+    db: AsyncSession,
+) -> dt_time | None:
+    """If loop_count is set, compute end_time from the asset duration.
+
+    Returns the computed end_time, or None if loop_count is not set.
+    Raises 422 if the asset is missing or has no duration.
+    """
+    if loop_count is None:
+        return None
+    asset = await db.get(Asset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=422, detail="Asset not found")
+    if not asset.duration_seconds:
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot compute end_time: asset has no duration. Provide end_time explicitly.",
+        )
+    return _compute_end_time(start_time, loop_count, asset.duration_seconds)
+
+
 @router.post("", response_model=ScheduleOut, status_code=201)
 async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_db)):
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
 
     # Auto-compute end_time when loop_count is set
-    if data.loop_count is not None:
-        asset = await db.get(Asset, data.asset_id)
-        if not asset:
-            raise HTTPException(status_code=422, detail="Asset not found")
-        if asset.duration_seconds:
-            # Compute end_time from loops × duration (overrides any provided value)
-            total_seconds = int(data.loop_count * asset.duration_seconds)
-            start_dt = timedelta(hours=data.start_time.hour, minutes=data.start_time.minute, seconds=data.start_time.second)
-            end_dt = start_dt + timedelta(seconds=total_seconds)
-            end_seconds = int(end_dt.total_seconds()) % 86400
-            h, remainder = divmod(end_seconds, 3600)
-            m, s = divmod(remainder, 60)
-            from datetime import time as dt_time
-            fields["end_time"] = dt_time(h, m, s)
-        elif fields.get("end_time") is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Cannot compute end_time: asset has no duration. Provide end_time explicitly.",
-            )
+    computed = await _resolve_loop_end_time(
+        data.loop_count, data.asset_id, data.start_time, db,
+    )
+    if computed is not None:
+        fields["end_time"] = computed
+    elif fields.get("end_time") is None:
+        raise HTTPException(
+            status_code=422,
+            detail="end_time is required when loop_count is not set.",
+        )
 
     schedule = Schedule(**fields)
     await _check_conflicts(schedule, db)
@@ -157,7 +185,21 @@ async def update_schedule(
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+
+    # Recompute end_time when loop_count changes (or when asset/start_time
+    # change on a schedule that already has loop_count set).
+    loop_count = updates.get("loop_count", schedule.loop_count)
+    if loop_count is not None and (
+        "loop_count" in updates or "asset_id" in updates or "start_time" in updates
+    ):
+        asset_id = updates.get("asset_id", schedule.asset_id)
+        start_time = updates.get("start_time", schedule.start_time)
+        computed = await _resolve_loop_end_time(loop_count, asset_id, start_time, db)
+        if computed is not None:
+            updates["end_time"] = computed
+
+    for field, value in updates.items():
         setattr(schedule, field, value)
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
     await db.commit()

@@ -415,24 +415,22 @@ class TestEditPreserveDuration:
 
 
 class TestEditClearLoopCount:
-    """Editing times clears stale loop_count when duration changes."""
+    """Editing loop_count in the UI updates end_time accordingly."""
 
     def test_edit_loop_count_cleared_on_duration_change(self, page: Page, api, ws_url):
-        """When both times are changed (duration changes), loop_count should be cleared."""
+        """When loop_count is cleared in the edit modal, end_time should re-enable."""
         device_id = "edit-lc-001"
         asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
-        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
-        # Create a schedule with explicit loop_count=8
+        # Create schedule WITHOUT loop_count (asset has no real duration)
         sched = _create_schedule_via_api(
             api, device_id, asset_id,
             start_time="09:00:00", end_time="10:20:00",
             name="Clear Loop Count",
-            loop_count=8,
         )
 
         _open_edit_modal(page, "Clear Loop Count")
-        # Re-inject duration into JS data (modal reload context)
+        # Inject duration into JS data for the modal
         page.evaluate(
             """([assetId, dur]) => {
                 const a = _scheduleData.assets.find(x => x.id === assetId);
@@ -440,26 +438,27 @@ class TestEditClearLoopCount:
             }""",
             [asset_id, ASSET_DURATION],
         )
-        page.dispatch_event("#edit-end-time", "change")
+
+        # Set loop_count=8 in the input — end_time should become disabled
+        page.fill("#edit-loop-count", "8")
+        page.dispatch_event("#edit-loop-count", "input")
+
+        end_time_input = page.locator("#edit-end-time")
+        expect(end_time_input).to_be_disabled()
 
         summary = page.locator("#edit-schedule-summary")
         expect(summary).to_be_visible()
-        # Should show "exact 8 loops" initially (from saved loop_count)
         expect(summary).to_contain_text("exact 8 loops")
 
-        # Change start time (end auto-adjusts preserving duration — loop_count stays)
-        page.fill("#edit-start-time", "10:00")
-        page.dispatch_event("#edit-start-time", "change")
+        # Clear loop_count — end_time should re-enable
+        page.fill("#edit-loop-count", "")
+        page.dispatch_event("#edit-loop-count", "input")
 
-        # Now change end time too (both touched — duration changes — loop_count cleared)
-        page.fill("#edit-end-time", "15:00")
-        page.dispatch_event("#edit-end-time", "change")
-
-        # Should no longer say "exact 8 loops"
+        expect(end_time_input).to_be_enabled()
         expect(summary).not_to_contain_text("exact 8 loops")
 
     def test_create_loop_count_cleared_on_time_change(self, page: Page, api, ws_url):
-        """On the create form, changing time clears a stale loop_count."""
+        """On the create form, clearing loop_count re-enables end_time for manual input."""
         device_id = "create-lc-001"
         asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
@@ -477,13 +476,21 @@ class TestEditClearLoopCount:
         summary.locator(".loop-round", has_text="Round down").click()
         expect(summary).to_contain_text("exact 8 loops")
 
-        # Now change end time — should clear the locked loop count
-        page.fill('input[name="end_time"]', "11:00")
-        page.dispatch_event('input[name="end_time"]', "change")
+        # end_time should be disabled now
+        end_time_input = page.locator('input[name="end_time"]')
+        expect(end_time_input).to_be_disabled()
 
+        # Clear loop_count — end_time should re-enable
+        page.fill('input[name="loop_count"]', "")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        expect(end_time_input).to_be_enabled()
         # Should no longer say "exact 8 loops"
         expect(summary).not_to_contain_text("exact 8 loops")
-        # Should show natural loop info instead
+
+        # Now we can change end_time manually
+        page.fill('input[name="end_time"]', "11:00")
+        page.dispatch_event('input[name="end_time"]', "change")
         expect(summary).to_contain_text("loops")
 
 

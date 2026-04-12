@@ -499,11 +499,17 @@ async function createSchedule(form) {
     const data = new FormData(form);
     const startTime = data.get("start_time");
     const endTime = data.get("end_time");
-    if (!startTime || !endTime) {
-        showToast("Please select start and end times", true);
+    const loopCountVal = data.get("loop_count");
+    const hasLoopCount = loopCountVal && parseInt(loopCountVal) > 0;
+    if (!startTime) {
+        showToast("Please select a start time", true);
         return false;
     }
-    if (startTime === endTime) {
+    if (!hasLoopCount && !endTime) {
+        showToast("Please select an end time or set a loop count", true);
+        return false;
+    }
+    if (!hasLoopCount && startTime === endTime) {
         showToast("Start time and end time cannot be the same", true);
         return false;
     }
@@ -522,10 +528,13 @@ async function createSchedule(form) {
         name: data.get("name"),
         asset_id: data.get("asset_id"),
         start_time: startTime + ":00",
-        end_time: endTime + ":00",
         priority: parseInt(data.get("priority") || "0"),
         enabled: true,
     };
+    // end_time: include if present (auto-computed or manual)
+    if (endTime) body.end_time = endTime + ":00";
+    // Explicit loop count
+    if (hasLoopCount) body.loop_count = parseInt(loopCountVal);
     // Target
     const target = data.get("target_type");
     if (target === "device") body.device_id = data.get("target_id");
@@ -539,10 +548,6 @@ async function createSchedule(form) {
         if (data.get(`day_${i}`)) days.push(i);
     }
     if (days.length > 0 && days.length < 7) body.days_of_week = days;
-
-    // Explicit loop count (from round-to-loops)
-    const loopCountVal = data.get("loop_count");
-    if (loopCountVal) body.loop_count = parseInt(loopCountVal);
 
     const resp = await apiCall("POST", "/api/schedules", body);
     if (resp && resp.ok) {
