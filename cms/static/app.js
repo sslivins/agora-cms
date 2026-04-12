@@ -648,14 +648,29 @@ async function unshareAsset(assetId, groupId) {
     if (resp && resp.ok) {
         const scopeEl = document.getElementById("scope-" + assetId);
         if (!scopeEl) { location.reload(); return; }
-        // Remove the badge
+        // Capture group name before removing the badge
         const badge = scopeEl.querySelector(`.badge[data-group-id="${groupId}"]`);
+        const groupName = badge ? badge.textContent.replace("×", "").trim() : "";
         if (badge) badge.remove();
-        // Re-show option in popup
+        // Re-show or create option in popup
         const popup = document.getElementById("group-popup-" + assetId);
         if (popup) {
-            const btn = popup.querySelector(`[data-group-id="${groupId}"]`);
-            if (btn) btn.style.display = "";
+            let btn = popup.querySelector(`[data-group-id="${groupId}"]`);
+            if (btn) {
+                btn.style.display = "";
+            } else if (groupName) {
+                // Button wasn't rendered (group was assigned at page load) — create it
+                btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "group-popup-item";
+                btn.dataset.groupId = groupId;
+                btn.textContent = groupName;
+                btn.onclick = function(e) {
+                    e.stopPropagation();
+                    pickAssetGroup(assetId, groupId, groupName, btn);
+                };
+                popup.appendChild(btn);
+            }
         }
         _syncPlusButton(popup);
         // If no badges left and not global, show Personal
