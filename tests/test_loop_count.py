@@ -100,7 +100,7 @@ class TestScheduleLoopCountCRUD:
         from cms.models.device import Device, DeviceStatus
 
         device = Device(id="loop-pi", name="Loop Test", status=DeviceStatus.ADOPTED)
-        asset = Asset(filename="loop.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="lll")
+        asset = Asset(filename="loop.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="lll", duration_seconds=30.0)
         db_session.add_all([device, asset])
         await db_session.commit()
         return device.id, str(asset.id)
@@ -119,6 +119,8 @@ class TestScheduleLoopCountCRUD:
         assert resp.status_code == 201
         data = resp.json()
         assert data["loop_count"] == 5
+        # end_time auto-computed: 08:00 + 5×30s = 08:02:30
+        assert data["end_time"] == "08:02:30"
 
     async def test_create_without_loop_count(self, client, db_session):
         device_id, asset_id = await self._create_device_and_asset(db_session)
@@ -148,6 +150,8 @@ class TestScheduleLoopCountCRUD:
         resp = await client.patch(f"/api/schedules/{sched_id}", json={"loop_count": 10})
         assert resp.status_code == 200
         assert resp.json()["loop_count"] == 10
+        # end_time recomputed: 08:00 + 10×30s = 08:05:00
+        assert resp.json()["end_time"] == "08:05:00"
 
     async def test_clear_loop_count(self, client, db_session):
         device_id, asset_id = await self._create_device_and_asset(db_session)
