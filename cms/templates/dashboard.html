@@ -249,7 +249,7 @@
         <tbody>
             {% for log in recent_activity %}
             <tr>
-                <td data-utc="{{ log.timestamp.isoformat() }}">{{ log.timestamp.astimezone(tz).strftime('%I:%M %p').lstrip('0') }}</td>
+                <td data-utc="{{ log.timestamp.isoformat() }}">{{ log.timestamp.astimezone(tz).strftime('%I:%M:%S %p').lstrip('0') }}</td>
                 <td>
                     {% if log.event.value == 'STARTED' %}
                     <span class="badge badge-started">Started</span>
@@ -288,11 +288,11 @@ async function endNow(scheduleId) {
 
 (function() {
     // Only track stable identifiers for change detection — no time-varying fields
-    function fingerprint(data) {
-        // Bucket temperatures to avoid constant reloads from minor fluctuations
+    function structuralFingerprint(data) {
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
-            playing: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.device_offline ? 'off' : p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
+            playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
+            playingStatus: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.device_offline ? 'off' : p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
             devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '') + ':' + (d.display_connected == null ? 'n' : d.display_connected ? 'y' : 'x')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
@@ -302,7 +302,7 @@ async function endNow(scheduleId) {
         });
     }
 
-    let lastFingerprint = fingerprint({
+    let lastFingerprint = structuralFingerprint({
         now_playing: {{ now_playing | tojson }},
         device_states: {{ device_states | tojson }},
         pending_ids: {{ pending_devices | map(attribute='id') | list | tojson }},
@@ -317,13 +317,76 @@ async function endNow(scheduleId) {
         sessionStorage.setItem('prev_playing_ids', JSON.stringify(ids));
     }
 
+    // Track remaining seconds for each schedule, synced from API
+    const remainingMap = {};
+    {% for np in now_playing %}
+    remainingMap['{{ np.schedule_id }}'] = { secs: {{ np.remaining_seconds }}, syncedAt: Date.now() };
+    {% endfor %}
+
+    // Format remaining seconds for display
+    function formatRemaining(secs) {
+        if (secs <= 30) return secs + 's';
+        if (secs < 60) return 'less than a minute';
+        if (secs < 3600) {
+            const m = Math.floor(secs / 60);
+            return m + ' minute' + (m !== 1 ? 's' : '');
+        }
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        let s = h + ' hour' + (h !== 1 ? 's' : '');
+        if (m > 0) s += ', ' + m + ' minute' + (m !== 1 ? 's' : '');
+        return s;
+    }
+
+    // Update remaining-time cells in-place (no page reload)
+    function updateRemainingCells() {
+        const now = Date.now();
+        document.querySelectorAll('td[data-remaining]').forEach(cell => {
+            const row = cell.closest('tr[data-schedule-id]');
+            if (!row) return;
+            const sid = row.dataset.scheduleId;
+            const entry = remainingMap[sid];
+            if (!entry) return;
+            const elapsed = Math.floor((now - entry.syncedAt) / 1000);
+            const left = Math.max(0, entry.secs - elapsed);
+            cell.textContent = formatRemaining(left);
+            cell.dataset.remaining = left;
+        });
+    }
+
+    // Sync remaining times from API data (called on each poll)
+    function syncRemaining(nowPlaying) {
+        const now = Date.now();
+        const seen = new Set();
+        (nowPlaying || []).forEach(np => {
+            seen.add(np.schedule_id);
+            remainingMap[np.schedule_id] = { secs: np.remaining_seconds, syncedAt: now };
+        });
+        // Remove entries for schedules no longer playing
+        for (const sid of Object.keys(remainingMap)) {
+            if (!seen.has(sid)) delete remainingMap[sid];
+        }
+    }
+
+    // 1-second ticker for smooth countdown
+    setInterval(updateRemainingCells, 1000);
+    // Run immediately on load
+    updateRemainingCells();
+
+    // 5-second poll for data changes
     setInterval(async () => {
         if (isModalOpen()) return;
         try {
             const res = await fetch("/api/dashboard");
             if (!res.ok) return;
             const data = await res.json();
-            const newFingerprint = fingerprint(data);
+
+            // Always sync remaining times from fresh API data
+            syncRemaining(data.now_playing);
+            updateRemainingCells();
+
+            // Check if structural changes require a full reload
+            const newFingerprint = structuralFingerprint(data);
             if (newFingerprint !== lastFingerprint) {
                 savePlayingIds();
                 location.reload();
@@ -342,28 +405,6 @@ async function endNow(scheduleId) {
         });
         sessionStorage.removeItem('prev_playing_ids');
     })();
-})();
-
-// Live countdown for now-playing items ≤ 30 seconds remaining
-(function() {
-    const cells = document.querySelectorAll('td[data-remaining]');
-    if (!cells.length) return;
-
-    const loadedAt = Date.now();
-
-    function tick() {
-        const elapsed = Math.floor((Date.now() - loadedAt) / 1000);
-        cells.forEach(cell => {
-            const initial = parseInt(cell.dataset.remaining);
-            const left = Math.max(0, initial - elapsed);
-            if (left <= 30) {
-                cell.textContent = left + 's';
-            }
-        });
-    }
-
-    tick();
-    setInterval(tick, 1000);
 })();
 </script>
 {% endblock %}

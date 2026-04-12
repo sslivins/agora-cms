@@ -19,7 +19,7 @@
         <tbody>
             {% for log in logs %}
             <tr>
-                <td data-utc="{{ log.timestamp.isoformat() }}">{{ log.timestamp.astimezone(tz).strftime('%b %d, %I:%M %p').replace(' 0', ' ') }}</td>
+                <td data-utc="{{ log.timestamp.isoformat() }}">{{ log.timestamp.astimezone(tz).strftime('%b %d, %I:%M:%S %p').replace(' 0', ' ') }}</td>
                 <td>
                     {% if log.event.value == 'STARTED' %}
                     <span class="badge badge-started">Started</span>
