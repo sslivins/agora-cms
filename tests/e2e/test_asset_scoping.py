@@ -660,3 +660,31 @@ class TestUIGroupPickerLibrary:
             # Remove global before cleanup
             admin_session.post(f"{CMS_URL}/api/assets/{asset['id']}/global")
             _delete_asset(admin_session, asset["id"])
+
+
+class TestSchedulerGroupScoping:
+    """Scheduler page should only show groups/devices the user has access to."""
+
+    def test_scheduler_target_shows_only_user_groups(self, page, cms_url, test_users, groups):
+        """When a non-admin user selects 'Group' as target type in the scheduler,
+        only their assigned groups should appear in the target dropdown."""
+        # userA is Operator in E2E-GroupA only
+        login_playwright(page, cms_url, test_users["userA"]["email"], test_users["userA"]["password"])
+        page.goto(f"{cms_url}/schedules")
+        page.wait_for_selector("#target_type")
+
+        # Select "Group" as target type
+        page.select_option("#target_type", "group")
+
+        # Get all options in the target dropdown
+        target_select = page.locator("#target_id")
+        options = target_select.locator("option").all()
+        option_texts = [o.text_content().strip() for o in options]
+
+        # Should contain E2E-GroupA
+        assert "E2E-GroupA" in option_texts, \
+            f"Expected E2E-GroupA in target options, got: {option_texts}"
+
+        # Should NOT contain E2E-GroupB
+        assert "E2E-GroupB" not in option_texts, \
+            f"E2E-GroupB should not be visible to userA, got: {option_texts}"
