@@ -227,7 +227,7 @@
             </div>
             <div class="form-group">
                 <label>Groups</label>
-                <div class="group-checkboxes" id="edit-groups" style="flex-direction:row;">
+                <div class="group-checkboxes" id="edit-groups">
                     {% for group in groups %}
                     <label class="checkbox-label"><input type="checkbox" name="group_ids" value="{{ group.id }}"> {{ group.name }}</label>
                     {% endfor %}

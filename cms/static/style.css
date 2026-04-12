@@ -809,6 +809,8 @@ tr.highlight-new td {
 }
 .checkbox-label input[type="checkbox"] {
     accent-color: var(--accent);
+    width: auto;
+    margin: 0;
 }
 
 .checkbox-field-aligned {
