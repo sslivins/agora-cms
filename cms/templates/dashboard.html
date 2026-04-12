@@ -153,7 +153,7 @@
                     {% endif %}
                 </td>
                 <td>{{ np.end_time }}</td>
-                <td>{{ np.remaining }}</td>
+                <td data-remaining="{{ np.remaining_seconds }}">{{ np.remaining }}</td>
                 <td><button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}')">End Now</button></td>
             </tr>
             {% endfor %}
@@ -342,6 +342,26 @@ async function endNow(scheduleId) {
         });
         sessionStorage.removeItem('prev_playing_ids');
     })();
+})();
+
+// Live countdown for now-playing items ≤ 30 seconds remaining
+(function() {
+    const cells = document.querySelectorAll('td[data-remaining]');
+    if (!cells.length) return;
+
+    // Track the page-load timestamp so we can compute elapsed time
+    const loadedAt = Date.now();
+
+    setInterval(() => {
+        const elapsed = Math.floor((Date.now() - loadedAt) / 1000);
+        cells.forEach(cell => {
+            const initial = parseInt(cell.dataset.remaining);
+            const left = Math.max(0, initial - elapsed);
+            if (left <= 30) {
+                cell.textContent = left + 's';
+            }
+        });
+    }, 1000);
 })();
 </script>
 {% endblock %}

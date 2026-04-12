@@ -869,3 +869,43 @@ class TestNowPlayingCleanup:
             assert ended_logs[-1].schedule_name == "Will Be Deleted"
         finally:
             device_manager.disconnect("np-fk-01")
+
+    async def test_now_playing_has_remaining_seconds(self, app, db_session):
+        """remaining_seconds must be present in _now_playing for the countdown timer."""
+        from cms.services.device_manager import device_manager
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="countdown.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="cnt")
+        device = Device(id="np-countdown-01", name="Countdown",
+                        status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, device])
+        await db_session.flush()
+
+        sched = Schedule(
+            name="Countdown Test",
+            device_id="np-countdown-01",
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("np-countdown-01", FakeWS())
+
+        try:
+            await evaluate_schedules()
+            assert "np-countdown-01" in _now_playing
+            entry = _now_playing["np-countdown-01"]
+            assert "remaining_seconds" in entry
+            assert isinstance(entry["remaining_seconds"], int)
+            assert entry["remaining_seconds"] >= 0
+            assert "remaining" in entry
+        finally:
+            device_manager.disconnect("np-countdown-01")
