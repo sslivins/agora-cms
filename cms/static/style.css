@@ -794,12 +794,13 @@ tr.highlight-new td {
     padding: 0.4rem 0;
 }
 .checkbox-label {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 0.3rem;
     font-size: 0.9rem;
     cursor: pointer;
     color: var(--text);
+    white-space: nowrap;
 }
 .checkbox-label input[type="checkbox"] {
     accent-color: var(--accent);

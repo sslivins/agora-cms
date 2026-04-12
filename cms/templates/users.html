@@ -222,16 +222,12 @@
                     <input type="password" id="edit-password" name="password" minlength="6" placeholder="Unchanged">
                 </div>
             </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label class="checkbox-label" style="margin-top:0.5rem;">
-                        <input type="checkbox" id="edit-active" name="is_active"> Active
-                    </label>
-                </div>
+            <div style="margin-bottom:0.75rem;">
+                <label class="checkbox-label"><input type="checkbox" id="edit-active" name="is_active"> Active</label>
             </div>
             <div class="form-group">
                 <label>Groups</label>
-                <div class="group-checkboxes" id="edit-groups">
+                <div class="group-checkboxes" id="edit-groups" style="flex-direction:row;">
                     {% for group in groups %}
                     <label class="checkbox-label"><input type="checkbox" name="group_ids" value="{{ group.id }}"> {{ group.name }}</label>
                     {% endfor %}
