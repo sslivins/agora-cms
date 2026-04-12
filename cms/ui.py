@@ -783,7 +783,11 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.variant_processing = processing
         a.variant_failed = failed
         a.schedule_count = sched_counts.get(a.id, 0)
-        a.group_asset_entries = all_group_assets.get(a.id, [])
+        entries = all_group_assets.get(a.id, [])
+        # Non-admin users should only see group entries for their own groups
+        if group_ids is not None:
+            entries = [ga for ga in entries if ga.group_id in group_ids]
+        a.group_asset_entries = entries
 
     # Groups available for upload dropdown (user's groups, or all for admin)
     if group_ids is None:
