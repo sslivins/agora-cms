@@ -210,7 +210,7 @@
                         {% if 'assets:write' in user_perms %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">Scope</span>
-                            <span class="detail-value" id="scope-{{ a.id }}" style="display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap">
+                            <span class="detail-value has-tooltip" id="scope-{{ a.id }}" style="display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap; white-space:normal">
                                 {% if a.is_global %}
                                 <span class="badge badge-ready">Global</span>
                                 {% elif a.group_asset_entries | length == 0 %}
