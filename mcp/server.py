@@ -70,19 +70,28 @@ async def adopt_device(device_id: str) -> str:
 
 
 @mcp.tool()
-async def update_device(device_id: str, name: str | None = None, group_id: str | None = None) -> str:
-    """Update a device's name or group assignment.
+async def update_device(
+    device_id: str,
+    name: str | None = None,
+    group_id: str | None = None,
+    default_asset_id: str | None = None,
+) -> str:
+    """Update a device's name, group assignment, or default asset (splash screen).
 
     Args:
         device_id: The device ID to update.
         name: New display name for the device.
         group_id: UUID of the group to assign the device to, or null to remove from group.
+        default_asset_id: UUID of the asset to use as the device's default splash screen,
+            or null to clear (falls back to group default, then system splash).
     """
     fields = {}
     if name is not None:
         fields["name"] = name
     if group_id is not None:
         fields["group_id"] = group_id
+    if default_asset_id is not None:
+        fields["default_asset_id"] = default_asset_id if default_asset_id != "null" else None
     result = await client.update_device(device_id, fields)
     return _json_result(result)
 
@@ -120,31 +129,46 @@ async def list_groups() -> str:
 
 
 @mcp.tool()
-async def create_group(name: str, description: str = "") -> str:
+async def create_group(
+    name: str,
+    description: str = "",
+    default_asset_id: str | None = None,
+) -> str:
     """Create a new device group for bulk scheduling.
 
     Args:
         name: Name of the group.
         description: Optional description.
+        default_asset_id: UUID of the asset to use as the default splash screen for all
+            devices in this group (unless overridden at the device level).
     """
-    result = await client.create_group(name, description)
+    result = await client.create_group(name, description, default_asset_id=default_asset_id)
     return _json_result(result)
 
 
 @mcp.tool()
-async def update_group(group_id: str, name: str | None = None, description: str | None = None) -> str:
-    """Update a device group's name or description.
+async def update_group(
+    group_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    default_asset_id: str | None = None,
+) -> str:
+    """Update a device group's name, description, or default asset.
 
     Args:
         group_id: UUID of the group to update.
         name: New name for the group.
         description: New description.
+        default_asset_id: UUID of the asset to use as the default splash screen for all
+            devices in this group, or null to clear. Device-level defaults take precedence.
     """
     fields = {}
     if name is not None:
         fields["name"] = name
     if description is not None:
         fields["description"] = description
+    if default_asset_id is not None:
+        fields["default_asset_id"] = default_asset_id if default_asset_id != "null" else None
     result = await client.update_group(group_id, fields)
     return _json_result(result)
 
