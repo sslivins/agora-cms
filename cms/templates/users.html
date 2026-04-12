@@ -190,7 +190,7 @@
         </div>
         <div class="role-permissions">
             {% for perm in role.permissions %}
-            <span class="perm-tag">{{ perm }}</span>
+            <span class="perm-tag has-tooltip">{{ perm }}<span class="tooltip">{{ perm_descriptions.get(perm, perm) }}</span></span>
             {% endfor %}
         </div>
     </div>
