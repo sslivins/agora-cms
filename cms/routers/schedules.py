@@ -228,6 +228,12 @@ async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get
     target_ids = await _get_target_device_ids(schedule, db)
     await db.delete(schedule)
     await db.commit()
+    # Clear now-playing entries for this schedule immediately
+    from cms.services.scheduler import clear_now_playing, _now_playing
+    stale = [did for did, info in _now_playing.items()
+             if info.get("schedule_id") == str(schedule_id)]
+    for did in stale:
+        clear_now_playing(did)
     # Push updated sync (without the deleted schedule) to affected devices
     for did in target_ids:
         await push_sync_to_device(did, db)
