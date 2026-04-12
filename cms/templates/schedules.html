@@ -44,11 +44,11 @@
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Start Time<span class="tooltip">Time of day the schedule becomes active</span></span></label>
-                <input type="time" name="start_time" step="1" required>
+                <input type="time" name="start_time" required>
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">End Time<span class="tooltip">Time of day the schedule stops. Auto-computed when Loop Count is set</span></span></label>
-                <input type="time" name="end_time" step="1" required>
+                <input type="time" name="end_time" required>
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">Loop Count<span class="tooltip">Play the asset exactly this many times, then stop. End Time is auto-computed from the asset duration. Leave blank to loop continuously within the time window</span></span></label>
@@ -784,11 +784,11 @@ function editSchedule(s) {
         <div class="form-row">
             <div class="form-group">
                 <label>Start Time</label>
-                <input type="time" id="edit-start-time" step="1" value="${s.start_time}">
+                <input type="time" id="edit-start-time" value="${s.start_time}">
             </div>
             <div class="form-group">
                 <label>End Time</label>
-                <input type="time" id="edit-end-time" step="1" value="${s.end_time}"${s.loop_count ? ' disabled' : ''}>
+                <input type="time" id="edit-end-time" value="${s.end_time}"${s.loop_count ? ' disabled' : ''}>
             </div>
             <div class="form-group">
                 <label>Loop Count</label>
