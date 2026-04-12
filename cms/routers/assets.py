@@ -518,6 +518,7 @@ async def share_asset(
     asset_id: uuid.UUID,
     request: Request,
     group_id: uuid.UUID = Query(..., description="Group UUID to share with"),
+    user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
     """Share an asset with an additional group."""
@@ -530,6 +531,11 @@ async def share_asset(
     group = (await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))).scalar_one_or_none()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+
+    # Scoped users can only share to groups they belong to
+    user_groups = await get_user_group_ids(user, db)
+    if user_groups is not None and group_id not in user_groups:
+        raise HTTPException(status_code=403, detail="Cannot share to a group you are not a member of")
 
     # Check if already shared
     existing = (await db.execute(

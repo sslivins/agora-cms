@@ -991,3 +991,189 @@ class TestIDORProtection:
                 f"Found {len(unknown_badges)} '?' scope badges — groups the user is not in should be filtered out"
         finally:
             await ac.aclose()
+
+    async def test_cross_group_share_gives_other_user_access(self, app, db_session):
+        """User A (G1+G2) shares an asset in G2 with G1. User B (G1 only)
+        should then see the asset in both the API list and the assets page."""
+        from cms.models.asset import Asset, AssetType
+        g1 = await _create_group(db_session, "XShare G1")
+        g2 = await _create_group(db_session, "XShare G2")
+
+        user_a = await _create_user(db_session, email="xshare_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id, g2.id])
+        await _create_user(db_session, email="xshare_b@test.com",
+                           role_name="Operator", group_ids=[g1.id])
+
+        # Asset owned by User A, shared only with G2
+        asset = Asset(filename="xshare.mp4", original_filename="xshare.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        # User B should NOT see it yet (only in G2, not their group)
+        ac_b = await _login_as(app, "xshare_b@test.com")
+        try:
+            resp = await ac_b.get("/api/assets")
+            assert resp.status_code == 200
+            assert "xshare.mp4" not in [a["filename"] for a in resp.json()], \
+                "User B should not see asset before it's shared with their group"
+        finally:
+            await ac_b.aclose()
+
+        # User A shares the asset with G1
+        ac_a = await _login_as(app, "xshare_a@test.com")
+        try:
+            resp = await ac_a.post(f"/api/assets/{asset.id}/share",
+                                   params={"group_id": str(g1.id)})
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "shared"
+        finally:
+            await ac_a.aclose()
+
+        # Now User B SHOULD see it (asset is now in G1)
+        ac_b2 = await _login_as(app, "xshare_b@test.com")
+        try:
+            resp = await ac_b2.get("/api/assets")
+            assert resp.status_code == 200
+            assert "xshare.mp4" in [a["filename"] for a in resp.json()], \
+                "User B should see asset after it's shared with their group"
+
+            # Assets page should also show it
+            page = await ac_b2.get("/assets")
+            assert page.status_code == 200
+            assert "xshare.mp4" in page.text
+        finally:
+            await ac_b2.aclose()
+
+    async def test_unshare_removes_cross_user_access(self, app, db_session):
+        """After unsharing an asset from G1, User B (G1 only) should no
+        longer see it in the API or the assets page."""
+        from cms.models.asset import Asset, AssetType
+        g1 = await _create_group(db_session, "XUnshare G1")
+        g2 = await _create_group(db_session, "XUnshare G2")
+
+        user_a = await _create_user(db_session, email="xunshare_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id, g2.id])
+        await _create_user(db_session, email="xunshare_b@test.com",
+                           role_name="Operator", group_ids=[g1.id])
+
+        # Asset shared with both G1 and G2
+        asset = Asset(filename="xunshare.mp4", original_filename="xunshare.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        # User B can see it initially
+        ac_b = await _login_as(app, "xunshare_b@test.com")
+        try:
+            resp = await ac_b.get("/api/assets")
+            assert "xunshare.mp4" in [a["filename"] for a in resp.json()]
+        finally:
+            await ac_b.aclose()
+
+        # User A unshares from G1
+        ac_a = await _login_as(app, "xunshare_a@test.com")
+        try:
+            resp = await ac_a.delete(f"/api/assets/{asset.id}/share",
+                                     params={"group_id": str(g1.id)})
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "unshared"
+        finally:
+            await ac_a.aclose()
+
+        # User B should no longer see it
+        ac_b2 = await _login_as(app, "xunshare_b@test.com")
+        try:
+            resp = await ac_b2.get("/api/assets")
+            assert "xunshare.mp4" not in [a["filename"] for a in resp.json()], \
+                "User B should not see asset after it's unshared from their group"
+
+            page = await ac_b2.get("/assets")
+            assert "xunshare.mp4" not in page.text, \
+                "Assets page should not show unshared asset"
+        finally:
+            await ac_b2.aclose()
+
+    async def test_asset_status_poll_reflects_share_changes(self, app, db_session):
+        """The /api/assets/status polling endpoint should reflect correct
+        asset counts after share/unshare operations."""
+        from cms.models.asset import Asset, AssetType
+        g1 = await _create_group(db_session, "Poll G1")
+        g2 = await _create_group(db_session, "Poll G2")
+
+        user_a = await _create_user(db_session, email="poll_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id, g2.id])
+        await _create_user(db_session, email="poll_b@test.com",
+                           role_name="Operator", group_ids=[g1.id])
+
+        # Asset in G2 only
+        asset = Asset(filename="poll_test.mp4", original_filename="poll_test.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        # User B: asset_count should be 0
+        ac_b = await _login_as(app, "poll_b@test.com")
+        try:
+            resp = await ac_b.get("/api/assets/status")
+            assert resp.status_code == 200
+            assert resp.json()["asset_count"] == 0
+        finally:
+            await ac_b.aclose()
+
+        # Share with G1
+        ac_a = await _login_as(app, "poll_a@test.com")
+        try:
+            await ac_a.post(f"/api/assets/{asset.id}/share",
+                            params={"group_id": str(g1.id)})
+        finally:
+            await ac_a.aclose()
+
+        # User B: asset_count should now be 1
+        ac_b2 = await _login_as(app, "poll_b@test.com")
+        try:
+            resp = await ac_b2.get("/api/assets/status")
+            assert resp.status_code == 200
+            assert resp.json()["asset_count"] == 1, \
+                "Polling endpoint should reflect the newly shared asset"
+        finally:
+            await ac_b2.aclose()
+
+    async def test_share_to_non_member_group_blocked(self, app, db_session):
+        """A scoped user should not be able to share an asset to a group
+        they are not a member of."""
+        from cms.models.asset import Asset, AssetType
+        g1 = await _create_group(db_session, "ShareBlock G1")
+        g2 = await _create_group(db_session, "ShareBlock G2")
+
+        user = await _create_user(db_session, email="shareblock@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+
+        # Asset in G1
+        asset = Asset(filename="block_test.mp4", original_filename="block_test.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        # Try to share with G2 (user is NOT in G2)
+        ac = await _login_as(app, "shareblock@test.com")
+        try:
+            resp = await ac.post(f"/api/assets/{asset.id}/share",
+                                 params={"group_id": str(g2.id)})
+            assert resp.status_code == 403, \
+                f"Expected 403 when sharing to non-member group, got {resp.status_code}"
+        finally:
+            await ac.aclose()
