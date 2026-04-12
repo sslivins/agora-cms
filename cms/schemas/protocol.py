@@ -105,8 +105,8 @@ class ScheduleEntry(BaseModel):
     name: str
     asset: str
     asset_checksum: Optional[str] = None  # SHA-256 of the file the device should have
-    start_time: str          # "HH:MM"
-    end_time: str            # "HH:MM"
+    start_time: str          # "HH:MM:SS"
+    end_time: str            # "HH:MM:SS"
     start_date: Optional[str] = None  # "YYYY-MM-DD" or null (open-ended)
     end_date: Optional[str] = None    # "YYYY-MM-DD" or null (open-ended)
     days_of_week: Optional[list[int]] = None  # ISO 1-7, null = every day

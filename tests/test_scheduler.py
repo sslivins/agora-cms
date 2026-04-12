@@ -255,8 +255,8 @@ class TestScheduleToEntry:
         assert entry.id == "12345678-1234-1234-1234-123456789abc"
         assert entry.name == "Test Schedule"
         assert entry.asset == "video.mp4"
-        assert entry.start_time == "09:00"
-        assert entry.end_time == "17:00"
+        assert entry.start_time == "09:00:00"
+        assert entry.end_time == "17:00:00"
         assert entry.start_date is None
         assert entry.end_date is None
         assert entry.days_of_week == [1, 2, 3]
