@@ -162,6 +162,13 @@ async def run_migrations():
                 "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT false"
             ))
 
+        # -- users.setup_token (one-time account setup link) --
+        has_st = await conn.run_sync(lambda c: _has_column(c, "users", "setup_token"))
+        if not has_st:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN setup_token VARCHAR(128) UNIQUE"
+            ))
+
         # -- users.email: set NOT NULL and backfill from username for legacy rows --
         # First backfill any NULL emails
         has_users = await conn.run_sync(lambda c: sa_inspect(c).has_table("users"))

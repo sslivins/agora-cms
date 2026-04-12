@@ -100,6 +100,41 @@ async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {"error": None})
 
 
+@router.get("/setup-account")
+async def setup_account(
+    request: Request,
+    token: str = Query(...),
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """One-time magic link from welcome email — logs user in and redirects to password change."""
+    result = await db.execute(
+        select(User).where(User.setup_token == token, User.is_active.is_(True))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": "This setup link is invalid or has already been used. Please sign in with your credentials."},
+            status_code=400,
+        )
+
+    # Invalidate the token (single-use)
+    user.setup_token = None
+    from datetime import datetime, timezone
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Create session and redirect to force-password-change
+    serializer = URLSafeTimedSerializer(settings.secret_key)
+    session_token = serializer.dumps({"user_id": str(user.id)})
+    response = RedirectResponse(url="/force-password-change", status_code=303)
+    response.set_cookie(
+        COOKIE_NAME, session_token, max_age=MAX_AGE, httponly=True, samesite="lax"
+    )
+    return response
+
+
 @router.post("/login")
 async def login_submit(
     request: Request,

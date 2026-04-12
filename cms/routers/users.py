@@ -143,6 +143,9 @@ async def create_user(
         username = f"{base_username}{counter}"
         counter += 1
 
+    # Generate one-time setup token for magic login link
+    setup_token = secrets.token_urlsafe(32)
+
     user = User(
         username=username,
         email=data.email,
@@ -151,6 +154,7 @@ async def create_user(
         role_id=data.role_id,
         is_active=True,
         must_change_password=True,
+        setup_token=setup_token,
     )
     db.add(user)
     await db.flush()
@@ -168,14 +172,15 @@ async def create_user(
     # Send welcome email in background (best-effort, don't block response)
     from cms.services.email_service import send_welcome_email_sync, get_smtp_settings
     smtp_cfg = await get_smtp_settings(db)
-    login_url = request.base_url._url.rstrip("/") + "/login"
+    base = request.base_url._url.rstrip("/")
+    setup_url = f"{base}/setup-account?token={setup_token}"
     background_tasks.add_task(
         send_welcome_email_sync,
         smtp_cfg=smtp_cfg,
         to_email=data.email,
         display_name=data.display_name,
         temp_password=temp_password,
-        login_url=login_url,
+        setup_url=setup_url,
     )
 
     return _user_to_read(user, data.group_ids)

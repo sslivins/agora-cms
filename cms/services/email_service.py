@@ -69,7 +69,7 @@ def send_welcome_email_sync(
     to_email: str,
     display_name: str,
     temp_password: str,
-    login_url: str,
+    setup_url: str,
 ) -> bool:
     """Send a welcome email synchronously (for use in BackgroundTasks)."""
     greeting = display_name or to_email
@@ -80,16 +80,15 @@ def send_welcome_email_sync(
     <div style="background: #1a1a2e; color: #e0e0e0; padding: 2rem; border-radius: 8px;">
         <h1 style="color: #7c83ff; margin-top: 0;">Welcome to Agora CMS</h1>
         <p>Hi {greeting},</p>
-        <p>An account has been created for you on Agora CMS. Here are your sign-in credentials:</p>
-        <div style="background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 1rem; margin: 1.5rem 0;">
-            <p style="margin: 0.25rem 0;"><strong>Email:</strong> <code style="background: #0f3460; padding: 2px 6px; border-radius: 3px;">{to_email}</code></p>
-            <p style="margin: 0.25rem 0;"><strong>Temporary Password:</strong> <code style="background: #0f3460; padding: 2px 6px; border-radius: 3px;">{temp_password}</code></p>
-        </div>
-        <p>You will be asked to set a new password on your first sign-in.</p>
+        <p>An account has been created for you on Agora CMS.</p>
+        <p>Click the button below to set your password and get started:</p>
         <p style="margin-top: 1.5rem;">
-            <a href="{login_url}" style="background: #7c83ff; color: #fff; padding: 0.6rem 1.5rem; border-radius: 4px; text-decoration: none; font-weight: 600;">Sign In</a>
+            <a href="{setup_url}" style="background: #7c83ff; color: #fff; padding: 0.6rem 1.5rem; border-radius: 4px; text-decoration: none; font-weight: 600;">Set Up My Account</a>
         </p>
+        <p style="margin-top: 1.5rem; font-size: 0.9rem; color: #aaa;">If the button doesn't work, copy and paste this link into your browser:</p>
+        <p style="font-size: 0.85rem; word-break: break-all;"><a href="{setup_url}" style="color: #7c83ff;">{setup_url}</a></p>
         <hr style="border: none; border-top: 1px solid #0f3460; margin: 2rem 0;">
+        <p style="font-size: 0.85rem; color: #888;">This link is single-use and will expire once you set your password.</p>
         <p style="font-size: 0.85rem; color: #888;">This is an automated message from Agora CMS. Do not reply to this email.</p>
     </div>
 </body>
@@ -99,10 +98,8 @@ def send_welcome_email_sync(
         f"Welcome to Agora CMS\n\n"
         f"Hi {greeting},\n\n"
         f"An account has been created for you.\n\n"
-        f"Email: {to_email}\n"
-        f"Temporary Password: {temp_password}\n\n"
-        f"Sign in at: {login_url}\n"
-        f"You will be asked to set a new password on your first sign-in.\n"
+        f"Set up your account by visiting:\n{setup_url}\n\n"
+        f"This link is single-use and will expire once you set your password.\n"
     )
 
     return _send_email(smtp_cfg, to_email, "Welcome to Agora CMS", html_body, text_body)

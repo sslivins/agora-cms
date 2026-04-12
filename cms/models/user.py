@@ -60,6 +60,9 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    setup_token: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True
+    )
 
     role: Mapped[Role] = relationship(back_populates="users")
     groups: Mapped[list["UserGroup"]] = relationship(back_populates="user")
