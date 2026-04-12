@@ -166,7 +166,8 @@ async def create_user(
 
     # Send welcome email (best-effort, don't fail if SMTP not configured)
     from cms.services.email_service import send_welcome_email
-    send_welcome_email(
+    await send_welcome_email(
+        db=db,
         to_email=data.email,
         display_name=data.display_name,
         temp_password=temp_password,

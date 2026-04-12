@@ -294,6 +294,118 @@
     });
 })();
 </script>
+
+<div class="card" id="smtp-card">
+    <h2>Email (SMTP) <span id="smtp-status-badge" class="badge badge-offline">not configured</span></h2>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Configure outgoing email for welcome emails, notifications, and alerts.
+    </p>
+    <form id="smtp-form" onsubmit="event.preventDefault(); saveSmtpSettings()">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="smtp-host">SMTP Host</label>
+                <input type="text" id="smtp-host" placeholder="e.g. smtp.gmail.com" value="{{ smtp_host or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="smtp-port">Port</label>
+                <input type="number" id="smtp-port" placeholder="587" value="{{ smtp_port or '587' }}" style="max-width: 100px;">
+            </div>
+            <div class="form-group">
+                <label>&nbsp;</label>
+                <label class="checkbox-label checkbox-field-aligned">
+                    <input type="checkbox" id="smtp-tls" {{ 'checked' if smtp_use_tls else '' }}> Use TLS
+                </label>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="smtp-username">Username</label>
+                <input type="text" id="smtp-username" placeholder="SMTP username or email" value="{{ smtp_username or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="smtp-password">Password</label>
+                <input type="password" id="smtp-password" placeholder="{{ '••••••••' if smtp_password else 'SMTP password' }}" value="">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="smtp-from-email">From Email</label>
+                <input type="email" id="smtp-from-email" placeholder="e.g. noreply@example.com" value="{{ smtp_from_email or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="smtp-test-email">Test Recipient</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="email" id="smtp-test-email" placeholder="your@email.com" style="flex: 1;">
+                    <button type="button" class="btn btn-secondary" onclick="testSmtp()">Send Test</button>
+                </div>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Save SMTP Settings</button>
+    </form>
+</div>
+
+<script>
+(function() {
+    const badge = document.getElementById("smtp-status-badge");
+    if (document.getElementById("smtp-host").value) {
+        badge.textContent = "configured";
+        badge.className = "badge badge-online";
+    }
+})();
+
+async function saveSmtpSettings() {
+    const body = {
+        host: document.getElementById("smtp-host").value.trim(),
+        port: parseInt(document.getElementById("smtp-port").value) || 587,
+        username: document.getElementById("smtp-username").value.trim(),
+        from_email: document.getElementById("smtp-from-email").value.trim(),
+        use_tls: document.getElementById("smtp-tls").checked,
+    };
+    const pw = document.getElementById("smtp-password").value;
+    if (pw) body.password = pw;
+    try {
+        const resp = await fetch("/api/settings/smtp", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail || "Save failed");
+        showToast("SMTP settings saved");
+        const badge = document.getElementById("smtp-status-badge");
+        if (body.host) {
+            badge.textContent = "configured";
+            badge.className = "badge badge-online";
+        } else {
+            badge.textContent = "not configured";
+            badge.className = "badge badge-offline";
+        }
+    } catch (err) {
+        showToast(err.message || "Failed to save SMTP settings", true);
+    }
+}
+
+async function testSmtp() {
+    const testEmail = document.getElementById("smtp-test-email").value.trim();
+    if (!testEmail) { showToast("Enter a test recipient email", true); return; }
+    // Save first, then test
+    await saveSmtpSettings();
+    try {
+        const resp = await fetch("/api/settings/smtp/test", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({to_email: testEmail}),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast("Test email sent — check your inbox");
+        } else {
+            showToast("Test failed: " + (data.message || "Unknown error"), true);
+        }
+    } catch (err) {
+        showToast("Failed to send test email", true);
+    }
+}
+</script>
 {% endif %}
 
 {% if 'api_keys:write' in user_perms %}

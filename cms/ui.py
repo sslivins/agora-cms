@@ -14,6 +14,12 @@ from cms.auth import (
     SETTING_MCP_API_KEY,
     SETTING_MCP_ENABLED,
     SETTING_PASSWORD_HASH,
+    SETTING_SMTP_FROM_EMAIL,
+    SETTING_SMTP_HOST,
+    SETTING_SMTP_PASSWORD,
+    SETTING_SMTP_PORT,
+    SETTING_SMTP_USE_TLS,
+    SETTING_SMTP_USERNAME,
     SETTING_TIMEZONE,
     SETTING_USERNAME,
     _resolve_user_from_session,
@@ -760,6 +766,14 @@ async def settings_page(
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
     mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
+    # SMTP settings
+    smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
+    smtp_port = await get_setting(db, SETTING_SMTP_PORT) or "587"
+    smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
+    smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
+    smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
+    smtp_use_tls = (await get_setting(db, SETTING_SMTP_USE_TLS) or "true") == "true"
+
     # Device list for log download panel
     from cms.models.device import Device
     result = await db.execute(select(Device).order_by(Device.name))
@@ -777,6 +791,12 @@ async def settings_page(
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
         "mcp_api_key": mcp_api_key,
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_username": smtp_username,
+        "smtp_password": smtp_password,
+        "smtp_from_email": smtp_from_email,
+        "smtp_use_tls": smtp_use_tls,
         "devices": device_list,
         "success": None,
         "error": None,
@@ -875,6 +895,45 @@ async def mcp_generate_key(db: AsyncSession = Depends(get_db)):
     key = secrets.token_urlsafe(32)
     await set_setting(db, SETTING_MCP_API_KEY, key)
     return {"key": key}
+
+
+# ── SMTP Settings ──
+
+
+@router.post("/api/settings/smtp")
+async def save_smtp_settings(
+    request: Request,
+    _user: User = Depends(require_permission("settings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save SMTP configuration to the database."""
+    data = await request.json()
+    await set_setting(db, SETTING_SMTP_HOST, data.get("host", ""))
+    await set_setting(db, SETTING_SMTP_PORT, str(data.get("port", 587)))
+    await set_setting(db, SETTING_SMTP_USERNAME, data.get("username", ""))
+    if "password" in data and data["password"]:
+        await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
+    await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    await set_setting(db, SETTING_SMTP_USE_TLS, "true" if data.get("use_tls", True) else "false")
+    return {"status": "ok"}
+
+
+@router.post("/api/settings/smtp/test")
+async def test_smtp(
+    request: Request,
+    _user: User = Depends(require_permission("settings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a test email to verify SMTP configuration."""
+    data = await request.json()
+    to_email = data.get("to_email", "")
+    if not to_email:
+        return JSONResponse({"success": False, "message": "Recipient email required"}, status_code=400)
+
+    from cms.services.email_service import get_smtp_settings, test_smtp_connection
+    smtp_cfg = await get_smtp_settings(db)
+    success, message = test_smtp_connection(smtp_cfg, to_email)
+    return {"success": success, "message": message}
 
 
 # ── NTP Status ──

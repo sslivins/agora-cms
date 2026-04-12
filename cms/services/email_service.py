@@ -5,12 +5,67 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from cms.config import get_settings
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from cms.auth import (
+    SETTING_SMTP_FROM_EMAIL,
+    SETTING_SMTP_HOST,
+    SETTING_SMTP_PASSWORD,
+    SETTING_SMTP_PORT,
+    SETTING_SMTP_USE_TLS,
+    SETTING_SMTP_USERNAME,
+    get_setting,
+)
 
 _log = logging.getLogger(__name__)
 
 
-def send_welcome_email(
+async def get_smtp_settings(db: AsyncSession) -> dict:
+    """Read SMTP configuration from the database."""
+    return {
+        "host": await get_setting(db, SETTING_SMTP_HOST),
+        "port": int(await get_setting(db, SETTING_SMTP_PORT) or "587"),
+        "username": await get_setting(db, SETTING_SMTP_USERNAME),
+        "password": await get_setting(db, SETTING_SMTP_PASSWORD),
+        "from_email": await get_setting(db, SETTING_SMTP_FROM_EMAIL),
+        "use_tls": (await get_setting(db, SETTING_SMTP_USE_TLS) or "true") == "true",
+    }
+
+
+def _send_email(smtp_cfg: dict, to_email: str, subject: str, html_body: str, text_body: str) -> bool:
+    """Send an email using the given SMTP config dict. Returns True on success."""
+    if not smtp_cfg.get("host") or not smtp_cfg.get("from_email"):
+        _log.warning("SMTP not configured — skipping email to %s", to_email)
+        return False
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = smtp_cfg["from_email"]
+    msg["To"] = to_email
+    msg.attach(MIMEText(text_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        if smtp_cfg.get("use_tls", True):
+            server = smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"])
+            server.starttls()
+        else:
+            server = smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"])
+
+        if smtp_cfg.get("username") and smtp_cfg.get("password"):
+            server.login(smtp_cfg["username"], smtp_cfg["password"])
+
+        server.sendmail(smtp_cfg["from_email"], [to_email], msg.as_string())
+        server.quit()
+        _log.info("Email sent to %s: %s", to_email, subject)
+        return True
+    except Exception as e:
+        _log.error("Failed to send email to %s: %s", to_email, e)
+        return False
+
+
+async def send_welcome_email(
+    db: AsyncSession,
     to_email: str,
     display_name: str,
     temp_password: str,
@@ -20,17 +75,14 @@ def send_welcome_email(
 
     Returns True if sent successfully, False if SMTP is not configured or fails.
     """
+    smtp_cfg = await get_smtp_settings(db)
+
+    from cms.config import get_settings
     settings = get_settings()
-
-    if not settings.smtp_host or not settings.smtp_from_email:
-        _log.warning("SMTP not configured — skipping welcome email to %s", to_email)
-        return False
-
     login_url = login_url or settings.base_url or "http://localhost:8000"
     if not login_url.endswith("/login"):
         login_url = login_url.rstrip("/") + "/login"
 
-    subject = "Welcome to Agora CMS"
     greeting = display_name or to_email
 
     html_body = f"""\
@@ -64,27 +116,28 @@ def send_welcome_email(
         f"You will be asked to set a new password on your first sign-in.\n"
     )
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = settings.smtp_from_email
-    msg["To"] = to_email
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    return _send_email(smtp_cfg, to_email, "Welcome to Agora CMS", html_body, text_body)
+
+
+def test_smtp_connection(smtp_cfg: dict, test_to_email: str) -> tuple[bool, str]:
+    """Test SMTP connection by sending a test email. Returns (success, message)."""
+    html_body = """\
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+    <div style="background: #1a1a2e; color: #e0e0e0; padding: 2rem; border-radius: 8px;">
+        <h1 style="color: #7c83ff; margin-top: 0;">SMTP Test</h1>
+        <p>This is a test email from Agora CMS to verify your SMTP configuration is working correctly.</p>
+        <p style="color: #4caf50; font-weight: 600;">✓ If you received this email, your SMTP settings are configured correctly.</p>
+    </div>
+</body>
+</html>"""
+
+    text_body = "SMTP Test\n\nThis is a test email from Agora CMS.\nIf you received this, SMTP is configured correctly."
 
     try:
-        if settings.smtp_use_tls:
-            server = smtplib.SMTP(settings.smtp_host, settings.smtp_port)
-            server.starttls()
-        else:
-            server = smtplib.SMTP(settings.smtp_host, settings.smtp_port)
-
-        if settings.smtp_username and settings.smtp_password:
-            server.login(settings.smtp_username, settings.smtp_password)
-
-        server.sendmail(settings.smtp_from_email, [to_email], msg.as_string())
-        server.quit()
-        _log.info("Welcome email sent to %s", to_email)
-        return True
+        ok = _send_email(smtp_cfg, test_to_email, "Agora CMS — SMTP Test", html_body, text_body)
+        if ok:
+            return True, "Test email sent successfully"
+        return False, "SMTP not configured (host or from_email missing)"
     except Exception as e:
-        _log.error("Failed to send welcome email to %s: %s", to_email, e)
-        return False
+        return False, str(e)

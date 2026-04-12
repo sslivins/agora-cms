@@ -40,11 +40,5 @@ class Settings(BaseSettings):
     api_key_rotation_hours: int = 24  # rotate device API keys every N hours
     pending_device_ttl_hours: int = 24  # auto-purge pending devices not seen for N hours
 
-    # SMTP (for welcome emails)
-    smtp_host: str | None = None
-    smtp_port: int = 587
-    smtp_username: str | None = None
-    smtp_password: str | None = None
-    smtp_from_email: str | None = None
-    smtp_use_tls: bool = True
+    # SMTP is configured via the web UI settings page (stored in DB)
     base_url: str | None = None  # public URL for login links in emails
