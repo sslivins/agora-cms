@@ -312,9 +312,7 @@
             </div>
             <div class="form-group">
                 <label>&nbsp;</label>
-                <label class="checkbox-label checkbox-field-aligned">
-                    <input type="checkbox" id="smtp-tls" {{ 'checked' if smtp_use_tls else '' }}> Use TLS
-                </label>
+                <span class="checkbox-field-aligned" style="color:var(--text-muted);font-size:0.85rem;">TLS is always enabled</span>
             </div>
         </div>
         <div class="form-row">
@@ -359,7 +357,7 @@ async function saveSmtpSettings() {
         port: parseInt(document.getElementById("smtp-port").value) || 587,
         username: document.getElementById("smtp-username").value.trim(),
         from_email: document.getElementById("smtp-from-email").value.trim(),
-        use_tls: document.getElementById("smtp-tls").checked,
+
     };
     const pw = document.getElementById("smtp-password").value;
     if (pw) body.password = pw;

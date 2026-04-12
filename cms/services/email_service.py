@@ -12,7 +12,7 @@ from cms.auth import (
     SETTING_SMTP_HOST,
     SETTING_SMTP_PASSWORD,
     SETTING_SMTP_PORT,
-    SETTING_SMTP_USE_TLS,
+
     SETTING_SMTP_USERNAME,
     get_setting,
 )
@@ -28,7 +28,7 @@ async def get_smtp_settings(db: AsyncSession) -> dict:
         "username": await get_setting(db, SETTING_SMTP_USERNAME),
         "password": await get_setting(db, SETTING_SMTP_PASSWORD),
         "from_email": await get_setting(db, SETTING_SMTP_FROM_EMAIL),
-        "use_tls": (await get_setting(db, SETTING_SMTP_USE_TLS) or "true") == "true",
+        "use_tls": True,
     }
 
 

@@ -18,7 +18,7 @@ from cms.auth import (
     SETTING_SMTP_HOST,
     SETTING_SMTP_PASSWORD,
     SETTING_SMTP_PORT,
-    SETTING_SMTP_USE_TLS,
+
     SETTING_SMTP_USERNAME,
     SETTING_TIMEZONE,
     SETTING_USERNAME,
@@ -772,7 +772,6 @@ async def settings_page(
     smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
     smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
     smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
-    smtp_use_tls = (await get_setting(db, SETTING_SMTP_USE_TLS) or "true") == "true"
 
     # Device list for log download panel
     from cms.models.device import Device
@@ -796,7 +795,7 @@ async def settings_page(
         "smtp_username": smtp_username,
         "smtp_password": smtp_password,
         "smtp_from_email": smtp_from_email,
-        "smtp_use_tls": smtp_use_tls,
+
         "devices": device_list,
         "success": None,
         "error": None,
@@ -914,7 +913,6 @@ async def save_smtp_settings(
     if "password" in data and data["password"]:
         await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
     await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
-    await set_setting(db, SETTING_SMTP_USE_TLS, "true" if data.get("use_tls", True) else "false")
     return {"status": "ok"}
 
 
