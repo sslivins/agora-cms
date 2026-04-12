@@ -834,3 +834,107 @@ class TestIDORProtection:
             assert "Schedule In B" not in names, "User should NOT see schedule in other group"
         finally:
             await ac.aclose()
+
+    async def test_devices_page_only_shows_user_groups(self, app, db_session):
+        """GET /devices HTML page should only include groups the user belongs to."""
+        group_a = await _create_group(db_session, "UI Grp Visible")
+        group_b = await _create_group(db_session, "UI Grp Hidden")
+        dev_a = Device(id="ui-grp-dev-a", name="Dev In A",
+                       status=DeviceStatus.ADOPTED, group_id=group_a.id)
+        dev_b = Device(id="ui-grp-dev-b", name="Dev In B",
+                       status=DeviceStatus.ADOPTED, group_id=group_b.id)
+        db_session.add_all([dev_a, dev_b])
+        await db_session.commit()
+
+        await _create_user(db_session, email="ui_grp@test.com",
+                           role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "ui_grp@test.com")
+        try:
+            resp = await ac.get("/devices")
+            assert resp.status_code == 200
+            body = resp.text
+            assert "UI Grp Visible" in body, "User should see their own group"
+            assert "UI Grp Hidden" not in body, "User should NOT see groups they don't belong to"
+            assert "Dev In A" in body, "User should see devices in their group"
+            assert "Dev In B" not in body, "User should NOT see devices in other groups"
+        finally:
+            await ac.aclose()
+
+    async def test_list_groups_api_scoped_to_user(self, app, db_session):
+        """GET /api/groups should only return groups the user belongs to."""
+        group_a = await _create_group(db_session, "API Grp Mine")
+        group_b = await _create_group(db_session, "API Grp Other")
+        await db_session.commit()
+
+        await _create_user(db_session, email="api_grp@test.com",
+                           role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "api_grp@test.com")
+        try:
+            resp = await ac.get("/api/devices/groups/")
+            assert resp.status_code == 200
+            names = [g["name"] for g in resp.json()]
+            assert "API Grp Mine" in names, "User should see their own group"
+            assert "API Grp Other" not in names, "User should NOT see groups they don't belong to"
+        finally:
+            await ac.aclose()
+
+    async def test_schedules_page_scoped_to_user_groups(self, app, db_session):
+        """GET /schedules HTML page should only show schedules targeting user's groups."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.schedule import Schedule
+        from datetime import time
+        group_a = await _create_group(db_session, "UI Sched Grp A")
+        group_b = await _create_group(db_session, "UI Sched Grp B")
+
+        asset = Asset(filename="ui_sched.mp4", original_filename="ui_sched.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100)
+        db_session.add(asset)
+        await db_session.flush()
+
+        sched_a = Schedule(name="Sched Visible", group_id=group_a.id,
+                           asset_id=asset.id, start_time=time(8, 0),
+                           end_time=time(17, 0), priority=0, enabled=True)
+        sched_b = Schedule(name="Sched Hidden", group_id=group_b.id,
+                           asset_id=asset.id, start_time=time(8, 0),
+                           end_time=time(17, 0), priority=0, enabled=True)
+        db_session.add_all([sched_a, sched_b])
+        await db_session.commit()
+
+        await _create_user(db_session, email="ui_sched@test.com",
+                           role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "ui_sched@test.com")
+        try:
+            resp = await ac.get("/schedules")
+            assert resp.status_code == 200
+            body = resp.text
+            assert "Sched Visible" in body, "User should see schedule in their group"
+            assert "Sched Hidden" not in body, "User should NOT see schedule in other group"
+        finally:
+            await ac.aclose()
+
+    async def test_assets_page_hides_own_asset_in_other_group(self, app, db_session):
+        """Assets page should not show user's own uploads if only shared with groups they're not in."""
+        from cms.models.asset import Asset, AssetType
+        group_a = await _create_group(db_session, "Asset Own Grp A")
+        group_b = await _create_group(db_session, "Asset Own Grp B")
+
+        user = await _create_user(db_session, email="asset_own@test.com",
+                                  role_name="Operator", group_ids=[group_a.id])
+
+        # Asset uploaded by user but shared only with group_b (not user's group)
+        asset = Asset(filename="my_upload.mp4", original_filename="my_upload.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=group_b.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "asset_own@test.com")
+        try:
+            resp = await ac.get("/assets")
+            assert resp.status_code == 200
+            assert "my_upload.mp4" not in resp.text, \
+                "User should NOT see own asset shared only with groups they don't belong to"
+        finally:
+            await ac.aclose()

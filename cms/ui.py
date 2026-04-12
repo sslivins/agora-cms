@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import func, select
+import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -492,10 +493,22 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
 @router.get("/devices", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
+    from cms.auth import get_user_group_ids
 
-    result = await db.execute(
-        select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
-    )
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    device_query = select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
+    if not is_admin:
+        if group_ids:
+            device_query = device_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            device_query = device_query.where(Device.group_id.is_(None))
+
+    result = await db.execute(device_query)
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
@@ -515,11 +528,18 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.is_upgrading = d.id in _devices_upgrading
         d.has_active_schedule = d.id in scheduled_device_ids
 
-    groups_q = await db.execute(
+    groups_query = (
         select(DeviceGroup)
         .options(selectinload(DeviceGroup.devices))
         .order_by(DeviceGroup.name)
     )
+    if not is_admin:
+        if group_ids:
+            groups_query = groups_query.where(DeviceGroup.id.in_(group_ids))
+        else:
+            groups_query = groups_query.where(sqlalchemy.false())
+
+    groups_q = await db.execute(groups_query)
     groups = groups_q.scalars().all()
 
     # Attach device_count and is_online to each group's devices
@@ -602,6 +622,13 @@ async def users_page(
     all_permissions = ALL_PERMISSIONS
     perm_descriptions = PERMISSION_DESCRIPTIONS
 
+    # Group permissions by prefix (e.g. "devices", "schedules") for collapsible UI
+    from collections import OrderedDict
+    grouped_permissions: dict[str, list[str]] = OrderedDict()
+    for perm in all_permissions:
+        prefix = perm.split(":")[0] if ":" in perm else perm
+        grouped_permissions.setdefault(prefix, []).append(perm)
+
     # Check if current user can write
     can_write = USERS_WRITE in (user.role.permissions if user.role else [])
     can_write_roles = ROLES_WRITE in (user.role.permissions if user.role else [])
@@ -613,6 +640,7 @@ async def users_page(
         "roles": roles,
         "groups": groups,
         "all_permissions": all_permissions,
+        "grouped_permissions": grouped_permissions,
         "perm_descriptions": perm_descriptions,
         "can_write": can_write,
         "can_write_roles": can_write_roles,
@@ -636,7 +664,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         .order_by(Asset.uploaded_at.desc())
     )
     if group_ids is not None:
-        # Non-admin: only global + assets in their groups + own uploads
+        # Non-admin: only global + assets in their groups + own unshared uploads
         global_ids = set(
             (await db.execute(select(Asset.id).where(Asset.is_global.is_(True)))).scalars().all()
         )
@@ -651,7 +679,9 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         if user:
             own_ids = set(
                 (await db.execute(
-                    select(Asset.id).where(Asset.uploaded_by_user_id == user.id)
+                    select(Asset.id)
+                    .where(Asset.uploaded_by_user_id == user.id)
+                    .where(~Asset.id.in_(select(GroupAsset.asset_id)))
                 )).scalars().all()
             )
         visible = list(global_ids | ga_ids | own_ids)
@@ -698,9 +728,16 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         groups_q = None
     user_groups = groups_q.scalars().all() if groups_q else []
 
-    # Build lookup of all group names for display
-    all_groups_q = await db.execute(select(DeviceGroup))
-    group_name_map = {str(g.id): g.name for g in all_groups_q.scalars().all()}
+    # Build lookup of group names — scoped to user's groups for non-admins
+    if group_ids is None:
+        all_groups_q = await db.execute(select(DeviceGroup))
+    elif group_ids:
+        all_groups_q = await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids))
+        )
+    else:
+        all_groups_q = None
+    group_name_map = {str(g.id): g.name for g in all_groups_q.scalars().all()} if all_groups_q else {}
 
     is_admin = group_ids is None
 
@@ -734,7 +771,11 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
 async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     user: User | None = getattr(request.state, "user", None)
 
-    schedules_q = await db.execute(
+    # Filter assets by user visibility
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    sched_query = (
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
@@ -743,11 +784,19 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         )
         .order_by(Schedule.priority.desc(), Schedule.name)
     )
-    all_schedules = schedules_q.scalars().all()
+    if not is_admin:
+        if group_ids:
+            sched_query = sched_query.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            sched_query = sched_query.where(sqlalchemy.false())
 
-    # Filter assets by user visibility
-    group_ids = await get_user_group_ids(user, db) if user else []
-    is_admin = group_ids is None
+    schedules_q = await db.execute(sched_query)
+    all_schedules = schedules_q.scalars().all()
     asset_q = select(Asset).order_by(Asset.filename)
     if not is_admin:
         from cms.models.asset import Asset as AssetModel
@@ -765,7 +814,9 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         if user:
             own_ids = set(
                 (await db.execute(
-                    select(Asset.id).where(Asset.uploaded_by_user_id == user.id)
+                    select(Asset.id)
+                    .where(Asset.uploaded_by_user_id == user.id)
+                    .where(~Asset.id.in_(select(GroupAsset.asset_id)))
                 )).scalars().all()
             )
         visible = list(global_ids | ga_ids | own_ids)
@@ -790,17 +841,21 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     )
     devices = devices_q.scalars().all()
 
-    groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    groups_query_sched = select(DeviceGroup).order_by(DeviceGroup.name)
+    if not is_admin:
+        if group_ids:
+            groups_query_sched = groups_query_sched.where(DeviceGroup.id.in_(group_ids))
+        else:
+            groups_query_sched = groups_query_sched.where(sqlalchemy.false())
+    groups_q = await db.execute(groups_query_sched)
     groups = groups_q.scalars().all()
 
-    # Scope groups and devices to user's assignments (mirrors API-layer scoping)
+    # Scope devices to user's groups
     if not is_admin:
         if group_ids:
             group_id_set = set(group_ids)
-            groups = [g for g in groups if g.id in group_id_set]
             devices = [d for d in devices if d.group_id and d.group_id in group_id_set]
         else:
-            groups = []
             devices = []
 
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"

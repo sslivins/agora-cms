@@ -54,7 +54,7 @@ async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | 
     An asset is visible if:
     - it is global (is_global=True), OR
     - the user's groups include the asset via GroupAsset, OR
-    - the user uploaded it (personal assets)
+    - the user uploaded it AND it has no group assignments (personal/unshared)
     """
     group_ids = await get_user_group_ids(user, db)
     if group_ids is None:
@@ -69,8 +69,12 @@ async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | 
         .where(GroupAsset.group_id.in_(group_ids))
     ) if group_ids else select(GroupAsset.asset_id).where(False)
 
-    # Assets the user uploaded personally
-    own_q = select(Asset.id).where(Asset.uploaded_by_user_id == user.id)
+    # Assets the user uploaded that have NO group assignments (personal/unshared)
+    own_q = (
+        select(Asset.id)
+        .where(Asset.uploaded_by_user_id == user.id)
+        .where(~Asset.id.in_(select(GroupAsset.asset_id)))
+    )
 
     global_ids = set((await db.execute(global_q)).scalars().all())
     group_asset_ids = set((await db.execute(group_q)).scalars().all())

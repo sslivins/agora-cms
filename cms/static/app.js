@@ -758,6 +758,10 @@ function showUserTab(tabId, btn) {
     btn.classList.add('active');
 }
 
+function toggleAllPermGroups(container, open) {
+    container.querySelectorAll('details.perm-group').forEach(d => d.open = open);
+}
+
 function closeModal(id) {
     document.getElementById(id).style.display = 'none';
 }

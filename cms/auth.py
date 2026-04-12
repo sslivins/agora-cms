@@ -16,7 +16,7 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.api_key import APIKey
 from cms.models.setting import CMSSetting
-from cms.models.user import Role, User
+from cms.models.user import Role, User, UserGroup
 
 _log = logging.getLogger(__name__)
 
@@ -63,7 +63,8 @@ async def _resolve_user_from_api_key(
     key_hash = _hash_api_key(api_key_value)
     result = await db.execute(
         select(APIKey)
-        .options(selectinload(APIKey.user).selectinload(User.role))
+        .options(selectinload(APIKey.user).selectinload(User.role),
+                selectinload(APIKey.user).selectinload(User.groups).selectinload(UserGroup.group))
         .where(APIKey.key_hash == key_hash)
     )
     key_row = result.scalar_one_or_none()
@@ -103,7 +104,8 @@ async def _resolve_user_from_session(
             return None
         result = await db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role),
+                     selectinload(User.groups).selectinload(UserGroup.group))
             .where(User.id == user_id, User.is_active.is_(True))
         )
         return result.scalar_one_or_none()
@@ -112,7 +114,8 @@ async def _resolve_user_from_session(
     if isinstance(data, str):
         result = await db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role),
+                     selectinload(User.groups).selectinload(UserGroup.group))
             .where(User.username == data, User.is_active.is_(True))
         )
         return result.scalar_one_or_none()
@@ -214,7 +217,6 @@ async def get_user_group_ids(user: User, db: AsyncSession) -> list | None:
     from cms.permissions import GROUPS_VIEW_ALL
     if GROUPS_VIEW_ALL in user.role.permissions:
         return None  # Admin — no group scoping
-    from cms.models.user import UserGroup
     result = await db.execute(
         select(UserGroup.group_id).where(UserGroup.user_id == user.id)
     )
