@@ -262,27 +262,47 @@ async def force_password_change_submit(
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from datetime import datetime as _dt, timezone as _tz
     from cms.services.scheduler import get_now_playing, get_upcoming_schedules
+    from cms.auth import get_user_group_ids
 
     # CMS timezone
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     tz = ZoneInfo(tz_name)
     now = _dt.now(_tz.utc)
 
+    # Group scoping
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
     # Pending devices
-    pending_q = await db.execute(
-        select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
-    )
+    pending_query = select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
+    if not is_admin:
+        if group_ids:
+            pending_query = pending_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            pending_query = pending_query.where(Device.group_id.is_(None))
+    pending_q = await db.execute(pending_query)
     pending_devices = pending_q.scalars().all()
     for d in pending_devices:
         d.is_online = device_manager.is_connected(d.id)
 
     # All adopted devices
-    devices_q = await db.execute(
+    devices_query = (
         select(Device)
         .options(selectinload(Device.group))
         .where(Device.status == DeviceStatus.ADOPTED)
         .order_by(Device.name, Device.id)
     )
+    if not is_admin:
+        if group_ids:
+            devices_query = devices_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            devices_query = devices_query.where(Device.group_id.is_(None))
+    devices_q = await db.execute(devices_query)
     all_devices = devices_q.scalars().all()
     for d in all_devices:
         d.is_online = device_manager.is_connected(d.id)
@@ -291,16 +311,27 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     offline_devices = [d for d in all_devices if not d.is_online]
 
     # Orphaned devices
-    orphaned_q = await db.execute(
+    orphan_query = (
         select(Device)
         .options(selectinload(Device.group))
         .where(Device.status == DeviceStatus.ORPHANED)
         .order_by(Device.name, Device.id)
     )
+    if not is_admin:
+        if group_ids:
+            orphan_query = orphan_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            orphan_query = orphan_query.where(Device.group_id.is_(None))
+    orphaned_q = await db.execute(orphan_query)
     orphaned_devices = orphaned_q.scalars().all()
 
     # Now Playing — enrich with actual device state for mismatch detection
     now_playing = get_now_playing()
+    # Scope now_playing to user's visible devices
+    visible_device_ids = {d.id for d in all_devices}
+    now_playing = [np for np in now_playing if np["device_id"] in visible_device_ids]
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     for np in now_playing:
         did = np["device_id"]
@@ -343,7 +374,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         })
 
     # Upcoming schedules (next 24h)
-    sched_q = await db.execute(
+    upcoming_query = (
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
@@ -352,6 +383,17 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         )
         .where(Schedule.enabled == True)
     )
+    if not is_admin:
+        if group_ids:
+            upcoming_query = upcoming_query.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            upcoming_query = upcoming_query.where(sqlalchemy.false())
+    sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
     upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
@@ -398,36 +440,51 @@ async def server_time_json(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/api/dashboard", dependencies=[Depends(require_auth)])
-async def dashboard_json(db: AsyncSession = Depends(get_db)):
+async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""
     from datetime import datetime as _dt, timezone as _tz
     from cms.services.scheduler import get_now_playing, get_upcoming_schedules
+    from cms.auth import get_user_group_ids
 
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     tz = ZoneInfo(tz_name)
     now = _dt.now(_tz.utc)
 
+    # Group scoping
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    def _scope_device_query(q):
+        if is_admin:
+            return q
+        if group_ids:
+            return q.where((Device.group_id.in_(group_ids)) | (Device.group_id.is_(None)))
+        return q.where(Device.group_id.is_(None))
+
     # Pending device IDs
     pending_q = await db.execute(
-        select(Device.id).where(Device.status == DeviceStatus.PENDING)
+        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.PENDING))
     )
     pending_ids = [r[0] for r in pending_q.all()]
 
     # Orphaned device IDs
     orphaned_q = await db.execute(
-        select(Device.id).where(Device.status == DeviceStatus.ORPHANED)
+        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ORPHANED))
     )
     orphaned_ids = [r[0] for r in orphaned_q.all()]
 
     # Online status (adopted devices only)
     devices_q = await db.execute(
-        select(Device.id)
-        .where(Device.status == DeviceStatus.ADOPTED)
+        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ADOPTED))
     )
     all_device_ids = [r[0] for r in devices_q.all()]
     offline_ids = [did for did in all_device_ids if not device_manager.is_connected(did)]
 
     now_playing = get_now_playing()
+    # Scope now_playing to user's visible devices
+    visible_device_set = set(all_device_ids)
+    now_playing = [np for np in now_playing if np["device_id"] in visible_device_set]
 
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     for np in now_playing:
@@ -456,7 +513,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     ]
 
     # Upcoming schedules
-    sched_q = await db.execute(
+    upcoming_q = (
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
@@ -465,6 +522,17 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         )
         .where(Schedule.enabled == True)
     )
+    if not is_admin:
+        if group_ids:
+            upcoming_q = upcoming_q.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            upcoming_q = upcoming_q.where(sqlalchemy.false())
+    sched_q = await db.execute(upcoming_q)
     all_schedules = sched_q.scalars().all()
     upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
 
