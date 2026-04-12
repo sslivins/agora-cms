@@ -498,7 +498,8 @@ async function toggleSchedule(scheduleId, enabled) {
 async function createSchedule(form) {
     const data = new FormData(form);
     const startTime = data.get("start_time");
-    const endTime = data.get("end_time");
+    // FormData excludes disabled inputs — read end_time from the DOM directly
+    const endTime = data.get("end_time") || form.querySelector('[name="end_time"]').value;
     const loopCountVal = data.get("loop_count");
     const hasLoopCount = loopCountVal && parseInt(loopCountVal) > 0;
     if (!startTime) {
@@ -527,12 +528,12 @@ async function createSchedule(form) {
     const body = {
         name: data.get("name"),
         asset_id: data.get("asset_id"),
-        start_time: startTime + ":00",
+        start_time: startTime.length <= 5 ? startTime + ":00" : startTime,
         priority: parseInt(data.get("priority") || "0"),
         enabled: true,
     };
     // end_time: include if present (auto-computed or manual)
-    if (endTime) body.end_time = endTime + ":00";
+    if (endTime) body.end_time = endTime.length <= 5 ? endTime + ":00" : endTime;
     // Explicit loop count
     if (hasLoopCount) body.loop_count = parseInt(loopCountVal);
     // Target
