@@ -36,3 +36,5 @@ class AssetOut(BaseModel):
     checksum: str
     duration_seconds: Optional[float] = None
     uploaded_at: datetime
+    owner_group_id: Optional[uuid.UUID] = None
+    is_global: bool = False

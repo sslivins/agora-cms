@@ -155,6 +155,17 @@ async def run_migrations():
                 "REFERENCES device_groups(id) ON DELETE SET NULL"
             ))
 
+        # -- assets.is_global (RBAC asset scoping) --
+        has_global = await conn.run_sync(lambda c: _has_column(c, "assets", "is_global"))
+        if not has_global:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN is_global BOOLEAN DEFAULT false"
+            ))
+            # Mark existing assets as global for backward compatibility
+            await conn.execute(text(
+                "UPDATE assets SET is_global = true WHERE owner_group_id IS NULL"
+            ))
+
         # -- users.must_change_password (RBAC email login) --
         has_mcp = await conn.run_sync(lambda c: _has_column(c, "users", "must_change_password"))
         if not has_mcp:

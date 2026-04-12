@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,10 @@ class Asset(Base):
     # RBAC: which group owns this asset (NULL = global/legacy)
     owner_group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("device_groups.id", ondelete="SET NULL"), nullable=True
+    )
+    # When True, asset is visible to all groups regardless of ownership
+    is_global: Mapped[bool] = mapped_column(
+        "is_global", nullable=False, default=False, server_default="false"
     )
 
     # Media metadata (populated via ffprobe after upload)
