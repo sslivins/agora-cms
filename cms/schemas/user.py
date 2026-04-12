@@ -51,6 +51,7 @@ class UserUpdate(BaseModel):
     password: str | None = Field(None, min_length=6)
     role_id: uuid.UUID | None = None
     is_active: bool | None = None
+    must_change_password: bool | None = None
     group_ids: list[uuid.UUID] | None = None
 
 

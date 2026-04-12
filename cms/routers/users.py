@@ -219,6 +219,8 @@ async def update_user(
         user.role_id = data.role_id
     if data.is_active is not None:
         user.is_active = data.is_active
+    if data.must_change_password is not None:
+        user.must_change_password = data.must_change_password
 
     if data.group_ids is not None:
         # Replace group assignments
