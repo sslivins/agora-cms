@@ -278,7 +278,9 @@
 <div class="card">
     <div style="display: flex; justify-content: space-between; align-items: center;">
         <h2>Devices</h2>
+        {% if 'devices:write' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-sm" onclick="checkForUpdates()" id="check-updates-btn">Check for Updates</button><span class="tooltip">Updates are also checked automatically every hour</span></span>
+        {% endif %}
     </div>
     <table>
         <thead>{{ th_row }}</thead>
