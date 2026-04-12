@@ -512,6 +512,7 @@ function pickUploadGroup(gid, name) {
     if (popup) {
         const btn = popup.querySelector(`[data-group-id="${gid}"]`);
         if (btn) btn.style.display = "none";
+        _syncPlusButton(popup);
     }
     closeAllGroupPopups();
 }
@@ -524,6 +525,7 @@ function removeUploadGroup(badge) {
     if (popup && gid) {
         const btn = popup.querySelector(`[data-group-id="${gid}"]`);
         if (btn) btn.style.display = "";
+        _syncPlusButton(popup);
     }
 }
 
@@ -561,6 +563,18 @@ function openGroupPopup(popupId) {
 
 function closeAllGroupPopups() {
     document.querySelectorAll(".group-popup").forEach(p => p.style.display = "none");
+}
+
+// Disable the + button when no visible popup items remain; re-enable otherwise
+function _syncPlusButton(popup) {
+    if (!popup) return;
+    const wrap = popup.closest(".group-picker-wrap");
+    if (!wrap) return;
+    const btn = wrap.querySelector(".btn-add-group");
+    if (!btn) return;
+    const visibleItems = popup.querySelectorAll(".group-popup-item");
+    const anyVisible = Array.from(visibleItems).some(it => it.style.display !== "none");
+    btn.disabled = !anyVisible;
 }
 
 // ── Asset group management (detail row) ──
@@ -623,6 +637,8 @@ async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
         else scopeEl.appendChild(badge);
         // Hide this option from the popup
         if (btnEl) btnEl.style.display = "none";
+        const popup = document.getElementById("group-popup-" + assetId);
+        _syncPlusButton(popup);
         _syncCollapsedScope(assetId);
     }
 }
@@ -641,6 +657,7 @@ async function unshareAsset(assetId, groupId) {
             const btn = popup.querySelector(`[data-group-id="${groupId}"]`);
             if (btn) btn.style.display = "";
         }
+        _syncPlusButton(popup);
         // If no badges left and not global, show Personal
         const remaining = scopeEl.querySelectorAll(".badge[data-group-id]");
         const globalBadge = scopeEl.querySelector(".badge-ready");

@@ -378,6 +378,30 @@ class TestUIGroupPickerUpload:
         items = page.locator("#upload-group-popup .group-popup-item:visible").count()
         assert items >= 1, "Removed group should reappear in popup"
 
+    def test_upload_picker_plus_disabled_when_all_selected(self, page, cms_url, test_users):
+        """+ button should be disabled once every available group is selected."""
+        login_playwright(page, cms_url, test_users["userAB"]["email"], test_users["userAB"]["password"])
+        page.goto(f"{cms_url}/assets")
+        page.wait_for_selector("#upload-form")
+
+        plus_btn = page.locator("#upload-groups-badges .btn-add-group")
+
+        # Select all available groups one by one
+        while True:
+            if plus_btn.is_disabled():
+                break
+            plus_btn.click()
+            page.wait_for_timeout(300)
+            visible_items = page.locator("#upload-group-popup .group-popup-item:visible")
+            if visible_items.count() == 0:
+                page.evaluate("closeAllGroupPopups()")
+                break
+            visible_items.first.click()
+            page.wait_for_timeout(300)
+
+        # All groups selected — + button should now be disabled
+        assert plus_btn.is_disabled(), "+ button should be disabled when all groups are selected"
+
 
 class TestUIGroupPickerLibrary:
     """Playwright tests for the library detail row group picker."""
@@ -557,5 +581,37 @@ class TestUIGroupPickerLibrary:
                 scope_text = scope_cell.text_content()
                 assert "E2E-GroupB" in scope_text or "+1" in scope_text, \
                     f"Collapsed row should show GroupB or +N more overflow, got: {scope_text}"
+        finally:
+            _delete_asset(admin_session, asset["id"])
+
+    def test_library_picker_plus_disabled_when_all_selected(self, page, cms_url, admin_session, test_users, groups):
+        """+ button should be disabled once every group is assigned to the asset."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        asset = _upload_asset(sA, "e2e-picker-allsel.png", groups["E2E-GroupA"])
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            detail = self._expand_asset_detail(page, asset["id"])
+            plus_btn = detail.locator(".btn-add-group")
+
+            # Keep adding groups until + becomes disabled
+            for _ in range(20):  # safety cap
+                if plus_btn.is_disabled():
+                    break
+                plus_btn.click()
+                page.wait_for_timeout(400)
+                visible = detail.locator(".group-popup-item:visible")
+                if visible.count() == 0:
+                    page.evaluate("closeAllGroupPopups()")
+                    page.wait_for_timeout(300)
+                    break
+                with page.expect_response(lambda r: "/share" in r.url and r.status == 200):
+                    visible.first.click()
+                page.wait_for_timeout(500)
+
+            assert plus_btn.is_disabled(), \
+                "Library + button should be disabled when all groups are assigned"
         finally:
             _delete_asset(admin_session, asset["id"])
