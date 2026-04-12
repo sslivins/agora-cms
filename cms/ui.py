@@ -11,7 +11,6 @@ from sqlalchemy.orm import selectinload
 from cms.auth import (
     COOKIE_NAME,
     MAX_AGE,
-    SETTING_MCP_API_KEY,
     SETTING_MCP_ENABLED,
     SETTING_PASSWORD_HASH,
     SETTING_SMTP_FROM_EMAIL,
@@ -799,7 +798,6 @@ async def settings_page(
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
-    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
     # SMTP settings
     smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
@@ -824,7 +822,6 @@ async def settings_page(
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
-        "mcp_api_key": mcp_api_key,
         "smtp_host": smtp_host,
         "smtp_port": smtp_port,
         "smtp_username": smtp_username,
@@ -920,15 +917,6 @@ async def mcp_toggle(
     enabled = body.get("enabled", False)
     await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
     return {"enabled": enabled}
-
-
-@router.post("/api/mcp/generate-key", dependencies=[Depends(require_auth)])
-async def mcp_generate_key(db: AsyncSession = Depends(get_db)):
-    """Generate a new MCP API key (replaces any existing key)."""
-    import secrets
-    key = secrets.token_urlsafe(32)
-    await set_setting(db, SETTING_MCP_API_KEY, key)
-    return {"key": key}
 
 
 # ── SMTP Settings ──

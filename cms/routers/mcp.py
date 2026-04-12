@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import SETTING_MCP_API_KEY, SETTING_MCP_ENABLED, get_setting
+from cms.auth import SETTING_MCP_ENABLED, _resolve_user_from_api_key, get_setting
 from cms.database import get_db
 
 router = APIRouter(prefix="/api/mcp")
@@ -14,10 +14,11 @@ async def verify_mcp_token(
     db: AsyncSession = Depends(get_db),
     authorization: str = Header(default=""),
 ):
-    """Validate a bearer token and check if MCP is enabled.
+    """Validate a bearer token (user API key) and return user permissions.
 
     Called by the MCP server on each incoming connection.
-    Returns {"valid": true, "role": "admin"} on success.
+    The bearer token must be a valid user API key (``agora_...``).
+    Returns the user's display name, role, and permissions list.
     """
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
@@ -27,8 +28,17 @@ async def verify_mcp_token(
     if enabled != "true":
         raise HTTPException(status_code=403, detail="MCP server is disabled")
 
-    stored_key = await get_setting(db, SETTING_MCP_API_KEY)
-    if not stored_key or token != stored_key:
+    user = await _resolve_user_from_api_key(token, db)
+    if user is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account is disabled")
 
-    return {"valid": True, "role": "admin"}
+    permissions = user.role.permissions if user.role else []
+
+    return {
+        "valid": True,
+        "user": user.display_name or user.email or user.username,
+        "role": user.role.name if user.role else None,
+        "permissions": permissions,
+    }

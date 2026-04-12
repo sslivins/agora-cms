@@ -203,21 +203,13 @@
 
     <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
         <div class="form-group">
-            <label>API Key</label>
-            <div style="display: flex; gap: 0.5rem; align-items: center;">
-                <input type="text" id="mcp-api-key" value="{{ mcp_api_key }}" readonly
-                       style="flex:1; font-family: monospace; font-size: 0.85rem;"
-                       placeholder="No key generated yet">
-                <button type="button" class="btn btn-secondary" id="mcp-copy-key"
-                        onclick="copyToClipboard(document.getElementById('mcp-api-key').value)">
-                    Copy
-                </button>
-                <button type="button" class="btn btn-primary" id="mcp-generate-key">
-                    {{ 'Regenerate' if mcp_api_key else 'Generate' }}
-                </button>
-            </div>
+            <label>Authentication</label>
+            <p class="text-muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
+                MCP clients authenticate using your personal API key. Create one in
+                <strong>Settings → API Keys</strong>, then configure your LLM client
+                with the key as the Bearer token.
+            </p>
         </div>
-
     </div>
 </div>
 
@@ -227,7 +219,6 @@
     const keySection = document.getElementById("mcp-key-section");
     const statusBadge = document.getElementById("mcp-status-badge");
     const apiBadge = document.getElementById("mcp-api-badge");
-    const generateBtn = document.getElementById("mcp-generate-key");
 
     // Check MCP container health
     async function checkMcpHealth() {
@@ -237,7 +228,6 @@
             if (data.online) {
                 statusBadge.textContent = "online";
                 statusBadge.className = "badge badge-online";
-                // Show API connection status
                 apiBadge.style.display = "";
                 if (data.api_connected) {
                     apiBadge.textContent = "API: connected";
@@ -274,22 +264,6 @@
         } catch {
             toggle.checked = !toggle.checked;
             showToast("Failed to update MCP setting", true);
-        }
-    });
-
-    // Generate API key
-    generateBtn.addEventListener("click", async function() {
-        const ok = await showConfirm("Generate a new API key? Any existing key will stop working.");
-        if (!ok) return;
-        try {
-            const resp = await fetch("/api/mcp/generate-key", {method: "POST"});
-            if (!resp.ok) throw new Error("Generate failed");
-            const data = await resp.json();
-            document.getElementById("mcp-api-key").value = data.key;
-            generateBtn.textContent = "Regenerate";
-            showToast("New API key generated — copy it now");
-        } catch {
-            showToast("Failed to generate API key", true);
         }
     });
 })();

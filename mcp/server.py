@@ -1,5 +1,6 @@
 """Agora CMS MCP Server — exposes CMS operations as MCP tools over SSE."""
 
+import contextvars
 import json
 import logging
 import os
@@ -29,7 +30,62 @@ mcp = FastMCP(
         enable_dns_rebinding_protection=False,
     ),
 )
-client = CMSClient()
+
+# Per-request context — set by BearerAuthMiddleware, read by tools
+_ctx_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("api_key")
+_ctx_permissions: contextvars.ContextVar[list[str]] = contextvars.ContextVar("permissions", default=[])
+_ctx_user_name: contextvars.ContextVar[str] = contextvars.ContextVar("user_name", default="unknown")
+
+# Tool → required permission mapping
+TOOL_PERMISSIONS: dict[str, str | None] = {
+    "list_devices": "devices:read",
+    "get_device": "devices:read",
+    "adopt_device": "devices:write",
+    "update_device": "devices:write",
+    "reboot_device": "devices:reboot",
+    "delete_device": "devices:delete",
+    "list_groups": "groups:read",
+    "create_group": "groups:write",
+    "update_group": "groups:write",
+    "delete_group": "groups:write",
+    "list_assets": "assets:read",
+    "get_asset": "assets:read",
+    "delete_asset": "assets:write",
+    "list_schedules": "schedules:read",
+    "get_schedule": "schedules:read",
+    "create_schedule": "schedules:write",
+    "update_schedule": "schedules:write",
+    "delete_schedule": "schedules:write",
+    "play_now": "schedules:write",
+    "end_schedule_now": "schedules:write",
+    "list_profiles": "profiles:read",
+    "get_device_logs": "logs:read",
+    "get_server_time": None,  # any authenticated user
+    "get_dashboard": None,    # any authenticated user
+}
+
+
+def _get_client() -> CMSClient:
+    """Return a CMSClient using the current user's API key."""
+    return CMSClient(base_url=CMS_BASE_URL, api_key=_ctx_api_key.get())
+
+
+def _check_permission(tool_name: str) -> str | None:
+    """Check if the current user has permission for a tool.
+
+    Returns None if allowed, or an error message if denied.
+    """
+    required = TOOL_PERMISSIONS.get(tool_name)
+    if required is None:
+        return None
+    perms = _ctx_permissions.get()
+    if required not in perms:
+        user = _ctx_user_name.get()
+        return (
+            f"Permission denied: '{tool_name}' requires the '{required}' permission. "
+            f"Your account ({user}) does not have this permission."
+        )
+    return None
 
 
 def _json_result(data) -> str:
@@ -43,7 +99,9 @@ def _json_result(data) -> str:
 @mcp.tool()
 async def list_devices() -> str:
     """List all registered Agora devices with their status, group, and connection state."""
-    devices = await client.list_devices()
+    if err := _check_permission("list_devices"):
+        return err
+    devices = await _get_client().list_devices()
     return _json_result(devices)
 
 
@@ -54,7 +112,9 @@ async def get_device(device_id: str) -> str:
     Args:
         device_id: The device ID (Pi serial number or UUID).
     """
-    device = await client.get_device(device_id)
+    if err := _check_permission("get_device"):
+        return err
+    device = await _get_client().get_device(device_id)
     return _json_result(device)
 
 
@@ -65,7 +125,9 @@ async def adopt_device(device_id: str) -> str:
     Args:
         device_id: The device ID to adopt.
     """
-    result = await client.adopt_device(device_id)
+    if err := _check_permission("adopt_device"):
+        return err
+    result = await _get_client().adopt_device(device_id)
     return _json_result(result)
 
 
@@ -78,12 +140,14 @@ async def update_device(device_id: str, name: str | None = None, group_id: str |
         name: New display name for the device.
         group_id: UUID of the group to assign the device to, or null to remove from group.
     """
+    if err := _check_permission("update_device"):
+        return err
     fields = {}
     if name is not None:
         fields["name"] = name
     if group_id is not None:
         fields["group_id"] = group_id
-    result = await client.update_device(device_id, fields)
+    result = await _get_client().update_device(device_id, fields)
     return _json_result(result)
 
 
@@ -94,7 +158,9 @@ async def reboot_device(device_id: str) -> str:
     Args:
         device_id: The device ID to reboot.
     """
-    await client.reboot_device(device_id)
+    if err := _check_permission("reboot_device"):
+        return err
+    await _get_client().reboot_device(device_id)
     return f"Reboot command sent to device {device_id}"
 
 
@@ -105,7 +171,9 @@ async def delete_device(device_id: str) -> str:
     Args:
         device_id: The device ID to delete.
     """
-    await client.delete_device(device_id)
+    if err := _check_permission("delete_device"):
+        return err
+    await _get_client().delete_device(device_id)
     return f"Device {device_id} deleted"
 
 
@@ -115,7 +183,9 @@ async def delete_device(device_id: str) -> str:
 @mcp.tool()
 async def list_groups() -> str:
     """List all device groups."""
-    groups = await client.list_groups()
+    if err := _check_permission("list_groups"):
+        return err
+    groups = await _get_client().list_groups()
     return _json_result(groups)
 
 
@@ -127,7 +197,9 @@ async def create_group(name: str, description: str = "") -> str:
         name: Name of the group.
         description: Optional description.
     """
-    result = await client.create_group(name, description)
+    if err := _check_permission("create_group"):
+        return err
+    result = await _get_client().create_group(name, description)
     return _json_result(result)
 
 
@@ -140,12 +212,14 @@ async def update_group(group_id: str, name: str | None = None, description: str 
         name: New name for the group.
         description: New description.
     """
+    if err := _check_permission("update_group"):
+        return err
     fields = {}
     if name is not None:
         fields["name"] = name
     if description is not None:
         fields["description"] = description
-    result = await client.update_group(group_id, fields)
+    result = await _get_client().update_group(group_id, fields)
     return _json_result(result)
 
 
@@ -156,7 +230,9 @@ async def delete_group(group_id: str) -> str:
     Args:
         group_id: UUID of the group to delete.
     """
-    await client.delete_group(group_id)
+    if err := _check_permission("delete_group"):
+        return err
+    await _get_client().delete_group(group_id)
     return f"Group {group_id} deleted"
 
 
@@ -166,7 +242,9 @@ async def delete_group(group_id: str) -> str:
 @mcp.tool()
 async def list_assets() -> str:
     """List all uploaded assets (videos and images) in the CMS library."""
-    assets = await client.list_assets()
+    if err := _check_permission("list_assets"):
+        return err
+    assets = await _get_client().list_assets()
     return _json_result(assets)
 
 
@@ -177,7 +255,9 @@ async def get_asset(asset_id: str) -> str:
     Args:
         asset_id: UUID of the asset.
     """
-    asset = await client.get_asset(asset_id)
+    if err := _check_permission("get_asset"):
+        return err
+    asset = await _get_client().get_asset(asset_id)
     return _json_result(asset)
 
 
@@ -188,7 +268,9 @@ async def delete_asset(asset_id: str) -> str:
     Args:
         asset_id: UUID of the asset to delete.
     """
-    await client.delete_asset(asset_id)
+    if err := _check_permission("delete_asset"):
+        return err
+    await _get_client().delete_asset(asset_id)
     return f"Asset {asset_id} deleted"
 
 
@@ -198,7 +280,9 @@ async def delete_asset(asset_id: str) -> str:
 @mcp.tool()
 async def list_schedules() -> str:
     """List all schedules with their target devices/groups, assets, and time windows."""
-    schedules = await client.list_schedules()
+    if err := _check_permission("list_schedules"):
+        return err
+    schedules = await _get_client().list_schedules()
     return _json_result(schedules)
 
 
@@ -209,7 +293,9 @@ async def get_schedule(schedule_id: str) -> str:
     Args:
         schedule_id: UUID of the schedule.
     """
-    schedule = await client.get_schedule(schedule_id)
+    if err := _check_permission("get_schedule"):
+        return err
+    schedule = await _get_client().get_schedule(schedule_id)
     return _json_result(schedule)
 
 
@@ -258,6 +344,9 @@ async def create_schedule(
         enabled: Whether the schedule is active. Default true.
         loop_count: Number of times to loop the asset. When set, end_time is IGNORED and auto-computed. Omit or set null for infinite looping within the time window.
     """
+    if err := _check_permission("create_schedule"):
+        return err
+    client = _get_client()
     data = {
         "name": name,
         "asset_id": asset_id,
@@ -317,6 +406,8 @@ async def update_schedule(
         enabled: Enable or disable the schedule.
         loop_count: New loop count (null = infinite).
     """
+    if err := _check_permission("update_schedule"):
+        return err
     fields = {}
     for key in ("name", "asset_id", "device_id", "group_id", "start_time",
                 "end_time", "start_date", "end_date", "days_of_week",
@@ -324,7 +415,7 @@ async def update_schedule(
         val = locals()[key]
         if val is not None:
             fields[key] = val
-    result = await client.update_schedule(schedule_id, fields)
+    result = await _get_client().update_schedule(schedule_id, fields)
     return _json_result(result)
 
 
@@ -335,7 +426,9 @@ async def delete_schedule(schedule_id: str) -> str:
     Args:
         schedule_id: UUID of the schedule to delete.
     """
-    await client.delete_schedule(schedule_id)
+    if err := _check_permission("delete_schedule"):
+        return err
+    await _get_client().delete_schedule(schedule_id)
     return f"Schedule {schedule_id} deleted"
 
 
@@ -356,7 +449,9 @@ async def play_now(
         asset_id: UUID of the asset to play.
         name: Optional schedule name. Defaults to "<asset_filename> — Play Now".
     """
-    # Look up asset name for auto-naming
+    if err := _check_permission("play_now"):
+        return err
+    client = _get_client()
     if not name:
         try:
             asset = await client.get_asset(asset_id)
@@ -365,10 +460,8 @@ async def play_now(
         except Exception:
             name = f"Play Now \u2014 {asset_id[:8]}"
 
-    # Use the server's local date (not UTC) so the schedule matches today
-    # in the scheduler's configured timezone.
     server_time = await client.get_server_time()
-    today = server_time["local"][:10]  # e.g. "2026-04-08"
+    today = server_time["local"][:10]
     data = {
         "name": name,
         "asset_id": asset_id,
@@ -395,7 +488,9 @@ async def end_schedule_now(schedule_id: str) -> str:
     Args:
         schedule_id: UUID of the schedule to end.
     """
-    await client.end_schedule_now(schedule_id)
+    if err := _check_permission("end_schedule_now"):
+        return err
+    await _get_client().end_schedule_now(schedule_id)
     return f"Schedule {schedule_id} ended for current occurrence"
 
 
@@ -405,7 +500,9 @@ async def end_schedule_now(schedule_id: str) -> str:
 @mcp.tool()
 async def list_profiles() -> str:
     """List all transcode profiles (codec settings used when preparing video assets for devices)."""
-    profiles = await client.list_profiles()
+    if err := _check_permission("list_profiles"):
+        return err
+    profiles = await _get_client().list_profiles()
     return _json_result(profiles)
 
 
@@ -429,7 +526,9 @@ async def get_device_logs(
                   If omitted, returns logs from all agora services.
         since: Time range for logs (e.g. "1h", "24h", "7d"). Default "24h".
     """
-    result = await client.request_device_logs(device_id, services=services, since=since)
+    if err := _check_permission("get_device_logs"):
+        return err
+    result = await _get_client().request_device_logs(device_id, services=services, since=since)
     return _json_result(result)
 
 
@@ -443,7 +542,7 @@ async def get_server_time() -> str:
     Use this before creating schedules to understand what timezone
     start_time and end_time will be interpreted in.
     """
-    data = await client.get_server_time()
+    data = await _get_client().get_server_time()
     return _json_result(data)
 
 
@@ -453,7 +552,7 @@ async def get_server_time() -> str:
 @mcp.tool()
 async def get_dashboard() -> str:
     """Get the current dashboard state: what's playing now, upcoming schedules, device states, and alerts."""
-    dashboard = await client.get_dashboard()
+    dashboard = await _get_client().get_dashboard()
     return _json_result(dashboard)
 
 
@@ -464,8 +563,16 @@ async def health_endpoint(request: Request) -> Response:
 
 
 async def health_api_endpoint(request: Request) -> Response:
-    """Check if the MCP server can reach the CMS REST API with its API key."""
+    """Check if the MCP server can reach the CMS REST API."""
     try:
+        # Use env-configured API key for health checks
+        api_key = os.environ.get("CMS_API_KEY", "")
+        if not api_key:
+            return JSONResponse(
+                {"status": "warning", "detail": "CMS_API_KEY not configured"},
+                status_code=200,
+            )
+        client = CMSClient(base_url=CMS_BASE_URL, api_key=api_key)
         devices = await client.list_devices()
         return JSONResponse({"status": "ok", "device_count": len(devices)})
     except Exception as e:
@@ -475,9 +582,10 @@ async def health_api_endpoint(request: Request) -> Response:
 # ── Bearer token auth middleware ──
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Validate bearer tokens against the CMS /api/mcp/auth endpoint.
+    """Validate bearer tokens (user API keys) against the CMS.
 
-    Allows /health through without auth (used by CMS health check).
+    On success, sets contextvars with the user's API key and permissions
+    so MCP tools can create per-user CMSClients and pre-check permissions.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -492,6 +600,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # Extract raw key from "Bearer <key>"
+        raw_key = token.removeprefix("Bearer ").strip()
+
         try:
             async with httpx.AsyncClient(timeout=5.0) as http:
                 resp = await http.get(
@@ -505,12 +616,25 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                         status_code=resp.status_code,
                         headers={"WWW-Authenticate": "Bearer"},
                     )
+                auth_data = resp.json()
         except Exception as e:
             logger.error("Failed to validate token with CMS: %s", e)
             return JSONResponse(
                 {"error": "Auth service unavailable"},
                 status_code=503,
             )
+
+        # Store user context for MCP tools
+        _ctx_api_key.set(raw_key)
+        _ctx_permissions.set(auth_data.get("permissions", []))
+        _ctx_user_name.set(auth_data.get("user", "unknown"))
+
+        logger.info(
+            "Authenticated MCP user: %s (role: %s, %d permissions)",
+            auth_data.get("user"),
+            auth_data.get("role"),
+            len(auth_data.get("permissions", [])),
+        )
 
         return await call_next(request)
 

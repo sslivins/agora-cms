@@ -1,65 +1,122 @@
-"""Tests for MCP auth API and settings endpoints."""
+"""Tests for MCP auth API and settings endpoints.
+
+The MCP auth flow now uses user API keys (Bearer token → CMS validates
+against api_keys table → returns user permissions).
+"""
 
 import pytest
+
+from cms.auth import SETTING_MCP_ENABLED, _hash_api_key, set_setting
+from cms.models.api_key import APIKey
+
+
+async def _create_user_api_key(db_session, raw_key="agora_mcp_test_key_1234567890abcdef"):
+    """Helper: create an API key linked to the admin user."""
+    from sqlalchemy import select
+    from cms.models.user import User
+
+    # Find admin user seeded by conftest
+    result = await db_session.execute(select(User).where(User.username == "admin"))
+    admin = result.scalar_one()
+
+    key_hash = _hash_api_key(raw_key)
+    api_key = APIKey(
+        name="MCP Test Key",
+        key_prefix=raw_key[:12] + "...",
+        key_hash=key_hash,
+        user_id=admin.id,
+    )
+    db_session.add(api_key)
+    await db_session.commit()
+    return raw_key, admin
 
 
 @pytest.mark.asyncio
 class TestMcpAuth:
     """Test the /api/mcp/auth endpoint used by the MCP server."""
 
-    async def _enable_mcp(self, db_session, api_key="test-key-123"):
-        from cms.auth import SETTING_MCP_API_KEY, SETTING_MCP_ENABLED, set_setting
+    async def test_auth_valid_user_api_key(self, client, db_session):
+        """A valid user API key should return user info and permissions."""
         await set_setting(db_session, SETTING_MCP_ENABLED, "true")
-        await set_setting(db_session, SETTING_MCP_API_KEY, api_key)
-
-    async def test_auth_valid_token(self, client, db_session):
-        await self._enable_mcp(db_session, api_key="valid-key")
+        raw_key, admin = await _create_user_api_key(db_session)
 
         resp = await client.get(
             "/api/mcp/auth",
-            headers={"Authorization": "Bearer valid-key"},
+            headers={"Authorization": f"Bearer {raw_key}"},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["valid"] is True
-        assert data["role"] == "admin"
+        assert data["role"] == "Admin"
+        assert "devices:read" in data["permissions"]
+        assert "users:write" in data["permissions"]
 
-    async def test_auth_invalid_token(self, client, db_session):
-        await self._enable_mcp(db_session, api_key="correct-key")
+    async def test_auth_invalid_key(self, client, db_session):
+        """An invalid API key should be rejected with 401."""
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
 
         resp = await client.get(
             "/api/mcp/auth",
-            headers={"Authorization": "Bearer wrong-key"},
+            headers={"Authorization": "Bearer agora_wrong_key_not_real"},
         )
         assert resp.status_code == 401
 
     async def test_auth_missing_token(self, client, db_session):
-        await self._enable_mcp(db_session)
+        """Missing Authorization header should return 401."""
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
 
         resp = await client.get("/api/mcp/auth")
         assert resp.status_code == 401
 
     async def test_auth_mcp_disabled(self, client, db_session):
-        from cms.auth import SETTING_MCP_API_KEY, SETTING_MCP_ENABLED, set_setting
+        """When MCP is disabled, auth should return 403 even with a valid key."""
         await set_setting(db_session, SETTING_MCP_ENABLED, "false")
-        await set_setting(db_session, SETTING_MCP_API_KEY, "some-key")
+        raw_key, _ = await _create_user_api_key(db_session)
 
         resp = await client.get(
             "/api/mcp/auth",
-            headers={"Authorization": "Bearer some-key"},
+            headers={"Authorization": f"Bearer {raw_key}"},
         )
         assert resp.status_code == 403
 
-    async def test_auth_no_key_configured(self, client, db_session):
-        from cms.auth import SETTING_MCP_ENABLED, set_setting
+    async def test_auth_inactive_user(self, client, db_session):
+        """A key belonging to a disabled user should be rejected."""
+        from sqlalchemy import select
+        from cms.models.user import User
+
         await set_setting(db_session, SETTING_MCP_ENABLED, "true")
-        # No key set
+        raw_key, admin = await _create_user_api_key(db_session)
+
+        # Disable the admin user
+        result = await db_session.execute(select(User).where(User.id == admin.id))
+        user = result.scalar_one()
+        user.is_active = False
+        await db_session.commit()
 
         resp = await client.get(
             "/api/mcp/auth",
-            headers={"Authorization": "Bearer anything"},
+            headers={"Authorization": f"Bearer {raw_key}"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code == 403
+        assert "disabled" in resp.json()["detail"].lower()
+
+    async def test_auth_returns_permissions_list(self, client, db_session):
+        """Auth response should include the full permissions list for the user's role."""
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        raw_key, _ = await _create_user_api_key(db_session)
+
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={"Authorization": f"Bearer {raw_key}"},
+        )
+        data = resp.json()
+        perms = data["permissions"]
+        assert isinstance(perms, list)
+        assert len(perms) > 0
+        # Admin should have all permissions
+        assert "devices:read" in perms
+        assert "devices:write" in perms
+        assert "audit:read" in perms
 
 
 @pytest.mark.asyncio
@@ -74,13 +131,11 @@ class TestMcpSettings:
         assert resp.status_code == 200
         assert resp.json()["enabled"] is True
 
-        # Verify it persisted
-        from cms.auth import SETTING_MCP_ENABLED, get_setting
+        from cms.auth import get_setting
         val = await get_setting(db_session, SETTING_MCP_ENABLED)
         assert val == "true"
 
     async def test_toggle_disable(self, client, db_session):
-        from cms.auth import SETTING_MCP_ENABLED, set_setting
         await set_setting(db_session, SETTING_MCP_ENABLED, "true")
 
         resp = await client.post(
@@ -94,30 +149,10 @@ class TestMcpSettings:
         val = await get_setting(db_session, SETTING_MCP_ENABLED)
         assert val == "false"
 
-    async def test_generate_key(self, client, db_session):
+    async def test_generate_key_endpoint_removed(self, client, db_session):
+        """The old /api/mcp/generate-key endpoint should no longer exist."""
         resp = await client.post("/api/mcp/generate-key")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "key" in data
-        assert len(data["key"]) > 20  # token_urlsafe(32) produces ~43 chars
-
-        # Verify it persisted
-        from cms.auth import SETTING_MCP_API_KEY, get_setting
-        stored = await get_setting(db_session, SETTING_MCP_API_KEY)
-        assert stored == data["key"]
-
-    async def test_regenerate_key_replaces_old(self, client, db_session):
-        resp1 = await client.post("/api/mcp/generate-key")
-        key1 = resp1.json()["key"]
-
-        resp2 = await client.post("/api/mcp/generate-key")
-        key2 = resp2.json()["key"]
-
-        assert key1 != key2
-
-        from cms.auth import SETTING_MCP_API_KEY, get_setting
-        stored = await get_setting(db_session, SETTING_MCP_API_KEY)
-        assert stored == key2
+        assert resp.status_code in (404, 405)
 
     async def test_settings_page_shows_mcp(self, client, db_session):
         resp = await client.get("/settings")
@@ -125,3 +160,5 @@ class TestMcpSettings:
         text = resp.text
         assert "MCP Server" in text
         assert "mcp-enabled" in text
+        # Old generate button should be gone
+        assert "mcp-generate-key" not in text
