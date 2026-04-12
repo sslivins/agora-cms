@@ -20,14 +20,17 @@
         {% if user_groups | length > 0 %}
         <div style="margin-top:0.75rem;">
             <label>Assign to groups</label>
-            <div id="upload-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.25rem; min-height:1.6rem;"></div>
-            <select id="upload-group-picker" class="inline-edit" style="margin-top:0.35rem;"
-                    onchange="addUploadGroup(this)">
-                <option value="">— Add a group —</option>
-                {% for g in user_groups %}
-                <option value="{{ g.id }}" data-name="{{ g.name }}">{{ g.name }}</option>
-                {% endfor %}
-            </select>
+            <div id="upload-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; min-height:1.6rem; align-items:center;">
+                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                    <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('upload-group-popup')" title="Add group">+</button>
+                    <div id="upload-group-popup" class="group-popup" style="display:none;">
+                        {% for g in user_groups %}
+                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                onclick="event.stopPropagation(); pickUploadGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
+                        {% endfor %}
+                    </div>
+                </span>
+            </div>
             {% if is_admin %}
             <label style="display:inline-flex; align-items:center; gap:0.35rem; margin-top:0.35rem; font-size:0.85rem; cursor:pointer;">
                 <input type="checkbox" id="upload-global" onchange="toggleUploadGlobal(this)"> Make Global (visible to all)
@@ -70,9 +73,12 @@
                     {% if a.is_global %}
                     <span class="badge badge-ready">Global</span>
                     {% elif a.group_asset_entries | length > 0 %}
-                    {% for ga in a.group_asset_entries %}
+                    {% for ga in a.group_asset_entries[:2] %}
                     <span class="badge badge-processing" style="margin-right:0.15rem">{{ group_name_map.get(ga.group_id | string, '?') }}</span>
                     {% endfor %}
+                    {% if a.group_asset_entries | length > 2 %}
+                    <span class="badge badge-overflow has-tooltip">+{{ a.group_asset_entries | length - 2 }} more<span class="tooltip">{% for ga in a.group_asset_entries[2:] %}{% if not loop.first %}, {% endif %}{{ group_name_map.get(ga.group_id | string, '?') }}{% endfor %}</span></span>
+                    {% endif %}
                     {% elif a.uploaded_by_user_id %}
                     <span class="badge badge-pending">Personal</span>
                     {% else %}
@@ -211,26 +217,24 @@
                                 <span class="badge badge-pending">Personal</span>
                                 {% else %}
                                 {% for ga in a.group_asset_entries %}
-                                <span class="badge badge-processing">
+                                <span class="badge badge-processing" data-group-id="{{ ga.group_id }}">
                                     {{ group_name_map.get(ga.group_id | string, 'Unknown') }}
                                     <button class="btn-x" onclick="event.stopPropagation(); unshareAsset('{{ a.id }}', '{{ ga.group_id }}')" title="Remove from group">&times;</button>
                                 </span>
                                 {% endfor %}
                                 {% endif %}
                                 {% if user_groups | length > 0 %}
-                                <span class="scope-add-wrap" style="position:relative; display:inline-flex;">
-                                    <button class="btn-add-group" onclick="event.stopPropagation(); toggleGroupPicker('{{ a.id }}')" type="button" title="Add to group">+</button>
-                                    <select id="assign-group-{{ a.id }}" class="inline-edit scope-add-select" style="display:none; position:absolute; left:0; top:100%; z-index:10; min-width:10rem;"
-                                            onclick="event.stopPropagation()"
-                                            onchange="event.stopPropagation(); if(this.value) assignAssetGroup('{{ a.id }}')">
-                                        <option value="">Select group…</option>
+                                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                                    <button class="btn-add-group" onclick="event.stopPropagation(); openGroupPopup('group-popup-{{ a.id }}')" type="button" title="Add to group">+</button>
+                                    <div id="group-popup-{{ a.id }}" class="group-popup" style="display:none;">
                                         {% for g in user_groups %}
                                         {% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}
                                         {% if not already %}
-                                        <option value="{{ g.id }}">{{ g.name }}</option>
+                                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}"
+                                                onclick="event.stopPropagation(); pickAssetGroup('{{ a.id }}', '{{ g.id }}', '{{ g.name }}', this)">{{ g.name }}</button>
                                         {% endif %}
                                         {% endfor %}
-                                    </select>
+                                    </div>
                                 </span>
                                 {% endif %}
                                 {% if is_admin %}

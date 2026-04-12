@@ -498,61 +498,107 @@ function _getUploadGroupIds() {
     return Array.from(badges).map(b => b.dataset.groupId);
 }
 
-function addUploadGroup(selectEl) {
-    const gid = selectEl.value;
-    if (!gid) return;
-    const name = selectEl.options[selectEl.selectedIndex].dataset.name;
-    selectEl.value = "";
+function pickUploadGroup(gid, name) {
     const container = document.getElementById("upload-groups-badges");
-    // Don't add duplicates
-    if (container.querySelector(`[data-group-id="${gid}"]`)) return;
+    if (!container || container.querySelector(`[data-group-id="${gid}"]`)) return;
+    const plusBtn = container.querySelector(".group-picker-wrap");
     const badge = document.createElement("span");
     badge.className = "badge badge-processing";
     badge.dataset.groupId = gid;
     badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="this.parentElement.remove()">&times;</button>`;
-    container.appendChild(badge);
+    container.insertBefore(badge, plusBtn);
+    // Hide the option in the popup so it can't be picked twice
+    const popup = document.getElementById("upload-group-popup");
+    if (popup) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "none";
+    }
+    closeAllGroupPopups();
 }
 
 function toggleUploadGlobal(cb) {
-    const picker = document.getElementById("upload-group-picker");
     const badges = document.getElementById("upload-groups-badges");
     if (cb.checked) {
-        if (picker) picker.disabled = true;
         if (badges) badges.style.opacity = "0.4";
+        if (badges) badges.style.pointerEvents = "none";
     } else {
-        if (picker) picker.disabled = false;
         if (badges) badges.style.opacity = "1";
+        if (badges) badges.style.pointerEvents = "";
     }
+}
+
+// ── Group popup (shared for upload + detail row) ──
+function openGroupPopup(popupId) {
+    closeAllGroupPopups();
+    const popup = document.getElementById(popupId);
+    if (!popup) return;
+    popup.style.display = "flex";
+    // Close when clicking outside
+    setTimeout(() => {
+        function onClickOutside(e) {
+            if (!popup.contains(e.target) && !popup.previousElementSibling?.contains(e.target)) {
+                popup.style.display = "none";
+                document.removeEventListener("click", onClickOutside, true);
+            }
+        }
+        document.addEventListener("click", onClickOutside, true);
+    }, 0);
+}
+
+function closeAllGroupPopups() {
+    document.querySelectorAll(".group-popup").forEach(p => p.style.display = "none");
 }
 
 // ── Asset group management (detail row) ──
-function toggleGroupPicker(assetId) {
-    const sel = document.getElementById("assign-group-" + assetId);
-    if (!sel) return;
-    if (sel.style.display === "none") {
-        sel.style.display = "block";
-        sel.focus();
-        // Close on blur
-        const close = () => { sel.style.display = "none"; sel.removeEventListener("blur", close); };
-        sel.addEventListener("blur", close);
-    } else {
-        sel.style.display = "none";
-    }
-}
-
-async function assignAssetGroup(assetId) {
-    const sel = document.getElementById("assign-group-" + assetId);
-    const groupId = sel ? sel.value : "";
-    if (!groupId) return;
-    sel.style.display = "none";
+async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
+    closeAllGroupPopups();
     const resp = await apiCall("POST", `/api/assets/${assetId}/share?group_id=${groupId}`);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        const scopeEl = document.getElementById("scope-" + assetId);
+        if (!scopeEl) { location.reload(); return; }
+        // Remove any "Personal" badge
+        const personalBadge = scopeEl.querySelector(".badge-pending");
+        if (personalBadge) personalBadge.remove();
+        // Add new badge before the + button wrapper
+        const pickerWrap = scopeEl.querySelector(".group-picker-wrap");
+        const badge = document.createElement("span");
+        badge.className = "badge badge-processing";
+        badge.dataset.groupId = groupId;
+        badge.innerHTML = `${groupName} <button class="btn-x" onclick="event.stopPropagation(); unshareAsset('${assetId}', '${groupId}')" title="Remove from group">&times;</button>`;
+        if (pickerWrap) scopeEl.insertBefore(badge, pickerWrap);
+        else scopeEl.appendChild(badge);
+        // Hide this option from the popup
+        if (btnEl) btnEl.style.display = "none";
+    }
 }
 
 async function unshareAsset(assetId, groupId) {
     if (!await showConfirm("Remove this asset from the group?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}/share?group_id=${groupId}`);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        const scopeEl = document.getElementById("scope-" + assetId);
+        if (!scopeEl) { location.reload(); return; }
+        // Remove the badge
+        const badge = scopeEl.querySelector(`.badge[data-group-id="${groupId}"]`);
+        if (badge) badge.remove();
+        // Re-show option in popup
+        const popup = document.getElementById("group-popup-" + assetId);
+        if (popup) {
+            const btn = popup.querySelector(`[data-group-id="${groupId}"]`);
+            if (btn) btn.style.display = "";
+        }
+        // If no badges left and not global, show Personal
+        const remaining = scopeEl.querySelectorAll(".badge[data-group-id]");
+        const globalBadge = scopeEl.querySelector(".badge-ready");
+        if (remaining.length === 0 && !globalBadge) {
+            const pickerWrap = scopeEl.querySelector(".group-picker-wrap");
+            const personal = document.createElement("span");
+            personal.className = "badge badge-pending";
+            personal.textContent = "Personal";
+            if (pickerWrap) scopeEl.insertBefore(personal, pickerWrap);
+            else scopeEl.prepend(personal);
+        }
+    }
 }
 
 async function toggleGlobal(assetId) {
