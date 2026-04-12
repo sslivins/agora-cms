@@ -20,7 +20,7 @@
         {% if user_groups | length > 0 %}
         <div style="margin-top:0.75rem;">
             <label for="upload-group">Assign to group</label>
-            <select id="upload-group" name="group_id" style="margin-top:0.25rem;">
+            <select id="upload-group" name="group_id" class="inline-edit" style="margin-top:0.25rem;">
                 {% if is_admin %}<option value="">(Global — visible to all)</option>{% endif %}
                 {% for g in user_groups %}
                 <option value="{{ g.id }}">{{ g.name }}</option>
@@ -125,6 +125,12 @@
                             <span class="detail-label">Uploaded</span>
                             <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%b %d, %Y %I:%M %p') }}</span>
                         </div>
+                        {% if is_admin and a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
+                        <div class="detail-item">
+                            <span class="detail-label">Uploaded by</span>
+                            <span class="detail-value">{{ uploader_map[a.uploaded_by_user_id | string] }}</span>
+                        </div>
+                        {% endif %}
                         {% if a.width and a.height %}
                         <div class="detail-item">
                             <span class="detail-label">Resolution</span>
@@ -205,7 +211,7 @@
                             </span>
                         </div>
                         <div class="detail-item detail-item-wide" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
-                            <select id="assign-group-{{ a.id }}" style="width:auto; min-width:12rem;" onclick="event.stopPropagation()">
+                            <select id="assign-group-{{ a.id }}" class="inline-edit" style="width:auto; min-width:12rem;" onclick="event.stopPropagation()">
                                 <option value="">— Assign to group —</option>
                                 {% for g in user_groups %}
                                 {% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}

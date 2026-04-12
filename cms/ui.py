@@ -699,12 +699,23 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     is_admin = group_ids is None
 
+    # Build uploader name map for admin view
+    uploader_map: dict[str, str] = {}
+    if is_admin and assets:
+        uploader_ids = {a.uploaded_by_user_id for a in assets if a.uploaded_by_user_id}
+        if uploader_ids:
+            uploaders = (await db.execute(
+                select(User.id, User.username, User.email).where(User.id.in_(uploader_ids))
+            )).all()
+            uploader_map = {str(u.id): u.username or u.email for u in uploaders}
+
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
         "assets": assets,
         "user_groups": user_groups,
         "group_name_map": group_name_map,
         "is_admin": is_admin,
+        "uploader_map": uploader_map,
     })
 
 
