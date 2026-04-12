@@ -349,10 +349,9 @@ async function endNow(scheduleId) {
     const cells = document.querySelectorAll('td[data-remaining]');
     if (!cells.length) return;
 
-    // Track the page-load timestamp so we can compute elapsed time
     const loadedAt = Date.now();
 
-    setInterval(() => {
+    function tick() {
         const elapsed = Math.floor((Date.now() - loadedAt) / 1000);
         cells.forEach(cell => {
             const initial = parseInt(cell.dataset.remaining);
@@ -361,7 +360,10 @@ async function endNow(scheduleId) {
                 cell.textContent = left + 's';
             }
         });
-    }, 1000);
+    }
+
+    tick();
+    setInterval(tick, 1000);
 })();
 </script>
 {% endblock %}
