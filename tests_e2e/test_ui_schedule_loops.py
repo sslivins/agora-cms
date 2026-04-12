@@ -139,9 +139,9 @@ class TestRoundButtons:
         expect(round_down).to_be_visible()
         round_down.click()
 
-        # End time should now be 10:20 (9:00 + 8×10min)
+        # End time should now be 10:20:00 (9:00 + 8×10min)
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "10:20", f"Expected 10:20 but got {end_time}"
+        assert end_time == "10:20:00", f"Expected 10:20:00 but got {end_time}"
 
         # Summary should now say exact 8 loops (locked with loop_count)
         expect(summary).to_contain_text("exact 8 loops")
@@ -166,9 +166,9 @@ class TestRoundButtons:
         expect(round_up).to_be_visible()
         round_up.click()
 
-        # End time should now be 10:30 (9:00 + 9×10min)
+        # End time should now be 10:30:00 (9:00 + 9×10min)
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "10:30", f"Expected 10:30 but got {end_time}"
+        assert end_time == "10:30:00", f"Expected 10:30:00 but got {end_time}"
 
         # Summary should now say exact 9 loops (locked with loop_count)
         expect(summary).to_contain_text("exact 9 loops")
@@ -231,7 +231,7 @@ class TestOneShotLoopSummary:
         summary.locator(".loop-round", has_text="Round up").click()
 
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "10:30", f"Expected 10:30 but got {end_time}"
+        assert end_time == "10:30:00", f"Expected 10:30:00 but got {end_time}"
         expect(summary).to_contain_text("exact 9 loops")
 
 
@@ -554,5 +554,186 @@ class TestSubOneLoop:
 
         # End time = 09:00 + 11 min = 09:11
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "09:11", f"Expected 09:11 but got {end_time}"
+        assert end_time == "09:11:00", f"Expected 09:11:00 but got {end_time}"
         expect(summary).to_contain_text("exact 1 loop")
+
+
+class TestLoopCountFormSubmit:
+    """Regression: creating a schedule with loop_count set must succeed
+    even though end_time is disabled (FormData excludes disabled inputs)."""
+
+    def test_create_with_loop_count_sends_end_time(self, page: Page, api, ws_url):
+        """Set loop_count on the create form, submit, and verify the POST
+        request includes end_time even though the input is disabled."""
+        device_id = "lc-submit-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "LC Submit Test")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.select_option('select[name="target_id"]', value=device_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=3 — this disables end_time and auto-computes it
+        page.fill('input[name="loop_count"]', "3")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_input = page.locator('input[name="end_time"]')
+        expect(end_input).to_be_disabled()
+
+        # Verify the auto-computed end_time is correct: 09:00 + 3×600s = 09:30
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:30:00", f"Expected 09:30:00 but got {end_time}"
+
+        # Intercept the POST to verify end_time is included in the request body
+        captured_body = {}
+
+        def capture_request(route, request):
+            import json
+            captured_body.update(json.loads(request.post_data))
+            # Fulfill with a fake success to avoid needing real asset duration
+            route.fulfill(
+                status=201,
+                content_type="application/json",
+                body='{"id":"fake-id","name":"LC Submit Test"}',
+            )
+
+        page.route("**/api/schedules", capture_request)
+        page.click('button[type="submit"]')
+        page.wait_for_timeout(1000)
+
+        assert "end_time" in captured_body, f"POST body missing end_time: {captured_body}"
+        assert captured_body["end_time"] == "09:30:00", (
+            f"Unexpected end_time in POST: {captured_body['end_time']}"
+        )
+        assert captured_body.get("loop_count") == 3
+
+    def test_adjust_start_time_after_loop_count_sends_end_time(self, page: Page, api, ws_url):
+        """Reproduce the exact bug: set time + loop_count, then adjust start_time.
+        The auto-computed end_time updates, and the POST must include it."""
+        device_id = "lc-adjust-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "LC Adjust Start")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.select_option('select[name="target_id"]', value=device_id)
+        page.fill('input[name="start_time"]', "05:59")
+        page.fill('input[name="end_time"]', "06:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=1
+        page.fill('input[name="loop_count"]', "1")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_input = page.locator('input[name="end_time"]')
+        expect(end_input).to_be_disabled()
+
+        # Now adjust start_time — this re-triggers computeLoopEndTime
+        page.fill('input[name="start_time"]', "06:00")
+        page.dispatch_event('input[name="start_time"]', "change")
+
+        # end_time should still be disabled and recomputed: 06:00 + 1×600s = 06:10
+        expect(end_input).to_be_disabled()
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "06:10:00", f"Expected 06:10:00 but got {end_time}"
+
+        # Intercept POST
+        captured_body = {}
+
+        def capture_request(route, request):
+            import json
+            captured_body.update(json.loads(request.post_data))
+            route.fulfill(
+                status=201,
+                content_type="application/json",
+                body='{"id":"fake-id","name":"LC Adjust Start"}',
+            )
+
+        js_errors = []
+        page.on("pageerror", lambda err: js_errors.append(str(err)))
+        page.route("**/api/schedules", capture_request)
+        page.click('button[type="submit"]')
+        page.wait_for_timeout(1000)
+
+        assert "end_time" in captured_body, f"POST body missing end_time: {captured_body}"
+        assert captured_body["end_time"] == "06:10:00", (
+            f"Unexpected end_time in POST: {captured_body['end_time']}"
+        )
+        assert captured_body.get("loop_count") == 1
+        assert not js_errors, f"JS errors: {js_errors}"
+
+
+class TestSecondPrecisionEndTime:
+    """End-time auto-computation works in seconds, not just minutes."""
+
+    SHORT_ASSET = 3  # 3-second video clip
+
+    def test_short_clip_loop_count_shows_seconds(self, page: Page, api, ws_url):
+        """A 3-second clip with loop_count=1 should show end_time with seconds offset."""
+        device_id = "sec-prec-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Seconds Precision")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=1 — end_time should be 09:00:03 (3 seconds later)
+        page.fill('input[name="loop_count"]', "1")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:00:03", f"Expected 09:00:03 but got {end_time}"
+
+    def test_short_clip_multi_loop_shows_seconds(self, page: Page, api, ws_url):
+        """A 3-second clip with loop_count=10 → end_time = start + 30s."""
+        device_id = "sec-prec-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Multi Loop Seconds")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "14:30")
+        page.fill('input[name="end_time"]', "15:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        page.fill('input[name="loop_count"]', "10")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "14:30:30", f"Expected 14:30:30 but got {end_time}"
+
+    def test_longer_clip_still_correct_with_seconds(self, page: Page, api, ws_url):
+        """A 10-minute clip (600s) × 3 loops = 30 min, should render as HH:MM:SS."""
+        device_id = "sec-prec-003"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "Normal Clip Seconds")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        page.fill('input[name="loop_count"]', "3")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        # 09:00 + 3×600s = 09:30:00
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:30:00", f"Expected 09:30:00 but got {end_time}"
+
+    def test_time_inputs_have_step_one(self, page: Page, api, ws_url):
+        """Verify time inputs have step=1 attribute for seconds display."""
+        _setup_device_and_asset(page, api, ws_url, "sec-step-001")
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        start_input = page.locator('input[name="start_time"]')
+        end_input = page.locator('input[name="end_time"]')
+        assert start_input.get_attribute("step") == "1", "start_time missing step=1"
+        assert end_input.get_attribute("step") == "1", "end_time missing step=1"
