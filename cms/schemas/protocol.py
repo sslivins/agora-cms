@@ -37,10 +37,12 @@ class MessageType(str, Enum):
     REBOOT = "reboot"
     UPGRADE = "upgrade"
     FACTORY_RESET = "factory_reset"
+    WIPE_ASSETS = "wipe_assets"
     REQUEST_LOGS = "request_logs"
 
     # Device → CMS (response)
     LOGS_RESPONSE = "logs_response"
+    WIPE_ASSETS_ACK = "wipe_assets_ack"
 
 
 class BaseMessage(BaseModel):
@@ -167,6 +169,11 @@ class RebootMessage(BaseMessage):
 
 class FactoryResetMessage(BaseMessage):
     type: MessageType = MessageType.FACTORY_RESET
+
+
+class WipeAssetsMessage(BaseMessage):
+    type: MessageType = MessageType.WIPE_ASSETS
+    reason: str = ""  # "adopted", "deleted" — informational for device logs
 
 
 class UpgradeMessage(BaseMessage):

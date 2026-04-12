@@ -351,6 +351,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             elif msg_type == MessageType.ASSET_DELETED:
                 logger.info("Device %s deleted asset: %s", device_id, msg.get("asset_name"))
 
+            elif msg_type == MessageType.WIPE_ASSETS_ACK:
+                logger.info("Device %s confirmed asset wipe (reason: %s)", device_id, msg.get("reason", ""))
+
             elif msg_type == MessageType.FETCH_REQUEST:
                 asset_name = msg.get("asset", "")
                 if asset_name:
