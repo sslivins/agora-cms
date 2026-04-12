@@ -775,6 +775,8 @@ async def evaluate_schedules() -> None:
                         "asset_filename": winner.asset.filename,
                         "since": now.isoformat(),
                         "end_time": winner.end_time.strftime("%I:%M %p").lstrip("0"),
+                        "start_time_raw": winner.start_time.strftime("%H:%M:%S"),
+                        "end_time_raw": winner.end_time.strftime("%H:%M:%S"),
                     }
                 # Always update remaining time (schedule times are local)
                 end_today = datetime.combine(local_now.date(), winner.end_time)
