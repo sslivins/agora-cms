@@ -276,7 +276,7 @@ class TestUIAssetVisibility:
             page.wait_for_selector("table")
             # Find the row with our asset and check scope
             row = page.locator("tr", has_text="e2e-scope-badge.png")
-            scope_cell = row.locator("td:nth-child(5)")  # Scope column (5th col)
+            scope_cell = row.locator("td:nth-child(4)")  # Scope column (4th col)
             assert "E2E-GroupA" in scope_cell.text_content(), "Scope should show group name"
         finally:
             _delete_asset(admin_session, asset["id"])
