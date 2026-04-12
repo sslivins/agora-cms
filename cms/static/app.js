@@ -149,7 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const d = new Date(el.dataset.utc);
         if (isNaN(d)) return;
         el.textContent = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
-            + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true });
+            + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
     });
     // Legacy storage formatters (other pages)
     document.querySelectorAll("[data-storage-mb]:not([data-storage-pct]):not([data-storage-detail])").forEach(el => {

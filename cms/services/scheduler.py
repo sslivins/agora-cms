@@ -69,20 +69,6 @@ async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_nam
 log_schedule_event = _log_event
 
 
-async def _resolve_schedule_id(db, schedule_id_str: str | None):
-    """Convert a schedule_id string to UUID, returning None if the schedule
-    was deleted (to avoid FK violations in schedule_logs)."""
-    import uuid as _uuid
-    if not schedule_id_str:
-        return None
-    try:
-        sid = _uuid.UUID(schedule_id_str) if isinstance(schedule_id_str, str) else schedule_id_str
-    except ValueError:
-        return None
-    exists = await db.execute(select(Schedule.id).where(Schedule.id == sid))
-    return sid if exists.scalar_one_or_none() is not None else None
-
-
 def get_now_playing() -> list[dict]:
     """Return a list of currently active schedule playbacks for the dashboard.
 
