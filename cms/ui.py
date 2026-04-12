@@ -178,6 +178,24 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Now Playing — enrich with actual device state for mismatch detection
     now_playing = get_now_playing()
+
+    # Recompute remaining_seconds fresh (scheduler tick is every 15s)
+    from datetime import time as _time, timedelta as _td
+    local_now = now.astimezone(tz)
+    for np in now_playing:
+        raw_end = np.get("end_time_raw")
+        raw_start = np.get("start_time_raw")
+        if raw_end:
+            parts = [int(x) for x in raw_end.split(":")]
+            end_t = _time(*parts)
+            start_t = None
+            if raw_start:
+                sp = [int(x) for x in raw_start.split(":")]
+                start_t = _time(*sp)
+            end_today = _dt.combine(local_now.date(), end_t, tzinfo=tz)
+            if start_t and end_t <= start_t:
+                end_today += _td(days=1)
+            np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     for np in now_playing:
         did = np["device_id"]

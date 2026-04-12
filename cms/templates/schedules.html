@@ -521,8 +521,17 @@ function describeSchedule(d, opts) {
 
     let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
     if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-    if (d.end_date && d.end_date < new Date().toLocaleDateString('en-CA')) {
-        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+    if (d.end_date) {
+        const todayStr = new Date().toLocaleDateString('en-CA');
+        if (d.end_date < todayStr) {
+            msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+        } else if (d.end_date === todayStr && d.end_time && !isOvernight) {
+            const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+            const [eh, em] = d.end_time.split(":").map(Number);
+            if (eh * 60 + em <= nowMins) {
+                msg += " \u26a0\ufe0f End date and time are in the past \u2014 this schedule will never play.";
+            }
+        }
     }
     if (opts.loopHtml) msg += opts.loopHtml;
     return msg;
@@ -954,8 +963,16 @@ function editSchedule(s) {
         }
         const todayLocal = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD in local tz
         if (endDate && endDate < todayLocal) {
-            const ok = await showConfirm("\u26a0\ufe0f The end date is in the past \u2014 this schedule will never play. Continue anyway?");
-            if (!ok) return;
+            if (!await showConfirm("\u26a0\ufe0f The end date is in the past \u2014 this schedule will never play. Continue anyway?")) return;
+        } else if (endDate && endDate === todayLocal && endTime) {
+            const isOvernight = startTime > endTime;
+            if (!isOvernight) {
+                const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+                const [eh, em] = endTime.split(":").map(Number);
+                if (eh * 60 + em <= nowMins) {
+                    if (!await showConfirm("\u26a0\ufe0f The end date and time are in the past \u2014 this schedule will never play. Continue anyway?")) return;
+                }
+            }
         }
         const days = [];
         for (let i = 1; i <= 7; i++) {
