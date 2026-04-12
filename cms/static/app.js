@@ -500,12 +500,12 @@ function _getUploadGroupIds() {
 
 function pickUploadGroup(gid, name) {
     const container = document.getElementById("upload-groups-badges");
-    if (!container || container.querySelector(`[data-group-id="${gid}"]`)) return;
+    if (!container || container.querySelector(`.badge[data-group-id="${gid}"]`)) return;
     const plusBtn = container.querySelector(".group-picker-wrap");
     const badge = document.createElement("span");
     badge.className = "badge badge-processing";
     badge.dataset.groupId = gid;
-    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="this.parentElement.remove()">&times;</button>`;
+    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="removeUploadGroup(this.parentElement)">&times;</button>`;
     container.insertBefore(badge, plusBtn);
     // Hide the option in the popup so it can't be picked twice
     const popup = document.getElementById("upload-group-popup");
@@ -514,6 +514,17 @@ function pickUploadGroup(gid, name) {
         if (btn) btn.style.display = "none";
     }
     closeAllGroupPopups();
+}
+
+function removeUploadGroup(badge) {
+    const gid = badge.dataset.groupId;
+    badge.remove();
+    // Re-show the option in the popup
+    const popup = document.getElementById("upload-group-popup");
+    if (popup && gid) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "";
+    }
 }
 
 function toggleUploadGlobal(cb) {
