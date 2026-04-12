@@ -464,18 +464,22 @@ function describeSchedule(d, opts) {
     if (!startStr || !endStr) return "";
 
     // Duration
-    let startMins = timeToMins(d.start_time);
-    let endMins = timeToMins(d.end_time);
-    const isOvernight = endMins <= startMins;
-    if (isOvernight) endMins += 24 * 60;
-    const durMins = endMins - startMins;
+    let startSecs = timeToSecs(d.start_time);
+    let endSecs = timeToSecs(d.end_time);
+    const isOvernight = endSecs <= startSecs;
+    if (isOvernight) endSecs += 24 * 3600;
+    const durSecs = endSecs - startSecs;
     let durStr;
-    if (durMins >= 60) {
-        const h = Math.floor(durMins / 60), m = durMins % 60;
+    if (durSecs >= 3600) {
+        const h = Math.floor(durSecs / 3600), m = Math.floor((durSecs % 3600) / 60);
         durStr = h + " hr" + (h !== 1 ? "s" : "");
         if (m > 0) durStr += " " + m + " min";
+    } else if (durSecs >= 60) {
+        const m = Math.floor(durSecs / 60), s = durSecs % 60;
+        durStr = m + " min";
+        if (s > 0) durStr += " " + s + " sec";
     } else {
-        durStr = durMins + " min";
+        durStr = durSecs + " sec";
     }
 
     const label = d.name ? `\u2018${d.name}\u2019` : "This schedule";
@@ -532,18 +536,22 @@ function describeScheduleCompact(d) {
     const endStr = formatTimeDisplay(d.end_time);
     if (!startStr || !endStr) return "";
 
-    let startMins = timeToMins(d.start_time);
-    let endMins = timeToMins(d.end_time);
-    const isOvernight = endMins <= startMins;
-    if (isOvernight) endMins += 24 * 60;
-    const durMins = endMins - startMins;
+    let startSecs = timeToSecs(d.start_time);
+    let endSecs = timeToSecs(d.end_time);
+    const isOvernight = endSecs <= startSecs;
+    if (isOvernight) endSecs += 24 * 3600;
+    const durSecs = endSecs - startSecs;
     let durStr;
-    if (durMins >= 60) {
-        const h = Math.floor(durMins / 60), m = durMins % 60;
+    if (durSecs >= 3600) {
+        const h = Math.floor(durSecs / 3600), m = Math.floor((durSecs % 3600) / 60);
         durStr = h + " hr" + (h !== 1 ? "s" : "");
         if (m > 0) durStr += " " + m + " min";
+    } else if (durSecs >= 60) {
+        const m = Math.floor(durSecs / 60), s = durSecs % 60;
+        durStr = m + " min";
+        if (s > 0) durStr += " " + s + " sec";
     } else {
-        durStr = durMins + " min";
+        durStr = durSecs + " sec";
     }
 
     const oneShot = d.start_date && d.end_date && d.start_date === d.end_date;
@@ -608,10 +616,10 @@ function updateDayCheckboxes(form) {
 }
 
 // Helper: build loop-info HTML snippet for the schedule summary
-function getLoopInfoHtml(form, durMins) {
+function getLoopInfoHtml(form, durSecs) {
     const assetDur = getSelectedAssetDuration(form);
     if (!assetDur || assetDur <= 0) return "";
-    const scheduleSecs = durMins * 60;
+    const scheduleSecs = durSecs;
     const loops = scheduleSecs / assetDur;
     const nearestLoops = Math.round(loops);
 
@@ -674,11 +682,11 @@ function _updateSummaryEl(el, form, dayPrefix) {
     updateDayCheckboxes(form);
 
     // Compute loop info
-    let startMins = timeToMins(data.start_time);
-    let endMins = timeToMins(data.end_time);
-    if (endMins <= startMins) endMins += 24 * 60;
-    const durMins = endMins - startMins;
-    const loopHtml = getLoopInfoHtml(form, durMins);
+    let startSecs = timeToSecs(data.start_time);
+    let endSecs = timeToSecs(data.end_time);
+    if (endSecs <= startSecs) endSecs += 24 * 3600;
+    const durSecs = endSecs - startSecs;
+    const loopHtml = getLoopInfoHtml(form, durSecs);
 
     el.innerHTML = describeSchedule(data, { loopHtml: loopHtml });
     el.style.display = "";
