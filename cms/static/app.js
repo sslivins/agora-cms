@@ -625,6 +625,13 @@ function openEditUser(userId) {
     _editUserOriginal = _getEditUserState();
     const btn = document.getElementById("edit-user-save-btn");
     if (btn) btn.disabled = true;
+    // Wire dirty-tracking on every open (safe to re-add — same function ref dedupes)
+    document.querySelectorAll('#edit-user-modal input, #edit-user-modal select').forEach(el => {
+        el.removeEventListener('input', _checkEditUserDirty);
+        el.removeEventListener('change', _checkEditUserDirty);
+        el.addEventListener('input', _checkEditUserDirty);
+        el.addEventListener('change', _checkEditUserDirty);
+    });
     document.getElementById("edit-user-modal").style.display = "";
 }
 

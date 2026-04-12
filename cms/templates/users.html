@@ -318,11 +318,5 @@ const rolesData = {
     },
     {% endfor %}
 };
-
-// Wire up dirty-tracking for edit user modal
-document.querySelectorAll('#edit-user-modal input, #edit-user-modal select').forEach(el => {
-    el.addEventListener('input', _checkEditUserDirty);
-    el.addEventListener('change', _checkEditUserDirty);
-});
 </script>
 {% endblock %}
