@@ -292,11 +292,12 @@ async function endNow(scheduleId) {
         function tempBucket(t) { return t == null ? 'n' : t >= 80 ? 'c' : t >= 70 ? 'w' : 'ok'; }
         return JSON.stringify({
             playing: (data.now_playing || []).map(p => p.schedule_id).sort(),
+            playingStatus: (data.now_playing || []).map(p => p.schedule_id + ':' + (p.device_offline ? 'off' : p.mismatch ? '!' : p.starting ? '~' : '')).sort(),
             devices: (data.device_states || []).map(d => d.id + ':' + d.mode + ':' + tempBucket(d.cpu_temp_c) + ':' + (d.error || '') + ':' + (d.display_connected == null ? 'n' : d.display_connected ? 'y' : 'x')).sort(),
             pending: (data.pending_ids || []).sort(),
             orphaned: (data.orphaned_ids || []).sort(),
             offline: (data.offline_ids || []).sort(),
-            upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label + (u.device_offline ? ':offline' : u.preempted ? ':preempted' : '')).sort(),
+            upcoming: (data.upcoming || []).map(u => u.schedule_name + ':' + u.day_label + (u.device_offline ? ':offline' : u.starting ? ':starting' : u.preempted ? ':preempted' : '')).sort(),
         });
     }
 
