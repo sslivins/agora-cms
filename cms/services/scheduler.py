@@ -209,6 +209,7 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
     if s.end_time <= s.start_time:
         end_dt += timedelta(days=1)
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
 
     total_secs = int(delta.total_seconds())
     if total_secs < 60:
@@ -237,6 +238,7 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
         "countdown": countdown,
         "starts_in_seconds": total_secs,
         "day_label": day_label,
@@ -280,6 +282,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
     if s.end_time <= s.start_time:
         end_dt += timedelta(days=1)
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
 
     target_name = None
     if s.group:
@@ -312,6 +315,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
         "countdown": countdown,
         "starts_in_seconds": resume_secs,
         "day_label": "today",
@@ -327,6 +331,7 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
     if s.end_time <= s.start_time:
         end_dt += timedelta(days=1)
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
 
     target_name = None
     if s.group:
@@ -342,6 +347,7 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
         "countdown": "starting",
         "starts_in_seconds": 0,
         "day_label": "today",
