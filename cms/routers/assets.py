@@ -53,8 +53,8 @@ async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | 
 
     An asset is visible if:
     - it is global (is_global=True), OR
-    - the user's groups include the asset's owner group, OR
-    - the asset is shared with one of the user's groups via GroupAsset
+    - the user's groups include the asset via GroupAsset, OR
+    - the user uploaded it (personal assets)
     """
     group_ids = await get_user_group_ids(user, db)
     if group_ids is None:
@@ -69,10 +69,14 @@ async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | 
         .where(GroupAsset.group_id.in_(group_ids))
     ) if group_ids else select(GroupAsset.asset_id).where(False)
 
+    # Assets the user uploaded personally
+    own_q = select(Asset.id).where(Asset.uploaded_by_user_id == user.id)
+
     global_ids = set((await db.execute(global_q)).scalars().all())
     group_asset_ids = set((await db.execute(group_q)).scalars().all())
+    own_ids = set((await db.execute(own_q)).scalars().all())
 
-    return list(global_ids | group_asset_ids)
+    return list(global_ids | group_asset_ids | own_ids)
 
 
 @router.get("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
@@ -238,15 +242,19 @@ async def upload_asset(
 
     # Resolve owner group
     owner_uuid = None
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
     if group_id:
         try:
             owner_uuid = uuid.UUID(group_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid group_id")
         # Verify user has access to this group (or is admin)
-        user_groups = await get_user_group_ids(user, db)
-        if user_groups is not None and owner_uuid not in user_groups:
+        if not is_admin and owner_uuid not in user_groups:
             raise HTTPException(status_code=403, detail="You are not a member of this group")
+
+    # Only admin uploads without group_id become global; others are personal
+    make_global = (owner_uuid is None and is_admin)
 
     # Database record
     asset = Asset(
@@ -256,7 +264,8 @@ async def upload_asset(
         size_bytes=len(content),
         checksum=checksum,
         owner_group_id=owner_uuid,
-        is_global=owner_uuid is None,  # No group → global
+        is_global=make_global,
+        uploaded_by_user_id=user.id,
     )
     db.add(asset)
     await db.flush()

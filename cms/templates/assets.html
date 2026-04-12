@@ -17,6 +17,21 @@
             <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Choose File</button>
             <input type="file" id="file-input" name="file" accept=".mp4,.mov,.mkv,.avi,.webm,.ts,.m4v,.jpg,.jpeg,.png,.heif,.heic,.avif,.webp,.gif,.bmp,.tiff,.tif" required style="display:none">
         </div>
+        {% if user_groups | length > 0 %}
+        <div style="margin-top:0.75rem;">
+            <label for="upload-group">Assign to group</label>
+            <select id="upload-group" name="group_id" style="margin-top:0.25rem;">
+                {% if is_admin %}<option value="">(Global — visible to all)</option>{% endif %}
+                {% for g in user_groups %}
+                <option value="{{ g.id }}">{{ g.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {% else %}
+        <p class="text-muted" style="margin-top:0.5rem; font-size:0.85rem">
+            ℹ️ You are not assigned to any group — uploaded assets will be personal (visible only to you and admins).
+        </p>
+        {% endif %}
         <div id="upload-status" class="form-status"></div>
         <button type="submit" class="btn btn-primary">Upload</button>
     </form>
@@ -31,6 +46,7 @@
                 <th style="width:2rem"></th>
                 <th class="col-filename">Filename</th>
                 <th>Type</th>
+                <th>Scope</th>
                 <th>Size</th>
                 <th>Variants</th>
                 <th>Duration</th>
@@ -43,6 +59,15 @@
                 <td class="expand-toggle">▶</td>
                 <td class="wrap asset-filename-cell"><span class="has-tooltip"><span class="asset-filename-truncate">{{ a.original_filename or a.filename }}</span><span class="tooltip">{{ a.original_filename or a.filename }}</span></span></td>
                 <td><span class="badge badge-{{ a.asset_type.value }}">{{ a.asset_type.value | capitalize }}</span></td>
+                <td>
+                    {% if a.is_global %}
+                    <span class="badge badge-ready">Global</span>
+                    {% elif a.owner_group_id and group_name_map.get(a.owner_group_id | string) %}
+                    <span class="badge badge-processing">{{ group_name_map[a.owner_group_id | string] }}</span>
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
                 <td>
                     {% set mb = a.size_bytes / 1048576 %}
                     {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
@@ -94,7 +119,7 @@
             </tr>
             <tr class="asset-detail" data-detail-for="{{ a.id }}" style="display: none;">
                 <td></td>
-                <td colspan="6">
+                <td colspan="7">
                     <div class="detail-grid">
                         <div class="detail-item">
                             <span class="detail-label">Uploaded</span>
@@ -159,6 +184,46 @@
                                 </span>
                             </span>
                         </div>
+                        {% if 'assets:write' in user_perms %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">Scope</span>
+                            <span class="detail-value" id="scope-{{ a.id }}">
+                                {% if a.is_global %}
+                                <span class="badge badge-ready">Global</span>
+                                {% elif not a.owner_group_id and a.group_asset_entries | length == 0 %}
+                                <span class="badge badge-pending">Personal</span>
+                                {% else %}
+                                {% for ga in a.group_asset_entries %}
+                                <span class="badge badge-processing" style="margin-right:0.25rem">
+                                    {{ group_name_map.get(ga.group_id | string, 'Unknown') }}
+                                    {% if not ga.is_owner %}
+                                    <button class="btn-x" onclick="event.stopPropagation(); unshareAsset('{{ a.id }}', '{{ ga.group_id }}')" title="Remove from group">&times;</button>
+                                    {% endif %}
+                                </span>
+                                {% endfor %}
+                                {% endif %}
+                            </span>
+                        </div>
+                        <div class="detail-item detail-item-wide" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+                            <select id="assign-group-{{ a.id }}" style="width:auto; min-width:12rem;" onclick="event.stopPropagation()">
+                                <option value="">— Assign to group —</option>
+                                {% for g in user_groups %}
+                                {% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}
+                                {% if not already %}
+                                <option value="{{ g.id }}">{{ g.name }}</option>
+                                {% endif %}
+                                {% endfor %}
+                            </select>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); assignAssetGroup('{{ a.id }}')" type="button">Add</button>
+                            {% if is_admin %}
+                            <button class="btn btn-sm {% if a.is_global %}btn-danger{% else %}btn-secondary{% endif %}"
+                                    onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" type="button"
+                                    title="{% if a.is_global %}Remove global visibility{% else %}Make visible to all groups{% endif %}">
+                                {% if a.is_global %}Remove Global{% else %}Make Global{% endif %}
+                            </button>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                     </div>
                     {% if a.variants | length > 0 %}
                     <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
@@ -225,7 +290,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="7" class="empty">No assets uploaded yet</td></tr>
+            <tr><td colspan="8" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
         </tbody>
     </table>

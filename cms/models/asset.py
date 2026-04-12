@@ -44,6 +44,10 @@ class Asset(Base):
     is_global: Mapped[bool] = mapped_column(
         "is_global", nullable=False, default=False, server_default="false"
     )
+    # Who uploaded this asset (for personal/no-group assets visibility)
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Media metadata (populated via ffprobe after upload)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)

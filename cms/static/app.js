@@ -478,9 +478,32 @@ async function uploadAsset(form) {
             submitBtn.disabled = false;
             resolve(false);
         });
-        xhr.open("POST", "/api/assets/upload");
+        xhr.open("POST", "/api/assets/upload" + (function() {
+            const sel = document.getElementById("upload-group");
+            return sel && sel.value ? "?group_id=" + sel.value : "";
+        })());
         xhr.send(data);
     });
+}
+
+// ── Asset group management ──
+async function assignAssetGroup(assetId) {
+    const sel = document.getElementById("assign-group-" + assetId);
+    const groupId = sel ? sel.value : "";
+    if (!groupId) { showToast("Select a group first", true); return; }
+    const resp = await apiCall("POST", `/api/assets/${assetId}/share?group_id=${groupId}`);
+    if (resp && resp.ok) location.reload();
+}
+
+async function unshareAsset(assetId, groupId) {
+    if (!await showConfirm("Remove this asset from the group?")) return;
+    const resp = await apiCall("DELETE", `/api/assets/${assetId}/share?group_id=${groupId}`);
+    if (resp && resp.ok) location.reload();
+}
+
+async function toggleGlobal(assetId) {
+    const resp = await apiCall("POST", `/api/assets/${assetId}/global`);
+    if (resp && resp.ok) location.reload();
 }
 
 // ── Schedule actions ──

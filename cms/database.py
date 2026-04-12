@@ -166,6 +166,14 @@ async def run_migrations():
                 "UPDATE assets SET is_global = true WHERE owner_group_id IS NULL"
             ))
 
+        # -- assets.uploaded_by_user_id (track uploader for personal assets) --
+        has_upby = await conn.run_sync(lambda c: _has_column(c, "assets", "uploaded_by_user_id"))
+        if not has_upby:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN uploaded_by_user_id UUID "
+                "REFERENCES users(id) ON DELETE SET NULL"
+            ))
+
         # -- users.must_change_password (RBAC email login) --
         has_mcp = await conn.run_sync(lambda c: _has_column(c, "users", "must_change_password"))
         if not has_mcp:

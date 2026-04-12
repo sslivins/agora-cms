@@ -38,3 +38,4 @@ class AssetOut(BaseModel):
     uploaded_at: datetime
     owner_group_id: Optional[uuid.UUID] = None
     is_global: bool = False
+    uploaded_by_user_id: Optional[uuid.UUID] = None

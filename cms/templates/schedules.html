@@ -32,7 +32,7 @@
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">Target<span class="tooltip">The specific device or group this schedule applies to</span></span></label>
-                <select name="target_id" id="target_id" required>
+                <select name="target_id" id="target_id" required onchange="filterAssetsByTarget()">
                     {% for d in devices %}
                     <option value="{{ d.id }}" data-type="device">{{ d.name or d.id }}</option>
                     {% endfor %}
@@ -209,9 +209,10 @@
 <input type="hidden" id="_tzOptions" value='{{ tz_options | tojson }}'>
 <script>
 const _scheduleData = {
-    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }}}{% if not loop.last %},{% endif %}{% endfor %}],
-    devices: [{% for d in devices %}{"id":"{{ d.id }}","name":"{{ d.name or d.id }}"}{% if not loop.last %},{% endif %}{% endfor %}],
-    groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}]
+    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    devices: [{% for d in devices %}{"id":"{{ d.id }}","name":"{{ d.name or d.id }}","group":"{{ d.group_id or '' }}"}{% if not loop.last %},{% endif %}{% endfor %}],
+    groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
+    isAdmin: {{ 'true' if is_admin else 'false' }}
 };
 
 const _tzList = JSON.parse(document.getElementById('_tzOptions').value);
@@ -272,6 +273,38 @@ function updateTargetOptions() {
     const type = document.getElementById('target_type').value;
     const selectEl = document.getElementById('target_id');
     _populateTargetSelect(selectEl, type);
+    filterAssetsByTarget();
+}
+
+function filterAssetsByTarget() {
+    if (_scheduleData.isAdmin) return;  // Admins see all assets
+    const targetType = document.getElementById('target_type').value;
+    const targetId = document.getElementById('target_id').value;
+    if (!targetId) return;
+
+    // Find the group(s) associated with the target
+    let targetGroupId = null;
+    if (targetType === 'group') {
+        targetGroupId = targetId;
+    } else {
+        const dev = _scheduleData.devices.find(d => d.id === targetId);
+        targetGroupId = dev ? dev.group : null;
+    }
+
+    const assetSel = document.querySelector('[name="asset_id"]');
+    if (!assetSel) return;
+    const currentVal = assetSel.value;
+    assetSel.innerHTML = '<option value="">Select asset...</option>';
+    for (const a of _scheduleData.assets) {
+        // Show if: global, or asset belongs to target group
+        if (a.global || (targetGroupId && a.groups.includes(targetGroupId))) {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            opt.textContent = a.name + (a.duration ? ` (${Math.floor(a.duration/60)}:${String(Math.round(a.duration%60)).padStart(2,'0')})` : '');
+            if (a.id === currentVal) opt.selected = true;
+            assetSel.appendChild(opt);
+        }
+    }
 }
 
 // Helper: parse "HH:MM" to total minutes

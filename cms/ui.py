@@ -36,10 +36,12 @@ from cms.database import get_db
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE
+from cms.auth import get_user_group_ids
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
-from cms.models.user import User
+from cms.models.group_asset import GroupAsset
+from cms.models.user import User, UserGroup
 from cms.services.device_manager import device_manager
 from cms.services.version_checker import get_latest_device_version, is_update_available
 from cms.routers.devices import _upgrading as _devices_upgrading
@@ -618,12 +620,39 @@ async def users_page(
 
 @router.get("/assets", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
+    user: User | None = getattr(request.state, "user", None)
 
-    result = await db.execute(
+    # ── Determine which assets this user can see ──
+    group_ids = await get_user_group_ids(user, db) if user else []
+    # group_ids is None for admins (see all), list of UUIDs for others
+    asset_q = (
         select(Asset)
         .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
         .order_by(Asset.uploaded_at.desc())
     )
+    if group_ids is not None:
+        # Non-admin: only global + assets in their groups + own uploads
+        global_ids = set(
+            (await db.execute(select(Asset.id).where(Asset.is_global.is_(True)))).scalars().all()
+        )
+        ga_ids = set()
+        if group_ids:
+            ga_ids = set(
+                (await db.execute(
+                    select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_ids))
+                )).scalars().all()
+            )
+        own_ids = set()
+        if user:
+            own_ids = set(
+                (await db.execute(
+                    select(Asset.id).where(Asset.uploaded_by_user_id == user.id)
+                )).scalars().all()
+            )
+        visible = list(global_ids | ga_ids | own_ids)
+        asset_q = asset_q.where(Asset.id.in_(visible))
+
+    result = await db.execute(asset_q)
     assets = result.scalars().all()
 
     # Count schedules per asset
@@ -632,7 +661,15 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     )
     sched_counts = dict(sched_counts_q.all())
 
-    # Annotate each asset with variant summary + schedule count
+    # Annotate each asset with variant summary + schedule count + group info
+    all_group_assets = {}
+    if assets:
+        ga_rows = (await db.execute(
+            select(GroupAsset).where(GroupAsset.asset_id.in_([a.id for a in assets]))
+        )).scalars().all()
+        for ga in ga_rows:
+            all_group_assets.setdefault(ga.asset_id, []).append(ga)
+
     for a in assets:
         total = len(a.variants)
         ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
@@ -643,10 +680,31 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.variant_processing = processing
         a.variant_failed = failed
         a.schedule_count = sched_counts.get(a.id, 0)
+        a.group_asset_entries = all_group_assets.get(a.id, [])
+
+    # Groups available for upload dropdown (user's groups, or all for admin)
+    if group_ids is None:
+        groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    elif group_ids:
+        groups_q = await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids)).order_by(DeviceGroup.name)
+        )
+    else:
+        groups_q = None
+    user_groups = groups_q.scalars().all() if groups_q else []
+
+    # Build lookup of all group names for display
+    all_groups_q = await db.execute(select(DeviceGroup))
+    group_name_map = {str(g.id): g.name for g in all_groups_q.scalars().all()}
+
+    is_admin = group_ids is None
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
         "assets": assets,
+        "user_groups": user_groups,
+        "group_name_map": group_name_map,
+        "is_admin": is_admin,
     })
 
 
@@ -658,6 +716,8 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/schedules", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
+    user: User | None = getattr(request.state, "user", None)
+
     schedules_q = await db.execute(
         select(Schedule)
         .options(
@@ -669,8 +729,45 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     )
     all_schedules = schedules_q.scalars().all()
 
-    assets_q = await db.execute(select(Asset).order_by(Asset.filename))
-    assets = assets_q.scalars().all()
+    # Filter assets by user visibility
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+    asset_q = select(Asset).order_by(Asset.filename)
+    if not is_admin:
+        from cms.models.asset import Asset as AssetModel
+        global_ids = set(
+            (await db.execute(select(Asset.id).where(Asset.is_global.is_(True)))).scalars().all()
+        )
+        ga_ids = set()
+        if group_ids:
+            ga_ids = set(
+                (await db.execute(
+                    select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_ids))
+                )).scalars().all()
+            )
+        own_ids = set()
+        if user:
+            own_ids = set(
+                (await db.execute(
+                    select(Asset.id).where(Asset.uploaded_by_user_id == user.id)
+                )).scalars().all()
+            )
+        visible = list(global_ids | ga_ids | own_ids)
+        asset_q = asset_q.where(Asset.id.in_(visible))
+    assets_result = await db.execute(asset_q)
+    assets = assets_result.scalars().all()
+
+    # Load asset-to-group mapping for JS filtering
+    asset_group_map = {}
+    if assets:
+        ga_rows = (await db.execute(
+            select(GroupAsset.asset_id, GroupAsset.group_id)
+            .where(GroupAsset.asset_id.in_([a.id for a in assets]))
+        )).all()
+        for aid, gid in ga_rows:
+            asset_group_map.setdefault(str(aid), []).append(str(gid))
+    for a in assets:
+        a._group_ids_json = asset_group_map.get(str(a.id), [])
 
     devices_q = await db.execute(
         select(Device).where(Device.status == DeviceStatus.ADOPTED).order_by(Device.name)
@@ -726,6 +823,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "tz_options": tz_options,
+        "is_admin": is_admin,
     })
 
 
