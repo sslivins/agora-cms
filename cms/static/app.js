@@ -553,6 +553,46 @@ function closeAllGroupPopups() {
 }
 
 // ── Asset group management (detail row) ──
+
+// Sync the collapsed row scope cell to match the detail row badges
+function _syncCollapsedScope(assetId) {
+    const row = document.querySelector(`tr.asset-row[data-asset-id="${assetId}"]`);
+    if (!row) return;
+    const scopeCell = row.querySelector("td:nth-child(4)");
+    if (!scopeCell) return;
+    const scopeEl = document.getElementById("scope-" + assetId);
+    if (!scopeEl) return;
+    // Gather current state from detail row
+    const globalBadge = scopeEl.querySelector(".badge-ready");
+    const personalBadge = scopeEl.querySelector(".badge-pending");
+    const groupBadges = scopeEl.querySelectorAll(".badge[data-group-id]");
+    scopeCell.innerHTML = "";
+    if (globalBadge) {
+        scopeCell.innerHTML = '<span class="badge badge-ready">Global</span>';
+    } else if (groupBadges.length === 0) {
+        scopeCell.innerHTML = '<span class="badge badge-pending">Personal</span>';
+    } else {
+        const MAX_SHOW = 2;
+        groupBadges.forEach((b, i) => {
+            if (i < MAX_SHOW) {
+                const s = document.createElement("span");
+                s.className = "badge badge-processing";
+                s.style.marginRight = "0.15rem";
+                s.textContent = b.textContent.replace("×", "").trim();
+                scopeCell.appendChild(s);
+            }
+        });
+        if (groupBadges.length > MAX_SHOW) {
+            const extra = groupBadges.length - MAX_SHOW;
+            const names = Array.from(groupBadges).slice(MAX_SHOW).map(b => b.textContent.replace("×", "").trim()).join(", ");
+            const ov = document.createElement("span");
+            ov.className = "badge badge-overflow has-tooltip";
+            ov.innerHTML = `+${extra} more<span class="tooltip">${names}</span>`;
+            scopeCell.appendChild(ov);
+        }
+    }
+}
+
 async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
     closeAllGroupPopups();
     const resp = await apiCall("POST", `/api/assets/${assetId}/share?group_id=${groupId}`);
@@ -572,6 +612,7 @@ async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
         else scopeEl.appendChild(badge);
         // Hide this option from the popup
         if (btnEl) btnEl.style.display = "none";
+        _syncCollapsedScope(assetId);
     }
 }
 
@@ -600,6 +641,7 @@ async function unshareAsset(assetId, groupId) {
             if (pickerWrap) scopeEl.insertBefore(personal, pickerWrap);
             else scopeEl.prepend(personal);
         }
+        _syncCollapsedScope(assetId);
     }
 }
 
