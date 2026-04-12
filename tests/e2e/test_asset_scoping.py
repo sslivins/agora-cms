@@ -634,3 +634,29 @@ class TestUIGroupPickerLibrary:
                 "Library + button should be disabled when all groups are assigned"
         finally:
             _delete_asset(admin_session, asset["id"])
+
+    def test_library_picker_hidden_when_global(self, page, cms_url, admin_session, test_users, groups):
+        """+ button should not be visible when an asset is marked global."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        asset = _upload_asset(sA, "e2e-picker-global.png", groups["E2E-GroupA"])
+        # Make the asset global via API
+        admin_session.post(f"{CMS_URL}/api/assets/{asset['id']}/global")
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            detail = self._expand_asset_detail(page, asset["id"])
+
+            # The + button should not be visible when asset is global
+            plus_btn = detail.locator(".btn-add-group")
+            assert plus_btn.count() == 0 or not plus_btn.is_visible(), \
+                "Group + button should be hidden when asset is global"
+
+            # Should show the Global badge
+            scope_el = detail.locator(f'#scope-{asset["id"]}')
+            assert "Global" in scope_el.text_content(), "Should show Global badge"
+        finally:
+            # Remove global before cleanup
+            admin_session.post(f"{CMS_URL}/api/assets/{asset['id']}/global")
+            _delete_asset(admin_session, asset["id"])

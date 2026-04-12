@@ -223,7 +223,7 @@
                                 </span>
                                 {% endfor %}
                                 {% endif %}
-                                {% if user_groups | length > 0 %}
+                                {% if user_groups | length > 0 and not a.is_global %}
                                 <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
                                     {% set unassigned = [] %}{% for g in user_groups %}{% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}{% if not already %}{% if unassigned.append(g) %}{% endif %}{% endif %}{% endfor %}
                                     <button class="btn-add-group" onclick="event.stopPropagation(); openGroupPopup('group-popup-{{ a.id }}')" type="button" title="Add to group" {% if unassigned | length == 0 %}disabled{% endif %}>+</button>
