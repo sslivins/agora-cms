@@ -3,7 +3,7 @@
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -114,6 +114,7 @@ async def get_user(
 async def create_user(
     data: UserCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     _user: User = Depends(require_permission(USERS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -164,14 +165,17 @@ async def create_user(
     await db.commit()
     await db.refresh(user, ["role"])
 
-    # Send welcome email (best-effort, don't fail if SMTP not configured)
-    from cms.services.email_service import send_welcome_email
-    await send_welcome_email(
-        db=db,
+    # Send welcome email in background (best-effort, don't block response)
+    from cms.services.email_service import send_welcome_email_sync, get_smtp_settings
+    smtp_cfg = await get_smtp_settings(db)
+    login_url = request.base_url._url.rstrip("/") + "/login"
+    background_tasks.add_task(
+        send_welcome_email_sync,
+        smtp_cfg=smtp_cfg,
         to_email=data.email,
         display_name=data.display_name,
         temp_password=temp_password,
-        login_url=request.base_url._url.rstrip("/") + "/login",
+        login_url=login_url,
     )
 
     return _user_to_read(user, data.group_ids)

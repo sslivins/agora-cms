@@ -586,42 +586,72 @@ async function createUser(form) {
     }
 }
 
+let _editUserOriginal = {};
+
+function _getEditUserState() {
+    const groupIds = [];
+    document.querySelectorAll('#edit-groups input[type="checkbox"]').forEach(cb => {
+        if (cb.checked) groupIds.push(cb.value);
+    });
+    return {
+        email: document.getElementById("edit-email").value,
+        display_name: document.getElementById("edit-display-name").value,
+        role_id: document.getElementById("edit-role").value,
+        is_active: document.getElementById("edit-active").checked,
+        password: document.getElementById("edit-password").value,
+        group_ids: groupIds.sort().join(","),
+    };
+}
+
+function _checkEditUserDirty() {
+    const cur = _getEditUserState();
+    const dirty = Object.keys(_editUserOriginal).some(k => cur[k] !== _editUserOriginal[k]);
+    const btn = document.getElementById("edit-user-save-btn");
+    if (btn) btn.disabled = !dirty;
+}
+
 function openEditUser(userId) {
     const u = usersData[userId];
     if (!u) return;
     document.getElementById("edit-user-id").value = userId;
     document.getElementById("edit-email").value = u.email;
-    document.getElementById("edit-display-name").value = u.display_name;
+    document.getElementById("edit-display-name").value = u.display_name || "";
     document.getElementById("edit-password").value = "";
     document.getElementById("edit-role").value = u.role_id;
     document.getElementById("edit-active").checked = u.is_active;
-    // Set group checkboxes
     document.querySelectorAll('#edit-groups input[type="checkbox"]').forEach(cb => {
         cb.checked = u.group_ids.includes(cb.value);
     });
+    _editUserOriginal = _getEditUserState();
+    const btn = document.getElementById("edit-user-save-btn");
+    if (btn) btn.disabled = true;
     document.getElementById("edit-user-modal").style.display = "";
 }
 
 async function updateUser(form) {
-    const data = new FormData(form);
-    const userId = data.get("user_id");
-    const groupIds = data.getAll("group_ids");
-    const body = {
-        email: data.get("email"),
-        display_name: data.get("display_name") || "",
-        role_id: data.get("role_id"),
-        is_active: data.get("is_active") === "on",
-        group_ids: groupIds,
-    };
-    const pw = data.get("password");
-    if (pw) body.password = pw;
-    const resp = await apiCall("PATCH", `/api/users/${userId}`, body);
-    if (resp && resp.ok) {
-        showToast("User updated");
-        location.reload();
-    } else if (resp) {
-        const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+    try {
+        const data = new FormData(form);
+        const userId = data.get("user_id");
+        const groupIds = data.getAll("group_ids");
+        const body = {
+            email: data.get("email"),
+            display_name: data.get("display_name") || "",
+            role_id: data.get("role_id"),
+            is_active: data.get("is_active") === "on",
+            group_ids: groupIds,
+        };
+        const pw = data.get("password");
+        if (pw) body.password = pw;
+        const resp = await apiCall("PATCH", `/api/users/${userId}`, body);
+        if (resp && resp.ok) {
+            showToast("User updated");
+            location.reload();
+        } else if (resp) {
+            const err = await resp.json().catch(() => ({}));
+            showToast(err.detail || `Error: ${resp.status}`, true);
+        }
+    } catch (e) {
+        showToast("Failed to update user: " + e.message, true);
     }
 }
 

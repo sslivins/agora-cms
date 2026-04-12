@@ -64,25 +64,14 @@ def _send_email(smtp_cfg: dict, to_email: str, subject: str, html_body: str, tex
         return False
 
 
-async def send_welcome_email(
-    db: AsyncSession,
+def send_welcome_email_sync(
+    smtp_cfg: dict,
     to_email: str,
     display_name: str,
     temp_password: str,
-    login_url: str | None = None,
+    login_url: str,
 ) -> bool:
-    """Send a welcome email with temporary credentials.
-
-    Returns True if sent successfully, False if SMTP is not configured or fails.
-    """
-    smtp_cfg = await get_smtp_settings(db)
-
-    from cms.config import get_settings
-    settings = get_settings()
-    login_url = login_url or settings.base_url or "http://localhost:8000"
-    if not login_url.endswith("/login"):
-        login_url = login_url.rstrip("/") + "/login"
-
+    """Send a welcome email synchronously (for use in BackgroundTasks)."""
     greeting = display_name or to_email
 
     html_body = f"""\
