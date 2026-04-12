@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import get_settings, require_auth, require_permission
+from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission
 from cms.database import get_db
 from cms.permissions import (
     DEVICES_READ, DEVICES_WRITE, DEVICES_REBOOT, DEVICES_DELETE,
@@ -72,12 +72,22 @@ async def check_for_updates():
 
 
 @router.get("", response_model=List[DeviceOut], dependencies=[Depends(require_permission(DEVICES_READ))])
-async def list_devices(db: AsyncSession = Depends(get_db)):
+async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
 
-    result = await db.execute(
-        select(Device).options(selectinload(Device.group)).order_by(Device.registered_at)
-    )
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    query = select(Device).options(selectinload(Device.group)).order_by(Device.registered_at)
+    if not is_admin:
+        # Non-admin: only devices in user's groups
+        if group_ids:
+            query = query.where(Device.group_id.in_(group_ids))
+        else:
+            query = query.where(False)
+
+    result = await db.execute(query)
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
@@ -408,8 +418,12 @@ async def request_device_logs(
 
 
 @router.get("/groups/", response_model=List[DeviceGroupOut], dependencies=[Depends(require_permission(GROUPS_READ))])
-async def list_groups(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
+async def list_groups(request: Request, db: AsyncSession = Depends(get_db)):
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    query = (
         select(
             DeviceGroup,
             func.count(Device.id).label("device_count"),
@@ -418,6 +432,13 @@ async def list_groups(db: AsyncSession = Depends(get_db)):
         .group_by(DeviceGroup.id)
         .order_by(DeviceGroup.name)
     )
+    if not is_admin:
+        if group_ids:
+            query = query.where(DeviceGroup.id.in_(group_ids))
+        else:
+            query = query.where(False)
+
+    result = await db.execute(query)
     return [
         DeviceGroupOut(
             id=group.id,

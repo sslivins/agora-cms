@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.auth import hash_password, _hash_api_key
 from cms.models.api_key import APIKey
-from cms.models.device import DeviceGroup
+from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.group_asset import GroupAsset
 from cms.models.user import Role, User, UserGroup
 
@@ -501,6 +501,61 @@ class TestAssetGroupScoping:
                 params={"group_id": str(group_b.id)},
             )
             assert resp.status_code == 403
+        finally:
+            await ac.aclose()
+
+
+# ── Device/group API scoping ──
+
+
+@pytest.mark.asyncio
+class TestDeviceGroupAPIScoping:
+    """Non-admin users should only see their assigned groups and devices in those groups."""
+
+    async def test_groups_api_returns_only_user_groups(self, app, db_session):
+        """Operator in GroupA should only see GroupA from GET /api/devices/groups/."""
+        group_a = await _create_group(db_session, "Scope API GroupA")
+        group_b = await _create_group(db_session, "Scope API GroupB")
+        await _create_user(db_session, email="grp_scope@test.com", role_name="Operator",
+                          group_ids=[group_a.id])
+        ac = await _login_as(app, "grp_scope@test.com")
+        try:
+            resp = await ac.get("/api/devices/groups/")
+            assert resp.status_code == 200
+            group_names = [g["name"] for g in resp.json()]
+            assert "Scope API GroupA" in group_names
+            assert "Scope API GroupB" not in group_names
+        finally:
+            await ac.aclose()
+
+    async def test_groups_api_admin_sees_all(self, client, db_session):
+        """Admin should see all groups from GET /api/devices/groups/."""
+        group = await _create_group(db_session, "Scope Admin All")
+        resp = await client.get("/api/devices/groups/")
+        assert resp.status_code == 200
+        group_names = [g["name"] for g in resp.json()]
+        assert "Scope Admin All" in group_names
+
+    async def test_devices_api_returns_only_user_group_devices(self, app, db_session):
+        """Operator in GroupA should not see devices assigned to GroupB."""
+        group_a = await _create_group(db_session, "Dev Scope A")
+        group_b = await _create_group(db_session, "Dev Scope B")
+
+        # Create devices in each group
+        dev_a = Device(id="dev-scope-a", name="Device A", status=DeviceStatus.ADOPTED, group_id=group_a.id)
+        dev_b = Device(id="dev-scope-b", name="Device B", status=DeviceStatus.ADOPTED, group_id=group_b.id)
+        db_session.add_all([dev_a, dev_b])
+        await db_session.commit()
+
+        await _create_user(db_session, email="dev_scope@test.com", role_name="Operator",
+                          group_ids=[group_a.id])
+        ac = await _login_as(app, "dev_scope@test.com")
+        try:
+            resp = await ac.get("/api/devices")
+            assert resp.status_code == 200
+            device_names = [d["name"] for d in resp.json()]
+            assert "Device A" in device_names
+            assert "Device B" not in device_names
         finally:
             await ac.aclose()
 

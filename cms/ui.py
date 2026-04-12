@@ -793,14 +793,15 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
     groups = groups_q.scalars().all()
 
-    # Non-admin users only see their assigned groups and devices in those groups
-    if not is_admin and group_ids:
-        groups = [g for g in groups if g.id in group_ids]
-        devices = [d for d in devices if d.group_id and d.group_id in group_ids]
-    elif not is_admin:
-        # User has no groups — no groups or devices to target
-        groups = []
-        devices = []
+    # Scope groups and devices to user's assignments (mirrors API-layer scoping)
+    if not is_admin:
+        if group_ids:
+            group_id_set = set(group_ids)
+            groups = [g for g in groups if g.id in group_id_set]
+            devices = [d for d in devices if d.group_id and d.group_id in group_id_set]
+        else:
+            groups = []
+            devices = []
 
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
