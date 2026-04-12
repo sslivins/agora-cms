@@ -37,21 +37,16 @@ class RoleRead(RoleBase):
 
 # ── User schemas ──
 
-class UserBase(BaseModel):
-    username: str = Field(..., min_length=1, max_length=100)
-    email: str | None = None
+class UserCreate(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
     display_name: str = ""
-
-
-class UserCreate(UserBase):
-    password: str = Field(..., min_length=6)
+    password: str | None = Field(None, min_length=6)
     role_id: uuid.UUID
     group_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class UserUpdate(BaseModel):
-    username: str | None = Field(None, min_length=1, max_length=100)
-    email: str | None = None
+    email: str | None = Field(None, min_length=3, max_length=255)
     display_name: str | None = None
     password: str | None = Field(None, min_length=6)
     role_id: uuid.UUID | None = None
@@ -59,11 +54,14 @@ class UserUpdate(BaseModel):
     group_ids: list[uuid.UUID] | None = None
 
 
-class UserRead(UserBase):
+class UserRead(BaseModel):
     id: uuid.UUID
+    email: str
+    display_name: str
     role_id: uuid.UUID
     role: RoleRead | None = None
     is_active: bool
+    must_change_password: bool = False
     created_at: datetime
     updated_at: datetime
     last_login_at: datetime | None = None
@@ -80,8 +78,7 @@ class PasswordChange(BaseModel):
 class UserMe(BaseModel):
     """Lightweight profile for the currently authenticated user."""
     id: uuid.UUID
-    username: str
-    email: str | None = None
+    email: str
     display_name: str
     role: RoleRead
     group_ids: list[uuid.UUID] = Field(default_factory=list)

@@ -118,10 +118,12 @@ async def app(db_engine, tmp_path):
         await seed_db.flush()
         admin_user = User(
             username=settings.admin_username,
+            email=settings.admin_email,
             display_name="Test Admin",
             password_hash=hash_password(settings.admin_password),
             role_id=roles["Admin"].id,
             is_active=True,
+            must_change_password=False,
         )
         seed_db.add(admin_user)
         await seed_db.commit()

@@ -1,5 +1,6 @@
 """User management API routes."""
 
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,12 +22,12 @@ def _user_to_read(user: User, group_ids: list[uuid.UUID] | None = None) -> UserR
     """Convert a User ORM object to a UserRead schema."""
     return UserRead(
         id=user.id,
-        username=user.username,
         email=user.email,
         display_name=user.display_name,
         role_id=user.role_id,
         role=user.role if user.role else None,
         is_active=user.is_active,
+        must_change_password=user.must_change_password,
         created_at=user.created_at,
         updated_at=user.updated_at,
         last_login_at=user.last_login_at,
@@ -50,7 +51,6 @@ async def get_my_profile(
     group_ids = await _get_group_ids(current_user.id, db)
     return UserMe(
         id=current_user.id,
-        username=current_user.username,
         email=current_user.email,
         display_name=current_user.display_name,
         role=current_user.role,
@@ -69,6 +69,7 @@ async def change_my_password(
     if not verify_password(data.current_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     current_user.password_hash = hash_password(data.new_password)
+    current_user.must_change_password = False
     await db.commit()
     return {"status": "ok"}
 
@@ -81,7 +82,7 @@ async def list_users(
     result = await db.execute(
         select(User)
         .options(selectinload(User.role))
-        .order_by(User.username)
+        .order_by(User.email)
     )
     users = result.scalars().all()
     out = []
@@ -116,23 +117,39 @@ async def create_user(
     _user: User = Depends(require_permission(USERS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
-    # Check username uniqueness
-    exists = await db.execute(select(User).where(User.username == data.username))
+    # Check email uniqueness
+    exists = await db.execute(select(User).where(User.email == data.email))
     if exists.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Username already exists")
+        raise HTTPException(status_code=409, detail="Email already exists")
 
     # Verify role exists
     role = await db.execute(select(Role).where(Role.id == data.role_id))
     if not role.scalar_one_or_none():
         raise HTTPException(status_code=422, detail="Role not found")
 
+    # Generate temporary password if none provided
+    temp_password = data.password or secrets.token_urlsafe(12)
+
+    # Use email prefix as username (internal field)
+    username = data.email.split("@")[0]
+    # Ensure uniqueness by appending suffix if needed
+    base_username = username
+    counter = 1
+    while True:
+        check = await db.execute(select(User).where(User.username == username))
+        if not check.scalar_one_or_none():
+            break
+        username = f"{base_username}{counter}"
+        counter += 1
+
     user = User(
-        username=data.username,
+        username=username,
         email=data.email,
         display_name=data.display_name,
-        password_hash=hash_password(data.password),
+        password_hash=hash_password(temp_password),
         role_id=data.role_id,
         is_active=True,
+        must_change_password=True,
     )
     db.add(user)
     await db.flush()
@@ -142,10 +159,20 @@ async def create_user(
         db.add(UserGroup(user_id=user.id, group_id=gid))
 
     await audit_log(db, user=_user, action="user.create", resource_type="user",
-                    resource_id=str(user.id), details={"username": data.username},
+                    resource_id=str(user.id), details={"email": data.email},
                     request=request)
     await db.commit()
     await db.refresh(user, ["role"])
+
+    # Send welcome email (best-effort, don't fail if SMTP not configured)
+    from cms.services.email_service import send_welcome_email
+    send_welcome_email(
+        to_email=data.email,
+        display_name=data.display_name,
+        temp_password=temp_password,
+        login_url=request.base_url._url.rstrip("/") + "/login",
+    )
+
     return _user_to_read(user, data.group_ids)
 
 
@@ -164,15 +191,12 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if data.username is not None:
+    if data.email is not None:
         exists = await db.execute(
-            select(User).where(User.username == data.username, User.id != user_id)
+            select(User).where(User.email == data.email, User.id != user_id)
         )
         if exists.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="Username already exists")
-        user.username = data.username
-
-    if data.email is not None:
+            raise HTTPException(status_code=409, detail="Email already exists")
         user.email = data.email
     if data.display_name is not None:
         user.display_name = data.display_name
@@ -226,7 +250,7 @@ async def delete_user(
     await db.execute(delete(UserGroup).where(UserGroup.user_id == user_id))
 
     await audit_log(db, user=_admin, action="user.delete", resource_type="user",
-                    resource_id=str(user_id), details={"username": user.username},
+                    resource_id=str(user_id), details={"email": user.email},
                     request=request)
     await db.delete(user)
     await db.commit()

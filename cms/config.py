@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="change-me-in-production")
     admin_username: str = "admin"
     admin_password: str = "agora"
+    admin_email: str = "admin@localhost"
     reset_password: bool = False
 
     # Storage
@@ -38,3 +39,12 @@ class Settings(BaseSettings):
     default_device_storage_mb: int = 500  # assumed device flash budget for assets
     api_key_rotation_hours: int = 24  # rotate device API keys every N hours
     pending_device_ttl_hours: int = 24  # auto-purge pending devices not seen for N hours
+
+    # SMTP (for welcome emails)
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_tls: bool = True
+    base_url: str | None = None  # public URL for login links in emails

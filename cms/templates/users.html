@@ -16,22 +16,12 @@
     <form onsubmit="event.preventDefault(); createUser(this)">
         <div class="form-row">
             <div class="form-group">
-                <label for="new-username">Username</label>
-                <input type="text" id="new-username" name="username" required minlength="1" maxlength="100" placeholder="e.g. jsmith">
+                <label for="new-email">Email</label>
+                <input type="email" id="new-email" name="email" required placeholder="e.g. john@example.com">
             </div>
             <div class="form-group">
                 <label for="new-display-name">Display Name</label>
                 <input type="text" id="new-display-name" name="display_name" placeholder="e.g. John Smith">
-            </div>
-            <div class="form-group">
-                <label for="new-email">Email</label>
-                <input type="email" id="new-email" name="email" placeholder="e.g. john@example.com">
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label for="new-password">Password</label>
-                <input type="password" id="new-password" name="password" required minlength="6" placeholder="Min 6 characters">
             </div>
             <div class="form-group">
                 <label for="new-role">Role</label>
@@ -42,6 +32,8 @@
                     {% endfor %}
                 </select>
             </div>
+        </div>
+        <div class="form-row">
             <div class="form-group">
                 <label>Groups</label>
                 <div class="group-checkboxes">
@@ -57,6 +49,7 @@
                 </div>
             </div>
         </div>
+        <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.5rem;">A temporary password will be generated and emailed to the user. They will be required to set a new password on first sign-in.</p>
         <button type="submit" class="btn btn-primary">Create User</button>
     </form>
 </div>
@@ -68,9 +61,8 @@
     <table>
         <thead>
             <tr>
-                <th>Username</th>
-                <th>Display Name</th>
                 <th>Email</th>
+                <th>Display Name</th>
                 <th>Role</th>
                 <th>Status</th>
                 <th>Last Login</th>
@@ -80,9 +72,8 @@
         <tbody>
             {% for u in users %}
             <tr class="{% if not u.is_active %}row-inactive{% endif %}">
-                <td><strong>{{ u.username }}</strong></td>
+                <td><strong>{{ u.email }}</strong></td>
                 <td>{{ u.display_name or '—' }}</td>
-                <td>{{ u.email or '—' }}</td>
                 <td>
                     {% if u.role %}
                     <span class="badge badge-role {% if u.role.name == 'Admin' %}badge-role-admin{% elif u.role.name == 'Operator' %}badge-role-operator{% elif u.role.name == 'Viewer' %}badge-role-viewer{% endif %}">{{ u.role.name }}</span>
@@ -113,7 +104,7 @@
                     {% else %}
                     <button class="btn btn-sm btn-success" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
                     {% endif %}
-                    <button class="btn btn-sm btn-danger" onclick="deleteUser('{{ u.id }}', '{{ u.username }}')">Delete</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
                     {% endif %}
                 </td>
                 {% endif %}
@@ -212,16 +203,12 @@
             <input type="hidden" id="edit-user-id" name="user_id">
             <div class="form-row">
                 <div class="form-group">
-                    <label for="edit-username">Username</label>
-                    <input type="text" id="edit-username" name="username" required>
+                    <label for="edit-email">Email</label>
+                    <input type="email" id="edit-email" name="email" required>
                 </div>
                 <div class="form-group">
                     <label for="edit-display-name">Display Name</label>
                     <input type="text" id="edit-display-name" name="display_name">
-                </div>
-                <div class="form-group">
-                    <label for="edit-email">Email</label>
-                    <input type="email" id="edit-email" name="email">
                 </div>
             </div>
             <div class="form-row">
@@ -321,9 +308,8 @@
 const usersData = {
     {% for u in users %}
     "{{ u.id }}": {
-        username: {{ u.username | tojson }},
+        email: {{ u.email | tojson }},
         display_name: {{ (u.display_name or '') | tojson }},
-        email: {{ (u.email or '') | tojson }},
         role_id: "{{ u.role_id }}",
         is_active: {{ u.is_active | tojson }},
         group_ids: {{ user_groups_map.get(u.id | string, []) | tojson }}

@@ -16,6 +16,7 @@ from cms.auth import (
     SETTING_PASSWORD_HASH,
     SETTING_TIMEZONE,
     SETTING_USERNAME,
+    _resolve_user_from_session,
     get_current_user,
     get_setting,
     get_settings,
@@ -100,13 +101,16 @@ async def login_submit(
     db: AsyncSession = Depends(get_db),
 ):
     form = await request.form()
-    username = form.get("username", "")
+    login_id = form.get("email", "") or form.get("username", "")
     password = form.get("password", "")
 
-    # Authenticate against the users table
-    from sqlalchemy import select as sa_select
+    # Authenticate against the users table — try email first, then username for backward compat
+    from sqlalchemy import select as sa_select, or_
     result = await db.execute(
-        sa_select(User).where(User.username == username, User.is_active.is_(True))
+        sa_select(User).where(
+            or_(User.email == login_id, User.username == login_id),
+            User.is_active.is_(True),
+        )
     )
     user = result.scalar_one_or_none()
 
@@ -122,7 +126,13 @@ async def login_submit(
 
         serializer = URLSafeTimedSerializer(settings.secret_key)
         token = serializer.dumps({"user_id": str(user.id)})
-        response = RedirectResponse(url="/", status_code=303)
+
+        # Check if user must change password on first login
+        if user.must_change_password:
+            response = RedirectResponse(url="/force-password-change", status_code=303)
+        else:
+            response = RedirectResponse(url="/", status_code=303)
+
         response.set_cookie(
             COOKIE_NAME, token, max_age=MAX_AGE, httponly=True, samesite="lax"
         )
@@ -138,6 +148,63 @@ async def logout():
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+# ── Force password change ──
+
+
+@router.get("/force-password-change", response_class=HTMLResponse)
+async def force_password_change_page(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show the forced password change page for first-login users."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return RedirectResponse(url="/login", status_code=303)
+    user = await _resolve_user_from_session(cookie, settings, db)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if not user.must_change_password:
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request, "force_password_change.html", {"error": None})
+
+
+@router.post("/force-password-change")
+async def force_password_change_submit(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle forced password change submission."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return RedirectResponse(url="/login", status_code=303)
+    user = await _resolve_user_from_session(cookie, settings, db)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    form = await request.form()
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+
+    if len(new_password) < 6:
+        return templates.TemplateResponse(
+            request, "force_password_change.html",
+            {"error": "Password must be at least 6 characters"}, status_code=400
+        )
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            request, "force_password_change.html",
+            {"error": "Passwords do not match"}, status_code=400
+        )
+
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+    await db.commit()
+
+    return RedirectResponse(url="/", status_code=303)
 
 
 # ── Dashboard ──
@@ -462,7 +529,7 @@ async def users_page(
 
     # All users with roles eager-loaded
     users_q = await db.execute(
-        select(User).options(selectinload(User.role)).order_by(User.username)
+        select(User).options(selectinload(User.role)).order_by(User.email)
     )
     users = users_q.scalars().all()
 
@@ -733,7 +800,7 @@ async def change_password(
     ctx = {
         "active_tab": "settings",
         "version": __version__,
-        "username": current_user.username,
+        "username": current_user.email,
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "success": None,

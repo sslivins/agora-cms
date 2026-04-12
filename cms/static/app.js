@@ -571,16 +571,14 @@ async function createUser(form) {
     const data = new FormData(form);
     const groupIds = data.getAll("group_ids");
     const body = {
-        username: data.get("username"),
+        email: data.get("email"),
         display_name: data.get("display_name") || "",
-        email: data.get("email") || null,
-        password: data.get("password"),
         role_id: data.get("role_id"),
         group_ids: groupIds,
     };
     const resp = await apiCall("POST", "/api/users", body);
     if (resp && resp.ok) {
-        showToast("User created");
+        showToast("User created — welcome email sent (if SMTP configured)");
         location.reload();
     } else if (resp) {
         const err = await resp.json();
@@ -592,9 +590,8 @@ function openEditUser(userId) {
     const u = usersData[userId];
     if (!u) return;
     document.getElementById("edit-user-id").value = userId;
-    document.getElementById("edit-username").value = u.username;
-    document.getElementById("edit-display-name").value = u.display_name;
     document.getElementById("edit-email").value = u.email;
+    document.getElementById("edit-display-name").value = u.display_name;
     document.getElementById("edit-password").value = "";
     document.getElementById("edit-role").value = u.role_id;
     document.getElementById("edit-active").checked = u.is_active;
@@ -610,9 +607,8 @@ async function updateUser(form) {
     const userId = data.get("user_id");
     const groupIds = data.getAll("group_ids");
     const body = {
-        username: data.get("username"),
+        email: data.get("email"),
         display_name: data.get("display_name") || "",
-        email: data.get("email") || null,
         role_id: data.get("role_id"),
         is_active: data.get("is_active") === "on",
         group_ids: groupIds,
@@ -629,8 +625,8 @@ async function updateUser(form) {
     }
 }
 
-async function deleteUser(userId, username) {
-    if (!await showConfirm(`Delete user "${username}"? This cannot be undone.`)) return;
+async function deleteUser(userId, email) {
+    if (!await showConfirm(`Delete user "${email}"? This cannot be undone.`)) return;
     const resp = await apiCall("DELETE", `/api/users/${userId}`);
     if (resp && resp.ok) {
         showToast("User deleted");

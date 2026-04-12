@@ -155,6 +155,21 @@ async def run_migrations():
                 "REFERENCES device_groups(id) ON DELETE SET NULL"
             ))
 
+        # -- users.must_change_password (RBAC email login) --
+        has_mcp = await conn.run_sync(lambda c: _has_column(c, "users", "must_change_password"))
+        if not has_mcp:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT false"
+            ))
+
+        # -- users.email: set NOT NULL and backfill from username for legacy rows --
+        # First backfill any NULL emails
+        has_users = await conn.run_sync(lambda c: sa_inspect(c).has_table("users"))
+        if has_users:
+            await conn.execute(text(
+                "UPDATE users SET email = username || '@localhost' WHERE email IS NULL"
+            ))
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

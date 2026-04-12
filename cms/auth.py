@@ -151,9 +151,18 @@ async def require_auth(
 
     Delegates to get_current_user but stores the user on request.state
     so templates can access user permissions for nav rendering.
+    Also redirects users who must change their password.
     """
     user = await get_current_user(request, settings, db)
     request.state.user = user
+
+    # Force password change redirect for web UI requests
+    if user.must_change_password and request.url.path != "/force-password-change":
+        from fastapi.responses import RedirectResponse
+        raise HTTPException(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            headers={"Location": "/force-password-change"},
+        )
 
 
 def require_permission(*perms: str):
@@ -237,31 +246,39 @@ async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None
         _log.error("Admin role not found — cannot seed admin user. Ensure _seed_roles runs first.")
         return
 
-    # Check if admin User row exists
+    # Check if admin User row exists (try by username first for backward compat)
     result = await db.execute(
         select(User).where(User.username == settings.admin_username)
     )
     admin_user = result.scalar_one_or_none()
 
+    admin_email = settings.admin_email
+
     if admin_user is None:
         # Create admin user from env vars
         admin_user = User(
             username=settings.admin_username,
+            email=admin_email,
             display_name="Administrator",
             password_hash=hash_password(settings.admin_password),
             role_id=admin_role.id,
             is_active=True,
+            must_change_password=False,
         )
         db.add(admin_user)
         await db.commit()
         _log.info("Created admin user: %s", settings.admin_username)
-    elif settings.reset_password:
-        admin_user.password_hash = hash_password(settings.admin_password)
-        await db.commit()
-        _log.warning(
-            "Admin password reset from environment. "
-            "Set AGORA_CMS_RESET_PASSWORD=false and restart."
-        )
+    else:
+        # Ensure email is set (migration for existing admin users)
+        if not admin_user.email:
+            admin_user.email = admin_email
+        if settings.reset_password:
+            admin_user.password_hash = hash_password(settings.admin_password)
+            await db.commit()
+            _log.warning(
+                "Admin password reset from environment. "
+                "Set AGORA_CMS_RESET_PASSWORD=false and restart."
+            )
 
     # Keep cms_settings in sync for any legacy code
     await set_setting(db, SETTING_PASSWORD_HASH, admin_user.password_hash)
