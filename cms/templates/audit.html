@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — Agora CMS{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>Audit Log</h2>
+    <span class="text-muted">{{ total }} event{{ 's' if total != 1 else '' }}</span>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>Details</th>
+                <th>IP Address</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in entries %}
+            <tr>
+                <td style="white-space:nowrap;">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>{{ entry.user.display_name or entry.user.email if entry.user else '—' }}</td>
+                <td><span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.action }}</span></td>
+                <td>
+                    {% if entry.resource_type %}
+                    <span class="text-muted">{{ entry.resource_type }}</span>
+                    {% if entry.resource_id %}<code style="font-size:0.75rem; margin-left:0.25rem;">{{ entry.resource_id[:8] }}…</code>{% endif %}
+                    {% else %}—{% endif %}
+                </td>
+                <td style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    {% if entry.details %}
+                    <code style="font-size:0.75rem;">{{ entry.details | tojson }}</code>
+                    {% else %}—{% endif %}
+                </td>
+                <td class="text-muted">{{ entry.ip_address or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="text-muted" style="text-align:center; padding:2rem;">No audit log entries yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}<a href="/audit?page={{ page - 1 }}" class="btn btn-secondary btn-sm">← Previous</a>{% endif %}
+    <span class="text-muted">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}<a href="/audit?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next →</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

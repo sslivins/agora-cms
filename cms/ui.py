@@ -1213,3 +1213,44 @@ async def history_page(
         "total_pages": total_pages,
         "total": total,
     })
+
+
+# ── Audit Log ──
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    _user: User = Depends(require_permission("audit:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from cms.models.audit_log import AuditLog
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    count_result = await db.execute(select(func.count()).select_from(AuditLog))
+    total = count_result.scalar()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    result = await db.execute(
+        select(AuditLog)
+        .options(selectinload(AuditLog.user))
+        .order_by(AuditLog.created_at.desc())
+        .limit(per_page)
+        .offset(offset)
+    )
+    entries = result.scalars().all()
+
+    return templates.TemplateResponse(request, "audit.html", {
+        "active_tab": "audit",
+        "tz": tz,
+        "entries": entries,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    })

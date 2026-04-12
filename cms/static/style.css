@@ -224,6 +224,10 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-skipped { background: var(--warning); color: #000; }
 .badge-missed { background: var(--danger); color: #fff; }
 .badge-preempted { background: #e67e22; color: #fff; }
+.badge-success { background: var(--success); color: #000; }
+.badge-danger { background: var(--danger); color: #fff; }
+.badge-info { background: #3498db; color: #fff; }
+.badge-muted { background: #555; color: #ccc; }
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
 
