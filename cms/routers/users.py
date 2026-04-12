@@ -229,9 +229,10 @@ async def update_user(
         for gid in data.group_ids:
             db.add(UserGroup(user_id=user.id, group_id=gid))
 
+    details = data.model_dump(exclude_unset=True, exclude={"password"}, mode="json")
     await audit_log(db, user=_admin, action="user.update", resource_type="user",
                     resource_id=str(user_id),
-                    details=data.model_dump(exclude_unset=True, exclude={"password"}),
+                    details=details,
                     request=request)
     await db.commit()
     await db.refresh(user, ["role"])
