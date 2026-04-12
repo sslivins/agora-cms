@@ -43,7 +43,7 @@
         </p>
         {% endif %}
         <div id="upload-status" class="form-status"></div>
-        <button type="submit" class="btn btn-primary" style="margin-top:0.75rem">Upload</button>
+        <button type="submit" class="btn btn-primary" id="upload-submit" style="margin-top:0.75rem" disabled>Upload</button>
     </form>
 </div>
 {% endif %}
@@ -336,15 +336,19 @@
         if (files.length) {
             fileInput.files = files;
             document.getElementById("drop-label").textContent = files[0].name;
+            document.getElementById("upload-submit").disabled = false;
         }
     });
 
     fileInput.addEventListener("change", () => {
         const label = document.getElementById("drop-label");
+        const submitBtn = document.getElementById("upload-submit");
         if (fileInput.files.length) {
             label.textContent = fileInput.files[0].name;
+            submitBtn.disabled = false;
         } else {
             label.textContent = "Drag \u0026 drop a file here, or";
+            submitBtn.disabled = true;
         }
     });
 

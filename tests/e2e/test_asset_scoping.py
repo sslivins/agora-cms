@@ -285,6 +285,25 @@ class TestUIAssetVisibility:
 class TestUIGroupPickerUpload:
     """Playwright tests for the upload panel group picker."""
 
+    def test_upload_button_disabled_until_file_selected(self, page, cms_url, test_users):
+        """Upload button should be disabled when no file is selected."""
+        login_playwright(page, cms_url, test_users["userA"]["email"], test_users["userA"]["password"])
+        page.goto(f"{cms_url}/assets")
+        page.wait_for_selector("#upload-form")
+
+        submit_btn = page.locator('#upload-form button[type="submit"]')
+        assert submit_btn.is_disabled(), "Upload button should be disabled when no file is selected"
+
+        # Select a file — button should become enabled
+        file_input = page.locator("#file-input")
+        file_input.set_input_files({
+            "name": "test-upload-btn.png",
+            "mimeType": "image/png",
+            "buffer": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82",
+        })
+        page.wait_for_timeout(300)
+        assert not submit_btn.is_disabled(), "Upload button should be enabled after file is selected"
+
     def test_upload_picker_opens_and_shows_groups(self, page, cms_url, test_users):
         """Clicking + in upload panel opens popup with available groups."""
         login_playwright(page, cms_url, test_users["userA"]["email"], test_users["userA"]["password"])
