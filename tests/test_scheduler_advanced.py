@@ -909,3 +909,144 @@ class TestNowPlayingCleanup:
             assert "remaining" in entry
         finally:
             device_manager.disconnect("np-countdown-01")
+
+
+class TestNowPlayingRemainingText:
+    """Test that the remaining text is formatted correctly for the dashboard."""
+
+    def setup_method(self):
+        _now_playing.clear()
+
+    def teardown_method(self):
+        _now_playing.clear()
+
+    def _inject_remaining(self, remaining_secs: int):
+        """Simulate the evaluate_schedules remaining-text logic."""
+        entry = {
+            "device_id": "test-dev",
+            "schedule_id": "test-sched",
+            "remaining_seconds": remaining_secs,
+        }
+        if remaining_secs < 60:
+            entry["remaining"] = "less than a minute"
+        elif remaining_secs < 3600:
+            mins = remaining_secs // 60
+            entry["remaining"] = f"{mins} minute{'s' if mins != 1 else ''}"
+        else:
+            hours = remaining_secs // 3600
+            mins = (remaining_secs % 3600) // 60
+            entry["remaining"] = f"{hours} hour{'s' if hours != 1 else ''}"
+            if mins > 0:
+                entry["remaining"] += f", {mins} minute{'s' if mins != 1 else ''}"
+        _now_playing["test-dev"] = entry
+        return entry
+
+    def test_remaining_under_30s_shows_less_than_minute(self):
+        """≤30s: server sends 'less than a minute' (JS countdown handles live display)."""
+        entry = self._inject_remaining(25)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 25
+
+    def test_remaining_45s_shows_less_than_minute(self):
+        """31-59s: still 'less than a minute'."""
+        entry = self._inject_remaining(45)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 45
+
+    def test_remaining_1s_shows_less_than_minute(self):
+        """Edge case: 1 second remaining."""
+        entry = self._inject_remaining(1)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 1
+
+    def test_remaining_0s_shows_less_than_minute(self):
+        """Edge case: 0 seconds remaining."""
+        entry = self._inject_remaining(0)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 0
+
+    def test_remaining_60s_shows_1_minute(self):
+        """Exactly 60s should show '1 minute' (singular)."""
+        entry = self._inject_remaining(60)
+        assert entry["remaining"] == "1 minute"
+
+    def test_remaining_5_minutes(self):
+        """300s = 5 minutes."""
+        entry = self._inject_remaining(300)
+        assert entry["remaining"] == "5 minutes"
+
+    def test_remaining_1_hour(self):
+        """3600s = 1 hour."""
+        entry = self._inject_remaining(3600)
+        assert entry["remaining"] == "1 hour"
+
+    def test_remaining_1_hour_30_minutes(self):
+        """5400s = 1 hour, 30 minutes."""
+        entry = self._inject_remaining(5400)
+        assert entry["remaining"] == "1 hour, 30 minutes"
+
+    def test_remaining_seconds_always_int(self):
+        """remaining_seconds should always be an int."""
+        for secs in [0, 1, 15, 30, 59, 60, 300, 3600, 7200]:
+            entry = self._inject_remaining(secs)
+            assert isinstance(entry["remaining_seconds"], int)
+
+
+@pytest.mark.asyncio
+class TestDashboardCountdownAttribute:
+    """Test that the dashboard HTML renders data-remaining for JS countdown."""
+
+    async def test_data_remaining_attr_rendered(self, client, db_session):
+        """The now-playing row should have data-remaining='N' for the JS countdown."""
+        _now_playing.clear()
+        # Dashboard needs a timezone setting
+        db_session.add(CMSSetting(key="timezone", value="UTC"))
+        await db_session.commit()
+
+        _now_playing["dash-dev"] = {
+            "device_id": "dash-dev",
+            "device_name": "Dashboard Dev",
+            "schedule_id": "sched-abc",
+            "schedule_name": "Countdown Sched",
+            "asset_filename": "clip.mp4",
+            "end_time": "11:59 PM",
+            "remaining": "less than a minute",
+            "remaining_seconds": 22,
+            "since": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            resp = await client.get("/")
+            assert resp.status_code == 200
+            html = resp.text
+            assert 'data-remaining="22"' in html
+            assert "less than a minute" in html
+        finally:
+            _now_playing.clear()
+
+    async def test_data_remaining_attr_large_value(self, client, db_session):
+        """data-remaining should render even for values > 30s (JS ignores them)."""
+        _now_playing.clear()
+        db_session.add(CMSSetting(key="timezone", value="UTC"))
+        await db_session.commit()
+
+        _now_playing["dash-dev2"] = {
+            "device_id": "dash-dev2",
+            "device_name": "Dashboard Dev 2",
+            "schedule_id": "sched-xyz",
+            "schedule_name": "Long Sched",
+            "asset_filename": "movie.mp4",
+            "end_time": "6:00 PM",
+            "remaining": "2 hours",
+            "remaining_seconds": 7200,
+            "since": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            resp = await client.get("/")
+            assert resp.status_code == 200
+            html = resp.text
+            assert 'data-remaining="7200"' in html
+            assert "2 hours" in html
+        finally:
+            _now_playing.clear()
