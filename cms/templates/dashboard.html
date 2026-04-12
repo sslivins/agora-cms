@@ -191,7 +191,7 @@
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.target_name }}</span><span class="tooltip">{{ u.target_name }}</span></span>{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.asset_filename }}</span><span class="tooltip">{{ u.asset_filename }}</span></span></td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
-                <td>{% if u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
+                <td>{% if u.duration_secs < 60 %}{{ u.duration_secs }} second{{ 's' if u.duration_secs != 1 else '' }}{% elif u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
                 <td class="{% if u.preempted %}text-warning{% elif u.device_offline or u.starting %}{% else %}text-success{% endif %}">{% if u.device_offline %}<span class="badge badge-offline">Device Offline</span>{% elif u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
             </tr>
             {% endfor %}
@@ -219,7 +219,7 @@
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.target_name }}</span><span class="tooltip">{{ u.target_name }}</span></span>{% if u.target_type == 'group' %} <span class="badge badge-builtin">group</span>{% endif %}</td>
                 <td><span class="has-tooltip"><span class="cell-truncate-text">{{ u.asset_filename }}</span><span class="tooltip">{{ u.asset_filename }}</span></span></td>
                 <td>{{ u.start_time }} – {{ u.end_time }}</td>
-                <td>{% if u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
+                <td>{% if u.duration_secs < 60 %}{{ u.duration_secs }} second{{ 's' if u.duration_secs != 1 else '' }}{% elif u.duration_mins >= 60 %}{{ u.duration_mins // 60 }} hour{{ 's' if u.duration_mins // 60 != 1 else '' }}{% if u.duration_mins % 60 %}, {{ u.duration_mins % 60 }} minute{{ 's' if u.duration_mins % 60 != 1 else '' }}{% endif %}{% else %}{{ u.duration_mins }} minute{{ 's' if u.duration_mins != 1 else '' }}{% endif %}</td>
                 <td class="{% if u.preempted %}text-warning{% elif u.device_offline or u.starting %}{% else %}text-muted{% endif %}">{% if u.device_offline %}<span class="badge badge-offline">Device Offline</span>{% elif u.starting %}<span class="badge badge-started pulse-badge">Starting…</span>{% else %}{{ u.countdown }}{% if u.resumes_at %} <small>({{ u.resumes_at }})</small>{% endif %}{% endif %}</td>
             </tr>
             {% endfor %}

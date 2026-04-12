@@ -507,6 +507,17 @@ class TestUpcomingSchedules:
         assert len(result) == 1
         assert result[0]["day_label"] == "today"
 
+    def test_sub_minute_duration_shows_seconds(self):
+        """A schedule with duration < 60s should have duration_secs set correctly."""
+        s = self._make_full_schedule(time(9, 0, 0), time(9, 0, 30), name="Short Clip")
+        now = datetime(2026, 3, 28, 8, 0, tzinfo=timezone.utc)
+        tz = ZoneInfo("UTC")
+
+        result = get_upcoming_schedules([s], now, tz)
+        assert len(result) == 1
+        assert result[0]["duration_secs"] == 30
+        assert result[0]["duration_mins"] == 0
+
 
 # ── Schedule unique names (API test) ──
 
