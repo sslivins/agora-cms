@@ -71,6 +71,21 @@ header {
 }
 .header-group-none { background: var(--danger); }
 .header-groups .tooltip { text-align: left; }
+/* Header groups tooltip: open below like other header tooltips */
+.header-groups.has-tooltip .tooltip {
+    bottom: auto;
+    top: calc(100% + 10px);
+    transform: translateX(-50%) translateY(-6px);
+}
+.header-groups.has-tooltip .tooltip::after {
+    top: auto;
+    bottom: 100%;
+    border-top-color: transparent;
+    border-bottom-color: var(--accent);
+}
+.header-groups.has-tooltip:hover .tooltip {
+    transform: translateX(-50%) translateY(0);
+}
 .tooltip-wide { min-width: 180px; white-space: normal; }
 .tooltip-wide .perm-tag { margin: 0.15rem 0; }
 .header-icon {
