@@ -7,7 +7,11 @@
 <tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td class="expand-toggle">▶</td>
     <td>
+        {% if 'devices:write' in user_perms %}
         <input type="text" class="inline-edit" value="{{ d.name or '' }}" placeholder="{{ d.id }}" onclick="event.stopPropagation()" onchange="renameDevice('{{ d.id }}', this.value)" onfocus="this.dataset.prev = this.value">
+        {% else %}
+        {{ d.name or d.id }}
+        {% endif %}
     </td>
     <td>
         {% if d.status.value == 'orphaned' %}
@@ -25,28 +29,40 @@
         {% endif %}
     </td>
     <td>
+        {% if 'devices:write' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for g in groups %}
             <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
             {% endfor %}
         </select>
+        {% else %}
+        {{ d.group.name if d.group else '—' }}
+        {% endif %}
     </td>
     <td>
+        {% if 'devices:write' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onfocus="this.dataset.prev = this.value" onchange="setDefaultAsset('{{ d.id }}', this.value, this)">
             <option value="">None (use group)</option>
             {% for a in assets %}
             <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
             {% endfor %}
         </select>
+        {% else %}
+        {{ d.default_asset.filename if d.default_asset else '—' }}
+        {% endif %}
     </td>
     <td>
+        {% if 'devices:write' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
             {% endfor %}
         </select>
+        {% else %}
+        {{ d.profile.name if d.profile else '—' }}
+        {% endif %}
     </td>
     <td data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
         {% if d.storage_capacity_mb > 0 %}
@@ -55,13 +71,19 @@
     </td>
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
+        {% if 'devices:write' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
+        {% endif %}
         {% elif d.is_upgrading %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
         {% elif d.is_online and d.update_available %}
+        {% if 'devices:write' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button><span class="tooltip">Update firmware from {{ d.firmware_version }} to {{ latest_version }}</span></span>
         {% endif %}
+        {% endif %}
+        {% if 'devices:delete' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>
+        {% endif %}
     </td>
 </tr>
 <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
@@ -156,9 +178,10 @@
             </div>
             {% endif %}
         </div>
-        {% if d.is_online %}
+        {% if d.is_online and ('devices:write' in user_perms or 'devices:reboot' in user_perms) %}
         <div class="detail-toolbar">
             <span class="detail-label">Actions</span>
+            {% if 'devices:write' in user_perms %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button><span class="tooltip">Set the password for this device's local web UI</span></span>
             {% if d.ssh_enabled %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>
@@ -170,8 +193,13 @@
             {% else %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', false)">Disable Local API</button><span class="tooltip">Disable the device's local REST API</span></span>
             {% endif %}
+            {% endif %}
+            {% if 'devices:reboot' in user_perms %}
             <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
+            {% endif %}
+            {% if 'devices:write' in user_perms %}
             <span class="has-tooltip"><button class="btn btn-warn btn-sm" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')">Factory Reset</button><span class="tooltip">Wipe all data and return device to setup mode</span></span>
+            {% endif %}
         </div>
         {% endif %}
         </div>
@@ -183,7 +211,11 @@
 {% macro device_row_compact(d, groups, draggable=false) %}
 <tr class="device-row{% if draggable %} draggable-device{% endif %}" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td>
+        {% if 'devices:write' in user_perms %}
         <input type="text" class="inline-edit" value="{{ d.name or '' }}" placeholder="{{ d.id }}" onclick="event.stopPropagation()" onchange="renameDevice('{{ d.id }}', this.value)" onfocus="this.dataset.prev = this.value">
+        {% else %}
+        {{ d.name or d.id }}
+        {% endif %}
     </td>
     <td>
         {% if d.status.value == 'orphaned' %}
@@ -201,15 +233,19 @@
         {% endif %}
     </td>
     <td>
+        {% if 'devices:write' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for g in groups %}
             <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
             {% endfor %}
         </select>
+        {% else %}
+        {{ d.group.name if d.group else '—' }}
+        {% endif %}
     </td>
     <td class="actions" onclick="event.stopPropagation()">
-        {% if d.group_id %}
+        {% if d.group_id and 'devices:write' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="assignGroup('{{ d.id }}', '')">Remove</button><span class="tooltip">Remove this device from the group</span></span>
         {% endif %}
     </td>
@@ -271,6 +307,7 @@
             <span class="badge badge-count">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
             <span class="group-actions" onclick="event.stopPropagation()">
                 <span class="has-tooltip inline-label">Splash<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
+                {% if 'groups:write' in user_perms %}
                 <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
                     <option value="">No default asset</option>
                     {% for a in assets %}
@@ -278,6 +315,9 @@
                     {% endfor %}
                 </select>
                 <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')"><span class="has-tooltip">Remove<span class="tooltip">Remove this group — devices will be ungrouped</span></span></button>
+                {% else %}
+                <span class="text-muted">{{ (assets | selectattr('id', 'equalto', g.default_asset_id) | first).filename if g.default_asset_id else 'None' }}</span>
+                {% endif %}
             </span>
         </div>
         <div class="group-body" style="display: none;">
@@ -298,6 +338,7 @@
     {% else %}
     <p class="text-muted empty-state">No groups created yet.</p>
     {% endfor %}
+    {% if 'groups:write' in user_perms %}
     <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: end;">
         <div class="form-group" style="margin: 0; flex: 1;">
             <input type="text" id="group-name" placeholder="Group name">
@@ -307,6 +348,7 @@
         </div>
         <button class="btn btn-primary" onclick="createGroup()">Add Group</button>
     </div>
+    {% endif %}
 </div>
 
 {# ── Ungrouped Devices ── #}

@@ -37,7 +37,7 @@
                 <td>{{ d.name or d.id }}</td>
                 <td>{{ d.group.name if d.group else '—' }}</td>
                 <td><span class="badge badge-orphaned">Orphaned</span></td>
-                <td>Authentication failed — <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button></td>
+                <td>Authentication failed — {% if 'devices:write' in user_perms %}<button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>{% endif %}</td>
             </tr>
             {% endfor %}
             {% for d in offline_devices %}
@@ -108,8 +108,8 @@
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
                 <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
                 <td class="actions">
-                    <button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>
+                    {% if 'devices:write' in user_perms %}<button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>{% endif %}
+                    {% if 'devices:delete' in user_perms %}<button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>{% endif %}
                 </td>
             </tr>
             {% endfor %}
@@ -152,7 +152,7 @@
                 </td>
                 <td>{{ np.end_time }}</td>
                 <td>{{ np.remaining }}</td>
-                <td><button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}')">End Now</button></td>
+                <td>{% if 'schedules:write' in user_perms %}<button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}')">End Now</button>{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>

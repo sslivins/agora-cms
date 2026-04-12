@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Schedules</h1>
 
+{% if 'schedules:write' in user_perms %}
 <div class="card">
     <h2>Create Schedule</h2>
     <form onsubmit="event.preventDefault(); createSchedule(this)">
@@ -92,6 +93,7 @@
         <button type="submit" class="btn btn-primary">Create Schedule</button>
     </form>
 </div>
+{% endif %}
 
 <div class="card">
     <h2>Active Schedules</h2>
@@ -129,14 +131,20 @@
                 <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
                 <td>
+                    {% if 'schedules:write' in user_perms %}
                     <button class="btn btn-sm {% if s.enabled %}btn-success{% else %}btn-danger{% endif %}"
                             onclick="toggleSchedule('{{ s.id }}', {{ 'false' if s.enabled else 'true' }})">
                         {{ 'On' if s.enabled else 'Off' }}
                     </button>
+                    {% else %}
+                    <span class="badge {% if s.enabled %}badge-online{% else %}badge-offline{% endif %}">{{ 'On' if s.enabled else 'Off' }}</span>
+                    {% endif %}
                 </td>
                 <td class="actions">
+                    {% if 'schedules:write' in user_perms %}
                     <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                    {% endif %}
                 </td>
             </tr>
             {% else %}
@@ -182,8 +190,10 @@
                 <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
                 <td class="actions">
+                    {% if 'schedules:write' in user_perms %}
                     <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}

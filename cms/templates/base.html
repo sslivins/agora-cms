@@ -1,5 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
+{# Extract user permissions into a simple list for easy checking in all templates #}
+{% set user_perms = request.state.user.role.permissions if request.state.user is defined and request.state.user and request.state.user.role else [] %}
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -21,7 +23,7 @@
         <a href="/assets" class="nav-tab {% if active_tab == 'assets' %}active{% endif %}">Assets</a>
         <a href="/schedules" class="nav-tab {% if active_tab == 'schedules' %}active{% endif %}">Schedules</a>
         <a href="/history" class="nav-tab {% if active_tab == 'history' %}active{% endif %}">History</a>
-        {% if request.state.user is defined and request.state.user and request.state.user.role and 'users:read' in request.state.user.role.permissions %}
+        {% if 'users:read' in user_perms %}
         <a href="/users" class="nav-tab {% if active_tab == 'users' %}active{% endif %}">Users</a>
         {% endif %}
     </nav>
