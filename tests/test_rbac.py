@@ -938,3 +938,56 @@ class TestIDORProtection:
                 "User should NOT see own asset shared only with groups they don't belong to"
         finally:
             await ac.aclose()
+
+    async def test_assets_page_hides_other_group_scope_badges(self, app, db_session):
+        """When an asset is shared with multiple groups, a user should only see
+        scope badges for groups they belong to — never 'Unknown' or '?'."""
+        from cms.models.asset import Asset, AssetType
+        group1 = await _create_group(db_session, "ScopeBadge Grp1")
+        group2 = await _create_group(db_session, "ScopeBadge Grp2")
+        group3 = await _create_group(db_session, "ScopeBadge Grp3")
+
+        # User A is in group1 + group2
+        user_a = await _create_user(db_session, email="scope_a@test.com",
+                                    role_name="Operator", group_ids=[group1.id, group2.id])
+
+        # Asset starts in group2 only (uploaded by user_a)
+        asset = Asset(filename="multi_scope.mp4", original_filename="multi_scope.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=200,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        # Share with group1, group2, and group3
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=group1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=group2.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=group3.id))
+        await db_session.commit()
+
+        # User B is only in group1
+        await _create_user(db_session, email="scope_b@test.com",
+                           role_name="Operator", group_ids=[group1.id])
+        ac = await _login_as(app, "scope_b@test.com")
+        try:
+            resp = await ac.get("/assets")
+            assert resp.status_code == 200
+            body = resp.text
+            # User B should see the asset (it's in group1)
+            assert "multi_scope.mp4" in body, "Asset shared with user's group should be visible"
+            # Should see group1 badge
+            assert "ScopeBadge Grp1" in body, "User's own group badge should appear"
+            # Should NOT see group2 or group3 badges (not user B's groups)
+            assert "ScopeBadge Grp2" not in body, \
+                "Group badge for non-member group should be hidden"
+            assert "ScopeBadge Grp3" not in body, \
+                "Group badge for non-member group should be hidden"
+            # Scope badges should not contain the '?' fallback for unknown groups
+            # (check the table cells specifically — 'Unknown' also appears in JS error strings)
+            from html.parser import HTMLParser
+            import re
+            # Find all badge-processing spans (scope badges) and ensure none say '?'
+            badges = re.findall(r'<span class="badge badge-processing[^"]*"[^>]*>(.*?)</span>', body, re.DOTALL)
+            unknown_badges = [b.strip() for b in badges if b.strip() == '?']
+            assert len(unknown_badges) == 0, \
+                f"Found {len(unknown_badges)} '?' scope badges — groups the user is not in should be filtered out"
+        finally:
+            await ac.aclose()
