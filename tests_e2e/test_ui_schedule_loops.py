@@ -737,3 +737,95 @@ class TestSecondPrecisionEndTime:
         end_input = page.locator('input[name="end_time"]')
         assert start_input.get_attribute("step") == "1", "start_time missing step=1"
         assert end_input.get_attribute("step") == "1", "end_time missing step=1"
+
+
+class TestSchedulePreviewSubMinuteDuration:
+    """Schedule preview correctly handles sub-minute durations instead of
+    showing '24 hrs' and '⚠️ Spans midnight' when start and end times
+    differ only by seconds."""
+
+    SHORT_ASSET = 20  # 20-second video clip
+
+    def test_preview_shows_seconds_not_24hrs(self, page: Page, api, ws_url):
+        """A 20s clip × 1 loop should show '20 sec' not '24 hrs'."""
+        device_id = "prev-sec-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Short Preview")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "10:06")
+        page.fill('input[name="end_time"]', "11:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=1 → end_time = 10:06:20
+        page.fill('input[name="loop_count"]', "1")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("20 sec")
+        expect(summary).not_to_contain_text("24 hrs")
+        expect(summary).not_to_contain_text("Spans midnight")
+
+    def test_preview_no_midnight_warning_for_sub_minute(self, page: Page, api, ws_url):
+        """Sub-minute durations should never trigger the midnight warning."""
+        device_id = "prev-sec-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, 5)  # 5-second clip
+
+        page.fill('input[name="name"]', "No Midnight Warn")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "23:59")
+        page.fill('input[name="end_time"]', "23:59")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=2 → end_time = 23:59:10
+        page.fill('input[name="loop_count"]', "2")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("10 sec")
+        expect(summary).not_to_contain_text("Spans midnight")
+
+    def test_preview_minutes_and_seconds(self, page: Page, api, ws_url):
+        """A duration of e.g. 1 min 40 sec should show both units."""
+        device_id = "prev-sec-003"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Min and Sec")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=5 → 5 × 20s = 100s = 1 min 40 sec
+        page.fill('input[name="loop_count"]', "5")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("1 min 40 sec")
+
+    def test_preview_exact_minutes_no_trailing_sec(self, page: Page, api, ws_url):
+        """A duration that's an exact number of minutes should NOT show '0 sec'."""
+        device_id = "prev-sec-004"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, 30)  # 30-second clip
+
+        page.fill('input[name="name"]', "Exact Minutes")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=4 → 4 × 30s = 120s = 2 min (exact)
+        page.fill('input[name="loop_count"]', "4")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("2 min")
+        expect(summary).not_to_contain_text("sec")
