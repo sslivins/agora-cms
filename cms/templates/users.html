@@ -38,10 +38,7 @@
                 <label>Groups</label>
                 <div class="group-checkboxes">
                     {% for group in groups %}
-                    <label class="checkbox-label">
-                        <input type="checkbox" name="group_ids" value="{{ group.id }}">
-                        {{ group.name }}
-                    </label>
+                    <label class="checkbox-label"><input type="checkbox" name="group_ids" value="{{ group.id }}"> {{ group.name }}</label>
                     {% endfor %}
                     {% if not groups %}
                     <span class="text-muted">No groups defined</span>
@@ -236,10 +233,7 @@
                 <label>Groups</label>
                 <div class="group-checkboxes" id="edit-groups">
                     {% for group in groups %}
-                    <label class="checkbox-label">
-                        <input type="checkbox" name="group_ids" value="{{ group.id }}">
-                        {{ group.name }}
-                    </label>
+                    <label class="checkbox-label"><input type="checkbox" name="group_ids" value="{{ group.id }}"> {{ group.name }}</label>
                     {% endfor %}
                     {% if not groups %}
                     <span class="text-muted">No groups defined</span>
