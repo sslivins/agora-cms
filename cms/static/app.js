@@ -533,16 +533,19 @@ function openGroupPopup(popupId) {
     const popup = document.getElementById(popupId);
     if (!popup) return;
     popup.style.display = "flex";
-    // Close when clicking outside
-    setTimeout(() => {
+    // Close when clicking outside (deferred to next frame to avoid catching the opening click)
+    requestAnimationFrame(() => {
         function onClickOutside(e) {
-            if (!popup.contains(e.target) && !popup.previousElementSibling?.contains(e.target)) {
-                popup.style.display = "none";
-                document.removeEventListener("click", onClickOutside, true);
-            }
+            const wrap = popup.closest(".group-picker-wrap");
+            if (wrap && wrap.contains(e.target)) return;
+            if (popup.contains(e.target)) return;
+            popup.style.display = "none";
+            document.removeEventListener("click", onClickOutside, true);
+            document.removeEventListener("mousedown", onClickOutside, true);
         }
         document.addEventListener("click", onClickOutside, true);
-    }, 0);
+        document.addEventListener("mousedown", onClickOutside, true);
+    });
 }
 
 function closeAllGroupPopups() {
@@ -573,7 +576,6 @@ async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
 }
 
 async function unshareAsset(assetId, groupId) {
-    if (!await showConfirm("Remove this asset from the group?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}/share?group_id=${groupId}`);
     if (resp && resp.ok) {
         const scopeEl = document.getElementById("scope-" + assetId);
