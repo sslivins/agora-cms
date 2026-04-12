@@ -90,6 +90,11 @@ def schedule_json(s):
 
 templates.env.filters["schedule_json"] = schedule_json
 
+# Cache-busting: use build timestamp so browsers fetch fresh static files after deploy
+import time as _time
+_static_version = str(int(_time.time()))
+templates.env.globals["static_version"] = _static_version
+
 router = APIRouter()
 
 

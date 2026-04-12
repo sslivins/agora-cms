@@ -280,3 +280,282 @@ class TestUIAssetVisibility:
             assert "E2E-GroupA" in scope_cell.text_content(), "Scope should show group name"
         finally:
             _delete_asset(admin_session, asset["id"])
+
+
+class TestUIGroupPickerUpload:
+    """Playwright tests for the upload panel group picker."""
+
+    def test_upload_picker_opens_and_shows_groups(self, page, cms_url, test_users):
+        """Clicking + in upload panel opens popup with available groups."""
+        login_playwright(page, cms_url, test_users["userA"]["email"], test_users["userA"]["password"])
+        page.goto(f"{cms_url}/assets")
+        page.wait_for_selector("#upload-form")
+
+        plus_btn = page.locator("#upload-groups-badges .btn-add-group")
+        assert plus_btn.is_visible(), "Upload + button should be visible"
+
+        plus_btn.click()
+        page.wait_for_timeout(300)
+
+        popup = page.locator("#upload-group-popup")
+        assert popup.evaluate("el => getComputedStyle(el).display") == "flex", "Popup should be visible"
+
+        items = popup.locator(".group-popup-item")
+        assert items.count() > 0, "Popup should have at least one group option"
+
+    def test_upload_picker_adds_badge(self, page, cms_url, test_users):
+        """Clicking a group in the upload popup adds a badge."""
+        login_playwright(page, cms_url, test_users["userA"]["email"], test_users["userA"]["password"])
+        page.goto(f"{cms_url}/assets")
+        page.wait_for_selector("#upload-form")
+
+        # Count existing badges
+        badges_before = page.locator("#upload-groups-badges .badge[data-group-id]").count()
+
+        # Open popup and click first item
+        page.locator("#upload-groups-badges .btn-add-group").click()
+        page.wait_for_timeout(300)
+
+        first_item = page.locator("#upload-group-popup .group-popup-item").first
+        group_name = first_item.text_content().strip()
+        first_item.click()
+        page.wait_for_timeout(300)
+
+        # Badge should be added
+        badges_after = page.locator("#upload-groups-badges .badge[data-group-id]").count()
+        assert badges_after == badges_before + 1, f"Badge count should increase: {badges_before} → {badges_after}"
+
+        # Badge text should match group name
+        new_badge = page.locator("#upload-groups-badges .badge[data-group-id]").last
+        assert group_name in new_badge.text_content(), "Badge should show group name"
+
+    def test_upload_picker_hides_already_selected(self, page, cms_url, test_users):
+        """After selecting a group, it should be hidden in the popup."""
+        login_playwright(page, cms_url, test_users["userAB"]["email"], test_users["userAB"]["password"])
+        page.goto(f"{cms_url}/assets")
+        page.wait_for_selector("#upload-form")
+
+        # Open popup — should see multiple groups
+        page.locator("#upload-groups-badges .btn-add-group").click()
+        page.wait_for_timeout(300)
+        items_before = page.locator("#upload-group-popup .group-popup-item:visible").count()
+        assert items_before >= 2, "userAB should see at least 2 groups"
+
+        # Pick first group
+        first_item = page.locator("#upload-group-popup .group-popup-item:visible").first
+        first_item.click()
+        page.wait_for_timeout(300)
+
+        # Reopen popup — should have one fewer visible item
+        page.locator("#upload-groups-badges .btn-add-group").click()
+        page.wait_for_timeout(300)
+        items_after = page.locator("#upload-group-popup .group-popup-item:visible").count()
+        assert items_after == items_before - 1, "Selected group should be hidden in popup"
+
+    def test_upload_picker_remove_badge_restores_option(self, page, cms_url, test_users):
+        """Removing a badge should re-show the group in the popup."""
+        login_playwright(page, cms_url, test_users["userA"]["email"], test_users["userA"]["password"])
+        page.goto(f"{cms_url}/assets")
+        page.wait_for_selector("#upload-form")
+
+        # Add a badge
+        page.locator("#upload-groups-badges .btn-add-group").click()
+        page.wait_for_timeout(300)
+        page.locator("#upload-group-popup .group-popup-item").first.click()
+        page.wait_for_timeout(300)
+
+        badge = page.locator("#upload-groups-badges .badge[data-group-id]").first
+        assert badge.count() > 0, "Badge should exist after picking"
+
+        # Remove the badge
+        badge.locator(".btn-x").click()
+        page.wait_for_timeout(300)
+        assert page.locator("#upload-groups-badges .badge[data-group-id]").count() == 0, "Badge should be removed"
+
+        # Reopen popup — option should be back
+        page.locator("#upload-groups-badges .btn-add-group").click()
+        page.wait_for_timeout(300)
+        items = page.locator("#upload-group-popup .group-popup-item:visible").count()
+        assert items >= 1, "Removed group should reappear in popup"
+
+
+class TestUIGroupPickerLibrary:
+    """Playwright tests for the library detail row group picker."""
+
+    def _expand_asset_detail(self, page, asset_id):
+        """Click an asset row to expand it and return the detail row locator."""
+        row = page.locator(f'tr.asset-row[data-asset-id="{asset_id}"]')
+        row.click()
+        page.wait_for_timeout(400)
+        detail = page.locator(f'tr.asset-detail[data-detail-for="{asset_id}"]')
+        assert detail.is_visible(), "Detail row should be visible after clicking"
+        return detail
+
+    def test_library_picker_popup_visible(self, page, cms_url, admin_session, test_users, groups):
+        """Clicking + in library detail opens popup with visible, clickable items."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        asset = _upload_asset(sA, "e2e-picker-popup.png", groups["E2E-GroupA"])
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            detail = self._expand_asset_detail(page, asset["id"])
+            plus_btn = detail.locator(".btn-add-group")
+            assert plus_btn.is_visible(), "Library + button should be visible"
+
+            plus_btn.click()
+            page.wait_for_timeout(400)
+
+            popup = detail.locator(".group-popup")
+            assert popup.evaluate("el => getComputedStyle(el).display") == "flex", "Popup should be displayed"
+
+            items = popup.locator(".group-popup-item:visible")
+            assert items.count() > 0, "Popup should have visible items"
+
+            # Items should have non-zero bounding boxes (not clipped)
+            first_item = items.first
+            bbox = first_item.bounding_box()
+            assert bbox is not None, "Popup item should have a bounding box"
+            assert bbox["width"] > 0 and bbox["height"] > 0, "Popup item should have non-zero size"
+        finally:
+            _delete_asset(admin_session, asset["id"])
+
+    def test_library_picker_adds_group(self, page, cms_url, admin_session, test_users, groups):
+        """Clicking a group in library popup adds badge and calls share API."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        asset = _upload_asset(sA, "e2e-picker-add.png", groups["E2E-GroupA"])
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            detail = self._expand_asset_detail(page, asset["id"])
+            scope_el = detail.locator(f'#scope-{asset["id"]}')
+            badges_before = scope_el.locator(".badge[data-group-id]").count()
+
+            # Open popup and click an available group
+            detail.locator(".btn-add-group").click()
+            page.wait_for_timeout(400)
+
+            available = detail.locator(".group-popup-item:visible")
+            assert available.count() > 0, "Should have groups to add"
+            group_name = available.first.text_content().strip()
+
+            # Intercept the share API call
+            with page.expect_response(lambda r: "/share" in r.url and r.status == 200):
+                available.first.click()
+
+            page.wait_for_timeout(500)
+
+            # Badge should be added
+            badges_after = scope_el.locator(".badge[data-group-id]").count()
+            assert badges_after == badges_before + 1, f"Badge count should increase: {badges_before} → {badges_after}"
+
+            # Badge text should match
+            all_badge_text = scope_el.locator(".badge[data-group-id]").all_text_contents()
+            assert any(group_name in t for t in all_badge_text), f"New badge with '{group_name}' should appear"
+        finally:
+            _delete_asset(admin_session, asset["id"])
+
+    def test_library_picker_remove_group(self, page, cms_url, admin_session, test_users, groups):
+        """Removing a group badge calls unshare API and updates the UI."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        # Upload to GroupA, then share with GroupB via API
+        asset = _upload_asset(sA, "e2e-picker-remove.png", groups["E2E-GroupA"])
+        admin_session.post(f"{CMS_URL}/api/assets/{asset['id']}/share?group_id={groups['E2E-GroupB']}")
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            detail = self._expand_asset_detail(page, asset["id"])
+            scope_el = detail.locator(f'#scope-{asset["id"]}')
+            badges_before = scope_el.locator(".badge[data-group-id]").count()
+            assert badges_before >= 2, "Should have at least 2 group badges"
+
+            # Click × on the last badge
+            last_badge = scope_el.locator(".badge[data-group-id]").last
+            badge_gid = last_badge.get_attribute("data-group-id")
+
+            with page.expect_response(lambda r: "/share" in r.url and r.status == 200):
+                last_badge.locator(".btn-x").click()
+
+            page.wait_for_timeout(500)
+
+            badges_after = scope_el.locator(".badge[data-group-id]").count()
+            assert badges_after == badges_before - 1, f"Badge count should decrease: {badges_before} → {badges_after}"
+
+            # Verify via API that the group was actually unshared
+            resp = admin_session.get(f"{CMS_URL}/api/assets/{asset['id']}")
+            asset_data = resp.json()
+            remaining_groups = [ga["group_id"] for ga in asset_data.get("group_asset_entries", [])]
+            assert badge_gid not in remaining_groups, "Removed group should not be in asset's groups"
+        finally:
+            _delete_asset(admin_session, asset["id"])
+
+    def test_library_picker_no_overflow_clip(self, page, cms_url, admin_session, test_users, groups):
+        """The scope cell should not clip the popup due to overflow:hidden."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        asset = _upload_asset(sA, "e2e-picker-overflow.png", groups["E2E-GroupA"])
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            detail = self._expand_asset_detail(page, asset["id"])
+            scope_el = detail.locator(f'#scope-{asset["id"]}')
+
+            # Check that the scope element doesn't have overflow:hidden
+            overflow = scope_el.evaluate("el => getComputedStyle(el).overflow")
+            assert overflow != "hidden", f"Scope should not have overflow:hidden, got {overflow}"
+
+            # Open popup and verify it's not clipped
+            detail.locator(".btn-add-group").click()
+            page.wait_for_timeout(400)
+
+            popup = detail.locator(".group-popup")
+            popup_box = popup.bounding_box()
+            scope_box = scope_el.bounding_box()
+            assert popup_box is not None, "Popup should have a bounding box (not clipped)"
+            # Popup opens upward, so its top should be above the scope element
+            assert popup_box["y"] < scope_box["y"], "Popup should extend above the scope element"
+        finally:
+            _delete_asset(admin_session, asset["id"])
+
+    def test_library_collapsed_row_syncs(self, page, cms_url, admin_session, test_users, groups):
+        """After adding a group in detail view, the collapsed row scope should update."""
+        sA = _api_session(test_users["userA"]["email"], test_users["userA"]["password"])
+        asset = _upload_asset(sA, "e2e-collapsed-sync.png", groups["E2E-GroupA"])
+        try:
+            login_playwright(page, cms_url, "admin@localhost", ADMIN_PASS)
+            page.goto(f"{cms_url}/assets")
+            page.wait_for_selector("table")
+
+            # Check collapsed row has GroupA badge
+            collapsed_row = page.locator(f'tr.asset-row[data-asset-id="{asset["id"]}"]')
+            scope_cell = collapsed_row.locator("td:nth-child(4)")
+            assert "E2E-GroupA" in scope_cell.text_content(), "Collapsed row should show GroupA"
+
+            # Expand and add GroupB
+            detail = self._expand_asset_detail(page, asset["id"])
+            detail.locator(".btn-add-group").click()
+            page.wait_for_timeout(400)
+
+            # Find E2E-GroupB in popup
+            group_b_btn = detail.locator('.group-popup-item', has_text="E2E-GroupB")
+            if group_b_btn.count() > 0:
+                with page.expect_response(lambda r: "/share" in r.url and r.status == 200):
+                    group_b_btn.click()
+                page.wait_for_timeout(500)
+
+                # Collapse the row
+                collapsed_row.click()
+                page.wait_for_timeout(300)
+
+                # Re-read scope cell — should now include GroupB
+                scope_text = scope_cell.text_content()
+                assert "E2E-GroupB" in scope_text or "+1" in scope_text, \
+                    f"Collapsed row should show GroupB or +N more overflow, got: {scope_text}"
+        finally:
+            _delete_asset(admin_session, asset["id"])
