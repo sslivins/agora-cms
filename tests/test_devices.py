@@ -1037,3 +1037,117 @@ class TestDefaultAssetVariantResolution:
             assert fetch_msg["checksum"] == "src_checksum"
         finally:
             device_manager.disconnect("test-noprof-pi")
+
+
+@pytest.mark.asyncio
+class TestWipeAssetsOnAdoptDelete:
+    """Verify that adopt and delete send wipe_assets to connected devices."""
+
+    async def test_adopt_sends_wipe_assets(self, client, db_session):
+        """Adopting a pending device should send wipe_assets with reason='adopted'."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        device = Device(id="wipe-adopt", name="wipe-adopt", status=DeviceStatus.PENDING)
+        db_session.add(device)
+        await db_session.commit()
+
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("wipe-adopt", FakeWS())
+
+        try:
+            resp = await client.post("/api/devices/wipe-adopt/adopt")
+            assert resp.status_code == 200
+
+            wipe_msgs = [m for m in sent_messages if m.get("type") == "wipe_assets"]
+            assert len(wipe_msgs) == 1
+            assert wipe_msgs[0]["reason"] == "adopted"
+        finally:
+            device_manager.disconnect("wipe-adopt")
+
+    async def test_adopt_orphaned_sends_wipe_assets(self, client, db_session):
+        """Re-adopting an orphaned device should also send wipe_assets."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        device = Device(
+            id="wipe-orphan", name="wipe-orphan",
+            status=DeviceStatus.ORPHANED,
+            device_auth_token_hash="oldhash",
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("wipe-orphan", FakeWS())
+
+        try:
+            resp = await client.post("/api/devices/wipe-orphan/adopt")
+            assert resp.status_code == 200
+
+            wipe_msgs = [m for m in sent_messages if m.get("type") == "wipe_assets"]
+            assert len(wipe_msgs) == 1
+            assert wipe_msgs[0]["reason"] == "adopted"
+        finally:
+            device_manager.disconnect("wipe-orphan")
+
+    async def test_delete_sends_wipe_assets(self, client, db_session):
+        """Deleting a device should send wipe_assets with reason='deleted' before removing from DB."""
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+
+        device = Device(id="wipe-delete", name="wipe-delete", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        sent_messages = []
+
+        class FakeWS:
+            async def send_json(self, data):
+                sent_messages.append(data)
+
+        device_manager.register("wipe-delete", FakeWS())
+
+        try:
+            resp = await client.delete("/api/devices/wipe-delete")
+            assert resp.status_code == 200
+
+            wipe_msgs = [m for m in sent_messages if m.get("type") == "wipe_assets"]
+            assert len(wipe_msgs) == 1
+            assert wipe_msgs[0]["reason"] == "deleted"
+        finally:
+            device_manager.disconnect("wipe-delete")
+
+    async def test_adopt_offline_device_no_error(self, client, db_session):
+        """Adopting an offline device should succeed (wipe is best-effort)."""
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="wipe-offline", name="wipe-offline", status=DeviceStatus.PENDING)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.post("/api/devices/wipe-offline/adopt")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    async def test_delete_offline_device_no_error(self, client, db_session):
+        """Deleting an offline device should succeed (wipe is best-effort)."""
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="wipe-del-off", name="wipe-del-off", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.delete("/api/devices/wipe-del-off")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == "wipe-del-off"
