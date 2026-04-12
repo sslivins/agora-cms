@@ -559,8 +559,39 @@ class TestDeviceGroupAPIScoping:
         finally:
             await ac.aclose()
 
+    async def test_scope_all_permission_bypasses_group_filter(self, app, db_session):
+        """A role with groups:view_all should see all groups even without ALL_PERMISSIONS."""
+        from cms.permissions import DEVICES_READ, GROUPS_READ, GROUPS_VIEW_ALL
+        group_a = await _create_group(db_session, "Scope Bypass A")
+        group_b = await _create_group(db_session, "Scope Bypass B")
 
-# ── API key + user association ──
+        # Create a custom role with limited perms + groups:view_all
+        custom_role = Role(
+            name="ScopeAllTest",
+            permissions=[DEVICES_READ, GROUPS_READ, GROUPS_VIEW_ALL],
+        )
+        db_session.add(custom_role)
+        await db_session.flush()
+
+        await _create_user(db_session, email="scope_all@test.com",
+                          group_ids=[group_a.id])
+        # Patch user to custom role
+        user = (await db_session.execute(
+            select(User).where(User.email == "scope_all@test.com")
+        )).scalar_one()
+        user.role_id = custom_role.id
+        await db_session.commit()
+
+        ac = await _login_as(app, "scope_all@test.com")
+        try:
+            resp = await ac.get("/api/devices/groups/")
+            assert resp.status_code == 200
+            group_names = [g["name"] for g in resp.json()]
+            assert "Scope Bypass A" in group_names
+            assert "Scope Bypass B" in group_names, \
+                "User with groups:view_all should see all groups, not just assigned ones"
+        finally:
+            await ac.aclose()
 
 
 @pytest.mark.asyncio
@@ -650,3 +681,156 @@ class TestAuditLogging:
         resp = await client.get("/api/audit-log")
         actions = [e["action"] for e in resp.json()]
         assert "user.delete" in actions
+
+
+# ── IDOR Protection Tests ──
+
+
+@pytest.mark.asyncio
+class TestIDORProtection:
+    """Verify that individual resource endpoints enforce group scoping.
+
+    Users should NOT be able to access resources in groups they are not
+    assigned to, even if they know the resource UUID.
+    """
+
+    async def test_scoped_user_cannot_get_device_in_other_group(self, app, db_session):
+        """GET /api/devices/{id} for a device in another group should return 403."""
+        group_a = await _create_group(db_session, "IDOR Dev A")
+        group_b = await _create_group(db_session, "IDOR Dev B")
+        dev_b = Device(id="idor-dev-b", name="IDOR Device B",
+                       status=DeviceStatus.ADOPTED, group_id=group_b.id)
+        db_session.add(dev_b)
+        await db_session.commit()
+
+        await _create_user(db_session, email="idor_dev@test.com",
+                          role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "idor_dev@test.com")
+        try:
+            resp = await ac.get("/api/devices/idor-dev-b")
+            assert resp.status_code == 403, \
+                f"Expected 403, got {resp.status_code}: user should not access device in other group"
+        finally:
+            await ac.aclose()
+
+    async def test_scoped_user_cannot_delete_schedule_in_other_group(self, app, db_session):
+        """DELETE /api/schedules/{id} for a schedule targeting another group should return 403."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.schedule import Schedule
+        group_a = await _create_group(db_session, "IDOR Sched A")
+        group_b = await _create_group(db_session, "IDOR Sched B")
+
+        # Create a minimal asset for the schedule
+        asset = Asset(filename="idor_test.mp4", original_filename="idor_test.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100)
+        db_session.add(asset)
+        await db_session.flush()
+
+        # Create a schedule targeting group_b
+        from datetime import time
+        sched = Schedule(name="IDOR Schedule", group_id=group_b.id,
+                        asset_id=asset.id, start_time=time(8, 0),
+                        end_time=time(17, 0), priority=0, enabled=True)
+        db_session.add(sched)
+        await db_session.commit()
+
+        await _create_user(db_session, email="idor_sched@test.com",
+                          role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "idor_sched@test.com")
+        try:
+            resp = await ac.delete(f"/api/schedules/{sched.id}")
+            assert resp.status_code == 403, \
+                f"Expected 403, got {resp.status_code}: user should not delete schedule in other group"
+        finally:
+            await ac.aclose()
+
+    async def test_scoped_user_cannot_get_asset_in_other_group(self, app, db_session):
+        """GET /api/assets/{id} for an asset in another group should return 403."""
+        from cms.models.asset import Asset, AssetType
+        group_a = await _create_group(db_session, "IDOR Asset A")
+        group_b = await _create_group(db_session, "IDOR Asset B")
+
+        asset = Asset(filename="secret.mp4", original_filename="secret.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100)
+        db_session.add(asset)
+        await db_session.flush()
+        # Associate asset with group_b only
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=group_b.id))
+        await db_session.commit()
+
+        await _create_user(db_session, email="idor_asset@test.com",
+                          role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "idor_asset@test.com")
+        try:
+            resp = await ac.get(f"/api/assets/{asset.id}")
+            assert resp.status_code == 403, \
+                f"Expected 403, got {resp.status_code}: user should not access asset in other group"
+        finally:
+            await ac.aclose()
+
+    async def test_view_all_user_can_access_cross_group_device(self, app, db_session):
+        """A user with groups:view_all should access devices in any group."""
+        from cms.permissions import DEVICES_READ, DEVICES_WRITE, GROUPS_READ, GROUPS_VIEW_ALL
+        group_a = await _create_group(db_session, "IDOR ViewAll A")
+        group_b = await _create_group(db_session, "IDOR ViewAll B")
+        dev_b = Device(id="idor-va-dev-b", name="ViewAll Device B",
+                       status=DeviceStatus.ADOPTED, group_id=group_b.id)
+        db_session.add(dev_b)
+        await db_session.commit()
+
+        custom_role = Role(
+            name="ViewAllIDORTest",
+            permissions=[DEVICES_READ, DEVICES_WRITE, GROUPS_READ, GROUPS_VIEW_ALL],
+        )
+        db_session.add(custom_role)
+        await db_session.flush()
+
+        await _create_user(db_session, email="idor_va@test.com",
+                          group_ids=[group_a.id])
+        user = (await db_session.execute(
+            select(User).where(User.email == "idor_va@test.com")
+        )).scalar_one()
+        user.role_id = custom_role.id
+        await db_session.commit()
+
+        ac = await _login_as(app, "idor_va@test.com")
+        try:
+            resp = await ac.get("/api/devices/idor-va-dev-b")
+            assert resp.status_code == 200, \
+                f"Expected 200, got {resp.status_code}: groups:view_all user should access any device"
+        finally:
+            await ac.aclose()
+
+    async def test_schedule_list_scoped_to_user_groups(self, app, db_session):
+        """GET /api/schedules should only return schedules targeting the user's groups."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.schedule import Schedule
+        from datetime import time
+        group_a = await _create_group(db_session, "IDOR SchedList A")
+        group_b = await _create_group(db_session, "IDOR SchedList B")
+
+        asset = Asset(filename="sched_list.mp4", original_filename="sched_list.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100)
+        db_session.add(asset)
+        await db_session.flush()
+
+        sched_a = Schedule(name="Schedule In A", group_id=group_a.id,
+                          asset_id=asset.id, start_time=time(8, 0),
+                          end_time=time(17, 0), priority=0, enabled=True)
+        sched_b = Schedule(name="Schedule In B", group_id=group_b.id,
+                          asset_id=asset.id, start_time=time(8, 0),
+                          end_time=time(17, 0), priority=0, enabled=True)
+        db_session.add_all([sched_a, sched_b])
+        await db_session.commit()
+
+        await _create_user(db_session, email="idor_slist@test.com",
+                          role_name="Operator", group_ids=[group_a.id])
+        ac = await _login_as(app, "idor_slist@test.com")
+        try:
+            resp = await ac.get("/api/schedules")
+            assert resp.status_code == 200
+            names = [s["name"] for s in resp.json()]
+            assert "Schedule In A" in names, "User should see schedule in their group"
+            assert "Schedule In B" not in names, "User should NOT see schedule in other group"
+        finally:
+            await ac.aclose()

@@ -50,6 +50,9 @@ LOGS_READ = "logs:read"
 # ── Audit permissions ──
 AUDIT_READ = "audit:read"
 
+# ── Group scope permissions ──
+GROUPS_VIEW_ALL = "groups:view_all"
+
 
 ALL_PERMISSIONS: list[str] = [
     DEVICES_READ, DEVICES_WRITE, DEVICES_REBOOT, DEVICES_DELETE,
@@ -63,6 +66,7 @@ ALL_PERMISSIONS: list[str] = [
     API_KEYS_READ, API_KEYS_WRITE,
     LOGS_READ,
     AUDIT_READ,
+    GROUPS_VIEW_ALL,
 ]
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -88,6 +92,7 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     API_KEYS_WRITE: "Create, revoke, and delete API keys",
     LOGS_READ: "View system and device logs",
     AUDIT_READ: "View audit trail and activity history",
+    GROUPS_VIEW_ALL: "View all groups and their resources regardless of group assignment",
 }
 
 # ── Predefined role templates ──

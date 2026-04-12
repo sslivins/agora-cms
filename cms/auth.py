@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import uuid
 from functools import lru_cache
 
 import bcrypt
@@ -206,17 +207,36 @@ def require_permission(*perms: str):
 async def get_user_group_ids(user: User, db: AsyncSession) -> list | None:
     """Return the list of group UUIDs a user is assigned to, or None for admins.
 
-    Admins (whose role has ALL permissions) return None, meaning "no filtering".
+    Users with the 'groups:view_all' permission return None, meaning "no filtering"
+    — they are treated as if they are a member of every group.
     Non-admin users return their assigned group IDs for query scoping.
     """
-    from cms.permissions import ALL_PERMISSIONS
-    if set(ALL_PERMISSIONS).issubset(set(user.role.permissions)):
+    from cms.permissions import GROUPS_VIEW_ALL
+    if GROUPS_VIEW_ALL in user.role.permissions:
         return None  # Admin — no group scoping
     from cms.models.user import UserGroup
     result = await db.execute(
         select(UserGroup.group_id).where(UserGroup.user_id == user.id)
     )
     return [row[0] for row in result.all()]
+
+
+async def verify_resource_group_access(
+    user: User, db: AsyncSession, group_id: uuid.UUID | None
+) -> None:
+    """Raise 403 if the user does not have access to the given group.
+
+    Call this on every by-ID endpoint after fetching the resource to prevent
+    IDOR attacks. ``group_id`` may be ``None`` (e.g. a device not yet assigned
+    to a group), in which case access is allowed (the resource is unscoped).
+    """
+    if group_id is None:
+        return  # Resource has no group — allow access
+    group_ids = await get_user_group_ids(user, db)
+    if group_ids is None:
+        return  # User has groups:view_all — allow all
+    if group_id not in group_ids:
+        raise HTTPException(status_code=403, detail="Access denied: resource is outside your assigned groups")
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:

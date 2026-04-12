@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +77,16 @@ async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | 
     own_ids = set((await db.execute(own_q)).scalars().all())
 
     return list(global_ids | group_asset_ids | own_ids)
+
+
+async def _verify_asset_access(asset_id: uuid.UUID, request, db: AsyncSession) -> None:
+    """Raise 403 if the current user cannot access this asset."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        return
+    visible = await _visible_asset_ids(user, db)
+    if visible is not None and asset_id not in visible:
+        raise HTTPException(status_code=403, detail="Not authorised for this asset")
 
 
 @router.get("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
@@ -322,11 +332,12 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
 
 
 @router.get("/{asset_id}", response_model=AssetOut, dependencies=[Depends(require_permission(ASSETS_READ))])
-async def get_asset(asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_asset(asset_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await _verify_asset_access(asset_id, request, db)
     return asset
 
 
@@ -370,9 +381,11 @@ MIME_TYPES = {
 @router.get("/{asset_id}/preview", dependencies=[Depends(require_permission(ASSETS_READ))])
 async def preview_asset(
     asset_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    await _verify_asset_access(asset_id, request, db)
     result = await db.execute(select(Asset).where(Asset.id == asset_id))
     asset = result.scalar_one_or_none()
     if not asset:
@@ -499,6 +512,7 @@ async def delete_asset(
 @router.post("/{asset_id}/share", dependencies=[Depends(require_permission(ASSETS_WRITE))])
 async def share_asset(
     asset_id: uuid.UUID,
+    request: Request,
     group_id: uuid.UUID = Query(..., description="Group UUID to share with"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -506,6 +520,7 @@ async def share_asset(
     asset = (await db.execute(select(Asset).where(Asset.id == asset_id))).scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await _verify_asset_access(asset_id, request, db)
 
     # Check target group exists
     group = (await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))).scalar_one_or_none()
@@ -527,10 +542,12 @@ async def share_asset(
 @router.delete("/{asset_id}/share", dependencies=[Depends(require_permission(ASSETS_WRITE))])
 async def unshare_asset(
     asset_id: uuid.UUID,
+    request: Request,
     group_id: uuid.UUID = Query(..., description="Group UUID to unshare from"),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove an asset from a group."""
+    await _verify_asset_access(asset_id, request, db)
     ga = (await db.execute(
         select(GroupAsset).where(GroupAsset.asset_id == asset_id, GroupAsset.group_id == group_id)
     )).scalar_one_or_none()
@@ -544,9 +561,11 @@ async def unshare_asset(
 @router.post("/{asset_id}/global", dependencies=[Depends(require_permission(ASSETS_WRITE))])
 async def toggle_asset_global(
     asset_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Toggle an asset's global visibility."""
+    await _verify_asset_access(asset_id, request, db)
     asset = (await db.execute(select(Asset).where(Asset.id == asset_id))).scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")

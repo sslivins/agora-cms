@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission
+from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission, verify_resource_group_access
 from cms.database import get_db
 from cms.permissions import (
     DEVICES_READ, DEVICES_WRITE, DEVICES_REBOOT, DEVICES_DELETE,
@@ -35,6 +35,20 @@ router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 
 # Track devices with an in-flight upgrade to prevent concurrent upgrade commands
 _upgrading: set[str] = set()
+
+
+async def _get_device_with_access(
+    device_id: str, request: Request, db: AsyncSession,
+) -> Device:
+    """Fetch a device by ID and verify the current user has group access."""
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    user = getattr(request.state, "user", None)
+    if user:
+        await verify_resource_group_access(user, db, device.group_id)
+    return device
 
 
 async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: AsyncSession) -> None:
@@ -108,15 +122,11 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{device_id}", response_model=DeviceOut, dependencies=[Depends(require_permission(DEVICES_READ))])
-async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
+async def get_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
 
-    result = await db.execute(
-        select(Device).options(selectinload(Device.group)).where(Device.id == device_id)
-    )
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
+    await db.refresh(device, ["group"])
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
     return DeviceOut(
@@ -143,6 +153,10 @@ async def update_device(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+
+    user = getattr(request.state, "user", None)
+    if user:
+        await verify_resource_group_access(user, db, device.group_id)
 
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -182,6 +196,7 @@ async def update_device(
 async def set_device_password(
     device_id: str,
     body: SetPasswordRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     password = body.password.strip()
@@ -190,10 +205,7 @@ async def set_device_password(
     if len(password) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
 
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
@@ -209,12 +221,10 @@ async def set_device_password(
 @router.post("/{device_id}/reboot", dependencies=[Depends(require_permission(DEVICES_REBOOT))])
 async def reboot_device(
     device_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
@@ -230,12 +240,10 @@ async def reboot_device(
 @router.post("/{device_id}/upgrade", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def upgrade_device(
     device_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         _upgrading.discard(device_id)
@@ -258,14 +266,11 @@ async def upgrade_device(
 async def toggle_device_ssh(
     device_id: str,
     body: ToggleRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     enabled = body.enabled
-
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
@@ -286,12 +291,10 @@ async def toggle_device_ssh(
 @router.post("/{device_id}/factory-reset", dependencies=[Depends(require_permission(DEVICES_WRITE))])
 async def factory_reset_device(
     device_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
@@ -308,14 +311,11 @@ async def factory_reset_device(
 async def toggle_device_local_api(
     device_id: str,
     body: ToggleRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     enabled = body.enabled
-
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
@@ -333,16 +333,13 @@ async def toggle_device_local_api(
 
 
 @router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_WRITE))])
-async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
+async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Adopt a pending device or re-adopt an orphaned one.
 
     For pending devices: sets status to adopted and assigns an auth token on next connect.
     For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
     """
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if device.status == DeviceStatus.PENDING:
         device.status = DeviceStatus.ADOPTED
@@ -364,11 +361,8 @@ async def adopt_device(device_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{device_id}", dependencies=[Depends(require_permission(DEVICES_DELETE))])
-async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    device = await _get_device_with_access(device_id, request, db)
 
     # Remove referencing rows before deleting the device
     from cms.models.asset import DeviceAsset
@@ -389,6 +383,7 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/{device_id}/logs", dependencies=[Depends(require_permission(DEVICES_READ))])
 async def request_device_logs(
     device_id: str,
+    request: Request,
     body: LogRequest = LogRequest(),
     db: AsyncSession = Depends(get_db),
 ):
@@ -396,10 +391,7 @@ async def request_device_logs(
 
     Returns a dict of {service_name: log_text}.
     """
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = await _get_device_with_access(device_id, request, db)
 
     if not device_manager.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
@@ -479,6 +471,11 @@ async def update_group(
     group = result.scalar_one_or_none()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+
+    user = getattr(request.state, "user", None)
+    if user:
+        await verify_resource_group_access(user, db, group_id)
+
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(group, field, value)
@@ -520,11 +517,15 @@ async def update_group(
 
 
 @router.delete("/groups/{group_id}", dependencies=[Depends(require_permission(GROUPS_WRITE))])
-async def delete_group(group_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
     group = result.scalar_one_or_none()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+
+    user = getattr(request.state, "user", None)
+    if user:
+        await verify_resource_group_access(user, db, group_id)
     await db.delete(group)
     await db.commit()
     return {"deleted": str(group_id)}

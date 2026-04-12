@@ -6,12 +6,16 @@ import logging
 import zipfile
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import require_auth, require_permission
+from cms.auth import require_auth, require_permission, get_user_group_ids
+from cms.database import get_db
 from cms.permissions import LOGS_READ
+from cms.models.device import Device
 from cms.services.device_manager import device_manager
 
 logger = logging.getLogger("agora.cms.logs")
@@ -27,8 +31,26 @@ class LogDownloadRequest(BaseModel):
 
 
 @router.post("/download", dependencies=[Depends(require_permission(LOGS_READ))])
-async def download_logs(req: LogDownloadRequest):
+async def download_logs(req: LogDownloadRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Collect logs from selected devices (+ optionally CMS) and return a zip file."""
+    # Validate the requesting user has group access to every requested device
+    user = getattr(request.state, "user", None)
+    if user and req.device_ids:
+        group_ids = await get_user_group_ids(user, db)
+        if group_ids is not None:  # None = admin
+            result = await db.execute(
+                select(Device.id).where(
+                    Device.id.in_(req.device_ids),
+                    Device.group_id.notin_(group_ids) if group_ids else True,
+                )
+            )
+            forbidden = [r[0] for r in result.all()]
+            if forbidden:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Not authorised for device(s): {', '.join(forbidden)}",
+                )
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     buf = io.BytesIO()
 

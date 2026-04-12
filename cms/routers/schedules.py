@@ -5,15 +5,16 @@ import uuid
 from datetime import timedelta
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import require_auth, require_permission
+from cms.auth import require_auth, require_permission, get_user_group_ids, verify_resource_group_access
 from cms.database import get_db
 from cms.permissions import SCHEDULES_READ, SCHEDULES_WRITE
 from cms.models.asset import Asset
+from cms.models.device import Device
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
@@ -49,11 +50,40 @@ def _eager_options():
     ]
 
 
+async def _verify_schedule_access(schedule: Schedule, request: Request, db) -> None:
+    """Verify the current user has group access to the schedule's target."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        return
+    if schedule.group_id:
+        await verify_resource_group_access(user, db, schedule.group_id)
+    elif schedule.device_id:
+        dev = await db.execute(select(Device).where(Device.id == schedule.device_id))
+        device = dev.scalar_one_or_none()
+        if device:
+            await verify_resource_group_access(user, db, device.group_id)
+
+
 @router.get("", response_model=List[ScheduleOut], dependencies=[Depends(require_permission(SCHEDULES_READ))])
-async def list_schedules(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Schedule).options(*_eager_options()).order_by(Schedule.priority.desc(), Schedule.name)
-    )
+async def list_schedules(request: Request, db: AsyncSession = Depends(get_db)):
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    query = select(Schedule).options(*_eager_options()).order_by(Schedule.priority.desc(), Schedule.name)
+    if not is_admin:
+        if group_ids:
+            # Include schedules targeting the user's groups (directly or via device)
+            query = query.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            query = query.where(False)
+
+    result = await db.execute(query)
     return [_schedule_to_out(s) for s in result.scalars().all()]
 
 
@@ -137,13 +167,14 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOut, dependencies=[Depends(require_permission(SCHEDULES_READ))])
-async def get_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_schedule(schedule_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
     )
     schedule = result.scalar_one_or_none()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    await _verify_schedule_access(schedule, request, db)
     return _schedule_to_out(schedule)
 
 
@@ -151,12 +182,14 @@ async def get_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db
 async def update_schedule(
     schedule_id: uuid.UUID,
     data: ScheduleUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    await _verify_schedule_access(schedule, request, db)
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(schedule, field, value)
@@ -176,13 +209,14 @@ async def update_schedule(
 
 
 @router.delete("/{schedule_id}", dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
-async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_schedule(schedule_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
     )
     schedule = result.scalar_one_or_none()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    await _verify_schedule_access(schedule, request, db)
     # Resolve target devices before deleting the schedule
     target_ids = await _get_target_device_ids(schedule, db)
     await db.delete(schedule)
@@ -195,7 +229,7 @@ async def delete_schedule(schedule_id: uuid.UUID, db: AsyncSession = Depends(get
 
 
 @router.post("/{schedule_id}/end-now", dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
-async def end_schedule_now(schedule_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     """End the current occurrence of a schedule immediately.
 
     The schedule is skipped until its end_time today (or tomorrow for
@@ -211,6 +245,7 @@ async def end_schedule_now(schedule_id: uuid.UUID, db: AsyncSession = Depends(ge
     schedule = result.scalar_one_or_none()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    await _verify_schedule_access(schedule, request, db)
 
     # Determine skip-until as end_time today (local timezone)
     tz_result = await db.execute(
