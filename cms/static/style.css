@@ -330,7 +330,8 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     font-size: 0.9rem;
     color-scheme: dark;
 }
-.form-group input[type="time"] {
+.form-group input[type="time"],
+.form-group input[type="number"] {
     padding: 0.6rem 0.75rem;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
