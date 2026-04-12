@@ -542,7 +542,7 @@ async def users_page(
     # Load group memberships for each user
     from cms.models.user import UserGroup
     ug_q = await db.execute(select(UserGroup))
-    all_ug = ug_q.all()
+    all_ug = ug_q.scalars().all()
     user_groups_map: dict = {}
     for ug in all_ug:
         user_groups_map.setdefault(str(ug.user_id), []).append(str(ug.group_id))
