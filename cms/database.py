@@ -196,6 +196,27 @@ async def run_migrations():
                 "UPDATE users SET email = username || '@localhost' WHERE email IS NULL"
             ))
 
+        # -- Drop assets.owner_group_id (replaced by GroupAsset entries) --
+        # Use explicit table+column check (can't rely on _has_column for drops)
+        has_ogid = await conn.run_sync(
+            lambda c: sa_inspect(c).has_table("assets")
+            and "owner_group_id" in [col["name"] for col in sa_inspect(c).get_columns("assets")]
+        )
+        if has_ogid:
+            await conn.execute(text(
+                "ALTER TABLE assets DROP COLUMN owner_group_id"
+            ))
+
+        # -- Drop group_assets.is_owner (all associations are now equal) --
+        has_isowner = await conn.run_sync(
+            lambda c: sa_inspect(c).has_table("group_assets")
+            and "is_owner" in [col["name"] for col in sa_inspect(c).get_columns("group_assets")]
+        )
+        if has_isowner:
+            await conn.execute(text(
+                "ALTER TABLE group_assets DROP COLUMN is_owner"
+            ))
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

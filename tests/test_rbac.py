@@ -330,7 +330,6 @@ class TestAssetGroupScoping:
         assert resp.status_code == 201
         data = resp.json()
         assert data["is_global"] is True
-        assert data["owner_group_id"] is None
 
     async def test_upload_with_group_is_scoped(self, client, db_session):
         group = await _create_group(db_session, "Scoped Group")
@@ -338,7 +337,6 @@ class TestAssetGroupScoping:
         assert resp.status_code == 201
         data = resp.json()
         assert data["is_global"] is False
-        assert data["owner_group_id"] == str(group.id)
 
     async def test_viewer_sees_global_assets(self, app, db_session, client):
         # Upload global asset as admin
@@ -437,13 +435,14 @@ class TestAssetGroupScoping:
         assert resp.status_code == 200
         assert resp.json()["status"] == "unshared"
 
-    async def test_cannot_unshare_owner_group(self, client, db_session):
-        group = await _create_group(db_session, "Owner Unshare")
-        upload_resp = await self._upload_asset(client, "owner_unshare.mp4", str(group.id))
+    async def test_can_unshare_any_group(self, client, db_session):
+        """All group associations are equal — any can be removed."""
+        group = await _create_group(db_session, "Any Unshare")
+        upload_resp = await self._upload_asset(client, "any_unshare.mp4", str(group.id))
         asset_id = upload_resp.json()["id"]
 
         resp = await client.delete(f"/api/assets/{asset_id}/share", params={"group_id": str(group.id)})
-        assert resp.status_code == 409
+        assert resp.status_code == 200
 
     async def test_toggle_global(self, client, db_session):
         group = await _create_group(db_session, "Toggle Global")
@@ -486,7 +485,6 @@ class TestAssetGroupScoping:
                 params={"group_id": str(group.id)},
             )
             assert resp.status_code == 201
-            assert resp.json()["owner_group_id"] == str(group.id)
         finally:
             await ac.aclose()
 

@@ -19,13 +19,20 @@
         </div>
         {% if user_groups | length > 0 %}
         <div style="margin-top:0.75rem;">
-            <label for="upload-group">Assign to group</label>
-            <select id="upload-group" name="group_id" class="inline-edit" style="margin-top:0.25rem;">
-                {% if is_admin %}<option value="">(Global — visible to all)</option>{% endif %}
+            <label>Assign to groups</label>
+            <div id="upload-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.25rem; min-height:1.6rem;"></div>
+            <select id="upload-group-picker" class="inline-edit" style="margin-top:0.35rem;"
+                    onchange="addUploadGroup(this)">
+                <option value="">— Add a group —</option>
                 {% for g in user_groups %}
-                <option value="{{ g.id }}">{{ g.name }}</option>
+                <option value="{{ g.id }}" data-name="{{ g.name }}">{{ g.name }}</option>
                 {% endfor %}
             </select>
+            {% if is_admin %}
+            <label style="display:inline-flex; align-items:center; gap:0.35rem; margin-top:0.35rem; font-size:0.85rem; cursor:pointer;">
+                <input type="checkbox" id="upload-global" onchange="toggleUploadGlobal(this)"> Make Global (visible to all)
+            </label>
+            {% endif %}
         </div>
         {% else %}
         <p class="text-muted" style="margin-top:0.5rem; font-size:0.85rem">
@@ -62,8 +69,12 @@
                 <td>
                     {% if a.is_global %}
                     <span class="badge badge-ready">Global</span>
-                    {% elif a.owner_group_id and group_name_map.get(a.owner_group_id | string) %}
-                    <span class="badge badge-processing">{{ group_name_map[a.owner_group_id | string] }}</span>
+                    {% elif a.group_asset_entries | length > 0 %}
+                    {% for ga in a.group_asset_entries %}
+                    <span class="badge badge-processing" style="margin-right:0.15rem">{{ group_name_map.get(ga.group_id | string, '?') }}</span>
+                    {% endfor %}
+                    {% elif a.uploaded_by_user_id %}
+                    <span class="badge badge-pending">Personal</span>
                     {% else %}
                     <span class="text-muted">—</span>
                     {% endif %}
@@ -193,41 +204,43 @@
                         {% if 'assets:write' in user_perms %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">Scope</span>
-                            <span class="detail-value" id="scope-{{ a.id }}">
+                            <span class="detail-value" id="scope-{{ a.id }}" style="display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap">
                                 {% if a.is_global %}
                                 <span class="badge badge-ready">Global</span>
-                                {% elif not a.owner_group_id and a.group_asset_entries | length == 0 %}
+                                {% elif a.group_asset_entries | length == 0 %}
                                 <span class="badge badge-pending">Personal</span>
                                 {% else %}
                                 {% for ga in a.group_asset_entries %}
-                                <span class="badge badge-processing" style="margin-right:0.25rem">
+                                <span class="badge badge-processing">
                                     {{ group_name_map.get(ga.group_id | string, 'Unknown') }}
-                                    {% if not ga.is_owner %}
                                     <button class="btn-x" onclick="event.stopPropagation(); unshareAsset('{{ a.id }}', '{{ ga.group_id }}')" title="Remove from group">&times;</button>
-                                    {% endif %}
                                 </span>
                                 {% endfor %}
                                 {% endif %}
-                            </span>
-                        </div>
-                        <div class="detail-item detail-item-wide" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
-                            <select id="assign-group-{{ a.id }}" class="inline-edit" style="width:auto; min-width:12rem;" onclick="event.stopPropagation()">
-                                <option value="">— Assign to group —</option>
-                                {% for g in user_groups %}
-                                {% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}
-                                {% if not already %}
-                                <option value="{{ g.id }}">{{ g.name }}</option>
+                                {% if user_groups | length > 0 %}
+                                <span class="scope-add-wrap" style="position:relative; display:inline-flex;">
+                                    <button class="btn-add-group" onclick="event.stopPropagation(); toggleGroupPicker('{{ a.id }}')" type="button" title="Add to group">+</button>
+                                    <select id="assign-group-{{ a.id }}" class="inline-edit scope-add-select" style="display:none; position:absolute; left:0; top:100%; z-index:10; min-width:10rem;"
+                                            onclick="event.stopPropagation()"
+                                            onchange="event.stopPropagation(); if(this.value) assignAssetGroup('{{ a.id }}')">
+                                        <option value="">Select group…</option>
+                                        {% for g in user_groups %}
+                                        {% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}
+                                        {% if not already %}
+                                        <option value="{{ g.id }}">{{ g.name }}</option>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </span>
                                 {% endif %}
-                                {% endfor %}
-                            </select>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); assignAssetGroup('{{ a.id }}')" type="button">Add</button>
-                            {% if is_admin %}
-                            <button class="btn btn-sm {% if a.is_global %}btn-danger{% else %}btn-secondary{% endif %}"
-                                    onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" type="button"
-                                    title="{% if a.is_global %}Remove global visibility{% else %}Make visible to all groups{% endif %}">
-                                {% if a.is_global %}Remove Global{% else %}Make Global{% endif %}
-                            </button>
-                            {% endif %}
+                                {% if is_admin %}
+                                <button class="btn btn-sm {% if a.is_global %}btn-danger{% else %}btn-secondary{% endif %}" style="margin-left:0.25rem;"
+                                        onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" type="button"
+                                        title="{% if a.is_global %}Remove global visibility{% else %}Make visible to all groups{% endif %}">
+                                    {% if a.is_global %}Remove Global{% else %}Make Global{% endif %}
+                                </button>
+                                {% endif %}
+                            </span>
                         </div>
                         {% endif %}
                     </div>

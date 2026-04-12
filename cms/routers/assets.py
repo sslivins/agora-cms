@@ -181,7 +181,8 @@ async def upload_asset(
     user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-    group_id: str | None = Query(None, description="Owner group UUID"),
+    group_id: str | None = Query(None, description="Group UUID (single, for backward compat)"),
+    group_ids: str | None = Query(None, description="Comma-separated group UUIDs"),
 ):
     if not file.filename or not ALLOWED_PATTERN.match(file.filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -240,21 +241,26 @@ async def upload_asset(
         # Sync source file to cloud storage
         await storage.on_file_stored(file.filename)
 
-    # Resolve owner group
-    owner_uuid = None
+    # Resolve group UUIDs (support both single group_id and multi group_ids)
+    resolved_groups: list[uuid.UUID] = []
     user_groups = await get_user_group_ids(user, db)
     is_admin = user_groups is None
-    if group_id:
+    raw_ids = []
+    if group_ids:
+        raw_ids = [g.strip() for g in group_ids.split(",") if g.strip()]
+    elif group_id:
+        raw_ids = [group_id]
+    for gid in raw_ids:
         try:
-            owner_uuid = uuid.UUID(group_id)
+            parsed = uuid.UUID(gid)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid group_id")
-        # Verify user has access to this group (or is admin)
-        if not is_admin and owner_uuid not in user_groups:
+            raise HTTPException(status_code=400, detail=f"Invalid group_id: {gid}")
+        if not is_admin and parsed not in user_groups:
             raise HTTPException(status_code=403, detail="You are not a member of this group")
+        resolved_groups.append(parsed)
 
-    # Only admin uploads without group_id become global; others are personal
-    make_global = (owner_uuid is None and is_admin)
+    # Only admin uploads without groups become global; others are personal
+    make_global = (not resolved_groups and is_admin)
 
     # Database record
     asset = Asset(
@@ -263,20 +269,15 @@ async def upload_asset(
         asset_type=asset_type,
         size_bytes=len(content),
         checksum=checksum,
-        owner_group_id=owner_uuid,
         is_global=make_global,
         uploaded_by_user_id=user.id,
     )
     db.add(asset)
     await db.flush()
 
-    # Create GroupAsset ownership entry
-    if owner_uuid:
-        db.add(GroupAsset(
-            asset_id=asset.id,
-            group_id=owner_uuid,
-            is_owner=True,
-        ))
+    # Create GroupAsset entries for all selected groups
+    for gid in resolved_groups:
+        db.add(GroupAsset(asset_id=asset.id, group_id=gid))
 
     await db.commit()
     await db.refresh(asset)
@@ -518,7 +519,7 @@ async def share_asset(
     if existing:
         return {"status": "already_shared"}
 
-    db.add(GroupAsset(asset_id=asset_id, group_id=group_id, is_owner=False))
+    db.add(GroupAsset(asset_id=asset_id, group_id=group_id))
     await db.commit()
     return {"status": "shared", "asset_id": str(asset_id), "group_id": str(group_id)}
 
@@ -529,14 +530,12 @@ async def unshare_asset(
     group_id: uuid.UUID = Query(..., description="Group UUID to unshare from"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove an asset's sharing with a group (cannot remove owner group)."""
+    """Remove an asset from a group."""
     ga = (await db.execute(
         select(GroupAsset).where(GroupAsset.asset_id == asset_id, GroupAsset.group_id == group_id)
     )).scalar_one_or_none()
     if not ga:
         raise HTTPException(status_code=404, detail="Asset is not shared with this group")
-    if ga.is_owner:
-        raise HTTPException(status_code=409, detail="Cannot unshare from the owner group")
     await db.delete(ga)
     await db.commit()
     return {"status": "unshared", "asset_id": str(asset_id), "group_id": str(group_id)}

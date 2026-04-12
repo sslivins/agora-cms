@@ -36,11 +36,7 @@ class Asset(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    # RBAC: which group owns this asset (NULL = global/legacy)
-    owner_group_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("device_groups.id", ondelete="SET NULL"), nullable=True
-    )
-    # When True, asset is visible to all groups regardless of ownership
+    # When True, asset is visible to all groups regardless of group associations
     is_global: Mapped[bool] = mapped_column(
         "is_global", nullable=False, default=False, server_default="false"
     )

@@ -478,19 +478,73 @@ async function uploadAsset(form) {
             submitBtn.disabled = false;
             resolve(false);
         });
-        xhr.open("POST", "/api/assets/upload" + (function() {
-            const sel = document.getElementById("upload-group");
-            return sel && sel.value ? "?group_id=" + sel.value : "";
-        })());
+        // Build group_ids query param from selected badges
+        const ids = _getUploadGroupIds();
+        const globalCb = document.getElementById("upload-global");
+        let qs = "";
+        if (globalCb && globalCb.checked) {
+            // No group_ids → admin upload becomes global
+        } else if (ids.length) {
+            qs = "?group_ids=" + ids.join(",");
+        }
+        xhr.open("POST", "/api/assets/upload" + qs);
         xhr.send(data);
     });
 }
 
-// ── Asset group management ──
+// ── Upload multi-group selector ──
+function _getUploadGroupIds() {
+    const badges = document.querySelectorAll("#upload-groups-badges .badge[data-group-id]");
+    return Array.from(badges).map(b => b.dataset.groupId);
+}
+
+function addUploadGroup(selectEl) {
+    const gid = selectEl.value;
+    if (!gid) return;
+    const name = selectEl.options[selectEl.selectedIndex].dataset.name;
+    selectEl.value = "";
+    const container = document.getElementById("upload-groups-badges");
+    // Don't add duplicates
+    if (container.querySelector(`[data-group-id="${gid}"]`)) return;
+    const badge = document.createElement("span");
+    badge.className = "badge badge-processing";
+    badge.dataset.groupId = gid;
+    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="this.parentElement.remove()">&times;</button>`;
+    container.appendChild(badge);
+}
+
+function toggleUploadGlobal(cb) {
+    const picker = document.getElementById("upload-group-picker");
+    const badges = document.getElementById("upload-groups-badges");
+    if (cb.checked) {
+        if (picker) picker.disabled = true;
+        if (badges) badges.style.opacity = "0.4";
+    } else {
+        if (picker) picker.disabled = false;
+        if (badges) badges.style.opacity = "1";
+    }
+}
+
+// ── Asset group management (detail row) ──
+function toggleGroupPicker(assetId) {
+    const sel = document.getElementById("assign-group-" + assetId);
+    if (!sel) return;
+    if (sel.style.display === "none") {
+        sel.style.display = "block";
+        sel.focus();
+        // Close on blur
+        const close = () => { sel.style.display = "none"; sel.removeEventListener("blur", close); };
+        sel.addEventListener("blur", close);
+    } else {
+        sel.style.display = "none";
+    }
+}
+
 async function assignAssetGroup(assetId) {
     const sel = document.getElementById("assign-group-" + assetId);
     const groupId = sel ? sel.value : "";
-    if (!groupId) { showToast("Select a group first", true); return; }
+    if (!groupId) return;
+    sel.style.display = "none";
     const resp = await apiCall("POST", `/api/assets/${assetId}/share?group_id=${groupId}`);
     if (resp && resp.ok) location.reload();
 }
