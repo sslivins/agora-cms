@@ -727,16 +727,16 @@ class TestSecondPrecisionEndTime:
         end_time = page.input_value('input[name="end_time"]')
         assert end_time == "09:30:00", f"Expected 09:30:00 but got {end_time}"
 
-    def test_time_inputs_have_step_one(self, page: Page, api, ws_url):
-        """Verify time inputs have step=1 attribute for seconds display."""
+    def test_time_inputs_default_step(self, page: Page, api, ws_url):
+        """Verify time inputs use default step (no step attribute) for minute-level picker."""
         _setup_device_and_asset(page, api, ws_url, "sec-step-001")
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
         start_input = page.locator('input[name="start_time"]')
         end_input = page.locator('input[name="end_time"]')
-        assert start_input.get_attribute("step") == "1", "start_time missing step=1"
-        assert end_input.get_attribute("step") == "1", "end_time missing step=1"
+        assert start_input.get_attribute("step") is None, "start_time should not have step attribute"
+        assert end_input.get_attribute("step") is None, "end_time should not have step attribute"
 
 
 class TestSchedulePreviewSubMinuteDuration:
