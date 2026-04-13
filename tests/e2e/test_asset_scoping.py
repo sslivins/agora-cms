@@ -1,5 +1,9 @@
 """E2E tests for RBAC asset scoping.
 
+NOTE: These tests are currently disabled (see #183).
+They depend on a live Azure CMS instance which is being decommissioned.
+They need to be converted to run against a local server.
+
 Tests:
 1. Upload to GroupA → userA sees it, userB does not
 2. No-group user uploads → personal asset visible to self + admin only
@@ -12,6 +16,8 @@ import io
 import pytest
 import requests
 from tests.e2e.conftest import login_playwright, CMS_URL, ADMIN_USER, ADMIN_PASS
+
+pytestmark = pytest.mark.skip(reason="e2e tests need conversion to local server (#183)")
 
 
 # ── Helpers ──
