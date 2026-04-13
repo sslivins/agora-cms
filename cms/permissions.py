@@ -41,8 +41,11 @@ SETTINGS_READ = "settings:read"
 SETTINGS_WRITE = "settings:write"
 
 # ── API key permissions ──
-API_KEYS_READ = "api_keys:read"
-API_KEYS_WRITE = "api_keys:write"
+API_KEYS_READ = "api_keys:read"      # Legacy — kept for backward compat
+API_KEYS_WRITE = "api_keys:write"    # Legacy — kept for backward compat
+MCP_KEYS_SELF = "mcp_keys:self"      # Create/manage own MCP keys
+API_KEYS_SELF = "api_keys:self"      # Create/manage own API keys
+API_KEYS_MANAGE = "api_keys:manage"  # Admin: see/revoke/regenerate any user's keys
 
 # ── Log permissions ──
 LOGS_READ = "logs:read"
@@ -64,6 +67,7 @@ ALL_PERMISSIONS: list[str] = [
     ROLES_READ, ROLES_WRITE,
     SETTINGS_READ, SETTINGS_WRITE,
     API_KEYS_READ, API_KEYS_WRITE,
+    MCP_KEYS_SELF, API_KEYS_SELF, API_KEYS_MANAGE,
     LOGS_READ,
     AUDIT_READ,
     GROUPS_VIEW_ALL,
@@ -90,6 +94,9 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     SETTINGS_WRITE: "Modify system settings",
     API_KEYS_READ: "View API keys",
     API_KEYS_WRITE: "Create, revoke, and delete API keys",
+    MCP_KEYS_SELF: "Create, revoke, and regenerate your own MCP keys",
+    API_KEYS_SELF: "Create, revoke, and regenerate your own API keys",
+    API_KEYS_MANAGE: "View and manage all users' API keys",
     LOGS_READ: "View system and device logs",
     AUDIT_READ: "View audit trail and activity history",
     GROUPS_VIEW_ALL: "View all groups and their resources regardless of group assignment",
@@ -106,6 +113,7 @@ OPERATOR_PERMISSIONS: list[str] = [
     SCHEDULES_READ, SCHEDULES_WRITE,
     PROFILES_READ,
     LOGS_READ,
+    MCP_KEYS_SELF,
 ]
 
 VIEWER_PERMISSIONS: list[str] = [

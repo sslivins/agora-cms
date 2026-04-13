@@ -27,7 +27,9 @@ SETTING_PASSWORD_HASH = "admin_password_hash"
 SETTING_USERNAME = "admin_username"
 SETTING_TIMEZONE = "timezone"
 SETTING_MCP_ENABLED = "mcp_enabled"
-SETTING_MCP_API_KEY = "mcp_api_key"
+SETTING_MCP_API_KEY = "mcp_api_key"  # Legacy — to be removed
+SETTING_MCP_ROLE_ID = "mcp_role_id"  # System-wide MCP permission ceiling
+SETTING_API_ROLE_ID = "api_role_id"  # System-wide API key permission ceiling
 SETTING_SMTP_HOST = "smtp_host"
 SETTING_SMTP_PORT = "smtp_port"
 SETTING_SMTP_USERNAME = "smtp_username"
@@ -59,8 +61,11 @@ def _hash_api_key(key: str) -> str:
 
 async def _resolve_user_from_api_key(
     api_key_value: str, db: AsyncSession
-) -> User | None:
-    """Look up the user associated with an API key. Returns None if invalid."""
+) -> tuple[User, APIKey] | None:
+    """Look up the user associated with an API key.
+
+    Returns ``(user, api_key_row)`` or ``None`` if the key is invalid.
+    """
     key_hash = _hash_api_key(api_key_value)
     result = await db.execute(
         select(APIKey)
@@ -82,8 +87,11 @@ async def _resolve_user_from_api_key(
             .join(User.role)
             .where(Role.name == "Admin", User.is_active.is_(True))
         )
-        return admin.scalar_one_or_none()
-    return key_row.user
+        admin_user = admin.scalar_one_or_none()
+        if admin_user is None:
+            return None
+        return admin_user, key_row
+    return key_row.user, key_row
 
 
 async def _resolve_user_from_session(
@@ -136,9 +144,16 @@ async def get_current_user(
     # API key auth
     api_key = request.headers.get("X-API-Key")
     if api_key:
-        user = await _resolve_user_from_api_key(api_key, db)
-        if user is None:
+        result = await _resolve_user_from_api_key(api_key, db)
+        if result is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        user, key_row = result
+        # MCP keys are not allowed on the REST API
+        if key_row.key_type == "mcp":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="MCP keys cannot be used on the REST API. Use an API key instead.",
+            )
         return user
 
     # Session cookie auth
@@ -257,6 +272,35 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
     else:
         db.add(CMSSetting(key=key, value=value))
     await db.commit()
+
+
+async def compute_effective_permissions(
+    user: User, key_type: str, db: AsyncSession
+) -> list[str]:
+    """Compute effective permissions by intersecting user role with key-type role ceiling.
+
+    If no key-type role is configured, the user's own permissions are returned unchanged.
+    """
+    user_perms = set(user.role.permissions) if user.role else set()
+
+    setting_key = SETTING_MCP_ROLE_ID if key_type == "mcp" else SETTING_API_ROLE_ID
+    role_id_str = await get_setting(db, setting_key)
+    if not role_id_str:
+        return list(user_perms)
+
+    import uuid as _uuid
+    try:
+        role_id = _uuid.UUID(role_id_str)
+    except ValueError:
+        return list(user_perms)
+
+    result = await db.execute(select(Role).where(Role.id == role_id))
+    ceiling_role = result.scalar_one_or_none()
+    if ceiling_role is None:
+        return list(user_perms)
+
+    ceiling_perms = set(ceiling_role.permissions)
+    return list(user_perms & ceiling_perms)
 
 
 async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None:
