@@ -326,6 +326,18 @@
 {% block scripts %}
 <script>
 (function() {
+    // Restore expanded rows after a poller-triggered reload
+    const saved = sessionStorage.getItem("expandedAssets");
+    if (saved) {
+        sessionStorage.removeItem("expandedAssets");
+        try {
+            for (const id of JSON.parse(saved)) {
+                const row = document.querySelector(`tr.asset-row[data-asset-id="${id}"]`);
+                if (row) toggleAsset(row);
+            }
+        } catch (e) { /* ignore */ }
+    }
+
     const dropZone = document.getElementById("drop-zone");
     const fileInput = document.getElementById("file-input");
 
@@ -486,6 +498,10 @@
             const countChanged = newState.asset_count !== lastState.asset_count;
             // Scope changes reload immediately; count changes wait for collapsed view
             if (scopeChanged || (countChanged && !document.querySelector(".asset-row.expanded"))) {
+                // Preserve expanded rows across reload
+                const expanded = [...document.querySelectorAll(".asset-row.expanded")]
+                    .map(r => r.dataset.assetId).filter(Boolean);
+                if (expanded.length) sessionStorage.setItem("expandedAssets", JSON.stringify(expanded));
                 location.reload();
                 return;
             }
