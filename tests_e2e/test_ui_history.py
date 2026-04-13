@@ -62,17 +62,19 @@ class TestDashboardRecentActivity:
         link.click()
         page.wait_for_url("**/history")
 
-    def test_history_event_badges_render(self, page: Page, api):
+    def test_history_event_badges_render(self, page: Page, api, ws_url, e2e_server):
         """Event badges have proper CSS classes after seeding a log entry."""
-        # Seed a log entry via the API (end-now on a schedule)
-        # First create a device and asset
-        import io
-        api.post("/api/devices/register", json={
-            "device_id": "e2e-hist-pi",
-            "auth_token": "tok",
-            "firmware_version": "1.0",
-        })
-        api.patch("/api/devices/e2e-hist-pi", json={"status": "adopted"})
+        from tests_e2e.fake_device import FakeDevice
+        from tests_e2e.conftest import run_async
+
+        # Register device via WebSocket and adopt it
+        async def register():
+            async with FakeDevice("e2e-hist-pi", ws_url) as dev:
+                await dev.send_status()
+
+        run_async(register())
+        api.post("/api/devices/e2e-hist-pi/adopt")
+
         upload = api.create_asset(filename="e2e-history.mp4")
         asset_id = upload.json()["id"]
 
