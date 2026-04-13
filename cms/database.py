@@ -44,6 +44,11 @@ async def run_migrations():
     """
     from sqlalchemy import text, inspect as sa_inspect
 
+    # Create any brand-new tables first so FK references in ALTER statements
+    # can resolve (e.g. api_keys.user_id → users.id on first RBAC deploy).
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     async with _engine.begin() as conn:
         # Helper to check if a column exists in a table
         def _has_column(connection, table_name, column_name):
@@ -217,6 +222,6 @@ async def run_migrations():
                 "ALTER TABLE group_assets DROP COLUMN is_owner"
             ))
 
-    # Let create_all handle brand-new tables (device_profiles, asset_variants)
+    # Run create_all again in case migrations added models with new relationships
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

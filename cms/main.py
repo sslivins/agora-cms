@@ -25,10 +25,11 @@ _buf_handler = _BufferHandler(logging.INFO)
 _buf_handler.setFormatter(logging.Formatter(_fmt))
 logging.getLogger().addHandler(_buf_handler)
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms import __version__
 from cms.auth import ensure_admin_credentials, get_settings
@@ -373,3 +374,11 @@ app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(ws_router)
 app.include_router(ui_router)
+
+
+@app.get("/healthz", tags=["system"])
+async def healthz(db: AsyncSession = Depends(get_db)):
+    """Lightweight liveness probe — verifies the app can reach the database."""
+    from sqlalchemy import text
+    await db.execute(text("SELECT 1"))
+    return {"status": "ok", "version": __version__}
