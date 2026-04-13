@@ -19,13 +19,13 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          # BtbN static build — includes libsvtav1, libaom-av1, libx265, libopus, etc.
+          # FFmpeg static build hosted in our own repo release (originally from BtbN/FFmpeg-Builds)
           ARCH=$(dpkg --print-architecture)
           case "$ARCH" in
             arm64|aarch64) FFARCH=linuxarm64 ;;
             *)             FFARCH=linux64 ;;
           esac
-          curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-06-13-14/ffmpeg-n8.1-7-ga3475e2554-${FFARCH}-gpl-8.1.tar.xz" | \
+          curl -fSL "https://github.com/sslivins/agora-cms/releases/download/ffmpeg-8.1/ffmpeg-${FFARCH}.tar.xz" | \
             sudo tar -xJ --strip-components=1 -C /usr/local
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265
