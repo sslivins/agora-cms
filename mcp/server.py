@@ -613,7 +613,10 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith("/health"):
+        # Skip auth for health checks and OAuth discovery probes.
+        # Returning 404 on /.well-known/ tells MCP clients that this
+        # server uses simple Bearer auth, not OAuth.
+        if request.url.path.startswith("/health") or request.url.path.startswith("/.well-known"):
             return await call_next(request)
 
         token = request.headers.get("authorization", "")
