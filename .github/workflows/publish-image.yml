@@ -13,7 +13,7 @@ permissions:
 
 env:
   ACR_REGISTRY: agoracmsacr.azurecr.io
-  AZURE_RESOURCE_GROUP: agora-cms-w3
+  AZURE_RESOURCE_GROUP: agoracms-cms-rg
 
 jobs:
   publish:

@@ -298,7 +298,7 @@ $maxAttempts = 30
 $cmsReady = $false
 for ($i = 1; $i -le $maxAttempts; $i++) {
     try {
-        $health = Invoke-WebRequest -Uri "https://$cmsUrl/login" -TimeoutSec 5 -ErrorAction SilentlyContinue -MaximumRedirection 0
+        $health = Invoke-WebRequest -Uri "https://$cmsUrl/healthz" -TimeoutSec 5 -ErrorAction SilentlyContinue -MaximumRedirection 0
         if ($health.StatusCode -eq 200) { $cmsReady = $true; break }
     } catch {}
     if ($i -eq $maxAttempts) {
@@ -313,7 +313,7 @@ if ($cmsReady) {
     try {
         # Login returns a 303 redirect on success; follow it to capture the session cookie
         $null = Invoke-WebRequest -Uri "https://$cmsUrl/login" -Method POST `
-            -Body @{username='admin'; password=$cmsPass} `
+            -Body @{email='admin'; password=$cmsPass} `
             -SessionVariable cmsSession -ErrorAction Stop
 
         # Create a CMS API key for the MCP server
