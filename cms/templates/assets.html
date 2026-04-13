@@ -482,14 +482,12 @@
             if (data.assets) updateLiveAssets(data.assets);
 
             // Full reload for structural changes (asset added/removed or scope changed)
-            // and only when no detail panel is open
-            const structuralChange = newState.asset_count !== lastState.asset_count ||
-                (lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash);
-            if (structuralChange) {
-                if (!document.querySelector(".asset-row.expanded")) {
-                    location.reload();
-                    return;
-                }
+            const scopeChanged = lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash;
+            const countChanged = newState.asset_count !== lastState.asset_count;
+            // Scope changes reload immediately; count changes wait for collapsed view
+            if (scopeChanged || (countChanged && !document.querySelector(".asset-row.expanded"))) {
+                location.reload();
+                return;
             }
             lastState = newState;
         } catch (e) { /* ignore */ }
