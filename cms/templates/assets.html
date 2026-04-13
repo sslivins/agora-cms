@@ -134,7 +134,7 @@
                     <button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
                     {% endif %}
                     {% else %}
-                    <span class="badge badge-processing" style="font-size:0.75rem">Shared</span>
+                    <span class="has-tooltip" style="display:inline-block"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
                     {% endif %}
                     {% endif %}
                 </td>
