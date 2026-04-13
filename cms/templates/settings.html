@@ -15,7 +15,7 @@
     <table>
         <tbody>
             <tr><td>CMS Version</td><td>{{ version }}</td></tr>
-            <tr><td>Admin Username</td><td>{{ username }}</td></tr>
+            <tr><td>Logged in as</td><td>{{ username }}</td></tr>
             <tr><td>Connected Devices</td><td>{{ online_count }}</td></tr>
             <tr><td>Asset Storage</td><td>{{ asset_storage }}</td></tr>
         </tbody>
@@ -64,6 +64,7 @@
         <button type="submit" class="btn btn-primary">Update Password</button>
     </form>
 </div>
+
 
 <div class="card" id="db-card">
     <h2>Database <span id="db-status-badge" class="badge badge-offline">checking…</span></h2>
@@ -169,6 +170,7 @@
 })();
 </script>
 
+{% if 'settings:write' in user_perms %}
 <div class="card" id="mcp-card">
     <h2>MCP Server <span id="mcp-status-badge" class="badge badge-offline">checking…</span> <span id="mcp-api-badge" class="badge badge-offline" style="display:none;">API: checking…</span></h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
@@ -182,21 +184,13 @@
 
     <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
         <div class="form-group">
-            <label>API Key</label>
-            <div style="display: flex; gap: 0.5rem; align-items: center;">
-                <input type="text" id="mcp-api-key" value="{{ mcp_api_key }}" readonly
-                       style="flex:1; font-family: monospace; font-size: 0.85rem;"
-                       placeholder="No key generated yet">
-                <button type="button" class="btn btn-secondary" id="mcp-copy-key"
-                        onclick="copyToClipboard(document.getElementById('mcp-api-key').value)">
-                    Copy
-                </button>
-                <button type="button" class="btn btn-primary" id="mcp-generate-key">
-                    {{ 'Regenerate' if mcp_api_key else 'Generate' }}
-                </button>
-            </div>
+            <label>Authentication</label>
+            <p class="text-muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
+                MCP clients authenticate using your personal API key. Create one in
+                <strong>Settings → API Keys</strong>, then configure your LLM client
+                with the key as the Bearer token.
+            </p>
         </div>
-
     </div>
 </div>
 
@@ -206,7 +200,6 @@
     const keySection = document.getElementById("mcp-key-section");
     const statusBadge = document.getElementById("mcp-status-badge");
     const apiBadge = document.getElementById("mcp-api-badge");
-    const generateBtn = document.getElementById("mcp-generate-key");
 
     // Check MCP container health
     async function checkMcpHealth() {
@@ -216,7 +209,6 @@
             if (data.online) {
                 statusBadge.textContent = "online";
                 statusBadge.className = "badge badge-online";
-                // Show API connection status
                 apiBadge.style.display = "";
                 if (data.api_connected) {
                     apiBadge.textContent = "API: connected";
@@ -255,25 +247,118 @@
             showToast("Failed to update MCP setting", true);
         }
     });
-
-    // Generate API key
-    generateBtn.addEventListener("click", async function() {
-        const ok = await showConfirm("Generate a new API key? Any existing key will stop working.");
-        if (!ok) return;
-        try {
-            const resp = await fetch("/api/mcp/generate-key", {method: "POST"});
-            if (!resp.ok) throw new Error("Generate failed");
-            const data = await resp.json();
-            document.getElementById("mcp-api-key").value = data.key;
-            generateBtn.textContent = "Regenerate";
-            showToast("New API key generated — copy it now");
-        } catch {
-            showToast("Failed to generate API key", true);
-        }
-    });
 })();
 </script>
 
+<div class="card" id="smtp-card">
+    <h2>Email (SMTP) <span id="smtp-status-badge" class="badge badge-offline">not configured</span></h2>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Configure outgoing email for welcome emails, notifications, and alerts.
+    </p>
+    <form id="smtp-form" onsubmit="event.preventDefault(); saveSmtpSettings()">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="smtp-host">SMTP Host</label>
+                <input type="text" id="smtp-host" placeholder="e.g. smtp.gmail.com" value="{{ smtp_host or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="smtp-port">Port</label>
+                <input type="number" id="smtp-port" placeholder="587" value="{{ smtp_port or '587' }}" style="max-width: 100px;">
+            </div>
+
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="smtp-username">Username</label>
+                <input type="text" id="smtp-username" placeholder="SMTP username or email" value="{{ smtp_username or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="smtp-password">Password</label>
+                <input type="password" id="smtp-password" placeholder="{{ '••••••••' if smtp_password else 'SMTP password' }}" value="">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="smtp-from-email">From Email</label>
+                <input type="email" id="smtp-from-email" placeholder="e.g. noreply@example.com" value="{{ smtp_from_email or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="smtp-test-email">Test Recipient</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="email" id="smtp-test-email" placeholder="your@email.com" style="flex: 1;">
+                    <button type="button" class="btn btn-secondary" onclick="testSmtp()">Send Test</button>
+                </div>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Save SMTP Settings</button>
+    </form>
+</div>
+
+<script>
+(function() {
+    const badge = document.getElementById("smtp-status-badge");
+    if (document.getElementById("smtp-host").value) {
+        badge.textContent = "configured";
+        badge.className = "badge badge-online";
+    }
+})();
+
+async function saveSmtpSettings() {
+    const body = {
+        host: document.getElementById("smtp-host").value.trim(),
+        port: parseInt(document.getElementById("smtp-port").value) || 587,
+        username: document.getElementById("smtp-username").value.trim(),
+        from_email: document.getElementById("smtp-from-email").value.trim(),
+
+    };
+    const pw = document.getElementById("smtp-password").value;
+    if (pw) body.password = pw;
+    try {
+        const resp = await fetch("/api/settings/smtp", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail || "Save failed");
+        showToast("SMTP settings saved");
+        const badge = document.getElementById("smtp-status-badge");
+        if (body.host) {
+            badge.textContent = "configured";
+            badge.className = "badge badge-online";
+        } else {
+            badge.textContent = "not configured";
+            badge.className = "badge badge-offline";
+        }
+    } catch (err) {
+        showToast(err.message || "Failed to save SMTP settings", true);
+    }
+}
+
+async function testSmtp() {
+    const testEmail = document.getElementById("smtp-test-email").value.trim();
+    if (!testEmail) { showToast("Enter a test recipient email", true); return; }
+    // Save first, then test
+    await saveSmtpSettings();
+    try {
+        const resp = await fetch("/api/settings/smtp/test", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({to_email: testEmail}),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast("Test email sent — check your inbox");
+        } else {
+            showToast("Test failed: " + (data.message || "Unknown error"), true);
+        }
+    } catch (err) {
+        showToast("Failed to send test email", true);
+    }
+}
+</script>
+{% endif %}
+
+{% if 'api_keys:write' in user_perms %}
 <div class="card" id="api-keys-card">
     <h2>API Keys</h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
@@ -403,7 +488,9 @@ async function deleteApiKey(id, name) {
     }
 }
 </script>
+{% endif %}
 
+{% if 'settings:write' in user_perms %}
 <div class="card" id="logs-card">
     <h2>Download Logs</h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
@@ -537,5 +624,6 @@ async function deleteApiKey(id, name) {
     });
 })();
 </script>
+{% endif %}
 
 {% endblock %}

@@ -36,7 +36,7 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout httpx aiosqlite
 
       - name: Run tests
-        run: python -m pytest tests/ --tb=short -q -rs
+        run: python -m pytest tests/ --ignore=tests/e2e --tb=short -q -rs
 
   e2e:
     runs-on: ubuntu-latest

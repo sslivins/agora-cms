@@ -9,9 +9,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import _hash_api_key, require_auth
+from cms.auth import _hash_api_key, require_auth, require_permission
 from cms.database import get_db
 from cms.models.api_key import APIKey
+from cms.models.user import User
+from cms.permissions import API_KEYS_READ, API_KEYS_WRITE
 
 router = APIRouter(prefix="/api/keys", dependencies=[Depends(require_auth)])
 
@@ -41,7 +43,10 @@ def _generate_key() -> str:
 
 
 @router.get("", response_model=list[APIKeyOut])
-async def list_api_keys(db: AsyncSession = Depends(get_db)):
+async def list_api_keys(
+    user: User = Depends(require_permission(API_KEYS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(APIKey).order_by(APIKey.created_at.desc()))
     keys = result.scalars().all()
     return [
@@ -57,7 +62,11 @@ async def list_api_keys(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=APIKeyCreated, status_code=201)
-async def create_api_key(data: APIKeyCreate, db: AsyncSession = Depends(get_db)):
+async def create_api_key(
+    data: APIKeyCreate,
+    user: User = Depends(require_permission(API_KEYS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
     if not data.name.strip():
         raise HTTPException(status_code=422, detail="Name is required")
 
@@ -69,6 +78,7 @@ async def create_api_key(data: APIKeyCreate, db: AsyncSession = Depends(get_db))
         name=data.name.strip(),
         key_prefix=prefix,
         key_hash=key_hash,
+        user_id=user.id,
     )
     db.add(api_key)
     await db.commit()
@@ -85,7 +95,11 @@ async def create_api_key(data: APIKeyCreate, db: AsyncSession = Depends(get_db))
 
 
 @router.delete("/{key_id}")
-async def delete_api_key(key_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_api_key(
+    key_id: uuid.UUID,
+    user: User = Depends(require_permission(API_KEYS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(APIKey).where(APIKey.id == key_id))
     api_key = result.scalar_one_or_none()
     if not api_key:

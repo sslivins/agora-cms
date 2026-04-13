@@ -478,9 +478,231 @@ async function uploadAsset(form) {
             submitBtn.disabled = false;
             resolve(false);
         });
-        xhr.open("POST", "/api/assets/upload");
+        // Build group_ids query param from selected badges
+        const ids = _getUploadGroupIds();
+        const globalCb = document.getElementById("upload-global");
+        let qs = "";
+        if (globalCb && globalCb.checked) {
+            // No group_ids → admin upload becomes global
+        } else if (ids.length) {
+            qs = "?group_ids=" + ids.join(",");
+        }
+        xhr.open("POST", "/api/assets/upload" + qs);
         xhr.send(data);
     });
+}
+
+// ── Upload multi-group selector ──
+function _getUploadGroupIds() {
+    const badges = document.querySelectorAll("#upload-groups-badges .badge[data-group-id]");
+    return Array.from(badges).map(b => b.dataset.groupId);
+}
+
+function pickUploadGroup(gid, name) {
+    const container = document.getElementById("upload-groups-badges");
+    if (!container || container.querySelector(`.badge[data-group-id="${gid}"]`)) return;
+    const plusBtn = container.querySelector(".group-picker-wrap");
+    const badge = document.createElement("span");
+    badge.className = "badge badge-processing";
+    badge.dataset.groupId = gid;
+    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="removeUploadGroup(this.parentElement)">&times;</button>`;
+    container.insertBefore(badge, plusBtn);
+    // Hide the option in the popup so it can't be picked twice
+    const popup = document.getElementById("upload-group-popup");
+    if (popup) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "none";
+        _syncPlusButton(popup);
+    }
+    closeAllGroupPopups();
+}
+
+function removeUploadGroup(badge) {
+    const gid = badge.dataset.groupId;
+    badge.remove();
+    // Re-show the option in the popup
+    const popup = document.getElementById("upload-group-popup");
+    if (popup && gid) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "";
+        _syncPlusButton(popup);
+    }
+}
+
+function toggleUploadGlobal(cb) {
+    const badges = document.getElementById("upload-groups-badges");
+    if (cb.checked) {
+        if (badges) badges.style.opacity = "0.4";
+        if (badges) badges.style.pointerEvents = "none";
+    } else {
+        if (badges) badges.style.opacity = "1";
+        if (badges) badges.style.pointerEvents = "";
+    }
+}
+
+// ── Group popup (shared for upload + detail row) ──
+function openGroupPopup(popupId) {
+    closeAllGroupPopups();
+    const popup = document.getElementById(popupId);
+    if (!popup) return;
+    popup.style.display = "flex";
+    // Close when clicking outside (deferred to next frame to avoid catching the opening click)
+    requestAnimationFrame(() => {
+        function onClickOutside(e) {
+            const wrap = popup.closest(".group-picker-wrap");
+            if (wrap && wrap.contains(e.target)) return;
+            if (popup.contains(e.target)) return;
+            popup.style.display = "none";
+            document.removeEventListener("click", onClickOutside, true);
+            document.removeEventListener("mousedown", onClickOutside, true);
+        }
+        document.addEventListener("click", onClickOutside, true);
+        document.addEventListener("mousedown", onClickOutside, true);
+    });
+}
+
+function closeAllGroupPopups() {
+    document.querySelectorAll(".group-popup").forEach(p => p.style.display = "none");
+}
+
+// Disable the + button when no visible popup items remain; re-enable otherwise
+function _syncPlusButton(popup) {
+    if (!popup) return;
+    const wrap = popup.closest(".group-picker-wrap");
+    if (!wrap) return;
+    const btn = wrap.querySelector(".btn-add-group");
+    if (!btn) return;
+    const visibleItems = popup.querySelectorAll(".group-popup-item");
+    const anyVisible = Array.from(visibleItems).some(it => it.style.display !== "none");
+    btn.disabled = !anyVisible;
+}
+
+// ── Asset group management (detail row) ──
+
+// Sync the collapsed row scope cell to match the detail row badges
+function _syncCollapsedScope(assetId) {
+    const row = document.querySelector(`tr.asset-row[data-asset-id="${assetId}"]`);
+    if (!row) return;
+    const scopeCell = row.querySelector("td:nth-child(4)");
+    if (!scopeCell) return;
+    const scopeEl = document.getElementById("scope-" + assetId);
+    if (!scopeEl) return;
+    // Gather current state from detail row
+    const globalBadge = scopeEl.querySelector(".badge-ready");
+    const personalBadge = scopeEl.querySelector(".badge-pending");
+    const groupBadges = scopeEl.querySelectorAll(".badge[data-group-id]");
+    scopeCell.innerHTML = "";
+    if (globalBadge) {
+        scopeCell.innerHTML = '<span class="badge badge-ready">Global</span>';
+    } else if (groupBadges.length === 0) {
+        scopeCell.innerHTML = '<span class="badge badge-pending">Personal</span>';
+    } else {
+        const MAX_SHOW = 2;
+        groupBadges.forEach((b, i) => {
+            if (i < MAX_SHOW) {
+                const s = document.createElement("span");
+                s.className = "badge badge-processing";
+                s.style.marginRight = "0.15rem";
+                s.textContent = b.textContent.replace("×", "").trim();
+                scopeCell.appendChild(s);
+            }
+        });
+        if (groupBadges.length > MAX_SHOW) {
+            const extra = groupBadges.length - MAX_SHOW;
+            const names = Array.from(groupBadges).slice(MAX_SHOW).map(b => b.textContent.replace("×", "").trim()).join(", ");
+            const ov = document.createElement("span");
+            ov.className = "badge badge-overflow has-tooltip";
+            ov.innerHTML = `+${extra} more<span class="tooltip">${names}</span>`;
+            scopeCell.appendChild(ov);
+        }
+    }
+}
+
+async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
+    closeAllGroupPopups();
+    const resp = await apiCall("POST", `/api/assets/${assetId}/share?group_id=${groupId}`);
+    if (resp && resp.ok) {
+        const scopeEl = document.getElementById("scope-" + assetId);
+        if (!scopeEl) { location.reload(); return; }
+        // Remove any "Personal" badge
+        const personalBadge = scopeEl.querySelector(".badge-pending");
+        if (personalBadge) personalBadge.remove();
+        // Add new badge before the + button wrapper
+        const pickerWrap = scopeEl.querySelector(".group-picker-wrap");
+        const badge = document.createElement("span");
+        badge.className = "badge badge-processing";
+        badge.dataset.groupId = groupId;
+        badge.innerHTML = `${groupName} <button class="btn-x" onclick="event.stopPropagation(); unshareAsset('${assetId}', '${groupId}')" title="Remove from group">&times;</button>`;
+        if (pickerWrap) scopeEl.insertBefore(badge, pickerWrap);
+        else scopeEl.appendChild(badge);
+        // Hide this option from the popup
+        if (btnEl) btnEl.style.display = "none";
+        const popup = document.getElementById("group-popup-" + assetId);
+        _syncPlusButton(popup);
+        _syncCollapsedScope(assetId);
+    }
+}
+
+async function unshareAsset(assetId, groupId) {
+    if (!await showConfirm("\u26a0\ufe0f This will remove the asset from everyone in this group. Continue?")) return;
+    const resp = await apiCall("DELETE", `/api/assets/${assetId}/share?group_id=${groupId}`);
+    if (resp && resp.ok) {
+        const data = await resp.json();
+        const scopeEl = document.getElementById("scope-" + assetId);
+        if (!scopeEl) { location.reload(); return; }
+
+        // If asset is no longer visible to us, remove its rows entirely
+        if (data.still_visible === false) {
+            const collapsedRow = document.querySelector(`tr.asset-row[data-asset-id="${assetId}"]`);
+            const detailRow = document.querySelector(`tr.asset-detail[data-detail-for="${assetId}"]`);
+            if (collapsedRow) collapsedRow.remove();
+            if (detailRow) detailRow.remove();
+            return;
+        }
+
+        // Capture group name before removing the badge
+        const badge = scopeEl.querySelector(`.badge[data-group-id="${groupId}"]`);
+        const groupName = badge ? badge.textContent.replace("\u00d7", "").trim() : "";
+        if (badge) badge.remove();
+        // Re-show or create option in popup
+        const popup = document.getElementById("group-popup-" + assetId);
+        if (popup) {
+            let btn = popup.querySelector(`[data-group-id="${groupId}"]`);
+            if (btn) {
+                btn.style.display = "";
+            } else if (groupName) {
+                // Button wasn't rendered (group was assigned at page load) — create it
+                btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "group-popup-item";
+                btn.dataset.groupId = groupId;
+                btn.textContent = groupName;
+                btn.onclick = function(e) {
+                    e.stopPropagation();
+                    pickAssetGroup(assetId, groupId, groupName, btn);
+                };
+                popup.appendChild(btn);
+            }
+        }
+        _syncPlusButton(popup);
+        // If no badges left and not global, show Personal
+        const remaining = scopeEl.querySelectorAll(".badge[data-group-id]");
+        const globalBadge = scopeEl.querySelector(".badge-ready");
+        if (remaining.length === 0 && !globalBadge) {
+            const pickerWrap = scopeEl.querySelector(".group-picker-wrap");
+            const personal = document.createElement("span");
+            personal.className = "badge badge-pending";
+            personal.textContent = "Personal";
+            if (pickerWrap) scopeEl.insertBefore(personal, pickerWrap);
+            else scopeEl.prepend(personal);
+        }
+        _syncCollapsedScope(assetId);
+    }
+}
+
+async function toggleGlobal(assetId) {
+    const resp = await apiCall("POST", `/api/assets/${assetId}/global`);
+    if (resp && resp.ok) location.reload();
 }
 
 // ── Schedule actions ──
@@ -558,4 +780,201 @@ async function createSchedule(form) {
         showToast(err.detail || JSON.stringify(err), true);
     }
     return false;
+}
+
+// ── User & Role Management ──
+
+function showUserTab(tabId, btn) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.sub-tab').forEach(b => b.classList.remove('active'));
+    document.getElementById(tabId).classList.add('active');
+    btn.classList.add('active');
+}
+
+function toggleAllPermGroups(container, open) {
+    container.querySelectorAll('details.perm-group').forEach(d => d.open = open);
+}
+
+function closeModal(id) {
+    document.getElementById(id).style.display = 'none';
+}
+
+async function createUser(form) {
+    const data = new FormData(form);
+    const groupIds = data.getAll("group_ids");
+    const body = {
+        email: data.get("email"),
+        display_name: data.get("display_name") || "",
+        role_id: data.get("role_id"),
+        group_ids: groupIds,
+    };
+    const resp = await apiCall("POST", "/api/users", body);
+    if (resp && resp.ok) {
+        showToast("User created — welcome email sent (if SMTP configured)");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+let _editUserOriginal = {};
+
+function _getEditUserState() {
+    const groupIds = [];
+    document.querySelectorAll('#edit-groups input[type="checkbox"]').forEach(cb => {
+        if (cb.checked) groupIds.push(cb.value);
+    });
+    return {
+        email: document.getElementById("edit-email").value,
+        display_name: document.getElementById("edit-display-name").value,
+        role_id: document.getElementById("edit-role").value,
+        is_active: document.getElementById("edit-active").checked,
+        password: document.getElementById("edit-password").value,
+        group_ids: groupIds.sort().join(","),
+    };
+}
+
+function _checkEditUserDirty() {
+    const cur = _getEditUserState();
+    const dirty = Object.keys(_editUserOriginal).some(k => cur[k] !== _editUserOriginal[k]);
+    const btn = document.getElementById("edit-user-save-btn");
+    if (btn) btn.disabled = !dirty;
+}
+
+function openEditUser(userId) {
+    const u = usersData[userId];
+    if (!u) return;
+    document.getElementById("edit-user-id").value = userId;
+    document.getElementById("edit-email").value = u.email;
+    document.getElementById("edit-display-name").value = u.display_name || "";
+    document.getElementById("edit-password").value = "";
+    document.getElementById("edit-role").value = u.role_id;
+    document.getElementById("edit-active").checked = u.is_active;
+    document.querySelectorAll('#edit-groups input[type="checkbox"]').forEach(cb => {
+        cb.checked = u.group_ids.includes(cb.value);
+    });
+    _editUserOriginal = _getEditUserState();
+    const btn = document.getElementById("edit-user-save-btn");
+    if (btn) btn.disabled = true;
+    // Wire dirty-tracking on every open (safe to re-add — same function ref dedupes)
+    document.querySelectorAll('#edit-user-modal input, #edit-user-modal select').forEach(el => {
+        el.removeEventListener('input', _checkEditUserDirty);
+        el.removeEventListener('change', _checkEditUserDirty);
+        el.addEventListener('input', _checkEditUserDirty);
+        el.addEventListener('change', _checkEditUserDirty);
+    });
+    document.getElementById("edit-user-modal").style.display = "";
+}
+
+async function updateUser(form) {
+    try {
+        const data = new FormData(form);
+        const userId = data.get("user_id");
+        const groupIds = data.getAll("group_ids");
+        const body = {
+            email: data.get("email"),
+            display_name: data.get("display_name") || "",
+            role_id: data.get("role_id"),
+            is_active: data.get("is_active") === "on",
+            group_ids: groupIds,
+        };
+        const pw = data.get("password");
+        if (pw) body.password = pw;
+        const resp = await apiCall("PATCH", `/api/users/${userId}`, body);
+        if (resp && resp.ok) {
+            showToast("User updated");
+            location.reload();
+        } else if (resp) {
+            const err = await resp.json().catch(() => ({}));
+            showToast(err.detail || `Error: ${resp.status}`, true);
+        }
+    } catch (e) {
+        showToast("Failed to update user: " + e.message, true);
+    }
+}
+
+async function deleteUser(userId, email) {
+    if (!await showConfirm(`Delete user "${email}"? This cannot be undone.`)) return;
+    const resp = await apiCall("DELETE", `/api/users/${userId}`);
+    if (resp && resp.ok) {
+        showToast("User deleted");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function toggleUserActive(userId, active) {
+    const resp = await apiCall("PATCH", `/api/users/${userId}`, { is_active: active });
+    if (resp && resp.ok) {
+        showToast(active ? "User enabled" : "User disabled");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function createRole(form) {
+    const data = new FormData(form);
+    const perms = data.getAll("permissions");
+    const body = {
+        name: data.get("name"),
+        description: data.get("description") || "",
+        permissions: perms,
+    };
+    const resp = await apiCall("POST", "/api/roles", body);
+    if (resp && resp.ok) {
+        showToast("Role created");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+function openEditRole(roleId) {
+    const r = rolesData[roleId];
+    if (!r) return;
+    document.getElementById("edit-role-id").value = roleId;
+    document.getElementById("edit-role-name").value = r.name;
+    document.getElementById("edit-role-desc").value = r.description;
+    // Set permission checkboxes
+    document.querySelectorAll('#edit-role-permissions input[type="checkbox"]').forEach(cb => {
+        cb.checked = r.permissions.includes(cb.value);
+    });
+    document.getElementById("edit-role-modal").style.display = "";
+}
+
+async function updateRole(form) {
+    const data = new FormData(form);
+    const roleId = data.get("role_id");
+    const perms = data.getAll("permissions");
+    const body = {
+        name: data.get("name"),
+        description: data.get("description") || "",
+        permissions: perms,
+    };
+    const resp = await apiCall("PATCH", `/api/roles/${roleId}`, body);
+    if (resp && resp.ok) {
+        showToast("Role updated");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
+}
+
+async function deleteRole(roleId, roleName) {
+    if (!await showConfirm(`Delete role "${roleName}"? Users with this role will need to be reassigned.`)) return;
+    const resp = await apiCall("DELETE", `/api/roles/${roleId}`);
+    if (resp && resp.ok) {
+        showToast("Role deleted");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json();
+        showToast(err.detail || JSON.stringify(err), true);
+    }
 }

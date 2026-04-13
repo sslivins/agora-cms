@@ -206,6 +206,33 @@ async def _migrate_variant_filenames(db, settings):
         logger.warning("Variant filename migration failed: %s", e)
 
 
+async def _seed_roles(db):
+    """Create built-in RBAC roles if they don't exist, and sync their permissions."""
+    from sqlalchemy import select
+    from cms.models.user import Role
+    from cms.permissions import BUILTIN_ROLES
+
+    for name, spec in BUILTIN_ROLES.items():
+        result = await db.execute(select(Role).where(Role.name == name))
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(Role(
+                name=name,
+                description=spec["description"],
+                permissions=spec["permissions"],
+                is_builtin=True,
+            ))
+            logger.info("Seeded built-in role: %s", name)
+        else:
+            # Sync permissions for built-in roles to handle upgrades
+            if set(existing.permissions) != set(spec["permissions"]):
+                existing.permissions = spec["permissions"]
+                logger.info("Updated permissions for built-in role: %s", name)
+            if existing.description != spec["description"]:
+                existing.description = spec["description"]
+    await db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -231,6 +258,10 @@ async def lifespan(app: FastAPI):
     else:
         backend = LocalStorageBackend(base_path=settings.asset_storage_path)
     init_storage(backend)
+
+    # Seed built-in RBAC roles (Admin, Operator, Viewer)
+    async for db in get_db():
+        await _seed_roles(db)
 
     # Seed admin credentials from env vars if not already in DB
     async for db in get_db():
@@ -324,6 +355,9 @@ from cms.routers.profiles import router as profiles_router  # noqa: E402
 from cms.routers.schedules import router as schedules_router  # noqa: E402
 from cms.routers.ws import router as ws_router  # noqa: E402
 from cms.routers.api_keys import router as api_keys_router  # noqa: E402
+from cms.routers.audit import router as audit_router  # noqa: E402
+from cms.routers.roles import router as roles_router  # noqa: E402
+from cms.routers.users import router as users_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
 
 app.include_router(devices_router)
@@ -334,5 +368,8 @@ app.include_router(profiles_router)
 app.include_router(logs_router)
 app.include_router(mcp_router)
 app.include_router(api_keys_router)
+app.include_router(audit_router)
+app.include_router(users_router)
+app.include_router(roles_router)
 app.include_router(ws_router)
 app.include_router(ui_router)

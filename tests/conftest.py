@@ -14,9 +14,15 @@ from cms.database import Base
 
 # ── Patch ARRAY columns for SQLite compatibility ──
 def _patch_array_columns():
-    """Replace PostgreSQL ARRAY columns with JSON for SQLite tests."""
+    """Replace PostgreSQL ARRAY/JSONB columns with JSON for SQLite tests."""
     from cms.models.schedule import Schedule
+    from cms.models.user import Role
+    from cms.models.audit_log import AuditLog
     col = Schedule.__table__.columns["days_of_week"]
+    col.type = JSON()
+    col = Role.__table__.columns["permissions"]
+    col.type = JSON()
+    col = AuditLog.__table__.columns["details"]
     col.type = JSON()
 
 
@@ -97,6 +103,30 @@ async def app(db_engine, tmp_path):
 
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_settings] = override_get_settings
+
+    # Seed RBAC roles and admin user for tests
+    async with factory() as seed_db:
+        from cms.models.user import Role, User
+        from cms.auth import hash_password
+        from cms.permissions import BUILTIN_ROLES
+        roles = {}
+        for name, spec in BUILTIN_ROLES.items():
+            role = Role(name=name, description=spec["description"],
+                        permissions=spec["permissions"], is_builtin=True)
+            seed_db.add(role)
+            roles[name] = role
+        await seed_db.flush()
+        admin_user = User(
+            username=settings.admin_username,
+            email=settings.admin_email,
+            display_name="Test Admin",
+            password_hash=hash_password(settings.admin_password),
+            role_id=roles["Admin"].id,
+            is_active=True,
+            must_change_password=False,
+        )
+        seed_db.add(admin_user)
+        await seed_db.commit()
 
     # Point the DB module at our test SQLite engine so any code that
     # accesses database globals directly (e.g. WebSocket handler) works.

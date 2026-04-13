@@ -1,20 +1,13 @@
 """HTTP client for Agora CMS REST API.
 
-Supports API key authentication (preferred) or session-cookie fallback.
+Authenticates using a user API key (X-API-Key header).
 """
 
 import logging
-import os
 
 import httpx
 
 logger = logging.getLogger(__name__)
-
-CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
-CMS_API_KEY = os.environ.get("CMS_API_KEY", "")
-# Legacy fallback — used only if CMS_API_KEY is not set
-CMS_USERNAME = os.environ.get("CMS_USERNAME", "admin")
-CMS_PASSWORD = os.environ.get("CMS_PASSWORD", "agora")
 
 
 class CMSClient:
@@ -22,45 +15,23 @@ class CMSClient:
 
     def __init__(
         self,
-        base_url: str = CMS_BASE_URL,
-        api_key: str = CMS_API_KEY,
-        username: str = CMS_USERNAME,
-        password: str = CMS_PASSWORD,
+        base_url: str = "http://cms:8080",
+        api_key: str = "",
     ):
         self.base_url = base_url.rstrip("/")
-        self._api_key = api_key
-        self._username = username
-        self._password = password
         headers = {}
-        if self._api_key:
-            headers["X-API-Key"] = self._api_key
+        if api_key:
+            headers["X-API-Key"] = api_key
         self._client = httpx.AsyncClient(
             base_url=self.base_url, timeout=30.0, headers=headers,
         )
-        self._authenticated = bool(self._api_key)
-
-    async def _ensure_auth(self) -> None:
-        """Login via session cookie if no API key is configured."""
-        if self._authenticated:
-            return
-        resp = await self._client.post(
-            "/login",
-            data={"username": self._username, "password": self._password},
-            follow_redirects=False,
-        )
-        if resp.status_code not in (200, 303):
-            raise RuntimeError(f"CMS login failed: {resp.status_code}")
-        self._authenticated = True
-        logger.info("Authenticated with CMS at %s", self.base_url)
 
     async def _get(self, path: str) -> dict | list:
-        await self._ensure_auth()
         resp = await self._client.get(path)
         resp.raise_for_status()
         return resp.json()
 
     async def _post(self, path: str, json: dict | None = None) -> dict | list | str:
-        await self._ensure_auth()
         resp = await self._client.post(path, json=json)
         resp.raise_for_status()
         if resp.headers.get("content-type", "").startswith("application/json"):
@@ -68,13 +39,11 @@ class CMSClient:
         return resp.text
 
     async def _patch(self, path: str, json: dict) -> dict:
-        await self._ensure_auth()
         resp = await self._client.patch(path, json=json)
         resp.raise_for_status()
         return resp.json()
 
     async def _delete(self, path: str) -> str:
-        await self._ensure_auth()
         resp = await self._client.delete(path)
         resp.raise_for_status()
         return "ok"

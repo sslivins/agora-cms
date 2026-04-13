@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+{% block title %}Users — Agora CMS{% endblock %}
+
+{% block content %}
+<div class="sub-tabs">
+    <button class="sub-tab active" onclick="showUserTab('users-tab', this)">Users</button>
+    <button class="sub-tab" onclick="showUserTab('roles-tab', this)">Roles</button>
+</div>
+
+<!-- ═══════════════════════════════════════════ USERS TAB ═══════════════════════════════════════════ -->
+<div id="users-tab" class="tab-content active">
+
+{% if can_write %}
+<div class="card">
+    <h3>Create User</h3>
+    <form onsubmit="event.preventDefault(); createUser(this)">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="new-email">Email</label>
+                <input type="email" id="new-email" name="email" required placeholder="e.g. john@example.com">
+            </div>
+            <div class="form-group">
+                <label for="new-display-name">Display Name</label>
+                <input type="text" id="new-display-name" name="display_name" placeholder="e.g. John Smith">
+            </div>
+            <div class="form-group">
+                <label for="new-role">Role</label>
+                <select id="new-role" name="role_id" required>
+                    <option value="">Select a role…</option>
+                    {% for role in roles %}
+                    <option value="{{ role.id }}">{{ role.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Groups</label>
+                <div class="group-checkboxes">
+                    {% for group in groups %}
+                    <label class="checkbox-label"><input type="checkbox" name="group_ids" value="{{ group.id }}"> {{ group.name }}</label>
+                    {% endfor %}
+                    {% if not groups %}
+                    <span class="text-muted">No groups defined</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.5rem;">A temporary password will be generated and emailed to the user. They will be required to set a new password on first sign-in.</p>
+        <button type="submit" class="btn btn-primary">Create User</button>
+    </form>
+</div>
+{% endif %}
+
+<div class="card">
+    <h3>Users ({{ users | length }})</h3>
+    {% if users %}
+    <table>
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Display Name</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Last Login</th>
+                {% if can_write %}<th>Actions</th>{% endif %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr class="{% if not u.is_active %}row-inactive{% endif %}">
+                <td><strong>{{ u.email }}</strong></td>
+                <td>{{ u.display_name or '—' }}</td>
+                <td>
+                    {% if u.role %}
+                    <span class="badge badge-role {% if u.role.name == 'Admin' %}badge-role-admin{% elif u.role.name == 'Operator' %}badge-role-operator{% elif u.role.name == 'Viewer' %}badge-role-viewer{% endif %}">{{ u.role.name }}</span>
+                    {% else %}
+                    <span class="badge badge-offline">No role</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.is_active %}
+                    <span class="badge badge-online">Active</span>
+                    {% else %}
+                    <span class="badge badge-offline">Inactive</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.last_login_at %}
+                    <span data-utc="{{ u.last_login_at.isoformat() }}">{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                    {% else %}
+                    <span class="text-muted">Never</span>
+                    {% endif %}
+                </td>
+                {% if can_write %}
+                <td class="actions-cell">
+                    <button class="btn btn-sm" onclick="openEditUser('{{ u.id }}')">Edit</button>
+                    {% if u.id | string != current_user_id %}
+                    {% if u.is_active %}
+                    <button class="btn btn-sm btn-warning" onclick="toggleUserActive('{{ u.id }}', false)">Disable</button>
+                    {% else %}
+                    <button class="btn btn-sm btn-success" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
+                    {% endif %}
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
+                    {% endif %}
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No users found.</p>
+    {% endif %}
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════ ROLES TAB ═══════════════════════════════════════════ -->
+<div id="roles-tab" class="tab-content">
+
+{% if can_write_roles %}
+<div class="card">
+    <h3>Create Role</h3>
+    <form onsubmit="event.preventDefault(); createRole(this)">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="new-role-name">Role Name</label>
+                <input type="text" id="new-role-name" name="name" required minlength="1" maxlength="100" placeholder="e.g. Content Manager">
+            </div>
+            <div class="form-group" style="flex: 2">
+                <label for="new-role-desc">Description</label>
+                <input type="text" id="new-role-desc" name="description" placeholder="e.g. Can manage content but not devices">
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="perm-toolbar">
+                <label>Permissions</label>
+                <div>
+                    <button type="button" class="btn btn-xs" onclick="toggleAllPermGroups(this.closest('.form-group'), true)">Expand All</button>
+                    <button type="button" class="btn btn-xs" onclick="toggleAllPermGroups(this.closest('.form-group'), false)">Collapse All</button>
+                </div>
+            </div>
+            {% for group_name, perms in grouped_permissions.items() %}
+            <details class="perm-group" open>
+                <summary class="perm-group-header">
+                    <span class="perm-group-name">{{ group_name | capitalize }}</span>
+                    <span class="perm-group-count text-muted">({{ perms | length }})</span>
+                </summary>
+                <table class="permissions-table">
+                    <tbody>
+                        {% for perm in perms %}
+                        <tr>
+                            <td style="width:40px"><input type="checkbox" name="permissions" value="{{ perm }}"></td>
+                            <td><span class="perm-tag">{{ perm }}</span></td>
+                            <td class="text-muted">{{ perm_descriptions.get(perm, '') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </details>
+            {% endfor %}
+        </div>
+        <button type="submit" class="btn btn-primary">Create Role</button>
+    </form>
+</div>
+{% endif %}
+
+<div class="card">
+    <h3>Roles ({{ roles | length }})</h3>
+    {% if roles %}
+    {% for role in roles %}
+    <div class="role-card">
+        <div class="role-header">
+            <div>
+                <strong>{{ role.name }}</strong>
+                {% if role.is_builtin %}<span class="badge badge-builtin">Built-in</span>{% endif %}
+                <span class="text-muted"> — {{ role.description }}</span>
+            </div>
+            {% if can_write_roles and not role.is_builtin %}
+            <div class="role-actions">
+                <button class="btn btn-sm" onclick="openEditRole('{{ role.id }}')">Edit</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteRole('{{ role.id }}', '{{ role.name }}')">Delete</button>
+            </div>
+            {% endif %}
+        </div>
+        <div class="role-permissions">
+            {% for perm in role.permissions %}
+            <span class="perm-tag has-tooltip">{{ perm }}<span class="tooltip">{{ perm_descriptions.get(perm, perm) }}</span></span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="text-muted">No roles defined.</p>
+    {% endif %}
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════ EDIT USER MODAL ═══════════════════════════════════════════ -->
+<div id="edit-user-modal" class="modal-overlay" style="display:none">
+    <div class="modal-box modal-wide">
+        <div class="modal-header">
+            <h3>Edit User</h3>
+            <button class="modal-close" onclick="closeModal('edit-user-modal')">&times;</button>
+        </div>
+        <form onsubmit="event.preventDefault(); updateUser(this)">
+            <input type="hidden" id="edit-user-id" name="user_id">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="edit-email">Email</label>
+                    <input type="email" id="edit-email" name="email" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit-display-name">Display Name</label>
+                    <input type="text" id="edit-display-name" name="display_name">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="edit-role">Role</label>
+                    <select id="edit-role" name="role_id" required>
+                        {% for role in roles %}
+                        <option value="{{ role.id }}">{{ role.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="edit-password">New Password <span class="text-muted">(leave blank to keep)</span></label>
+                    <input type="password" id="edit-password" name="password" minlength="6" placeholder="Unchanged">
+                </div>
+            </div>
+            <div style="margin-bottom:0.75rem;">
+                <label class="checkbox-label"><input type="checkbox" id="edit-active" name="is_active"> Active</label>
+            </div>
+            <div class="form-group">
+                <label>Groups</label>
+                <div class="group-checkboxes" id="edit-groups">
+                    {% for group in groups %}
+                    <label class="checkbox-label"><input type="checkbox" name="group_ids" value="{{ group.id }}"> {{ group.name }}</label>
+                    {% endfor %}
+                    {% if not groups %}
+                    <span class="text-muted">No groups defined</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('edit-user-modal')">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="edit-user-save-btn" disabled>Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ EDIT ROLE MODAL ═══════════════════════════════════════════ -->
+<div id="edit-role-modal" class="modal-overlay" style="display:none">
+    <div class="modal-box modal-wide">
+        <div class="modal-header">
+            <h3>Edit Role</h3>
+            <button class="modal-close" onclick="closeModal('edit-role-modal')">&times;</button>
+        </div>
+        <form onsubmit="event.preventDefault(); updateRole(this)">
+            <input type="hidden" id="edit-role-id" name="role_id">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="edit-role-name">Role Name</label>
+                    <input type="text" id="edit-role-name" name="name" required>
+                </div>
+                <div class="form-group" style="flex: 2">
+                    <label for="edit-role-desc">Description</label>
+                    <input type="text" id="edit-role-desc" name="description">
+                </div>
+            </div>
+            <div class="form-group" id="edit-role-permissions">
+                <div class="perm-toolbar">
+                    <label>Permissions</label>
+                    <div>
+                        <button type="button" class="btn btn-xs" onclick="toggleAllPermGroups(this.closest('.form-group'), true)">Expand All</button>
+                        <button type="button" class="btn btn-xs" onclick="toggleAllPermGroups(this.closest('.form-group'), false)">Collapse All</button>
+                    </div>
+                </div>
+                {% for group_name, perms in grouped_permissions.items() %}
+                <details class="perm-group" open>
+                    <summary class="perm-group-header">
+                        <span class="perm-group-name">{{ group_name | capitalize }}</span>
+                        <span class="perm-group-count text-muted">({{ perms | length }})</span>
+                    </summary>
+                    <table class="permissions-table">
+                        <tbody>
+                            {% for perm in perms %}
+                            <tr>
+                                <td style="width:40px"><input type="checkbox" name="permissions" value="{{ perm }}"></td>
+                                <td><span class="perm-tag">{{ perm }}</span></td>
+                                <td class="text-muted">{{ perm_descriptions.get(perm, '') }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+                {% endfor %}
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('edit-role-modal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// User data for edit modal population
+const usersData = {
+    {% for u in users %}
+    "{{ u.id }}": {
+        email: {{ u.email | tojson }},
+        display_name: {{ (u.display_name or '') | tojson }},
+        role_id: "{{ u.role_id }}",
+        is_active: {{ u.is_active | tojson }},
+        group_ids: {{ user_groups_map.get(u.id | string, []) | tojson }}
+    },
+    {% endfor %}
+};
+
+// Role data for edit modal population
+const rolesData = {
+    {% for role in roles %}
+    "{{ role.id }}": {
+        name: {{ role.name | tojson }},
+        description: {{ (role.description or '') | tojson }},
+        permissions: {{ role.permissions | tojson }}
+    },
+    {% endfor %}
+};
+</script>
+{% endblock %}

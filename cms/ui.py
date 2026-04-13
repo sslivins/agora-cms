@@ -5,21 +5,31 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import func, select
+import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from cms.auth import (
     COOKIE_NAME,
     MAX_AGE,
-    SETTING_MCP_API_KEY,
     SETTING_MCP_ENABLED,
+    SETTING_MCP_API_KEY,
     SETTING_PASSWORD_HASH,
+    SETTING_SMTP_FROM_EMAIL,
+    SETTING_SMTP_HOST,
+    SETTING_SMTP_PASSWORD,
+    SETTING_SMTP_PORT,
+
+    SETTING_SMTP_USERNAME,
     SETTING_TIMEZONE,
     SETTING_USERNAME,
+    _resolve_user_from_session,
+    get_current_user,
     get_setting,
     get_settings,
     hash_password,
     require_auth,
+    require_permission,
     set_setting,
     verify_password,
 )
@@ -27,9 +37,13 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE
+from cms.auth import get_user_group_ids
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
+from cms.models.group_asset import GroupAsset
+from cms.models.user import User, UserGroup
 from cms.services.device_manager import device_manager
 from cms.services.version_checker import get_latest_device_version, is_update_available
 from cms.routers.devices import _upgrading as _devices_upgrading
@@ -78,6 +92,11 @@ def schedule_json(s):
 
 templates.env.filters["schedule_json"] = schedule_json
 
+# Cache-busting: use build timestamp so browsers fetch fresh static files after deploy
+import time as _time
+_static_version = str(int(_time.time()))
+templates.env.globals["static_version"] = _static_version
+
 router = APIRouter()
 
 
@@ -89,6 +108,41 @@ async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {"error": None})
 
 
+@router.get("/setup-account")
+async def setup_account(
+    request: Request,
+    token: str = Query(...),
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """One-time magic link from welcome email — logs user in and redirects to password change."""
+    result = await db.execute(
+        select(User).where(User.setup_token == token, User.is_active.is_(True))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": "This setup link is invalid or has already been used. Please sign in with your credentials."},
+            status_code=400,
+        )
+
+    # Invalidate the token (single-use)
+    user.setup_token = None
+    from datetime import datetime, timezone
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Create session and redirect to force-password-change
+    serializer = URLSafeTimedSerializer(settings.secret_key)
+    session_token = serializer.dumps({"user_id": str(user.id)})
+    response = RedirectResponse(url="/force-password-change", status_code=303)
+    response.set_cookie(
+        COOKIE_NAME, session_token, max_age=MAX_AGE, httponly=True, samesite="lax"
+    )
+    return response
+
+
 @router.post("/login")
 async def login_submit(
     request: Request,
@@ -96,25 +150,38 @@ async def login_submit(
     db: AsyncSession = Depends(get_db),
 ):
     form = await request.form()
-    username = form.get("username", "")
+    login_id = form.get("email", "") or form.get("username", "")
     password = form.get("password", "")
 
-    stored_username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
-    stored_hash = await get_setting(db, SETTING_PASSWORD_HASH)
+    # Authenticate against the users table — try email first, then username for backward compat
+    from sqlalchemy import select as sa_select, or_
+    result = await db.execute(
+        sa_select(User).where(
+            or_(User.email == login_id, User.username == login_id),
+            User.is_active.is_(True),
+        )
+    )
+    user = result.scalar_one_or_none()
 
-    # Verify credentials
     valid = False
-    if username == stored_username:
-        if stored_hash:
-            valid = verify_password(password, stored_hash)
-        else:
-            # Fallback to env var if DB not seeded yet
-            valid = password == settings.admin_password
+    if user is not None:
+        valid = verify_password(password, user.password_hash)
 
     if valid:
+        # Update last_login_at
+        from datetime import datetime, timezone
+        user.last_login_at = datetime.now(timezone.utc)
+        await db.commit()
+
         serializer = URLSafeTimedSerializer(settings.secret_key)
-        token = serializer.dumps({"user": username})
-        response = RedirectResponse(url="/", status_code=303)
+        token = serializer.dumps({"user_id": str(user.id)})
+
+        # Check if user must change password on first login
+        if user.must_change_password:
+            response = RedirectResponse(url="/force-password-change", status_code=303)
+        else:
+            response = RedirectResponse(url="/", status_code=303)
+
         response.set_cookie(
             COOKIE_NAME, token, max_age=MAX_AGE, httponly=True, samesite="lax"
         )
@@ -132,6 +199,63 @@ async def logout():
     return response
 
 
+# ── Force password change ──
+
+
+@router.get("/force-password-change", response_class=HTMLResponse)
+async def force_password_change_page(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show the forced password change page for first-login users."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return RedirectResponse(url="/login", status_code=303)
+    user = await _resolve_user_from_session(cookie, settings, db)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if not user.must_change_password:
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request, "force_password_change.html", {"error": None})
+
+
+@router.post("/force-password-change")
+async def force_password_change_submit(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle forced password change submission."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return RedirectResponse(url="/login", status_code=303)
+    user = await _resolve_user_from_session(cookie, settings, db)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    form = await request.form()
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+
+    if len(new_password) < 6:
+        return templates.TemplateResponse(
+            request, "force_password_change.html",
+            {"error": "Password must be at least 6 characters"}, status_code=400
+        )
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            request, "force_password_change.html",
+            {"error": "Passwords do not match"}, status_code=400
+        )
+
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+    await db.commit()
+
+    return RedirectResponse(url="/", status_code=303)
+
+
 # ── Dashboard ──
 
 
@@ -139,27 +263,47 @@ async def logout():
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from datetime import datetime as _dt, timezone as _tz
     from cms.services.scheduler import get_now_playing, get_upcoming_schedules
+    from cms.auth import get_user_group_ids
 
     # CMS timezone
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     tz = ZoneInfo(tz_name)
     now = _dt.now(_tz.utc)
 
+    # Group scoping
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
     # Pending devices
-    pending_q = await db.execute(
-        select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
-    )
+    pending_query = select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
+    if not is_admin:
+        if group_ids:
+            pending_query = pending_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            pending_query = pending_query.where(Device.group_id.is_(None))
+    pending_q = await db.execute(pending_query)
     pending_devices = pending_q.scalars().all()
     for d in pending_devices:
         d.is_online = device_manager.is_connected(d.id)
 
     # All adopted devices
-    devices_q = await db.execute(
+    devices_query = (
         select(Device)
         .options(selectinload(Device.group))
         .where(Device.status == DeviceStatus.ADOPTED)
         .order_by(Device.name, Device.id)
     )
+    if not is_admin:
+        if group_ids:
+            devices_query = devices_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            devices_query = devices_query.where(Device.group_id.is_(None))
+    devices_q = await db.execute(devices_query)
     all_devices = devices_q.scalars().all()
     for d in all_devices:
         d.is_online = device_manager.is_connected(d.id)
@@ -168,16 +312,28 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     offline_devices = [d for d in all_devices if not d.is_online]
 
     # Orphaned devices
-    orphaned_q = await db.execute(
+    orphan_query = (
         select(Device)
         .options(selectinload(Device.group))
         .where(Device.status == DeviceStatus.ORPHANED)
         .order_by(Device.name, Device.id)
     )
+    if not is_admin:
+        if group_ids:
+            orphan_query = orphan_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            orphan_query = orphan_query.where(Device.group_id.is_(None))
+    orphaned_q = await db.execute(orphan_query)
     orphaned_devices = orphaned_q.scalars().all()
 
     # Now Playing — enrich with actual device state for mismatch detection
     now_playing = get_now_playing()
+    # Scope now_playing to user's visible devices (admins see all)
+    if not is_admin:
+        visible_device_ids = {d.id for d in all_devices}
+        now_playing = [np for np in now_playing if np["device_id"] in visible_device_ids]
 
     # Recompute remaining_seconds fresh (scheduler tick is every 15s)
     from datetime import time as _time, timedelta as _td
@@ -245,7 +401,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         })
 
     # Upcoming schedules (next 24h)
-    sched_q = await db.execute(
+    upcoming_query = (
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
@@ -254,6 +410,17 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         )
         .where(Schedule.enabled == True)
     )
+    if not is_admin:
+        if group_ids:
+            upcoming_query = upcoming_query.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            upcoming_query = upcoming_query.where(sqlalchemy.false())
+    sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
     offline_set = set(d.id for d in offline_devices)
     upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
@@ -301,36 +468,51 @@ async def server_time_json(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/api/dashboard", dependencies=[Depends(require_auth)])
-async def dashboard_json(db: AsyncSession = Depends(get_db)):
+async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""
     from datetime import datetime as _dt, timezone as _tz
     from cms.services.scheduler import get_now_playing, get_upcoming_schedules
+    from cms.auth import get_user_group_ids
 
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     tz = ZoneInfo(tz_name)
     now = _dt.now(_tz.utc)
 
+    # Group scoping
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    def _scope_device_query(q):
+        if is_admin:
+            return q
+        if group_ids:
+            return q.where((Device.group_id.in_(group_ids)) | (Device.group_id.is_(None)))
+        return q.where(Device.group_id.is_(None))
+
     # Pending device IDs
     pending_q = await db.execute(
-        select(Device.id).where(Device.status == DeviceStatus.PENDING)
+        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.PENDING))
     )
     pending_ids = [r[0] for r in pending_q.all()]
 
     # Orphaned device IDs
     orphaned_q = await db.execute(
-        select(Device.id).where(Device.status == DeviceStatus.ORPHANED)
+        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ORPHANED))
     )
     orphaned_ids = [r[0] for r in orphaned_q.all()]
 
     # Online status (adopted devices only)
     devices_q = await db.execute(
-        select(Device.id)
-        .where(Device.status == DeviceStatus.ADOPTED)
+        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ADOPTED))
     )
     all_device_ids = [r[0] for r in devices_q.all()]
     offline_ids = [did for did in all_device_ids if not device_manager.is_connected(did)]
 
     now_playing = get_now_playing()
+    # Scope now_playing to user's visible devices
+    visible_device_set = set(all_device_ids)
+    now_playing = [np for np in now_playing if np["device_id"] in visible_device_set]
 
     # Recompute remaining_seconds fresh (scheduler tick is every 15s, too stale
     # for a smooth client-side countdown)
@@ -384,7 +566,7 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
     ]
 
     # Upcoming schedules
-    sched_q = await db.execute(
+    upcoming_q = (
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
@@ -393,6 +575,17 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
         )
         .where(Schedule.enabled == True)
     )
+    if not is_admin:
+        if group_ids:
+            upcoming_q = upcoming_q.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            upcoming_q = upcoming_q.where(sqlalchemy.false())
+    sched_q = await db.execute(upcoming_q)
     all_schedules = sched_q.scalars().all()
     offline_set = set(offline_ids)
     upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
@@ -422,10 +615,22 @@ async def dashboard_json(db: AsyncSession = Depends(get_db)):
 @router.get("/devices", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import get_now_playing
+    from cms.auth import get_user_group_ids
 
-    result = await db.execute(
-        select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
-    )
+    user = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    device_query = select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
+    if not is_admin:
+        if group_ids:
+            device_query = device_query.where(
+                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+            )
+        else:
+            device_query = device_query.where(Device.group_id.is_(None))
+
+    result = await db.execute(device_query)
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
@@ -445,11 +650,18 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.is_upgrading = d.id in _devices_upgrading
         d.has_active_schedule = d.id in scheduled_device_ids
 
-    groups_q = await db.execute(
+    groups_query = (
         select(DeviceGroup)
         .options(selectinload(DeviceGroup.devices))
         .order_by(DeviceGroup.name)
     )
+    if not is_admin:
+        if group_ids:
+            groups_query = groups_query.where(DeviceGroup.id.in_(group_ids))
+        else:
+            groups_query = groups_query.where(sqlalchemy.false())
+
+    groups_q = await db.execute(groups_query)
     groups = groups_q.scalars().all()
 
     # Attach device_count and is_online to each group's devices
@@ -493,17 +705,111 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     })
 
 
+# ── Users & Roles ──
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_page(
+    request: Request,
+    user: User = Depends(require_permission(USERS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    request.state.user = user
+
+    # All users with roles eager-loaded
+    users_q = await db.execute(
+        select(User).options(selectinload(User.role)).order_by(User.email)
+    )
+    users = users_q.scalars().all()
+
+    # Load group memberships for each user
+    from cms.models.user import UserGroup
+    ug_q = await db.execute(select(UserGroup))
+    all_ug = ug_q.scalars().all()
+    user_groups_map: dict = {}
+    for ug in all_ug:
+        user_groups_map.setdefault(str(ug.user_id), []).append(str(ug.group_id))
+
+    # All roles
+    from cms.models.user import Role
+    roles_q = await db.execute(select(Role).order_by(Role.name))
+    roles = roles_q.scalars().all()
+
+    # All device groups (for assigning users to groups)
+    groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    groups = groups_q.scalars().all()
+
+    # All permissions for the role editor
+    from cms.permissions import ALL_PERMISSIONS, PERMISSION_DESCRIPTIONS
+    all_permissions = ALL_PERMISSIONS
+    perm_descriptions = PERMISSION_DESCRIPTIONS
+
+    # Group permissions by prefix (e.g. "devices", "schedules") for collapsible UI
+    from collections import OrderedDict
+    grouped_permissions: dict[str, list[str]] = OrderedDict()
+    for perm in all_permissions:
+        prefix = perm.split(":")[0] if ":" in perm else perm
+        grouped_permissions.setdefault(prefix, []).append(perm)
+
+    # Check if current user can write
+    can_write = USERS_WRITE in (user.role.permissions if user.role else [])
+    can_write_roles = ROLES_WRITE in (user.role.permissions if user.role else [])
+
+    return templates.TemplateResponse(request, "users.html", {
+        "active_tab": "users",
+        "users": users,
+        "user_groups_map": user_groups_map,
+        "roles": roles,
+        "groups": groups,
+        "all_permissions": all_permissions,
+        "grouped_permissions": grouped_permissions,
+        "perm_descriptions": perm_descriptions,
+        "can_write": can_write,
+        "can_write_roles": can_write_roles,
+        "current_user_id": str(user.id),
+    })
+
+
 # ── Assets ──
 
 
 @router.get("/assets", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
+    user: User | None = getattr(request.state, "user", None)
 
-    result = await db.execute(
+    # ── Determine which assets this user can see ──
+    group_ids = await get_user_group_ids(user, db) if user else []
+    # group_ids is None for admins (see all), list of UUIDs for others
+    asset_q = (
         select(Asset)
         .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
         .order_by(Asset.uploaded_at.desc())
     )
+    if group_ids is not None:
+        # Non-admin: only global + assets in their groups + own unshared uploads
+        global_ids = set(
+            (await db.execute(select(Asset.id).where(Asset.is_global.is_(True)))).scalars().all()
+        )
+        ga_ids = set()
+        if group_ids:
+            ga_ids = set(
+                (await db.execute(
+                    select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_ids))
+                )).scalars().all()
+            )
+        own_ids = set()
+        if user:
+            own_ids = set(
+                (await db.execute(
+                    select(Asset.id)
+                    .where(Asset.uploaded_by_user_id == user.id)
+                    .where(~Asset.id.in_(select(GroupAsset.asset_id)))
+                )).scalars().all()
+            )
+        visible = list(global_ids | ga_ids | own_ids)
+        asset_q = asset_q.where(Asset.id.in_(visible))
+
+    result = await db.execute(asset_q)
     assets = result.scalars().all()
 
     # Count schedules per asset
@@ -512,7 +818,15 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     )
     sched_counts = dict(sched_counts_q.all())
 
-    # Annotate each asset with variant summary + schedule count
+    # Annotate each asset with variant summary + schedule count + group info
+    all_group_assets = {}
+    if assets:
+        ga_rows = (await db.execute(
+            select(GroupAsset).where(GroupAsset.asset_id.in_([a.id for a in assets]))
+        )).scalars().all()
+        for ga in ga_rows:
+            all_group_assets.setdefault(ga.asset_id, []).append(ga)
+
     for a in assets:
         total = len(a.variants)
         ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
@@ -523,10 +837,53 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.variant_processing = processing
         a.variant_failed = failed
         a.schedule_count = sched_counts.get(a.id, 0)
+        entries = all_group_assets.get(a.id, [])
+        # Non-admin users should only see group entries for their own groups
+        if group_ids is not None:
+            entries = [ga for ga in entries if ga.group_id in group_ids]
+        a.group_asset_entries = entries
+
+    # Groups available for upload dropdown (user's groups, or all for admin)
+    if group_ids is None:
+        groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    elif group_ids:
+        groups_q = await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids)).order_by(DeviceGroup.name)
+        )
+    else:
+        groups_q = None
+    user_groups = groups_q.scalars().all() if groups_q else []
+
+    # Build lookup of group names — scoped to user's groups for non-admins
+    if group_ids is None:
+        all_groups_q = await db.execute(select(DeviceGroup))
+    elif group_ids:
+        all_groups_q = await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids))
+        )
+    else:
+        all_groups_q = None
+    group_name_map = {str(g.id): g.name for g in all_groups_q.scalars().all()} if all_groups_q else {}
+
+    is_admin = group_ids is None
+
+    # Build uploader name map for admin view
+    uploader_map: dict[str, str] = {}
+    if is_admin and assets:
+        uploader_ids = {a.uploaded_by_user_id for a in assets if a.uploaded_by_user_id}
+        if uploader_ids:
+            uploaders = (await db.execute(
+                select(User.id, User.username, User.email).where(User.id.in_(uploader_ids))
+            )).all()
+            uploader_map = {str(u.id): u.username or u.email for u in uploaders}
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
         "assets": assets,
+        "user_groups": user_groups,
+        "group_name_map": group_name_map,
+        "is_admin": is_admin,
+        "uploader_map": uploader_map,
     })
 
 
@@ -538,7 +895,13 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/schedules", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
-    schedules_q = await db.execute(
+    user: User | None = getattr(request.state, "user", None)
+
+    # Filter assets by user visibility
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    sched_query = (
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
@@ -547,18 +910,79 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         )
         .order_by(Schedule.priority.desc(), Schedule.name)
     )
-    all_schedules = schedules_q.scalars().all()
+    if not is_admin:
+        if group_ids:
+            sched_query = sched_query.where(
+                Schedule.group_id.in_(group_ids)
+                | Schedule.device_id.in_(
+                    select(Device.id).where(Device.group_id.in_(group_ids))
+                )
+            )
+        else:
+            sched_query = sched_query.where(sqlalchemy.false())
 
-    assets_q = await db.execute(select(Asset).order_by(Asset.filename))
-    assets = assets_q.scalars().all()
+    schedules_q = await db.execute(sched_query)
+    all_schedules = schedules_q.scalars().all()
+    asset_q = select(Asset).order_by(Asset.filename)
+    if not is_admin:
+        from cms.models.asset import Asset as AssetModel
+        global_ids = set(
+            (await db.execute(select(Asset.id).where(Asset.is_global.is_(True)))).scalars().all()
+        )
+        ga_ids = set()
+        if group_ids:
+            ga_ids = set(
+                (await db.execute(
+                    select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_ids))
+                )).scalars().all()
+            )
+        own_ids = set()
+        if user:
+            own_ids = set(
+                (await db.execute(
+                    select(Asset.id)
+                    .where(Asset.uploaded_by_user_id == user.id)
+                    .where(~Asset.id.in_(select(GroupAsset.asset_id)))
+                )).scalars().all()
+            )
+        visible = list(global_ids | ga_ids | own_ids)
+        asset_q = asset_q.where(Asset.id.in_(visible))
+    assets_result = await db.execute(asset_q)
+    assets = assets_result.scalars().all()
+
+    # Load asset-to-group mapping for JS filtering
+    asset_group_map = {}
+    if assets:
+        ga_rows = (await db.execute(
+            select(GroupAsset.asset_id, GroupAsset.group_id)
+            .where(GroupAsset.asset_id.in_([a.id for a in assets]))
+        )).all()
+        for aid, gid in ga_rows:
+            asset_group_map.setdefault(str(aid), []).append(str(gid))
+    for a in assets:
+        a._group_ids_json = asset_group_map.get(str(a.id), [])
 
     devices_q = await db.execute(
         select(Device).where(Device.status == DeviceStatus.ADOPTED).order_by(Device.name)
     )
     devices = devices_q.scalars().all()
 
-    groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    groups_query_sched = select(DeviceGroup).order_by(DeviceGroup.name)
+    if not is_admin:
+        if group_ids:
+            groups_query_sched = groups_query_sched.where(DeviceGroup.id.in_(group_ids))
+        else:
+            groups_query_sched = groups_query_sched.where(sqlalchemy.false())
+    groups_q = await db.execute(groups_query_sched)
     groups = groups_q.scalars().all()
+
+    # Scope devices to user's groups
+    if not is_admin:
+        if group_ids:
+            group_id_set = set(group_ids)
+            devices = [d for d in devices if d.group_id and d.group_id in group_id_set]
+        else:
+            devices = []
 
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
@@ -606,6 +1030,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "tz_options": tz_options,
+        "is_admin": is_admin,
     })
 
 
@@ -680,6 +1105,13 @@ async def settings_page(
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
     mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
+    # SMTP settings
+    smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
+    smtp_port = await get_setting(db, SETTING_SMTP_PORT) or "587"
+    smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
+    smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
+    smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
+
     # Timezone
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
@@ -709,6 +1141,11 @@ async def settings_page(
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_username": smtp_username,
+        "smtp_password": smtp_password,
+        "smtp_from_email": smtp_from_email,
         "mcp_api_key": mcp_api_key,
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
@@ -719,11 +1156,12 @@ async def settings_page(
     })
 
 
-@router.post("/settings/password", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+@router.post("/settings/password", response_class=HTMLResponse)
 async def change_password(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
 ):
     from cms import __version__
 
@@ -732,27 +1170,20 @@ async def change_password(
     new_password = form.get("new_password", "")
     confirm_password = form.get("confirm_password", "")
 
-    username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     ctx = {
         "active_tab": "settings",
         "version": __version__,
-        "username": username,
+        "username": current_user.email,
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "success": None,
         "error": None,
     }
 
-    # Validate current password
-    stored_hash = await get_setting(db, SETTING_PASSWORD_HASH)
-    if stored_hash:
-        if not verify_password(current_password, stored_hash):
-            ctx["error"] = "Current password is incorrect"
-            return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
-    else:
-        if current_password != settings.admin_password:
-            ctx["error"] = "Current password is incorrect"
-            return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
+    # Validate current password against user record
+    if not verify_password(current_password, current_user.password_hash):
+        ctx["error"] = "Current password is incorrect"
+        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
 
     # Validate new password
     if len(new_password) < 6:
@@ -763,8 +1194,10 @@ async def change_password(
         ctx["error"] = "New passwords do not match"
         return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
 
-    # Save new hash
-    await set_setting(db, SETTING_PASSWORD_HASH, hash_password(new_password))
+    # Update password on the User row and keep cms_settings in sync
+    current_user.password_hash = hash_password(new_password)
+    await db.commit()
+    await set_setting(db, SETTING_PASSWORD_HASH, current_user.password_hash)
 
     ctx["success"] = "Password updated successfully"
     return templates.TemplateResponse(request, "settings.html", ctx)
@@ -808,13 +1241,42 @@ async def mcp_toggle(
     return {"enabled": enabled}
 
 
-@router.post("/api/mcp/generate-key", dependencies=[Depends(require_auth)])
-async def mcp_generate_key(db: AsyncSession = Depends(get_db)):
-    """Generate a new MCP API key (replaces any existing key)."""
-    import secrets
-    key = secrets.token_urlsafe(32)
-    await set_setting(db, SETTING_MCP_API_KEY, key)
-    return {"key": key}
+# ── SMTP Settings ──
+
+
+@router.post("/api/settings/smtp")
+async def save_smtp_settings(
+    request: Request,
+    _user: User = Depends(require_permission("settings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save SMTP configuration to the database."""
+    data = await request.json()
+    await set_setting(db, SETTING_SMTP_HOST, data.get("host", ""))
+    await set_setting(db, SETTING_SMTP_PORT, str(data.get("port", 587)))
+    await set_setting(db, SETTING_SMTP_USERNAME, data.get("username", ""))
+    if "password" in data and data["password"]:
+        await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
+    await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    return {"status": "ok"}
+
+
+@router.post("/api/settings/smtp/test")
+async def test_smtp(
+    request: Request,
+    _user: User = Depends(require_permission("settings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a test email to verify SMTP configuration."""
+    data = await request.json()
+    to_email = data.get("to_email", "")
+    if not to_email:
+        return JSONResponse({"success": False, "message": "Recipient email required"}, status_code=400)
+
+    from cms.services.email_service import get_smtp_settings, test_smtp_connection
+    smtp_cfg = await get_smtp_settings(db)
+    success, message = test_smtp_connection(smtp_cfg, to_email)
+    return {"success": success, "message": message}
 
 
 # ── Database Status ──
@@ -1038,6 +1500,47 @@ async def history_page(
         "active_tab": "history",
         "tz": tz,
         "logs": logs,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    })
+
+
+# ── Audit Log ──
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    _user: User = Depends(require_permission("audit:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from cms.models.audit_log import AuditLog
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    count_result = await db.execute(select(func.count()).select_from(AuditLog))
+    total = count_result.scalar()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    result = await db.execute(
+        select(AuditLog)
+        .options(selectinload(AuditLog.user))
+        .order_by(AuditLog.created_at.desc())
+        .limit(per_page)
+        .offset(offset)
+    )
+    entries = result.scalars().all()
+
+    return templates.TemplateResponse(request, "audit.html", {
+        "active_tab": "audit",
+        "tz": tz,
+        "entries": entries,
         "page": page,
         "total_pages": total_pages,
         "total": total,

@@ -139,6 +139,84 @@ async def run_migrations():
                 "ALTER TABLE devices ADD COLUMN timezone VARCHAR(64)"
             ))
 
+        # -- api_keys.user_id (RBAC) --
+        has_user_id = await conn.run_sync(lambda c: _has_column(c, "api_keys", "user_id"))
+        if not has_user_id:
+            await conn.execute(text(
+                "ALTER TABLE api_keys ADD COLUMN user_id UUID "
+                "REFERENCES users(id) ON DELETE SET NULL"
+            ))
+
+        # -- assets.owner_group_id (RBAC) --
+        has_owner = await conn.run_sync(lambda c: _has_column(c, "assets", "owner_group_id"))
+        if not has_owner:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN owner_group_id UUID "
+                "REFERENCES device_groups(id) ON DELETE SET NULL"
+            ))
+
+        # -- assets.is_global (RBAC asset scoping) --
+        has_global = await conn.run_sync(lambda c: _has_column(c, "assets", "is_global"))
+        if not has_global:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN is_global BOOLEAN DEFAULT false"
+            ))
+            # Mark existing assets as global for backward compatibility
+            await conn.execute(text(
+                "UPDATE assets SET is_global = true WHERE owner_group_id IS NULL"
+            ))
+
+        # -- assets.uploaded_by_user_id (track uploader for personal assets) --
+        has_upby = await conn.run_sync(lambda c: _has_column(c, "assets", "uploaded_by_user_id"))
+        if not has_upby:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN uploaded_by_user_id UUID "
+                "REFERENCES users(id) ON DELETE SET NULL"
+            ))
+
+        # -- users.must_change_password (RBAC email login) --
+        has_mcp = await conn.run_sync(lambda c: _has_column(c, "users", "must_change_password"))
+        if not has_mcp:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT false"
+            ))
+
+        # -- users.setup_token (one-time account setup link) --
+        has_st = await conn.run_sync(lambda c: _has_column(c, "users", "setup_token"))
+        if not has_st:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN setup_token VARCHAR(128) UNIQUE"
+            ))
+
+        # -- users.email: set NOT NULL and backfill from username for legacy rows --
+        # First backfill any NULL emails
+        has_users = await conn.run_sync(lambda c: sa_inspect(c).has_table("users"))
+        if has_users:
+            await conn.execute(text(
+                "UPDATE users SET email = username || '@localhost' WHERE email IS NULL"
+            ))
+
+        # -- Drop assets.owner_group_id (replaced by GroupAsset entries) --
+        # Use explicit table+column check (can't rely on _has_column for drops)
+        has_ogid = await conn.run_sync(
+            lambda c: sa_inspect(c).has_table("assets")
+            and "owner_group_id" in [col["name"] for col in sa_inspect(c).get_columns("assets")]
+        )
+        if has_ogid:
+            await conn.execute(text(
+                "ALTER TABLE assets DROP COLUMN owner_group_id"
+            ))
+
+        # -- Drop group_assets.is_owner (all associations are now equal) --
+        has_isowner = await conn.run_sync(
+            lambda c: sa_inspect(c).has_table("group_assets")
+            and "is_owner" in [col["name"] for col in sa_inspect(c).get_columns("group_assets")]
+        )
+        if has_isowner:
+            await conn.execute(text(
+                "ALTER TABLE group_assets DROP COLUMN is_owner"
+            ))
+
     # Let create_all handle brand-new tables (device_profiles, asset_variants)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

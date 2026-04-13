@@ -87,10 +87,18 @@ def e2e_server(e2e_port, tmp_path_factory):
     os.environ["AGORA_CMS_ASSET_STORAGE_PATH"] = str(asset_path)
     os.environ["AGORA_CMS_API_KEY_ROTATION_HOURS"] = "0"
 
-    # Patch PostgreSQL ARRAY → JSON for SQLite before any model import
+    # Patch PostgreSQL ARRAY/JSONB → JSON for SQLite before any model import
     from sqlalchemy import JSON as SA_JSON
     from cms.models.schedule import Schedule
     col = Schedule.__table__.columns["days_of_week"]
+    col.type = SA_JSON()
+
+    from cms.models.user import Role
+    col = Role.__table__.columns["permissions"]
+    col.type = SA_JSON()
+
+    from cms.models.audit_log import AuditLog
+    col = AuditLog.__table__.columns["details"]
     col.type = SA_JSON()
 
     # Clear cached settings so they pick up the new env vars
@@ -162,10 +170,11 @@ def context(browser_instance: Browser, base_url: str, e2e_server) -> BrowserCont
     ctx = browser_instance.new_context(
         base_url=base_url,
         ignore_https_errors=True,
+        viewport={"width": 1280, "height": 1024},
     )
     page = ctx.new_page()
     page.goto("/login")
-    page.fill('input[name="username"]', "admin")
+    page.fill('input[name="email"]', "admin")
     page.fill('input[name="password"]', "testpass")
     page.click('button[type="submit"]')
     page.wait_for_url("**/")

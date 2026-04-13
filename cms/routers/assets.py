@@ -1,4 +1,4 @@
-"""Asset library API routes."""
+"""Asset library API routes with RBAC group scoping."""
 
 import hashlib
 import re
@@ -6,18 +6,22 @@ import uuid
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from cms.auth import get_settings, require_auth
+from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission
 from cms.config import Settings
 from cms.database import get_db
+from cms.permissions import ASSETS_READ, ASSETS_WRITE
 from cms.models.asset import Asset, AssetType, AssetVariant, DeviceAsset, VariantStatus
 from cms.models.device import Device, DeviceGroup
 from cms.models.device_profile import DeviceProfile
+from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
+from cms.models.user import User
 from cms.schemas.asset import AssetOut
 from cms.services.storage import get_storage
 
@@ -44,32 +48,95 @@ def _asset_type(filename: str) -> AssetType:
     return AssetType.IMAGE
 
 
-@router.get("/status")
-async def assets_status_json(db: AsyncSession = Depends(get_db)):
-    """Lightweight JSON for assets page polling.
+async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | None:
+    """Return asset IDs visible to the user, or None if admin (see all).
 
-    Returns global variant counts for structural-change detection, plus
-    per-asset variant summaries so the UI can update badges and expanded
-    detail panels in-place without a full page reload.
+    An asset is visible if:
+    - it is global (is_global=True), OR
+    - the user's groups include the asset via GroupAsset, OR
+    - the user uploaded it AND it has no group assignments (personal/unshared)
     """
-    from sqlalchemy import func as sa_func
-    from sqlalchemy.orm import selectinload
+    group_ids = await get_user_group_ids(user, db)
+    if group_ids is None:
+        return None  # Admin — no filtering
 
-    asset_count = (await db.execute(select(sa_func.count(Asset.id)))).scalar() or 0
+    # Global assets
+    global_q = select(Asset.id).where(Asset.is_global.is_(True))
+
+    # Assets in the user's groups (via GroupAsset junction)
+    group_q = (
+        select(GroupAsset.asset_id)
+        .where(GroupAsset.group_id.in_(group_ids))
+    ) if group_ids else select(GroupAsset.asset_id).where(False)
+
+    # Assets the user uploaded that have NO group assignments (personal/unshared)
+    own_q = (
+        select(Asset.id)
+        .where(Asset.uploaded_by_user_id == user.id)
+        .where(~Asset.id.in_(select(GroupAsset.asset_id)))
+    )
+
+    global_ids = set((await db.execute(global_q)).scalars().all())
+    group_asset_ids = set((await db.execute(group_q)).scalars().all())
+    own_ids = set((await db.execute(own_q)).scalars().all())
+
+    return list(global_ids | group_asset_ids | own_ids)
+
+
+async def _verify_asset_access(asset_id: uuid.UUID, request, db: AsyncSession) -> None:
+    """Raise 403 if the current user cannot access this asset."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        return
+    visible = await _visible_asset_ids(user, db)
+    if visible is not None and asset_id not in visible:
+        raise HTTPException(status_code=403, detail="Not authorised for this asset")
+
+
+@router.get("/status", dependencies=[Depends(require_permission(ASSETS_READ))])
+async def assets_status_json(
+    user: User = Depends(require_permission(ASSETS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight JSON for assets page polling — filtered by user's group access."""
+    from sqlalchemy import func as sa_func
+
+    visible = await _visible_asset_ids(user, db)
+    user_group_ids = await get_user_group_ids(user, db)
+
+    # Base query for assets this user can see
+    asset_q = select(Asset)
+    if visible is not None:
+        asset_q = asset_q.where(Asset.id.in_(visible))
+
+    asset_count = (await db.execute(
+        select(sa_func.count(Asset.id)).where(Asset.id.in_(visible)) if visible is not None
+        else select(sa_func.count(Asset.id))
+    )).scalar() or 0
+
+    variant_base = select(sa_func.count()).select_from(AssetVariant)
+    if visible is not None:
+        variant_base = variant_base.where(AssetVariant.source_asset_id.in_(visible))
     variant_ready = (await db.execute(
-        select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.READY)
+        variant_base.where(AssetVariant.status == VariantStatus.READY)
     )).scalar() or 0
     variant_processing = (await db.execute(
-        select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.PROCESSING)
+        variant_base.where(AssetVariant.status == VariantStatus.PROCESSING)
     )).scalar() or 0
     variant_failed = (await db.execute(
-        select(sa_func.count()).select_from(AssetVariant).where(AssetVariant.status == VariantStatus.FAILED)
+        variant_base.where(AssetVariant.status == VariantStatus.FAILED)
     )).scalar() or 0
 
-    # Per-asset variant details for in-place UI updates
+    # Build group name map for scope data
+    groups_result = await db.execute(select(DeviceGroup.id, DeviceGroup.name))
+    group_name_map = {str(r[0]): r[1] for r in groups_result.all()}
+
     result = await db.execute(
-        select(Asset)
-        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+        asset_q
+        .options(
+            selectinload(Asset.variants).selectinload(AssetVariant.profile),
+            selectinload(Asset.group_asset_links),
+        )
         .order_by(Asset.uploaded_at.desc())
     )
     assets_detail = []
@@ -105,28 +172,57 @@ async def assets_status_json(db: AsyncSession = Depends(get_db)):
             "variant_processing": a_processing,
             "variant_failed": a_failed,
             "variants": variants,
+            "is_global": a.is_global,
+            "has_uploader": a.uploaded_by_user_id is not None,
+            "scope_groups": [
+                {"id": str(ga.group_id), "name": group_name_map.get(str(ga.group_id), "?")}
+                for ga in a.group_asset_links
+                if user_group_ids is None or ga.group_id in user_group_ids
+            ],
         })
+
+    # Compute a hash of group-asset assignments so the poller can detect scope changes
+    import hashlib
+    ga_q = select(GroupAsset.asset_id, GroupAsset.group_id).order_by(GroupAsset.asset_id, GroupAsset.group_id)
+    if visible is not None:
+        ga_q = ga_q.where(GroupAsset.asset_id.in_(visible))
+    ga_rows = (await db.execute(ga_q)).all()
+    scope_hash = hashlib.md5(
+        ",".join(f"{r[0]}:{r[1]}" for r in ga_rows).encode()
+    ).hexdigest()[:12]
 
     return {
         "asset_count": asset_count,
         "variant_ready": variant_ready,
         "variant_processing": variant_processing,
         "variant_failed": variant_failed,
+        "scope_hash": scope_hash,
         "assets": assets_detail,
     }
 
 
 @router.get("", response_model=List[AssetOut])
-async def list_assets(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Asset).order_by(Asset.uploaded_at.desc()))
+async def list_assets(
+    user: User = Depends(require_permission(ASSETS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """List assets visible to the current user (filtered by group membership)."""
+    visible = await _visible_asset_ids(user, db)
+    q = select(Asset).order_by(Asset.uploaded_at.desc())
+    if visible is not None:
+        q = q.where(Asset.id.in_(visible))
+    result = await db.execute(q)
     return result.scalars().all()
 
 
 @router.post("/upload", response_model=AssetOut, status_code=201)
 async def upload_asset(
     file: UploadFile,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    group_id: str | None = Query(None, description="Group UUID (single, for backward compat)"),
+    group_ids: str | None = Query(None, description="Comma-separated group UUIDs"),
 ):
     if not file.filename or not ALLOWED_PATTERN.match(file.filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -185,6 +281,27 @@ async def upload_asset(
         # Sync source file to cloud storage
         await storage.on_file_stored(file.filename)
 
+    # Resolve group UUIDs (support both single group_id and multi group_ids)
+    resolved_groups: list[uuid.UUID] = []
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    raw_ids = []
+    if group_ids:
+        raw_ids = [g.strip() for g in group_ids.split(",") if g.strip()]
+    elif group_id:
+        raw_ids = [group_id]
+    for gid in raw_ids:
+        try:
+            parsed = uuid.UUID(gid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid group_id: {gid}")
+        if not is_admin and parsed not in user_groups:
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        resolved_groups.append(parsed)
+
+    # Only admin uploads without groups become global; others are personal
+    make_global = (not resolved_groups and is_admin)
+
     # Database record
     asset = Asset(
         filename=final_filename,
@@ -192,8 +309,16 @@ async def upload_asset(
         asset_type=asset_type,
         size_bytes=len(content),
         checksum=checksum,
+        is_global=make_global,
+        uploaded_by_user_id=user.id,
     )
     db.add(asset)
+    await db.flush()
+
+    # Create GroupAsset entries for all selected groups
+    for gid in resolved_groups:
+        db.add(GroupAsset(asset_id=asset.id, group_id=gid))
+
     await db.commit()
     await db.refresh(asset)
 
@@ -236,12 +361,13 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     await db.commit()
 
 
-@router.get("/{asset_id}", response_model=AssetOut)
-async def get_asset(asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@router.get("/{asset_id}", response_model=AssetOut, dependencies=[Depends(require_permission(ASSETS_READ))])
+async def get_asset(asset_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await _verify_asset_access(asset_id, request, db)
     return asset
 
 
@@ -282,12 +408,14 @@ MIME_TYPES = {
 }
 
 
-@router.get("/{asset_id}/preview")
+@router.get("/{asset_id}/preview", dependencies=[Depends(require_permission(ASSETS_READ))])
 async def preview_asset(
     asset_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    await _verify_asset_access(asset_id, request, db)
     result = await db.execute(select(Asset).where(Asset.id == asset_id))
     asset = result.scalar_one_or_none()
     if not asset:
@@ -307,6 +435,7 @@ async def preview_asset(
 @router.delete("/{asset_id}")
 async def delete_asset(
     asset_id: uuid.UUID,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -315,6 +444,13 @@ async def delete_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
+    # Only the owner or an admin can delete an asset
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    if not is_admin and asset.uploaded_by_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the asset owner can delete this asset")
+
+    # Full deletion — no more references (or admin)
     # Block deletion if any schedule references this asset
     sched_count = await db.scalar(
         select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset_id)
@@ -370,9 +506,103 @@ async def delete_asset(
         await storage.on_file_deleted(f"variants/{variant.filename}")
         await db.delete(variant)
 
+    # Remove all GroupAsset references
+    ga_result = await db.execute(
+        select(GroupAsset).where(GroupAsset.asset_id == asset_id)
+    )
+    for ga in ga_result.scalars().all():
+        await db.delete(ga)
+
     await db.delete(asset)
     await db.commit()
     return {"deleted": asset.filename}
+
+
+# ── Asset sharing & global toggle ──
+
+
+@router.post("/{asset_id}/share", dependencies=[Depends(require_permission(ASSETS_WRITE))])
+async def share_asset(
+    asset_id: uuid.UUID,
+    request: Request,
+    group_id: uuid.UUID = Query(..., description="Group UUID to share with"),
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Share an asset with an additional group."""
+    asset = (await db.execute(select(Asset).where(Asset.id == asset_id))).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    await _verify_asset_access(asset_id, request, db)
+
+    # Check target group exists
+    group = (await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))).scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    # Scoped users can only share to groups they belong to
+    user_groups = await get_user_group_ids(user, db)
+    if user_groups is not None and group_id not in user_groups:
+        raise HTTPException(status_code=403, detail="Cannot share to a group you are not a member of")
+
+    # Check if already shared
+    existing = (await db.execute(
+        select(GroupAsset).where(GroupAsset.asset_id == asset_id, GroupAsset.group_id == group_id)
+    )).scalar_one_or_none()
+    if existing:
+        return {"status": "already_shared"}
+
+    db.add(GroupAsset(asset_id=asset_id, group_id=group_id))
+    await db.commit()
+    return {"status": "shared", "asset_id": str(asset_id), "group_id": str(group_id)}
+
+
+@router.delete("/{asset_id}/share", dependencies=[Depends(require_permission(ASSETS_WRITE))])
+async def unshare_asset(
+    asset_id: uuid.UUID,
+    request: Request,
+    group_id: uuid.UUID = Query(..., description="Group UUID to unshare from"),
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an asset from a group."""
+    await _verify_asset_access(asset_id, request, db)
+
+    # Scoped users can only unshare from groups they belong to
+    user_groups = await get_user_group_ids(user, db)
+    if user_groups is not None and group_id not in user_groups:
+        raise HTTPException(status_code=403, detail="Cannot unshare from a group you are not a member of")
+
+    ga = (await db.execute(
+        select(GroupAsset).where(GroupAsset.asset_id == asset_id, GroupAsset.group_id == group_id)
+    )).scalar_one_or_none()
+    if not ga:
+        raise HTTPException(status_code=404, detail="Asset is not shared with this group")
+    await db.delete(ga)
+    await db.commit()
+
+    # Check if asset is still visible to the requesting user after unshare
+    visible = await _visible_asset_ids(user, db)
+    still_visible = visible is None or asset_id in visible
+
+    return {"status": "unshared", "asset_id": str(asset_id), "group_id": str(group_id),
+            "still_visible": still_visible}
+
+
+@router.post("/{asset_id}/global", dependencies=[Depends(require_permission(ASSETS_WRITE))])
+async def toggle_asset_global(
+    asset_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle an asset's global visibility."""
+    await _verify_asset_access(asset_id, request, db)
+    asset = (await db.execute(select(Asset).where(Asset.id == asset_id))).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    asset.is_global = not asset.is_global
+    await db.commit()
+    return {"is_global": asset.is_global}
 
 
 @device_router.get("/variants/{variant_id}/download")

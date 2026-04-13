@@ -1,6 +1,8 @@
 """Authentication — session-based for web UI, API key for programmatic access."""
 
 import hashlib
+import logging
+import uuid
 from functools import lru_cache
 
 import bcrypt
@@ -8,11 +10,15 @@ from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from cms.config import Settings
 from cms.database import get_db
 from cms.models.api_key import APIKey
 from cms.models.setting import CMSSetting
+from cms.models.user import Role, User, UserGroup
+
+_log = logging.getLogger(__name__)
 
 COOKIE_NAME = "agora_cms_session"
 MAX_AGE = 604800  # 7 days
@@ -22,6 +28,11 @@ SETTING_USERNAME = "admin_username"
 SETTING_TIMEZONE = "timezone"
 SETTING_MCP_ENABLED = "mcp_enabled"
 SETTING_MCP_API_KEY = "mcp_api_key"
+SETTING_SMTP_HOST = "smtp_host"
+SETTING_SMTP_PORT = "smtp_port"
+SETTING_SMTP_USERNAME = "smtp_username"
+SETTING_SMTP_PASSWORD = "smtp_password"
+SETTING_SMTP_FROM_EMAIL = "smtp_from_email"
 
 
 @lru_cache
@@ -46,36 +57,189 @@ def _hash_api_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+async def _resolve_user_from_api_key(
+    api_key_value: str, db: AsyncSession
+) -> User | None:
+    """Look up the user associated with an API key. Returns None if invalid."""
+    key_hash = _hash_api_key(api_key_value)
+    result = await db.execute(
+        select(APIKey)
+        .options(selectinload(APIKey.user).selectinload(User.role),
+                selectinload(APIKey.user).selectinload(User.groups).selectinload(UserGroup.group))
+        .where(APIKey.key_hash == key_hash)
+    )
+    key_row = result.scalar_one_or_none()
+    if key_row is None:
+        return None
+    from datetime import datetime, timezone
+    key_row.last_used_at = datetime.now(timezone.utc)
+    await db.commit()
+    # Legacy keys without a user_id: fall back to admin user
+    if key_row.user is None:
+        admin = await db.execute(
+            select(User)
+            .options(selectinload(User.role))
+            .join(User.role)
+            .where(Role.name == "Admin", User.is_active.is_(True))
+        )
+        return admin.scalar_one_or_none()
+    return key_row.user
+
+
+async def _resolve_user_from_session(
+    cookie: str, settings: Settings, db: AsyncSession
+) -> User | None:
+    """Decode session cookie and return the User. Returns None if invalid."""
+    serializer = URLSafeTimedSerializer(settings.secret_key)
+    try:
+        data = serializer.loads(cookie, max_age=MAX_AGE)
+    except BadSignature:
+        return None
+
+    # New-style cookie: {"user_id": "..."} — old-style: just "admin"
+    if isinstance(data, dict) and "user_id" in data:
+        import uuid as _uuid
+        try:
+            user_id = _uuid.UUID(data["user_id"])
+        except (ValueError, AttributeError):
+            return None
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.role),
+                     selectinload(User.groups).selectinload(UserGroup.group))
+            .where(User.id == user_id, User.is_active.is_(True))
+        )
+        return result.scalar_one_or_none()
+
+    # Legacy cookie (pre-RBAC) — look up the admin user by username
+    if isinstance(data, str):
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.role),
+                     selectinload(User.groups).selectinload(UserGroup.group))
+            .where(User.username == data, User.is_active.is_(True))
+        )
+        return result.scalar_one_or_none()
+
+    return None
+
+
+async def get_current_user(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Return the authenticated User or raise 401.
+
+    Checks API key header first, then session cookie.
+    """
+    # API key auth
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        user = await _resolve_user_from_api_key(api_key, db)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        return user
+
+    # Session cookie auth
+    cookie = request.cookies.get(COOKIE_NAME)
+    if cookie:
+        user = await _resolve_user_from_session(cookie, settings, db)
+        if user is not None:
+            return user
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+
 async def require_auth(
     request: Request,
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
-    # Check for API key first (programmatic access)
-    api_key = request.headers.get("X-API-Key")
-    if api_key:
-        key_hash = _hash_api_key(api_key)
-        result = await db.execute(
-            select(APIKey).where(APIKey.key_hash == key_hash)
-        )
-        key_row = result.scalar_one_or_none()
-        if key_row is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-        # Update last_used_at
-        from datetime import datetime, timezone
-        key_row.last_used_at = datetime.now(timezone.utc)
-        await db.commit()
-        return
+    """Legacy auth check — kept for backward compatibility during migration.
 
-    # Fall back to session cookie (web UI)
-    cookie = request.cookies.get(COOKIE_NAME)
-    if not cookie:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    serializer = URLSafeTimedSerializer(settings.secret_key)
-    try:
-        serializer.loads(cookie, max_age=MAX_AGE)
-    except BadSignature:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    Delegates to get_current_user but stores the user on request.state
+    so templates can access user permissions for nav rendering.
+    Also redirects users who must change their password.
+    """
+    user = await get_current_user(request, settings, db)
+    request.state.user = user
+
+    # Force password change redirect for web UI requests
+    if user.must_change_password and request.url.path != "/force-password-change":
+        from fastapi.responses import RedirectResponse
+        raise HTTPException(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            headers={"Location": "/force-password-change"},
+        )
+
+
+def require_permission(*perms: str):
+    """Return a FastAPI dependency that enforces one or more permissions.
+
+    Usage::
+
+        @router.get("/things", dependencies=[Depends(require_permission("things:read"))])
+        async def list_things(...): ...
+
+    Or inject the user directly::
+
+        @router.post("/things")
+        async def create_thing(user: User = Depends(require_permission("things:write"))): ...
+    """
+    from cms.permissions import has_permission
+
+    async def _check(
+        request: Request,
+        settings: Settings = Depends(get_settings),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        user = await get_current_user(request, settings, db)
+        if user.role is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No role assigned")
+        for perm in perms:
+            if not has_permission(user.role.permissions, perm):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing permission: {perm}",
+                )
+        return user
+
+    return _check
+
+
+async def get_user_group_ids(user: User, db: AsyncSession) -> list | None:
+    """Return the list of group UUIDs a user is assigned to, or None for admins.
+
+    Users with the 'groups:view_all' permission return None, meaning "no filtering"
+    — they are treated as if they are a member of every group.
+    Non-admin users return their assigned group IDs for query scoping.
+    """
+    from cms.permissions import GROUPS_VIEW_ALL
+    if GROUPS_VIEW_ALL in user.role.permissions:
+        return None  # Admin — no group scoping
+    result = await db.execute(
+        select(UserGroup.group_id).where(UserGroup.user_id == user.id)
+    )
+    return [row[0] for row in result.all()]
+
+
+async def verify_resource_group_access(
+    user: User, db: AsyncSession, group_id: uuid.UUID | None
+) -> None:
+    """Raise 403 if the user does not have access to the given group.
+
+    Call this on every by-ID endpoint after fetching the resource to prevent
+    IDOR attacks. ``group_id`` may be ``None`` (e.g. a device not yet assigned
+    to a group), in which case access is allowed (the resource is unscoped).
+    """
+    if group_id is None:
+        return  # Resource has no group — allow access
+    group_ids = await get_user_group_ids(user, db)
+    if group_ids is None:
+        return  # User has groups:view_all — allow all
+    if group_id not in group_ids:
+        raise HTTPException(status_code=403, detail="Access denied: resource is outside your assigned groups")
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
@@ -95,11 +259,54 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
 
 
 async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None:
-    """On startup, seed admin credentials from env vars if not already in DB."""
-    existing = await get_setting(db, SETTING_PASSWORD_HASH)
-    if not existing or settings.reset_password:
-        await set_setting(db, SETTING_PASSWORD_HASH, hash_password(settings.admin_password))
-        await set_setting(db, SETTING_USERNAME, settings.admin_username)
+    """On startup, ensure a User row exists for the admin.
+
+    Migration path:
+    1. If a User with the admin username already exists, optionally reset password.
+    2. If no User exists yet, create one with the Admin role and env-var credentials.
+    3. Keep cms_settings in sync for any legacy code that still reads them.
+    """
+    # Ensure built-in Admin role exists (should be seeded by _seed_roles first)
+    result = await db.execute(select(Role).where(Role.name == "Admin"))
+    admin_role = result.scalar_one_or_none()
+    if admin_role is None:
+        _log.error("Admin role not found — cannot seed admin user. Ensure _seed_roles runs first.")
+        return
+
+    # Check if admin User row exists (try by username first for backward compat)
+    result = await db.execute(
+        select(User).where(User.username == settings.admin_username)
+    )
+    admin_user = result.scalar_one_or_none()
+
+    admin_email = settings.admin_email
+
+    if admin_user is None:
+        # Create admin user from env vars
+        admin_user = User(
+            username=settings.admin_username,
+            email=admin_email,
+            display_name="Administrator",
+            password_hash=hash_password(settings.admin_password),
+            role_id=admin_role.id,
+            is_active=True,
+            must_change_password=False,
+        )
+        db.add(admin_user)
+        await db.commit()
+        _log.info("Created admin user: %s", settings.admin_username)
+    else:
+        # Ensure email is set (migration for existing admin users)
+        if not admin_user.email:
+            admin_user.email = admin_email
         if settings.reset_password:
-            import logging
-            logging.getLogger(__name__).warning("Admin password reset from environment. Set AGORA_CMS_RESET_PASSWORD=false and restart.")
+            admin_user.password_hash = hash_password(settings.admin_password)
+            await db.commit()
+            _log.warning(
+                "Admin password reset from environment. "
+                "Set AGORA_CMS_RESET_PASSWORD=false and restart."
+            )
+
+    # Keep cms_settings in sync for any legacy code
+    await set_setting(db, SETTING_PASSWORD_HASH, admin_user.password_hash)
+    await set_setting(db, SETTING_USERNAME, admin_user.username)

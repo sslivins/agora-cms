@@ -7,6 +7,7 @@
     <a href="/profiles" class="sub-tab active">Playback Profiles</a>
 </div>
 
+{% if 'profiles:write' in user_perms %}
 <div class="card">
     <h2>Create Profile</h2>
     <form onsubmit="event.preventDefault(); createProfile(this)">
@@ -104,6 +105,7 @@
         <button type="submit" class="btn btn-primary">Create Profile</button>
     </form>
 </div>
+{% endif %}
 
 <div class="card">
     <h2>Profiles</h2>
@@ -151,12 +153,14 @@
                     {% endif %}
                 </td>
                 <td>
+                    {% if 'profiles:write' in user_perms %}
                     {% if not p.builtin %}
                     <button class="btn btn-secondary btn-sm" onclick="editProfile('{{ p.id }}')">Edit</button>
                     {% endif %}
                     <button class="btn btn-secondary btn-sm" onclick="copyProfile('{{ p.id }}', '{{ p.name }}')">Copy</button>
                     {% if not p.builtin %}
                     <button class="btn btn-danger btn-sm" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
+                    {% endif %}
                     {% endif %}
                 </td>
             </tr>

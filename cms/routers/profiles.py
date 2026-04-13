@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import require_auth
+from cms.auth import require_auth, require_permission
 from cms.database import get_db
+from cms.permissions import PROFILES_READ, PROFILES_WRITE
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
 from cms.models.device_profile import DeviceProfile
@@ -75,7 +76,7 @@ def _validate_profile_compat(
         )
 
 
-@router.get("", response_model=List[ProfileOut])
+@router.get("", response_model=List[ProfileOut], dependencies=[Depends(require_permission(PROFILES_READ))])
 async def list_profiles(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(DeviceProfile).order_by(DeviceProfile.name)
@@ -121,7 +122,7 @@ async def list_profiles(db: AsyncSession = Depends(get_db)):
     return out
 
 
-@router.post("", response_model=ProfileOut, status_code=201)
+@router.post("", response_model=ProfileOut, status_code=201, dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)):
     # Validate codec/profile compatibility
     _validate_profile_compat(
@@ -175,7 +176,7 @@ _TRANSCODE_FIELDS = {
 }
 
 
-@router.put("/{profile_id}", response_model=ProfileOut)
+@router.put("/{profile_id}", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def update_profile(
     profile_id: uuid.UUID,
     data: ProfileUpdate,
@@ -268,7 +269,7 @@ async def update_profile(
     )
 
 
-@router.delete("/{profile_id}")
+@router.delete("/{profile_id}", dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(DeviceProfile).where(DeviceProfile.id == profile_id)
@@ -312,7 +313,7 @@ async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_d
     return {"deleted": profile.name}
 
 
-@router.post("/{profile_id}/copy", response_model=ProfileOut, status_code=201)
+@router.post("/{profile_id}/copy", response_model=ProfileOut, status_code=201, dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def copy_profile(
     profile_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -383,7 +384,7 @@ async def copy_profile(
     )
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_permission(PROFILES_READ))])
 async def profiles_status_json(db: AsyncSession = Depends(get_db)):
     """Lightweight JSON for profiles page polling — queue status + profile variant counts."""
 

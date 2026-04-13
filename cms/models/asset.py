@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +36,15 @@ class Asset(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
+    # When True, asset is visible to all groups regardless of group associations
+    is_global: Mapped[bool] = mapped_column(
+        "is_global", nullable=False, default=False, server_default="false"
+    )
+    # Who uploaded this asset (for personal/no-group assets visibility)
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Media metadata (populated via ffprobe after upload)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -49,6 +58,7 @@ class Asset(Base):
     schedules: Mapped[list["Schedule"]] = relationship(back_populates="asset")
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="asset")
     variants: Mapped[list["AssetVariant"]] = relationship(back_populates="source_asset")
+    group_asset_links: Mapped[list["GroupAsset"]] = relationship(back_populates="asset")
 
 
 class AssetVariant(Base):
