@@ -170,6 +170,7 @@ def context(browser_instance: Browser, base_url: str, e2e_server) -> BrowserCont
     ctx = browser_instance.new_context(
         base_url=base_url,
         ignore_https_errors=True,
+        viewport={"width": 1280, "height": 1024},
     )
     page = ctx.new_page()
     page.goto("/login")
