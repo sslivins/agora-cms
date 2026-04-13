@@ -422,7 +422,7 @@ class TestScheduleEditWithDates:
             "device_id": device_id,
             "asset_id": assets.json()[0]["id"],
             "start_time": "09:00",
-            "end_time": "17:00",
+            "end_time": "23:59",
         })
 
     def test_edit_with_dates_saves_successfully(self, page: Page, api, ws_url):
