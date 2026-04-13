@@ -111,28 +111,72 @@ jobs:
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}
 
+  verify:
+    needs: [publish, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Wait for CMS to become healthy
+        id: health
         run: |
+          EXPECTED="${{ needs.publish.outputs.version }}"
           FQDN=$(az containerapp show \
             --name agoracms-cms \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --query "properties.configuration.ingress.fqdn" -o tsv)
           URL="https://${FQDN}/healthz"
-          echo "Polling $URL for up to 120s ..."
-          for i in $(seq 1 24); do
+          echo "Polling $URL — expecting version $EXPECTED ..."
+          LAST_VERSION=""
+          for i in $(seq 1 30); do
             CODE=$(curl -s -o /tmp/health.json -w '%{http_code}' "$URL" --max-time 5 || echo "000")
             if [ "$CODE" = "200" ]; then
-              VERSION=$(cat /tmp/health.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))")
-              echo "✅ CMS healthy — version $VERSION (attempt $i)"
-              if [ "$VERSION" != "${{ needs.publish.outputs.version }}" ]; then
-                echo "⚠️  Expected version ${{ needs.publish.outputs.version }} but got $VERSION"
+              LAST_VERSION=$(cat /tmp/health.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))")
+              if [ "$LAST_VERSION" = "$EXPECTED" ]; then
+                echo "✅ CMS healthy — version $LAST_VERSION (attempt $i)"
+                echo "status=ok" >> "$GITHUB_OUTPUT"
+                exit 0
               fi
-              exit 0
+              echo "  attempt $i — version $LAST_VERSION != $EXPECTED, waiting 10s ..."
+            else
+              echo "  attempt $i — HTTP $CODE, waiting 10s ..."
             fi
-            echo "  attempt $i — HTTP $CODE, retrying in 5s ..."
-            sleep 5
+            sleep 10
           done
-          echo "❌ CMS failed to become healthy within 120s"
-          echo "Last response:"
-          cat /tmp/health.json 2>/dev/null || echo "(no response body)"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "last_version=$LAST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "❌ CMS did not reach expected version $EXPECTED within 5 minutes (last: ${LAST_VERSION:-no response})"
+
+      - name: Fetch container logs on failure
+        if: steps.health.outputs.status == 'failed'
+        run: |
+          echo "──── Console logs (last 150 lines) ────"
+          az containerapp logs show \
+            --name agoracms-cms \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --type console --tail 150 2>&1 || echo "(failed to fetch console logs)"
+
+          echo ""
+          echo "──── System logs (last 50 lines) ────"
+          az containerapp logs show \
+            --name agoracms-cms \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --type system --tail 50 2>&1 || echo "(failed to fetch system logs)"
+
+          echo ""
+          echo "──── Active revisions ────"
+          az containerapp revision list \
+            --name agoracms-cms \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            -o table 2>&1 || echo "(failed to list revisions)"
+
+      - name: Fail if version mismatch
+        if: steps.health.outputs.status == 'failed'
+        run: |
+          echo "::error::Deployment verification failed — expected version ${{ needs.publish.outputs.version }} but got ${{ steps.health.outputs.last_version }}"
           exit 1
