@@ -21,6 +21,7 @@ class DeviceOut(BaseModel):
     timezone: Optional[str] = None
     firmware_version: str
     device_type: str = ""
+    supported_codecs: str = ""
     storage_capacity_mb: int
     storage_used_mb: int
     last_seen: Optional[datetime] = None

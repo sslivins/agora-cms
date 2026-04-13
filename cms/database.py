@@ -222,6 +222,13 @@ async def run_migrations():
                 "ALTER TABLE group_assets DROP COLUMN is_owner"
             ))
 
+        # -- devices.supported_codecs --
+        has_codecs = await conn.run_sync(lambda c: _has_column(c, "devices", "supported_codecs"))
+        if not has_codecs:
+            await conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN supported_codecs VARCHAR(100) DEFAULT ''"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

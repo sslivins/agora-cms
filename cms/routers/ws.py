@@ -110,10 +110,13 @@ async def _resolve_asset_for_device(
     )
 
 
-# Mapping of device_type substrings to built-in profile names
+# Mapping of device_type substrings to built-in profile names.
+# Checked in order — more specific patterns first.
 _DEVICE_TYPE_PROFILE_MAP = {
     "pi zero 2 w": "pi-zero-2w",
     "raspberry pi zero 2 w": "pi-zero-2w",
+    "pi 5": "pi-5",
+    "pi 4": "pi-4",
 }
 
 
@@ -196,6 +199,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 status=DeviceStatus.PENDING,
                 firmware_version=raw.get("firmware_version", ""),
                 device_type=raw.get("device_type", ""),
+                supported_codecs=",".join(raw.get("supported_codecs", [])),
                 storage_capacity_mb=raw.get("storage_capacity_mb", 0),
                 storage_used_mb=raw.get("storage_used_mb", 0),
                 last_seen=datetime.now(timezone.utc),
@@ -260,6 +264,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             # Update device stats
             device.firmware_version = raw.get("firmware_version", device.firmware_version)
             device.device_type = raw.get("device_type", device.device_type)
+            reg_codecs = raw.get("supported_codecs")
+            if reg_codecs is not None:
+                device.supported_codecs = ",".join(reg_codecs)
             device.storage_capacity_mb = raw.get("storage_capacity_mb", device.storage_capacity_mb)
             device.storage_used_mb = raw.get("storage_used_mb", device.storage_used_mb)
             device.last_seen = datetime.now(timezone.utc)

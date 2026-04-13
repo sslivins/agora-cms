@@ -49,6 +49,7 @@ class Device(Base):
     storage_capacity_mb: Mapped[int] = mapped_column(Integer, default=0)
     storage_used_mb: Mapped[int] = mapped_column(Integer, default=0)
     device_type: Mapped[str] = mapped_column(String(100), default="")
+    supported_codecs: Mapped[str] = mapped_column(String(100), default="")
     profile_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("device_profiles.id"), nullable=True
     )

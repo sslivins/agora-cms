@@ -1,4 +1,9 @@
-"""Playwright e2e test fixtures for asset scoping."""
+"""Playwright e2e test fixtures for asset scoping.
+
+NOTE: These tests are currently disabled (see #183).
+They depend on a live Azure CMS instance which is being decommissioned.
+They need to be converted to run against a local server.
+"""
 import os
 import pytest
 import requests

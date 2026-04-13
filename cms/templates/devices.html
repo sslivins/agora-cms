@@ -99,6 +99,10 @@
                 <span class="detail-value">{{ d.device_type or '—' }}</span>
             </div>
             <div class="detail-item">
+                <span class="detail-label">Supported Codecs</span>
+                <span class="detail-value">{{ d.supported_codecs.replace(',', ', ') if d.supported_codecs else '—' }}</span>
+            </div>
+            <div class="detail-item">
                 <span class="detail-label">IP Address</span>
                 <span class="detail-value monospace">{{ d.ip_address or '—' }}</span>
             </div>
