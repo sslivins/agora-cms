@@ -147,8 +147,12 @@ class TestDeviceLogsAPI:
 
         async def fake_resolve():
             """Simulate the device responding with logs."""
-            await asyncio.sleep(0.05)
-            # Find the request_id from the sent message
+            # Wait for the WS message to arrive (PostgreSQL DB queries
+            # may take longer than SQLite, so a fixed sleep is racy).
+            for _ in range(200):
+                if ws.sent:
+                    break
+                await asyncio.sleep(0.05)
             msg = ws.sent[-1]
             device_manager.resolve_log_request(
                 msg["request_id"],
