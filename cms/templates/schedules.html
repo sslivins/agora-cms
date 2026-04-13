@@ -466,7 +466,7 @@ function describeSchedule(d, opts) {
     // Duration
     let startSecs = timeToSecs(d.start_time);
     let endSecs = timeToSecs(d.end_time);
-    const isOvernight = endSecs <= startSecs;
+    const isOvernight = endSecs < startSecs;
     if (isOvernight) endSecs += 24 * 3600;
     const durSecs = endSecs - startSecs;
     let durStr;
@@ -547,7 +547,7 @@ function describeScheduleCompact(d) {
 
     let startSecs = timeToSecs(d.start_time);
     let endSecs = timeToSecs(d.end_time);
-    const isOvernight = endSecs <= startSecs;
+    const isOvernight = endSecs < startSecs;
     if (isOvernight) endSecs += 24 * 3600;
     const durSecs = endSecs - startSecs;
     let durStr;
@@ -693,7 +693,7 @@ function _updateSummaryEl(el, form, dayPrefix) {
     // Compute loop info
     let startSecs = timeToSecs(data.start_time);
     let endSecs = timeToSecs(data.end_time);
-    if (endSecs <= startSecs) endSecs += 24 * 3600;
+    if (endSecs < startSecs) endSecs += 24 * 3600;
     const durSecs = endSecs - startSecs;
     const loopHtml = getLoopInfoHtml(form, durSecs);
 
@@ -850,10 +850,10 @@ function editSchedule(s) {
     // Preserve original duration when editing times (instead of resetting to +1h)
     const editStartTimeEl = box.querySelector("#edit-start-time");
     const editEndTimeEl = box.querySelector("#edit-end-time");
-    const _origStartMins = timeToMins(s.start_time);
-    let _origEndMins = timeToMins(s.end_time);
-    if (_origEndMins <= _origStartMins) _origEndMins += 24 * 60;
-    const _origDurMins = _origEndMins - _origStartMins;
+    const _origStartSecs = timeToSecs(s.start_time);
+    let _origEndSecs = timeToSecs(s.end_time);
+    if (_origEndSecs < _origStartSecs) _origEndSecs += 24 * 3600;
+    const _origDurMins = Math.round((_origEndSecs - _origStartSecs) / 60);
     let _startTouched = false, _endTouched = false;
     let _roundingInProgress = false;
     const editLcInput = box.querySelector('#edit-loop-count');
