@@ -5,16 +5,31 @@ import os
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import JSON, event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from cms.database import Base
 
 
-# ── Patch ARRAY columns for SQLite compatibility ──
+def _get_test_database_url():
+    """Return the test database URL.
+
+    Uses AGORA_CMS_DATABASE_URL if set (CI uses PostgreSQL),
+    otherwise falls back to SQLite for local dev convenience.
+    """
+    url = os.environ.get("AGORA_CMS_DATABASE_URL")
+    if url:
+        return url
+    return None  # caller must provide tmp_path-based SQLite URL
+
+
+def _needs_sqlite_patches(db_url: str) -> bool:
+    return "sqlite" in db_url
+
+
 def _patch_array_columns():
     """Replace PostgreSQL ARRAY/JSONB columns with JSON for SQLite tests."""
+    from sqlalchemy import JSON
     from cms.models.schedule import Schedule
     from cms.models.user import Role
     from cms.models.audit_log import AuditLog
@@ -29,23 +44,33 @@ def _patch_array_columns():
     col.type = JSON()
 
 
-# ── File-based SQLite async engine ──
+# ── Database engine ──
 
 @pytest_asyncio.fixture
 async def db_engine(tmp_path):
-    _patch_array_columns()
-    db_path = tmp_path / "test.db"
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{db_path}",
-        echo=False,
-        poolclass=NullPool,
-    )
+    pg_url = _get_test_database_url()
+    if pg_url:
+        db_url = pg_url
+    else:
+        db_path = tmp_path / "test.db"
+        db_url = f"sqlite+aiosqlite:///{db_path}"
+        _patch_array_columns()
+
+    engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
+
     async with engine.begin() as conn:
+        # For PostgreSQL: drop and recreate all tables for isolation
+        if "postgresql" in db_url:
+            await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+
     yield engine
+
+    if "postgresql" in db_url:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+
     await engine.dispose()
-    if db_path.exists():
-        os.unlink(db_path)
 
 
 @pytest_asyncio.fixture
@@ -59,7 +84,7 @@ async def db_session(db_engine):
 
 @pytest_asyncio.fixture
 async def app(db_engine, tmp_path):
-    """Create a test FastAPI app with SQLite DB and temp storage."""
+    """Create a test FastAPI app with temp storage."""
     from contextlib import asynccontextmanager
 
     from cms.auth import get_settings
@@ -68,7 +93,7 @@ async def app(db_engine, tmp_path):
     from cms.services.storage import LocalStorageBackend, init_storage
 
     settings = Settings(
-        database_url="sqlite+aiosqlite://",
+        database_url=str(db_engine.url),
         secret_key="test-secret",
         admin_username="admin",
         admin_password="testpass",
@@ -131,7 +156,7 @@ async def app(db_engine, tmp_path):
         seed_db.add(admin_user)
         await seed_db.commit()
 
-    # Point the DB module at our test SQLite engine so any code that
+    # Point the DB module at our test engine so any code that
     # accesses database globals directly (e.g. WebSocket handler) works.
     import cms.database as db_mod
     db_mod._engine = db_engine

@@ -242,9 +242,12 @@ async def run_migrations():
                 perms = row[1] if isinstance(row[1], list) else json.loads(row[1] or "[]")
                 if NOTIFICATIONS_SYSTEM not in perms:
                     perms.append(NOTIFICATIONS_SYSTEM)
-                    await conn.execute(text(
-                        "UPDATE roles SET permissions = :perms WHERE id = :rid"
-                    ), {"perms": json.dumps(perms), "rid": str(row[0])})
+                    from cms.models.user import Role
+                    await conn.execute(
+                        Role.__table__.update()
+                        .where(Role.__table__.c.id == row[0])
+                        .values(permissions=perms)
+                    )
 
     # Run create_all again in case migrations added models with new relationships
     async with _engine.begin() as conn:
