@@ -27,7 +27,7 @@ class TestLogin:
         page = ctx.new_page()
 
         page.goto("/login")
-        page.fill('input[name="username"]', "admin")
+        page.fill('input[name="email"]', "admin")
         page.fill('input[name="password"]', "testpass")
         page.click('button[type="submit"]')
 
@@ -44,7 +44,7 @@ class TestLogin:
         page = ctx.new_page()
 
         page.goto("/login")
-        page.fill('input[name="username"]', "admin")
+        page.fill('input[name="email"]', "admin")
         page.fill('input[name="password"]', "wrongpassword")
         page.click('button[type="submit"]')
 

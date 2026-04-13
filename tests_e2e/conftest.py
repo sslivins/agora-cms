@@ -173,7 +173,7 @@ def context(browser_instance: Browser, base_url: str, e2e_server) -> BrowserCont
     )
     page = ctx.new_page()
     page.goto("/login")
-    page.fill('input[name="username"]', "admin")
+    page.fill('input[name="email"]', "admin")
     page.fill('input[name="password"]', "testpass")
     page.click('button[type="submit"]')
     page.wait_for_url("**/")
