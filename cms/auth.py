@@ -195,6 +195,7 @@ def require_permission(*perms: str):
         db: AsyncSession = Depends(get_db),
     ) -> User:
         user = await get_current_user(request, settings, db)
+        request.state.user = user
         if user.role is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No role assigned")
         for perm in perms:
