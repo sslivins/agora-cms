@@ -52,6 +52,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-e2e.txt
+          pip install pytest-asyncio aiosqlite
 
       - name: Get Playwright version
         id: pw-version
