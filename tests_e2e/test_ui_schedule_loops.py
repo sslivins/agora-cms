@@ -829,3 +829,95 @@ class TestSchedulePreviewSubMinuteDuration:
         expect(summary).to_be_visible()
         expect(summary).to_contain_text("2 min")
         expect(summary).not_to_contain_text("sec")
+
+
+class TestActiveTableAndEditNoFalseOvernight:
+    """Saved short-clip schedules should not show '24 hrs' in the active
+    schedules table or 'Spans midnight' in the edit dialog."""
+
+    SHORT_DURATION = 5  # 5-second clip
+
+    def test_active_table_no_24hrs_for_short_clip(self, page: Page, api, ws_url):
+        """A saved schedule with start=09:00:00 end=09:00:05 must NOT show
+        '24 hrs' in the active schedules table description."""
+        device_id = "tbl-24h-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+
+        _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="09:00:00", end_time="09:00:05",
+            name="Short Clip Table",
+        )
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Short Clip Table")
+        expect(row).to_be_visible()
+        desc_cell = row.locator("td.schedule-desc")
+        expect(desc_cell).to_be_visible()
+        cell_text = desc_cell.inner_text()
+        assert "24 hr" not in cell_text, (
+            f"Active table shows '24 hrs' for a 5-second schedule: {cell_text}"
+        )
+        assert "Spans midnight" not in cell_text, (
+            f"Active table shows midnight warning for a 5-second schedule: {cell_text}"
+        )
+
+    def test_active_table_no_24hrs_same_minute(self, page: Page, api, ws_url):
+        """When start and end times share the same HH:MM (differ only in
+        seconds), the table must not show '24 hrs'."""
+        device_id = "tbl-24h-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+
+        _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="14:30:00", end_time="14:30:45",
+            name="Same Minute Sched",
+        )
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Same Minute Sched")
+        desc_cell = row.locator("td.schedule-desc")
+        expect(desc_cell).to_be_visible()
+        cell_text = desc_cell.inner_text()
+        assert "24 hr" not in cell_text, (
+            f"Table shows '24 hrs' for same-minute schedule: {cell_text}"
+        )
+
+    def test_edit_modal_no_midnight_for_short_clip(self, page: Page, api, ws_url):
+        """Opening the edit modal for a sub-minute schedule must NOT show
+        'Spans midnight' in the summary preview."""
+        device_id = "edit-mid-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+
+        _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="12:00:00", end_time="12:00:30",
+            name="Edit Short Clip",
+        )
+
+        _open_edit_modal(page, "Edit Short Clip")
+
+        # Inject known duration so the summary can compute loop info
+        page.evaluate(
+            """([assetId, dur]) => {
+                const a = _scheduleData.assets.find(x => x.id === assetId);
+                if (a) a.duration = dur;
+            }""",
+            [asset_id, 30],
+        )
+        # Trigger summary update by dispatching change on start time
+        page.dispatch_event("#edit-start-time", "change")
+
+        summary = page.locator("#edit-schedule-summary")
+        expect(summary).to_be_visible()
+        summary_text = summary.inner_text()
+        assert "Spans midnight" not in summary_text, (
+            f"Edit modal shows midnight warning for 30-second schedule: {summary_text}"
+        )
+        assert "24 hr" not in summary_text, (
+            f"Edit modal shows '24 hrs' for 30-second schedule: {summary_text}"
+        )
