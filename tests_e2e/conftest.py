@@ -101,6 +101,10 @@ def e2e_server(e2e_port, tmp_path_factory):
     col = AuditLog.__table__.columns["details"]
     col.type = SA_JSON()
 
+    from cms.models.notification import Notification
+    col = Notification.__table__.columns["details"]
+    col.type = SA_JSON()
+
     # Clear cached settings so they pick up the new env vars
     from cms.auth import get_settings
     get_settings.cache_clear()

@@ -383,6 +383,7 @@ from cms.routers.schedules import router as schedules_router  # noqa: E402
 from cms.routers.ws import router as ws_router  # noqa: E402
 from cms.routers.api_keys import router as api_keys_router  # noqa: E402
 from cms.routers.audit import router as audit_router  # noqa: E402
+from cms.routers.notifications import router as notifications_router  # noqa: E402
 from cms.routers.roles import router as roles_router  # noqa: E402
 from cms.routers.users import router as users_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
@@ -396,6 +397,7 @@ app.include_router(logs_router)
 app.include_router(mcp_router)
 app.include_router(api_keys_router)
 app.include_router(audit_router)
+app.include_router(notifications_router)
 app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(ws_router)

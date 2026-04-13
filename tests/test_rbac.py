@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import hash_password, _hash_api_key
+from cms.auth import hash_password, set_setting, _hash_api_key
 from cms.models.api_key import APIKey
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.group_asset import GroupAsset
@@ -17,6 +17,13 @@ from cms.models.user import Role, User, UserGroup
 
 
 # ── Helpers ──
+
+
+async def _seed_smtp(db: AsyncSession):
+    """Seed SMTP settings so user-creation API calls pass the SMTP gate."""
+    await set_setting(db, "smtp_host", "smtp.example.com")
+    await set_setting(db, "smtp_from_email", "noreply@example.com")
+    await db.commit()
 
 
 async def _get_role_id(db: AsyncSession, name: str) -> uuid.UUID:
@@ -180,6 +187,7 @@ class TestUserManagement:
     """Test user creation, update, and deletion via admin API."""
 
     async def test_create_user(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         resp = await client.post("/api/users", json={
             "email": "newuser@test.com",
@@ -193,6 +201,7 @@ class TestUserManagement:
         assert data["display_name"] == "New User"
 
     async def test_create_duplicate_email_rejected(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         await client.post("/api/users", json={
             "email": "dup@test.com", "display_name": "First",
@@ -205,6 +214,7 @@ class TestUserManagement:
         assert resp.status_code == 409
 
     async def test_update_user_display_name(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         create_resp = await client.post("/api/users", json={
             "email": "editable@test.com", "display_name": "Original",
@@ -218,6 +228,7 @@ class TestUserManagement:
         assert resp.json()["display_name"] == "Updated Name"
 
     async def test_update_user_role(self, client, db_session):
+        await _seed_smtp(db_session)
         viewer_id = str(await _get_role_id(db_session, "Viewer"))
         op_id = str(await _get_role_id(db_session, "Operator"))
         create_resp = await client.post("/api/users", json={
@@ -232,6 +243,7 @@ class TestUserManagement:
         assert resp.json()["role"]["name"] == "Operator"
 
     async def test_delete_user(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         create_resp = await client.post("/api/users", json={
             "email": "deleteme@test.com", "display_name": "Delete Me",
@@ -253,6 +265,7 @@ class TestUserManagement:
         assert any(u["email"] == "admin@localhost" for u in data)
 
     async def test_create_user_with_groups(self, client, db_session):
+        await _seed_smtp(db_session)
         group = await _create_group(db_session, "Test Group A")
         role_id = str(await _get_role_id(db_session, "Operator"))
         resp = await client.post("/api/users", json={
@@ -646,6 +659,7 @@ class TestAuditLogging:
     """Test that RBAC actions produce audit log entries."""
 
     async def test_user_create_logged(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         await client.post("/api/users", json={
             "email": "audited@test.com", "display_name": "Audited",
@@ -657,6 +671,7 @@ class TestAuditLogging:
         assert "user.create" in actions
 
     async def test_user_update_logged(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         create_resp = await client.post("/api/users", json={
             "email": "audit_update@test.com", "display_name": "Before",
@@ -670,6 +685,7 @@ class TestAuditLogging:
         assert "user.update" in actions
 
     async def test_user_delete_logged(self, client, db_session):
+        await _seed_smtp(db_session)
         role_id = str(await _get_role_id(db_session, "Viewer"))
         create_resp = await client.post("/api/users", json={
             "email": "audit_del@test.com", "display_name": "Delete Me",
