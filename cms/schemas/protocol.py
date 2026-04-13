@@ -40,6 +40,10 @@ class MessageType(str, Enum):
     WIPE_ASSETS = "wipe_assets"
     REQUEST_LOGS = "request_logs"
 
+    # Device → CMS (playback events)
+    PLAYBACK_STARTED = "playback_started"
+    PLAYBACK_ENDED = "playback_ended"
+
     # Device → CMS (response)
     LOGS_RESPONSE = "logs_response"
     WIPE_ASSETS_ACK = "wipe_assets_ack"
@@ -94,6 +98,24 @@ class AssetDeletedMessage(BaseMessage):
     type: MessageType = MessageType.ASSET_DELETED
     device_id: str
     asset_name: str
+
+
+class PlaybackStartedMessage(BaseMessage):
+    type: MessageType = MessageType.PLAYBACK_STARTED
+    device_id: str
+    schedule_id: str
+    schedule_name: str
+    asset: str
+    timestamp: str  # ISO 8601 UTC — when the device started playback
+
+
+class PlaybackEndedMessage(BaseMessage):
+    type: MessageType = MessageType.PLAYBACK_ENDED
+    device_id: str
+    schedule_id: str
+    schedule_name: str
+    asset: str
+    timestamp: str  # ISO 8601 UTC — when the device ended playback
 
 
 # ── CMS → Device ──
