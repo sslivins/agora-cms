@@ -653,10 +653,10 @@ async function unshareAsset(assetId, groupId) {
 
         // If asset is no longer visible to us, remove its rows entirely
         if (data.still_visible === false) {
-            const detailRow = document.getElementById("detail-" + assetId);
-            const collapsedRow = detailRow ? detailRow.previousElementSibling : null;
-            if (detailRow) detailRow.remove();
+            const collapsedRow = document.querySelector(`tr.asset-row[data-asset-id="${assetId}"]`);
+            const detailRow = document.querySelector(`tr.asset-detail[data-detail-for="${assetId}"]`);
             if (collapsedRow) collapsedRow.remove();
+            if (detailRow) detailRow.remove();
             return;
         }
 
