@@ -73,11 +73,13 @@ class CMSClient:
     async def list_groups(self) -> list:
         return await self._get("/api/devices/groups/")
 
-    async def create_group(self, name: str, description: str = "") -> dict:
-        return await self._post(
-            "/api/devices/groups/",
-            json={"name": name, "description": description},
-        )
+    async def create_group(
+        self, name: str, description: str = "", *, default_asset_id: str | None = None,
+    ) -> dict:
+        data = {"name": name, "description": description}
+        if default_asset_id is not None:
+            data["default_asset_id"] = default_asset_id
+        return await self._post("/api/devices/groups/", json=data)
 
     async def update_group(self, group_id: str, fields: dict) -> dict:
         return await self._patch(f"/api/devices/groups/{group_id}", json=fields)

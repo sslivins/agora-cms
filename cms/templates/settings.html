@@ -23,6 +23,30 @@
 </div>
 
 <div class="card">
+    <h2>Timezone</h2>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Default timezone used for schedule evaluation and device time sync.
+        Devices set to "CMS default" will use this timezone.
+    </p>
+    <form method="POST" action="/settings/timezone" class="settings-form">
+        <div class="form-group">
+            <label for="timezone">CMS Timezone</label>
+            <select id="timezone" name="timezone" style="max-width: 400px;">
+                {% for tz in timezones %}
+                <option value="{{ tz.value }}"{% if tz.value == current_timezone %} selected{% endif %}>{{ tz.label }}</option>
+                {% endfor %}
+            </select>
+            {% if not timezone_saved %}
+            <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--warning, #e6a817);">
+                ⚠ No timezone has been set — defaulting to UTC. Select your timezone and save.
+            </p>
+            {% endif %}
+        </div>
+        <button type="submit" class="btn btn-primary">Save Timezone</button>
+    </form>
+</div>
+
+<div class="card">
     <h2>Change Password</h2>
     <form method="POST" action="/settings/password" class="settings-form">
         <div class="form-group">
@@ -41,50 +65,6 @@
     </form>
 </div>
 
-{% if 'settings:write' in user_perms %}
-<div class="card" id="ntp-card">
-    <h2>NTP Server <span id="ntp-status-badge" class="badge badge-offline">checking…</span></h2>
-    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
-        Network Time Protocol server providing time synchronization to devices.
-    </p>
-    <table id="ntp-details" style="display: none;">
-        <tbody>
-            <tr><td>Stratum</td><td id="ntp-stratum">—</td></tr>
-            <tr><td>Clock Offset</td><td id="ntp-offset">—</td></tr>
-        </tbody>
-    </table>
-</div>
-
-<script>
-(function() {
-    const badge = document.getElementById("ntp-status-badge");
-    const details = document.getElementById("ntp-details");
-
-    async function checkNtpHealth() {
-        try {
-            const resp = await fetch("/api/ntp/status");
-            const data = await resp.json();
-            if (data.online) {
-                badge.textContent = "online";
-                badge.className = "badge badge-online";
-                details.style.display = "";
-                document.getElementById("ntp-stratum").textContent = data.stratum;
-                const ms = data.offset_ms;
-                const sign = ms >= 0 ? "+" : "";
-                document.getElementById("ntp-offset").textContent = sign + ms + " ms";
-            } else {
-                badge.textContent = "offline";
-                badge.className = "badge badge-offline";
-            }
-        } catch {
-            badge.textContent = "offline";
-            badge.className = "badge badge-offline";
-        }
-    }
-
-    checkNtpHealth();
-})();
-</script>
 
 <div class="card" id="db-card">
     <h2>Database <span id="db-status-badge" class="badge badge-offline">checking…</span></h2>
@@ -190,6 +170,7 @@
 })();
 </script>
 
+{% if 'settings:write' in user_perms %}
 <div class="card" id="mcp-card">
     <h2>MCP Server <span id="mcp-status-badge" class="badge badge-offline">checking…</span> <span id="mcp-api-badge" class="badge badge-offline" style="display:none;">API: checking…</span></h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">

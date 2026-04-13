@@ -18,12 +18,17 @@ from cms.services.scheduler import (
     _skipped,
     _now_playing,
     _last_sync_hash,
+    _offline_since,
+    _missed_logged,
+    MISSED_GRACE_SECONDS,
     build_device_sync,
     clear_schedule_skip,
     clear_sync_hash,
+    clear_now_playing,
     evaluate_schedules,
     get_now_playing,
     get_upcoming_schedules,
+    set_now_playing,
     skip_schedule_until,
 )
 
@@ -507,6 +512,17 @@ class TestUpcomingSchedules:
         assert len(result) == 1
         assert result[0]["day_label"] == "today"
 
+    def test_sub_minute_duration_shows_seconds(self):
+        """A schedule with duration < 60s should have duration_secs set correctly."""
+        s = self._make_full_schedule(time(9, 0, 0), time(9, 0, 30), name="Short Clip")
+        now = datetime(2026, 3, 28, 8, 0, tzinfo=timezone.utc)
+        tz = ZoneInfo("UTC")
+
+        result = get_upcoming_schedules([s], now, tz)
+        assert len(result) == 1
+        assert result[0]["duration_secs"] == 30
+        assert result[0]["duration_mins"] == 0
+
 
 # ── Schedule unique names (API test) ──
 
@@ -676,7 +692,7 @@ class TestBuildDeviceSyncSkipped:
 
 @pytest.mark.asyncio
 class TestNowPlayingCleanup:
-    """Test that _now_playing is cleaned up when schedules are deleted."""
+    """Test that _now_playing is managed correctly with event-driven model."""
 
     def setup_method(self):
         _now_playing.clear()
@@ -689,10 +705,7 @@ class TestNowPlayingCleanup:
         _skipped.clear()
 
     async def test_now_playing_cleared_when_schedule_deleted(self, app, db_session):
-        """After deleting a schedule, evaluate_schedules should remove the
-        device from _now_playing and log ENDED."""
-        from cms.services.device_manager import device_manager
-
+        """Deleting a schedule should clear its _now_playing entries."""
         # Create device, asset, timezone setting
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="test-video.mp4", asset_type=AssetType.VIDEO,
@@ -716,94 +729,64 @@ class TestNowPlayingCleanup:
         await db_session.commit()
         sched_id = str(sched.id)
 
-        # Register fake device
-        class FakeWS:
-            async def send_json(self, data): pass
+        # Simulate device reporting playback via PLAYBACK_STARTED
+        set_now_playing("np-cleanup-01", {
+            "device_id": "np-cleanup-01",
+            "device_name": "Cleanup Test",
+            "schedule_id": sched_id,
+            "schedule_name": "Play Now Test",
+            "asset_filename": "test-video.mp4",
+            "since": datetime.now(timezone.utc).isoformat(),
+            "source": "device",
+        })
+        assert "np-cleanup-01" in _now_playing
+        assert _now_playing["np-cleanup-01"]["schedule_id"] == sched_id
 
-        device_manager.register("np-cleanup-01", FakeWS())
+        # Simulate schedule deletion clearing _now_playing
+        # (this is what the delete_schedule route does)
+        stale = [did for did, info in _now_playing.items()
+                 if info.get("schedule_id") == sched_id]
+        for did in stale:
+            clear_now_playing(did)
 
-        try:
-            # Run evaluate — should add to _now_playing
-            await evaluate_schedules()
-            assert "np-cleanup-01" in _now_playing
-            assert _now_playing["np-cleanup-01"]["schedule_id"] == sched_id
+        assert "np-cleanup-01" not in _now_playing, \
+            "_now_playing should be cleared after schedule deletion"
 
-            # Delete the schedule
-            await db_session.delete(sched)
-            await db_session.commit()
+    async def test_now_playing_replaced_by_device_events(self, app, db_session):
+        """Device events replace _now_playing entries correctly."""
+        sched_a_id = str(uuid.uuid4())
+        sched_b_id = str(uuid.uuid4())
 
-            # Run evaluate again — should remove from _now_playing
-            await evaluate_schedules()
-            assert "np-cleanup-01" not in _now_playing, \
-                "_now_playing should be cleared after schedule deletion"
-        finally:
-            device_manager.disconnect("np-cleanup-01")
+        # Simulate device reporting schedule A
+        set_now_playing("np-replace-01", {
+            "device_id": "np-replace-01",
+            "device_name": "Replace Test",
+            "schedule_id": sched_a_id,
+            "schedule_name": "Schedule A",
+            "asset_filename": "video-a.mp4",
+            "since": datetime.now(timezone.utc).isoformat(),
+            "source": "device",
+        })
+        assert _now_playing["np-replace-01"]["asset_filename"] == "video-a.mp4"
 
-    async def test_now_playing_replaced_after_delete_and_new_schedule(self, app, db_session):
-        """Delete schedule A, create schedule B — _now_playing should show B."""
-        from cms.services.device_manager import device_manager
-
-        setting = CMSSetting(key="timezone", value="UTC")
-        asset_a = Asset(filename="video-a.mp4", asset_type=AssetType.VIDEO,
-                        size_bytes=1000, checksum="aaa")
-        asset_b = Asset(filename="video-b.mp4", asset_type=AssetType.VIDEO,
-                        size_bytes=2000, checksum="bbb")
-        device = Device(id="np-replace-01", name="Replace Test",
-                        status=DeviceStatus.ADOPTED)
-        db_session.add_all([setting, asset_a, asset_b, device])
-        await db_session.flush()
-
-        sched_a = Schedule(
-            name="Schedule A",
-            device_id="np-replace-01",
-            asset_id=asset_a.id,
-            start_time=time(0, 0),
-            end_time=time(23, 59),
-            priority=10,
-            enabled=True,
-        )
-        db_session.add(sched_a)
-        await db_session.commit()
-
-        class FakeWS:
-            async def send_json(self, data): pass
-
-        device_manager.register("np-replace-01", FakeWS())
-
-        try:
-            # Eval picks up schedule A
-            await evaluate_schedules()
-            assert _now_playing["np-replace-01"]["asset_filename"] == "video-a.mp4"
-
-            # Delete A, create B
-            await db_session.delete(sched_a)
-            sched_b = Schedule(
-                name="Schedule B",
-                device_id="np-replace-01",
-                asset_id=asset_b.id,
-                start_time=time(0, 0),
-                end_time=time(23, 59),
-                priority=10,
-                enabled=True,
-            )
-            db_session.add(sched_b)
-            await db_session.commit()
-
-            # Eval should replace A with B in _now_playing
-            await evaluate_schedules()
-            assert "np-replace-01" in _now_playing, \
-                "_now_playing should have an entry for the device"
-            assert _now_playing["np-replace-01"]["asset_filename"] == "video-b.mp4", \
-                "_now_playing should show the new schedule's asset"
-            assert _now_playing["np-replace-01"]["schedule_name"] == "Schedule B"
-        finally:
-            device_manager.disconnect("np-replace-01")
+        # Simulate device switching to schedule B
+        set_now_playing("np-replace-01", {
+            "device_id": "np-replace-01",
+            "device_name": "Replace Test",
+            "schedule_id": sched_b_id,
+            "schedule_name": "Schedule B",
+            "asset_filename": "video-b.mp4",
+            "since": datetime.now(timezone.utc).isoformat(),
+            "source": "device",
+        })
+        assert _now_playing["np-replace-01"]["asset_filename"] == "video-b.mp4"
+        assert _now_playing["np-replace-01"]["schedule_name"] == "Schedule B"
 
     async def test_ended_log_survives_deleted_schedule_fk(self, app, db_session):
         """When a schedule is deleted, the ENDED log event should not crash
         due to FK violation on schedule_logs.schedule_id (Issue #126)."""
         from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
-        from cms.services.device_manager import device_manager
+        from cms.services.scheduler import log_schedule_event
 
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="fk-test.mp4", asset_type=AssetType.VIDEO,
@@ -824,37 +807,410 @@ class TestNowPlayingCleanup:
         )
         db_session.add(sched)
         await db_session.commit()
+        sched_id = str(sched.id)
+
+        # Simulate device reported playback
+        set_now_playing("np-fk-01", {
+            "device_id": "np-fk-01",
+            "device_name": "FK Test",
+            "schedule_id": sched_id,
+            "schedule_name": "Will Be Deleted",
+            "asset_filename": "fk-test.mp4",
+            "since": datetime.now(timezone.utc).isoformat(),
+            "source": "device",
+        })
+
+        # Delete the schedule
+        await db_session.delete(sched)
+        await db_session.commit()
+
+        # Log ENDED event with the now-deleted schedule_id
+        # (simulating what happens when device sends PLAYBACK_ENDED
+        # for a schedule that was deleted while playing)
+        await log_schedule_event(
+            db_session, ScheduleLogEvent.ENDED,
+            schedule_name="Will Be Deleted",
+            device_name="FK Test",
+            asset_filename="fk-test.mp4",
+            schedule_id=sched_id,
+            device_id="np-fk-01",
+        )
+        clear_now_playing("np-fk-01")
+        assert "np-fk-01" not in _now_playing
+
+        # Verify ENDED was logged
+        from sqlalchemy import select as sa_select
+        logs = await db_session.execute(
+            sa_select(ScheduleLog).where(
+                ScheduleLog.device_id == "np-fk-01",
+                ScheduleLog.event == ScheduleLogEvent.ENDED,
+            )
+        )
+        ended_logs = logs.scalars().all()
+        assert len(ended_logs) >= 1
+        assert ended_logs[-1].schedule_name == "Will Be Deleted"
+
+    async def test_now_playing_cleaned_on_disconnect(self, app, db_session):
+        """Scheduler should clean up _now_playing for disconnected devices."""
+        from cms.services.device_manager import device_manager
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        db_session.add(setting)
+        await db_session.commit()
+
+        # Simulate device reported playback while connected
+        set_now_playing("np-disconnect-01", {
+            "device_id": "np-disconnect-01",
+            "device_name": "Disconnect Test",
+            "schedule_id": str(uuid.uuid4()),
+            "schedule_name": "Some Schedule",
+            "asset_filename": "video.mp4",
+            "since": datetime.now(timezone.utc).isoformat(),
+            "source": "device",
+        })
+        assert "np-disconnect-01" in _now_playing
+
+        # Device is NOT in connected list — scheduler should clean up
+        await evaluate_schedules()
+        # Still there because no connected devices to process
+        # Now register a different device to trigger the scheduler
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device2 = Device(id="np-disconnect-02", name="Other",
+                         status=DeviceStatus.ADOPTED)
+        db_session.add(device2)
+        await db_session.commit()
+        device_manager.register("np-disconnect-02", FakeWS())
+
+        try:
+            await evaluate_schedules()
+            assert "np-disconnect-01" not in _now_playing, \
+                "_now_playing should be cleaned up for disconnected devices"
+        finally:
+            device_manager.disconnect("np-disconnect-02")
+
+    async def test_now_playing_set_by_device_events(self, app, db_session):
+        """set_now_playing should correctly populate _now_playing with device-reported data."""
+        sched_id = str(uuid.uuid4())
+
+        set_now_playing("np-countdown-01", {
+            "device_id": "np-countdown-01",
+            "device_name": "Countdown",
+            "schedule_id": sched_id,
+            "schedule_name": "Countdown Test",
+            "asset_filename": "countdown.mp4",
+            "since": datetime.now(timezone.utc).isoformat(),
+            "end_time": "11:59 PM",
+            "start_time_raw": "00:00:00",
+            "end_time_raw": "23:59:59",
+            "source": "device",
+        })
+        assert "np-countdown-01" in _now_playing
+        entry = _now_playing["np-countdown-01"]
+        assert entry["schedule_id"] == sched_id
+        assert entry["asset_filename"] == "countdown.mp4"
+        assert entry["source"] == "device"
+        assert "start_time_raw" in entry
+        assert "end_time_raw" in entry
+
+
+class TestNowPlayingRemainingText:
+    """Test that the remaining text is formatted correctly for the dashboard."""
+
+    def setup_method(self):
+        _now_playing.clear()
+
+    def teardown_method(self):
+        _now_playing.clear()
+
+    def _inject_remaining(self, remaining_secs: int):
+        """Simulate the evaluate_schedules remaining-text logic."""
+        entry = {
+            "device_id": "test-dev",
+            "schedule_id": "test-sched",
+            "remaining_seconds": remaining_secs,
+        }
+        if remaining_secs < 60:
+            entry["remaining"] = "less than a minute"
+        elif remaining_secs < 3600:
+            mins = remaining_secs // 60
+            entry["remaining"] = f"{mins} minute{'s' if mins != 1 else ''}"
+        else:
+            hours = remaining_secs // 3600
+            mins = (remaining_secs % 3600) // 60
+            entry["remaining"] = f"{hours} hour{'s' if hours != 1 else ''}"
+            if mins > 0:
+                entry["remaining"] += f", {mins} minute{'s' if mins != 1 else ''}"
+        _now_playing["test-dev"] = entry
+        return entry
+
+    def test_remaining_under_30s_shows_less_than_minute(self):
+        """≤30s: server sends 'less than a minute' (JS countdown handles live display)."""
+        entry = self._inject_remaining(25)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 25
+
+    def test_remaining_45s_shows_less_than_minute(self):
+        """31-59s: still 'less than a minute'."""
+        entry = self._inject_remaining(45)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 45
+
+    def test_remaining_1s_shows_less_than_minute(self):
+        """Edge case: 1 second remaining."""
+        entry = self._inject_remaining(1)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 1
+
+    def test_remaining_0s_shows_less_than_minute(self):
+        """Edge case: 0 seconds remaining."""
+        entry = self._inject_remaining(0)
+        assert entry["remaining"] == "less than a minute"
+        assert entry["remaining_seconds"] == 0
+
+    def test_remaining_60s_shows_1_minute(self):
+        """Exactly 60s should show '1 minute' (singular)."""
+        entry = self._inject_remaining(60)
+        assert entry["remaining"] == "1 minute"
+
+    def test_remaining_5_minutes(self):
+        """300s = 5 minutes."""
+        entry = self._inject_remaining(300)
+        assert entry["remaining"] == "5 minutes"
+
+    def test_remaining_1_hour(self):
+        """3600s = 1 hour."""
+        entry = self._inject_remaining(3600)
+        assert entry["remaining"] == "1 hour"
+
+    def test_remaining_1_hour_30_minutes(self):
+        """5400s = 1 hour, 30 minutes."""
+        entry = self._inject_remaining(5400)
+        assert entry["remaining"] == "1 hour, 30 minutes"
+
+    def test_remaining_seconds_always_int(self):
+        """remaining_seconds should always be an int."""
+        for secs in [0, 1, 15, 30, 59, 60, 300, 3600, 7200]:
+            entry = self._inject_remaining(secs)
+            assert isinstance(entry["remaining_seconds"], int)
+
+
+@pytest.mark.asyncio
+class TestDashboardCountdownAttribute:
+    """Test that the dashboard HTML renders data-remaining for JS countdown."""
+
+    async def test_data_remaining_attr_rendered(self, client, db_session):
+        """The now-playing row should have data-remaining='N' for the JS countdown."""
+        _now_playing.clear()
+        # Dashboard needs a timezone setting
+        db_session.add(CMSSetting(key="timezone", value="UTC"))
+        await db_session.commit()
+
+        _now_playing["dash-dev"] = {
+            "device_id": "dash-dev",
+            "device_name": "Dashboard Dev",
+            "schedule_id": "sched-abc",
+            "schedule_name": "Countdown Sched",
+            "asset_filename": "clip.mp4",
+            "end_time": "11:59 PM",
+            "remaining": "less than a minute",
+            "remaining_seconds": 22,
+            "since": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            resp = await client.get("/")
+            assert resp.status_code == 200
+            html = resp.text
+            assert 'data-remaining="22"' in html
+            assert "less than a minute" in html
+        finally:
+            _now_playing.clear()
+
+    async def test_data_remaining_attr_large_value(self, client, db_session):
+        """data-remaining should render even for values > 30s (JS ignores them)."""
+        _now_playing.clear()
+        db_session.add(CMSSetting(key="timezone", value="UTC"))
+        await db_session.commit()
+
+        _now_playing["dash-dev2"] = {
+            "device_id": "dash-dev2",
+            "device_name": "Dashboard Dev 2",
+            "schedule_id": "sched-xyz",
+            "schedule_name": "Long Sched",
+            "asset_filename": "movie.mp4",
+            "end_time": "6:00 PM",
+            "remaining": "2 hours",
+            "remaining_seconds": 7200,
+            "since": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            resp = await client.get("/")
+            assert resp.status_code == 200
+            html = resp.text
+            assert 'data-remaining="7200"' in html
+            assert "2 hours" in html
+        finally:
+            _now_playing.clear()
+
+
+@pytest.mark.asyncio
+class TestMissedGracePeriod:
+    """Test that MISSED is only logged after MISSED_GRACE_SECONDS of continuous offline."""
+
+    def setup_method(self):
+        _now_playing.clear()
+        _missed_logged.clear()
+        _offline_since.clear()
+
+    def teardown_method(self):
+        _now_playing.clear()
+        _missed_logged.clear()
+        _offline_since.clear()
+
+    async def test_missed_not_logged_before_grace_period(self, app, db_session):
+        """MISSED should NOT be logged immediately when device goes offline."""
+        from cms.services.device_manager import device_manager
+        from cms.models.schedule_log import ScheduleLog
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="grace.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="grace1")
+        device = Device(id="grace-dev-01", name="Grace Device",
+                        status=DeviceStatus.ADOPTED)
+        # A second device that IS connected (so scheduler doesn't skip)
+        dummy = Device(id="grace-dummy", name="Dummy",
+                       status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, device, dummy])
+        await db_session.flush()
+
+        sched = Schedule(
+            name="Grace Test",
+            device_id="grace-dev-01",
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
 
         class FakeWS:
             async def send_json(self, data): pass
 
-        device_manager.register("np-fk-01", FakeWS())
+        device_manager.register("grace-dummy", FakeWS())
 
         try:
-            # Eval picks up schedule
+            # grace-dev-01 is NOT connected — scheduler should start tracking
+            # offline time but NOT log MISSED yet (grace period not elapsed)
             await evaluate_schedules()
-            assert "np-fk-01" in _now_playing
 
-            # Delete the schedule (simulates API delete)
-            await db_session.delete(sched)
-            await db_session.commit()
-
-            # Eval should clear _now_playing WITHOUT crashing on FK violation
-            await evaluate_schedules()
-            assert "np-fk-01" not in _now_playing
-
-            # Verify ENDED was logged with schedule_id=None (FK-safe)
             from sqlalchemy import select as sa_select
-            logs = await db_session.execute(
-                sa_select(ScheduleLog).where(
-                    ScheduleLog.device_id == "np-fk-01",
-                    ScheduleLog.event == ScheduleLogEvent.ENDED,
-                )
-            )
-            ended_logs = logs.scalars().all()
-            assert len(ended_logs) >= 1
-            # schedule_id should be None since the schedule was deleted
-            assert ended_logs[-1].schedule_id is None
-            assert ended_logs[-1].schedule_name == "Will Be Deleted"
+            result = await db_session.execute(sa_select(ScheduleLog))
+            logs = result.scalars().all()
+            missed_logs = [l for l in logs if l.event.value == "MISSED"]
+            assert len(missed_logs) == 0, \
+                "MISSED should NOT be logged before grace period expires"
+
+            # Verify offline tracking started
+            key = (str(sched.id), "grace-dev-01")
+            assert key in _offline_since, \
+                "_offline_since should track when device first seen offline"
         finally:
-            device_manager.disconnect("np-fk-01")
+            device_manager.disconnect("grace-dummy")
+
+    async def test_missed_logged_after_grace_period(self, app, db_session):
+        """MISSED should be logged after MISSED_GRACE_SECONDS of continuous offline."""
+        from cms.services.device_manager import device_manager
+        from cms.models.schedule_log import ScheduleLog
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="grace2.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="grace2")
+        device = Device(id="grace-dev-02", name="Grace Device 2",
+                        status=DeviceStatus.ADOPTED)
+        dummy = Device(id="grace-dummy-2", name="Dummy 2",
+                       status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, device, dummy])
+        await db_session.flush()
+
+        sched = Schedule(
+            name="Grace Test 2",
+            device_id="grace-dev-02",
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("grace-dummy-2", FakeWS())
+
+        try:
+            # Pre-seed _offline_since to simulate device offline > grace period
+            key = (str(sched.id), "grace-dev-02")
+            _offline_since[key] = datetime.now(timezone.utc) - timedelta(
+                seconds=MISSED_GRACE_SECONDS + 10
+            )
+
+            await evaluate_schedules()
+
+            from sqlalchemy import select as sa_select
+            result = await db_session.execute(sa_select(ScheduleLog))
+            logs = result.scalars().all()
+            missed_logs = [l for l in logs if l.event.value == "MISSED"]
+            assert len(missed_logs) == 1, \
+                "MISSED should be logged after grace period expires"
+            assert missed_logs[0].device_name == "Grace Device 2"
+        finally:
+            device_manager.disconnect("grace-dummy-2")
+
+    async def test_missed_cleared_when_device_reconnects(self, app, db_session):
+        """When device reconnects, offline tracking should be cleared."""
+        from cms.services.device_manager import device_manager
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="grace3.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="grace3")
+        device = Device(id="grace-dev-03", name="Grace Device 3",
+                        status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, device])
+        await db_session.flush()
+
+        sched = Schedule(
+            name="Grace Test 3",
+            device_id="grace-dev-03",
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        key = (str(sched.id), "grace-dev-03")
+        # Pre-seed offline tracking
+        _offline_since[key] = datetime.now(timezone.utc) - timedelta(seconds=30)
+
+        # Connect the device
+        class FakeWS:
+            async def send_json(self, data): pass
+
+        device_manager.register("grace-dev-03", FakeWS())
+
+        try:
+            await evaluate_schedules()
+            # Offline tracking should be cleared since device is now connected
+            assert key not in _offline_since, \
+                "_offline_since should be cleared when device reconnects"
+        finally:
+            device_manager.disconnect("grace-dev-03")

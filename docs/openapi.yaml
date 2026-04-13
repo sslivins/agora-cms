@@ -135,6 +135,10 @@ paths:
     delete:
       tags: [devices]
       summary: Delete device
+      description: >
+        Remove a device from the CMS. If the device is connected, a wipe_assets
+        command is sent so it clears cached content. Associated schedules and
+        device-asset records are also removed.
       operationId: deleteDevice
       parameters:
         - $ref: "#/components/parameters/DeviceId"
@@ -208,6 +212,8 @@ paths:
       description: >
         Adopt a pending or orphaned device. Pending devices are set to adopted.
         Orphaned devices have their auth credentials cleared and are set to adopted.
+        If the device is connected, a wipe_assets command is sent so it starts
+        fresh without stale content from a previous adoption.
       operationId: adoptDevice
       parameters:
         - $ref: "#/components/parameters/DeviceId"

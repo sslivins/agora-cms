@@ -149,7 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const d = new Date(el.dataset.utc);
         if (isNaN(d)) return;
         el.textContent = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
-            + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true });
+            + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
     });
     // Legacy storage formatters (other pages)
     document.querySelectorAll("[data-storage-mb]:not([data-storage-pct]):not([data-storage-detail])").forEach(el => {
@@ -720,12 +720,19 @@ async function toggleSchedule(scheduleId, enabled) {
 async function createSchedule(form) {
     const data = new FormData(form);
     const startTime = data.get("start_time");
-    const endTime = data.get("end_time");
-    if (!startTime || !endTime) {
-        showToast("Please select start and end times", true);
+    // FormData excludes disabled inputs — read end_time from the DOM directly
+    const endTime = data.get("end_time") || form.querySelector('[name="end_time"]').value;
+    const loopCountVal = data.get("loop_count");
+    const hasLoopCount = loopCountVal && parseInt(loopCountVal) > 0;
+    if (!startTime) {
+        showToast("Please select a start time", true);
         return false;
     }
-    if (startTime === endTime) {
+    if (!hasLoopCount && !endTime) {
+        showToast("Please select an end time or set a loop count", true);
+        return false;
+    }
+    if (!hasLoopCount && startTime === endTime) {
         showToast("Start time and end time cannot be the same", true);
         return false;
     }
@@ -743,11 +750,14 @@ async function createSchedule(form) {
     const body = {
         name: data.get("name"),
         asset_id: data.get("asset_id"),
-        start_time: startTime + ":00",
-        end_time: endTime + ":00",
+        start_time: startTime.length <= 5 ? startTime + ":00" : startTime,
         priority: parseInt(data.get("priority") || "0"),
         enabled: true,
     };
+    // end_time: include if present (auto-computed or manual)
+    if (endTime) body.end_time = endTime.length <= 5 ? endTime + ":00" : endTime;
+    // Explicit loop count
+    if (hasLoopCount) body.loop_count = parseInt(loopCountVal);
     // Target
     const target = data.get("target_type");
     if (target === "device") body.device_id = data.get("target_id");
@@ -761,10 +771,6 @@ async function createSchedule(form) {
         if (data.get(`day_${i}`)) days.push(i);
     }
     if (days.length > 0 && days.length < 7) body.days_of_week = days;
-
-    // Explicit loop count (from round-to-loops)
-    const loopCountVal = data.get("loop_count");
-    if (loopCountVal) body.loop_count = parseInt(loopCountVal);
 
     const resp = await apiCall("POST", "/api/schedules", body);
     if (resp && resp.ok) {

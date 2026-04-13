@@ -13,6 +13,7 @@ from cms.auth import (
     COOKIE_NAME,
     MAX_AGE,
     SETTING_MCP_ENABLED,
+    SETTING_MCP_API_KEY,
     SETTING_PASSWORD_HASH,
     SETTING_SMTP_FROM_EMAIL,
     SETTING_SMTP_HOST,
@@ -329,9 +330,28 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Now Playing — enrich with actual device state for mismatch detection
     now_playing = get_now_playing()
-    # Scope now_playing to user's visible devices
-    visible_device_ids = {d.id for d in all_devices}
-    now_playing = [np for np in now_playing if np["device_id"] in visible_device_ids]
+    # Scope now_playing to user's visible devices (admins see all)
+    if not is_admin:
+        visible_device_ids = {d.id for d in all_devices}
+        now_playing = [np for np in now_playing if np["device_id"] in visible_device_ids]
+
+    # Recompute remaining_seconds fresh (scheduler tick is every 15s)
+    from datetime import time as _time, timedelta as _td
+    local_now = now.astimezone(tz)
+    for np in now_playing:
+        raw_end = np.get("end_time_raw")
+        raw_start = np.get("start_time_raw")
+        if raw_end:
+            parts = [int(x) for x in raw_end.split(":")]
+            end_t = _time(*parts)
+            start_t = None
+            if raw_start:
+                sp = [int(x) for x in raw_start.split(":")]
+                start_t = _time(*sp)
+            end_today = _dt.combine(local_now.date(), end_t, tzinfo=tz)
+            if start_t and end_t <= start_t:
+                end_today += _td(days=1)
+            np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     for np in now_playing:
         did = np["device_id"]
@@ -354,7 +374,14 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
                 # schedule preempted but _now_playing is stale), don't
                 # flip the badge — the device is working fine.
                 if actual_mode != "play":
-                    np["starting"] = True
+                    if not device_manager.is_connected(did):
+                        np["device_offline"] = True
+                    else:
+                        np["starting"] = True
+        # Outside the grace period, flag offline devices distinctly
+        if np.get("mismatch") and not device_manager.is_connected(did):
+            np["mismatch"] = False
+            np["device_offline"] = True
 
     # Build device status with live playback state
     device_states = []
@@ -395,7 +422,8 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             upcoming_query = upcoming_query.where(sqlalchemy.false())
     sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
-    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
+    offline_set = set(d.id for d in offline_devices)
+    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
@@ -486,6 +514,25 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     visible_device_set = set(all_device_ids)
     now_playing = [np for np in now_playing if np["device_id"] in visible_device_set]
 
+    # Recompute remaining_seconds fresh (scheduler tick is every 15s, too stale
+    # for a smooth client-side countdown)
+    from datetime import time as _time, timedelta as _td
+    local_now = now.astimezone(tz)
+    for np in now_playing:
+        raw_end = np.get("end_time_raw")
+        raw_start = np.get("start_time_raw")
+        if raw_end:
+            parts = [int(x) for x in raw_end.split(":")]
+            end_t = _time(*parts)
+            start_t = None
+            if raw_start:
+                sp = [int(x) for x in raw_start.split(":")]
+                start_t = _time(*sp)
+            end_today = _dt.combine(local_now.date(), end_t, tzinfo=tz)
+            if start_t and end_t <= start_t:
+                end_today += _td(days=1)
+            np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
+
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     for np in now_playing:
         did = np["device_id"]
@@ -498,7 +545,13 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
                 if actual_mode != "play":
-                    np["starting"] = True
+                    if did in offline_ids:
+                        np["device_offline"] = True
+                    else:
+                        np["starting"] = True
+        if np.get("mismatch") and did in offline_ids:
+            np["mismatch"] = False
+            np["device_offline"] = True
 
     device_states = [
         {
@@ -534,7 +587,8 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
             upcoming_q = upcoming_q.where(sqlalchemy.false())
     sched_q = await db.execute(upcoming_q)
     all_schedules = sched_q.scalars().all()
-    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing)
+    offline_set = set(offline_ids)
+    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
 
     # Recent activity count for change detection
     from datetime import timedelta
@@ -1049,6 +1103,7 @@ async def settings_page(
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
+    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
 
     # SMTP settings
     smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
@@ -1056,6 +1111,19 @@ async def settings_page(
     smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
     smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
     smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
+
+    # Timezone
+    current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
+    now_utc = datetime.now(_tz.utc)
+    tz_options = []
+    for tz_name in sorted(available_timezones()):
+        offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
+        total_sec = int(offset.total_seconds())
+        sign = "+" if total_sec >= 0 else "-"
+        h, m = divmod(abs(total_sec) // 60, 60)
+        label = f"{tz_name.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
+        tz_options.append({"value": tz_name, "label": label})
 
     # Device list for log download panel
     from cms.models.device import Device
@@ -1078,7 +1146,10 @@ async def settings_page(
         "smtp_username": smtp_username,
         "smtp_password": smtp_password,
         "smtp_from_email": smtp_from_email,
-
+        "mcp_api_key": mcp_api_key,
+        "current_timezone": current_timezone,
+        "timezone_saved": timezone_saved,
+        "timezones": tz_options,
         "devices": device_list,
         "success": None,
         "error": None,
@@ -1206,46 +1277,6 @@ async def test_smtp(
     smtp_cfg = await get_smtp_settings(db)
     success, message = test_smtp_connection(smtp_cfg, to_email)
     return {"success": success, "message": message}
-
-
-# ── NTP Status ──
-
-
-@router.get("/api/ntp/status", dependencies=[Depends(require_auth)])
-async def ntp_status():
-    """Check NTP container health via a raw NTP query."""
-    import socket
-    import struct
-    import time
-
-    try:
-        # Build minimal NTP request (v3 client, mode 3)
-        msg = b"\x1b" + 47 * b"\0"
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(3.0)
-        sock.sendto(msg, ("ntp", 123))
-        data, _ = sock.recvfrom(48)
-        sock.close()
-
-        if len(data) < 48:
-            return {"online": False}
-
-        unpacked = struct.unpack("!BBBb11I", data)
-        stratum = unpacked[1]
-        # Transmit timestamp (seconds since 1900-01-01)
-        ntp_time = unpacked[10] + unpacked[11] / 2**32
-        # NTP epoch offset from Unix epoch
-        ntp_epoch = 2208988800
-        server_time = ntp_time - ntp_epoch
-        offset = server_time - time.time()
-
-        return {
-            "online": True,
-            "stratum": stratum,
-            "offset_ms": round(offset * 1000, 1),
-        }
-    except Exception:
-        return {"online": False}
 
 
 # ── Database Status ──
@@ -1382,19 +1413,45 @@ async def change_timezone(
     tz_name = form.get("timezone", "").strip()
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
-    timezones = sorted(available_timezones())
+    mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
+    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
+
+    now_utc = datetime.now(_tz.utc)
+    tz_options = []
+    for tz in sorted(available_timezones()):
+        offset = now_utc.astimezone(ZoneInfo(tz)).utcoffset()
+        total_sec = int(offset.total_seconds())
+        sign = "+" if total_sec >= 0 else "-"
+        h, m = divmod(abs(total_sec) // 60, 60)
+        label = f"{tz.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
+        tz_options.append({"value": tz, "label": label})
+
+    from cms.models.device import Device
+    result = await db.execute(select(Device).order_by(Device.name))
+    devices = result.scalars().all()
+    device_list = [
+        {"id": d.id, "name": d.name, "connected": device_manager.is_connected(d.id)}
+        for d in devices
+    ]
+
+    base_ctx = {
+        "active_tab": "settings",
+        "version": __version__,
+        "username": username,
+        "online_count": device_manager.connected_count,
+        "asset_storage": str(settings.asset_storage_path),
+        "mcp_enabled": mcp_enabled,
+        "mcp_api_key": mcp_api_key,
+        "timezones": tz_options,
+        "devices": device_list,
+    }
 
     if tz_name not in available_timezones():
         current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
         return templates.TemplateResponse(request, "settings.html", {
-            "active_tab": "settings",
-            "version": __version__,
-            "username": username,
-            "online_count": device_manager.connected_count,
-            "asset_storage": str(settings.asset_storage_path),
+            **base_ctx,
             "current_timezone": current_timezone,
             "timezone_saved": True,
-            "timezones": timezones,
             "success": None,
             "error": f"Invalid timezone: {tz_name}",
         }, status_code=400)
@@ -1402,14 +1459,9 @@ async def change_timezone(
     await set_setting(db, SETTING_TIMEZONE, tz_name)
 
     return templates.TemplateResponse(request, "settings.html", {
-        "active_tab": "settings",
-        "version": __version__,
-        "username": username,
-        "online_count": device_manager.connected_count,
-        "asset_storage": str(settings.asset_storage_path),
+        **base_ctx,
         "current_timezone": tz_name,
         "timezone_saved": True,
-        "timezones": timezones,
         "success": f"Timezone set to {tz_name}",
         "error": None,
     })

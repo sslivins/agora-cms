@@ -269,6 +269,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-danger { background: var(--danger); color: #fff; }
 .badge-info { background: #3498db; color: #fff; }
 .badge-muted { background: #555; color: #ccc; }
+.badge-offline { background: var(--warning); color: #000; }
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
 
@@ -379,7 +380,8 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
     font-size: 0.9rem;
     color-scheme: dark;
 }
-.form-group input[type="time"] {
+.form-group input[type="time"],
+.form-group input[type="number"] {
     padding: 0.6rem 0.75rem;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;

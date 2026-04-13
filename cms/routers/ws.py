@@ -16,6 +16,8 @@ from cms.database import get_db
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceStatus
 from cms.models.device_profile import DeviceProfile
+from cms.models.schedule import Schedule
+from cms.models.schedule_log import ScheduleLogEvent
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
     AuthAssignedMessage,
@@ -26,7 +28,7 @@ from cms.schemas.protocol import (
     SyncMessage,
 )
 from cms.services.device_manager import device_manager
-from cms.services.scheduler import build_device_sync
+from cms.services.scheduler import build_device_sync, log_schedule_event, set_now_playing, clear_now_playing
 from cms.services.storage import get_storage
 
 logger = logging.getLogger("agora.cms.ws")
@@ -351,6 +353,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             elif msg_type == MessageType.ASSET_DELETED:
                 logger.info("Device %s deleted asset: %s", device_id, msg.get("asset_name"))
 
+            elif msg_type == MessageType.WIPE_ASSETS_ACK:
+                logger.info("Device %s confirmed asset wipe (reason: %s)", device_id, msg.get("reason", ""))
+
             elif msg_type == MessageType.FETCH_REQUEST:
                 asset_name = msg.get("asset", "")
                 if asset_name:
@@ -374,6 +379,72 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     "Device %s failed to fetch asset %s: %s (budget=%sMB, available=%sMB, required=%sMB)",
                     device_id, msg.get("asset"), msg.get("reason"),
                     msg.get("budget_mb"), msg.get("available_mb"), msg.get("required_mb"),
+                )
+
+            elif msg_type == MessageType.PLAYBACK_STARTED:
+                schedule_id = msg.get("schedule_id", "")
+                schedule_name = msg.get("schedule_name", "")
+                asset_name = msg.get("asset", "")
+                device_ts = msg.get("timestamp", "")
+
+                # Look up the schedule for rich now-playing info
+                sched_result = await db.execute(
+                    select(Schedule).where(Schedule.id == schedule_id)
+                )
+                sched = sched_result.scalar_one_or_none()
+
+                device_name = device.name or device_id
+                now_entry = {
+                    "device_id": device_id,
+                    "device_name": device_name,
+                    "schedule_id": schedule_id,
+                    "schedule_name": schedule_name,
+                    "asset_filename": asset_name,
+                    "since": device_ts or datetime.now(timezone.utc).isoformat(),
+                    "source": "device",
+                }
+                # Enrich with schedule time info if available
+                if sched:
+                    now_entry["end_time"] = sched.end_time.strftime("%I:%M %p").lstrip("0")
+                    now_entry["start_time_raw"] = sched.start_time.strftime("%H:%M:%S")
+                    now_entry["end_time_raw"] = sched.end_time.strftime("%H:%M:%S")
+
+                set_now_playing(device_id, now_entry)
+
+                await log_schedule_event(
+                    db, ScheduleLogEvent.STARTED,
+                    schedule_name=schedule_name,
+                    device_name=device_name,
+                    asset_filename=asset_name,
+                    schedule_id=schedule_id,
+                    device_id=device_id,
+                )
+                await db.commit()
+                logger.info(
+                    "Device %s started playing %s (schedule %s)",
+                    device_id, asset_name, schedule_name,
+                )
+
+            elif msg_type == MessageType.PLAYBACK_ENDED:
+                schedule_id = msg.get("schedule_id", "")
+                schedule_name = msg.get("schedule_name", "")
+                asset_name = msg.get("asset", "")
+                device_name = device.name or device_id
+
+                clear_now_playing(device_id)
+
+                await log_schedule_event(
+                    db, ScheduleLogEvent.ENDED,
+                    schedule_name=schedule_name,
+                    device_name=device_name,
+                    asset_filename=asset_name,
+                    schedule_id=schedule_id,
+                    device_id=device_id,
+                )
+                await db.commit()
+                logger.info(
+                    "Device %s ended playing %s (schedule %s)",
+                    device_id, asset_name, schedule_name,
                 )
 
             elif msg_type == MessageType.LOGS_RESPONSE:

@@ -33,7 +33,12 @@ _skipped: dict[str, datetime] = {}
 # Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
 _missed_logged: set[tuple[str, str]] = set()
 
+# Track when a (schedule_id, device_id) combo was first seen offline
+# Only log MISSED after MISSED_GRACE_SECONDS of continuous offline
+_offline_since: dict[tuple[str, str], datetime] = {}
+
 EVAL_INTERVAL_SECONDS = 15
+MISSED_GRACE_SECONDS = 60
 SCHEDULE_WINDOW_DAYS = 30
 
 
@@ -60,18 +65,8 @@ async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_nam
     await db.flush()
 
 
-async def _resolve_schedule_id(db, schedule_id_str: str | None):
-    """Convert a schedule_id string to UUID, returning None if the schedule
-    was deleted (to avoid FK violations in schedule_logs)."""
-    import uuid as _uuid
-    if not schedule_id_str:
-        return None
-    try:
-        sid = _uuid.UUID(schedule_id_str) if isinstance(schedule_id_str, str) else schedule_id_str
-    except ValueError:
-        return None
-    exists = await db.execute(select(Schedule.id).where(Schedule.id == sid))
-    return sid if exists.scalar_one_or_none() is not None else None
+# Public alias for use by ws.py handler
+log_schedule_event = _log_event
 
 
 def get_now_playing() -> list[dict]:
@@ -82,6 +77,16 @@ def get_now_playing() -> list[dict]:
     the canonical scheduler state.
     """
     return [d.copy() for d in _now_playing.values()]
+
+
+def set_now_playing(device_id: str, entry: dict) -> None:
+    """Set the now-playing entry for a device (called by WS handler on PLAYBACK_STARTED)."""
+    _now_playing[device_id] = entry
+
+
+def clear_now_playing(device_id: str) -> dict | None:
+    """Remove and return the now-playing entry for a device (called by WS handler on PLAYBACK_ENDED)."""
+    return _now_playing.pop(device_id, None)
 
 
 def skip_schedule_until(schedule_id: str, until: datetime) -> None:
@@ -106,6 +111,7 @@ def clear_sync_hash(device_id: str) -> None:
 def get_upcoming_schedules(
     schedules: list, now: datetime, tz: ZoneInfo,
     now_playing: list[dict] | None = None,
+    offline_device_ids: set[str] | None = None,
 ) -> list[dict]:
     """Return schedules starting within the next 24 hours.
 
@@ -116,6 +122,7 @@ def get_upcoming_schedules(
     Each entry includes start/end time, duration, countdown, and whether it's
     today or tomorrow.
     """
+    _offline = offline_device_ids or set()
     local_now = now.astimezone(tz).replace(tzinfo=None)
     today = local_now.date()
     tomorrow = today + timedelta(days=1)
@@ -160,7 +167,13 @@ def get_upcoming_schedules(
                 # No winner yet for this target (device or group) — scheduler
                 # hasn't evaluated.  Show as "starting" so the schedule
                 # doesn't vanish from the dashboard during the transition.
-                results.append(_starting_entry(s, local_now))
+                # If the target device is offline, flag it so the dashboard
+                # can show a "Device Offline" badge instead of "Starting…".
+                entry = _starting_entry(s, local_now)
+                if s.device_id and s.device_id in _offline:
+                    entry["starting"] = False
+                    entry["device_offline"] = True
+                results.append(entry)
             continue
 
         # Check today
@@ -201,6 +214,7 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
     if s.end_time <= s.start_time:
         end_dt += timedelta(days=1)
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
 
     total_secs = int(delta.total_seconds())
     if total_secs < 60:
@@ -229,6 +243,7 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
         "countdown": countdown,
         "starts_in_seconds": total_secs,
         "day_label": day_label,
@@ -272,6 +287,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
     if s.end_time <= s.start_time:
         end_dt += timedelta(days=1)
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
 
     target_name = None
     if s.group:
@@ -304,6 +320,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
         "countdown": countdown,
         "starts_in_seconds": resume_secs,
         "day_label": "today",
@@ -319,6 +336,7 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
     if s.end_time <= s.start_time:
         end_dt += timedelta(days=1)
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
 
     target_name = None
     if s.group:
@@ -334,6 +352,7 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
         "countdown": "starting",
         "starts_in_seconds": 0,
         "day_label": "today",
@@ -473,8 +492,8 @@ def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = N
         name=s.name,
         asset=s.asset.filename,
         asset_checksum=checksum,
-        start_time=s.start_time.strftime("%H:%M"),
-        end_time=s.end_time.strftime("%H:%M"),
+        start_time=s.start_time.strftime("%H:%M:%S"),
+        end_time=s.end_time.strftime("%H:%M:%S"),
         start_date=s.start_date.date().isoformat() if s.start_date else None,
         end_date=s.end_date.date().isoformat() if s.end_date else None,
         days_of_week=s.days_of_week,
@@ -625,7 +644,7 @@ async def push_sync_to_affected_devices(schedule: Schedule, db) -> None:
 
 
 async def evaluate_schedules() -> None:
-    """Single evaluation pass: sync schedules and update now-playing dashboard."""
+    """Single evaluation pass: sync schedules to devices and detect MISSED playback."""
     if not device_manager.connected_count:
         return
 
@@ -635,7 +654,7 @@ async def evaluate_schedules() -> None:
     now = datetime.now(timezone.utc)
 
     async with _db._session_factory() as db:
-        # Read timezone for now-playing evaluation
+        # Read timezone for schedule evaluation
         tz_result = await db.execute(
             select(CMSSetting.value).where(CMSSetting.key == "timezone")
         )
@@ -648,7 +667,7 @@ async def evaluate_schedules() -> None:
         for did in connected:
             await push_sync_to_device(did, db)
 
-        # ── Update now-playing dashboard ──
+        # ── Detect MISSED schedules ──
         result = await db.execute(
             select(Schedule)
             .options(
@@ -673,34 +692,30 @@ async def evaluate_schedules() -> None:
             if _matches_now(s, local_now) and str(s.id) not in _skipped
         ]
 
-        # Find winner per device (highest priority)
-        device_winner: dict[str, Schedule] = {}
-        for s in active:
-            if not s.asset:
-                continue
-            target_ids = await _get_target_device_ids(s, db)
-            for did in target_ids:
-                if did not in connected:
-                    continue
-                existing = device_winner.get(did)
-                if existing is None or s.priority > existing.priority:
-                    device_winner[did] = s
-
         # Detect MISSED schedules: active schedules targeting offline adopted devices
+        # Only log MISSED after MISSED_GRACE_SECONDS of continuous offline
         all_adopted_q = await db.execute(
             select(Device.id, Device.name).where(Device.status == DeviceStatus.ADOPTED)
         )
         all_adopted = {r[0]: (r[1] or r[0]) for r in all_adopted_q.all()}
 
+        utc_now = datetime.now(timezone.utc)
+
         for s in active:
             if not s.asset:
                 continue
             target_ids = await _get_target_device_ids(s, db)
             for did in target_ids:
-                if did in connected or did not in all_adopted:
-                    continue
                 key = (str(s.id), did)
-                if key not in _missed_logged:
+                if did in connected or did not in all_adopted:
+                    # Device is online or not adopted — clear offline tracking
+                    _offline_since.pop(key, None)
+                    continue
+                # Device is offline and adopted
+                if key not in _offline_since:
+                    _offline_since[key] = utc_now
+                elapsed = (utc_now - _offline_since[key]).total_seconds()
+                if elapsed >= MISSED_GRACE_SECONDS and key not in _missed_logged:
                     _missed_logged.add(key)
                     await _log_event(
                         db, ScheduleLogEvent.MISSED,
@@ -708,10 +723,10 @@ async def evaluate_schedules() -> None:
                         device_name=all_adopted.get(did, did),
                         asset_filename=s.asset.filename,
                         schedule_id=s.id, device_id=did,
-                        details="Device offline",
+                        details=f"Device offline for {int(elapsed)}s",
                     )
 
-        # Clear missed flags for combos that are no longer active
+        # Clear missed/offline tracking for combos that are no longer active
         active_keys = set()
         for s in active:
             if not s.asset:
@@ -721,75 +736,15 @@ async def evaluate_schedules() -> None:
                 if did not in connected and did in all_adopted:
                     active_keys.add((str(s.id), did))
         _missed_logged.difference_update(_missed_logged - active_keys)
+        # Clear offline_since for combos no longer relevant
+        stale_offline = [k for k in _offline_since if k not in active_keys]
+        for k in stale_offline:
+            del _offline_since[k]
 
-        # Load device names
-        device_names: dict[str, str] = {}
-        if connected:
-            name_q = await db.execute(
-                select(Device.id, Device.name).where(Device.id.in_(connected))
-            )
-            device_names = {r[0]: (r[1] or r[0]) for r in name_q.all()}
-
-        for did in connected:
-            winner = device_winner.get(did)
-            if winner:
-                prev = _now_playing.get(did)
-                if prev is None or prev.get("schedule_id") != str(winner.id):
-                    # Log ENDED for the previous schedule if there was one
-                    if prev:
-                        await _log_event(
-                            db, ScheduleLogEvent.ENDED,
-                            schedule_name=prev["schedule_name"],
-                            device_name=prev["device_name"],
-                            asset_filename=prev["asset_filename"],
-                            schedule_id=await _resolve_schedule_id(db, prev.get("schedule_id")),
-                            device_id=did,
-                        )
-                    # Log STARTED for the new schedule
-                    await _log_event(
-                        db, ScheduleLogEvent.STARTED,
-                        schedule_name=winner.name,
-                        device_name=device_names.get(did, did),
-                        asset_filename=winner.asset.filename,
-                        schedule_id=winner.id, device_id=did,
-                    )
-                    _now_playing[did] = {
-                        "device_id": did,
-                        "device_name": device_names.get(did, did),
-                        "schedule_id": str(winner.id),
-                        "schedule_name": winner.name,
-                        "asset_filename": winner.asset.filename,
-                        "since": now.isoformat(),
-                        "end_time": winner.end_time.strftime("%I:%M %p").lstrip("0"),
-                    }
-                # Always update remaining time (schedule times are local)
-                end_today = datetime.combine(local_now.date(), winner.end_time)
-                if winner.end_time <= winner.start_time:
-                    end_today += timedelta(days=1)
-                remaining_secs = max(0, int((end_today - local_now).total_seconds()))
-                _now_playing[did]["remaining_seconds"] = remaining_secs
-                if remaining_secs < 60:
-                    _now_playing[did]["remaining"] = "less than a minute"
-                elif remaining_secs < 3600:
-                    mins = remaining_secs // 60
-                    _now_playing[did]["remaining"] = f"{mins} minute{'s' if mins != 1 else ''}"
-                else:
-                    hours = remaining_secs // 3600
-                    mins = (remaining_secs % 3600) // 60
-                    _now_playing[did]["remaining"] = f"{hours} hour{'s' if hours != 1 else ''}"
-                    if mins > 0:
-                        _now_playing[did]["remaining"] += f", {mins} minute{'s' if mins != 1 else ''}"
-            else:
-                prev = _now_playing.pop(did, None)
-                if prev:
-                    await _log_event(
-                        db, ScheduleLogEvent.ENDED,
-                        schedule_name=prev["schedule_name"],
-                        device_name=prev["device_name"],
-                        asset_filename=prev["asset_filename"],
-                        schedule_id=await _resolve_schedule_id(db, prev.get("schedule_id")),
-                        device_id=did,
-                    )
+        # Clean up _now_playing for devices that disconnected
+        stale = [did for did in list(_now_playing) if did not in connected]
+        for did in stale:
+            _now_playing.pop(did, None)
 
         await db.commit()
 

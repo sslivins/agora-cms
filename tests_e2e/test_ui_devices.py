@@ -249,9 +249,11 @@ class TestPlaybackAssetTooltip:
             detail = page.locator('[data-detail-for="tooltip-dev-002"]').first
             expect(detail).to_be_visible(timeout=3000)
 
-            # The asset-name-truncate span should be visible with the short name
+            # The asset-name-truncate span should be visible with the short name.
+            # The text may not appear until the JS status poll fires (~5s interval),
+            # so use a generous timeout like the long-filename test above.
             asset_span = detail.locator(".asset-name-truncate", has_text=asset_name).first
-            expect(asset_span).to_be_visible(timeout=3000)
+            expect(asset_span).to_be_visible(timeout=10_000)
 
             # Wait a frame for applyAssetTooltips to run
             page.wait_for_timeout(200)

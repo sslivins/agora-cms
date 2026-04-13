@@ -523,6 +523,8 @@ class TestUIGroupPickerLibrary:
 
             with page.expect_response(lambda r: "/share" in r.url and r.status == 200):
                 last_badge.locator(".btn-x").click()
+                # Confirm the unshare dialog
+                page.locator(".modal-overlay .btn-danger", has_text="Confirm").click()
 
             page.wait_for_timeout(500)
 

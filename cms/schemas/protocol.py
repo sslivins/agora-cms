@@ -37,10 +37,16 @@ class MessageType(str, Enum):
     REBOOT = "reboot"
     UPGRADE = "upgrade"
     FACTORY_RESET = "factory_reset"
+    WIPE_ASSETS = "wipe_assets"
     REQUEST_LOGS = "request_logs"
+
+    # Device → CMS (playback events)
+    PLAYBACK_STARTED = "playback_started"
+    PLAYBACK_ENDED = "playback_ended"
 
     # Device → CMS (response)
     LOGS_RESPONSE = "logs_response"
+    WIPE_ASSETS_ACK = "wipe_assets_ack"
 
 
 class BaseMessage(BaseModel):
@@ -94,6 +100,24 @@ class AssetDeletedMessage(BaseMessage):
     asset_name: str
 
 
+class PlaybackStartedMessage(BaseMessage):
+    type: MessageType = MessageType.PLAYBACK_STARTED
+    device_id: str
+    schedule_id: str
+    schedule_name: str
+    asset: str
+    timestamp: str  # ISO 8601 UTC — when the device started playback
+
+
+class PlaybackEndedMessage(BaseMessage):
+    type: MessageType = MessageType.PLAYBACK_ENDED
+    device_id: str
+    schedule_id: str
+    schedule_name: str
+    asset: str
+    timestamp: str  # ISO 8601 UTC — when the device ended playback
+
+
 # ── CMS → Device ──
 
 
@@ -103,8 +127,8 @@ class ScheduleEntry(BaseModel):
     name: str
     asset: str
     asset_checksum: Optional[str] = None  # SHA-256 of the file the device should have
-    start_time: str          # "HH:MM"
-    end_time: str            # "HH:MM"
+    start_time: str          # "HH:MM:SS"
+    end_time: str            # "HH:MM:SS"
     start_date: Optional[str] = None  # "YYYY-MM-DD" or null (open-ended)
     end_date: Optional[str] = None    # "YYYY-MM-DD" or null (open-ended)
     days_of_week: Optional[list[int]] = None  # ISO 1-7, null = every day
@@ -167,6 +191,11 @@ class RebootMessage(BaseMessage):
 
 class FactoryResetMessage(BaseMessage):
     type: MessageType = MessageType.FACTORY_RESET
+
+
+class WipeAssetsMessage(BaseMessage):
+    type: MessageType = MessageType.WIPE_ASSETS
+    reason: str = ""  # "adopted", "deleted" — informational for device logs
 
 
 class UpgradeMessage(BaseMessage):

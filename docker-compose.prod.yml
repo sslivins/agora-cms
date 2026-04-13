@@ -37,26 +37,6 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  ntp:
-    image: alpine:3.21
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        apk add --no-cache chrony &&
-        cat > /etc/chrony/chrony.conf <<'EOF'
-        pool pool.ntp.org iburst
-        driftfile /var/lib/chrony/drift
-        makestep 1.0 3
-        rtcsync
-        allow all
-        EOF
-        exec chronyd -d -s
-    cap_add:
-      - SYS_TIME
-    ports:
-      - "123:123/udp"
-    restart: unless-stopped
-
   watchtower:
     image: containrrr/watchtower:latest
     volumes:

@@ -6,7 +6,7 @@
 {% if 'schedules:write' in user_perms %}
 <div class="card">
     <h2>Create Schedule</h2>
-    <form onsubmit="event.preventDefault(); createSchedule(this)">
+    <form onsubmit="event.preventDefault(); createSchedule(this)" novalidate>
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Name<span class="tooltip">A friendly name for this schedule, e.g. &ldquo;Morning Promo&rdquo; or &ldquo;Weekend Loop&rdquo;</span></span></label>
@@ -48,9 +48,15 @@
                 <input type="time" name="start_time" required>
             </div>
             <div class="form-group">
-                <label><span class="has-tooltip">End Time<span class="tooltip">Time of day the schedule stops. The asset will stop playing at this time</span></span></label>
+                <label><span class="has-tooltip">End Time<span class="tooltip">Time of day the schedule stops. Auto-computed when Loop Count is set</span></span></label>
                 <input type="time" name="end_time" required>
             </div>
+            <div class="form-group">
+                <label><span class="has-tooltip">Loop Count<span class="tooltip">Play the asset exactly this many times, then stop. End Time is auto-computed from the asset duration. Leave blank to loop continuously within the time window</span></span></label>
+                <input type="number" name="loop_count" min="1" max="9999" placeholder="∞">
+            </div>
+        </div>
+        <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Priority<span class="tooltip">Higher number = higher priority. When schedules overlap, the one with the highest priority wins. Use 0 for default</span></span></label>
                 <input type="number" name="priority" value="0" min="0" max="100">
@@ -89,7 +95,6 @@
             </div>
         </div>
         <div id="schedule-summary" class="schedule-summary" style="display:none;"></div>
-        <input type="hidden" name="loop_count" value="">
         <button type="submit" class="btn btn-primary">Create Schedule</button>
     </form>
 </div>
@@ -315,11 +320,29 @@ function timeToMins(str) {
     return h * 60 + m;
 }
 
+// Helper: "HH:MM" or "HH:MM:SS" to total seconds
+function timeToSecs(str) {
+    if (!str) return null;
+    const parts = str.split(':').map(Number);
+    if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return null;
+    const s = parts.length > 2 && !isNaN(parts[2]) ? parts[2] : 0;
+    return parts[0] * 3600 + parts[1] * 60 + s;
+}
+
 // Helper: total minutes to "HH:MM"
 function minsToTime(mins) {
     mins = ((mins % (24 * 60)) + 24 * 60) % (24 * 60);
     const h = Math.floor(mins / 60), m = mins % 60;
     return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+// Helper: total seconds to "HH:MM:SS"
+function secsToTime(secs) {
+    secs = ((secs % 86400) + 86400) % 86400;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
 
 // Helper: format seconds to human-readable duration
@@ -348,6 +371,31 @@ function formatTimeDisplay(timeStr) {
     if (isNaN(h) || isNaN(m)) return null;
     const d = new Date(2000, 0, 1, h, m);
     return d.toLocaleTimeString(navigator.language, { hour: 'numeric', minute: '2-digit' });
+}
+
+// Helper: compute end_time from start_time, loop_count, and asset duration
+function computeLoopEndTime(container) {
+    const startInput = container.querySelector('[name="start_time"]') || container.querySelector('#edit-start-time');
+    const endInput = container.querySelector('[name="end_time"]') || container.querySelector('#edit-end-time');
+    const lcInput = container.querySelector('[name="loop_count"]') || container.querySelector('#edit-loop-count');
+    if (!startInput || !endInput || !lcInput) return;
+    const lc = parseInt(lcInput.value);
+    if (lc > 0) {
+        const assetDur = getSelectedAssetDuration(container);
+        endInput.disabled = true;
+        endInput.removeAttribute('required');
+        if (assetDur && assetDur > 0) {
+            const startSecs = timeToSecs(startInput.value);
+            if (startSecs !== null) {
+                const newEndSecs = Math.round(startSecs + lc * assetDur);
+                endInput.value = secsToTime(newEndSecs);
+            }
+        }
+    } else {
+        endInput.disabled = false;
+        // Only require end_time on the create form (it has the name= attribute)
+        if (endInput.name === 'end_time') endInput.setAttribute('required', '');
+    }
 }
 
 // ── Create form setup ──
@@ -383,26 +431,39 @@ document.addEventListener("DOMContentLoaded", function() {
     // Auto-advance end time when start time changes
     const startTimeEl = document.querySelector('[name="start_time"]');
     const endTimeEl = document.querySelector('[name="end_time"]');
+    const loopCountEl = document.querySelector('[name="loop_count"]');
     startTimeEl.addEventListener('change', function() {
         const startMins = timeToMins(this.value);
-        const endMins = timeToMins(endTimeEl.value);
-        if (startMins !== null && (endMins === null || endMins <= startMins)) {
-            endTimeEl.value = minsToTime(startMins + 60);
+        const lc = parseInt(loopCountEl.value);
+        if (lc > 0) {
+            // Recompute end_time from loop_count when start changes
+            computeLoopEndTime(this.closest('form'));
+        } else {
+            const endMins = timeToMins(endTimeEl.value);
+            if (startMins !== null && (endMins === null || endMins <= startMins)) {
+                endTimeEl.value = minsToTime(startMins + 60);
+            }
         }
-        // Clear stale explicit loop count when duration changes
-        const lcInput = document.querySelector('[name="loop_count"]');
-        if (lcInput) lcInput.value = "";
         updateScheduleSummary();
     });
     endTimeEl.addEventListener('change', function() {
-        // Clear stale explicit loop count when duration changes
-        const lcInput = document.querySelector('[name="loop_count"]');
-        if (lcInput) lcInput.value = "";
+        // Clear loop count when user manually changes end time
+        if (!endTimeEl.disabled) {
+            loopCountEl.value = "";
+        }
+        updateScheduleSummary();
+    });
+    // Loop count changes: recompute end_time
+    loopCountEl.addEventListener('input', function() {
+        computeLoopEndTime(this.closest('form'));
         updateScheduleSummary();
     });
 
-    // Also update summary when asset changes (for loop info)
-    document.querySelector('[name="asset_id"]').addEventListener('change', updateScheduleSummary);
+    // Also update summary and loop end_time when asset changes
+    document.querySelector('[name="asset_id"]').addEventListener('change', function() {
+        computeLoopEndTime(this.closest('form'));
+        updateScheduleSummary();
+    });
 
     // Auto-advance end date when start date changes
     const startDateEl = document.querySelector('[name="start_date"]');
@@ -446,18 +507,22 @@ function describeSchedule(d, opts) {
     if (!startStr || !endStr) return "";
 
     // Duration
-    let startMins = timeToMins(d.start_time);
-    let endMins = timeToMins(d.end_time);
-    const isOvernight = endMins <= startMins;
-    if (isOvernight) endMins += 24 * 60;
-    const durMins = endMins - startMins;
+    let startSecs = timeToSecs(d.start_time);
+    let endSecs = timeToSecs(d.end_time);
+    const isOvernight = endSecs < startSecs;
+    if (isOvernight) endSecs += 24 * 3600;
+    const durSecs = endSecs - startSecs;
     let durStr;
-    if (durMins >= 60) {
-        const h = Math.floor(durMins / 60), m = durMins % 60;
+    if (durSecs >= 3600) {
+        const h = Math.floor(durSecs / 3600), m = Math.floor((durSecs % 3600) / 60);
         durStr = h + " hr" + (h !== 1 ? "s" : "");
         if (m > 0) durStr += " " + m + " min";
+    } else if (durSecs >= 60) {
+        const m = Math.floor(durSecs / 60), s = durSecs % 60;
+        durStr = m + " min";
+        if (s > 0) durStr += " " + s + " sec";
     } else {
-        durStr = durMins + " min";
+        durStr = durSecs + " sec";
     }
 
     const label = d.name ? `\u2018${d.name}\u2019` : "This schedule";
@@ -499,8 +564,17 @@ function describeSchedule(d, opts) {
 
     let msg = `${label} will play for ${durStr} from ${startStr}\u2013${endStr}, ${dayStr}${dateStr}.`;
     if (isOvernight) msg += " \u26a0\ufe0f Spans midnight.";
-    if (d.end_date && d.end_date < new Date().toLocaleDateString('en-CA')) {
-        msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+    if (d.end_date) {
+        const todayStr = new Date().toLocaleDateString('en-CA');
+        if (d.end_date < todayStr) {
+            msg += " \u26a0\ufe0f End date is in the past \u2014 this schedule will never play.";
+        } else if (d.end_date === todayStr && d.end_time && !isOvernight) {
+            const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+            const [eh, em] = d.end_time.split(":").map(Number);
+            if (eh * 60 + em <= nowMins) {
+                msg += " \u26a0\ufe0f End date and time are in the past \u2014 this schedule will never play.";
+            }
+        }
     }
     if (opts.loopHtml) msg += opts.loopHtml;
     return msg;
@@ -514,18 +588,22 @@ function describeScheduleCompact(d) {
     const endStr = formatTimeDisplay(d.end_time);
     if (!startStr || !endStr) return "";
 
-    let startMins = timeToMins(d.start_time);
-    let endMins = timeToMins(d.end_time);
-    const isOvernight = endMins <= startMins;
-    if (isOvernight) endMins += 24 * 60;
-    const durMins = endMins - startMins;
+    let startSecs = timeToSecs(d.start_time);
+    let endSecs = timeToSecs(d.end_time);
+    const isOvernight = endSecs < startSecs;
+    if (isOvernight) endSecs += 24 * 3600;
+    const durSecs = endSecs - startSecs;
     let durStr;
-    if (durMins >= 60) {
-        const h = Math.floor(durMins / 60), m = durMins % 60;
+    if (durSecs >= 3600) {
+        const h = Math.floor(durSecs / 3600), m = Math.floor((durSecs % 3600) / 60);
         durStr = h + " hr" + (h !== 1 ? "s" : "");
         if (m > 0) durStr += " " + m + " min";
+    } else if (durSecs >= 60) {
+        const m = Math.floor(durSecs / 60), s = durSecs % 60;
+        durStr = m + " min";
+        if (s > 0) durStr += " " + s + " sec";
     } else {
-        durStr = durMins + " min";
+        durStr = durSecs + " sec";
     }
 
     const oneShot = d.start_date && d.end_date && d.start_date === d.end_date;
@@ -590,10 +668,10 @@ function updateDayCheckboxes(form) {
 }
 
 // Helper: build loop-info HTML snippet for the schedule summary
-function getLoopInfoHtml(form, durMins) {
+function getLoopInfoHtml(form, durSecs) {
     const assetDur = getSelectedAssetDuration(form);
     if (!assetDur || assetDur <= 0) return "";
-    const scheduleSecs = durMins * 60;
+    const scheduleSecs = durSecs;
     const loops = scheduleSecs / assetDur;
     const nearestLoops = Math.round(loops);
 
@@ -648,15 +726,19 @@ function _readFormData(form, dayPrefix) {
 
 function _updateSummaryEl(el, form, dayPrefix) {
     const data = _readFormData(form, dayPrefix);
-    if (!data.start_time || !data.end_time) { el.style.display = "none"; return; }
+    if (!data.start_time) { el.style.display = "none"; return; }
+    // Allow missing end_time when loop_count is set
+    const lcInput = form.querySelector('[name="loop_count"]') || form.querySelector('#edit-loop-count');
+    const lc = lcInput ? parseInt(lcInput.value) : NaN;
+    if (!data.end_time && !(lc > 0)) { el.style.display = "none"; return; }
     updateDayCheckboxes(form);
 
     // Compute loop info
-    let startMins = timeToMins(data.start_time);
-    let endMins = timeToMins(data.end_time);
-    if (endMins <= startMins) endMins += 24 * 60;
-    const durMins = endMins - startMins;
-    const loopHtml = getLoopInfoHtml(form, durMins);
+    let startSecs = timeToSecs(data.start_time);
+    let endSecs = timeToSecs(data.end_time);
+    if (endSecs < startSecs) endSecs += 24 * 3600;
+    const durSecs = endSecs - startSecs;
+    const loopHtml = getLoopInfoHtml(form, durSecs);
 
     el.innerHTML = describeSchedule(data, { loopHtml: loopHtml });
     el.style.display = "";
@@ -677,20 +759,16 @@ document.getElementById("schedule-summary").addEventListener('click', function(e
     if (clearLink) {
         e.preventDefault();
         if (lcInput) lcInput.value = "";
+        computeLoopEndTime(form);
         updateScheduleSummary();
         return;
     }
     if (!link) return;
     e.preventDefault();
     const targetLoops = parseInt(link.dataset.loops);
-    const assetDur = getSelectedAssetDuration(form);
-    if (!assetDur || !targetLoops) return;
-    const startMins = timeToMins(form.querySelector('[name="start_time"]').value);
-    if (startMins === null) return;
-    const newEndMins = Math.round(startMins + (targetLoops * assetDur) / 60);
-    form.querySelector('[name="end_time"]').value = minsToTime(newEndMins);
-    // Set explicit loop count
+    if (!targetLoops) return;
     if (lcInput) lcInput.value = targetLoops;
+    computeLoopEndTime(form);
     updateScheduleSummary();
 });
 
@@ -762,7 +840,11 @@ function editSchedule(s) {
             </div>
             <div class="form-group">
                 <label>End Time</label>
-                <input type="time" id="edit-end-time" value="${s.end_time}">
+                <input type="time" id="edit-end-time" value="${s.end_time}"${s.loop_count ? ' disabled' : ''}>
+            </div>
+            <div class="form-group">
+                <label>Loop Count</label>
+                <input type="number" id="edit-loop-count" value="${s.loop_count || ''}" min="1" max="9999" placeholder="∞">
             </div>
             <div class="form-group">
                 <label>Priority</label>
@@ -790,7 +872,6 @@ function editSchedule(s) {
             <div style="display: flex; gap: 1rem; margin-top: 0.3rem;">${daysChecks}</div>
         </div>
         <div id="edit-schedule-summary" class="schedule-summary" style="display:none;"></div>
-        <input type="hidden" id="edit-loop-count" value="${s.loop_count || ''}">
         <div class="modal-actions">
             <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
             <button class="btn btn-primary" id="edit-save">Save</button>
@@ -812,23 +893,26 @@ function editSchedule(s) {
     // Preserve original duration when editing times (instead of resetting to +1h)
     const editStartTimeEl = box.querySelector("#edit-start-time");
     const editEndTimeEl = box.querySelector("#edit-end-time");
-    const _origStartMins = timeToMins(s.start_time);
-    let _origEndMins = timeToMins(s.end_time);
-    if (_origEndMins <= _origStartMins) _origEndMins += 24 * 60;
-    const _origDurMins = _origEndMins - _origStartMins;
+    const _origStartSecs = timeToSecs(s.start_time);
+    let _origEndSecs = timeToSecs(s.end_time);
+    if (_origEndSecs < _origStartSecs) _origEndSecs += 24 * 3600;
+    const _origDurMins = Math.round((_origEndSecs - _origStartSecs) / 60);
     let _startTouched = false, _endTouched = false;
     let _roundingInProgress = false;
     const editLcInput = box.querySelector('#edit-loop-count');
     editStartTimeEl.addEventListener('change', function() {
         if (_roundingInProgress) return;
         _startTouched = true;
-        const startMins = timeToMins(this.value);
-        if (startMins !== null && !_endTouched) {
-            // Preserve original duration
-            editEndTimeEl.value = minsToTime(startMins + _origDurMins);
+        const lc = parseInt(editLcInput.value);
+        if (lc > 0) {
+            // Recompute end_time from loop_count
+            computeLoopEndTime(box);
+        } else {
+            const startMins = timeToMins(this.value);
+            if (startMins !== null && !_endTouched) {
+                editEndTimeEl.value = minsToTime(startMins + _origDurMins);
+            }
         }
-        // Clear stale loop count when duration changes
-        if (_startTouched && _endTouched && editLcInput) editLcInput.value = "";
         updateEditSummary();
     });
     editEndTimeEl.addEventListener('change', function() {
@@ -836,11 +920,15 @@ function editSchedule(s) {
         _endTouched = true;
         const endMins = timeToMins(this.value);
         if (endMins !== null && !_startTouched) {
-            // Preserve original duration
             editStartTimeEl.value = minsToTime(endMins - _origDurMins);
         }
-        // Clear stale loop count when duration changes
-        if (_startTouched && _endTouched && editLcInput) editLcInput.value = "";
+        // Clear loop count when user manually changes end time
+        if (!editEndTimeEl.disabled && editLcInput) editLcInput.value = "";
+        updateEditSummary();
+    });
+    // Loop count changes in edit modal
+    editLcInput.addEventListener('input', function() {
+        computeLoopEndTime(box);
         updateEditSummary();
     });
 
@@ -859,7 +947,10 @@ function editSchedule(s) {
 
     // Attach edit summary listeners to name, asset, and day checkboxes
     box.querySelector("#edit-name").addEventListener('input', updateEditSummary);
-    box.querySelector("#edit-asset").addEventListener('change', updateEditSummary);
+    box.querySelector("#edit-asset").addEventListener('change', function() {
+        computeLoopEndTime(box);
+        updateEditSummary();
+    });
     for (let i = 1; i <= 7; i++) {
         const dayCb = box.querySelector(`[name="edit_day_${i}"]`);
         if (dayCb) dayCb.addEventListener('change', updateEditSummary);
@@ -872,21 +963,17 @@ function editSchedule(s) {
         if (clearLink) {
             e.preventDefault();
             if (editLcInput) editLcInput.value = "";
+            computeLoopEndTime(box);
             updateEditSummary();
             return;
         }
         if (!link) return;
         e.preventDefault();
         const targetLoops = parseInt(link.dataset.loops);
-        const assetDur = getSelectedAssetDuration(box);
-        if (!assetDur || !targetLoops) return;
-        const loopStart = timeToMins(editStartTimeEl.value);
-        if (loopStart === null) return;
+        if (!targetLoops) return;
         _roundingInProgress = true;
-        const newEndMins = Math.round(loopStart + (targetLoops * assetDur) / 60);
-        editEndTimeEl.value = minsToTime(newEndMins);
-        // Set explicit loop count
         if (editLcInput) editLcInput.value = targetLoops;
+        computeLoopEndTime(box);
         _roundingInProgress = false;
         updateEditSummary();
     });
@@ -897,11 +984,17 @@ function editSchedule(s) {
     box.querySelector("#edit-save").onclick = async () => {
         const startTime = box.querySelector("#edit-start-time").value;
         const endTime = box.querySelector("#edit-end-time").value;
-        if (!startTime || !endTime) {
-            showToast("Please select start and end times", true);
+        const editLoopCount = box.querySelector('#edit-loop-count').value;
+        const hasLoopCount = editLoopCount && parseInt(editLoopCount) > 0;
+        if (!startTime) {
+            showToast("Please select a start time", true);
             return;
         }
-        if (startTime === endTime) {
+        if (!hasLoopCount && !endTime) {
+            showToast("Please select an end time or set a loop count", true);
+            return;
+        }
+        if (!hasLoopCount && startTime === endTime) {
             showToast("Start time and end time cannot be the same", true);
             return;
         }
@@ -913,8 +1006,16 @@ function editSchedule(s) {
         }
         const todayLocal = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD in local tz
         if (endDate && endDate < todayLocal) {
-            const ok = await showConfirm("\u26a0\ufe0f The end date is in the past \u2014 this schedule will never play. Continue anyway?");
-            if (!ok) return;
+            if (!await showConfirm("\u26a0\ufe0f The end date is in the past \u2014 this schedule will never play. Continue anyway?")) return;
+        } else if (endDate && endDate === todayLocal && endTime) {
+            const isOvernight = startTime > endTime;
+            if (!isOvernight) {
+                const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+                const [eh, em] = endTime.split(":").map(Number);
+                if (eh * 60 + em <= nowMins) {
+                    if (!await showConfirm("\u26a0\ufe0f The end date and time are in the past \u2014 this schedule will never play. Continue anyway?")) return;
+                }
+            }
         }
         const days = [];
         for (let i = 1; i <= 7; i++) {
@@ -928,16 +1029,15 @@ function editSchedule(s) {
             asset_id: box.querySelector("#edit-asset").value,
             device_id: editTargetType === "device" ? editTargetId : null,
             group_id: editTargetType === "group" ? editTargetId : null,
-            start_time: startTime + ":00",
-            end_time: endTime + ":00",
+            start_time: startTime.length <= 5 ? startTime + ":00" : startTime,
+            end_time: endTime ? (endTime.length <= 5 ? endTime + ":00" : endTime) : null,
             start_date: startDate || null,
             end_date: endDate || null,
             days_of_week: days.length ? days : null,
             priority: parseInt(box.querySelector("#edit-priority").value) || 0,
         };
         // Explicit loop count
-        const editLoopCount = box.querySelector('#edit-loop-count').value;
-        body.loop_count = editLoopCount ? parseInt(editLoopCount) : null;
+        body.loop_count = hasLoopCount ? parseInt(editLoopCount) : null;
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
         if (resp && resp.ok) { overlay.remove(); location.reload(); }
         else {

@@ -26,7 +26,7 @@ from cms.schemas.device import (
     SetPasswordRequest,
     ToggleRequest,
 )
-from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage
+from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage, WipeAssetsMessage
 from cms.services.device_manager import device_manager
 from cms.services.scheduler import push_sync_to_device
 from cms.services.version_checker import check_now
@@ -338,6 +338,9 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
 
     For pending devices: sets status to adopted and assigns an auth token on next connect.
     For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
+
+    In both cases, a wipe_assets command is sent so the device starts fresh
+    without stale content from a previous adoption.
     """
     device = await _get_device_with_access(device_id, request, db)
 
@@ -353,6 +356,10 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
 
     await db.commit()
 
+    # Tell the device to wipe cached assets so it starts clean
+    wipe_msg = WipeAssetsMessage(reason="adopted")
+    await device_manager.send_to_device(device_id, wipe_msg.model_dump(mode="json"))
+
     # Push a fresh sync so the device learns its new status immediately
     # (e.g. the OOBE screen advances from "waiting for adoption" to "adopted").
     await push_sync_to_device(device_id, db)
@@ -363,6 +370,10 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
 @router.delete("/{device_id}", dependencies=[Depends(require_permission(DEVICES_DELETE))])
 async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     device = await _get_device_with_access(device_id, request, db)
+
+    # Tell the device to wipe cached assets before we remove it from the DB
+    wipe_msg = WipeAssetsMessage(reason="deleted")
+    await device_manager.send_to_device(device_id, wipe_msg.model_dump(mode="json"))
 
     # Remove referencing rows before deleting the device
     from cms.models.asset import DeviceAsset

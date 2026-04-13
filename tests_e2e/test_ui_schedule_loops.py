@@ -139,9 +139,9 @@ class TestRoundButtons:
         expect(round_down).to_be_visible()
         round_down.click()
 
-        # End time should now be 10:20 (9:00 + 8×10min)
+        # End time should now be 10:20:00 (9:00 + 8×10min)
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "10:20", f"Expected 10:20 but got {end_time}"
+        assert end_time == "10:20:00", f"Expected 10:20:00 but got {end_time}"
 
         # Summary should now say exact 8 loops (locked with loop_count)
         expect(summary).to_contain_text("exact 8 loops")
@@ -166,9 +166,9 @@ class TestRoundButtons:
         expect(round_up).to_be_visible()
         round_up.click()
 
-        # End time should now be 10:30 (9:00 + 9×10min)
+        # End time should now be 10:30:00 (9:00 + 9×10min)
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "10:30", f"Expected 10:30 but got {end_time}"
+        assert end_time == "10:30:00", f"Expected 10:30:00 but got {end_time}"
 
         # Summary should now say exact 9 loops (locked with loop_count)
         expect(summary).to_contain_text("exact 9 loops")
@@ -231,7 +231,7 @@ class TestOneShotLoopSummary:
         summary.locator(".loop-round", has_text="Round up").click()
 
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "10:30", f"Expected 10:30 but got {end_time}"
+        assert end_time == "10:30:00", f"Expected 10:30:00 but got {end_time}"
         expect(summary).to_contain_text("exact 9 loops")
 
 
@@ -415,24 +415,22 @@ class TestEditPreserveDuration:
 
 
 class TestEditClearLoopCount:
-    """Editing times clears stale loop_count when duration changes."""
+    """Editing loop_count in the UI updates end_time accordingly."""
 
     def test_edit_loop_count_cleared_on_duration_change(self, page: Page, api, ws_url):
-        """When both times are changed (duration changes), loop_count should be cleared."""
+        """When loop_count is cleared in the edit modal, end_time should re-enable."""
         device_id = "edit-lc-001"
         asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
-        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
-        # Create a schedule with explicit loop_count=8
+        # Create schedule WITHOUT loop_count (asset has no real duration)
         sched = _create_schedule_via_api(
             api, device_id, asset_id,
             start_time="09:00:00", end_time="10:20:00",
             name="Clear Loop Count",
-            loop_count=8,
         )
 
         _open_edit_modal(page, "Clear Loop Count")
-        # Re-inject duration into JS data (modal reload context)
+        # Inject duration into JS data for the modal
         page.evaluate(
             """([assetId, dur]) => {
                 const a = _scheduleData.assets.find(x => x.id === assetId);
@@ -440,26 +438,27 @@ class TestEditClearLoopCount:
             }""",
             [asset_id, ASSET_DURATION],
         )
-        page.dispatch_event("#edit-end-time", "change")
+
+        # Set loop_count=8 in the input — end_time should become disabled
+        page.fill("#edit-loop-count", "8")
+        page.dispatch_event("#edit-loop-count", "input")
+
+        end_time_input = page.locator("#edit-end-time")
+        expect(end_time_input).to_be_disabled()
 
         summary = page.locator("#edit-schedule-summary")
         expect(summary).to_be_visible()
-        # Should show "exact 8 loops" initially (from saved loop_count)
         expect(summary).to_contain_text("exact 8 loops")
 
-        # Change start time (end auto-adjusts preserving duration — loop_count stays)
-        page.fill("#edit-start-time", "10:00")
-        page.dispatch_event("#edit-start-time", "change")
+        # Clear loop_count — end_time should re-enable
+        page.fill("#edit-loop-count", "")
+        page.dispatch_event("#edit-loop-count", "input")
 
-        # Now change end time too (both touched — duration changes — loop_count cleared)
-        page.fill("#edit-end-time", "15:00")
-        page.dispatch_event("#edit-end-time", "change")
-
-        # Should no longer say "exact 8 loops"
+        expect(end_time_input).to_be_enabled()
         expect(summary).not_to_contain_text("exact 8 loops")
 
     def test_create_loop_count_cleared_on_time_change(self, page: Page, api, ws_url):
-        """On the create form, changing time clears a stale loop_count."""
+        """On the create form, clearing loop_count re-enables end_time for manual input."""
         device_id = "create-lc-001"
         asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
@@ -477,13 +476,21 @@ class TestEditClearLoopCount:
         summary.locator(".loop-round", has_text="Round down").click()
         expect(summary).to_contain_text("exact 8 loops")
 
-        # Now change end time — should clear the locked loop count
-        page.fill('input[name="end_time"]', "11:00")
-        page.dispatch_event('input[name="end_time"]', "change")
+        # end_time should be disabled now
+        end_time_input = page.locator('input[name="end_time"]')
+        expect(end_time_input).to_be_disabled()
 
+        # Clear loop_count — end_time should re-enable
+        page.fill('input[name="loop_count"]', "")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        expect(end_time_input).to_be_enabled()
         # Should no longer say "exact 8 loops"
         expect(summary).not_to_contain_text("exact 8 loops")
-        # Should show natural loop info instead
+
+        # Now we can change end_time manually
+        page.fill('input[name="end_time"]', "11:00")
+        page.dispatch_event('input[name="end_time"]', "change")
         expect(summary).to_contain_text("loops")
 
 
@@ -547,5 +554,370 @@ class TestSubOneLoop:
 
         # End time = 09:00 + 11 min = 09:11
         end_time = page.input_value('input[name="end_time"]')
-        assert end_time == "09:11", f"Expected 09:11 but got {end_time}"
+        assert end_time == "09:11:00", f"Expected 09:11:00 but got {end_time}"
         expect(summary).to_contain_text("exact 1 loop")
+
+
+class TestLoopCountFormSubmit:
+    """Regression: creating a schedule with loop_count set must succeed
+    even though end_time is disabled (FormData excludes disabled inputs)."""
+
+    def test_create_with_loop_count_sends_end_time(self, page: Page, api, ws_url):
+        """Set loop_count on the create form, submit, and verify the POST
+        request includes end_time even though the input is disabled."""
+        device_id = "lc-submit-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "LC Submit Test")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.select_option('select[name="target_id"]', value=device_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=3 — this disables end_time and auto-computes it
+        page.fill('input[name="loop_count"]', "3")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_input = page.locator('input[name="end_time"]')
+        expect(end_input).to_be_disabled()
+
+        # Verify the auto-computed end_time is correct: 09:00 + 3×600s = 09:30
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:30:00", f"Expected 09:30:00 but got {end_time}"
+
+        # Intercept the POST to verify end_time is included in the request body
+        captured_body = {}
+
+        def capture_request(route, request):
+            import json
+            captured_body.update(json.loads(request.post_data))
+            # Fulfill with a fake success to avoid needing real asset duration
+            route.fulfill(
+                status=201,
+                content_type="application/json",
+                body='{"id":"fake-id","name":"LC Submit Test"}',
+            )
+
+        page.route("**/api/schedules", capture_request)
+        page.click('button[type="submit"]')
+        page.wait_for_timeout(1000)
+
+        assert "end_time" in captured_body, f"POST body missing end_time: {captured_body}"
+        assert captured_body["end_time"] == "09:30:00", (
+            f"Unexpected end_time in POST: {captured_body['end_time']}"
+        )
+        assert captured_body.get("loop_count") == 3
+
+    def test_adjust_start_time_after_loop_count_sends_end_time(self, page: Page, api, ws_url):
+        """Reproduce the exact bug: set time + loop_count, then adjust start_time.
+        The auto-computed end_time updates, and the POST must include it."""
+        device_id = "lc-adjust-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "LC Adjust Start")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.select_option('select[name="target_id"]', value=device_id)
+        page.fill('input[name="start_time"]', "05:59")
+        page.fill('input[name="end_time"]', "06:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=1
+        page.fill('input[name="loop_count"]', "1")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_input = page.locator('input[name="end_time"]')
+        expect(end_input).to_be_disabled()
+
+        # Now adjust start_time — this re-triggers computeLoopEndTime
+        page.fill('input[name="start_time"]', "06:00")
+        page.dispatch_event('input[name="start_time"]', "change")
+
+        # end_time should still be disabled and recomputed: 06:00 + 1×600s = 06:10
+        expect(end_input).to_be_disabled()
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "06:10:00", f"Expected 06:10:00 but got {end_time}"
+
+        # Intercept POST
+        captured_body = {}
+
+        def capture_request(route, request):
+            import json
+            captured_body.update(json.loads(request.post_data))
+            route.fulfill(
+                status=201,
+                content_type="application/json",
+                body='{"id":"fake-id","name":"LC Adjust Start"}',
+            )
+
+        js_errors = []
+        page.on("pageerror", lambda err: js_errors.append(str(err)))
+        page.route("**/api/schedules", capture_request)
+        page.click('button[type="submit"]')
+        page.wait_for_timeout(1000)
+
+        assert "end_time" in captured_body, f"POST body missing end_time: {captured_body}"
+        assert captured_body["end_time"] == "06:10:00", (
+            f"Unexpected end_time in POST: {captured_body['end_time']}"
+        )
+        assert captured_body.get("loop_count") == 1
+        assert not js_errors, f"JS errors: {js_errors}"
+
+
+class TestSecondPrecisionEndTime:
+    """End-time auto-computation works in seconds, not just minutes."""
+
+    SHORT_ASSET = 3  # 3-second video clip
+
+    def test_short_clip_loop_count_shows_seconds(self, page: Page, api, ws_url):
+        """A 3-second clip with loop_count=1 should show end_time with seconds offset."""
+        device_id = "sec-prec-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Seconds Precision")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=1 — end_time should be 09:00:03 (3 seconds later)
+        page.fill('input[name="loop_count"]', "1")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:00:03", f"Expected 09:00:03 but got {end_time}"
+
+    def test_short_clip_multi_loop_shows_seconds(self, page: Page, api, ws_url):
+        """A 3-second clip with loop_count=10 → end_time = start + 30s."""
+        device_id = "sec-prec-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Multi Loop Seconds")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "14:30")
+        page.fill('input[name="end_time"]', "15:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        page.fill('input[name="loop_count"]', "10")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "14:30:30", f"Expected 14:30:30 but got {end_time}"
+
+    def test_longer_clip_still_correct_with_seconds(self, page: Page, api, ws_url):
+        """A 10-minute clip (600s) × 3 loops = 30 min, should render as HH:MM:SS."""
+        device_id = "sec-prec-003"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
+
+        page.fill('input[name="name"]', "Normal Clip Seconds")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        page.fill('input[name="loop_count"]', "3")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        # 09:00 + 3×600s = 09:30:00
+        end_time = page.input_value('input[name="end_time"]')
+        assert end_time == "09:30:00", f"Expected 09:30:00 but got {end_time}"
+
+    def test_time_inputs_default_step(self, page: Page, api, ws_url):
+        """Verify time inputs use default step (no step attribute) for minute-level picker."""
+        _setup_device_and_asset(page, api, ws_url, "sec-step-001")
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        start_input = page.locator('input[name="start_time"]')
+        end_input = page.locator('input[name="end_time"]')
+        assert start_input.get_attribute("step") is None, "start_time should not have step attribute"
+        assert end_input.get_attribute("step") is None, "end_time should not have step attribute"
+
+
+class TestSchedulePreviewSubMinuteDuration:
+    """Schedule preview correctly handles sub-minute durations instead of
+    showing '24 hrs' and '⚠️ Spans midnight' when start and end times
+    differ only by seconds."""
+
+    SHORT_ASSET = 20  # 20-second video clip
+
+    def test_preview_shows_seconds_not_24hrs(self, page: Page, api, ws_url):
+        """A 20s clip × 1 loop should show '20 sec' not '24 hrs'."""
+        device_id = "prev-sec-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Short Preview")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "10:06")
+        page.fill('input[name="end_time"]', "11:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=1 → end_time = 10:06:20
+        page.fill('input[name="loop_count"]', "1")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("20 sec")
+        expect(summary).not_to_contain_text("24 hrs")
+        expect(summary).not_to_contain_text("Spans midnight")
+
+    def test_preview_no_midnight_warning_for_sub_minute(self, page: Page, api, ws_url):
+        """Sub-minute durations should never trigger the midnight warning."""
+        device_id = "prev-sec-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, 5)  # 5-second clip
+
+        page.fill('input[name="name"]', "No Midnight Warn")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "23:59")
+        page.fill('input[name="end_time"]', "23:59")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=2 → end_time = 23:59:10
+        page.fill('input[name="loop_count"]', "2")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("10 sec")
+        expect(summary).not_to_contain_text("Spans midnight")
+
+    def test_preview_minutes_and_seconds(self, page: Page, api, ws_url):
+        """A duration of e.g. 1 min 40 sec should show both units."""
+        device_id = "prev-sec-003"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
+
+        page.fill('input[name="name"]', "Min and Sec")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=5 → 5 × 20s = 100s = 1 min 40 sec
+        page.fill('input[name="loop_count"]', "5")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("1 min 40 sec")
+
+    def test_preview_exact_minutes_no_trailing_sec(self, page: Page, api, ws_url):
+        """A duration that's an exact number of minutes should NOT show '0 sec'."""
+        device_id = "prev-sec-004"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        _go_to_schedules_and_inject_duration(page, asset_id, 30)  # 30-second clip
+
+        page.fill('input[name="name"]', "Exact Minutes")
+        page.select_option('select[name="asset_id"]', value=asset_id)
+        page.fill('input[name="start_time"]', "09:00")
+        page.fill('input[name="end_time"]', "10:00")
+        page.dispatch_event('input[name="end_time"]', "change")
+
+        # Set loop_count=4 → 4 × 30s = 120s = 2 min (exact)
+        page.fill('input[name="loop_count"]', "4")
+        page.dispatch_event('input[name="loop_count"]', "input")
+
+        summary = page.locator("#schedule-summary")
+        expect(summary).to_be_visible()
+        expect(summary).to_contain_text("2 min")
+        expect(summary).not_to_contain_text("sec")
+
+
+class TestActiveTableAndEditNoFalseOvernight:
+    """Saved short-clip schedules should not show '24 hrs' in the active
+    schedules table or 'Spans midnight' in the edit dialog."""
+
+    SHORT_DURATION = 5  # 5-second clip
+
+    def test_active_table_no_24hrs_for_short_clip(self, page: Page, api, ws_url):
+        """A saved schedule with start=09:00:00 end=09:00:05 must NOT show
+        '24 hrs' in the active schedules table description."""
+        device_id = "tbl-24h-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+
+        _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="09:00:00", end_time="09:00:05",
+            name="Short Clip Table",
+        )
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Short Clip Table")
+        expect(row).to_be_visible()
+        desc_cell = row.locator("td.schedule-desc")
+        expect(desc_cell).to_be_visible()
+        cell_text = desc_cell.inner_text()
+        assert "24 hr" not in cell_text, (
+            f"Active table shows '24 hrs' for a 5-second schedule: {cell_text}"
+        )
+        assert "Spans midnight" not in cell_text, (
+            f"Active table shows midnight warning for a 5-second schedule: {cell_text}"
+        )
+
+    def test_active_table_no_24hrs_same_minute(self, page: Page, api, ws_url):
+        """When start and end times share the same HH:MM (differ only in
+        seconds), the table must not show '24 hrs'."""
+        device_id = "tbl-24h-002"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+
+        _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="14:30:00", end_time="14:30:45",
+            name="Same Minute Sched",
+        )
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Same Minute Sched")
+        desc_cell = row.locator("td.schedule-desc")
+        expect(desc_cell).to_be_visible()
+        cell_text = desc_cell.inner_text()
+        assert "24 hr" not in cell_text, (
+            f"Table shows '24 hrs' for same-minute schedule: {cell_text}"
+        )
+
+    def test_edit_modal_no_midnight_for_short_clip(self, page: Page, api, ws_url):
+        """Opening the edit modal for a sub-minute schedule must NOT show
+        'Spans midnight' in the summary preview."""
+        device_id = "edit-mid-001"
+        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+
+        _create_schedule_via_api(
+            api, device_id, asset_id,
+            start_time="12:00:00", end_time="12:00:30",
+            name="Edit Short Clip",
+        )
+
+        _open_edit_modal(page, "Edit Short Clip")
+
+        # Inject known duration so the summary can compute loop info
+        page.evaluate(
+            """([assetId, dur]) => {
+                const a = _scheduleData.assets.find(x => x.id === assetId);
+                if (a) a.duration = dur;
+            }""",
+            [asset_id, 30],
+        )
+        # Trigger summary update by dispatching change on start time
+        page.dispatch_event("#edit-start-time", "change")
+
+        summary = page.locator("#edit-schedule-summary")
+        expect(summary).to_be_visible()
+        summary_text = summary.inner_text()
+        assert "Spans midnight" not in summary_text, (
+            f"Edit modal shows midnight warning for 30-second schedule: {summary_text}"
+        )
+        assert "24 hr" not in summary_text, (
+            f"Edit modal shows '24 hrs' for 30-second schedule: {summary_text}"
+        )
