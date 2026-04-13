@@ -93,6 +93,10 @@ def e2e_server(e2e_port, tmp_path_factory):
     col = Schedule.__table__.columns["days_of_week"]
     col.type = SA_JSON()
 
+    from cms.models.user import Role
+    col = Role.__table__.columns["permissions"]
+    col.type = SA_JSON()
+
     # Clear cached settings so they pick up the new env vars
     from cms.auth import get_settings
     get_settings.cache_clear()
