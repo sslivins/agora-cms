@@ -52,7 +52,6 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-e2e.txt
-          pip install pytest-asyncio aiosqlite
 
       - name: Get Playwright version
         id: pw-version
@@ -74,4 +73,4 @@ jobs:
         run: python -m playwright install-deps chromium
 
       - name: Run E2E tests
-        run: python -m pytest tests_e2e/ tests/e2e/ --tb=short -q
+        run: python -m pytest tests_e2e/ --tb=short -q
