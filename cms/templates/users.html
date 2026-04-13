@@ -5,6 +5,9 @@
 <div class="sub-tabs">
     <button class="sub-tab active" onclick="showUserTab('users-tab', this)">Users</button>
     <button class="sub-tab" onclick="showUserTab('roles-tab', this)">Roles</button>
+    {% if 'api_keys:manage' in user_perms %}
+    <button class="sub-tab" onclick="showUserTab('admin-keys-tab', this)">API Keys</button>
+    {% endif %}
 </div>
 
 <!-- ═══════════════════════════════════════════ USERS TAB ═══════════════════════════════════════════ -->
@@ -305,6 +308,36 @@
         </form>
     </div>
 </div>
+
+{% if 'api_keys:manage' in user_perms %}
+<!-- ═══════════════════════════════════════════ ADMIN API KEYS TAB ═══════════════════════════════════════════ -->
+<div id="admin-keys-tab" class="tab-content">
+<div class="card">
+    <h3>All API Keys</h3>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Administrator view of all API keys across all users. You can regenerate or revoke any key.
+    </p>
+
+    <table id="admin-keys-table">
+        <thead>
+            <tr>
+                <th>User</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Key</th>
+                <th>Created</th>
+                <th>Last Used</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="admin-keys-body">
+            <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+        </tbody>
+    </table>
+</div>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -332,5 +365,107 @@ const rolesData = {
     },
     {% endfor %}
 };
+
+{% if 'api_keys:manage' in user_perms %}
+// Admin API Keys tab logic
+(function() {
+    const tbody = document.getElementById("admin-keys-body");
+    if (!tbody) return;
+
+    function formatDate(iso) {
+        if (!iso) return '<span class="text-muted">Never</span>';
+        return new Date(iso).toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'});
+    }
+
+    function typeBadge(keyType) {
+        const cls = keyType === 'mcp' ? 'badge-role-admin' : '';
+        return `<span class="badge badge-role ${cls}">${(keyType || 'api').toUpperCase()}</span>`;
+    }
+
+    async function loadAllKeys() {
+        try {
+            const resp = await fetch("/api/keys");
+            const keys = await resp.json();
+            if (!keys.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No API keys exist.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = keys.map(k => `
+                <tr>
+                    <td>${k.user_display_name || '<span class="text-muted">Unknown</span>'}</td>
+                    <td>${k.name}</td>
+                    <td>${typeBadge(k.key_type)}</td>
+                    <td style="font-family: monospace; font-size: 0.85rem;">${k.key_prefix}</td>
+                    <td>${formatDate(k.created_at)}</td>
+                    <td>${formatDate(k.last_used_at)}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-sm btn-warning" onclick="adminRegenKey('${k.id}', '${k.name}')">Regenerate</button>
+                        <button class="btn btn-sm btn-danger" onclick="adminDeleteKey('${k.id}', '${k.name}')">Delete</button>
+                    </td>
+                </tr>
+            `).join("");
+        } catch {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-muted">Failed to load keys.</td></tr>';
+        }
+    }
+
+    window.adminDeleteKey = async function(id, name) {
+        const ok = await showConfirm(`Revoke key "${name}"? The user will lose access immediately.`);
+        if (!ok) return;
+        try {
+            const resp = await fetch(`/api/keys/${id}`, {method: "DELETE"});
+            if (!resp.ok) throw new Error("Delete failed");
+            showToast(`Key "${name}" revoked`);
+            await loadAllKeys();
+        } catch {
+            showToast("Failed to revoke key", true);
+        }
+    };
+
+    window.adminRegenKey = async function(id, name) {
+        const ok = await showConfirm(`Regenerate key "${name}"? The current secret will be invalidated.`);
+        if (!ok) return;
+        try {
+            const resp = await fetch(`/api/keys/${id}/regenerate`, {method: "POST"});
+            if (!resp.ok) throw new Error("Regenerate failed");
+            const data = await resp.json();
+            await loadAllKeys();
+            copyToClipboard(data.key);
+            // Show key modal
+            const overlay = document.createElement("div");
+            overlay.className = "modal-overlay";
+            const box = document.createElement("div");
+            box.className = "modal-box";
+            box.innerHTML = `
+                <p style="margin-bottom:0.5rem;"><strong>Key regenerated!</strong></p>
+                <p style="margin-bottom:0.75rem; font-size:0.85rem;" class="text-muted">Store it securely — it won't be shown again.</p>
+                <input type="text" value="${data.key}" readonly class="form-input-dark" style="width:100%; font-family:monospace; font-size:0.85rem; margin-bottom:1rem;">
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" id="admin-key-copy-btn">Copy</button>
+                    <button class="btn btn-primary" id="admin-key-ok-btn">OK</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            overlay.appendChild(box);
+            box.querySelector("input").select();
+            box.querySelector("#admin-key-copy-btn").onclick = () => { copyToClipboard(data.key); };
+            box.querySelector("#admin-key-ok-btn").onclick = () => { overlay.remove(); };
+            overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+        } catch {
+            showToast("Failed to regenerate key", true);
+        }
+    };
+
+    // Load keys when tab is first shown
+    const tabBtn = document.querySelector('[onclick*="admin-keys-tab"]');
+    if (tabBtn) {
+        const origClick = tabBtn.onclick;
+        tabBtn.onclick = function(e) {
+            showUserTab('admin-keys-tab', this);
+            loadAllKeys();
+        };
+    }
+})();
+{% endif %}
 </script>
 {% endblock %}

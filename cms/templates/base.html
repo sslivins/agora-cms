@@ -51,6 +51,7 @@
         {% if 'users:read' in user_perms %}
         <a href="/users" class="nav-tab {% if active_tab == 'users' %}active{% endif %}">Users</a>
         {% endif %}
+        <a href="/profile" class="nav-tab {% if active_tab == 'profile' %}active{% endif %}">Profile</a>
     </nav>
     {% endblock %}
     <main>

@@ -770,6 +770,18 @@ async def users_page(
     })
 
 
+# ── Profile ──
+
+
+@router.get("/profile", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def profile_page(request: Request, db: AsyncSession = Depends(get_db)):
+    user: User = request.state.user
+    return templates.TemplateResponse(request, "profile.html", {
+        "active_tab": "profile",
+        "profile_user": user,
+    })
+
+
 # ── Assets ──
 
 
