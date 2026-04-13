@@ -1,6 +1,6 @@
 """Shared fixtures for Playwright end-to-end tests.
 
-Starts a real CMS server backed by SQLite (no Docker/PostgreSQL needed)
+Starts a real CMS server backed by PostgreSQL (in CI) or SQLite (local dev)
 on a random free port, then provides a Playwright browser context pre-
 authenticated via session cookie.
 """
@@ -70,51 +70,66 @@ def ws_url(e2e_port):
 
 @pytest.fixture(scope="session")
 def e2e_server(e2e_port, tmp_path_factory):
-    """Start a real CMS server with SQLite in a background thread.
+    """Start a real CMS server in a background thread.
 
-    Environment variables MUST be set before importing any cms module so that
-    Settings picks up SQLite and the test paths.
+    Uses PostgreSQL when AGORA_CMS_DATABASE_URL is set (CI), otherwise
+    falls back to SQLite for local dev convenience.
     """
     tmp = tmp_path_factory.mktemp("e2e")
-    db_path = tmp / "e2e.db"
     asset_path = tmp / "assets"
     asset_path.mkdir()
 
-    os.environ["AGORA_CMS_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    pg_url = os.environ.get("AGORA_CMS_DATABASE_URL")
+    using_sqlite = not pg_url
+
+    if using_sqlite:
+        db_path = tmp / "e2e.db"
+        os.environ["AGORA_CMS_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    # else: AGORA_CMS_DATABASE_URL is already set to PostgreSQL
+
     os.environ["AGORA_CMS_SECRET_KEY"] = "e2e-test-secret"
     os.environ["AGORA_CMS_ADMIN_USERNAME"] = "admin"
     os.environ["AGORA_CMS_ADMIN_PASSWORD"] = "testpass"
     os.environ["AGORA_CMS_ASSET_STORAGE_PATH"] = str(asset_path)
     os.environ["AGORA_CMS_API_KEY_ROTATION_HOURS"] = "0"
 
-    # Patch PostgreSQL ARRAY/JSONB → JSON for SQLite before any model import
-    from sqlalchemy import JSON as SA_JSON
-    from cms.models.schedule import Schedule
-    col = Schedule.__table__.columns["days_of_week"]
-    col.type = SA_JSON()
+    if using_sqlite:
+        # Patch PostgreSQL ARRAY/JSONB → JSON for SQLite before any model import
+        from sqlalchemy import JSON as SA_JSON
+        from cms.models.schedule import Schedule
+        col = Schedule.__table__.columns["days_of_week"]
+        col.type = SA_JSON()
 
-    from cms.models.user import Role
-    col = Role.__table__.columns["permissions"]
-    col.type = SA_JSON()
+        from cms.models.user import Role
+        col = Role.__table__.columns["permissions"]
+        col.type = SA_JSON()
 
-    from cms.models.audit_log import AuditLog
-    col = AuditLog.__table__.columns["details"]
-    col.type = SA_JSON()
+        from cms.models.audit_log import AuditLog
+        col = AuditLog.__table__.columns["details"]
+        col.type = SA_JSON()
+
+        from cms.models.notification import Notification
+        col = Notification.__table__.columns["details"]
+        col.type = SA_JSON()
 
     # Clear cached settings so they pick up the new env vars
     from cms.auth import get_settings
     get_settings.cache_clear()
 
-    # Monkey-patch run_migrations to skip PostgreSQL-specific ALTER TYPE commands
-    import cms.database as db_mod
-    _orig_run_migrations = db_mod.run_migrations
+    if using_sqlite:
+        # Monkey-patch run_migrations to skip PostgreSQL-specific ALTER TYPE commands
+        import cms.database as db_mod
+        _orig_run_migrations = db_mod.run_migrations
 
-    async def _sqlite_safe_migrations():
-        """Only run create_all (skip ALTER TYPE for pg_enum)."""
-        async with db_mod._engine.begin() as conn:
-            await conn.run_sync(db_mod.Base.metadata.create_all)
+        async def _sqlite_safe_migrations():
+            """Only run create_all (skip ALTER TYPE for pg_enum)."""
+            async with db_mod._engine.begin() as conn:
+                await conn.run_sync(db_mod.Base.metadata.create_all)
 
-    db_mod.run_migrations = _sqlite_safe_migrations
+        db_mod.run_migrations = _sqlite_safe_migrations
+    else:
+        import cms.database as db_mod
+        _orig_run_migrations = None
 
     from cms.main import app
 
@@ -147,7 +162,8 @@ def e2e_server(e2e_port, tmp_path_factory):
     server.should_exit = True
     thread.join(timeout=5)
 
-    db_mod.run_migrations = _orig_run_migrations
+    if _orig_run_migrations:
+        db_mod.run_migrations = _orig_run_migrations
 
     for key in list(os.environ):
         if key.startswith("AGORA_CMS_"):

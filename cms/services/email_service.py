@@ -32,11 +32,12 @@ async def get_smtp_settings(db: AsyncSession) -> dict:
     }
 
 
-def _send_email(smtp_cfg: dict, to_email: str, subject: str, html_body: str, text_body: str) -> bool:
-    """Send an email using the given SMTP config dict. Returns True on success."""
+def _send_email(smtp_cfg: dict, to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str]:
+    """Send an email using the given SMTP config dict. Returns (success, error_message)."""
     if not smtp_cfg.get("host") or not smtp_cfg.get("from_email"):
-        _log.warning("SMTP not configured — skipping email to %s", to_email)
-        return False
+        msg = "SMTP not configured — skipping email"
+        _log.warning("%s to %s", msg, to_email)
+        return False, msg
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -58,10 +59,40 @@ def _send_email(smtp_cfg: dict, to_email: str, subject: str, html_body: str, tex
         server.sendmail(smtp_cfg["from_email"], [to_email], msg.as_string())
         server.quit()
         _log.info("Email sent to %s: %s", to_email, subject)
-        return True
+        return True, ""
     except Exception as e:
-        _log.error("Failed to send email to %s: %s", to_email, e)
-        return False
+        error = str(e)
+        _log.error("Failed to send email to %s: %s", to_email, error)
+        return False, error
+
+
+def _create_notification_sync(level: str, title: str, message: str, details: dict | None = None):
+    """Create a system notification using a synchronous DB connection.
+
+    Used from background tasks that run in a thread pool.
+    """
+    from cms.database import _engine
+    if _engine is None:
+        _log.warning("No DB engine — cannot create notification")
+        return
+    from sqlalchemy.orm import Session
+    from cms.models.notification import Notification
+
+    # Create a sync connection from the async engine's pool
+    sync_engine = _engine.sync_engine
+    try:
+        with Session(sync_engine) as session:
+            notif = Notification(
+                scope="system",
+                level=level,
+                title=title,
+                message=message,
+                details=details,
+            )
+            session.add(notif)
+            session.commit()
+    except Exception as exc:
+        _log.error("Failed to create notification: %s", exc)
 
 
 def send_welcome_email_sync(
@@ -102,7 +133,34 @@ def send_welcome_email_sync(
         f"This link is single-use and will expire once you set your password.\n"
     )
 
-    return _send_email(smtp_cfg, to_email, "Welcome to Agora CMS", html_body, text_body)
+    ok, _ = _send_email(smtp_cfg, to_email, "Welcome to Agora CMS", html_body, text_body)
+    return ok
+
+
+def send_welcome_email_background(
+    smtp_cfg: dict,
+    to_email: str,
+    display_name: str,
+    temp_password: str,
+    setup_url: str,
+) -> None:
+    """Send welcome email and create a notification on failure."""
+    ok = send_welcome_email_sync(
+        smtp_cfg=smtp_cfg,
+        to_email=to_email,
+        display_name=display_name,
+        temp_password=temp_password,
+        setup_url=setup_url,
+    )
+    if not ok:
+        _create_notification_sync(
+            level="error",
+            title="Welcome email failed",
+            message=f"Failed to send welcome email to {to_email}. "
+                    "The user account was created but the activation link was not delivered. "
+                    "Use the Resend Invite button on the Users page to retry.",
+            details={"to_email": to_email, "display_name": display_name},
+        )
 
 
 def test_smtp_connection(smtp_cfg: dict, test_to_email: str) -> tuple[bool, str]:
@@ -121,9 +179,9 @@ def test_smtp_connection(smtp_cfg: dict, test_to_email: str) -> tuple[bool, str]
     text_body = "SMTP Test\n\nThis is a test email from Agora CMS.\nIf you received this, SMTP is configured correctly."
 
     try:
-        ok = _send_email(smtp_cfg, test_to_email, "Agora CMS — SMTP Test", html_body, text_body)
+        ok, error = _send_email(smtp_cfg, test_to_email, "Agora CMS — SMTP Test", html_body, text_body)
         if ok:
             return True, "Test email sent successfully"
-        return False, "SMTP not configured (host or from_email missing)"
+        return False, error or "SMTP not configured (host or from_email missing)"
     except Exception as e:
         return False, str(e)

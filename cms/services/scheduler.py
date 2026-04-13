@@ -46,6 +46,7 @@ async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_nam
                      asset_filename: str, schedule_id=None, device_id=None, details=None):
     """Write a schedule history log entry."""
     import uuid as _uuid
+    from sqlalchemy.exc import IntegrityError
     # Ensure schedule_id is a proper UUID (may arrive as string from _now_playing)
     if isinstance(schedule_id, str):
         try:
@@ -62,7 +63,24 @@ async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_nam
         details=details,
     )
     db.add(entry)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # FK target was deleted (schedule or device removed while playing).
+        # Retry without the dangling FK — the denormalized name columns
+        # still preserve the context for the log entry.
+        await db.rollback()
+        entry = ScheduleLog(
+            schedule_id=None,
+            schedule_name=schedule_name,
+            device_id=None,
+            device_name=device_name,
+            asset_filename=asset_filename,
+            event=event,
+            details=details,
+        )
+        db.add(entry)
+        await db.flush()
 
 
 # Public alias for use by ws.py handler

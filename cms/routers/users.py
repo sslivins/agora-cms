@@ -118,6 +118,15 @@ async def create_user(
     _user: User = Depends(require_permission(USERS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
+    # Require SMTP to be configured before creating users
+    from cms.services.email_service import get_smtp_settings
+    smtp_cfg = await get_smtp_settings(db)
+    if not smtp_cfg.get("host") or not smtp_cfg.get("from_email"):
+        raise HTTPException(
+            status_code=422,
+            detail="SMTP is not configured. Set up email in Settings → SMTP before creating user accounts.",
+        )
+
     # Check email uniqueness
     exists = await db.execute(select(User).where(User.email == data.email))
     if exists.scalar_one_or_none():
@@ -169,13 +178,12 @@ async def create_user(
     await db.commit()
     await db.refresh(user, ["role"])
 
-    # Send welcome email in background (best-effort, don't block response)
-    from cms.services.email_service import send_welcome_email_sync, get_smtp_settings
-    smtp_cfg = await get_smtp_settings(db)
+    # Send welcome email in background — failures create a notification
+    from cms.services.email_service import send_welcome_email_background
     base = request.base_url._url.rstrip("/")
     setup_url = f"{base}/setup-account?token={setup_token}"
     background_tasks.add_task(
-        send_welcome_email_sync,
+        send_welcome_email_background,
         smtp_cfg=smtp_cfg,
         to_email=data.email,
         display_name=data.display_name,
@@ -268,3 +276,53 @@ async def delete_user(
     await db.delete(user)
     await db.commit()
     return {"deleted": str(user_id)}
+
+
+@router.post("/{user_id}/resend-invite")
+async def resend_invite(
+    user_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    _admin: User = Depends(require_permission(USERS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend the activation email for a user who hasn't completed setup."""
+    result = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.must_change_password:
+        raise HTTPException(
+            status_code=400,
+            detail="User has already completed account setup",
+        )
+
+    # Require SMTP
+    from cms.services.email_service import get_smtp_settings, send_welcome_email_background
+    smtp_cfg = await get_smtp_settings(db)
+    if not smtp_cfg.get("host") or not smtp_cfg.get("from_email"):
+        raise HTTPException(
+            status_code=422,
+            detail="SMTP is not configured. Set up email in Settings → SMTP first.",
+        )
+
+    # Regenerate setup token (invalidates old link)
+    new_token = secrets.token_urlsafe(32)
+    user.setup_token = new_token
+    await db.commit()
+
+    base = request.base_url._url.rstrip("/")
+    setup_url = f"{base}/setup-account?token={new_token}"
+    background_tasks.add_task(
+        send_welcome_email_background,
+        smtp_cfg=smtp_cfg,
+        to_email=user.email,
+        display_name=user.display_name,
+        temp_password="(use the link below to set your password)",
+        setup_url=setup_url,
+    )
+
+    return {"status": "ok", "message": f"Activation email queued for {user.email}"}

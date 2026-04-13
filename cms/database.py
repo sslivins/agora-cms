@@ -236,6 +236,26 @@ async def run_migrations():
                 "ALTER TABLE api_keys ADD COLUMN key_type VARCHAR(10) DEFAULT 'api' NOT NULL"
             ))
 
+        # -- Add notifications:system permission to existing Admin roles --
+        has_roles = await conn.run_sync(lambda c: sa_inspect(c).has_table("roles"))
+        if has_roles:
+            from cms.permissions import NOTIFICATIONS_SYSTEM
+            result = await conn.execute(text(
+                "SELECT id, permissions FROM roles WHERE name = 'Admin'"
+            ))
+            row = result.first()
+            if row:
+                import json
+                perms = row[1] if isinstance(row[1], list) else json.loads(row[1] or "[]")
+                if NOTIFICATIONS_SYSTEM not in perms:
+                    perms.append(NOTIFICATIONS_SYSTEM)
+                    from cms.models.user import Role
+                    await conn.execute(
+                        Role.__table__.update()
+                        .where(Role.__table__.c.id == row[0])
+                        .values(permissions=perms)
+                    )
+
     # Run create_all again in case migrations added models with new relationships
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
