@@ -31,5 +31,5 @@ class GroupAsset(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    asset: Mapped["Asset"] = relationship()
+    asset: Mapped["Asset"] = relationship(back_populates="group_asset_links")
     group: Mapped["DeviceGroup"] = relationship()

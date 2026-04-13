@@ -102,6 +102,7 @@ async def assets_status_json(
     from sqlalchemy import func as sa_func
 
     visible = await _visible_asset_ids(user, db)
+    user_group_ids = await get_user_group_ids(user, db)
 
     # Base query for assets this user can see
     asset_q = select(Asset)
@@ -126,9 +127,16 @@ async def assets_status_json(
         variant_base.where(AssetVariant.status == VariantStatus.FAILED)
     )).scalar() or 0
 
+    # Build group name map for scope data
+    groups_result = await db.execute(select(DeviceGroup.id, DeviceGroup.name))
+    group_name_map = {str(r[0]): r[1] for r in groups_result.all()}
+
     result = await db.execute(
         asset_q
-        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+        .options(
+            selectinload(Asset.variants).selectinload(AssetVariant.profile),
+            selectinload(Asset.group_asset_links),
+        )
         .order_by(Asset.uploaded_at.desc())
     )
     assets_detail = []
@@ -164,6 +172,13 @@ async def assets_status_json(
             "variant_processing": a_processing,
             "variant_failed": a_failed,
             "variants": variants,
+            "is_global": a.is_global,
+            "has_uploader": a.uploaded_by_user_id is not None,
+            "scope_groups": [
+                {"id": str(ga.group_id), "name": group_name_map.get(str(ga.group_id), "?")}
+                for ga in a.group_asset_links
+                if user_group_ids is None or ga.group_id in user_group_ids
+            ],
         })
 
     # Compute a hash of group-asset assignments so the poller can detect scope changes

@@ -1321,3 +1321,675 @@ class TestIDORProtection:
                 "scope_hash should change after unshare so poller detects the update"
         finally:
             await ac_a2.aclose()
+
+
+class TestAssetStatusScopeData:
+    """Tests for the per-asset scope data returned by /api/assets/status.
+
+    The poller uses these fields to do inline DOM updates instead of full
+    page reloads.  Each asset in the response should contain:
+      - is_global (bool)
+      - has_uploader (bool)
+      - scope_groups (list of {id, name})
+    These must accurately reflect the current sharing state AND be filtered
+    to only include groups the requesting user belongs to.
+    """
+
+    @pytest.mark.asyncio
+    async def test_status_returns_scope_fields_for_each_asset(self, app, db_session):
+        """Every asset in the status response must include is_global,
+        has_uploader, and scope_groups."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "ScopeField G1")
+        user = await _create_user(db_session, email="scopefield@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+        asset = Asset(filename="sf.mp4", original_filename="sf.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "scopefield@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data["assets"]) == 1
+            a = data["assets"][0]
+            assert "is_global" in a, "Missing is_global field"
+            assert "has_uploader" in a, "Missing has_uploader field"
+            assert "scope_groups" in a, "Missing scope_groups field"
+            assert isinstance(a["scope_groups"], list)
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_groups_contains_correct_group_info(self, app, db_session):
+        """scope_groups should include id and name for each assigned group."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "ScopeInfo Alpha")
+        g2 = await _create_group(db_session, "ScopeInfo Beta")
+        user = await _create_user(db_session, email="scopeinfo@test.com",
+                                  role_name="Operator", group_ids=[g1.id, g2.id])
+        asset = Asset(filename="si.mp4", original_filename="si.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "scopeinfo@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            groups = resp.json()["assets"][0]["scope_groups"]
+            group_ids = {g["id"] for g in groups}
+            group_names = {g["name"] for g in groups}
+            assert str(g1.id) in group_ids
+            assert str(g2.id) in group_ids
+            assert "ScopeInfo Alpha" in group_names
+            assert "ScopeInfo Beta" in group_names
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_groups_filtered_to_user_groups(self, app, db_session):
+        """Non-admin users should only see scope_groups they belong to, not
+        groups they can't access (even if the asset is shared there)."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "Filtered G1")
+        g2 = await _create_group(db_session, "Filtered G2")
+        g3 = await _create_group(db_session, "Filtered G3")
+        owner = await _create_user(db_session, email="filtered_own@test.com",
+                                   role_name="Operator", group_ids=[g1.id, g2.id, g3.id])
+        viewer = await _create_user(db_session, email="filtered_view@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+
+        asset = Asset(filename="filt.mp4", original_filename="filt.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=owner.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g3.id))
+        await db_session.commit()
+
+        # Viewer is only in g1 — should only see g1 in scope_groups
+        ac = await _login_as(app, "filtered_view@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            groups = resp.json()["assets"][0]["scope_groups"]
+            group_ids = {g["id"] for g in groups}
+            assert group_ids == {str(g1.id)}, \
+                f"Viewer should only see their own group; got {group_ids}"
+        finally:
+            await ac.aclose()
+
+        # Owner is in all 3 — should see all 3
+        ac2 = await _login_as(app, "filtered_own@test.com")
+        try:
+            resp = await ac2.get("/api/assets/status")
+            groups = resp.json()["assets"][0]["scope_groups"]
+            group_ids = {g["id"] for g in groups}
+            assert group_ids == {str(g1.id), str(g2.id), str(g3.id)}
+        finally:
+            await ac2.aclose()
+
+    @pytest.mark.asyncio
+    async def test_admin_sees_all_scope_groups(self, app, db_session):
+        """Admin (groups:view_all) should see ALL scope_groups, not just
+        groups they are personally assigned to."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "AdminScope G1")
+        g2 = await _create_group(db_session, "AdminScope G2")
+        user = await _create_user(db_session, email="admscope_uploader@test.com",
+                                  role_name="Operator", group_ids=[g1.id, g2.id])
+        admin = await _create_user(db_session, email="admscope_admin@test.com",
+                                   role_name="Admin")
+        asset = Asset(filename="adm.mp4", original_filename="adm.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "admscope_admin@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            assert resp.status_code == 200
+            assets = resp.json()["assets"]
+            # Find our asset
+            our = [a for a in assets if a["id"] == str(asset.id)]
+            assert len(our) == 1
+            group_ids = {g["id"] for g in our[0]["scope_groups"]}
+            assert str(g1.id) in group_ids
+            assert str(g2.id) in group_ids
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_is_global_flag_reflects_asset_state(self, app, db_session):
+        """is_global should be true for global assets, false otherwise."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "IsGlobal G1")
+        user = await _create_user(db_session, email="isglobal@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+
+        normal = Asset(filename="normal.mp4", original_filename="normal.mp4",
+                       asset_type=AssetType.VIDEO, size_bytes=100,
+                       uploaded_by_user_id=user.id)
+        glob = Asset(filename="glob.mp4", original_filename="glob.mp4",
+                     asset_type=AssetType.VIDEO, size_bytes=100,
+                     uploaded_by_user_id=user.id, is_global=True)
+        db_session.add(normal)
+        db_session.add(glob)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=normal.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "isglobal@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            assets = {a["id"]: a for a in resp.json()["assets"]}
+            assert assets[str(normal.id)]["is_global"] is False
+            assert assets[str(glob.id)]["is_global"] is True
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_has_uploader_flag(self, app, db_session):
+        """has_uploader should be true when uploaded_by_user_id is set."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "HasUploader G1")
+        user = await _create_user(db_session, email="hasuploader@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+
+        # Asset with uploader
+        with_uploader = Asset(filename="with.mp4", original_filename="with.mp4",
+                              asset_type=AssetType.VIDEO, size_bytes=100,
+                              uploaded_by_user_id=user.id)
+        # Legacy asset without uploader (global)
+        without_uploader = Asset(filename="without.mp4", original_filename="without.mp4",
+                                 asset_type=AssetType.VIDEO, size_bytes=100,
+                                 is_global=True)
+        db_session.add(with_uploader)
+        db_session.add(without_uploader)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=with_uploader.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "hasuploader@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            assets = {a["id"]: a for a in resp.json()["assets"]}
+            assert assets[str(with_uploader.id)]["has_uploader"] is True
+            assert assets[str(without_uploader.id)]["has_uploader"] is False
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_groups_empty_for_personal_asset(self, app, db_session):
+        """A personal asset (no groups, not global) should have empty
+        scope_groups, has_uploader=true, is_global=false."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "Personal G1")
+        user = await _create_user(db_session, email="personal@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+
+        asset = Asset(filename="personal.mp4", original_filename="personal.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.commit()
+
+        ac = await _login_as(app, "personal@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            assets = resp.json()["assets"]
+            our = [a for a in assets if a["id"] == str(asset.id)]
+            assert len(our) == 1
+            assert our[0]["scope_groups"] == []
+            assert our[0]["has_uploader"] is True
+            assert our[0]["is_global"] is False
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_groups_update_after_share(self, app, db_session):
+        """After sharing an asset with a new group, scope_groups should
+        include the new group on the next poll."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "SharePoll G1")
+        g2 = await _create_group(db_session, "SharePoll G2")
+        user = await _create_user(db_session, email="sharepoll@test.com",
+                                  role_name="Operator", group_ids=[g1.id, g2.id])
+        asset = Asset(filename="sp.mp4", original_filename="sp.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "sharepoll@test.com")
+        try:
+            # Before share: only g1
+            resp = await ac.get("/api/assets/status")
+            groups_before = resp.json()["assets"][0]["scope_groups"]
+            assert len(groups_before) == 1
+            assert groups_before[0]["id"] == str(g1.id)
+
+            # Share with g2
+            resp = await ac.post(f"/api/assets/{asset.id}/share",
+                                 params={"group_id": str(g2.id)})
+            assert resp.status_code == 200
+
+            # After share: g1 + g2
+            resp = await ac.get("/api/assets/status")
+            groups_after = resp.json()["assets"][0]["scope_groups"]
+            group_ids = {g["id"] for g in groups_after}
+            assert group_ids == {str(g1.id), str(g2.id)}, \
+                "scope_groups should include newly shared group"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_groups_update_after_unshare(self, app, db_session):
+        """After unsharing an asset from a group, scope_groups should no
+        longer include that group on the next poll."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "UnsharePoll G1")
+        g2 = await _create_group(db_session, "UnsharePoll G2")
+        user = await _create_user(db_session, email="unsharepoll@test.com",
+                                  role_name="Operator", group_ids=[g1.id, g2.id])
+        asset = Asset(filename="usp.mp4", original_filename="usp.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "unsharepoll@test.com")
+        try:
+            # Before: 2 groups
+            resp = await ac.get("/api/assets/status")
+            groups_before = {g["id"] for g in resp.json()["assets"][0]["scope_groups"]}
+            assert len(groups_before) == 2
+
+            # Unshare from g2
+            resp = await ac.delete(f"/api/assets/{asset.id}/share",
+                                   params={"group_id": str(g2.id)})
+            assert resp.status_code == 200
+
+            # After: only g1
+            resp = await ac.get("/api/assets/status")
+            groups_after = resp.json()["assets"][0]["scope_groups"]
+            assert len(groups_after) == 1
+            assert groups_after[0]["id"] == str(g1.id), \
+                "scope_groups should no longer include unshared group"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_asset_disappears_from_status_after_last_unshare(self, app, db_session):
+        """When the last group is unshared from a non-owned asset, the asset
+        should vanish entirely from the status response (not just have empty
+        scope_groups)."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "Vanish G1")
+        owner = await _create_user(db_session, email="vanish_own@test.com",
+                                   role_name="Operator", group_ids=[g1.id])
+        viewer = await _create_user(db_session, email="vanish_view@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+
+        asset = Asset(filename="vanish.mp4", original_filename="vanish.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=owner.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        # Viewer sees the asset initially
+        ac = await _login_as(app, "vanish_view@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            ids_before = {a["id"] for a in resp.json()["assets"]}
+            assert str(asset.id) in ids_before
+
+            # Unshare the only group
+            resp = await ac.delete(f"/api/assets/{asset.id}/share",
+                                   params={"group_id": str(g1.id)})
+            assert resp.status_code == 200
+
+            # Asset should be completely gone from status
+            resp = await ac.get("/api/assets/status")
+            ids_after = {a["id"] for a in resp.json()["assets"]}
+            assert str(asset.id) not in ids_after, \
+                "Non-owned asset should disappear from status after last group removed"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_owner_sees_personal_after_all_groups_removed(self, app, db_session):
+        """When the owner unshares the last group from their own asset, the
+        status response should still include the asset with empty scope_groups
+        (personal)."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "OwnerPersonal G1")
+        owner = await _create_user(db_session, email="ownerpers@test.com",
+                                   role_name="Operator", group_ids=[g1.id])
+        asset = Asset(filename="ownpers.mp4", original_filename="ownpers.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=owner.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "ownerpers@test.com")
+        try:
+            # Unshare the only group
+            resp = await ac.delete(f"/api/assets/{asset.id}/share",
+                                   params={"group_id": str(g1.id)})
+            assert resp.status_code == 200
+
+            # Owner should still see it with empty scope_groups
+            resp = await ac.get("/api/assets/status")
+            assets = resp.json()["assets"]
+            our = [a for a in assets if a["id"] == str(asset.id)]
+            assert len(our) == 1, "Owner should still see asset as personal"
+            assert our[0]["scope_groups"] == []
+            assert our[0]["has_uploader"] is True
+            assert our[0]["is_global"] is False
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_hash_changes_on_share(self, app, db_session):
+        """scope_hash should change when an asset is shared with a new group,
+        so the frontend poller detects the change."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "HashShare G1")
+        g2 = await _create_group(db_session, "HashShare G2")
+        user = await _create_user(db_session, email="hashshare@test.com",
+                                  role_name="Operator", group_ids=[g1.id, g2.id])
+        asset = Asset(filename="hs.mp4", original_filename="hs.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "hashshare@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            hash_before = resp.json()["scope_hash"]
+
+            await ac.post(f"/api/assets/{asset.id}/share",
+                          params={"group_id": str(g2.id)})
+
+            resp = await ac.get("/api/assets/status")
+            hash_after = resp.json()["scope_hash"]
+            assert hash_after != hash_before, \
+                "scope_hash must change after sharing to trigger poller update"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_scope_hash_stable_without_changes(self, app, db_session):
+        """Consecutive polls without any scope changes should return the
+        same scope_hash (no false positives)."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "Stable G1")
+        user = await _create_user(db_session, email="stable@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+        asset = Asset(filename="stable.mp4", original_filename="stable.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "stable@test.com")
+        try:
+            resp1 = await ac.get("/api/assets/status")
+            hash1 = resp1.json()["scope_hash"]
+            resp2 = await ac.get("/api/assets/status")
+            hash2 = resp2.json()["scope_hash"]
+            assert hash1 == hash2, \
+                "scope_hash should be stable between polls with no changes"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_cross_user_scope_change_reflected_in_status(self, app, db_session):
+        """When User A shares an asset with User B's group, User B's next
+        status poll should include the new asset with correct scope_groups."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "CrossUser G1")
+        g2 = await _create_group(db_session, "CrossUser G2")
+        user_a = await _create_user(db_session, email="crossuser_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id, g2.id])
+        user_b = await _create_user(db_session, email="crossuser_b@test.com",
+                                    role_name="Operator", group_ids=[g2.id])
+
+        # Asset only in g1 — User B can't see it
+        asset = Asset(filename="cross.mp4", original_filename="cross.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        # User B sees 0 assets
+        ac_b = await _login_as(app, "crossuser_b@test.com")
+        try:
+            resp = await ac_b.get("/api/assets/status")
+            assert resp.json()["asset_count"] == 0
+            hash_b_before = resp.json()["scope_hash"]
+        finally:
+            await ac_b.aclose()
+
+        # User A shares with g2
+        ac_a = await _login_as(app, "crossuser_a@test.com")
+        try:
+            await ac_a.post(f"/api/assets/{asset.id}/share",
+                            params={"group_id": str(g2.id)})
+        finally:
+            await ac_a.aclose()
+
+        # User B now sees the asset, with scope_groups = [g2] (their group only)
+        ac_b2 = await _login_as(app, "crossuser_b@test.com")
+        try:
+            resp = await ac_b2.get("/api/assets/status")
+            data = resp.json()
+            assert data["asset_count"] == 1
+            assert data["scope_hash"] != hash_b_before, \
+                "scope_hash should change for User B after share"
+            our = [a for a in data["assets"] if a["id"] == str(asset.id)]
+            assert len(our) == 1
+            group_ids = {g["id"] for g in our[0]["scope_groups"]}
+            assert group_ids == {str(g2.id)}, \
+                "User B should only see g2 (their group) in scope_groups"
+        finally:
+            await ac_b2.aclose()
+
+    @pytest.mark.asyncio
+    async def test_cross_user_unshare_removes_asset_from_status(self, app, db_session):
+        """When User A unshares an asset from User B's only group, User B's
+        next status poll should no longer include that asset."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "CrossRemove G1")
+        g2 = await _create_group(db_session, "CrossRemove G2")
+        user_a = await _create_user(db_session, email="crossrem_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id, g2.id])
+        user_b = await _create_user(db_session, email="crossrem_b@test.com",
+                                    role_name="Operator", group_ids=[g2.id])
+
+        asset = Asset(filename="crossrem.mp4", original_filename="crossrem.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        # User B sees the asset
+        ac_b = await _login_as(app, "crossrem_b@test.com")
+        try:
+            resp = await ac_b.get("/api/assets/status")
+            assert resp.json()["asset_count"] == 1
+        finally:
+            await ac_b.aclose()
+
+        # User A unshares from g2 (User B's only group)
+        ac_a = await _login_as(app, "crossrem_a@test.com")
+        try:
+            resp = await ac_a.delete(f"/api/assets/{asset.id}/share",
+                                     params={"group_id": str(g2.id)})
+            assert resp.status_code == 200
+        finally:
+            await ac_a.aclose()
+
+        # User B no longer sees the asset
+        ac_b2 = await _login_as(app, "crossrem_b@test.com")
+        try:
+            resp = await ac_b2.get("/api/assets/status")
+            data = resp.json()
+            assert data["asset_count"] == 0, \
+                "Asset should disappear from User B's status after unshare from their only group"
+            assert all(a["id"] != str(asset.id) for a in data["assets"])
+        finally:
+            await ac_b2.aclose()
+
+    @pytest.mark.asyncio
+    async def test_multiple_assets_scope_data_independent(self, app, db_session):
+        """Each asset should have independent scope_groups — changing one
+        asset's scope should not affect another's scope_groups."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "MultiScope G1")
+        g2 = await _create_group(db_session, "MultiScope G2")
+        user = await _create_user(db_session, email="multiscope@test.com",
+                                  role_name="Operator", group_ids=[g1.id, g2.id])
+
+        a1 = Asset(filename="multi1.mp4", original_filename="multi1.mp4",
+                   asset_type=AssetType.VIDEO, size_bytes=100,
+                   uploaded_by_user_id=user.id)
+        a2 = Asset(filename="multi2.mp4", original_filename="multi2.mp4",
+                   asset_type=AssetType.VIDEO, size_bytes=100,
+                   uploaded_by_user_id=user.id)
+        db_session.add(a1)
+        db_session.add(a2)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=a1.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=a2.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=a2.id, group_id=g2.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "multiscope@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            assets = {a["id"]: a for a in resp.json()["assets"]}
+            a1_groups = {g["id"] for g in assets[str(a1.id)]["scope_groups"]}
+            a2_groups = {g["id"] for g in assets[str(a2.id)]["scope_groups"]}
+            assert a1_groups == {str(g1.id)}, "a1 should only be in g1"
+            assert a2_groups == {str(g1.id), str(g2.id)}, "a2 should be in g1 and g2"
+
+            # Unshare a2 from g2 — a1's scope should be unchanged
+            resp = await ac.delete(f"/api/assets/{a2.id}/share",
+                                   params={"group_id": str(g2.id)})
+            assert resp.status_code == 200
+
+            resp = await ac.get("/api/assets/status")
+            assets = {a["id"]: a for a in resp.json()["assets"]}
+            a1_groups_after = {g["id"] for g in assets[str(a1.id)]["scope_groups"]}
+            a2_groups_after = {g["id"] for g in assets[str(a2.id)]["scope_groups"]}
+            assert a1_groups_after == {str(g1.id)}, "a1 scope should be unaffected"
+            assert a2_groups_after == {str(g1.id)}, "a2 should now only be in g1"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_asset_count_matches_assets_array_length(self, app, db_session):
+        """asset_count should always equal the length of the assets array."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "CountMatch G1")
+        user = await _create_user(db_session, email="countmatch@test.com",
+                                  role_name="Operator", group_ids=[g1.id])
+        for i in range(3):
+            a = Asset(filename=f"cm{i}.mp4", original_filename=f"cm{i}.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user.id)
+            db_session.add(a)
+            await db_session.flush()
+            db_session.add(GroupAsset(asset_id=a.id, group_id=g1.id))
+        await db_session.commit()
+
+        ac = await _login_as(app, "countmatch@test.com")
+        try:
+            resp = await ac.get("/api/assets/status")
+            data = resp.json()
+            assert data["asset_count"] == len(data["assets"]), \
+                "asset_count must match the number of assets in the response"
+        finally:
+            await ac.aclose()
+
+    @pytest.mark.asyncio
+    async def test_global_asset_visible_to_all_with_no_scope_groups(self, app, db_session):
+        """A global asset should be visible to all users and have is_global=true,
+        regardless of scope_groups."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "GlobalVis G1")
+        g2 = await _create_group(db_session, "GlobalVis G2")
+        user_a = await _create_user(db_session, email="globalvis_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+        user_b = await _create_user(db_session, email="globalvis_b@test.com",
+                                    role_name="Operator", group_ids=[g2.id])
+
+        asset = Asset(filename="globalvis.mp4", original_filename="globalvis.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id, is_global=True)
+        db_session.add(asset)
+        await db_session.commit()
+
+        # Both users should see it with is_global=true
+        for email in ["globalvis_a@test.com", "globalvis_b@test.com"]:
+            ac = await _login_as(app, email)
+            try:
+                resp = await ac.get("/api/assets/status")
+                our = [a for a in resp.json()["assets"] if a["id"] == str(asset.id)]
+                assert len(our) == 1, f"{email} should see the global asset"
+                assert our[0]["is_global"] is True
+            finally:
+                await ac.aclose()

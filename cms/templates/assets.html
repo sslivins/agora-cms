@@ -326,7 +326,119 @@
 {% block scripts %}
 <script>
 (function() {
-    // Restore expanded rows after a poller-triggered reload
+    // User context for scope rebuilds
+    const __userGroups = [{% for g in user_groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}];
+    const __isAdmin = {{ 'true' if is_admin else 'false' }};
+    const __hasAssetsWrite = {{ 'true' if "assets:write" in user_perms else 'false' }};
+
+    function _escHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    // Rebuild the collapsed-row scope cell (td:nth-child(4)) from API data
+    function _rebuildCollapsedScope(assetId, d) {
+        const row = document.querySelector(`tr.asset-row[data-asset-id="${assetId}"]`);
+        if (!row) return;
+        const cell = row.querySelector("td:nth-child(4)");
+        if (!cell) return;
+        if (d.is_global) {
+            cell.innerHTML = '<span class="badge badge-ready">Global</span>';
+        } else if (d.scope_groups.length > 0) {
+            let h = '';
+            const MAX = 2;
+            d.scope_groups.slice(0, MAX).forEach(g => {
+                h += '<span class="badge badge-processing" style="margin-right:0.15rem">' + _escHtml(g.name) + '</span>';
+            });
+            if (d.scope_groups.length > MAX) {
+                const extra = d.scope_groups.length - MAX;
+                const names = d.scope_groups.slice(MAX).map(g => g.name).join(', ');
+                h += '<span class="badge badge-overflow has-tooltip">+' + extra + ' more<span class="tooltip">' + _escHtml(names) + '</span></span>';
+            }
+            cell.innerHTML = h;
+        } else if (d.has_uploader) {
+            cell.innerHTML = '<span class="badge badge-pending">Personal</span>';
+        } else {
+            cell.innerHTML = '<span class="text-muted">\u2014</span>';
+        }
+    }
+
+    // Rebuild the detail-row scope section (#scope-{id}) from API data
+    function _rebuildDetailScope(assetId, d) {
+        const el = document.getElementById("scope-" + assetId);
+        if (!el) return;
+        let h = '';
+        if (d.is_global) {
+            h += '<span class="badge badge-ready">Global</span>';
+        } else if (d.scope_groups.length === 0) {
+            h += '<span class="badge badge-pending">Personal</span>';
+        } else {
+            for (const g of d.scope_groups) {
+                h += '<span class="badge badge-processing" data-group-id="' + g.id + '">' +
+                    _escHtml(g.name) + ' ' +
+                    '<button class="btn-x" onclick="event.stopPropagation(); unshareAsset(\'' + assetId + '\',\'' + g.id + '\')" title="Remove from group">\u00d7</button>' +
+                    '</span>';
+            }
+        }
+        // Group picker
+        if (__userGroups.length > 0 && !d.is_global) {
+            const assigned = new Set(d.scope_groups.map(g => g.id));
+            const unassigned = __userGroups.filter(g => !assigned.has(g.id));
+            h += '<span class="group-picker-wrap" style="position:relative; display:inline-flex;">';
+            h += '<button class="btn-add-group" onclick="event.stopPropagation(); openGroupPopup(\'group-popup-' + assetId + '\')" type="button" title="Add to group"' + (unassigned.length === 0 ? ' disabled' : '') + '>+</button>';
+            h += '<div id="group-popup-' + assetId + '" class="group-popup" style="display:none;">';
+            for (const g of unassigned) {
+                h += '<button type="button" class="group-popup-item" data-group-id="' + g.id + '" onclick="event.stopPropagation(); pickAssetGroup(\'' + assetId + '\',\'' + g.id + '\',\'' + _escHtml(g.name) + '\',this)">' + _escHtml(g.name) + '</button>';
+            }
+            h += '</div></span>';
+        }
+        // Make Global button (admin)
+        if (__isAdmin) {
+            const cls = d.is_global ? 'btn-danger' : 'btn-secondary';
+            const txt = d.is_global ? 'Remove Global' : 'Make Global';
+            const ttl = d.is_global ? 'Remove global visibility' : 'Make visible to all groups';
+            h += ' <button class="btn btn-sm ' + cls + '" style="margin-left:0.25rem;" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" type="button" title="' + ttl + '">' + txt + '</button>';
+        }
+        el.innerHTML = h;
+    }
+
+    // Apply scope changes from API data without reloading the page
+    function applyScopeChanges(assets) {
+        const apiIds = new Set(assets.map(a => a.id));
+        const domRows = document.querySelectorAll("tr.asset-row[data-asset-id]");
+        const domIds = new Set();
+        // Remove rows for assets no longer visible
+        domRows.forEach(row => {
+            const id = row.dataset.assetId;
+            domIds.add(id);
+            if (!apiIds.has(id)) {
+                const detail = document.querySelector(`tr.asset-detail[data-detail-for="${id}"]`);
+                row.remove();
+                if (detail) detail.remove();
+            }
+        });
+        // Check if any genuinely new assets appeared (need reload for those)
+        let hasNew = false;
+        for (const a of assets) {
+            if (!domIds.has(a.id)) { hasNew = true; break; }
+        }
+        if (hasNew) {
+            // Preserve expanded state for reload
+            const expanded = [...document.querySelectorAll(".asset-row.expanded")]
+                .map(r => r.dataset.assetId).filter(Boolean);
+            if (expanded.length) sessionStorage.setItem("expandedAssets", JSON.stringify(expanded));
+            location.reload();
+            return;
+        }
+        // Update scope badges inline for remaining assets
+        for (const a of assets) {
+            _rebuildCollapsedScope(a.id, a);
+            if (__hasAssetsWrite) _rebuildDetailScope(a.id, a);
+        }
+    }
+
+    // Restore expanded rows after a rare reload (new assets appeared)
     const saved = sessionStorage.getItem("expandedAssets");
     if (saved) {
         sessionStorage.removeItem("expandedAssets");
@@ -493,17 +605,11 @@
             // Always update live fields in-place
             if (data.assets) updateLiveAssets(data.assets);
 
-            // Full reload for structural changes (asset added/removed or scope changed)
+            // Scope or count changed — update DOM inline (no reload)
             const scopeChanged = lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash;
             const countChanged = newState.asset_count !== lastState.asset_count;
-            // Scope changes reload immediately; count changes wait for collapsed view
-            if (scopeChanged || (countChanged && !document.querySelector(".asset-row.expanded"))) {
-                // Preserve expanded rows across reload
-                const expanded = [...document.querySelectorAll(".asset-row.expanded")]
-                    .map(r => r.dataset.assetId).filter(Boolean);
-                if (expanded.length) sessionStorage.setItem("expandedAssets", JSON.stringify(expanded));
-                location.reload();
-                return;
+            if (scopeChanged || countChanged) {
+                applyScopeChanges(data.assets);
             }
             lastState = newState;
         } catch (e) { /* ignore */ }

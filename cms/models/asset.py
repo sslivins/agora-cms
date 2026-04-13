@@ -58,6 +58,7 @@ class Asset(Base):
     schedules: Mapped[list["Schedule"]] = relationship(back_populates="asset")
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="asset")
     variants: Mapped[list["AssetVariant"]] = relationship(back_populates="source_asset")
+    group_asset_links: Mapped[list["GroupAsset"]] = relationship(back_populates="asset")
 
 
 class AssetVariant(Base):
