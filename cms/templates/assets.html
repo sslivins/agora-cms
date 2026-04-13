@@ -366,7 +366,8 @@
         asset_count: {{ assets | length }},
         variant_ready: {{ assets | sum(attribute='variant_ready') }},
         variant_processing: {{ assets | sum(attribute='variant_processing') }},
-        variant_failed: {{ assets | sum(attribute='variant_failed') }}
+        variant_failed: {{ assets | sum(attribute='variant_failed') }},
+        scope_hash: null
     };
 
     function buildVariantBadge(a) {
@@ -473,15 +474,18 @@
                 asset_count: data.asset_count,
                 variant_ready: data.variant_ready,
                 variant_processing: data.variant_processing,
-                variant_failed: data.variant_failed
+                variant_failed: data.variant_failed,
+                scope_hash: data.scope_hash
             };
 
             // Always update live fields in-place
             if (data.assets) updateLiveAssets(data.assets);
 
-            // Full reload only for structural changes (asset added/removed)
+            // Full reload for structural changes (asset added/removed or scope changed)
             // and only when no detail panel is open
-            if (newState.asset_count !== lastState.asset_count) {
+            const structuralChange = newState.asset_count !== lastState.asset_count ||
+                (lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash);
+            if (structuralChange) {
                 if (!document.querySelector(".asset-row.expanded")) {
                     location.reload();
                     return;

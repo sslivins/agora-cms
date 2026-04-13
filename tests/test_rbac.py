@@ -1269,3 +1269,55 @@ class TestIDORProtection:
                 f"Expected 403 when unsharing from non-member group, got {resp.status_code}"
         finally:
             await ac_b.aclose()
+
+    async def test_scope_hash_changes_on_unshare_for_other_users(self, app, db_session):
+        """When User B unshares an asset from a group, the /api/assets/status
+        endpoint should return a different scope_hash for User A (the owner),
+        so the poller triggers a page refresh and badges update."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "ScopeHash G1")
+
+        user_a = await _create_user(db_session, email="scopehash_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+        await _create_user(db_session, email="scopehash_b@test.com",
+                           role_name="Operator", group_ids=[g1.id])
+
+        # User A uploads asset shared with G1
+        asset = Asset(filename="scopehash_test.mp4", original_filename="scopehash_test.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        # User A gets initial scope_hash
+        ac_a = await _login_as(app, "scopehash_a@test.com")
+        try:
+            resp = await ac_a.get("/api/assets/status")
+            assert resp.status_code == 200
+            hash_before = resp.json()["scope_hash"]
+            assert hash_before, "scope_hash should be present in status response"
+        finally:
+            await ac_a.aclose()
+
+        # User B unshares the asset from G1
+        ac_b = await _login_as(app, "scopehash_b@test.com")
+        try:
+            resp = await ac_b.delete(f"/api/assets/{asset.id}/share",
+                                     params={"group_id": str(g1.id)})
+            assert resp.status_code == 200
+        finally:
+            await ac_b.aclose()
+
+        # User A gets scope_hash again — should be different
+        ac_a2 = await _login_as(app, "scopehash_a@test.com")
+        try:
+            resp = await ac_a2.get("/api/assets/status")
+            assert resp.status_code == 200
+            hash_after = resp.json()["scope_hash"]
+            assert hash_after != hash_before, \
+                "scope_hash should change after unshare so poller detects the update"
+        finally:
+            await ac_a2.aclose()

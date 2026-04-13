@@ -166,11 +166,22 @@ async def assets_status_json(
             "variants": variants,
         })
 
+    # Compute a hash of group-asset assignments so the poller can detect scope changes
+    import hashlib
+    ga_q = select(GroupAsset.asset_id, GroupAsset.group_id).order_by(GroupAsset.asset_id, GroupAsset.group_id)
+    if visible is not None:
+        ga_q = ga_q.where(GroupAsset.asset_id.in_(visible))
+    ga_rows = (await db.execute(ga_q)).all()
+    scope_hash = hashlib.md5(
+        ",".join(f"{r[0]}:{r[1]}" for r in ga_rows).encode()
+    ).hexdigest()[:12]
+
     return {
         "asset_count": asset_count,
         "variant_ready": variant_ready,
         "variant_processing": variant_processing,
         "variant_failed": variant_failed,
+        "scope_hash": scope_hash,
         "assets": assets_detail,
     }
 
