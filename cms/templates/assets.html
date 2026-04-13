@@ -123,6 +123,8 @@
                 <td class="actions" onclick="event.stopPropagation()">
                     <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
                     {% if 'assets:write' in user_perms %}
+                    {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
+                    {% if is_owner %}
                     {% if a.schedule_count > 0 %}
                     <span class="has-tooltip" style="pointer-events:auto; display:inline-block">
                         <button class="btn btn-danger btn-sm" disabled>Delete</button>
@@ -130,6 +132,9 @@
                     </span>
                     {% else %}
                     <button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                    {% endif %}
+                    {% else %}
+                    <span class="badge badge-processing" style="font-size:0.75rem">Shared</span>
                     {% endif %}
                     {% endif %}
                 </td>

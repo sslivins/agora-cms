@@ -418,29 +418,11 @@ async def delete_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # For non-admins, check if user's group is linked via GroupAsset
+    # Only the owner or an admin can delete an asset
     user_groups = await get_user_group_ids(user, db)
-    if user_groups is not None:
-        # Remove only the user's group references (ref-counted deletion)
-        ga_result = await db.execute(
-            select(GroupAsset).where(
-                GroupAsset.asset_id == asset_id,
-                GroupAsset.group_id.in_(user_groups),
-            )
-        )
-        user_gas = ga_result.scalars().all()
-        if not user_gas:
-            raise HTTPException(status_code=403, detail="You don't have access to this asset")
-        for ga in user_gas:
-            await db.delete(ga)
-        await db.commit()
-
-        # Check if any GroupAsset references remain
-        remaining = await db.scalar(
-            select(func.count()).select_from(GroupAsset).where(GroupAsset.asset_id == asset_id)
-        )
-        if remaining > 0 or asset.is_global:
-            return {"unlinked": asset.filename, "deleted": False}
+    is_admin = user_groups is None
+    if not is_admin and asset.uploaded_by_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the asset owner can delete this asset")
 
     # Full deletion — no more references (or admin)
     # Block deletion if any schedule references this asset
