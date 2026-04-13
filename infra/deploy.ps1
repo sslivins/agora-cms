@@ -173,7 +173,7 @@ Write-Ok "Resource group ready"
 
 # ── Recover soft-deleted Key Vault if needed ─────────────────────
 
-$kvName = "$Prefix-kv"
+$kvName = "$Prefix-vault"
 Write-Step "Checking for soft-deleted Key Vault ($kvName)"
 $deletedKv = az keyvault list-deleted --query "[?name=='$kvName'].name" -o tsv 2>$null
 if ($deletedKv) {
