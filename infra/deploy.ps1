@@ -338,7 +338,7 @@ if ($cmsReady) {
         Write-Ok "MCP SSE auth key generated"
 
         # Store API key in Key Vault
-        az keyvault secret set --vault-name "$Prefix-kv" --name "mcp-api-key" --value $apiKey -o none 2>$null
+        az keyvault secret set --vault-name "$Prefix-vault" --name "mcp-api-key" --value $apiKey -o none 2>$null
         Write-Ok "API key stored in Key Vault"
 
         # Update MCP container with the real API key and restart to pick it up
