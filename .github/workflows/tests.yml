@@ -10,6 +10,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agora_test
+          POSTGRES_PASSWORD: agora_test
+          POSTGRES_DB: agora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-timeout httpx aiosqlite
+          pip install pytest pytest-asyncio pytest-timeout httpx
 
       - name: Run tests
         run: python -m pytest tests/ --ignore=tests/e2e --tb=short -q -rs
@@ -41,6 +57,22 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     needs: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agora_test
+          POSTGRES_PASSWORD: agora_test
+          POSTGRES_DB: agora_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_e2e
     steps:
       - uses: actions/checkout@v4
 

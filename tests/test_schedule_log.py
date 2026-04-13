@@ -1,6 +1,5 @@
 """Tests for schedule history logging (ScheduleLog model and event logging)."""
 
-import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -150,22 +149,36 @@ class TestLogEventHelper:
     async def test_log_event_with_ids(self, db):
         from cms.services.scheduler import _log_event
 
-        sid = uuid.uuid4()
+        device = Device(id="log-dev-1", name="Log Dev", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="log.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="log1")
+        db.add_all([device, asset])
+        await db.flush()
+
+        schedule = Schedule(
+            name="Test",
+            device_id=device.id,
+            asset_id=asset.id,
+            start_time=datetime.strptime("08:00", "%H:%M").time(),
+            end_time=datetime.strptime("12:00", "%H:%M").time(),
+        )
+        db.add(schedule)
+        await db.flush()
+
         await _log_event(
             db,
             ScheduleLogEvent.STARTED,
             schedule_name="Test",
             device_name="Dev",
             asset_filename="v.mp4",
-            schedule_id=sid,
-            device_id="dev-1",
+            schedule_id=schedule.id,
+            device_id=device.id,
         )
         await db.commit()
 
         result = await db.execute(select(ScheduleLog))
         row = result.scalar_one()
-        assert str(row.schedule_id) == str(sid)
-        assert row.device_id == "dev-1"
+        assert row.schedule_id == schedule.id
+        assert row.device_id == device.id
 
 
 @pytest.mark.asyncio
