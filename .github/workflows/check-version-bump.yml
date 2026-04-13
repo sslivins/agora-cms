@@ -17,7 +17,7 @@ jobs:
           # Skip check if PR only touches CI/docs files (no runtime changes)
           git fetch origin main
           CHANGED=$(git diff --name-only origin/main...HEAD)
-          RUNTIME_CHANGES=$(echo "$CHANGED" | grep -v -E '^\.(github|gitignore)|^docs/|^README|^LICENSE' || true)
+          RUNTIME_CHANGES=$(echo "$CHANGED" | grep -v -E '^\.(github|gitignore)|^docs/|^README|^LICENSE|^tests/|^tests_e2e/' || true)
 
           if [ -z "$RUNTIME_CHANGES" ]; then
             echo "✅ Skipped — PR only changes CI/docs files, no version bump needed."
