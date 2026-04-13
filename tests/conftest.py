@@ -18,11 +18,14 @@ def _patch_array_columns():
     from cms.models.schedule import Schedule
     from cms.models.user import Role
     from cms.models.audit_log import AuditLog
+    from cms.models.notification import Notification
     col = Schedule.__table__.columns["days_of_week"]
     col.type = JSON()
     col = Role.__table__.columns["permissions"]
     col.type = JSON()
     col = AuditLog.__table__.columns["details"]
+    col.type = JSON()
+    col = Notification.__table__.columns["details"]
     col.type = JSON()
 
 

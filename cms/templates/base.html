@@ -35,6 +35,21 @@
             </span>
             {% endif %}
             {% endif %}
+            <div class="notification-bell-wrapper" id="notification-bell-wrapper">
+                <button class="header-icon" id="notification-bell" aria-label="Notifications" onclick="toggleNotificationPanel()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                    <span class="notification-badge" id="notification-badge" style="display:none;">0</span>
+                </button>
+                <div class="notification-panel" id="notification-panel" style="display:none;">
+                    <div class="notification-panel-header">
+                        <strong>Notifications</strong>
+                        <button class="btn btn-sm" onclick="markAllRead()">Mark all read</button>
+                    </div>
+                    <div class="notification-panel-list" id="notification-list">
+                        <p class="text-muted" style="padding: 1rem; text-align: center;">No notifications</p>
+                    </div>
+                </div>
+            </div>
             <a href="/settings" class="header-icon has-tooltip" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="tooltip">Settings</span></a>
             <a href="/logout" class="header-icon has-tooltip" aria-label="Logout"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 17.5H4.17a1.67 1.67 0 0 1-1.67-1.67V4.17A1.67 1.67 0 0 1 4.17 2.5H7.5M13.33 14.17 17.5 10l-4.17-4.17M17.5 10H7.5"/></svg><span class="tooltip">Logout</span></a>
         </div>
@@ -57,6 +72,98 @@
         {% block content %}{% endblock %}
     </main>
     <script src="/static/app.js?v={{ static_version }}"></script>
+    <script>
+    /* ── Notification bell ── */
+    let _notifPanelOpen = false;
+
+    function toggleNotificationPanel() {
+        const panel = document.getElementById('notification-panel');
+        _notifPanelOpen = !_notifPanelOpen;
+        panel.style.display = _notifPanelOpen ? 'block' : 'none';
+        if (_notifPanelOpen) loadNotifications();
+    }
+
+    document.addEventListener('click', (e) => {
+        const wrapper = document.getElementById('notification-bell-wrapper');
+        if (wrapper && !wrapper.contains(e.target) && _notifPanelOpen) {
+            document.getElementById('notification-panel').style.display = 'none';
+            _notifPanelOpen = false;
+        }
+    });
+
+    async function loadNotifications() {
+        try {
+            const resp = await fetch('/api/notifications?limit=20');
+            if (!resp.ok) return;
+            const items = await resp.json();
+            const list = document.getElementById('notification-list');
+            if (!items.length) {
+                list.innerHTML = '<p class="text-muted" style="padding:1rem;text-align:center;">No notifications</p>';
+                return;
+            }
+            list.innerHTML = items.map(n => {
+                const isUnread = !n.read_at;
+                const levelClass = n.level === 'error' ? 'notif-error' : n.level === 'warning' ? 'notif-warning' : 'notif-info';
+                const age = _timeAgo(n.created_at);
+                return `<div class="notification-item ${isUnread ? 'unread' : ''} ${levelClass}" data-id="${n.id}" onclick="markNotifRead('${n.id}', this)">
+                    <div class="notif-title">${_escHtml(n.title)}</div>
+                    <div class="notif-message">${_escHtml(n.message)}</div>
+                    <div class="notif-time">${age}</div>
+                </div>`;
+            }).join('');
+        } catch (e) { /* silent */ }
+    }
+
+    async function markNotifRead(id, el) {
+        try {
+            await fetch(`/api/notifications/${id}/read`, { method: 'POST' });
+            if (el) el.classList.remove('unread');
+            pollNotificationCount();
+        } catch (e) { /* silent */ }
+    }
+
+    async function markAllRead() {
+        try {
+            await fetch('/api/notifications/read-all', { method: 'POST' });
+            document.querySelectorAll('.notification-item.unread').forEach(el => el.classList.remove('unread'));
+            const badge = document.getElementById('notification-badge');
+            badge.style.display = 'none';
+        } catch (e) { /* silent */ }
+    }
+
+    async function pollNotificationCount() {
+        try {
+            const resp = await fetch('/api/notifications/count');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const badge = document.getElementById('notification-badge');
+            if (data.unread > 0) {
+                badge.textContent = data.unread > 99 ? '99+' : data.unread;
+                badge.style.display = 'flex';
+            } else {
+                badge.style.display = 'none';
+            }
+        } catch (e) { /* silent */ }
+    }
+
+    function _timeAgo(iso) {
+        const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+        if (s < 60) return 'just now';
+        if (s < 3600) return Math.floor(s / 60) + 'm ago';
+        if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+        return Math.floor(s / 86400) + 'd ago';
+    }
+
+    function _escHtml(t) {
+        const d = document.createElement('div');
+        d.textContent = t;
+        return d.innerHTML;
+    }
+
+    // Poll every 30s + initial load
+    pollNotificationCount();
+    setInterval(pollNotificationCount, 30000);
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

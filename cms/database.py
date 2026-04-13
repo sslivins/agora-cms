@@ -229,6 +229,23 @@ async def run_migrations():
                 "ALTER TABLE devices ADD COLUMN supported_codecs VARCHAR(100) DEFAULT ''"
             ))
 
+        # -- Add notifications:system permission to existing Admin roles --
+        has_roles = await conn.run_sync(lambda c: sa_inspect(c).has_table("roles"))
+        if has_roles:
+            from cms.permissions import NOTIFICATIONS_SYSTEM
+            result = await conn.execute(text(
+                "SELECT id, permissions FROM roles WHERE name = 'Admin'"
+            ))
+            row = result.first()
+            if row:
+                import json
+                perms = row[1] if isinstance(row[1], list) else json.loads(row[1] or "[]")
+                if NOTIFICATIONS_SYSTEM not in perms:
+                    perms.append(NOTIFICATIONS_SYSTEM)
+                    await conn.execute(text(
+                        "UPDATE roles SET permissions = :perms WHERE id = :rid"
+                    ), {"perms": json.dumps(perms), "rid": str(row[0])})
+
     # Run create_all again in case migrations added models with new relationships
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

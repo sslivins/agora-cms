@@ -95,6 +95,9 @@
                 {% if can_write %}
                 <td class="actions-cell">
                     <button class="btn btn-sm" onclick="openEditUser('{{ u.id }}')">Edit</button>
+                    {% if u.must_change_password %}
+                    <button class="btn btn-sm btn-secondary" onclick="resendInvite('{{ u.id }}', '{{ u.email }}')">Resend Invite</button>
+                    {% endif %}
                     {% if u.id | string != current_user_id %}
                     {% if u.is_active %}
                     <button class="btn btn-sm btn-warning" onclick="toggleUserActive('{{ u.id }}', false)">Disable</button>
@@ -332,5 +335,20 @@ const rolesData = {
     },
     {% endfor %}
 };
+
+async function resendInvite(userId, email) {
+    if (!confirm(`Resend activation email to ${email}? This will invalidate any previous setup link.`)) return;
+    try {
+        const resp = await fetch(`/api/users/${userId}/resend-invite`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast(data.message || 'Activation email sent', 'success');
+        } else {
+            showToast(data.detail || 'Failed to resend invite', 'error');
+        }
+    } catch (e) {
+        showToast('Failed to resend invite', 'error');
+    }
+}
 </script>
 {% endblock %}
