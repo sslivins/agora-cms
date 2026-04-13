@@ -1177,3 +1177,95 @@ class TestIDORProtection:
                 f"Expected 403 when sharing to non-member group, got {resp.status_code}"
         finally:
             await ac.aclose()
+
+    async def test_unshare_last_group_removes_non_owned_asset(self, app, db_session):
+        """When User B unshares the last group from an asset owned by User A,
+        the asset should no longer appear in User B's library and the API
+        response should indicate still_visible=false."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "UnshareVis G1")
+
+        user_a = await _create_user(db_session, email="unshare_owner@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+        user_b = await _create_user(db_session, email="unshare_viewer@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+
+        # User A uploads an asset and shares it with G1
+        asset = Asset(filename="unshare_test.mp4", original_filename="unshare_test.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        await db_session.commit()
+
+        # User B can see the asset
+        ac_b = await _login_as(app, "unshare_viewer@test.com")
+        try:
+            resp = await ac_b.get("/api/assets")
+            assert resp.status_code == 200
+            ids = [a["id"] for a in resp.json()]
+            assert str(asset.id) in ids, "User B should see asset shared via G1"
+
+            # User B unshares the asset from G1
+            resp = await ac_b.delete(f"/api/assets/{asset.id}/share",
+                                     params={"group_id": str(g1.id)})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "unshared"
+            assert body["still_visible"] is False, \
+                "Non-owner should not still see asset after last group removed"
+
+            # Verify asset no longer appears in User B's library
+            resp = await ac_b.get("/api/assets")
+            assert resp.status_code == 200
+            ids = [a["id"] for a in resp.json()]
+            assert str(asset.id) not in ids, \
+                "Asset should disappear from non-owner's library after unsharing last group"
+        finally:
+            await ac_b.aclose()
+
+        # Verify User A (the owner) still sees it as personal
+        ac_a = await _login_as(app, "unshare_owner@test.com")
+        try:
+            resp = await ac_a.get("/api/assets")
+            assert resp.status_code == 200
+            ids = [a["id"] for a in resp.json()]
+            assert str(asset.id) in ids, \
+                "Owner should still see asset as personal after all groups removed"
+        finally:
+            await ac_a.aclose()
+
+    async def test_unshare_from_non_member_group_blocked(self, app, db_session):
+        """A scoped user should not be able to unshare an asset from a group
+        they are not a member of."""
+        from cms.models.asset import Asset, AssetType
+
+        g1 = await _create_group(db_session, "UnshareMem G1")
+        g2 = await _create_group(db_session, "UnshareMem G2")
+
+        user_a = await _create_user(db_session, email="unshare_mem_a@test.com",
+                                    role_name="Operator", group_ids=[g1.id, g2.id])
+        user_b = await _create_user(db_session, email="unshare_mem_b@test.com",
+                                    role_name="Operator", group_ids=[g1.id])
+
+        # User A uploads asset shared with both groups
+        asset = Asset(filename="unshare_mem.mp4", original_filename="unshare_mem.mp4",
+                      asset_type=AssetType.VIDEO, size_bytes=100,
+                      uploaded_by_user_id=user_a.id)
+        db_session.add(asset)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g1.id))
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=g2.id))
+        await db_session.commit()
+
+        # User B tries to unshare from G2 (not a member) — should be blocked
+        ac_b = await _login_as(app, "unshare_mem_b@test.com")
+        try:
+            resp = await ac_b.delete(f"/api/assets/{asset.id}/share",
+                                     params={"group_id": str(g2.id)})
+            assert resp.status_code == 403, \
+                f"Expected 403 when unsharing from non-member group, got {resp.status_code}"
+        finally:
+            await ac_b.aclose()

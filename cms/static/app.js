@@ -644,13 +644,25 @@ async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
 }
 
 async function unshareAsset(assetId, groupId) {
+    if (!await showConfirm("\u26a0\ufe0f This will remove the asset from everyone in this group. Continue?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}/share?group_id=${groupId}`);
     if (resp && resp.ok) {
+        const data = await resp.json();
         const scopeEl = document.getElementById("scope-" + assetId);
         if (!scopeEl) { location.reload(); return; }
+
+        // If asset is no longer visible to us, remove its rows entirely
+        if (data.still_visible === false) {
+            const detailRow = document.getElementById("detail-" + assetId);
+            const collapsedRow = detailRow ? detailRow.previousElementSibling : null;
+            if (detailRow) detailRow.remove();
+            if (collapsedRow) collapsedRow.remove();
+            return;
+        }
+
         // Capture group name before removing the badge
         const badge = scopeEl.querySelector(`.badge[data-group-id="${groupId}"]`);
-        const groupName = badge ? badge.textContent.replace("×", "").trim() : "";
+        const groupName = badge ? badge.textContent.replace("\u00d7", "").trim() : "";
         if (badge) badge.remove();
         // Re-show or create option in popup
         const popup = document.getElementById("group-popup-" + assetId);

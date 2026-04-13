@@ -554,10 +554,17 @@ async def unshare_asset(
     asset_id: uuid.UUID,
     request: Request,
     group_id: uuid.UUID = Query(..., description="Group UUID to unshare from"),
+    user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove an asset from a group."""
     await _verify_asset_access(asset_id, request, db)
+
+    # Scoped users can only unshare from groups they belong to
+    user_groups = await get_user_group_ids(user, db)
+    if user_groups is not None and group_id not in user_groups:
+        raise HTTPException(status_code=403, detail="Cannot unshare from a group you are not a member of")
+
     ga = (await db.execute(
         select(GroupAsset).where(GroupAsset.asset_id == asset_id, GroupAsset.group_id == group_id)
     )).scalar_one_or_none()
@@ -565,7 +572,13 @@ async def unshare_asset(
         raise HTTPException(status_code=404, detail="Asset is not shared with this group")
     await db.delete(ga)
     await db.commit()
-    return {"status": "unshared", "asset_id": str(asset_id), "group_id": str(group_id)}
+
+    # Check if asset is still visible to the requesting user after unshare
+    visible = await _visible_asset_ids(user, db)
+    still_visible = visible is None or asset_id in visible
+
+    return {"status": "unshared", "asset_id": str(asset_id), "group_id": str(group_id),
+            "still_visible": still_visible}
 
 
 @router.post("/{asset_id}/global", dependencies=[Depends(require_permission(ASSETS_WRITE))])
