@@ -838,17 +838,20 @@ class TestNowPlayingCleanup:
         clear_now_playing("np-fk-01")
         assert "np-fk-01" not in _now_playing
 
-        # Verify ENDED was logged
+        # Verify ENDED was logged — FK references are cleared (schedule
+        # was deleted) but denormalized name columns survive.
         from sqlalchemy import select as sa_select
         logs = await db_session.execute(
             sa_select(ScheduleLog).where(
-                ScheduleLog.device_id == "np-fk-01",
                 ScheduleLog.event == ScheduleLogEvent.ENDED,
+                ScheduleLog.schedule_name == "Will Be Deleted",
             )
         )
         ended_logs = logs.scalars().all()
         assert len(ended_logs) >= 1
         assert ended_logs[-1].schedule_name == "Will Be Deleted"
+        # schedule_id is None because the FK target was deleted
+        assert ended_logs[-1].schedule_id is None
 
     async def test_now_playing_cleaned_on_disconnect(self, app, db_session):
         """Scheduler should clean up _now_playing for disconnected devices."""

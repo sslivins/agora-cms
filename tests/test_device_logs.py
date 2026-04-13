@@ -138,6 +138,7 @@ class TestDeviceLogsAPI:
         assert "not connected" in resp.json()["detail"]
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
     async def test_request_logs_success(self, client, device_in_db):
         from cms.services.device_manager import device_manager
 
