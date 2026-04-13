@@ -290,7 +290,6 @@ Write-Step "Configuring MCP API key"
 $cmsAppName = "$Prefix-cms"
 $mcpAppName = "$Prefix-mcp"
 $apiKey = ""
-$mcpSseKey = ""
 
 # Wait for CMS to be healthy
 Write-Host "  Waiting for CMS to start..." -ForegroundColor Yellow
@@ -311,10 +310,11 @@ for ($i = 1; $i -le $maxAttempts; $i++) {
 if ($cmsReady) {
     # Login and create API key
     try {
-        # Login returns a 303 redirect on success; follow it to capture the session cookie
+        # Login returns a 303 redirect — capture the session cookie
         $null = Invoke-WebRequest -Uri "https://$cmsUrl/login" -Method POST `
             -Body @{email='admin'; password=$cmsPass} `
-            -SessionVariable cmsSession -ErrorAction Stop
+            -SessionVariable cmsSession -MaximumRedirection 0 `
+            -ErrorAction SilentlyContinue -SkipHttpErrorCheck
 
         # Create a CMS API key for the MCP server
         $keyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/keys" -Method POST `
@@ -331,12 +331,6 @@ if ($cmsReady) {
             -Body '{"enabled":true}'
         Write-Ok "MCP server enabled in CMS settings"
 
-        # Generate MCP SSE auth key (for external clients like Copilot CLI)
-        $mcpKeyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/generate-key" -Method POST `
-            -WebSession $cmsSession
-        $mcpSseKey = $mcpKeyResp.key
-        Write-Ok "MCP SSE auth key generated"
-
         # Store API key in Key Vault
         az keyvault secret set --vault-name "$Prefix-vault" --name "mcp-api-key" --value $apiKey -o none 2>$null
         Write-Ok "API key stored in Key Vault"
@@ -347,9 +341,9 @@ if ($cmsReady) {
         $suffix = "mcp$(Get-Date -Format 'MMddHHmm')"
         az containerapp update --name $mcpAppName --resource-group $ResourceGroup `
             --revision-suffix $suffix -o none 2>$null
-        # Secret changes require a restart to take effect
+        # Secret changes require a restart — pick only the first active revision
         $activeRevision = (az containerapp revision list --name $mcpAppName `
-            --resource-group $ResourceGroup --query "[?properties.active].name" -o tsv 2>$null).Trim()
+            --resource-group $ResourceGroup --query "[?properties.active].name | [0]" -o tsv 2>$null).Trim()
         az containerapp revision restart --name $mcpAppName --resource-group $ResourceGroup `
             --revision $activeRevision -o none 2>$null
         Write-Ok "MCP container updated with API key (restarted)"
@@ -358,7 +352,6 @@ if ($cmsReady) {
         Write-Warn "Failed to configure MCP API key: $($_.Exception.Message)"
         Write-Host "  You can configure it manually via the CMS settings page." -ForegroundColor Yellow
         $apiKey = ""
-        $mcpSseKey = ""
     }
 }
 
@@ -376,9 +369,9 @@ Write-Host "  PostgreSQL:       $pgFqdn" -ForegroundColor White
 Write-Host "  Key Vault:        $kvUri" -ForegroundColor White
 Write-Host "  Storage Account:  $storageName" -ForegroundColor White
 Write-Host "  Resource Group:   $ResourceGroup" -ForegroundColor White
-if ($mcpSseKey) {
+if ($apiKey) {
     Write-Host ""
-    Write-Host "  MCP SSE Auth:     Bearer $mcpSseKey" -ForegroundColor White
+    Write-Host "  MCP API Key:      $apiKey" -ForegroundColor White
     Write-Host "  MCP SSE URL:      https://$mcpUrl/sse" -ForegroundColor White
 }
 Write-Host ""
@@ -395,7 +388,7 @@ $outputObj = @{
     cmsUrl             = "https://$cmsUrl"
     mcpUrl             = "https://$mcpUrl"
     mcpSseUrl          = "https://$mcpUrl/sse"
-    mcpSseKey          = if ($mcpSseKey) { $mcpSseKey } else { "" }
+    mcpApiKey          = if ($apiKey) { $apiKey } else { "" }
     acrLoginServer     = $acrLoginServer
     postgresServerFqdn = $pgFqdn
     keyVaultUri        = $kvUri
@@ -410,7 +403,7 @@ Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
 Write-Host "    1. Open CMS: https://$cmsUrl" -ForegroundColor Gray
 Write-Host "    2. Login with admin / <your password>" -ForegroundColor Gray
-if ($mcpSseKey) {
-    Write-Host "    3. Configure MCP in Copilot CLI using the SSE URL and key above" -ForegroundColor Gray
+if ($apiKey) {
+    Write-Host "    3. Configure MCP in Copilot CLI using the SSE URL and API key above" -ForegroundColor Gray
 }
 Write-Host ""
