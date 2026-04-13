@@ -36,7 +36,7 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout httpx aiosqlite
 
       - name: Run tests
-        run: python -m pytest tests/ --tb=short -q -rs
+        run: python -m pytest tests/ --ignore=tests/e2e --tb=short -q -rs
 
   e2e:
     runs-on: ubuntu-latest
@@ -73,4 +73,4 @@ jobs:
         run: python -m playwright install-deps chromium
 
       - name: Run E2E tests
-        run: python -m pytest tests_e2e/ --tb=short -q
+        run: python -m pytest tests_e2e/ tests/e2e/ --tb=short -q
