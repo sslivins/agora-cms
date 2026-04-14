@@ -24,7 +24,13 @@ class TestIsUpdateAvailable:
         assert is_update_available("", "0.7.5") is False
 
     def test_no_latest_version(self):
-        assert is_update_available("0.7.5", None) is False
+        from cms.services import version_checker
+        original = version_checker._latest_version
+        try:
+            version_checker._latest_version = None
+            assert is_update_available("0.7.5", None) is False
+        finally:
+            version_checker._latest_version = original
 
     def test_two_segment_version(self):
         assert is_update_available("0.7", "0.7.1") is True

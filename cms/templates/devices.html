@@ -53,15 +53,13 @@
         {% endif %}
     </td>
     <td>
-        {% if 'devices:write' in user_perms %}
+        {% if 'devices:manage' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
             {% endfor %}
         </select>
-        {% else %}
-        {{ d.profile.name if d.profile else '—' }}
         {% endif %}
     </td>
     <td data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
@@ -71,24 +69,24 @@
     </td>
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
-        {% if 'devices:write' in user_perms %}
+        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
         {% endif %}
         {% elif d.is_upgrading %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
         {% elif d.is_online and d.update_available %}
-        {% if 'devices:write' in user_perms %}
+        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button><span class="tooltip">Update firmware from {{ d.firmware_version }} to {{ latest_version }}</span></span>
         {% endif %}
         {% endif %}
-        {% if 'devices:delete' in user_perms %}
+        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>
         {% endif %}
     </td>
 </tr>
 <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
     <td></td>
-    <td colspan="7">
+    <td colspan="{% if 'devices:manage' in user_perms %}7{% else %}6{% endif %}">
         <div class="detail-grid">
             <div class="detail-item">
                 <span class="detail-label">Device ID</span>
@@ -126,6 +124,7 @@
                 <span class="detail-label">Last Seen</span>
                 <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
             </div>
+            {% if 'devices:manage' in user_perms %}
             <div class="detail-item">
                 <span class="detail-label">Timezone</span>
                 <span class="detail-value">
@@ -137,6 +136,7 @@
                     </select>
                 </span>
             </div>
+            {% endif %}
             {% if d.is_online %}
             <div class="detail-item">
                 <span class="detail-label">Asset</span>
@@ -182,10 +182,9 @@
             </div>
             {% endif %}
         </div>
-        {% if d.is_online and ('devices:write' in user_perms or 'devices:reboot' in user_perms) %}
+        {% if d.is_online and 'devices:manage' in user_perms %}
         <div class="detail-toolbar">
             <span class="detail-label">Actions</span>
-            {% if 'devices:write' in user_perms %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button><span class="tooltip">Set the password for this device's local web UI</span></span>
             {% if d.ssh_enabled %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>
@@ -197,13 +196,8 @@
             {% else %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', false)">Disable Local API</button><span class="tooltip">Disable the device's local REST API</span></span>
             {% endif %}
-            {% endif %}
-            {% if 'devices:reboot' in user_perms %}
             <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
-            {% endif %}
-            {% if 'devices:write' in user_perms %}
             <span class="has-tooltip"><button class="btn btn-warn btn-sm" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')">Factory Reset</button><span class="tooltip">Wipe all data and return device to setup mode</span></span>
-            {% endif %}
         </div>
         {% endif %}
         </div>
@@ -263,7 +257,7 @@
     <th>Status</th>
     <th>Group</th>
     <th>Default Splash Screen</th>
-    <th>Profile</th>
+    {% if 'devices:manage' in user_perms %}<th>Profile</th>{% endif %}
     <th>Storage</th>
     <th>Actions</th>
 </tr>
@@ -282,7 +276,7 @@
 <div class="card">
     <div style="display: flex; justify-content: space-between; align-items: center;">
         <h2>Devices</h2>
-        {% if 'devices:write' in user_perms %}
+        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-sm" onclick="checkForUpdates()" id="check-updates-btn">Check for Updates</button><span class="tooltip">Updates are also checked automatically every hour</span></span>
         {% endif %}
     </div>
@@ -292,7 +286,7 @@
             {% for d in devices %}
             {{ device_row(d, groups, assets, profiles) }}
             {% else %}
-            <tr><td colspan="8" class="empty">No devices registered yet</td></tr>
+            <tr><td colspan="{% if 'devices:manage' in user_perms %}8{% else %}7{% endif %}" class="empty">No devices registered yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
