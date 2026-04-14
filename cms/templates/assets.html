@@ -217,7 +217,7 @@
                             <span class="detail-label">Scope</span>
                             <span class="detail-value" id="scope-{{ a.id }}" style="display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap; white-space:normal; overflow:visible">
                                 {% if a.is_global %}
-                                <span class="badge badge-ready">Global</span>
+                                <span class="badge badge-ready">Global{% if is_admin %} <button class="btn-x" onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" title="Remove global visibility">&times;</button>{% endif %}</span>
                                 {% elif a.group_asset_entries | length == 0 %}
                                 <span class="badge badge-pending">Personal</span>
                                 {% else %}
@@ -240,11 +240,11 @@
                                     </div>
                                 </span>
                                 {% endif %}
-                                {% if is_admin %}
-                                <button class="btn btn-sm {% if a.is_global %}btn-danger{% else %}btn-secondary{% endif %}" style="margin-left:0.25rem;"
+                                {% if is_admin and not a.is_global %}
+                                <button class="btn btn-sm btn-secondary" style="margin-left:0.25rem;"
                                         onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" type="button"
-                                        title="{% if a.is_global %}Remove global visibility{% else %}Make visible to all groups{% endif %}">
-                                    {% if a.is_global %}Remove Global{% else %}Make Global{% endif %}
+                                        title="Make visible to all groups">
+                                    Make Global
                                 </button>
                                 {% endif %}
                             </span>
@@ -370,7 +370,11 @@
         if (!el) return;
         let h = '';
         if (d.is_global) {
-            h += '<span class="badge badge-ready">Global</span>';
+            h += '<span class="badge badge-ready">Global';
+            if (__isAdmin) {
+                h += ' <button class="btn-x" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" title="Remove global visibility">\u00d7</button>';
+            }
+            h += '</span>';
         } else if (d.scope_groups.length === 0) {
             h += '<span class="badge badge-pending">Personal</span>';
         } else {
@@ -393,12 +397,9 @@
             }
             h += '</div></span>';
         }
-        // Make Global button (admin)
-        if (__isAdmin) {
-            const cls = d.is_global ? 'btn-danger' : 'btn-secondary';
-            const txt = d.is_global ? 'Remove Global' : 'Make Global';
-            const ttl = d.is_global ? 'Remove global visibility' : 'Make visible to all groups';
-            h += ' <button class="btn btn-sm ' + cls + '" style="margin-left:0.25rem;" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" type="button" title="' + ttl + '">' + txt + '</button>';
+        // Make Global button (admin, only when not already global)
+        if (__isAdmin && !d.is_global) {
+            h += ' <button class="btn btn-sm btn-secondary" style="margin-left:0.25rem;" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" type="button" title="Make visible to all groups">Make Global</button>';
         }
         el.innerHTML = h;
     }
