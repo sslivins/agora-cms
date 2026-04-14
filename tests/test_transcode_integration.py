@@ -25,10 +25,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 from cms.services.transcoder import (
-    _build_ffmpeg_args_safe,
     convert_image_to_jpeg,
     probe_media,
 )
+from worker.transcoder import _build_ffmpeg_args_safe
 
 # ---------------------------------------------------------------------------
 # Helpers

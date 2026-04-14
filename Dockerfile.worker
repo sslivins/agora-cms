@@ -2,10 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# FFmpeg 8.1 static build hosted in our own repo release
+# FFmpeg 8.1 static build + libheif for HEIC image conversion
 ARG TARGETARCH
 
-# libheif-examples for HEIC grid assembly, curl + xz-utils to fetch FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif-examples \
     curl \
@@ -16,14 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y curl xz-utils && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-shared.txt requirements.txt requirements-test.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
+COPY requirements-shared.txt ./
+COPY worker/requirements.txt worker/requirements.txt
+RUN pip install --no-cache-dir -r requirements-shared.txt
 
 COPY shared/ shared/
-COPY cms/ cms/
-COPY tests/ tests/
-COPY pytest.ini .
+COPY worker/ worker/
 
-EXPOSE 8080
-
-CMD ["uvicorn", "cms.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "worker"]

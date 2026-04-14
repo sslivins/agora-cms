@@ -41,7 +41,6 @@ from cms.services.storage import (
     LocalStorageBackend,
     init_storage,
 )
-from cms.services.transcoder import transcoder_loop
 from cms.services.version_checker import version_check_loop
 from cms.services.device_purge import device_purge_loop
 
@@ -349,9 +348,8 @@ async def lifespan(app: FastAPI):
         from cms.services.transcoder import fix_image_variant_extensions
         await fix_image_variant_extensions(db)
 
-    # Start background scheduler
+    # Start background tasks (transcoding is handled by the dedicated worker container)
     scheduler_task = asyncio.create_task(scheduler_loop())
-    transcoder_task = asyncio.create_task(transcoder_loop(settings.asset_storage_path))
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
     version_check_task = asyncio.create_task(version_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
@@ -361,17 +359,12 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     scheduler_task.cancel()
-    transcoder_task.cancel()
     backfill_task.cancel()
     version_check_task.cancel()
     device_purge_task.cancel()
     key_rotation_task.cancel()
     try:
         await scheduler_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await transcoder_task
     except asyncio.CancelledError:
         pass
     try:

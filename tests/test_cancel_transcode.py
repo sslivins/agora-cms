@@ -103,68 +103,35 @@ class TestProfileUpdateResetsProcessing:
 
 
 # ── Unit tests: cancel_profile_transcodes function ──
+# In the new architecture, ffmpeg runs in the dedicated worker container.
+# The CMS cancel functions are no-ops (always return False) — the worker
+# handles its own process lifecycle.
 
 
 class TestCancelProfileTranscodes:
-    """cancel_profile_transcodes() should kill the active ffmpeg subprocess."""
+    """cancel_profile_transcodes() is a no-op in CMS (worker handles ffmpeg)."""
 
     @pytest.mark.asyncio
-    async def test_kills_active_process_for_matching_profile(self):
-        """Should terminate ffmpeg when active transcode matches the profile."""
+    async def test_always_returns_false(self):
+        """CMS cancel is a no-op — worker manages its own ffmpeg processes."""
         from cms.services import transcoder
 
         profile_id = uuid.uuid4()
-        mock_proc = AsyncMock()
-        mock_proc.returncode = None  # still running
-
-        # Simulate an active transcode for this profile
-        transcoder._active_process = mock_proc
-        transcoder._active_profile_id = profile_id
-        transcoder._active_variant_id = uuid.uuid4()
-
-        try:
-            cancel_profile_transcodes = transcoder.cancel_profile_transcodes
-            cancelled = cancel_profile_transcodes(profile_id)
-
-            assert cancelled is True
-            mock_proc.terminate.assert_called_once()
-        finally:
-            transcoder._active_process = None
-            transcoder._active_profile_id = None
-            transcoder._active_variant_id = None
+        cancelled = transcoder.cancel_profile_transcodes(profile_id)
+        assert cancelled is False
 
     @pytest.mark.asyncio
     async def test_no_op_for_different_profile(self):
-        """Should not kill ffmpeg when active transcode is for a different profile."""
+        """Should return False (no-op) regardless of profile."""
         from cms.services import transcoder
 
-        active_profile = uuid.uuid4()
-        other_profile = uuid.uuid4()
-        mock_proc = AsyncMock()
-        mock_proc.returncode = None
-
-        transcoder._active_process = mock_proc
-        transcoder._active_profile_id = active_profile
-        transcoder._active_variant_id = uuid.uuid4()
-
-        try:
-            cancelled = transcoder.cancel_profile_transcodes(other_profile)
-
-            assert cancelled is False
-            mock_proc.terminate.assert_not_called()
-        finally:
-            transcoder._active_process = None
-            transcoder._active_profile_id = None
-            transcoder._active_variant_id = None
+        cancelled = transcoder.cancel_profile_transcodes(uuid.uuid4())
+        assert cancelled is False
 
     @pytest.mark.asyncio
     async def test_no_op_when_no_active_transcode(self):
         """Should return False when no transcode is running."""
         from cms.services import transcoder
-
-        transcoder._active_process = None
-        transcoder._active_profile_id = None
-        transcoder._active_variant_id = None
 
         cancelled = transcoder.cancel_profile_transcodes(uuid.uuid4())
         assert cancelled is False
@@ -176,7 +143,7 @@ class TestTranscodeOneCancellation:
     @pytest.mark.asyncio
     async def test_cancelled_variant_not_marked_failed(self, db_session, tmp_path):
         """When ffmpeg is killed mid-transcode, variant should stay PENDING (not FAILED)."""
-        from cms.services import transcoder
+        from worker import transcoder
 
         profile = DeviceProfile(
             name="cancel-transcode-test",
@@ -229,9 +196,9 @@ class TestTranscodeOneCancellation:
         # _cancelled_variant_ids set
         transcoder._cancelled_variant_ids.add(variant.id)
 
-        with patch("cms.services.transcoder.asyncio.create_subprocess_exec", return_value=mock_proc), \
-             patch("cms.services.transcoder._get_duration", return_value=60.0), \
-             patch("cms.services.transcoder.probe_media", return_value={}):
+        with patch("worker.transcoder.asyncio.create_subprocess_exec", return_value=mock_proc), \
+             patch("worker.transcoder._get_duration", return_value=60.0), \
+             patch("worker.transcoder.probe_media", return_value={}):
             await transcoder._transcode_one(variant, db_session, asset_dir)
 
         # Variant should NOT be FAILED — the cancel signal means it will be re-queued

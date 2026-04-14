@@ -414,6 +414,8 @@ async def upload_asset(
     # Queue transcoding for all profiles (video and image assets)
     if asset_type in (AssetType.VIDEO, AssetType.IMAGE):
         await _enqueue_transcoding(asset, db)
+        from cms.services.transcoder import notify_worker
+        await notify_worker(db)
 
     return asset
 
