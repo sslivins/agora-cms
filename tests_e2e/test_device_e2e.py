@@ -61,6 +61,10 @@ class TestDeviceRegistration:
         run_async(first_connect())
         assert saved_token
 
+        # Adopt the device so it receives sync on reconnect
+        resp = api.post("/api/devices/reconnect-001/adopt")
+        assert resp.status_code == 200
+
         # Reconnect with the saved token
         async def reconnect():
             async with FakeDevice("reconnect-001", ws_url, auth_token=saved_token) as dev:
