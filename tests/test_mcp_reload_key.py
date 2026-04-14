@@ -424,7 +424,7 @@ class TestNotifyMcpReload:
     @pytest.mark.asyncio
     async def test_notify_posts_to_reload_key(self):
         """Should POST to {mcp_url}/reload-key."""
-        from cms.ui import _notify_mcp_reload
+        from cms.mcp_utils import notify_mcp_reload
 
         settings = MagicMock()
         settings.mcp_server_url = "http://mcp:8000"
@@ -437,15 +437,15 @@ class TestNotifyMcpReload:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("cms.ui._httpx.AsyncClient", return_value=mock_client):
-            await _notify_mcp_reload(settings)
+        with patch("cms.mcp_utils.httpx.AsyncClient", return_value=mock_client):
+            await notify_mcp_reload(settings)
 
         mock_client.post.assert_called_once_with("http://mcp:8000/reload-key")
 
     @pytest.mark.asyncio
     async def test_notify_strips_trailing_slash(self):
         """Should strip trailing slash from mcp_server_url."""
-        from cms.ui import _notify_mcp_reload
+        from cms.mcp_utils import notify_mcp_reload
 
         settings = MagicMock()
         settings.mcp_server_url = "http://mcp:8000/"
@@ -458,15 +458,15 @@ class TestNotifyMcpReload:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("cms.ui._httpx.AsyncClient", return_value=mock_client):
-            await _notify_mcp_reload(settings)
+        with patch("cms.mcp_utils.httpx.AsyncClient", return_value=mock_client):
+            await notify_mcp_reload(settings)
 
         mock_client.post.assert_called_once_with("http://mcp:8000/reload-key")
 
     @pytest.mark.asyncio
     async def test_notify_handles_connection_error_gracefully(self):
         """Connection error should be logged, not raised."""
-        from cms.ui import _notify_mcp_reload
+        from cms.mcp_utils import notify_mcp_reload
 
         settings = MagicMock()
         settings.mcp_server_url = "http://mcp:8000"
@@ -476,15 +476,15 @@ class TestNotifyMcpReload:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("cms.ui._httpx.AsyncClient", return_value=mock_client):
+        with patch("cms.mcp_utils.httpx.AsyncClient", return_value=mock_client):
             # Should NOT raise
-            await _notify_mcp_reload(settings)
+            await notify_mcp_reload(settings)
 
     @pytest.mark.asyncio
     async def test_notify_handles_timeout_gracefully(self):
         """Timeout should be logged, not raised."""
         import httpx
-        from cms.ui import _notify_mcp_reload
+        from cms.mcp_utils import notify_mcp_reload
 
         settings = MagicMock()
         settings.mcp_server_url = "http://mcp:8000"
@@ -494,13 +494,13 @@ class TestNotifyMcpReload:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("cms.ui._httpx.AsyncClient", return_value=mock_client):
-            await _notify_mcp_reload(settings)
+        with patch("cms.mcp_utils.httpx.AsyncClient", return_value=mock_client):
+            await notify_mcp_reload(settings)
 
     @pytest.mark.asyncio
     async def test_notify_logs_warning_on_non_200(self):
         """Non-200 response should log a warning."""
-        from cms.ui import _notify_mcp_reload
+        from cms.mcp_utils import notify_mcp_reload
 
         settings = MagicMock()
         settings.mcp_server_url = "http://mcp:8000"
@@ -514,10 +514,10 @@ class TestNotifyMcpReload:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("cms.ui._httpx.AsyncClient", return_value=mock_client),
-            patch("cms.ui._ui_logger") as mock_logger,
+            patch("cms.mcp_utils.httpx.AsyncClient", return_value=mock_client),
+            patch("cms.mcp_utils.logger") as mock_logger,
         ):
-            await _notify_mcp_reload(settings)
+            await notify_mcp_reload(settings)
             mock_logger.warning.assert_called_once()
             assert "500" in str(mock_logger.warning.call_args)
 
@@ -527,14 +527,6 @@ class TestNotifyMcpReload:
 
 @pytest.mark.asyncio
 class TestEndpointsCallNotify:
-    async def test_regenerate_calls_notify(self, app, client):
-        """Regenerate endpoint should call _notify_mcp_reload."""
-        with patch("cms.ui._notify_mcp_reload", new_callable=AsyncMock) as mock_notify:
-            resp = await client.post("/api/mcp/service-key/regenerate")
-            assert resp.status_code == 200
-            assert resp.json()["regenerated"] is True
-            mock_notify.assert_called_once()
-
     async def test_toggle_enable_with_new_key_calls_notify(self, app, client, db_session):
         """Toggle enable (new key provisioned) should call _notify_mcp_reload."""
         from cms.auth import SETTING_MCP_SERVICE_KEY_HASH, get_setting

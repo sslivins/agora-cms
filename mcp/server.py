@@ -82,6 +82,24 @@ def _get_client() -> CMSClient:
     )
 
 
+async def _call_api(method_name: str, *args, **kwargs):
+    """Call a CMSClient method with automatic key reload on 401.
+
+    If the CMS returns 401 (stale service key), reloads the key from
+    Key Vault/file and retries once with a fresh client.
+    """
+    client = _get_client()
+    try:
+        return await getattr(client, method_name)(*args, **kwargs)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 401:
+            raise
+        logger.warning("CMS returned 401 — reloading service key and retrying")
+        await _reload_service_key()
+        client = _get_client()
+        return await getattr(client, method_name)(*args, **kwargs)
+
+
 def _check_permission(tool_name: str) -> str | None:
     """Check if the current user has permission for a tool.
 
@@ -113,7 +131,7 @@ async def list_devices() -> str:
     """List all registered Agora devices with their status, group, and connection state."""
     if err := _check_permission("list_devices"):
         return err
-    devices = await _get_client().list_devices()
+    devices = await _call_api("list_devices")
     return _json_result(devices)
 
 
@@ -126,7 +144,7 @@ async def get_device(device_id: str) -> str:
     """
     if err := _check_permission("get_device"):
         return err
-    device = await _get_client().get_device(device_id)
+    device = await _call_api("get_device", device_id)
     return _json_result(device)
 
 
@@ -139,7 +157,7 @@ async def adopt_device(device_id: str) -> str:
     """
     if err := _check_permission("adopt_device"):
         return err
-    result = await _get_client().adopt_device(device_id)
+    result = await _call_api("adopt_device", device_id)
     return _json_result(result)
 
 
@@ -168,7 +186,7 @@ async def update_device(
         fields["group_id"] = group_id
     if default_asset_id is not None:
         fields["default_asset_id"] = default_asset_id if default_asset_id != "null" else None
-    result = await _get_client().update_device(device_id, fields)
+    result = await _call_api("update_device", device_id, fields)
     return _json_result(result)
 
 
@@ -181,7 +199,7 @@ async def reboot_device(device_id: str) -> str:
     """
     if err := _check_permission("reboot_device"):
         return err
-    await _get_client().reboot_device(device_id)
+    await _call_api("reboot_device", device_id)
     return f"Reboot command sent to device {device_id}"
 
 
@@ -194,7 +212,7 @@ async def delete_device(device_id: str) -> str:
     """
     if err := _check_permission("delete_device"):
         return err
-    await _get_client().delete_device(device_id)
+    await _call_api("delete_device", device_id)
     return f"Device {device_id} deleted"
 
 
@@ -206,7 +224,7 @@ async def list_groups() -> str:
     """List all device groups."""
     if err := _check_permission("list_groups"):
         return err
-    groups = await _get_client().list_groups()
+    groups = await _call_api("list_groups")
     return _json_result(groups)
 
 
@@ -226,7 +244,7 @@ async def create_group(
     """
     if err := _check_permission("create_group"):
         return err
-    result = await _get_client().create_group(name, description, default_asset_id=default_asset_id)
+    result = await _call_api("create_group", name, description, default_asset_id=default_asset_id)
     return _json_result(result)
 
 
@@ -255,7 +273,7 @@ async def update_group(
         fields["description"] = description
     if default_asset_id is not None:
         fields["default_asset_id"] = default_asset_id if default_asset_id != "null" else None
-    result = await _get_client().update_group(group_id, fields)
+    result = await _call_api("update_group", group_id, fields)
     return _json_result(result)
 
 
@@ -268,7 +286,7 @@ async def delete_group(group_id: str) -> str:
     """
     if err := _check_permission("delete_group"):
         return err
-    await _get_client().delete_group(group_id)
+    await _call_api("delete_group", group_id)
     return f"Group {group_id} deleted"
 
 
@@ -280,7 +298,7 @@ async def list_assets() -> str:
     """List all uploaded assets (videos and images) in the CMS library."""
     if err := _check_permission("list_assets"):
         return err
-    assets = await _get_client().list_assets()
+    assets = await _call_api("list_assets")
     return _json_result(assets)
 
 
@@ -293,7 +311,7 @@ async def get_asset(asset_id: str) -> str:
     """
     if err := _check_permission("get_asset"):
         return err
-    asset = await _get_client().get_asset(asset_id)
+    asset = await _call_api("get_asset", asset_id)
     return _json_result(asset)
 
 
@@ -306,7 +324,7 @@ async def delete_asset(asset_id: str) -> str:
     """
     if err := _check_permission("delete_asset"):
         return err
-    await _get_client().delete_asset(asset_id)
+    await _call_api("delete_asset", asset_id)
     return f"Asset {asset_id} deleted"
 
 
@@ -318,7 +336,7 @@ async def list_schedules() -> str:
     """List all schedules with their target devices/groups, assets, and time windows."""
     if err := _check_permission("list_schedules"):
         return err
-    schedules = await _get_client().list_schedules()
+    schedules = await _call_api("list_schedules")
     return _json_result(schedules)
 
 
@@ -331,7 +349,7 @@ async def get_schedule(schedule_id: str) -> str:
     """
     if err := _check_permission("get_schedule"):
         return err
-    schedule = await _get_client().get_schedule(schedule_id)
+    schedule = await _call_api("get_schedule", schedule_id)
     return _json_result(schedule)
 
 
@@ -382,7 +400,6 @@ async def create_schedule(
     """
     if err := _check_permission("create_schedule"):
         return err
-    client = _get_client()
     data = {
         "name": name,
         "asset_id": asset_id,
@@ -405,7 +422,7 @@ async def create_schedule(
     if loop_count is not None:
         data["loop_count"] = loop_count
 
-    result = await client.create_schedule(data)
+    result = await _call_api("create_schedule", data)
     return _json_result(result)
 
 
@@ -451,7 +468,7 @@ async def update_schedule(
         val = locals()[key]
         if val is not None:
             fields[key] = val
-    result = await _get_client().update_schedule(schedule_id, fields)
+    result = await _call_api("update_schedule", schedule_id, fields)
     return _json_result(result)
 
 
@@ -464,7 +481,7 @@ async def delete_schedule(schedule_id: str) -> str:
     """
     if err := _check_permission("delete_schedule"):
         return err
-    await _get_client().delete_schedule(schedule_id)
+    await _call_api("delete_schedule", schedule_id)
     return f"Schedule {schedule_id} deleted"
 
 
@@ -487,16 +504,15 @@ async def play_now(
     """
     if err := _check_permission("play_now"):
         return err
-    client = _get_client()
     if not name:
         try:
-            asset = await client.get_asset(asset_id)
+            asset = await _call_api("get_asset", asset_id)
             asset_name = asset.get("original_filename") or asset.get("filename") or asset_id
             name = f"{asset_name} \u2014 Play Now"
         except Exception:
             name = f"Play Now \u2014 {asset_id[:8]}"
 
-    server_time = await client.get_server_time()
+    server_time = await _call_api("get_server_time")
     today = server_time["local"][:10]
     data = {
         "name": name,
@@ -509,7 +525,7 @@ async def play_now(
         "priority": 10,
         "enabled": True,
     }
-    result = await client.create_schedule(data)
+    result = await _call_api("create_schedule", data)
     schedule_id = result.get("id", "unknown")
     return _json_result({
         "schedule": result,
@@ -526,7 +542,7 @@ async def end_schedule_now(schedule_id: str) -> str:
     """
     if err := _check_permission("end_schedule_now"):
         return err
-    await _get_client().end_schedule_now(schedule_id)
+    await _call_api("end_schedule_now", schedule_id)
     return f"Schedule {schedule_id} ended for current occurrence"
 
 
@@ -538,7 +554,7 @@ async def list_profiles() -> str:
     """List all transcode profiles (codec settings used when preparing video assets for devices)."""
     if err := _check_permission("list_profiles"):
         return err
-    profiles = await _get_client().list_profiles()
+    profiles = await _call_api("list_profiles")
     return _json_result(profiles)
 
 
@@ -564,7 +580,7 @@ async def get_device_logs(
     """
     if err := _check_permission("get_device_logs"):
         return err
-    result = await _get_client().request_device_logs(device_id, services=services, since=since)
+    result = await _call_api("request_device_logs", device_id, services=services, since=since)
     return _json_result(result)
 
 
@@ -578,7 +594,7 @@ async def get_server_time() -> str:
     Use this before creating schedules to understand what timezone
     start_time and end_time will be interpreted in.
     """
-    data = await _get_client().get_server_time()
+    data = await _call_api("get_server_time")
     return _json_result(data)
 
 
@@ -588,7 +604,7 @@ async def get_server_time() -> str:
 @mcp.tool()
 async def get_dashboard() -> str:
     """Get the current dashboard state: what's playing now, upcoming schedules, device states, and alerts."""
-    dashboard = await _get_client().get_dashboard()
+    dashboard = await _call_api("get_dashboard")
     return _json_result(dashboard)
 
 

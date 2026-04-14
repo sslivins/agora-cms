@@ -51,15 +51,12 @@ from cms.services.version_checker import get_latest_device_version, is_update_av
 from cms.routers.devices import _upgrading as _devices_upgrading
 
 import json as _json
-import logging as _logging
 from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo
 
 from cms.timezones import build_tz_options, canonical_timezones
 
-import httpx as _httpx
-
-_ui_logger = _logging.getLogger(__name__)
+from cms.mcp_utils import notify_mcp_reload as _notify_mcp_reload
 
 # Canonical IANA timezones for dropdowns — sorted for readability.
 COMMON_TIMEZONES = sorted(canonical_timezones())
@@ -1110,7 +1107,6 @@ async def settings_page(
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
-    mcp_service_key_active = (await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)) is not None
 
     # SMTP settings
     smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
@@ -1140,7 +1136,6 @@ async def settings_page(
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
-        "mcp_service_key_active": mcp_service_key_active,
         "smtp_host": smtp_host,
         "smtp_port": smtp_port,
         "smtp_username": smtp_username,
@@ -1205,19 +1200,6 @@ async def change_password(
 # ── MCP Settings (JSON API used by settings page JS) ──
 
 
-async def _notify_mcp_reload(settings: Settings) -> None:
-    """Tell the MCP server to reload its service key from Key Vault."""
-    mcp_url = settings.mcp_server_url.rstrip("/")
-    try:
-        async with _httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{mcp_url}/reload-key")
-            if resp.status_code == 200:
-                _ui_logger.info("MCP service key reload triggered")
-            else:
-                _ui_logger.warning("MCP reload-key returned %s", resp.status_code)
-    except Exception as exc:
-        _ui_logger.warning("Failed to notify MCP of key reload: %s", exc)
-
 
 @router.get("/api/mcp/status", dependencies=[Depends(require_auth)])
 async def mcp_health_check():
@@ -1275,20 +1257,6 @@ async def mcp_toggle(
         await _notify_mcp_reload(settings)
 
     return {"enabled": enabled}
-
-
-@router.post("/api/mcp/service-key/regenerate", dependencies=[Depends(require_auth)])
-async def regenerate_mcp_service_key(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-):
-    """Regenerate the MCP service key."""
-    raw_key, prefix = await provision_service_key(
-        db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
-    )
-    await _notify_mcp_reload(settings)
-    return {"regenerated": True, "prefix": prefix, "service_key": raw_key}
 
 
 # ── SMTP Settings ──
@@ -1464,7 +1432,6 @@ async def change_timezone(
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
-    mcp_service_key_active = (await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)) is not None
 
     tz_options = build_tz_options()
 
@@ -1483,7 +1450,6 @@ async def change_timezone(
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
-        "mcp_service_key_active": mcp_service_key_active,
         "timezones": tz_options,
         "devices": device_list,
     }
