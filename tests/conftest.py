@@ -92,12 +92,15 @@ async def app(db_engine, tmp_path):
     from cms.database import get_db
     from cms.services.storage import LocalStorageBackend, init_storage
 
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(
         database_url=str(db_engine.url),
         secret_key="test-secret",
         admin_username="admin",
         admin_password="testpass",
         asset_storage_path=tmp_path / "assets",
+        service_key_path=str(shared_dir / "mcp-service.key"),
     )
     settings.asset_storage_path.mkdir(parents=True, exist_ok=True)
 

@@ -183,12 +183,30 @@
     </label>
 
     <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
-        <div class="form-group">
+        <div class="form-group" style="margin-top: 1rem;">
+            <label>Service Key</label>
+            <p class="text-muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
+                Auto-managed key used by the MCP server to communicate with the CMS API.
+                The MCP server picks up changes automatically within 60 seconds.
+            </p>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span id="mcp-svc-key-status" class="badge {% if mcp_service_key_active %}badge-online{% else %}badge-offline{% endif %}">
+                    {% if mcp_service_key_active %}active{% else %}not provisioned{% endif %}
+                </span>
+                <button type="button" class="btn btn-secondary" id="mcp-regenerate-btn"
+                        {% if not mcp_service_key_active %}disabled{% endif %}
+                        style="font-size: 0.85rem; padding: 0.25rem 0.75rem;">
+                    🔄 Regenerate
+                </button>
+            </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 1rem;">
             <label>Authentication</label>
             <p class="text-muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
-                MCP clients authenticate using your personal API key. Create one in
-                <strong>Settings → API Keys</strong>, then configure your LLM client
-                with the key as the Bearer token.
+                MCP clients authenticate using personal MCP keys. Create one in
+                <a href="/profile"><strong>Profile → My Keys</strong></a>, then configure your
+                LLM client with the key as the Bearer token.
             </p>
         </div>
     </div>
@@ -200,6 +218,8 @@
     const keySection = document.getElementById("mcp-key-section");
     const statusBadge = document.getElementById("mcp-status-badge");
     const apiBadge = document.getElementById("mcp-api-badge");
+    const svcKeyStatus = document.getElementById("mcp-svc-key-status");
+    const regenBtn = document.getElementById("mcp-regenerate-btn");
 
     // Check MCP container health
     async function checkMcpHealth() {
@@ -241,10 +261,37 @@
             });
             if (!resp.ok) throw new Error("Toggle failed");
             keySection.style.display = toggle.checked ? "" : "none";
-            showToast(toggle.checked ? "MCP server enabled" : "MCP server disabled");
+            if (toggle.checked) {
+                svcKeyStatus.textContent = "active";
+                svcKeyStatus.className = "badge badge-online";
+                regenBtn.disabled = false;
+            } else {
+                svcKeyStatus.textContent = "not provisioned";
+                svcKeyStatus.className = "badge badge-offline";
+                regenBtn.disabled = true;
+            }
+            showToast(toggle.checked ? "MCP server enabled — service key provisioned" : "MCP server disabled — service key revoked");
         } catch {
             toggle.checked = !toggle.checked;
             showToast("Failed to update MCP setting", true);
+        }
+    });
+
+    // Regenerate service key
+    regenBtn.addEventListener("click", async function() {
+        const ok = await showConfirm(
+            "Regenerate the MCP service key? The MCP server will pick up the new key within 60 seconds. " +
+            "Any in-flight MCP requests may fail briefly during the transition."
+        );
+        if (!ok) return;
+        try {
+            const resp = await fetch("/api/mcp/service-key/regenerate", {
+                method: "POST",
+            });
+            if (!resp.ok) throw new Error("Regenerate failed");
+            showToast("Service key regenerated — MCP server will reload within 60s");
+        } catch (err) {
+            showToast(err.message || "Failed to regenerate service key", true);
         }
     });
 })();
@@ -353,138 +400,6 @@ async function testSmtp() {
         }
     } catch (err) {
         showToast("Failed to send test email", true);
-    }
-}
-</script>
-{% endif %}
-
-{% if 'api_keys:write' in user_perms %}
-<div class="card" id="api-keys-card">
-    <h2>API Keys</h2>
-    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
-        API keys allow programmatic access to the <a href="https://editor.swagger.io/?url=https://raw.githubusercontent.com/sslivins/agora-cms/main/docs/openapi.yaml" target="_blank">REST API</a> via the <code>X-API-Key</code> header.
-        Keys are shown only once when created — store them securely.
-    </p>
-
-    <table id="api-keys-table">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Key</th>
-                <th>Created</th>
-                <th>Last Used</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody id="api-keys-body">
-            <tr><td colspan="5" class="text-muted">Loading…</td></tr>
-        </tbody>
-    </table>
-
-    <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center; max-width: 500px;">
-        <input type="text" id="new-key-name" placeholder="Key name (e.g. MCP Server)" class="form-input-dark" style="flex:1;">
-        <button type="button" class="btn btn-primary" id="create-key-btn">Create Key</button>
-    </div>
-</div>
-
-<script>
-(function() {
-    const tbody = document.getElementById("api-keys-body");
-    const nameInput = document.getElementById("new-key-name");
-    const createBtn = document.getElementById("create-key-btn");
-
-    async function loadKeys() {
-        try {
-            const resp = await fetch("/api/keys");
-            const keys = await resp.json();
-            if (!keys.length) {
-                tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No API keys yet.</td></tr>';
-                return;
-            }
-            tbody.innerHTML = keys.map(k => `
-                <tr>
-                    <td>${k.name}</td>
-                    <td style="font-family: monospace; font-size: 0.85rem;">${k.key_prefix}</td>
-                    <td>${new Date(k.created_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'})}</td>
-                    <td>${k.last_used_at ? new Date(k.last_used_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'}) : '<span class="text-muted">Never</span>'}</td>
-                    <td><button class="btn btn-sm btn-danger" onclick="deleteApiKey('${k.id}', '${k.name}')">Delete</button></td>
-                </tr>
-            `).join("");
-        } catch {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-muted">Failed to load keys.</td></tr>';
-        }
-    }
-
-    createBtn.addEventListener("click", async function() {
-        const name = nameInput.value.trim();
-        if (!name) { showToast("Enter a name for the key", true); return; }
-        try {
-            const resp = await fetch("/api/keys", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({name}),
-            });
-            if (!resp.ok) throw new Error("Create failed");
-            const data = await resp.json();
-            nameInput.value = "";
-            await loadKeys();
-            // Show the key in a prompt so user can copy it
-            copyToClipboard(data.key);
-            // Show key in a custom modal with OK + Copy buttons
-            const overlay = document.createElement("div");
-            overlay.className = "modal-overlay";
-            const box = document.createElement("div");
-            box.className = "modal-box";
-            box.innerHTML = `
-                <p style="margin-bottom:0.5rem;"><strong>API key created!</strong></p>
-                <p style="margin-bottom:0.75rem; font-size:0.85rem;" class="text-muted">Store it securely — it won't be shown again.</p>
-                <input type="text" value="${data.key}" readonly class="form-input-dark" style="width:100%; font-family:monospace; font-size:0.85rem; margin-bottom:1rem;">
-                <div class="modal-actions">
-                    <button class="btn btn-secondary" id="key-copy-btn">Copy</button>
-                    <button class="btn btn-primary" id="key-ok-btn">OK</button>
-                </div>
-            `;
-            document.body.appendChild(overlay);
-            overlay.appendChild(box);
-            const keyInput = box.querySelector("input");
-            keyInput.select();
-            box.querySelector("#key-copy-btn").onclick = () => { copyToClipboard(data.key); };
-            box.querySelector("#key-ok-btn").onclick = () => { overlay.remove(); };
-            overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
-        } catch {
-            showToast("Failed to create API key", true);
-        }
-    });
-
-    loadKeys();
-})();
-
-async function deleteApiKey(id, name) {
-    const ok = await showConfirm(`Delete API key "${name}"? Any services using this key will lose access.`);
-    if (!ok) return;
-    try {
-        const resp = await fetch(`/api/keys/${id}`, {method: "DELETE"});
-        if (!resp.ok) throw new Error("Delete failed");
-        showToast(`API key "${name}" deleted`);
-        // Reload the keys table
-        const keysResp = await fetch("/api/keys");
-        const keys = await keysResp.json();
-        const tbody = document.getElementById("api-keys-body");
-        if (!keys.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No API keys yet.</td></tr>';
-        } else {
-            tbody.innerHTML = keys.map(k => `
-                <tr>
-                    <td>${k.name}</td>
-                    <td style="font-family: monospace; font-size: 0.85rem;">${k.key_prefix}</td>
-                    <td>${new Date(k.created_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'})}</td>
-                    <td>${k.last_used_at ? new Date(k.last_used_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'}) : '<span class="text-muted">Never</span>'}</td>
-                    <td><button class="btn btn-sm btn-danger" onclick="deleteApiKey('${k.id}', '${k.name}')">Delete</button></td>
-                </tr>
-            `).join("");
-        }
-    } catch {
-        showToast("Failed to delete API key", true);
     }
 }
 </script>
