@@ -40,5 +40,8 @@ class Settings(BaseSettings):
     api_key_rotation_hours: int = 24  # rotate device API keys every N hours
     pending_device_ttl_hours: int = 24  # auto-purge pending devices not seen for N hours
 
+    # MCP service key file (shared volume between CMS and MCP containers)
+    service_key_path: str = "/shared/mcp-service.key"
+
     # SMTP is configured via the web UI settings page (stored in DB)
     base_url: str | None = None  # public URL for login links in emails

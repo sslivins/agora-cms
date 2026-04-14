@@ -1,6 +1,7 @@
 """HTTP client for Agora CMS REST API.
 
-Authenticates using a user API key (X-API-Key header).
+Authenticates using the MCP service key (X-API-Key header) and passes
+the real user identity via X-On-Behalf-Of for audit logging.
 """
 
 import logging
@@ -17,11 +18,14 @@ class CMSClient:
         self,
         base_url: str = "http://cms:8080",
         api_key: str = "",
+        on_behalf_of: str = "",
     ):
         self.base_url = base_url.rstrip("/")
         headers = {}
         if api_key:
             headers["X-API-Key"] = api_key
+        if on_behalf_of:
+            headers["X-On-Behalf-Of"] = on_behalf_of
         self._client = httpx.AsyncClient(
             base_url=self.base_url, timeout=30.0, headers=headers,
         )

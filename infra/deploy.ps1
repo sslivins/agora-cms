@@ -283,13 +283,13 @@ $storageName     = $outputs.storageAccountName.value
 
 Write-Ok "Infrastructure deployed"
 
-# ── Post-deploy: configure MCP API key ───────────────────────────
+# ── Post-deploy: configure MCP ───────────────────────────────────
 
-Write-Step "Configuring MCP API key"
+Write-Step "Configuring MCP server"
 
 $cmsAppName = "$Prefix-cms"
 $mcpAppName = "$Prefix-mcp"
-$apiKey = ""
+$mcpSseKey = ""
 
 # Wait for CMS to be healthy
 Write-Host "  Waiting for CMS to start..." -ForegroundColor Yellow
@@ -301,14 +301,13 @@ for ($i = 1; $i -le $maxAttempts; $i++) {
         if ($health.StatusCode -eq 200) { $cmsReady = $true; break }
     } catch {}
     if ($i -eq $maxAttempts) {
-        Write-Warn "CMS not responding after $maxAttempts attempts — MCP key setup skipped"
+        Write-Warn "CMS not responding after $maxAttempts attempts — MCP setup skipped"
         Write-Host "  You can configure it manually later." -ForegroundColor Yellow
     }
     Start-Sleep 10
 }
 
 if ($cmsReady) {
-    # Login and create API key
     try {
         # Login returns a 303 redirect — capture the session cookie
         $null = Invoke-WebRequest -Uri "https://$cmsUrl/login" -Method POST `
@@ -316,42 +315,23 @@ if ($cmsReady) {
             -SessionVariable cmsSession -MaximumRedirection 0 `
             -ErrorAction SilentlyContinue -SkipHttpErrorCheck
 
-        # Create a CMS API key for the MCP server
-        $keyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/keys" -Method POST `
-            -WebSession $cmsSession `
-            -ContentType "application/json" `
-            -Body '{"name":"mcp-server"}'
-        $apiKey = $keyResp.key
-        Write-Ok "CMS API key created"
-
-        # Enable MCP in CMS settings
+        # Enable MCP in CMS settings (auto-provisions service key)
         $null = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/toggle" -Method POST `
             -WebSession $cmsSession `
             -ContentType "application/json" `
             -Body '{"enabled":true}'
-        Write-Ok "MCP server enabled in CMS settings"
+        Write-Ok "MCP server enabled (service key auto-provisioned)"
 
-        # Store API key in Key Vault
-        az keyvault secret set --vault-name "$Prefix-vault" --name "mcp-api-key" --value $apiKey -o none 2>$null
-        Write-Ok "API key stored in Key Vault"
-
-        # Update MCP container with the real API key and restart to pick it up
-        az containerapp secret set --name $mcpAppName --resource-group $ResourceGroup `
-            --secrets "mcp-api-key=$apiKey" -o none 2>$null
-        $suffix = "mcp$(Get-Date -Format 'MMddHHmm')"
-        az containerapp update --name $mcpAppName --resource-group $ResourceGroup `
-            --revision-suffix $suffix -o none 2>$null
-        # Secret changes require a restart — pick only the first active revision
-        $activeRevision = (az containerapp revision list --name $mcpAppName `
-            --resource-group $ResourceGroup --query "[?properties.active].name | [0]" -o tsv 2>$null).Trim()
-        az containerapp revision restart --name $mcpAppName --resource-group $ResourceGroup `
-            --revision $activeRevision -o none 2>$null
-        Write-Ok "MCP container updated with API key (restarted)"
+        # Generate an MCP SSE auth key for the admin user
+        $keyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/generate-key" -Method POST `
+            -WebSession $cmsSession `
+            -ContentType "application/json"
+        $mcpSseKey = $keyResp.key
+        Write-Ok "MCP SSE auth key generated"
 
     } catch {
-        Write-Warn "Failed to configure MCP API key: $($_.Exception.Message)"
+        Write-Warn "Failed to configure MCP: $($_.Exception.Message)"
         Write-Host "  You can configure it manually via the CMS settings page." -ForegroundColor Yellow
-        $apiKey = ""
     }
 }
 
@@ -369,10 +349,10 @@ Write-Host "  PostgreSQL:       $pgFqdn" -ForegroundColor White
 Write-Host "  Key Vault:        $kvUri" -ForegroundColor White
 Write-Host "  Storage Account:  $storageName" -ForegroundColor White
 Write-Host "  Resource Group:   $ResourceGroup" -ForegroundColor White
-if ($apiKey) {
+if ($mcpSseKey) {
     Write-Host ""
-    Write-Host "  MCP API Key:      $apiKey" -ForegroundColor White
     Write-Host "  MCP SSE URL:      https://$mcpUrl/sse" -ForegroundColor White
+    Write-Host "  MCP SSE Auth:     Bearer $mcpSseKey" -ForegroundColor White
 }
 Write-Host ""
 
@@ -388,7 +368,7 @@ $outputObj = @{
     cmsUrl             = "https://$cmsUrl"
     mcpUrl             = "https://$mcpUrl"
     mcpSseUrl          = "https://$mcpUrl/sse"
-    mcpApiKey          = if ($apiKey) { $apiKey } else { "" }
+    mcpSseKey          = if ($mcpSseKey) { $mcpSseKey } else { "" }
     acrLoginServer     = $acrLoginServer
     postgresServerFqdn = $pgFqdn
     keyVaultUri        = $kvUri
@@ -403,7 +383,7 @@ Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
 Write-Host "    1. Open CMS: https://$cmsUrl" -ForegroundColor Gray
 Write-Host "    2. Login with admin / <your password>" -ForegroundColor Gray
-if ($apiKey) {
-    Write-Host "    3. Configure MCP in Copilot CLI using the SSE URL and API key above" -ForegroundColor Gray
+if ($mcpSseKey) {
+    Write-Host "    3. Configure MCP in Copilot CLI using the SSE URL and auth key above" -ForegroundColor Gray
 }
 Write-Host ""

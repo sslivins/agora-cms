@@ -330,10 +330,9 @@ def main() -> int:
     ok("Infrastructure deployed")
 
     # ── Post-deploy: configure MCP ──
-    step("Configuring MCP API key")
+    step("Configuring MCP server")
     cms_app = f"{args.prefix}-cms"
     mcp_app = f"{args.prefix}-mcp"
-    api_key = ""
     mcp_sse_key = ""
 
     info("Waiting for CMS to start...")
@@ -343,7 +342,7 @@ def main() -> int:
             cms_ready = True
             break
         if i == 30:
-            warn("CMS not responding after 30 attempts — MCP key setup skipped")
+            warn("CMS not responding after 30 attempts — MCP setup skipped")
             info("You can configure it manually later.")
         time.sleep(10)
 
@@ -355,24 +354,15 @@ def main() -> int:
             session.post(f"https://{cms_url}/login",
                          data={"username": "admin", "password": cms_pass})
 
-            # Create CMS API key for MCP server
-            status, body = session.post(
-                f"https://{cms_url}/api/keys",
-                data={"name": "mcp-server"},
-                content_type="application/json",
-            )
-            api_key = json.loads(body)["key"]
-            ok("CMS API key created")
-
-            # Enable MCP
+            # Enable MCP (auto-provisions service key)
             session.post(
                 f"https://{cms_url}/api/mcp/toggle",
                 data={"enabled": True},
                 content_type="application/json",
             )
-            ok("MCP server enabled in CMS settings")
+            ok("MCP server enabled (service key auto-provisioned)")
 
-            # Generate MCP SSE auth key
+            # Generate MCP SSE auth key for admin user
             status, body = session.post(
                 f"https://{cms_url}/api/mcp/generate-key",
                 content_type="application/json",
@@ -380,35 +370,9 @@ def main() -> int:
             mcp_sse_key = json.loads(body)["key"]
             ok("MCP SSE auth key generated")
 
-            # Store in Key Vault
-            az("keyvault", "secret", "set", "--vault-name", kv_name,
-               "--name", "mcp-api-key", "--value", api_key, "-o", "none", quiet=True)
-            ok("API key stored in Key Vault")
-
-            # Update MCP container secret and restart
-            az("containerapp", "secret", "set", "--name", mcp_app,
-               "--resource-group", resource_group,
-               "--secrets", f"mcp-api-key={api_key}", "-o", "none", quiet=True)
-            suffix = f"mcp{datetime.now(timezone.utc).strftime('%m%d%H%M')}"
-            az("containerapp", "update", "--name", mcp_app,
-               "--resource-group", resource_group,
-               "--revision-suffix", suffix, "-o", "none", quiet=True)
-            active_rev = az(
-                "containerapp", "revision", "list", "--name", mcp_app,
-                "--resource-group", resource_group,
-                "--query", "[?properties.active].name", "-o", "tsv",
-                capture=True, quiet=True,
-            )
-            if active_rev:
-                az("containerapp", "revision", "restart", "--name", mcp_app,
-                   "--resource-group", resource_group,
-                   "--revision", active_rev.strip(), "-o", "none", quiet=True)
-            ok("MCP container updated with API key (restarted)")
-
         except Exception as e:
-            warn(f"Failed to configure MCP API key: {e}")
+            warn(f"Failed to configure MCP: {e}")
             info("You can configure it manually via the CMS settings page.")
-            api_key = ""
             mcp_sse_key = ""
 
     # ── Summary ──

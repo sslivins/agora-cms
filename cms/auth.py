@@ -27,7 +27,7 @@ SETTING_PASSWORD_HASH = "admin_password_hash"
 SETTING_USERNAME = "admin_username"
 SETTING_TIMEZONE = "timezone"
 SETTING_MCP_ENABLED = "mcp_enabled"
-SETTING_MCP_API_KEY = "mcp_api_key"  # Legacy — to be removed
+SETTING_MCP_SERVICE_KEY_HASH = "mcp_service_key_hash"  # SHA-256 hash of the MCP service key
 SETTING_MCP_ROLE_ID = "mcp_role_id"  # System-wide MCP permission ceiling
 SETTING_API_ROLE_ID = "api_role_id"  # System-wide API key permission ceiling
 SETTING_SMTP_HOST = "smtp_host"
@@ -140,20 +140,50 @@ async def get_current_user(
     """Return the authenticated User or raise 401.
 
     Checks API key header first, then session cookie.
+    Service keys (agora_svc_) get special handling — they authenticate as
+    an admin user with the real user recorded via X-On-Behalf-Of header.
+    MCP-type keys are blocked from REST API (MCP server uses the service key).
     """
     # API key auth
     api_key = request.headers.get("X-API-Key")
     if api_key:
+        # Check if this is the MCP service key (prefix-gated for performance)
+        if api_key.startswith(SERVICE_KEY_PREFIX):
+            service_key_hash = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
+            if service_key_hash and _hash_api_key(api_key) == service_key_hash:
+                on_behalf_of = request.headers.get("X-On-Behalf-Of", "MCP Service")
+                request.state.auth_method = "mcp_service"
+                request.state.on_behalf_of = on_behalf_of
+                # Return admin user for permission checks
+                admin = await db.execute(
+                    select(User)
+                    .options(selectinload(User.role),
+                             selectinload(User.groups).selectinload(UserGroup.group))
+                    .join(User.role)
+                    .where(Role.name == "Admin", User.is_active.is_(True))
+                )
+                admin_user = admin.scalar_one_or_none()
+                if admin_user is None:
+                    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                        detail="No admin user available for service key")
+                return admin_user
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Invalid service key")
+
+        # Regular user API key
         result = await _resolve_user_from_api_key(api_key, db)
         if result is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         user, key_row = result
-        # MCP keys are not allowed on the REST API
+
+        # Block MCP keys from REST API — MCP server should use the service key
         if key_row.key_type == "mcp":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="MCP keys cannot be used on the REST API. Use an API key instead.",
+                detail="MCP keys cannot access the REST API directly. "
+                       "Use an API key or the MCP server.",
             )
+
         return user
 
     # Session cookie auth
@@ -272,6 +302,67 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
     else:
         db.add(CMSSetting(key=key, value=value))
     await db.commit()
+
+
+async def delete_setting(db: AsyncSession, key: str) -> None:
+    result = await db.execute(select(CMSSetting).where(CMSSetting.key == key))
+    setting = result.scalar_one_or_none()
+    if setting:
+        await db.delete(setting)
+        await db.commit()
+
+
+# ── MCP service key management ──
+
+SERVICE_KEY_PREFIX = "agora_svc_"
+
+
+def generate_service_key() -> str:
+    """Generate a random MCP service key with agora_svc_ prefix."""
+    import secrets
+    return SERVICE_KEY_PREFIX + secrets.token_hex(32)
+
+
+def write_service_key_file(raw_key: str, path: str) -> None:
+    """Write the raw service key to the shared volume file."""
+    import os
+    from pathlib import Path
+
+    key_path = Path(path)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(raw_key)
+    # Restrict permissions (owner read/write only) — best-effort on Windows
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def clear_service_key_file(path: str) -> None:
+    """Remove the service key file from the shared volume."""
+    from pathlib import Path
+
+    key_path = Path(path)
+    if key_path.exists():
+        key_path.unlink()
+
+
+async def provision_service_key(db: AsyncSession, path: str) -> str:
+    """Generate a new service key, store its hash, and write to the shared volume.
+
+    Returns the key prefix for display in the UI.
+    """
+    raw_key = generate_service_key()
+    key_hash = _hash_api_key(raw_key)
+    await set_setting(db, SETTING_MCP_SERVICE_KEY_HASH, key_hash)
+    write_service_key_file(raw_key, path)
+    return raw_key[:16] + "..."
+
+
+async def revoke_service_key(db: AsyncSession, path: str) -> None:
+    """Delete the service key hash from settings and clear the file."""
+    await delete_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
+    clear_service_key_file(path)
 
 
 async def compute_effective_permissions(

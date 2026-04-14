@@ -1,9 +1,11 @@
 """Agora CMS MCP Server — exposes CMS operations as MCP tools over SSE."""
 
+import asyncio
 import contextvars
 import json
 import logging
 import os
+from pathlib import Path
 
 import httpx
 import uvicorn
@@ -23,6 +25,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
+SERVICE_KEY_PATH = os.environ.get("SERVICE_KEY_PATH", "/shared/mcp-service.key")
+SERVICE_KEY_RELOAD_INTERVAL = int(os.environ.get("SERVICE_KEY_RELOAD_INTERVAL", "60"))
+
+# Module-level service key — loaded from file, hot-reloaded periodically
+_service_key: str = ""
+_service_key_lock = asyncio.Lock()
 
 mcp = FastMCP(
     "Agora CMS",
@@ -66,8 +74,12 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
 
 
 def _get_client() -> CMSClient:
-    """Return a CMSClient using the current user's API key."""
-    return CMSClient(base_url=CMS_BASE_URL, api_key=_ctx_api_key.get())
+    """Return a CMSClient using the service key and current user's identity."""
+    return CMSClient(
+        base_url=CMS_BASE_URL,
+        api_key=_service_key,
+        on_behalf_of=_ctx_user_name.get(),
+    )
 
 
 def _check_permission(tool_name: str) -> str | None:
@@ -587,16 +599,14 @@ async def health_endpoint(request: Request) -> Response:
 
 
 async def health_api_endpoint(request: Request) -> Response:
-    """Check if the MCP server can reach the CMS REST API."""
+    """Check if the MCP server can reach the CMS REST API using the service key."""
     try:
-        # Use env-configured API key for health checks
-        api_key = os.environ.get("CMS_API_KEY", "")
-        if not api_key:
+        if not _service_key:
             return JSONResponse(
-                {"status": "warning", "detail": "CMS_API_KEY not configured"},
+                {"status": "warning", "detail": "Service key not loaded — waiting for CMS to provision"},
                 status_code=200,
             )
-        client = CMSClient(base_url=CMS_BASE_URL, api_key=api_key)
+        client = CMSClient(base_url=CMS_BASE_URL, api_key=_service_key)
         devices = await client.list_devices()
         return JSONResponse({"status": "ok", "device_count": len(devices)})
     except Exception as e:
@@ -666,9 +676,61 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# ── Service key management ──
+
+def _load_service_key_sync() -> str:
+    """Read the service key from the shared volume file (synchronous)."""
+    try:
+        path = Path(SERVICE_KEY_PATH)
+        if path.exists():
+            key = path.read_text().strip()
+            if key:
+                return key
+    except Exception as e:
+        logger.warning("Failed to read service key file: %s", e)
+    return ""
+
+
+async def _reload_service_key() -> None:
+    """Reload the service key from the file if it has changed."""
+    global _service_key
+    new_key = _load_service_key_sync()
+    if new_key != _service_key:
+        async with _service_key_lock:
+            _service_key = new_key
+        if new_key:
+            logger.info("Service key loaded/reloaded from %s", SERVICE_KEY_PATH)
+        else:
+            logger.warning("Service key file is empty or missing: %s", SERVICE_KEY_PATH)
+
+
+async def _service_key_watcher() -> None:
+    """Background task that periodically reloads the service key from the file."""
+    while True:
+        await _reload_service_key()
+        await asyncio.sleep(SERVICE_KEY_RELOAD_INTERVAL)
+
+
 if __name__ == "__main__":
+    # Load service key on startup (before server starts)
+    _service_key = _load_service_key_sync()
+    if _service_key:
+        logger.info("Service key loaded from %s", SERVICE_KEY_PATH)
+    else:
+        logger.warning(
+            "No service key found at %s — MCP tools will fail until "
+            "an admin enables MCP in the CMS Settings page.",
+            SERVICE_KEY_PATH,
+        )
+
     # Build the SSE app from FastMCP, then wrap it with auth
     sse_app = mcp.sse_app()
+
+    async def lifespan(app):
+        # Start the service key hot-reload watcher
+        task = asyncio.create_task(_service_key_watcher())
+        yield
+        task.cancel()
 
     app = Starlette(
         routes=[
@@ -678,6 +740,7 @@ if __name__ == "__main__":
         middleware=[
             Middleware(BearerAuthMiddleware),
         ],
+        lifespan=lifespan,
     )
     app.mount("/", sse_app)
 
