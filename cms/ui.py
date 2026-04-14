@@ -53,21 +53,16 @@ from cms.routers.devices import _upgrading as _devices_upgrading
 import json as _json
 import logging as _logging
 from datetime import datetime, timezone as _tz
-from zoneinfo import ZoneInfo, available_timezones
+from zoneinfo import ZoneInfo
+
+from cms.timezones import build_tz_options, canonical_timezones
 
 import httpx as _httpx
 
 _ui_logger = _logging.getLogger(__name__)
 
-# Common timezones for the device timezone dropdown — sorted for readability.
-# Uses well-known IANA zone names; excludes deprecated / obscure entries.
-COMMON_TIMEZONES = sorted([
-    tz for tz in available_timezones()
-    if tz.startswith(("Africa/", "America/", "Asia/", "Atlantic/", "Australia/",
-                      "Europe/", "Indian/", "Pacific/"))
-    and not tz.startswith(("America/Argentina/", "America/Indiana/",
-                           "America/Kentucky/", "America/North_Dakota/"))
-] + ["Etc/UTC"])
+# Canonical IANA timezones for dropdowns — sorted for readability.
+COMMON_TIMEZONES = sorted(canonical_timezones())
 
 templates = Jinja2Templates(directory="cms/templates")
 
@@ -1030,14 +1025,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
                 continue
         active_schedules.append(s)
 
-    tz_options = []
-    for tz_name in sorted(available_timezones()):
-        offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
-        total_sec = int(offset.total_seconds())
-        sign = "+" if total_sec >= 0 else "-"
-        h, m = divmod(abs(total_sec) // 60, 60)
-        label = f"{tz_name.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
-        tz_options.append({"value": tz_name, "label": label})
+    tz_options = build_tz_options()
 
     return templates.TemplateResponse(request, "schedules.html", {
         "active_tab": "schedules",
@@ -1134,15 +1122,7 @@ async def settings_page(
     # Timezone
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
-    now_utc = datetime.now(_tz.utc)
-    tz_options = []
-    for tz_name in sorted(available_timezones()):
-        offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
-        total_sec = int(offset.total_seconds())
-        sign = "+" if total_sec >= 0 else "-"
-        h, m = divmod(abs(total_sec) // 60, 60)
-        label = f"{tz_name.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
-        tz_options.append({"value": tz_name, "label": label})
+    tz_options = build_tz_options()
 
     # Device list for log download panel
     from cms.models.device import Device
@@ -1486,15 +1466,7 @@ async def change_timezone(
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
     mcp_service_key_active = (await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)) is not None
 
-    now_utc = datetime.now(_tz.utc)
-    tz_options = []
-    for tz in sorted(available_timezones()):
-        offset = now_utc.astimezone(ZoneInfo(tz)).utcoffset()
-        total_sec = int(offset.total_seconds())
-        sign = "+" if total_sec >= 0 else "-"
-        h, m = divmod(abs(total_sec) // 60, 60)
-        label = f"{tz.replace('_', ' ')} (UTC{sign}{h:02d}:{m:02d})"
-        tz_options.append({"value": tz, "label": label})
+    tz_options = build_tz_options()
 
     from cms.models.device import Device
     result = await db.execute(select(Device).order_by(Device.name))
@@ -1516,7 +1488,7 @@ async def change_timezone(
         "devices": device_list,
     }
 
-    if tz_name not in available_timezones():
+    if tz_name not in canonical_timezones():
         current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
         return templates.TemplateResponse(request, "settings.html", {
             **base_ctx,
