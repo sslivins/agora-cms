@@ -229,6 +229,13 @@ async def run_migrations():
                 "ALTER TABLE devices ADD COLUMN supported_codecs VARCHAR(100) DEFAULT ''"
             ))
 
+        # -- api_keys.key_type --
+        has_key_type = await conn.run_sync(lambda c: _has_column(c, "api_keys", "key_type"))
+        if not has_key_type:
+            await conn.execute(text(
+                "ALTER TABLE api_keys ADD COLUMN key_type VARCHAR(10) DEFAULT 'api' NOT NULL"
+            ))
+
         # -- Add notifications:system permission to existing Admin roles --
         has_roles = await conn.run_sync(lambda c: sa_inspect(c).has_table("roles"))
         if has_roles:

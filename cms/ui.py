@@ -13,7 +13,7 @@ from cms.auth import (
     COOKIE_NAME,
     MAX_AGE,
     SETTING_MCP_ENABLED,
-    SETTING_MCP_API_KEY,
+    SETTING_MCP_SERVICE_KEY_HASH,
     SETTING_PASSWORD_HASH,
     SETTING_SMTP_FROM_EMAIL,
     SETTING_SMTP_HOST,
@@ -28,8 +28,10 @@ from cms.auth import (
     get_setting,
     get_settings,
     hash_password,
+    provision_service_key,
     require_auth,
     require_permission,
+    revoke_service_key,
     set_setting,
     verify_password,
 )
@@ -770,6 +772,18 @@ async def users_page(
     })
 
 
+# ── Profile ──
+
+
+@router.get("/profile", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def profile_page(request: Request, db: AsyncSession = Depends(get_db)):
+    user: User = request.state.user
+    return templates.TemplateResponse(request, "profile.html", {
+        "active_tab": "profile",
+        "profile_user": user,
+    })
+
+
 # ── Assets ──
 
 
@@ -1103,7 +1117,7 @@ async def settings_page(
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
-    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
+    mcp_service_key_active = (await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)) is not None
 
     # SMTP settings
     smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
@@ -1141,12 +1155,12 @@ async def settings_page(
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
+        "mcp_service_key_active": mcp_service_key_active,
         "smtp_host": smtp_host,
         "smtp_port": smtp_port,
         "smtp_username": smtp_username,
         "smtp_password": smtp_password,
         "smtp_from_email": smtp_from_email,
-        "mcp_api_key": mcp_api_key,
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "timezones": tz_options,
@@ -1233,12 +1247,39 @@ async def mcp_health_check():
 async def mcp_toggle(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
-    """Enable or disable the MCP server."""
+    """Enable or disable the MCP server.
+
+    When enabling, auto-generates an MCP service key and writes it to the
+    shared volume for the MCP container to pick up.
+    When disabling, revokes the service key and clears the file.
+    """
     body = await request.json()
     enabled = body.get("enabled", False)
     await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
+
+    if enabled:
+        # Auto-provision service key if not already present
+        existing = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
+        if not existing:
+            await provision_service_key(db, settings.service_key_path)
+    else:
+        # Revoke service key when MCP is disabled
+        await revoke_service_key(db, settings.service_key_path)
+
     return {"enabled": enabled}
+
+
+@router.post("/api/mcp/service-key/regenerate", dependencies=[Depends(require_auth)])
+async def regenerate_mcp_service_key(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Regenerate the MCP service key. MCP server picks up the new key within 60s."""
+    prefix = await provision_service_key(db, settings.service_key_path)
+    return {"regenerated": True, "prefix": prefix}
 
 
 # ── SMTP Settings ──
@@ -1414,7 +1455,7 @@ async def change_timezone(
 
     username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
-    mcp_api_key = await get_setting(db, SETTING_MCP_API_KEY) or ""
+    mcp_service_key_active = (await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)) is not None
 
     now_utc = datetime.now(_tz.utc)
     tz_options = []
@@ -1441,7 +1482,7 @@ async def change_timezone(
         "online_count": device_manager.connected_count,
         "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
-        "mcp_api_key": mcp_api_key,
+        "mcp_service_key_active": mcp_service_key_active,
         "timezones": tz_options,
         "devices": device_list,
     }

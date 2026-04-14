@@ -48,10 +48,6 @@ param cmsImage string = ''
 @description('MCP server container image (e.g., agoracr.azurecr.io/agora-cms-mcp:latest)')
 param mcpImage string = ''
 
-@description('API key for MCP server to authenticate with CMS (auto-generated post-deploy if empty)')
-@secure()
-param mcpApiKey string = 'placeholder-will-be-replaced'
-
 @description('CMS container CPU cores (Consumption tier: 0.25–2.0 in 0.25 steps)')
 @allowed(['0.25', '0.5', '0.75', '1.0', '1.25', '1.5', '1.75', '2.0'])
 param cmsCpu string = '1.0'
@@ -174,7 +170,6 @@ module containerApps 'modules/containerApps.bicep' = {
     // MCP
     mcpAppName: mcpAppName
     mcpImage: resolvedMcpImage
-    mcpApiKey: mcpApiKey
   }
 }
 

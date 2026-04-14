@@ -41,8 +41,6 @@ param storageAccountKey string
 // ── MCP App config ──
 param mcpAppName string
 param mcpImage string
-@secure()
-param mcpApiKey string
 
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -234,10 +232,6 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'acr-password'
           value: acrPassword
         }
-        {
-          name: 'mcp-api-key'
-          value: mcpApiKey
-        }
       ]
     }
     template: {
@@ -253,10 +247,6 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'CMS_BASE_URL'
               value: 'http://${cmsAppName}'
-            }
-            {
-              name: 'CMS_API_KEY'
-              secretRef: 'mcp-api-key'
             }
           ]
         }

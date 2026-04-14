@@ -10,7 +10,7 @@ from cms.auth import SETTING_MCP_ENABLED, _hash_api_key, set_setting
 from cms.models.api_key import APIKey
 
 
-async def _create_user_api_key(db_session, raw_key="agora_mcp_test_key_1234567890abcdef"):
+async def _create_user_api_key(db_session, raw_key="agora_mcp_test_key_1234567890abcdef", key_type="mcp"):
     """Helper: create an API key linked to the admin user."""
     from sqlalchemy import select
     from cms.models.user import User
@@ -24,6 +24,7 @@ async def _create_user_api_key(db_session, raw_key="agora_mcp_test_key_123456789
         name="MCP Test Key",
         key_prefix=raw_key[:12] + "...",
         key_hash=key_hash,
+        key_type=key_type,
         user_id=admin.id,
     )
     db_session.add(api_key)
@@ -117,6 +118,34 @@ class TestMcpAuth:
         assert "devices:read" in perms
         assert "devices:write" in perms
         assert "audit:read" in perms
+
+    async def test_auth_rejects_api_type_key(self, client, db_session):
+        """An API-type key should be rejected by the MCP auth endpoint."""
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        raw_key, _ = await _create_user_api_key(
+            db_session,
+            raw_key="agora_api_type_key_for_rest_only_1234",
+            key_type="api",
+        )
+
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={"Authorization": f"Bearer {raw_key}"},
+        )
+        assert resp.status_code == 403
+        assert "MCP keys" in resp.json()["detail"]
+
+    async def test_auth_returns_key_type(self, client, db_session):
+        """Auth response should include the key_type field."""
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        raw_key, _ = await _create_user_api_key(db_session)
+
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={"Authorization": f"Bearer {raw_key}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["key_type"] == "mcp"
 
 
 @pytest.mark.asyncio
