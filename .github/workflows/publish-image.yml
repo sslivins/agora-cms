@@ -6,6 +6,10 @@ on:
     types: [completed]
     branches: [main]
 
+concurrency:
+  group: publish-deploy
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
