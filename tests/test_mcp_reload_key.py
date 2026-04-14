@@ -143,6 +143,204 @@ class TestReloadKeyEndpoint:
                 assert mod._service_key == "new_kv_key"
 
 
+# ── Docker Compose scenario: file-based key reload ──
+
+
+class TestFileBasedReload:
+    """Simulate Docker Compose: key exchanged via shared volume file, no Key Vault."""
+
+    @pytest.mark.asyncio
+    async def test_reload_picks_up_new_key_from_file(self, mcp_server_module, tmp_path):
+        """After CMS writes a new key to the shared file, /reload-key picks it up."""
+        mod = mcp_server_module
+        key_file = tmp_path / "mcp-service.key"
+        key_file.write_text("original_key_abc123")
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        test_app = Starlette(
+            routes=[Route("/reload-key", mod.reload_key_endpoint, methods=["POST"])],
+        )
+        with TestClient(test_app) as client:
+            # Initial load
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert mod._service_key == "original_key_abc123"
+
+            # CMS regenerates — writes new key to shared volume
+            key_file.write_text("regenerated_key_xyz789")
+
+            # Push reload signal
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert resp.json()["reloaded"] is True
+            assert resp.json()["has_key"] is True
+            assert mod._service_key == "regenerated_key_xyz789"
+
+    @pytest.mark.asyncio
+    async def test_reload_detects_revoked_key(self, mcp_server_module, tmp_path):
+        """After CMS revokes (deletes file), /reload-key reflects has_key=False."""
+        mod = mcp_server_module
+        key_file = tmp_path / "mcp-service.key"
+        key_file.write_text("active_key_111")
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        test_app = Starlette(
+            routes=[Route("/reload-key", mod.reload_key_endpoint, methods=["POST"])],
+        )
+        with TestClient(test_app) as client:
+            # Load active key
+            resp = client.post("/reload-key")
+            assert mod._service_key == "active_key_111"
+
+            # CMS revokes — deletes the key file
+            key_file.unlink()
+
+            # Push reload signal
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert resp.json()["has_key"] is False
+            assert mod._service_key == ""
+
+    @pytest.mark.asyncio
+    async def test_reload_ignores_unchanged_file(self, mcp_server_module, tmp_path):
+        """If the file hasn't changed, key stays the same (no unnecessary update)."""
+        mod = mcp_server_module
+        key_file = tmp_path / "mcp-service.key"
+        key_file.write_text("stable_key_999")
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        test_app = Starlette(
+            routes=[Route("/reload-key", mod.reload_key_endpoint, methods=["POST"])],
+        )
+        with TestClient(test_app) as client:
+            client.post("/reload-key")
+            assert mod._service_key == "stable_key_999"
+
+            # Reload again — file unchanged
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert mod._service_key == "stable_key_999"
+
+
+class TestEndToEndDockerCompose:
+    """Simulate full CMS → file → MCP reload cycle as in Docker Compose."""
+
+    @pytest.mark.asyncio
+    async def test_provision_write_file_reload_matches(self, db_session, mcp_server_module, tmp_path):
+        """CMS provisions key → writes to file → MCP reloads → keys match."""
+        mod = mcp_server_module
+        key_file = tmp_path / "mcp-service.key"
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from cms.auth import provision_service_key
+
+        raw_key, prefix = await provision_service_key(db_session, str(key_file))
+
+        # The key file should exist now
+        assert key_file.exists()
+        file_content = key_file.read_text().strip()
+        assert file_content == raw_key
+
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        test_app = Starlette(
+            routes=[Route("/reload-key", mod.reload_key_endpoint, methods=["POST"])],
+        )
+        with TestClient(test_app) as client:
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert mod._service_key == raw_key
+
+    @pytest.mark.asyncio
+    async def test_regenerate_updates_file_reload_picks_up(self, db_session, mcp_server_module, tmp_path):
+        """CMS regenerates key → file updated → MCP reload picks up new key."""
+        mod = mcp_server_module
+        key_file = tmp_path / "mcp-service.key"
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from cms.auth import provision_service_key
+
+        # First provision
+        key1, _ = await provision_service_key(db_session, str(key_file))
+
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        test_app = Starlette(
+            routes=[Route("/reload-key", mod.reload_key_endpoint, methods=["POST"])],
+        )
+        with TestClient(test_app) as client:
+            client.post("/reload-key")
+            assert mod._service_key == key1
+
+            # Regenerate
+            key2, _ = await provision_service_key(db_session, str(key_file))
+            assert key1 != key2
+
+            # Reload picks up new key
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert mod._service_key == key2
+
+    @pytest.mark.asyncio
+    async def test_revoke_clears_file_reload_clears_key(self, db_session, mcp_server_module, tmp_path):
+        """CMS revokes key → file cleared → MCP reload clears its key."""
+        mod = mcp_server_module
+        key_file = tmp_path / "mcp-service.key"
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from cms.auth import provision_service_key, revoke_service_key
+
+        raw_key, _ = await provision_service_key(db_session, str(key_file))
+
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        test_app = Starlette(
+            routes=[Route("/reload-key", mod.reload_key_endpoint, methods=["POST"])],
+        )
+        with TestClient(test_app) as client:
+            client.post("/reload-key")
+            assert mod._service_key == raw_key
+
+            # Revoke
+            await revoke_service_key(db_session, str(key_file))
+
+            # Reload should clear the key
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200
+            assert resp.json()["has_key"] is False
+            assert mod._service_key == ""
+
+
 # ── Watcher removal verification ──
 
 
