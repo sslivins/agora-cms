@@ -1247,6 +1247,7 @@ async def mcp_health_check():
 async def mcp_toggle(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
     """Enable or disable the MCP server.
 
@@ -1258,7 +1259,6 @@ async def mcp_toggle(
     enabled = body.get("enabled", False)
     await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
 
-    settings = get_settings()
     if enabled:
         # Auto-provision service key if not already present
         existing = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
@@ -1275,9 +1275,9 @@ async def mcp_toggle(
 async def regenerate_mcp_service_key(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
     """Regenerate the MCP service key. MCP server picks up the new key within 60s."""
-    settings = get_settings()
     prefix = await provision_service_key(db, settings.service_key_path)
     return {"regenerated": True, "prefix": prefix}
 
