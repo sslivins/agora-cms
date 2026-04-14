@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
 SERVICE_KEY_PATH = os.environ.get("SERVICE_KEY_PATH", "/shared/mcp-service.key")
 SERVICE_KEY_RELOAD_INTERVAL = int(os.environ.get("SERVICE_KEY_RELOAD_INTERVAL", "60"))
+AZURE_KEYVAULT_URI = os.environ.get("AZURE_KEYVAULT_URI", "")
 
 # Module-level service key — loaded from file, hot-reloaded periodically
 _service_key: str = ""
@@ -678,34 +679,63 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 # ── Service key management ──
 
-def _load_service_key_sync() -> str:
-    """Read the service key from env var or shared volume file (synchronous).
 
-    Priority: SERVICE_KEY env var (Azure/K8s) > file (Docker Compose).
+def _read_key_from_keyvault(vault_uri: str) -> str:
+    """Read the MCP service key from Azure Key Vault.
+
+    Returns the key value, or empty string on failure.
     """
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+
+        credential = DefaultAzureCredential()
+        client = SecretClient(vault_url=vault_uri, credential=credential)
+        secret = client.get_secret("mcp-service-key")
+        return (secret.value or "").strip()
+    except Exception as exc:
+        logger.warning("Failed to read service key from Key Vault: %s", exc)
+        return ""
+
+
+def _load_service_key_sync() -> tuple[str, str]:
+    """Read the service key from env var, Key Vault, or file (synchronous).
+
+    Priority: SERVICE_KEY env var (direct injection) > Azure Key Vault > file.
+    Returns (key, source) tuple.
+    """
+    # 1. Environment variable (direct injection via deploy scripts)
     env_key = os.environ.get("SERVICE_KEY", "").strip()
     if env_key:
-        return env_key
+        return env_key, "SERVICE_KEY env var"
+
+    # 2. Azure Key Vault (managed identity in Azure Container Apps)
+    if AZURE_KEYVAULT_URI:
+        kv_key = _read_key_from_keyvault(AZURE_KEYVAULT_URI)
+        if kv_key:
+            return kv_key, f"Key Vault ({AZURE_KEYVAULT_URI})"
+
+    # 3. Shared volume file (Docker Compose)
     try:
         path = Path(SERVICE_KEY_PATH)
         if path.exists():
             key = path.read_text().strip()
             if key:
-                return key
+                return key, SERVICE_KEY_PATH
     except Exception as e:
         logger.warning("Failed to read service key file: %s", e)
-    return ""
+
+    return "", ""
 
 
 async def _reload_service_key() -> None:
     """Reload the service key if it has changed."""
     global _service_key
-    new_key = _load_service_key_sync()
+    new_key, source = _load_service_key_sync()
     if new_key != _service_key:
         async with _service_key_lock:
             _service_key = new_key
         if new_key:
-            source = "SERVICE_KEY env var" if os.environ.get("SERVICE_KEY", "").strip() else SERVICE_KEY_PATH
             logger.info("Service key loaded/reloaded from %s", source)
         else:
             logger.warning("Service key is empty or missing")
@@ -720,14 +750,13 @@ async def _service_key_watcher() -> None:
 
 if __name__ == "__main__":
     # Load service key on startup (before server starts)
-    _service_key = _load_service_key_sync()
+    _service_key, _source = _load_service_key_sync()
     if _service_key:
-        source = "SERVICE_KEY env var" if os.environ.get("SERVICE_KEY", "").strip() else SERVICE_KEY_PATH
-        logger.info("Service key loaded from %s", source)
+        logger.info("Service key loaded from %s", _source)
     else:
         logger.warning(
-            "No service key found at %s — MCP tools will fail until "
-            "an admin enables MCP in the CMS Settings page.",
+            "No service key found (checked: env var, Key Vault, %s) — MCP tools "
+            "will fail until an admin enables MCP in the CMS Settings page.",
             SERVICE_KEY_PATH,
         )
 

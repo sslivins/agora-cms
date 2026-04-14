@@ -42,6 +42,8 @@ class Settings(BaseSettings):
 
     # MCP service key file (shared volume between CMS and MCP containers)
     service_key_path: str = "/shared/mcp-service.key"
+    # Azure Key Vault URI for MCP service key exchange (Azure deployments)
+    azure_keyvault_uri: str | None = None
 
     # SMTP is configured via the web UI settings page (stored in DB)
     base_url: str | None = None  # public URL for login links in emails
