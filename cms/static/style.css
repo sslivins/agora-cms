@@ -38,6 +38,15 @@ header {
     font-size: 1.25rem;
     font-weight: 600;
     color: var(--accent);
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+.nav-version {
+    font-size: 0.7rem;
+    font-weight: 400;
+    color: var(--text-muted);
+    opacity: 0.7;
 }
 .header-actions {
     display: flex;
@@ -185,8 +194,14 @@ nav {
     border-bottom: 1px solid var(--primary);
     padding: 0 1.5rem;
     display: flex;
-    justify-content: center;
+    align-items: center;
+    position: relative;
+}
+.nav-tabs-left {
+    display: flex;
     gap: 0.5rem;
+    flex: 1;
+    justify-content: center;
 }
 .nav-tab {
     background: none;
@@ -1074,6 +1089,63 @@ tr.highlight-new td {
     flex-wrap: wrap;
     gap: 0.3rem;
 }
+
+/* ── Header status lights ── */
+.header-status-lights {
+    position: absolute;
+    right: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+.status-light {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.15rem;
+}
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: background 0.3s;
+}
+.status-dot.status-ok { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.status-dot.status-error { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.status-dot.status-warn { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.status-dot.status-off { background: var(--text-muted); }
+.status-dot.status-unknown { background: var(--text-muted); opacity: 0.5; }
+.status-label {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+/* Status light tooltips: position below, right-aligned (lights are on far right) */
+.status-light.has-tooltip .tooltip {
+    bottom: auto;
+    top: calc(100% + 10px);
+    left: auto;
+    right: -0.5rem;
+    transform: translateX(0) translateY(-6px);
+}
+.status-light.has-tooltip .tooltip::after {
+    top: auto;
+    bottom: 100%;
+    left: auto;
+    right: 1rem;
+    transform: none;
+    border-top-color: transparent;
+    border-bottom-color: var(--accent);
+}
+.status-light.has-tooltip:hover .tooltip {
+    transform: translateX(0) translateY(0);
+}
+
+/* ── Site footer ── */
 
 .badge-role {
     font-weight: 600;

@@ -5,6 +5,7 @@
 <div class="sub-tabs">
     <button class="sub-tab active" onclick="showUserTab('profile-tab', this)">Profile</button>
     <button class="sub-tab" onclick="showUserTab('my-keys-tab', this)">My Keys</button>
+    <button class="sub-tab" onclick="showUserTab('security-tab', this)">Security</button>
 </div>
 
 <!-- ═══════════════════════════════════════════ PROFILE TAB ═══════════════════════════════════════════ -->
@@ -67,6 +68,34 @@
     <p class="text-muted">You don't have permission to create keys. Contact your administrator.</p>
 </div>
 {% endif %}
+</div>
+
+<!-- ═══════════════════════════════════════════ SECURITY TAB ═══════════════════════════════════════════ -->
+<div id="security-tab" class="tab-content">
+<div class="card">
+    <h3>Change Password</h3>
+    {% if pw_success %}
+    <div class="flash flash-success">{{ pw_success }}</div>
+    {% endif %}
+    {% if pw_error %}
+    <div class="flash flash-error">{{ pw_error }}</div>
+    {% endif %}
+    <form method="POST" action="/profile/password" class="settings-form" style="max-width: 400px;">
+        <div class="form-group">
+            <label for="current_password">Current Password</label>
+            <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
+        </div>
+        <div class="form-group">
+            <label for="new_password">New Password</label>
+            <input type="password" id="new_password" name="new_password" required minlength="6" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+            <label for="confirm_password">Confirm New Password</label>
+            <input type="password" id="confirm_password" name="confirm_password" required minlength="6" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary">Update Password</button>
+    </form>
+</div>
 </div>
 
 {% endblock %}
