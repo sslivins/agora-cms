@@ -368,3 +368,57 @@ async def test_notifications_require_auth(unauthed_client):
 
     resp = await unauthed_client.get("/api/notifications/count")
     assert resp.status_code in (401, 403, 307)
+
+
+# ── Delete / dismiss tests ──
+
+
+@pytest.mark.asyncio
+async def test_dismiss_single_notification(app, client, db_session):
+    """Admin can delete a single notification."""
+    notif = await _create_notification(db_session, scope="system", title="To dismiss")
+
+    resp = await client.delete(f"/api/notifications/{notif.id}")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+
+    # Confirm it's gone
+    resp = await client.get("/api/notifications")
+    titles = [n["title"] for n in resp.json()]
+    assert "To dismiss" not in titles
+
+
+@pytest.mark.asyncio
+async def test_dismiss_nonexistent_notification(client):
+    """Deleting a non-existent notification returns 404."""
+    resp = await client.delete(f"/api/notifications/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_clear_all_notifications(app, client, db_session):
+    """Admin can delete all visible notifications."""
+    await _create_notification(db_session, scope="system", title="Notif 1")
+    await _create_notification(db_session, scope="system", title="Notif 2")
+
+    resp = await client.delete("/api/notifications")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 2
+
+    resp = await client.get("/api/notifications")
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_dismiss_others_notification(app, db_session):
+    """User cannot delete a notification scoped to another user."""
+    user_a = await _create_user(db_session, email="alice@test.com", role_name="Viewer")
+    user_b = await _create_user(db_session, email="bob@test.com", role_name="Viewer")
+
+    notif = await _create_notification(
+        db_session, scope="user", title="Private", user_id=user_a.id
+    )
+
+    bob_client = await _login_as(app, "bob@test.com")
+    resp = await bob_client.delete(f"/api/notifications/{notif.id}")
+    assert resp.status_code == 404
