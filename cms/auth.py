@@ -7,7 +7,7 @@ from functools import lru_cache
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
-from itsdangerous import BadSignature, URLSafeTimedSerializer
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -101,6 +101,18 @@ async def _resolve_user_from_session(
     serializer = URLSafeTimedSerializer(settings.secret_key)
     try:
         data = serializer.loads(cookie, max_age=MAX_AGE)
+    except SignatureExpired as exc:
+        # Tolerate small backward clock drift (common on Docker Desktop / VMs).
+        # If the cookie was signed "in the future" by a few seconds due to
+        # clock correction, the signature is still valid — retry without
+        # the max_age check.
+        if "< 0 seconds" in str(exc):
+            try:
+                data = serializer.loads(cookie)
+            except BadSignature:
+                return None
+        else:
+            return None
     except BadSignature:
         return None
 
