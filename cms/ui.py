@@ -96,6 +96,10 @@ import time as _time
 _static_version = str(int(_time.time()))
 templates.env.globals["static_version"] = _static_version
 
+# Inject CMS version into all templates for the footer
+from cms import __version__ as _cms_version
+templates.env.globals["cms_version"] = _cms_version
+
 router = APIRouter()
 
 
@@ -778,7 +782,47 @@ async def profile_page(request: Request, db: AsyncSession = Depends(get_db)):
     return templates.TemplateResponse(request, "profile.html", {
         "active_tab": "profile",
         "profile_user": user,
+        "pw_success": None,
+        "pw_error": None,
     })
+
+
+@router.post("/profile/password", response_class=HTMLResponse)
+async def profile_change_password(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    form = await request.form()
+    current_password = form.get("current_password", "")
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+
+    ctx = {
+        "active_tab": "profile",
+        "profile_user": current_user,
+        "pw_success": None,
+        "pw_error": None,
+    }
+
+    if not verify_password(current_password, current_user.password_hash):
+        ctx["pw_error"] = "Current password is incorrect"
+        return templates.TemplateResponse(request, "profile.html", ctx, status_code=400)
+
+    if len(new_password) < 6:
+        ctx["pw_error"] = "New password must be at least 6 characters"
+        return templates.TemplateResponse(request, "profile.html", ctx, status_code=400)
+
+    if new_password != confirm_password:
+        ctx["pw_error"] = "New passwords do not match"
+        return templates.TemplateResponse(request, "profile.html", ctx, status_code=400)
+
+    current_user.password_hash = hash_password(new_password)
+    await db.commit()
+    await set_setting(db, SETTING_PASSWORD_HASH, current_user.password_hash)
+
+    ctx["pw_success"] = "Password updated successfully"
+    return templates.TemplateResponse(request, "profile.html", ctx)
 
 
 # ── Assets ──
@@ -1097,15 +1141,13 @@ async def profiles_page(request: Request, db: AsyncSession = Depends(get_db)):
 # ── Settings ──
 
 
-@router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+@router.get("/settings", response_class=HTMLResponse,
+            dependencies=[Depends(require_permission("settings:write"))])
 async def settings_page(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    from cms import __version__
-
-    username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
 
     # SMTP settings
@@ -1131,10 +1173,6 @@ async def settings_page(
 
     return templates.TemplateResponse(request, "settings.html", {
         "active_tab": "settings",
-        "version": __version__,
-        "username": username,
-        "online_count": device_manager.connected_count,
-        "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
         "smtp_host": smtp_host,
         "smtp_port": smtp_port,
@@ -1148,53 +1186,6 @@ async def settings_page(
         "success": None,
         "error": None,
     })
-
-
-@router.post("/settings/password", response_class=HTMLResponse)
-async def change_password(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-    current_user: User = Depends(get_current_user),
-):
-    from cms import __version__
-
-    form = await request.form()
-    current_password = form.get("current_password", "")
-    new_password = form.get("new_password", "")
-    confirm_password = form.get("confirm_password", "")
-
-    ctx = {
-        "active_tab": "settings",
-        "version": __version__,
-        "username": current_user.email,
-        "online_count": device_manager.connected_count,
-        "asset_storage": str(settings.asset_storage_path),
-        "success": None,
-        "error": None,
-    }
-
-    # Validate current password against user record
-    if not verify_password(current_password, current_user.password_hash):
-        ctx["error"] = "Current password is incorrect"
-        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
-
-    # Validate new password
-    if len(new_password) < 6:
-        ctx["error"] = "New password must be at least 6 characters"
-        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
-
-    if new_password != confirm_password:
-        ctx["error"] = "New passwords do not match"
-        return templates.TemplateResponse(request, "settings.html", ctx, status_code=400)
-
-    # Update password on the User row and keep cms_settings in sync
-    current_user.password_hash = hash_password(new_password)
-    await db.commit()
-    await set_setting(db, SETTING_PASSWORD_HASH, current_user.password_hash)
-
-    ctx["success"] = "Password updated successfully"
-    return templates.TemplateResponse(request, "settings.html", ctx)
 
 
 # ── MCP Settings (JSON API used by settings page JS) ──
@@ -1222,6 +1213,51 @@ async def mcp_health_check():
     except Exception as exc:
         result["error"] = str(exc)
     return result
+
+
+@router.get("/api/system/health", dependencies=[Depends(require_auth)])
+async def system_health(db: AsyncSession = Depends(get_db)):
+    """Aggregated health check for header status lights."""
+    from sqlalchemy import text
+    import httpx
+
+    # DB health
+    db_status = {"online": False, "detail": "Connection failed"}
+    try:
+        await db.execute(text("SELECT 1"))
+        db_status["online"] = True
+        db_status["detail"] = "Connected"
+    except Exception as e:
+        db_status["detail"] = f"Connection failed: {type(e).__name__}"
+
+    # SMTP configured (not a live connectivity test)
+    smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
+    if smtp_host.strip():
+        smtp_status = {"configured": True, "detail": f"Host: {smtp_host.strip()}"}
+    else:
+        smtp_status = {"configured": False, "detail": "Not configured"}
+
+    # MCP health
+    mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
+    mcp_status = {"online": False, "enabled": mcp_enabled}
+    if not mcp_enabled:
+        mcp_status["detail"] = "Disabled"
+    elif mcp_enabled:
+        try:
+            settings = get_settings()
+            mcp_url = settings.mcp_server_url.rstrip("/")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{mcp_url}/health")
+                mcp_status["online"] = resp.status_code == 200
+                mcp_status["detail"] = "Connected" if resp.status_code == 200 else f"Unhealthy (HTTP {resp.status_code})"
+        except httpx.ConnectError:
+            mcp_status["detail"] = "Connection refused"
+        except httpx.TimeoutException:
+            mcp_status["detail"] = "Connection timed out"
+        except Exception as e:
+            mcp_status["detail"] = f"Error: {type(e).__name__}"
+
+    return {"db": db_status, "smtp": smtp_status, "mcp": mcp_status}
 
 
 @router.post("/api/mcp/toggle", dependencies=[Depends(require_auth)])
@@ -1361,76 +1397,16 @@ async def db_status(db: AsyncSession = Depends(get_db)):
         return {"online": False}
 
 
-@router.post("/api/db/change-password", dependencies=[Depends(require_auth)])
-async def db_change_password(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Change the PostgreSQL user password and reinitialize the connection."""
-    from sqlalchemy import text
-    from urllib.parse import urlparse, urlunparse
-    from cms.database import init_db, dispose_db, _engine
-
-    body = await request.json()
-    new_password = body.get("password", "").strip()
-
-    if len(new_password) < 6:
-        return JSONResponse(
-            {"detail": "Password must be at least 6 characters"},
-            status_code=400,
-        )
-
-    try:
-        # Get current user
-        row = await db.execute(text("SELECT current_user"))
-        db_user = row.scalar()
-
-        # Change password in PostgreSQL (parameterized via format to avoid
-        # SQL injection — password is validated above and we use ALTER USER)
-        await db.execute(text(
-            f"ALTER USER {db_user} PASSWORD :pwd"
-        ), {"pwd": new_password})
-        await db.commit()
-
-        # Rebuild engine with new password
-        current_url = str(_engine.url)
-        parsed = urlparse(current_url)
-        new_url = urlunparse(parsed._replace(
-            netloc=f"{parsed.username}:{new_password}@{parsed.hostname}:{parsed.port}"
-        ))
-        await dispose_db()
-        # Create a temporary settings-like object with the new URL
-        settings = get_settings()
-        settings_dict = settings.model_dump()
-        settings_dict["database_url"] = new_url
-        temp_settings = Settings(**settings_dict)
-        init_db(temp_settings)
-
-        return {
-            "success": True,
-            "warning": "Database password changed. Update POSTGRES_PASSWORD and "
-                       "AGORA_CMS_DATABASE_URL in your .env file, then restart "
-                       "for the change to persist.",
-        }
-    except Exception as e:
-        return JSONResponse(
-            {"detail": f"Failed to change password: {e}"},
-            status_code=500,
-        )
-
-
-@router.post("/settings/timezone", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+@router.post("/settings/timezone", response_class=HTMLResponse,
+             dependencies=[Depends(require_permission("settings:write"))])
 async def change_timezone(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    from cms import __version__
-
     form = await request.form()
     tz_name = form.get("timezone", "").strip()
 
-    username = await get_setting(db, SETTING_USERNAME) or settings.admin_username
     mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
 
     tz_options = build_tz_options()
@@ -1443,13 +1419,22 @@ async def change_timezone(
         for d in devices
     ]
 
+    # SMTP settings for re-rendering
+    smtp_host = await get_setting(db, SETTING_SMTP_HOST) or ""
+    smtp_port = await get_setting(db, SETTING_SMTP_PORT) or "587"
+    smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
+    smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
+    smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
+
     base_ctx = {
         "active_tab": "settings",
-        "version": __version__,
-        "username": username,
-        "online_count": device_manager.connected_count,
-        "asset_storage": str(settings.asset_storage_path),
         "mcp_enabled": mcp_enabled,
+        "mcp_service_key_active": mcp_service_key_active,
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_username": smtp_username,
+        "smtp_password": smtp_password,
+        "smtp_from_email": smtp_from_email,
         "timezones": tz_options,
         "devices": device_list,
     }
