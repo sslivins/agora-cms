@@ -109,26 +109,6 @@ class TestToggleEndpointWithKeyvault:
             orig_settings.azure_keyvault_uri = orig_uri
 
 
-class TestRegenerateEndpointWithKeyvault:
-    @pytest.mark.asyncio
-    async def test_regenerate_writes_to_keyvault(self, app, client):
-        from cms.auth import get_settings
-
-        orig_settings = app.dependency_overrides[get_settings]()
-        orig_uri = orig_settings.azure_keyvault_uri
-        try:
-            orig_settings.azure_keyvault_uri = VAULT_URI
-            with patch("cms.keyvault.write_key_to_keyvault") as mock_write:
-                resp = await client.post("/api/mcp/service-key/regenerate")
-                assert resp.status_code == 200
-                data = resp.json()
-                assert data["regenerated"] is True
-                mock_write.assert_called_once()
-                assert mock_write.call_args[0][0] == VAULT_URI
-        finally:
-            orig_settings.azure_keyvault_uri = orig_uri
-
-
 # ── MCP-side: 3-tier key loading ──
 
 

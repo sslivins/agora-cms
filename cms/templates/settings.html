@@ -184,24 +184,6 @@
 
     <div id="mcp-key-section" style="max-width: 500px; {% if not mcp_enabled %}display:none{% endif %}">
         <div class="form-group" style="margin-top: 1rem;">
-            <label>Service Key</label>
-            <p class="text-muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
-                Auto-managed key used by the MCP server to communicate with the CMS API.
-                The MCP server picks up changes automatically within 60 seconds.
-            </p>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                <span id="mcp-svc-key-status" class="badge {% if mcp_service_key_active %}badge-online{% else %}badge-offline{% endif %}">
-                    {% if mcp_service_key_active %}active{% else %}not provisioned{% endif %}
-                </span>
-                <button type="button" class="btn btn-secondary" id="mcp-regenerate-btn"
-                        {% if not mcp_service_key_active %}disabled{% endif %}
-                        style="font-size: 0.85rem; padding: 0.25rem 0.75rem;">
-                    🔄 Regenerate
-                </button>
-            </div>
-        </div>
-
-        <div class="form-group" style="margin-top: 1rem;">
             <label>Authentication</label>
             <p class="text-muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
                 MCP clients authenticate using personal MCP keys. Create one in
@@ -218,8 +200,6 @@
     const keySection = document.getElementById("mcp-key-section");
     const statusBadge = document.getElementById("mcp-status-badge");
     const apiBadge = document.getElementById("mcp-api-badge");
-    const svcKeyStatus = document.getElementById("mcp-svc-key-status");
-    const regenBtn = document.getElementById("mcp-regenerate-btn");
 
     // Check MCP container health
     async function checkMcpHealth() {
@@ -261,37 +241,10 @@
             });
             if (!resp.ok) throw new Error("Toggle failed");
             keySection.style.display = toggle.checked ? "" : "none";
-            if (toggle.checked) {
-                svcKeyStatus.textContent = "active";
-                svcKeyStatus.className = "badge badge-online";
-                regenBtn.disabled = false;
-            } else {
-                svcKeyStatus.textContent = "not provisioned";
-                svcKeyStatus.className = "badge badge-offline";
-                regenBtn.disabled = true;
-            }
-            showToast(toggle.checked ? "MCP server enabled — service key provisioned" : "MCP server disabled — service key revoked");
+            showToast(toggle.checked ? "MCP server enabled" : "MCP server disabled");
         } catch {
             toggle.checked = !toggle.checked;
             showToast("Failed to update MCP setting", true);
-        }
-    });
-
-    // Regenerate service key
-    regenBtn.addEventListener("click", async function() {
-        const ok = await showConfirm(
-            "Regenerate the MCP service key? The MCP server will pick up the new key within 60 seconds. " +
-            "Any in-flight MCP requests may fail briefly during the transition."
-        );
-        if (!ok) return;
-        try {
-            const resp = await fetch("/api/mcp/service-key/regenerate", {
-                method: "POST",
-            });
-            if (!resp.ok) throw new Error("Regenerate failed");
-            showToast("Service key regenerated — MCP server will reload within 60s");
-        } catch (err) {
-            showToast(err.message || "Failed to regenerate service key", true);
         }
     });
 })();

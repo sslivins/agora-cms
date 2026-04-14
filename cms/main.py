@@ -260,6 +260,48 @@ async def _seed_roles(db):
     await db.commit()
 
 
+async def service_key_rotation_loop() -> None:
+    """Background loop that auto-rotates the MCP service key every hour."""
+    from cms.auth import (
+        SETTING_MCP_ENABLED,
+        SETTING_MCP_SERVICE_KEY_HASH,
+        get_setting,
+        get_settings,
+        provision_service_key,
+    )
+    from cms.database import get_db
+    from cms.mcp_utils import notify_mcp_reload
+
+    # Wait for startup
+    try:
+        await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        return
+
+    while True:
+        try:
+            settings = get_settings()
+            async for db in get_db():
+                enabled = await get_setting(db, SETTING_MCP_ENABLED)
+                has_key = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
+                if enabled == "true" and has_key:
+                    await provision_service_key(
+                        db, settings.service_key_path,
+                        keyvault_uri=settings.azure_keyvault_uri,
+                    )
+                    await notify_mcp_reload(settings)
+                    logger.info("MCP service key rotated")
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Error in service key rotation loop")
+
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -313,6 +355,7 @@ async def lifespan(app: FastAPI):
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
     version_check_task = asyncio.create_task(version_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
+    key_rotation_task = asyncio.create_task(service_key_rotation_loop())
 
     logger.info("Agora CMS %s started", __version__)
     yield
@@ -322,6 +365,7 @@ async def lifespan(app: FastAPI):
     backfill_task.cancel()
     version_check_task.cancel()
     device_purge_task.cancel()
+    key_rotation_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -340,6 +384,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await device_purge_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await key_rotation_task
     except asyncio.CancelledError:
         pass
     # Close storage backend (Azure: close async blob client)
