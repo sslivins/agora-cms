@@ -236,6 +236,15 @@ async def run_migrations():
                 "ALTER TABLE api_keys ADD COLUMN key_type VARCHAR(10) DEFAULT 'api' NOT NULL"
             ))
 
+        # -- devices.previous_api_key_hash (key rotation grace period) --
+        has_prev_key = await conn.run_sync(
+            lambda c: _has_column(c, "devices", "previous_api_key_hash")
+        )
+        if not has_prev_key:
+            await conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN previous_api_key_hash VARCHAR(128)"
+            ))
+
         # -- Add notifications:system permission to existing Admin roles --
         has_roles = await conn.run_sync(lambda c: sa_inspect(c).has_table("roles"))
         if has_roles:
