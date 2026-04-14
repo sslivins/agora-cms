@@ -315,12 +315,31 @@ if ($cmsReady) {
             -SessionVariable cmsSession -MaximumRedirection 0 `
             -ErrorAction SilentlyContinue -SkipHttpErrorCheck
 
-        # Enable MCP in CMS settings (auto-provisions service key)
-        $null = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/toggle" -Method POST `
+        # Enable MCP in CMS settings (auto-provisions service key — returns raw key)
+        $toggleResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/toggle" -Method POST `
             -WebSession $cmsSession `
             -ContentType "application/json" `
             -Body '{"enabled":true}'
-        Write-Ok "MCP server enabled (service key auto-provisioned)"
+        $serviceKey = $toggleResp.service_key
+        Write-Ok "MCP server enabled (service key provisioned)"
+
+        # Store service key in Key Vault and inject into MCP container
+        if ($serviceKey) {
+            $kvName = "$Prefix-vault"
+            Write-Step "Storing MCP service key in Key Vault"
+            az keyvault secret set --vault-name $kvName --name mcp-service-key `
+                --value $serviceKey -o none 2>$null
+            Write-Ok "Service key stored in Key Vault"
+
+            Write-Step "Injecting service key into MCP container"
+            az containerapp secret set --name $mcpAppName `
+                --resource-group $ResourceGroup `
+                --secrets "mcp-service-key=$serviceKey" -o none 2>$null
+            az containerapp update --name $mcpAppName `
+                --resource-group $ResourceGroup `
+                --set-env-vars "SERVICE_KEY=secretref:mcp-service-key" -o none 2>$null
+            Write-Ok "MCP container updated with service key"
+        }
 
         # Generate an MCP SSE auth key for the admin user
         $keyResp = Invoke-RestMethod -Uri "https://$cmsUrl/api/mcp/generate-key" -Method POST `

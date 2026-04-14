@@ -359,16 +359,17 @@ def clear_service_key_file(path: str) -> None:
         key_path.unlink()
 
 
-async def provision_service_key(db: AsyncSession, path: str) -> str:
+async def provision_service_key(db: AsyncSession, path: str) -> tuple[str, str]:
     """Generate a new service key, store its hash, and write to the shared volume.
 
-    Returns the key prefix for display in the UI.
+    Returns (raw_key, display_prefix) — raw_key is needed for Azure Key Vault
+    injection in deploy scripts; display_prefix is safe for UI display.
     """
     raw_key = generate_service_key()
     key_hash = _hash_api_key(raw_key)
     await set_setting(db, SETTING_MCP_SERVICE_KEY_HASH, key_hash)
     write_service_key_file(raw_key, path)
-    return raw_key[:16] + "..."
+    return raw_key, raw_key[:16] + "..."
 
 
 async def revoke_service_key(db: AsyncSession, path: str) -> None:

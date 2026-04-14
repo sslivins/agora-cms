@@ -354,13 +354,39 @@ def main() -> int:
             session.post(f"https://{cms_url}/login",
                          data={"username": "admin", "password": cms_pass})
 
-            # Enable MCP (auto-provisions service key)
-            session.post(
+            # Enable MCP (auto-provisions service key — returns raw key)
+            status, body = session.post(
                 f"https://{cms_url}/api/mcp/toggle",
                 data={"enabled": True},
                 content_type="application/json",
             )
-            ok("MCP server enabled (service key auto-provisioned)")
+            toggle_resp = json.loads(body)
+            service_key = toggle_resp.get("service_key", "")
+            ok("MCP server enabled (service key provisioned)")
+
+            # Store service key in Key Vault and inject into MCP container
+            if service_key:
+                kv_name = f"{args.prefix}-vault"
+                step("Storing MCP service key in Key Vault")
+                az("keyvault", "secret", "set",
+                   "--vault-name", kv_name,
+                   "--name", "mcp-service-key",
+                   "--value", service_key,
+                   "-o", "none", quiet=True)
+                ok("Service key stored in Key Vault")
+
+                step("Injecting service key into MCP container")
+                az("containerapp", "secret", "set",
+                   "--name", mcp_app,
+                   "--resource-group", resource_group,
+                   "--secrets", f"mcp-service-key={service_key}",
+                   "-o", "none", quiet=True)
+                az("containerapp", "update",
+                   "--name", mcp_app,
+                   "--resource-group", resource_group,
+                   "--set-env-vars", "SERVICE_KEY=secretref:mcp-service-key",
+                   "-o", "none", quiet=True)
+                ok("MCP container updated with service key")
 
             # Generate MCP SSE auth key for admin user
             status, body = session.post(

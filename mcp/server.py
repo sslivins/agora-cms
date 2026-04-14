@@ -679,7 +679,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 # ── Service key management ──
 
 def _load_service_key_sync() -> str:
-    """Read the service key from the shared volume file (synchronous)."""
+    """Read the service key from env var or shared volume file (synchronous).
+
+    Priority: SERVICE_KEY env var (Azure/K8s) > file (Docker Compose).
+    """
+    env_key = os.environ.get("SERVICE_KEY", "").strip()
+    if env_key:
+        return env_key
     try:
         path = Path(SERVICE_KEY_PATH)
         if path.exists():
@@ -692,16 +698,17 @@ def _load_service_key_sync() -> str:
 
 
 async def _reload_service_key() -> None:
-    """Reload the service key from the file if it has changed."""
+    """Reload the service key if it has changed."""
     global _service_key
     new_key = _load_service_key_sync()
     if new_key != _service_key:
         async with _service_key_lock:
             _service_key = new_key
         if new_key:
-            logger.info("Service key loaded/reloaded from %s", SERVICE_KEY_PATH)
+            source = "SERVICE_KEY env var" if os.environ.get("SERVICE_KEY", "").strip() else SERVICE_KEY_PATH
+            logger.info("Service key loaded/reloaded from %s", source)
         else:
-            logger.warning("Service key file is empty or missing: %s", SERVICE_KEY_PATH)
+            logger.warning("Service key is empty or missing")
 
 
 async def _service_key_watcher() -> None:
@@ -715,7 +722,8 @@ if __name__ == "__main__":
     # Load service key on startup (before server starts)
     _service_key = _load_service_key_sync()
     if _service_key:
-        logger.info("Service key loaded from %s", SERVICE_KEY_PATH)
+        source = "SERVICE_KEY env var" if os.environ.get("SERVICE_KEY", "").strip() else SERVICE_KEY_PATH
+        logger.info("Service key loaded from %s", source)
     else:
         logger.warning(
             "No service key found at %s — MCP tools will fail until "
