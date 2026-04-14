@@ -9,6 +9,9 @@ from __future__ import annotations
 # ── Device permissions ──
 DEVICES_READ = "devices:read"
 DEVICES_WRITE = "devices:write"
+DEVICES_MANAGE = "devices:manage"
+
+# Legacy — kept for backward compatibility; treated as devices:manage
 DEVICES_REBOOT = "devices:reboot"
 DEVICES_DELETE = "devices:delete"
 
@@ -61,7 +64,7 @@ GROUPS_VIEW_ALL = "groups:view_all"
 
 
 ALL_PERMISSIONS: list[str] = [
-    DEVICES_READ, DEVICES_WRITE, DEVICES_REBOOT, DEVICES_DELETE,
+    DEVICES_READ, DEVICES_WRITE, DEVICES_MANAGE,
     GROUPS_READ, GROUPS_WRITE,
     ASSETS_READ, ASSETS_WRITE,
     SCHEDULES_READ, SCHEDULES_WRITE,
@@ -79,9 +82,8 @@ ALL_PERMISSIONS: list[str] = [
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
     DEVICES_READ: "View devices and their status",
-    DEVICES_WRITE: "Create, update, and adopt devices",
-    DEVICES_REBOOT: "Send reboot commands to devices",
-    DEVICES_DELETE: "Remove devices from the system",
+    DEVICES_WRITE: "Rename devices and assign to groups",
+    DEVICES_MANAGE: "Adopt, reboot, delete, update firmware, and configure device settings (SSH, password, timezone, profile, factory reset)",
     GROUPS_READ: "View device groups",
     GROUPS_WRITE: "Create, update, and delete device groups",
     ASSETS_READ: "View and download media assets",
@@ -147,5 +149,15 @@ BUILTIN_ROLES: dict[str, dict] = {
 
 
 def has_permission(user_permissions: list[str], required: str) -> bool:
-    """Check whether a permission list includes the required permission."""
-    return required in user_permissions
+    """Check whether a permission list includes the required permission.
+
+    Backward compatibility: ``devices:reboot`` and ``devices:delete`` are
+    treated as aliases for ``devices:manage``.
+    """
+    if required in user_permissions:
+        return True
+    # Legacy mapping: if the role still has the old granular permissions,
+    # treat them as devices:manage.
+    if required == DEVICES_MANAGE:
+        return DEVICES_REBOOT in user_permissions or DEVICES_DELETE in user_permissions
+    return False
