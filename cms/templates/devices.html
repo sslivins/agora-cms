@@ -293,6 +293,7 @@
 </div>
 
 {# ── Device Groups (expandable) ── #}
+{% if 'groups:read' in user_perms %}
 <div class="card">
     <h2>Device Groups</h2>
     {% for g in groups %}
@@ -316,7 +317,7 @@
                 </select>
                 <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')"><span class="has-tooltip">Remove<span class="tooltip">Remove this group — devices will be ungrouped</span></span></button>
                 {% else %}
-                <span class="text-muted">{{ (assets | selectattr('id', 'equalto', g.default_asset_id) | first).filename if g.default_asset_id else 'None' }}</span>
+                <span class="text-muted">{{ (assets | selectattr('id', 'equalto', g.default_asset_id) | first).filename if g.default_asset_id else 'No default asset' }}</span>
                 {% endif %}
             </span>
         </div>
@@ -366,6 +367,7 @@
     </table>
 </div>
 {% endif %}
+{% endif %}{# end groups:read #}
 {% endblock %}
 
 {% block scripts %}
