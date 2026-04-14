@@ -1263,10 +1263,15 @@ async def mcp_toggle(
         # Auto-provision service key if not already present
         existing = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
         if not existing:
-            await provision_service_key(db, settings.service_key_path)
+            raw_key, prefix = await provision_service_key(
+                db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
+            )
+            return {"enabled": enabled, "service_key": raw_key}
     else:
         # Revoke service key when MCP is disabled
-        await revoke_service_key(db, settings.service_key_path)
+        await revoke_service_key(
+            db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
+        )
 
     return {"enabled": enabled}
 
@@ -1278,8 +1283,10 @@ async def regenerate_mcp_service_key(
     settings: Settings = Depends(get_settings),
 ):
     """Regenerate the MCP service key. MCP server picks up the new key within 60s."""
-    prefix = await provision_service_key(db, settings.service_key_path)
-    return {"regenerated": True, "prefix": prefix}
+    raw_key, prefix = await provision_service_key(
+        db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
+    )
+    return {"regenerated": True, "prefix": prefix, "service_key": raw_key}
 
 
 # ── SMTP Settings ──

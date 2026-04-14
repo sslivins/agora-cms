@@ -42,6 +42,9 @@ param storageAccountKey string
 param mcpAppName string
 param mcpImage string
 
+// ── Azure Key Vault (service key exchange) ──
+param keyVaultUri string = ''
+
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${environmentName}-logs'
@@ -93,6 +96,9 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: cmsAppName
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: containerAppsEnv.id
     configuration: {
@@ -182,6 +188,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'AGORA_CMS_MCP_SERVER_URL'
               value: 'http://${mcpAppName}'
             }
+            {
+              name: 'AGORA_CMS_AZURE_KEYVAULT_URI'
+              value: keyVaultUri
+            }
           ]
           volumeMounts: [
             {
@@ -211,6 +221,9 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: mcpAppName
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: containerAppsEnv.id
     configuration: {
@@ -248,6 +261,10 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'CMS_BASE_URL'
               value: 'http://${cmsAppName}'
             }
+            {
+              name: 'AZURE_KEYVAULT_URI'
+              value: keyVaultUri
+            }
           ]
         }
       ]
@@ -264,3 +281,5 @@ output cmsAppUrl string = 'https://${cmsApp.properties.configuration.ingress.fqd
 output mcpAppFqdn string = mcpApp.properties.configuration.ingress.fqdn
 output mcpAppUrl string = 'https://${mcpApp.properties.configuration.ingress.fqdn}'
 output environmentId string = containerAppsEnv.id
+output cmsPrincipalId string = cmsApp.identity.principalId
+output mcpPrincipalId string = mcpApp.identity.principalId

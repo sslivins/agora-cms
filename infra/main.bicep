@@ -170,6 +170,36 @@ module containerApps 'modules/containerApps.bicep' = {
     // MCP
     mcpAppName: mcpAppName
     mcpImage: resolvedMcpImage
+
+    // Key Vault (service key exchange)
+    keyVaultUri: keyVault.outputs.keyVaultUri
+  }
+}
+
+// ── Key Vault RBAC for Container Apps managed identities ──
+resource existingKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: keyVaultName
+}
+
+// CMS: Key Vault Secrets Officer (read + write service key)
+resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(existingKeyVault.id, containerApps.outputs.cmsPrincipalId, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  scope: existingKeyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+    principalId: containerApps.outputs.cmsPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// MCP: Key Vault Secrets User (read-only service key)
+resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(existingKeyVault.id, containerApps.outputs.mcpPrincipalId, '4633458b-17de-408a-b874-0445c86b69e6')
+  scope: existingKeyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+    principalId: containerApps.outputs.mcpPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
