@@ -31,10 +31,7 @@ class TestWebSocket:
                 assert msg["type"] == "auth_assigned"
                 assert "device_auth_token" in msg
 
-                # Should receive sync
-                msg = ws.receive_json()
-                assert msg["type"] == "sync"
-
+                # New device is PENDING — no sync sent until adopted
                 time.sleep(0.5)  # Allow server to finish before disconnect
 
                 ws.close()
@@ -156,8 +153,7 @@ class TestWebSocket:
                     "storage_used_mb": 50,
                 })
 
-                # Consume auth_assigned + sync
-                ws.receive_json()
+                # Consume auth_assigned (no sync for unadopted device)
                 ws.receive_json()
 
                 # Send status
@@ -208,10 +204,7 @@ class TestWebSocket:
                 assert msg["type"] == "auth_assigned"
                 assert "device_auth_token" in msg
 
-                # Should receive sync
-                msg = ws.receive_json()
-                assert msg["type"] == "sync"
-
+                # Reflashed device is reset to PENDING — no sync until adopted
                 time.sleep(0.5)  # Allow server to finish before disconnect
 
                 ws.close()
