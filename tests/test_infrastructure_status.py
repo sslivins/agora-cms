@@ -1,7 +1,5 @@
 """Tests for Database infrastructure status endpoints."""
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 
@@ -17,39 +15,22 @@ class TestDbStatus:
         # SQLite doesn't support pg_ functions, so it'll return offline
         assert "online" in data
 
-    async def test_settings_page_shows_db_card(self, client):
+    async def test_settings_page_no_db_card(self, client):
+        """Database card was removed from settings page."""
         resp = await client.get("/settings")
         assert resp.status_code == 200
-        assert "Database" in resp.text
-        assert "db-status-badge" in resp.text
-        assert "Change Database Password" in resp.text
+        assert "db-status-badge" not in resp.text
+        assert "Change Database Password" not in resp.text
 
 
 @pytest.mark.asyncio
-class TestDbChangePassword:
-    """Test the /api/db/change-password endpoint."""
+class TestDbChangePasswordRemoved:
+    """Verify the dangerous DB change-password endpoint was removed."""
 
-    async def test_password_too_short(self, client):
-        resp = await client.post(
-            "/api/db/change-password",
-            json={"password": "abc"},
-        )
-        assert resp.status_code == 400
-        assert "at least 6 characters" in resp.json()["detail"]
-
-    async def test_empty_password(self, client):
-        resp = await client.post(
-            "/api/db/change-password",
-            json={"password": ""},
-        )
-        assert resp.status_code == 400
-
-    async def test_change_password_fails_on_sqlite(self, client):
-        """ALTER USER doesn't exist in SQLite — should return 500 gracefully."""
+    async def test_change_password_endpoint_gone(self, client):
         resp = await client.post(
             "/api/db/change-password",
             json={"password": "new-secure-password"},
         )
-        # SQLite doesn't support ALTER USER, so this should fail gracefully
-        assert resp.status_code == 500
-        assert "detail" in resp.json()
+        # Endpoint removed — should 404 or 405
+        assert resp.status_code in (404, 405)

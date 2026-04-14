@@ -119,10 +119,12 @@ class TestChangeTimezone:
         )
         assert resp.status_code == 200
         text = resp.text
-        # Page must still contain other settings sections
-        assert "System Info" in text
-        assert "Change Password" in text
+        # Page must still contain remaining settings sections
         assert "MCP Server" in text
+        assert "SMTP" in text
+        # Removed sections should NOT appear
+        assert "System Info" not in text
+        assert "Change Database Password" not in text
 
     async def test_requires_auth(self, unauthed_client):
         """Unauthenticated requests should be rejected."""

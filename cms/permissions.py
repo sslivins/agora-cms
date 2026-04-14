@@ -62,6 +62,9 @@ NOTIFICATIONS_SYSTEM = "notifications:system"
 # ── Group scope permissions ──
 GROUPS_VIEW_ALL = "groups:view_all"
 
+# ── System health permissions ──
+SYSTEM_HEALTH = "system:health"
+
 
 ALL_PERMISSIONS: list[str] = [
     DEVICES_READ, DEVICES_WRITE, DEVICES_MANAGE,
@@ -78,6 +81,7 @@ ALL_PERMISSIONS: list[str] = [
     AUDIT_READ,
     NOTIFICATIONS_SYSTEM,
     GROUPS_VIEW_ALL,
+    SYSTEM_HEALTH,
 ]
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -107,6 +111,7 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     AUDIT_READ: "View audit trail and activity history",
     NOTIFICATIONS_SYSTEM: "View system-level notifications (SMTP failures, errors)",
     GROUPS_VIEW_ALL: "View all groups and their resources regardless of group assignment",
+    SYSTEM_HEALTH: "View system health indicators",
 }
 
 # ── Predefined role templates ──
