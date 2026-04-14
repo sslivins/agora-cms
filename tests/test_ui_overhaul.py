@@ -267,9 +267,9 @@ class TestVersionFooter:
         resp = await client.get("/profile")
         assert __version__ in resp.text
 
-    async def test_footer_element_present(self, client):
+    async def test_version_element_present(self, client):
         resp = await client.get("/")
-        assert "site-footer" in resp.text
+        assert "nav-version" in resp.text
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -1429,7 +1429,6 @@ async def change_timezone(
     base_ctx = {
         "active_tab": "settings",
         "mcp_enabled": mcp_enabled,
-        "mcp_service_key_active": mcp_service_key_active,
         "smtp_host": smtp_host,
         "smtp_port": smtp_port,
         "smtp_username": smtp_username,
