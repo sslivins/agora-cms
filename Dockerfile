@@ -20,6 +20,7 @@ COPY requirements-shared.txt requirements.txt requirements-test.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
 
 COPY shared/ shared/
+COPY worker/ worker/
 COPY cms/ cms/
 COPY tests/ tests/
 COPY pytest.ini .

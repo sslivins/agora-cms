@@ -38,5 +38,6 @@ class DeviceProfile(Base):
     )
 
     # Relationships
-    devices: Mapped[list["Device"]] = relationship(back_populates="profile")
+    # NOTE: DeviceProfile.devices relationship is added by cms/models/__init__.py
+    # (Device is a CMS-only model, not available in the worker package)
     variants: Mapped[list["AssetVariant"]] = relationship(back_populates="profile")

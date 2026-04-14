@@ -55,7 +55,8 @@ class Asset(Base):
     frame_rate: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "30" or "29.97"
     color_space: Mapped[str | None] = mapped_column(String(64), nullable=True)  # e.g. "bt709", "bt2020"
 
-    schedules: Mapped[list["Schedule"]] = relationship(back_populates="asset")
+    # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
+    # (Schedule is a CMS-only model, not available in the worker package)
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="asset")
     variants: Mapped[list["AssetVariant"]] = relationship(back_populates="source_asset")
     group_asset_links: Mapped[list["GroupAsset"]] = relationship(back_populates="asset")
@@ -116,5 +117,6 @@ class DeviceAsset(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    device: Mapped["Device"] = relationship(back_populates="device_assets")
+    # NOTE: DeviceAsset.device relationship is added by cms/models/__init__.py
+    # (Device is a CMS-only model, not available in the worker package)
     asset: Mapped[Asset] = relationship(back_populates="device_assets")

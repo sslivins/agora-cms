@@ -32,4 +32,5 @@ class GroupAsset(Base):
     )
 
     asset: Mapped["Asset"] = relationship(back_populates="group_asset_links")
-    group: Mapped["DeviceGroup"] = relationship()
+    # NOTE: GroupAsset.group relationship is added by cms/models/__init__.py
+    # (DeviceGroup is a CMS-only model, not available in the worker package)
