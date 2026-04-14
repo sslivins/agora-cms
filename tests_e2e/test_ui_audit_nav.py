@@ -45,13 +45,13 @@ class TestAuditPageNavigation:
 
         expect(page.locator("nav >> text=Users")).to_be_visible()
 
-    def test_audit_page_shows_group_badge(self, page: Page):
-        """The group icon/badge must be present in the header on /audit."""
+    def test_audit_page_hides_group_badge_for_admin(self, page: Page):
+        """The group badge must be hidden for admin (has groups:view_all)."""
         page.goto("/audit")
         page.wait_for_load_state("domcontentloaded")
 
         group_badge = page.locator(".header-groups")
-        expect(group_badge).to_be_visible(timeout=5000)
+        expect(group_badge).to_be_hidden(timeout=5000)
 
     def test_audit_tab_active(self, page: Page):
         """The Audit Log tab should be the active tab on /audit."""
