@@ -279,17 +279,12 @@
 
     // Regenerate service key
     regenBtn.addEventListener("click", async function() {
-        const ok = await showConfirm(
-            "Regenerate the MCP service key? The MCP server will pick up the new key within 60 seconds. " +
-            "Any in-flight MCP requests may fail briefly during the transition."
-        );
-        if (!ok) return;
         try {
             const resp = await fetch("/api/mcp/service-key/regenerate", {
                 method: "POST",
             });
             if (!resp.ok) throw new Error("Regenerate failed");
-            showToast("Service key regenerated — MCP server will reload within 60s");
+            showToast("Service key regenerated");
         } catch (err) {
             showToast(err.message || "Failed to regenerate service key", true);
         }

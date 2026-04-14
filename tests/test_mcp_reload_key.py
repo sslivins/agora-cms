@@ -143,6 +143,67 @@ class TestReloadKeyEndpoint:
                 assert mod._service_key == "new_kv_key"
 
 
+class TestReloadKeyBypassesAuth:
+    """Ensure /reload-key is exempt from BearerAuthMiddleware."""
+
+    @pytest.mark.asyncio
+    async def test_reload_key_does_not_require_auth(self, mcp_server_module, tmp_path):
+        """POST /reload-key without Authorization header should return 200, not 401."""
+        mod = mcp_server_module
+
+        # Provide a key file so reload has something to load
+        key_file = tmp_path / "svc.key"
+        key_file.write_text("test_key")
+        mod.SERVICE_KEY_PATH = str(key_file)
+        mod.AZURE_KEYVAULT_URI = ""
+        os.environ.pop("SERVICE_KEY", None)
+
+        from starlette.applications import Starlette
+        from starlette.middleware import Middleware
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+
+        # Build app WITH the auth middleware — same as production
+        app = Starlette(
+            routes=[
+                Route("/health", mod.health_endpoint),
+                Route("/reload-key", mod.reload_key_endpoint, methods=["POST"]),
+            ],
+            middleware=[Middleware(mod.BearerAuthMiddleware)],
+        )
+        with TestClient(app) as client:
+            # No Authorization header — must still succeed
+            resp = client.post("/reload-key")
+            assert resp.status_code == 200, f"Expected 200 but got {resp.status_code}: {resp.text}"
+            assert resp.json()["reloaded"] is True
+
+    @pytest.mark.asyncio
+    async def test_other_routes_still_require_auth(self, mcp_server_module):
+        """Non-exempt routes should still return 401 without a token."""
+        mod = mcp_server_module
+
+        from starlette.applications import Starlette
+        from starlette.middleware import Middleware
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+
+        async def dummy_endpoint(request):
+            return JSONResponse({"ok": True})
+
+        app = Starlette(
+            routes=[
+                Route("/health", mod.health_endpoint),
+                Route("/reload-key", mod.reload_key_endpoint, methods=["POST"]),
+                Route("/some-protected", dummy_endpoint),
+            ],
+            middleware=[Middleware(mod.BearerAuthMiddleware)],
+        )
+        with TestClient(app) as client:
+            resp = client.get("/some-protected")
+            assert resp.status_code == 401
+
+
 # ── Docker Compose scenario: file-based key reload ──
 
 

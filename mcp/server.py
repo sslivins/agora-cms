@@ -635,7 +635,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Skip auth for health checks and OAuth discovery probes.
         # Returning 404 on /.well-known/ tells MCP clients that this
         # server uses simple Bearer auth, not OAuth.
-        if request.url.path.startswith("/health") or request.url.path.startswith("/.well-known"):
+        if request.url.path.startswith("/health") or request.url.path.startswith("/.well-known") or request.url.path == "/reload-key":
             return await call_next(request)
 
         token = request.headers.get("authorization", "")
