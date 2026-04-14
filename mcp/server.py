@@ -26,10 +26,9 @@ logger = logging.getLogger(__name__)
 
 CMS_BASE_URL = os.environ.get("CMS_BASE_URL", "http://cms:8080")
 SERVICE_KEY_PATH = os.environ.get("SERVICE_KEY_PATH", "/shared/mcp-service.key")
-SERVICE_KEY_RELOAD_INTERVAL = int(os.environ.get("SERVICE_KEY_RELOAD_INTERVAL", "60"))
 AZURE_KEYVAULT_URI = os.environ.get("AZURE_KEYVAULT_URI", "")
 
-# Module-level service key — loaded from file, hot-reloaded periodically
+# Module-level service key — loaded at startup, reloaded on demand via /reload-key
 _service_key: str = ""
 _service_key_lock = asyncio.Lock()
 
@@ -595,6 +594,15 @@ async def get_dashboard() -> str:
 
 # ── Health check endpoints ──
 
+async def reload_key_endpoint(request: Request) -> Response:
+    """Signal the MCP server to reload its service key from Key Vault/file."""
+    if request.method != "POST":
+        return Response(status_code=405)
+    await _reload_service_key()
+    has_key = bool(_service_key)
+    return JSONResponse({"reloaded": True, "has_key": has_key})
+
+
 async def health_endpoint(request: Request) -> Response:
     return JSONResponse({"status": "ok"})
 
@@ -741,13 +749,6 @@ async def _reload_service_key() -> None:
             logger.warning("Service key is empty or missing")
 
 
-async def _service_key_watcher() -> None:
-    """Background task that periodically reloads the service key from the file."""
-    while True:
-        await _reload_service_key()
-        await asyncio.sleep(SERVICE_KEY_RELOAD_INTERVAL)
-
-
 if __name__ == "__main__":
     # Load service key on startup (before server starts)
     _service_key, _source = _load_service_key_sync()
@@ -764,15 +765,13 @@ if __name__ == "__main__":
     sse_app = mcp.sse_app()
 
     async def lifespan(app):
-        # Start the service key hot-reload watcher
-        task = asyncio.create_task(_service_key_watcher())
         yield
-        task.cancel()
 
     app = Starlette(
         routes=[
             Route("/health", health_endpoint),
             Route("/health/api", health_api_endpoint),
+            Route("/reload-key", reload_key_endpoint, methods=["POST"]),
         ],
         middleware=[
             Middleware(BearerAuthMiddleware),

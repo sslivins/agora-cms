@@ -51,8 +51,13 @@ from cms.services.version_checker import get_latest_device_version, is_update_av
 from cms.routers.devices import _upgrading as _devices_upgrading
 
 import json as _json
+import logging as _logging
 from datetime import datetime, timezone as _tz
 from zoneinfo import ZoneInfo, available_timezones
+
+import httpx as _httpx
+
+_ui_logger = _logging.getLogger(__name__)
 
 # Common timezones for the device timezone dropdown — sorted for readability.
 # Uses well-known IANA zone names; excludes deprecated / obscure entries.
@@ -1220,6 +1225,20 @@ async def change_password(
 # ── MCP Settings (JSON API used by settings page JS) ──
 
 
+async def _notify_mcp_reload(settings: Settings) -> None:
+    """Tell the MCP server to reload its service key from Key Vault."""
+    mcp_url = settings.mcp_server_url.rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{mcp_url}/reload-key")
+            if resp.status_code == 200:
+                _ui_logger.info("MCP service key reload triggered")
+            else:
+                _ui_logger.warning("MCP reload-key returned %s", resp.status_code)
+    except Exception as exc:
+        _ui_logger.warning("Failed to notify MCP of key reload: %s", exc)
+
+
 @router.get("/api/mcp/status", dependencies=[Depends(require_auth)])
 async def mcp_health_check():
     """Check if the MCP container is reachable and can talk to the CMS API."""
@@ -1266,12 +1285,14 @@ async def mcp_toggle(
             raw_key, prefix = await provision_service_key(
                 db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
             )
+            await _notify_mcp_reload(settings)
             return {"enabled": enabled, "service_key": raw_key}
     else:
         # Revoke service key when MCP is disabled
         await revoke_service_key(
             db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
         )
+        await _notify_mcp_reload(settings)
 
     return {"enabled": enabled}
 
@@ -1282,10 +1303,11 @@ async def regenerate_mcp_service_key(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """Regenerate the MCP service key. MCP server picks up the new key within 60s."""
+    """Regenerate the MCP service key."""
     raw_key, prefix = await provision_service_key(
         db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
     )
+    await _notify_mcp_reload(settings)
     return {"regenerated": True, "prefix": prefix, "service_key": raw_key}
 
 
