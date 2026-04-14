@@ -289,12 +289,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
 
         logger.info("Device %s: asset base_url = %s", device_id, base_url)
 
-        logger.info("Device %s: asset base_url = %s", device_id, base_url)
-
-        # ── 5. Send full schedule sync ──
-        sync = await build_device_sync(device_id, db)
-        if sync:
-            await websocket.send_json(sync.model_dump(mode="json"))
+        # ── 5. Send full schedule sync (adopted devices only) ──
+        if device.status == DeviceStatus.ADOPTED:
+            sync = await build_device_sync(device_id, db)
+            if sync:
+                await websocket.send_json(sync.model_dump(mode="json"))
+        else:
+            logger.info("Device %s is %s — skipping sync until adopted", device_id, device.status.value)
 
         # ── 6. If device is adopted and has a default asset, push it ──
         await db.refresh(device, ["default_asset", "group"])

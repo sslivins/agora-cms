@@ -641,6 +641,12 @@ async def push_sync_to_device(device_id: str, db) -> None:
     if not device_manager.is_connected(device_id):
         return
 
+    # Only sync adopted devices — pending/orphaned devices should not receive content
+    result = await db.execute(select(Device.status).where(Device.id == device_id))
+    status = result.scalar_one_or_none()
+    if status != DeviceStatus.ADOPTED:
+        return
+
     sync = await build_device_sync(device_id, db)
     if sync is None:
         return
