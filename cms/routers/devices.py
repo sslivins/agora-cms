@@ -349,6 +349,7 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
     elif device.status == DeviceStatus.ORPHANED:
         device.device_auth_token_hash = None
         device.device_api_key_hash = None
+        device.previous_api_key_hash = None
         device.api_key_rotated_at = None
         device.status = DeviceStatus.ADOPTED
     else:

@@ -1,6 +1,7 @@
 """Asset library API routes with RBAC group scoping."""
 
 import hashlib
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -25,10 +26,89 @@ from cms.models.user import User
 from cms.schemas.asset import AssetOut
 from cms.services.storage import get_storage
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/assets", dependencies=[Depends(require_auth)])
 
-# Separate router for device-facing endpoints (no admin auth required)
-device_router = APIRouter(prefix="/api/assets")
+
+# ── Device download auth ──
+
+
+def _hash_device_key(key: str) -> str:
+    """SHA-256 hash matching the scheme used by ws.py for device API keys."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+# Grace period after key rotation during which the previous key is still accepted.
+# This covers in-flight downloads that started before the device received its new key.
+_KEY_GRACE_SECONDS = 300  # 5 minutes
+
+
+async def require_device_or_session_auth(
+    request: Request,
+    key: str | None = Query(None, alias="key"),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Allow access if the request carries a valid device API key OR
+    an authenticated browser session (cookie).
+
+    Device key is accepted via ``X-Device-API-Key`` header or ``?key=`` query param.
+    During key rotation, the previous key is accepted for a short grace period.
+    """
+    from datetime import datetime, timedelta, timezone as tz
+
+    # 1. Try device API key (header first, then query param)
+    api_key = request.headers.get("X-Device-API-Key") or key
+    if api_key:
+        key_hash = _hash_device_key(api_key)
+
+        # Check current key
+        result = await db.execute(
+            select(Device.id).where(Device.device_api_key_hash == key_hash)
+        )
+        if result.scalar_one_or_none() is not None:
+            return  # valid current key
+
+        # Check previous key within grace period
+        result = await db.execute(
+            select(Device).where(Device.previous_api_key_hash == key_hash)
+        )
+        device = result.scalar_one_or_none()
+        if device is not None and device.api_key_rotated_at is not None:
+            rotated_at = device.api_key_rotated_at
+            # Ensure timezone-aware comparison (SQLite returns naïve datetimes)
+            if rotated_at.tzinfo is None:
+                rotated_at = rotated_at.replace(tzinfo=tz.utc)
+            age = datetime.now(tz.utc) - rotated_at
+            if age < timedelta(seconds=_KEY_GRACE_SECONDS):
+                logger.debug(
+                    "Device %s authenticated with previous key (rotated %ds ago)",
+                    device.id, age.total_seconds(),
+                )
+                return  # previous key still within grace window
+
+        raise HTTPException(status_code=401, detail="Invalid device API key")
+
+    # 2. Fall back to browser session cookie
+    from cms.auth import COOKIE_NAME, _resolve_user_from_session
+    cookie = request.cookies.get(COOKIE_NAME)
+    if cookie:
+        user = await _resolve_user_from_session(cookie, settings, db)
+        if user is not None:
+            return  # valid browser session
+
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication required. Provide X-Device-API-Key header or valid session.",
+    )
+
+
+# Separate router for device-facing download endpoints (device key auth)
+device_router = APIRouter(
+    prefix="/api/assets",
+    dependencies=[Depends(require_device_or_session_auth)],
+)
 
 ALLOWED_PATTERN = re.compile(
     r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-. ]{0,200}"

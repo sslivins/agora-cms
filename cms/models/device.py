@@ -59,6 +59,7 @@ class Device(Base):
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device_auth_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     device_api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    previous_api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     api_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registered_at: Mapped[datetime] = mapped_column(

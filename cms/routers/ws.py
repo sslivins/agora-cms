@@ -146,14 +146,20 @@ async def _auto_assign_profile(device: Device, db: AsyncSession) -> None:
 
 
 async def _generate_and_push_api_key(device: Device, websocket: WebSocket, db: AsyncSession) -> None:
-    """Generate a new device API key, store its hash, and push it to the device."""
+    """Generate a new device API key, store its hash, and push it to the device.
+
+    The previous key hash is preserved so in-flight downloads using the old
+    key still succeed during the short window before the device starts using
+    the new key.
+    """
     new_key = secrets.token_urlsafe(32)
+    device.previous_api_key_hash = device.device_api_key_hash
     device.device_api_key_hash = _hash_token(new_key)
     device.api_key_rotated_at = datetime.now(timezone.utc)
     await db.commit()
     config_msg = ConfigMessage(api_key=new_key)
     await websocket.send_json(config_msg.model_dump(mode="json"))
-    logger.info("API key pushed to device %s", device.id)
+    logger.info("API key rotated for device %s (previous key preserved)", device.id)
 
 
 @router.websocket("/ws/device")
@@ -353,7 +359,6 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     age = datetime.now(timezone.utc) - device.api_key_rotated_at
                     if age > timedelta(hours=settings.api_key_rotation_hours):
                         await _generate_and_push_api_key(device, websocket, db)
-                        logger.info("API key rotated for device %s", device_id)
 
             elif msg_type == MessageType.ASSET_ACK:
                 logger.info("Device %s confirmed asset: %s", device_id, msg.get("asset_name"))
