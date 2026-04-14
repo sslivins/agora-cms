@@ -98,6 +98,10 @@ header {
     border-radius: var(--radius);
     transition: color 0.2s, background 0.2s;
     cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    text-decoration: none;
 }
 .header-icon:hover {
     color: var(--text);
@@ -145,6 +149,9 @@ header {
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--primary);
 }
+.notification-panel-actions { display: flex; gap: 0.4rem; }
+.btn-danger-subtle { color: var(--danger); border-color: var(--danger); }
+.btn-danger-subtle:hover { background: var(--danger); color: #fff; }
 .notification-panel-list {
     max-height: 380px;
     overflow-y: auto;
@@ -154,15 +161,24 @@ header {
     border-bottom: 1px solid rgba(255,255,255,0.05);
     cursor: pointer;
     transition: background 0.15s;
+    position: relative;
 }
 .notification-item:hover { background: rgba(255,255,255,0.04); }
 .notification-item.unread { border-left: 3px solid var(--accent); }
 .notification-item.notif-error .notif-title { color: var(--danger); }
 .notification-item.notif-warning .notif-title { color: var(--warning); }
 .notification-item.notif-info .notif-title { color: var(--accent); }
-.notif-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; }
+.notif-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; padding-right: 1.2rem; }
 .notif-message { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
 .notif-time { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; opacity: 0.7; }
+.notif-dismiss {
+    position: absolute; top: 0.5rem; right: 0.5rem;
+    background: none; border: none; padding: 0;
+    color: var(--text-muted); font-size: 1rem; cursor: pointer;
+    line-height: 1; opacity: 0; transition: opacity 0.15s, color 0.15s;
+}
+.notification-item:hover .notif-dismiss { opacity: 1; }
+.notif-dismiss:hover { color: var(--danger); }
 
 nav {
     background: var(--surface);
@@ -779,8 +795,8 @@ tr.highlight-new td {
 .checksum-wrap.has-tooltip .tooltip { word-break: break-all; max-width: 420px; font-family: monospace; }
 .btn-copy { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; padding: 0.15rem 0.4rem; font-size: 0.7rem; line-height: 1; transition: color 0.2s, border-color 0.2s; flex-shrink: 0; }
 .btn-copy:hover { color: var(--text); border-color: var(--text); }
-.btn-x { background: none; border: none; color: rgba(255,255,255,0.8); cursor: pointer; padding: 0 0.15rem; font-size: 0.9rem; line-height: 1; margin-left: 0.2rem; }
-.btn-x:hover { color: #fff; text-shadow: 0 0 2px rgba(0,0,0,0.3); }
+.btn-x { background: none; border: none; color: inherit; cursor: pointer; padding: 0 0.15rem; font-size: 0.9rem; line-height: 1; margin-left: 0.2rem; }
+.btn-x:hover { opacity: 0.7; text-shadow: 0 0 2px rgba(0,0,0,0.3); }
 .btn-add-group { background: none; border: 2px dashed var(--text-muted); color: var(--text-muted); cursor: pointer; border-radius: 0.6rem; width: 1.6rem; height: 1.6rem; font-size: 1rem; line-height: 1; display: inline-flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
 .btn-add-group:hover { border-color: var(--accent); color: var(--accent); }
 .group-picker-wrap { position: relative; display: inline-flex; }
