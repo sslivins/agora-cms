@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission, verify_resource_group_access
 from cms.database import get_db
 from cms.permissions import (
-    DEVICES_READ, DEVICES_WRITE, DEVICES_REBOOT, DEVICES_DELETE,
+    DEVICES_READ, DEVICES_WRITE, DEVICES_MANAGE,
     GROUPS_READ, GROUPS_WRITE,
 )
 from cms.models.asset import Asset
@@ -78,7 +78,7 @@ async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: A
 # ── Devices ──
 
 
-@router.post("/check-updates", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/check-updates", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def check_for_updates():
     """Trigger an immediate check for the latest device firmware version."""
     latest = await check_now()
@@ -149,6 +149,8 @@ async def update_device(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    from cms.permissions import has_permission
+
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
@@ -159,6 +161,18 @@ async def update_device(
         await verify_resource_group_access(user, db, device.group_id)
 
     updates = data.model_dump(exclude_unset=True)
+
+    # Fields that require devices:manage (admin-only)
+    managed_fields = {"profile_id", "timezone", "status"}
+    restricted = managed_fields & updates.keys()
+    if restricted:
+        perms = user.role.permissions if user and user.role else []
+        if not has_permission(perms, DEVICES_MANAGE):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing permission: {DEVICES_MANAGE}",
+            )
+
     for field, value in updates.items():
         setattr(device, field, value)
     await db.commit()
@@ -192,7 +206,7 @@ async def update_device(
     )
 
 
-@router.post("/{device_id}/password", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/{device_id}/password", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def set_device_password(
     device_id: str,
     body: SetPasswordRequest,
@@ -218,7 +232,7 @@ async def set_device_password(
     return {"ok": True}
 
 
-@router.post("/{device_id}/reboot", dependencies=[Depends(require_permission(DEVICES_REBOOT))])
+@router.post("/{device_id}/reboot", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def reboot_device(
     device_id: str,
     request: Request,
@@ -237,7 +251,7 @@ async def reboot_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/upgrade", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/{device_id}/upgrade", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def upgrade_device(
     device_id: str,
     request: Request,
@@ -262,7 +276,7 @@ async def upgrade_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/ssh", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/{device_id}/ssh", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def toggle_device_ssh(
     device_id: str,
     body: ToggleRequest,
@@ -288,7 +302,7 @@ async def toggle_device_ssh(
     return {"ok": True}
 
 
-@router.post("/{device_id}/factory-reset", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/{device_id}/factory-reset", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def factory_reset_device(
     device_id: str,
     request: Request,
@@ -307,7 +321,7 @@ async def factory_reset_device(
     return {"ok": True}
 
 
-@router.post("/{device_id}/local-api", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/{device_id}/local-api", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def toggle_device_local_api(
     device_id: str,
     body: ToggleRequest,
@@ -332,7 +346,7 @@ async def toggle_device_local_api(
     return {"ok": True}
 
 
-@router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_WRITE))])
+@router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Adopt a pending device or re-adopt an orphaned one.
 
@@ -368,7 +382,7 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
     return {"ok": True}
 
 
-@router.delete("/{device_id}", dependencies=[Depends(require_permission(DEVICES_DELETE))])
+@router.delete("/{device_id}", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     device = await _get_device_with_access(device_id, request, db)
 
