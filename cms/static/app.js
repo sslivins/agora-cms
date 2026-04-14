@@ -702,7 +702,25 @@ async function unshareAsset(assetId, groupId) {
 
 async function toggleGlobal(assetId) {
     const resp = await apiCall("POST", `/api/assets/${assetId}/global`);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        const data = await resp.json();
+        const scopeEl = document.getElementById("scope-" + assetId);
+        if (!scopeEl) { location.reload(); return; }
+
+        scopeEl.innerHTML = "";
+        if (data.is_global) {
+            let h = '<span class="badge badge-ready">Global';
+            if (__isAdmin) h += ' <button class="btn-x" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" title="Remove global visibility">\u00d7</button>';
+            h += '</span>';
+            scopeEl.innerHTML = h;
+        } else {
+            scopeEl.innerHTML = '<span class="badge badge-pending">Personal</span>';
+            if (__isAdmin) {
+                scopeEl.innerHTML += ' <button class="btn btn-sm btn-secondary" style="margin-left:0.25rem;" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" type="button" title="Make visible to all groups">Make Global</button>';
+            }
+        }
+        _syncCollapsedScope(assetId);
+    }
 }
 
 // ── Schedule actions ──
