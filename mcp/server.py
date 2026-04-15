@@ -59,6 +59,7 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "list_assets": "assets:read",
     "get_asset": "assets:read",
     "delete_asset": "assets:write",
+    "create_webpage_asset": "assets:write",
     "list_schedules": "schedules:read",
     "get_schedule": "schedules:read",
     "create_schedule": "schedules:write",
@@ -295,7 +296,7 @@ async def delete_group(group_id: str) -> str:
 
 @mcp.tool()
 async def list_assets() -> str:
-    """List all uploaded assets (videos and images) in the CMS library."""
+    """List all uploaded assets (videos, images, and webpages) in the CMS library."""
     if err := _check_permission("list_assets"):
         return err
     assets = await _call_api("list_assets")
@@ -326,6 +327,33 @@ async def delete_asset(asset_id: str) -> str:
         return err
     await _call_api("delete_asset", asset_id)
     return f"Asset {asset_id} deleted"
+
+
+@mcp.tool()
+async def create_webpage_asset(
+    url: str,
+    name: str | None = None,
+    group_id: str | None = None,
+) -> str:
+    """Create a webpage asset from a URL. No file upload needed.
+
+    Webpage assets render a URL on-screen using Chromium in kiosk mode.
+    Only supported on Raspberry Pi 5 and Compute Module 5 devices.
+
+    Args:
+        url: The webpage URL to display (must start with http:// or https://).
+        name: Optional display name. If omitted, derived from the URL hostname.
+        group_id: Optional UUID of the group to assign the asset to.
+    """
+    if err := _check_permission("create_webpage_asset"):
+        return err
+    data: dict = {"url": url}
+    if name:
+        data["name"] = name
+    if group_id:
+        data["group_id"] = group_id
+    result = await _call_api("create_webpage_asset", data)
+    return _json_result(result)
 
 
 # ── Schedules ──

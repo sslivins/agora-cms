@@ -410,6 +410,7 @@ async def upload_asset(
         if val is not None:
             setattr(asset, key, val)
     await db.commit()
+    await db.refresh(asset)
 
     # Queue transcoding for all profiles (video and image assets)
     if asset_type in (AssetType.VIDEO, AssetType.IMAGE):
@@ -417,6 +418,80 @@ async def upload_asset(
         from cms.services.transcoder import notify_worker
         await notify_worker(db)
 
+    return asset
+
+
+@router.post("/webpage", response_model=AssetOut, status_code=201)
+async def create_webpage_asset(
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a webpage asset from a URL (no file upload)."""
+    body = await request.json()
+    url = body.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+    if len(url) > 2048:
+        raise HTTPException(status_code=400, detail="URL too long (max 2048 characters)")
+
+    # Use provided name or derive from URL
+    name = body.get("name", "").strip()
+    if not name:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        name = parsed.netloc + (parsed.path if parsed.path != "/" else "")
+        if len(name) > 200:
+            name = name[:200]
+
+    # Check for duplicate filename
+    existing = await db.execute(select(Asset).where(Asset.filename == name))
+    if existing.scalar_one_or_none():
+        # Append a short hash to make unique
+        import hashlib as _hl
+        suffix = _hl.md5(url.encode()).hexdigest()[:6]
+        name = f"{name} ({suffix})"
+
+    # Resolve group UUIDs
+    resolved_groups: list[uuid.UUID] = []
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    raw_ids = body.get("group_ids", [])
+    if isinstance(raw_ids, str):
+        raw_ids = [g.strip() for g in raw_ids.split(",") if g.strip()]
+    group_id = body.get("group_id")
+    if group_id and not raw_ids:
+        raw_ids = [group_id]
+    for gid in raw_ids:
+        try:
+            parsed_id = uuid.UUID(str(gid))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid group_id: {gid}")
+        if not is_admin and parsed_id not in user_groups:
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        resolved_groups.append(parsed_id)
+
+    make_global = (not resolved_groups and is_admin)
+
+    asset = Asset(
+        filename=name,
+        asset_type=AssetType.WEBPAGE,
+        size_bytes=0,
+        checksum="",
+        url=url,
+        is_global=make_global,
+        uploaded_by_user_id=user.id,
+    )
+    db.add(asset)
+    await db.flush()
+
+    for gid in resolved_groups:
+        db.add(GroupAsset(asset_id=asset.id, group_id=gid))
+
+    await db.commit()
+    await db.refresh(asset)
     return asset
 
 

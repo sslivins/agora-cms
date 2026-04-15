@@ -13,7 +13,8 @@ from sqlalchemy.orm import selectinload
 from cms.auth import require_auth, require_permission, get_user_group_ids, verify_resource_group_access
 from cms.database import get_db
 from cms.permissions import SCHEDULES_READ, SCHEDULES_WRITE
-from cms.models.asset import Asset
+from cms.models.asset import Asset, AssetType
+from cms.models.device import Device, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
@@ -127,6 +128,34 @@ def _compute_end_time(start_time, loop_count: int, duration_seconds: float) -> d
     return dt_time(h, m, s)
 
 
+def _is_pi5_compatible(device_type: str) -> bool:
+    """Check if a device type string indicates a Pi 5 or Compute Module 5."""
+    if not device_type:
+        return False
+    dt_lower = device_type.lower()
+    return "pi 5" in dt_lower or "compute module 5" in dt_lower
+
+
+async def _validate_webpage_group(group_id: uuid.UUID, db: AsyncSession) -> None:
+    """Validate all adopted devices in a group are Pi 5+ for webpage assets."""
+    result = await db.execute(
+        select(Device).where(
+            Device.group_id == group_id,
+            Device.status == DeviceStatus.ADOPTED,
+        )
+    )
+    devices = result.scalars().all()
+    non_pi5 = [d for d in devices if not _is_pi5_compatible(d.device_type)]
+    if non_pi5:
+        names = ", ".join(d.name or d.id for d in non_pi5[:3])
+        suffix = f" and {len(non_pi5) - 3} more" if len(non_pi5) > 3 else ""
+        raise HTTPException(
+            status_code=422,
+            detail=f"Webpage assets require Raspberry Pi 5 or newer. "
+                   f"These devices in the group are not compatible: {names}{suffix}",
+        )
+
+
 async def _resolve_loop_end_time(
     loop_count: int | None,
     asset_id: uuid.UUID,
@@ -156,17 +185,43 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
 
-    # Auto-compute end_time when loop_count is set
-    computed = await _resolve_loop_end_time(
-        data.loop_count, data.asset_id, data.start_time, db,
-    )
-    if computed is not None:
-        fields["end_time"] = computed
-    elif fields.get("end_time") is None:
+    # Check if asset is a webpage type
+    asset = await db.get(Asset, data.asset_id)
+    if not asset:
+        raise HTTPException(status_code=422, detail="Asset not found")
+
+    is_webpage = asset.asset_type == AssetType.WEBPAGE
+
+    # Webpage assets cannot use loop_count (no duration)
+    if is_webpage and data.loop_count is not None:
         raise HTTPException(
             status_code=422,
-            detail="end_time is required when loop_count is not set.",
+            detail="Webpage assets do not support loop count (no duration).",
         )
+
+    # Webpage assets require Pi 5+ devices
+    if is_webpage and data.group_id:
+        await _validate_webpage_group(data.group_id, db)
+
+    # Auto-compute end_time when loop_count is set
+    if not is_webpage:
+        computed = await _resolve_loop_end_time(
+            data.loop_count, data.asset_id, data.start_time, db,
+        )
+        if computed is not None:
+            fields["end_time"] = computed
+        elif fields.get("end_time") is None:
+            raise HTTPException(
+                status_code=422,
+                detail="end_time is required when loop_count is not set.",
+            )
+    else:
+        # Webpage: loop_count not applicable, but end_time is required
+        if fields.get("end_time") is None:
+            raise HTTPException(
+                status_code=422,
+                detail="end_time is required for webpage assets.",
+            )
 
     schedule = Schedule(**fields)
     await _check_conflicts(schedule, db)
@@ -208,10 +263,28 @@ async def update_schedule(
 
     updates = data.model_dump(exclude_unset=True)
 
+    # Check if the resulting asset is a webpage type (current or updated)
+    target_asset_id = updates.get("asset_id", schedule.asset_id)
+    target_asset = await db.get(Asset, target_asset_id)
+    is_webpage = target_asset and target_asset.asset_type == AssetType.WEBPAGE
+
+    # Webpage assets cannot use loop_count
+    if is_webpage and updates.get("loop_count") is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Webpage assets do not support loop count (no duration).",
+        )
+
+    # Validate Pi5 when switching to a webpage asset or changing the group
+    if is_webpage and ("asset_id" in updates or "group_id" in updates):
+        target_group_id = updates.get("group_id", schedule.group_id)
+        if target_group_id:
+            await _validate_webpage_group(target_group_id, db)
+
     # Recompute end_time when loop_count changes (or when asset/start_time
     # change on a schedule that already has loop_count set).
     loop_count = updates.get("loop_count", schedule.loop_count)
-    if loop_count is not None and (
+    if not is_webpage and loop_count is not None and (
         "loop_count" in updates or "asset_id" in updates or "start_time" in updates
     ):
         asset_id = updates.get("asset_id", schedule.asset_id)

@@ -102,6 +102,9 @@ class CMSClient:
     async def delete_asset(self, asset_id: str) -> str:
         return await self._delete(f"/api/assets/{asset_id}")
 
+    async def create_webpage_asset(self, data: dict) -> dict:
+        return await self._post("/api/assets/webpage", json=data)
+
     # ── Schedules ──
 
     async def list_schedules(self) -> list:

@@ -469,16 +469,22 @@ async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
 
 def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = None) -> ScheduleEntry:
     """Convert a Schedule ORM model to a protocol ScheduleEntry."""
+    from shared.models.asset import AssetType
     checksum = None
     if variant_checksums and s.asset.filename in variant_checksums:
         checksum = variant_checksums[s.asset.filename]
     elif s.asset:
         checksum = s.asset.checksum or None
+
+    # For webpage assets, include the URL and skip the checksum
+    is_webpage = s.asset and s.asset.asset_type == AssetType.WEBPAGE
     return ScheduleEntry(
         id=str(s.id),
         name=s.name,
         asset=s.asset.filename,
-        asset_checksum=checksum,
+        asset_checksum=None if is_webpage else checksum,
+        asset_type=s.asset.asset_type.value if s.asset else None,
+        url=s.asset.url if is_webpage else None,
         start_time=s.start_time.strftime("%H:%M:%S"),
         end_time=s.end_time.strftime("%H:%M:%S"),
         start_date=s.start_date.date().isoformat() if s.start_date else None,

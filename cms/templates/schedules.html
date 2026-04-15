@@ -25,10 +25,10 @@
             </div>
             <div class="form-group">
                 <label><span class="has-tooltip">Asset<span class="tooltip">The media file to play when this schedule is active</span></span></label>
-                <select name="asset_id" required>
+                <select name="asset_id" required onchange="onAssetTypeChange(this)">
                     <option value="">Select asset...</option>
                     {% for a in assets %}
-                    <option value="{{ a.id }}">{{ a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% endif %}</option>
+                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">{{ a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% elif a.asset_type.value == 'webpage' %} 🌐{% endif %}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -212,7 +212,7 @@
 <input type="hidden" id="_tzOptions" value='{{ tz_options | tojson }}'>
 <script>
 const _scheduleData = {
-    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}","type":"{{ a.asset_type.value }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
     isAdmin: {{ 'true' if is_admin else 'false' }}
 };
@@ -267,11 +267,16 @@ function filterAssetsByTarget() {
         if (a.global || (targetGroupId && a.groups.includes(targetGroupId))) {
             const opt = document.createElement('option');
             opt.value = a.id;
-            opt.textContent = a.name + (a.duration ? ` (${Math.floor(a.duration/60)}:${String(Math.round(a.duration%60)).padStart(2,'0')})` : '');
+            opt.dataset.assetType = a.type || '';
+            let label = a.name;
+            if (a.type === 'webpage') label += ' 🌐';
+            else if (a.duration) label += ` (${Math.floor(a.duration/60)}:${String(Math.round(a.duration%60)).padStart(2,'0')})`;
+            opt.textContent = label;
             if (a.id === currentVal) opt.selected = true;
             assetSel.appendChild(opt);
         }
     }
+    onAssetTypeChange(assetSel);
 }
 
 // Helper: parse "HH:MM" to total minutes
@@ -280,6 +285,27 @@ function timeToMins(str) {
     const [h, m] = str.split(':').map(Number);
     if (isNaN(h) || isNaN(m)) return null;
     return h * 60 + m;
+}
+
+// Hide/show loop count based on selected asset type (webpages have no duration)
+function onAssetTypeChange(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const assetType = opt ? opt.dataset.assetType : '';
+    const isWebpage = assetType === 'webpage';
+    // Find the loop count input in the same form/modal
+    const container = sel.closest('form') || sel.closest('.modal-box') || document;
+    const lcInput = container.querySelector('[name="loop_count"]') || container.querySelector('#edit-loop-count');
+    if (lcInput) {
+        const wrapper = lcInput.closest('.form-group');
+        if (wrapper) {
+            wrapper.style.display = isWebpage ? 'none' : '';
+        }
+        if (isWebpage) {
+            lcInput.value = '';
+            const etInput = container.querySelector('[name="end_time"]') || container.querySelector('#edit-end-time');
+            if (etInput) etInput.disabled = false;
+        }
+    }
 }
 
 // Helper: "HH:MM" or "HH:MM:SS" to total seconds
@@ -751,11 +777,12 @@ function editSchedule(s) {
 
     const assetOpts = _scheduleData.assets.map(a => {
         let label = a.name;
-        if (a.duration) {
+        if (a.type === 'webpage') label += ' 🌐';
+        else if (a.duration) {
             const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
             label += ` (${m}:${String(s).padStart(2,'0')})`;
         }
-        return `<option value="${a.id}" ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
+        return `<option value="${a.id}" data-asset-type="${a.type || ''}" ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
     }).join("");
 
     const groupOpts = groups.map(g =>
@@ -898,10 +925,14 @@ function editSchedule(s) {
 
     // Attach edit summary listeners to name, asset, and day checkboxes
     box.querySelector("#edit-name").addEventListener('input', updateEditSummary);
-    box.querySelector("#edit-asset").addEventListener('change', function() {
+    const editAssetSel = box.querySelector("#edit-asset");
+    editAssetSel.addEventListener('change', function() {
+        onAssetTypeChange(this);
         computeLoopEndTime(box);
         updateEditSummary();
     });
+    // Hide loop count initially if editing a webpage schedule
+    onAssetTypeChange(editAssetSel);
     for (let i = 1; i <= 7; i++) {
         const dayCb = box.querySelector(`[name="edit_day_${i}"]`);
         if (dayCb) dayCb.addEventListener('change', updateEditSummary);
