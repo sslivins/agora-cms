@@ -465,3 +465,127 @@ class TestDeviceStatusBadgeRendering:
         resp = await client.get("/devices")
         assert resp.status_code == 200
         assert 'data-device-status="adopted"' in resp.text
+
+
+@pytest.mark.asyncio
+class TestStorageFormatting:
+    """Verify storage is displayed in human-readable units."""
+
+    async def test_large_storage_shows_gb(self, client, app):
+        """Storage >= 1024 MB should display as GB."""
+        from cms.database import get_db
+        from cms.models.device import Device, DeviceStatus
+
+        factory = app.dependency_overrides[get_db]
+        device_id = "storage-gb-test-001"
+
+        async for db in factory():
+            device = Device(
+                id=device_id,
+                status=DeviceStatus.ADOPTED,
+                name="Large Storage Device",
+                firmware_version="1.0.0",
+                storage_capacity_mb=128000,
+                storage_used_mb=64000,
+            )
+            db.add(device)
+            await db.commit()
+            break
+
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        # Should show GB, not raw MB
+        assert "62.5 GB" in resp.text  # 64000 / 1024
+        assert "125.0 GB" in resp.text  # 128000 / 1024
+
+    async def test_small_storage_shows_mb(self, client, app):
+        """Storage < 1024 MB should display as MB."""
+        from cms.database import get_db
+        from cms.models.device import Device, DeviceStatus
+
+        factory = app.dependency_overrides[get_db]
+        device_id = "storage-mb-test-001"
+
+        async for db in factory():
+            device = Device(
+                id=device_id,
+                status=DeviceStatus.ADOPTED,
+                name="Small Storage Device",
+                firmware_version="1.0.0",
+                storage_capacity_mb=512,
+                storage_used_mb=100,
+            )
+            db.add(device)
+            await db.commit()
+            break
+
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert "100 MB" in resp.text
+        assert "512 MB" in resp.text
+
+    async def test_js_fmtStorage_function_present(self, client, device_with_live_state):
+        """The fmtStorage JS helper should be in the page for live updates."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert "function fmtStorage" in resp.text
+
+
+@pytest.mark.asyncio
+class TestSelectDropdownStyling:
+    """Verify all select elements get the global dropdown chevron and styling."""
+
+    async def test_global_select_chevron_in_css(self, client):
+        """Global style.css must contain the select chevron background-image."""
+        resp = await client.get("/static/style.css")
+        assert resp.status_code == 200
+        css = resp.text
+        # The global select rule must have appearance:none and the SVG chevron
+        assert "appearance: none" in css
+        assert "background-image:" in css
+        assert "M0 0l5 6 5-6z" in css  # the chevron SVG path
+
+    async def test_no_background_shorthand_on_inline_edit(self, client):
+        """inline-edit must use background-color (not background shorthand)
+        so the global chevron background-image is not overridden."""
+        resp = await client.get("/static/style.css")
+        assert resp.status_code == 200
+        css = resp.text
+        # Find the .inline-edit rule — it should NOT use 'background:' shorthand
+        import re
+        inline_rules = re.findall(r'\.inline-edit\s*\{[^}]+\}', css)
+        for rule in inline_rules:
+            # Allow 'background-color' and 'background-image' but not bare 'background:'
+            stripped = re.sub(r'background-(color|image|repeat|position|size)', '', rule)
+            assert 'background:' not in stripped, (
+                f".inline-edit uses 'background:' shorthand which kills the chevron: {rule}"
+            )
+
+    async def test_no_background_shorthand_on_form_group_select(self, client):
+        """form-group inputs must use background-color not background shorthand."""
+        resp = await client.get("/static/style.css")
+        assert resp.status_code == 200
+        css = resp.text
+        import re
+        # Match multiline rules like .form-group input,\n.form-group select { ... }
+        form_rules = re.findall(
+            r'\.form-group\s+(?:input|select|textarea)[\s\S]*?\{([^}]+)\}', css
+        )
+        for rule_body in form_rules:
+            stripped = re.sub(r'background-(color|image|repeat|position|size)', '', rule_body)
+            assert 'background:' not in stripped, (
+                f"form-group uses 'background:' shorthand which kills the chevron: {rule_body}"
+            )
+
+    async def test_select_vars_defined_in_root(self, client):
+        """CSS must define --select-bg and --select-border variables."""
+        resp = await client.get("/static/style.css")
+        assert resp.status_code == 200
+        assert "--select-bg:" in resp.text
+        assert "--select-border:" in resp.text
+
+    async def test_device_selects_have_inline_edit_class(self, client, device_with_live_state):
+        """Device page selects should have inline-edit class for consistent styling."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert 'class="inline-edit"' in resp.text

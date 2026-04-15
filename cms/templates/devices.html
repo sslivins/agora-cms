@@ -2,6 +2,9 @@
 {% block title %}Devices — Agora CMS{% endblock %}
 {% block content %}
 
+{# ── Helper: human-readable storage ── #}
+{% macro fmt_storage(mb) %}{% if mb >= 1024 %}{{ (mb / 1024) | round(1) }} GB{% else %}{{ mb }} MB{% endif %}{% endmacro %}
+
 {# ── Macro for a device row (reused in main table, groups, ungrouped) ── #}
 {% macro device_row(d, groups, assets, profiles, draggable=false) %}
 <tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
@@ -123,7 +126,7 @@
             </div>
             <div class="detail-item">
                 <span class="detail-label">Storage</span>
-                <span class="detail-value" data-live-storage="{{ d.id }}" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
+                <span class="detail-value" data-live-storage="{{ d.id }}" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ fmt_storage(d.storage_used_mb) }} / {{ fmt_storage(d.storage_capacity_mb) }}</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">CPU Temperature</span>
@@ -476,6 +479,12 @@ function applyAssetTooltips() {
         return '<span class="badge badge-offline">Offline</span>';
     }
 
+    function fmtStorage(mb) {
+        if (mb == null) return '—';
+        if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+        return mb + ' MB';
+    }
+
     function buildTempDisplay(d) {
         if (d.cpu_temp_c == null) return '<span class="text-muted">—</span>';
         const t = d.cpu_temp_c.toFixed(1);
@@ -561,7 +570,7 @@ function applyAssetTooltips() {
             if (storageEl) {
                 const cap = parseInt(storageEl.dataset.storageMb) || 0;
                 const used = d.storage_used_mb != null ? d.storage_used_mb : parseInt(storageEl.dataset.usedMb) || 0;
-                storageEl.textContent = used + ' / ' + cap + ' MB';
+                storageEl.textContent = fmtStorage(used) + ' / ' + fmtStorage(cap);
                 storageEl.dataset.usedMb = used;
             }
 
