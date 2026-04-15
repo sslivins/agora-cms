@@ -27,6 +27,7 @@ _last_sync_hash: dict[str, str] = {}
 # it's playing.  Populated by WS PLAYBACK_STARTED, cleared by PLAYBACK_ENDED
 # or device disconnect.  Only stores {device_id: {schedule_id, since}}.
 _confirmed_playing: dict[str, dict] = {}
+_now_playing = _confirmed_playing  # backwards-compat alias for tests
 
 # Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
 _skipped: dict[str, datetime] = {}
