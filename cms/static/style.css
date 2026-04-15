@@ -691,6 +691,14 @@ select.inline-edit:hover { border-color: var(--accent); }
     font-size: 0.95rem;
 }
 
+.modal-label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+}
+
 .modal-actions {
     display: flex;
     gap: 0.5rem;

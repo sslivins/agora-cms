@@ -77,6 +77,12 @@ class DeviceGroupUpdate(BaseModel):
     default_asset_id: Optional[uuid.UUID] = None
 
 
+class AdoptRequest(BaseModel):
+    name: Optional[str] = None
+    location: Optional[str] = None
+    group_id: Optional[uuid.UUID] = None
+
+
 class SetPasswordRequest(BaseModel):
     password: str
 
