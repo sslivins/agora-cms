@@ -11,6 +11,19 @@ services:
       - cms-assets:/opt/agora-cms/assets
       - mcp-shared:/shared
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file: .env
+    environment:
+      - AGORA_CMS_WORKER_MODE=listen
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - cms-assets:/opt/agora-cms/assets
+
   mcp:
     build: ./mcp
     ports:

@@ -223,7 +223,7 @@ async def assets_status_json(
     for a in result.scalars().all():
         variants = []
         a_ready = a_processing = a_failed = 0
-        for v in a.variants:
+        for v in sorted(a.variants, key=lambda v: (v.profile.name if v.profile else "")):
             vd = {
                 "id": str(v.id),
                 "profile_name": v.profile.name if v.profile else "",
@@ -414,6 +414,8 @@ async def upload_asset(
     # Queue transcoding for all profiles (video and image assets)
     if asset_type in (AssetType.VIDEO, AssetType.IMAGE):
         await _enqueue_transcoding(asset, db)
+        from cms.services.transcoder import notify_worker
+        await notify_worker(db)
 
     return asset
 

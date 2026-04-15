@@ -1,16 +1,11 @@
 """Agora CMS configuration."""
 
-from pathlib import Path
-
 from pydantic import Field
-from pydantic_settings import BaseSettings
+
+from shared.config import SharedSettings
 
 
-class Settings(BaseSettings):
-    model_config = {"env_prefix": "AGORA_CMS_"}
-
-    # Database
-    database_url: str = "postgresql+asyncpg://agora:agora@localhost:5432/agora_cms"
+class Settings(SharedSettings):
 
     # Auth
     secret_key: str = Field(default="change-me-in-production")
@@ -18,16 +13,6 @@ class Settings(BaseSettings):
     admin_password: str = "agora"
     admin_email: str = "admin@localhost"
     reset_password: bool = False
-
-    # Storage
-    asset_storage_path: Path = Path("/opt/agora-cms/assets")
-    storage_backend: str = "local"  # "local" or "azure"
-
-    # Azure Blob Storage (only used when storage_backend == "azure")
-    azure_storage_connection_string: str | None = None
-    azure_storage_account_name: str | None = None
-    azure_storage_account_key: str | None = None
-    azure_sas_expiry_hours: int = 1
 
     # MCP Server
     mcp_server_url: str = "http://mcp:8000"  # Docker default; override for Azure
@@ -44,6 +29,9 @@ class Settings(BaseSettings):
     service_key_path: str = "/shared/mcp-service.key"
     # Azure Key Vault URI for MCP service key exchange (Azure deployments)
     azure_keyvault_uri: str | None = None
+
+    # Transcode worker signaling (Azure)
+    azure_transcode_queue_url: str | None = None
 
     # SMTP is configured via the web UI settings page (stored in DB)
     base_url: str | None = None  # public URL for login links in emails

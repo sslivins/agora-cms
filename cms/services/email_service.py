@@ -71,7 +71,8 @@ def _create_notification_sync(level: str, title: str, message: str, details: dic
 
     Used from background tasks that run in a thread pool.
     """
-    from cms.database import _engine
+    from shared import database as _shared_db
+    _engine = _shared_db._engine
     if _engine is None:
         _log.warning("No DB engine — cannot create notification")
         return

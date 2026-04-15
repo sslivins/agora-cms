@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cms.services.transcoder import _build_ffmpeg_args_safe
+from worker.transcoder import _build_ffmpeg_args_safe
 
 
 def _make_profile(**overrides):

@@ -42,6 +42,12 @@ param storageAccountKey string
 param mcpAppName string
 param mcpImage string
 
+// ── Worker Job config ──
+param workerJobName string
+param workerImage string
+param workerCpu string = '4.0'
+param workerMemory string = '8Gi'
+
 // ── Azure Key Vault (service key exchange) ──
 param keyVaultUri string = ''
 
@@ -272,6 +278,116 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
         minReplicas: 1
         maxReplicas: 1
       }
+    }
+  }
+}
+
+// ── Worker Container Apps Job (queue-triggered transcoding) ──
+resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
+  name: workerJobName
+  location: location
+  tags: tags
+  properties: {
+    environmentId: containerAppsEnv.id
+    configuration: {
+      triggerType: 'Event'
+      replicaTimeout: 1800 // 30 min max per execution
+      replicaRetryLimit: 1
+      eventTriggerConfig: {
+        replicaCompletionCount: 1
+        parallelism: 1
+        scale: {
+          minExecutions: 0
+          maxExecutions: 3
+          pollingInterval: 10
+          rules: [
+            {
+              name: 'transcode-queue'
+              type: 'azure-queue'
+              metadata: {
+                queueName: 'transcode-jobs'
+                queueLength: '1'
+                accountName: storageAccountName
+                connectionFromEnv: 'AZURE_STORAGE_CONNECTION_STRING'
+              }
+              auth: [
+                {
+                  secretRef: 'storage-connection-string'
+                  triggerParameter: 'connection'
+                }
+              ]
+            }
+          ]
+        }
+      }
+      registries: [
+        {
+          server: acrLoginServer
+          username: acrUsername
+          passwordSecretRef: 'acr-password'
+        }
+      ]
+      secrets: [
+        {
+          name: 'acr-password'
+          value: acrPassword
+        }
+        {
+          name: 'worker-database-url'
+          value: cmsDatabaseUrl
+        }
+        {
+          name: 'storage-connection-string'
+          value: storageConnectionString
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'worker'
+          image: workerImage
+          resources: {
+            cpu: json(workerCpu)
+            memory: workerMemory
+          }
+          env: [
+            {
+              name: 'AGORA_CMS_DATABASE_URL'
+              secretRef: 'worker-database-url'
+            }
+            {
+              name: 'AGORA_CMS_WORKER_MODE'
+              value: 'queue'
+            }
+            {
+              name: 'AGORA_CMS_STORAGE_BACKEND'
+              value: 'azure'
+            }
+            {
+              name: 'AGORA_CMS_AZURE_STORAGE_CONNECTION_STRING'
+              secretRef: 'storage-connection-string'
+            }
+            {
+              name: 'AZURE_STORAGE_CONNECTION_STRING'
+              secretRef: 'storage-connection-string'
+            }
+          ]
+          volumeMounts: [
+            {
+              volumeName: 'transcode-workspace'
+              mountPath: '/opt/agora-cms/assets'
+            }
+          ]
+        }
+      ]
+      volumes: [
+        {
+          name: 'transcode-workspace'
+          storageName: transcodeStorage.name
+          storageType: 'AzureFile'
+        }
+      ]
     }
   }
 }

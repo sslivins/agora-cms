@@ -14,7 +14,7 @@ from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
 from cms.models.device_profile import DeviceProfile
 from cms.schemas.profile import ProfileCreate, ProfileOut, ProfileUpdate
-from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_profile
+from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_profile, notify_worker
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
 
@@ -144,6 +144,8 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
 
     # Enqueue transcoding for all existing video assets
     count = await enqueue_for_new_profile(profile.id, db)
+    if count:
+        await notify_worker(db)
 
     return ProfileOut(
         id=profile.id,
@@ -231,6 +233,11 @@ async def update_profile(
             variant.error_message = ""
 
     await db.commit()
+
+    # Notify worker if variants were reset to PENDING
+    if transcode_changed:
+        await notify_worker(db)
+
     await db.refresh(profile)
 
     dev_count = await db.execute(
@@ -360,6 +367,8 @@ async def copy_profile(
 
     # Enqueue transcoding for all existing video assets
     count = await enqueue_for_new_profile(profile.id, db)
+    if count:
+        await notify_worker(db)
 
     return ProfileOut(
         id=profile.id,

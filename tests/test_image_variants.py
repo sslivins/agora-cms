@@ -216,9 +216,9 @@ class TestTranscodeImageSourcePath:
             output_path.write_bytes(b"fake-output")
             return True
 
-        with patch("cms.services.transcoder.convert_image", side_effect=mock_convert), \
-             patch("cms.services.transcoder.probe_media", return_value={}):
-            from cms.services.transcoder import _transcode_one
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}):
+            from worker.transcoder import _transcode_one
             await _transcode_one(variant, db_session, asset_dir)
 
         assert len(captured_source) == 1
@@ -259,9 +259,9 @@ class TestTranscodeImageSourcePath:
             output_path.write_bytes(b"fake-output")
             return True
 
-        with patch("cms.services.transcoder.convert_image", side_effect=mock_convert), \
-             patch("cms.services.transcoder.probe_media", return_value={}):
-            from cms.services.transcoder import _transcode_one
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}):
+            from worker.transcoder import _transcode_one
             await _transcode_one(variant, db_session, asset_dir)
 
         assert len(captured_source) == 1
@@ -305,9 +305,9 @@ class TestTranscodeImageOutputFormat:
             output_path.write_bytes(b"fake-output")
             return True
 
-        with patch("cms.services.transcoder.convert_image", side_effect=mock_convert), \
-             patch("cms.services.transcoder.probe_media", return_value={}):
-            from cms.services.transcoder import _transcode_one
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}):
+            from worker.transcoder import _transcode_one
             await _transcode_one(variant, db_session, asset_dir)
 
         assert len(captured_output) == 1
@@ -347,9 +347,9 @@ class TestTranscodeImageOutputFormat:
             output_path.write_bytes(b"fake-output")
             return True
 
-        with patch("cms.services.transcoder.convert_image", side_effect=mock_convert), \
-             patch("cms.services.transcoder.probe_media", return_value={}):
-            from cms.services.transcoder import _transcode_one
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}):
+            from worker.transcoder import _transcode_one
             await _transcode_one(variant, db_session, asset_dir)
 
         assert len(captured_output) == 1
@@ -391,9 +391,9 @@ class TestTranscodeImageOutputFormat:
             output_path.write_bytes(b"fake-output")
             return True
 
-        with patch("cms.services.transcoder.convert_image", side_effect=mock_convert), \
-             patch("cms.services.transcoder.probe_media", return_value={}):
-            from cms.services.transcoder import _transcode_one
+        with patch("worker.transcoder.convert_image", side_effect=mock_convert), \
+             patch("worker.transcoder.probe_media", return_value={}):
+            from worker.transcoder import _transcode_one
             await _transcode_one(variant, db_session, asset_dir)
 
         assert len(captured_output) == 1

@@ -48,6 +48,15 @@ param cmsImage string = ''
 @description('MCP server container image (e.g., agoracr.azurecr.io/agora-cms-mcp:latest)')
 param mcpImage string = ''
 
+@description('Worker container image (e.g., agoracr.azurecr.io/agora-worker:latest)')
+param workerImage string = ''
+
+@description('Worker container CPU cores (Container Apps Job: up to 4.0)')
+param workerCpu string = '4.0'
+
+@description('Worker container memory (must be 2× CPU, e.g. 4.0→8Gi)')
+param workerMemory string = '8Gi'
+
 @description('CMS container CPU cores (Consumption tier: 0.25–2.0 in 0.25 steps)')
 @allowed(['0.25', '0.5', '0.75', '1.0', '1.25', '1.5', '1.75', '2.0'])
 param cmsCpu string = '1.0'
@@ -72,6 +81,7 @@ var keyVaultName = '${prefix}-vault'
 var containerAppsEnvName = '${prefix}-env'
 var cmsAppName = '${prefix}-cms'
 var mcpAppName = '${prefix}-mcp'
+var workerJobName = '${prefix}-worker'
 
 // ── Networking ──
 module networking 'modules/networking.bicep' = {
@@ -129,12 +139,15 @@ module keyVault 'modules/keyVault.bicep' = {
 }
 
 // ── Build database connection string ──
-var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${postgresAdminPassword}@${postgres.outputs.serverFqdn}:5432/${postgres.outputs.databaseName}?ssl=require'
+// URL-encode the '@' in the password so asyncpg parses the URL correctly
+var encodedPassword = replace(postgresAdminPassword, '@', '%40')
+var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${encodedPassword}@${postgres.outputs.serverFqdn}:5432/${postgres.outputs.databaseName}?ssl=require'
 
 // ── Determine container images ──
 // Use provided images or default to ACR-based names
 var resolvedCmsImage = !empty(cmsImage) ? cmsImage : '${acr.outputs.acrLoginServer}/agora-cms:latest'
 var resolvedMcpImage = !empty(mcpImage) ? mcpImage : '${acr.outputs.acrLoginServer}/agora-cms-mcp:latest'
+var resolvedWorkerImage = !empty(workerImage) ? workerImage : '${acr.outputs.acrLoginServer}/agora-worker:latest'
 
 // ── Container Apps (CMS + MCP) ──
 module containerApps 'modules/containerApps.bicep' = {
@@ -171,6 +184,12 @@ module containerApps 'modules/containerApps.bicep' = {
     mcpAppName: mcpAppName
     mcpImage: resolvedMcpImage
 
+    // Worker Job
+    workerJobName: workerJobName
+    workerImage: resolvedWorkerImage
+    workerCpu: workerCpu
+    workerMemory: workerMemory
+
     // Key Vault (service key exchange)
     keyVaultUri: keyVault.outputs.keyVaultUri
   }
@@ -183,7 +202,7 @@ resource existingKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 
 // CMS: Key Vault Secrets Officer (read + write service key)
 resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(existingKeyVault.id, containerApps.outputs.cmsPrincipalId, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  name: guid(existingKeyVault.id, cmsAppName, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
   scope: existingKeyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
@@ -194,7 +213,7 @@ resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 
 // MCP: Key Vault Secrets User (read-only service key)
 resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(existingKeyVault.id, containerApps.outputs.mcpPrincipalId, '4633458b-17de-408a-b874-0445c86b69e6')
+  name: guid(existingKeyVault.id, mcpAppName, '4633458b-17de-408a-b874-0445c86b69e6')
   scope: existingKeyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')

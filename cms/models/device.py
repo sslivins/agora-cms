@@ -19,6 +19,7 @@ class DeviceStatus(str, PyEnum):
 
 class DeviceGroup(Base):
     __tablename__ = "device_groups"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
@@ -36,6 +37,7 @@ class DeviceGroup(Base):
 
 class Device(Base):
     __tablename__ = "devices"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # Pi serial or UUID
     name: Mapped[str] = mapped_column(String(100), default="")

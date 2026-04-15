@@ -4,10 +4,9 @@ ENV PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-# FFmpeg 8.1 static build hosted in our own repo release
+# FFmpeg 8.1 static build + libheif for HEIC image conversion
 ARG TARGETARCH
 
-# libheif-examples for HEIC grid assembly, curl + xz-utils to fetch FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif-examples \
     curl \
@@ -18,16 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y curl xz-utils && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-shared.txt requirements.txt requirements-test.txt ./
+COPY requirements-shared.txt ./
+COPY worker/requirements.txt worker/requirements.txt
 RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 pip install --no-cache-dir --progress-bar off \
-    -r requirements.txt -r requirements-test.txt
+    -r requirements-shared.txt
 
 COPY shared/ shared/
 COPY worker/ worker/
-COPY cms/ cms/
-COPY tests/ tests/
-COPY pytest.ini .
 
-EXPOSE 8080
-
-CMD ["uvicorn", "cms.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "worker"]

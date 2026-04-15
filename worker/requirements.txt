@@ -1,0 +1,5 @@
+# Worker dependencies
+-r ../requirements-shared.txt
+
+# Worker needs raw asyncpg for LISTEN/NOTIFY (not just via SQLAlchemy)
+# asyncpg is already in requirements-shared.txt
