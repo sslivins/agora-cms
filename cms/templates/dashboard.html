@@ -277,6 +277,13 @@
 
 
 <script>
+// Pass groups data to JS for the adoption modal
+window._adoptionGroups = [
+    {% for g in adoption_groups %}
+    { id: {{ g.id | string | tojson }}, name: {{ g.name | tojson }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
+
 async function endNow(scheduleId) {
     if (!await showConfirm('End this schedule now? It will resume at its next scheduled time.')) return;
     try {

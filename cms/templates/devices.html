@@ -444,7 +444,7 @@ function applyAssetTooltips() {
 // Pass groups data to JS for the adoption modal
 window._adoptionGroups = [
     {% for g in groups %}
-    { id: "{{ g.id }}", name: "{{ g.name | e }}" }{% if not loop.last %},{% endif %}
+    { id: {{ g.id | string | tojson }}, name: {{ g.name | tojson }} }{% if not loop.last %},{% endif %}
     {% endfor %}
 ];
 

@@ -301,8 +301,17 @@ class TestScheduleUI:
                     f"Duplicate const in {fn_name}() will cause SyntaxError: {dupes}"
                 )
 
-    async def test_timezone_labels_no_underscores(self, client):
+    async def test_timezone_labels_no_underscores(self, client, db_session):
         """Timezone dropdown labels should use spaces, not underscores."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import DeviceGroup
+
+        # The form (and timezone dropdown) only renders when groups+assets exist
+        db_session.add(DeviceGroup(name="TZ Test"))
+        db_session.add(Asset(filename="tz.mp4", asset_type=AssetType.VIDEO,
+                             size_bytes=100, checksum="tz1"))
+        await db_session.commit()
+
         resp = await client.get("/schedules")
         assert resp.status_code == 200
         html = resp.text
@@ -314,6 +323,46 @@ class TestScheduleUI:
             # The part before the UTC offset should not have underscores
             name_part = label.split(" (UTC")[0]
             assert "_" not in name_part, f"Timezone label has underscore: {label}"
+
+    async def test_no_groups_shows_warning(self, client, db_session):
+        """When no groups exist, the create form should show a warning instead."""
+        resp = await client.get("/schedules")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "No groups available" in html
+        assert "create a group" in html
+        # The create form submit button should NOT be present
+        assert 'Create Schedule</button>' not in html
+
+    async def test_no_assets_shows_warning(self, client, db_session):
+        """When groups exist but no assets, show an upload warning."""
+        from cms.models.device import DeviceGroup
+        db_session.add(DeviceGroup(name="Has Group"))
+        await db_session.commit()
+
+        resp = await client.get("/schedules")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "No assets uploaded" in html
+        assert "upload an asset" in html
+        assert 'Create Schedule</button>' not in html
+
+    async def test_groups_and_assets_shows_form(self, client, db_session):
+        """When both groups and assets exist, the create form should render."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import DeviceGroup
+
+        db_session.add(DeviceGroup(name="Lobby"))
+        db_session.add(Asset(filename="clip.mp4", asset_type=AssetType.VIDEO,
+                             size_bytes=100, checksum="xyz"))
+        await db_session.commit()
+
+        resp = await client.get("/schedules")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "No groups available" not in html
+        assert "No assets uploaded" not in html
+        assert 'Create Schedule</button>' in html
 
 
 @pytest.mark.asyncio
