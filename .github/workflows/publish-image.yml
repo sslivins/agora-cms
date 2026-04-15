@@ -136,6 +136,7 @@ jobs:
             --image ${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}
 
       - name: Deploy Worker job
+        continue-on-error: true  # Worker job may not exist yet (requires initial Bicep deploy)
         run: |
           az containerapp job update \
             --name agoracms-worker \
