@@ -170,9 +170,31 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     logger.info("Queue mode: processed %d variant(s), exiting", count)
 
 
+async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
+    """Block until the CMS has created the database schema."""
+    from sqlalchemy import text
+    session_factory = get_session_factory()
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with session_factory() as db:
+                await db.execute(text("SELECT 1 FROM asset_variants LIMIT 0"))
+                return
+        except Exception:
+            if attempt == max_retries:
+                raise RuntimeError(
+                    "Database schema not ready after %d attempts — "
+                    "is the CMS container running?" % max_retries
+                )
+            logger.info("Waiting for database schema (attempt %d/%d)…", attempt, max_retries)
+            await asyncio.sleep(delay)
+
+
 async def main() -> None:
     settings = WorkerSettings()
     init_db(settings)
+
+    # Wait for the CMS to create the database schema before proceeding
+    await _wait_for_schema()
 
     # Initialize storage backend
     if settings.storage_backend == "azure":
