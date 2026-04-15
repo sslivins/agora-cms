@@ -616,13 +616,12 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
 @router.get("/devices", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import compute_now_playing
-    from cms.auth import get_user_group_ids
+    from cms.auth import get_user_group_ids, SETTING_TIMEZONE, get_setting as _get_setting
     from zoneinfo import ZoneInfo
-    from cms.config import get_settings
 
-    settings = get_settings()
-    tz = ZoneInfo(settings.timezone)
-    now = datetime.now(timezone.utc)
+    tz_name = await _get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(_tz.utc)
 
     user = getattr(request.state, "user", None)
     group_ids = await get_user_group_ids(user, db) if user else []

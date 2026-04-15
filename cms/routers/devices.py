@@ -89,11 +89,12 @@ async def check_for_updates():
 @router.get("", response_model=List[DeviceOut], dependencies=[Depends(require_permission(DEVICES_READ))])
 async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import compute_now_playing
+    from cms.auth import SETTING_TIMEZONE, get_setting
     from zoneinfo import ZoneInfo
     from datetime import datetime, timezone
 
-    settings = get_settings()
-    tz = ZoneInfo(settings.timezone)
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
     now = datetime.now(timezone.utc)
 
     user = getattr(request.state, "user", None)
@@ -140,11 +141,13 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
 @router.get("/{device_id}", response_model=DeviceOut, dependencies=[Depends(require_permission(DEVICES_READ))])
 async def get_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.scheduler import compute_now_playing
+    from cms.auth import SETTING_TIMEZONE
+    from cms.ui import get_setting
     from zoneinfo import ZoneInfo
     from datetime import datetime, timezone
 
-    settings = get_settings()
-    tz = ZoneInfo(settings.timezone)
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
     now = datetime.now(timezone.utc)
 
     device = await _get_device_with_access(device_id, request, db)
