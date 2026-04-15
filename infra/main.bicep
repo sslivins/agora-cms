@@ -139,7 +139,11 @@ module keyVault 'modules/keyVault.bicep' = {
 }
 
 // ── Build database connection string ──
-var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${postgresAdminPassword}@${postgres.outputs.serverFqdn}:5432/${postgres.outputs.databaseName}?ssl=require'
+// Use the private IP directly rather than the FQDN to avoid DNS resolution
+// issues in Container Apps environments where private DNS zone resolution
+// can be unreliable.  The first usable IP in a /24 subnet is always .4.
+var postgresPrivateIp = '10.0.2.4'
+var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${postgresAdminPassword}@${postgresPrivateIp}:5432/${postgres.outputs.databaseName}?ssl=require'
 
 // ── Determine container images ──
 // Use provided images or default to ACR-based names
@@ -200,7 +204,7 @@ resource existingKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 
 // CMS: Key Vault Secrets Officer (read + write service key)
 resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(existingKeyVault.id, containerApps.outputs.cmsPrincipalId, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  name: guid(existingKeyVault.id, cmsAppName, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
   scope: existingKeyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
@@ -211,7 +215,7 @@ resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 
 // MCP: Key Vault Secrets User (read-only service key)
 resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(existingKeyVault.id, containerApps.outputs.mcpPrincipalId, '4633458b-17de-408a-b874-0445c86b69e6')
+  name: guid(existingKeyVault.id, mcpAppName, '4633458b-17de-408a-b874-0445c86b69e6')
   scope: existingKeyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')

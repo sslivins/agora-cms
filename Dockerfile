@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ENV PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1
+
 WORKDIR /app
 
 # FFmpeg 8.1 static build hosted in our own repo release
@@ -17,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-shared.txt requirements.txt requirements-test.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
+RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 pip install --no-cache-dir --progress-bar off \
+    -r requirements.txt -r requirements-test.txt
 
 COPY shared/ shared/
 COPY worker/ worker/

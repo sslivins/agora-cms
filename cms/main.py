@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms import __version__
 from cms.auth import ensure_admin_credentials, get_settings
-from cms.database import create_tables, dispose_db, get_db, init_db, run_migrations
+from cms.database import create_tables, dispose_db, get_db, init_db, run_migrations, wait_for_db
 from cms.models import *  # noqa: F401,F403 — ensure all models registered with Base
 from cms.services.scheduler import scheduler_loop
 from cms.services.storage import (
@@ -306,6 +306,7 @@ async def lifespan(app: FastAPI):
     # Startup
     settings = get_settings()
     init_db(settings)
+    await wait_for_db()
     await run_migrations()
     settings.asset_storage_path.mkdir(parents=True, exist_ok=True)
 

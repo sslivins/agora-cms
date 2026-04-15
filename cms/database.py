@@ -4,7 +4,7 @@ Re-exports shared database primitives and adds CMS-only migrations.
 """
 
 from shared.database import Base, init_db, get_db, dispose_db, create_tables  # noqa: F401
-from shared.database import get_engine, get_session_factory  # noqa: F401
+from shared.database import get_engine, get_session_factory, wait_for_db  # noqa: F401
 from shared import database as _shared_db
 
 
