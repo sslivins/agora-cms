@@ -6,49 +6,217 @@
     <span class="text-muted">{{ total }} event{{ 's' if total != 1 else '' }}</span>
 </div>
 
+{# ── Filter bar ── #}
+{% set has_filters = filter_q or filter_action or filter_user_id or filter_since or filter_until %}
+<div class="card" style="margin-bottom:1rem; padding:0.75rem 1rem;">
+    <form id="auditFilterForm" method="get" action="/audit" style="margin:0;">
+        <input type="hidden" name="per_page" value="{{ per_page }}">
+        <div class="form-row" style="gap:0.75rem; align-items:flex-end; flex-wrap:wrap;">
+            <div class="form-group" style="flex:2; min-width:180px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Search</label>
+                <input type="text" name="q" id="auditSearchInput" value="{{ filter_q }}" placeholder="Search descriptions, actions…" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Action</label>
+                <select name="action" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All actions</option>
+                    {% for a in available_actions %}
+                    <option value="{{ a }}" {% if filter_action == a %}selected{% endif %}>{{ a }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">User</label>
+                <select name="user_id" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All users</option>
+                    {% for val, label in audit_users %}
+                    <option value="{{ val }}" {% if filter_user_id == val %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Since</label>
+                <input type="date" name="since" value="{{ filter_since }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Until</label>
+                <input type="date" name="until" value="{{ filter_until }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            {% if has_filters %}
+            <div style="margin-bottom:0; align-items:flex-end; padding-bottom:0.1rem;">
+                <a href="/audit?per_page={{ per_page }}" class="btn btn-secondary btn-sm">Clear</a>
+            </div>
+            {% endif %}
+        </div>
+    </form>
+    <script>
+    (function() {
+        var timer, input = document.getElementById('auditSearchInput');
+        if (!input) return;
+        input.addEventListener('input', function() {
+            clearTimeout(timer);
+            timer = setTimeout(function() { document.getElementById('auditFilterForm').submit(); }, 400);
+        });
+    })();
+    </script>
+</div>
+
+{# ── Macro to build pagination URLs preserving filters ── #}
+{% macro page_url(p) -%}
+/audit?page={{ p }}&per_page={{ per_page }}{% if filter_q %}&q={{ filter_q | urlencode }}{% endif %}{% if filter_action %}&action={{ filter_action | urlencode }}{% endif %}{% if filter_user_id %}&user_id={{ filter_user_id }}{% endif %}{% if filter_since %}&since={{ filter_since }}{% endif %}{% if filter_until %}&until={{ filter_until }}{% endif %}
+{%- endmacro %}
+
 <div class="card">
     <table>
         <thead>
             <tr>
+                <th style="width:2rem;"></th>
                 <th>Time</th>
                 <th>User</th>
-                <th>Action</th>
+                <th>Description</th>
                 <th>Resource</th>
-                <th>Details</th>
-                <th>IP Address</th>
             </tr>
         </thead>
         <tbody>
             {% for entry in entries %}
-            <tr>
+            <tr class="audit-row" onclick="toggleAuditRow(this)" data-audit-id="{{ entry.id }}">
+                <td class="expand-toggle">▶</td>
                 <td style="white-space:nowrap;">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                <td>{{ entry.user.display_name or entry.user.email if entry.user else '—' }}</td>
-                <td><span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.action }}</span></td>
+                <td>{{ entry.user.display_name or entry.user.username if entry.user else (entry.details.actor_username if entry.details and entry.details.actor_username is defined else '—') }}</td>
+                <td>{{ entry.description or entry.action }}</td>
                 <td>
                     {% if entry.resource_type %}
-                    <span class="text-muted">{{ entry.resource_type }}</span>
-                    {% if entry.resource_id %}<code style="font-size:0.75rem; margin-left:0.25rem;">{{ entry.resource_id[:8] }}…</code>{% endif %}
+                    <span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.resource_type }}</span>
                     {% else %}—{% endif %}
                 </td>
-                <td style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+            </tr>
+            <tr class="audit-detail" data-detail-for="{{ entry.id }}" style="display: none;">
+                <td></td>
+                <td colspan="4">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Action</span>
+                            <span class="detail-value"><span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.action }}</span></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Resource ID</span>
+                            <span class="detail-value monospace">{{ entry.resource_id or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">User</span>
+                            <span class="detail-value">{{ entry.user.username if entry.user else (entry.details.actor_username if entry.details and entry.details.actor_username is defined else '—') }}{% if entry.user and entry.user.display_name %} ({{ entry.user.display_name }}){% endif %}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">IP Address</span>
+                            <span class="detail-value monospace">{{ entry.ip_address or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Timestamp</span>
+                            <span class="detail-value">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S %Z') }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Entry ID</span>
+                            <span class="detail-value monospace" style="font-size:0.75rem;">{{ entry.id }}</span>
+                        </div>
+                    </div>
                     {% if entry.details %}
-                    <code style="font-size:0.75rem;">{{ entry.details | tojson }}</code>
-                    {% else %}—{% endif %}
+                    {# ── Friendly key-value details ── #}
+                    {% set label_map = {
+                        'actor_username': 'Performed By',
+                        'target_username': 'Target User',
+                        'target_display_name': 'Display Name',
+                        'owner_username': 'Key Owner',
+                        'role_name': 'Role',
+                        'email': 'Email',
+                        'key_type': 'Key Type',
+                        'permissions_count': 'Permissions',
+                        'changes': 'Changed Fields',
+                        'on_behalf_of': 'On Behalf Of',
+                        'auth_method': 'Auth Method',
+                        'device_name': 'Device',
+                        'schedule_name': 'Schedule',
+                        'filename': 'File',
+                        'permissions': 'Permissions',
+                        'owner_id': 'Owner ID',
+                    } %}
+                    {% set detail_items = [] %}
+                    {% for key, val in entry.details.items() %}
+                        {% if val is not none and val != '' %}
+                            {% if val is iterable and val is not string %}
+                                {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val | join(', '))) %}
+                            {% else %}
+                                {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val)) %}
+                            {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                    {% if detail_items %}
+                    <div style="margin-top:0.75rem;">
+                        <span class="detail-label" style="display:block; margin-bottom:0.25rem;">Details</span>
+                        <div class="detail-grid">
+                            {% for label, value in detail_items %}
+                            <div class="detail-item">
+                                <span class="detail-label">{{ label }}</span>
+                                <span class="detail-value">{{ value }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {# ── Raw JSON toggle ── #}
+                    <div style="margin-top:0.5rem;">
+                        <a href="javascript:void(0)" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.textContent = this.nextElementSibling.style.display === 'none' ? 'Show raw JSON' : 'Hide raw JSON';" class="text-muted" style="font-size:0.75rem; text-decoration:underline;">Show raw JSON</a>
+                        <pre class="audit-json" style="display:none; margin-top:0.25rem;">{{ entry.details | tojson(indent=2) }}</pre>
+                    </div>
+                    {% endif %}
                 </td>
-                <td class="text-muted">{{ entry.ip_address or '—' }}</td>
             </tr>
             {% else %}
-            <tr><td colspan="6" class="text-muted" style="text-align:center; padding:2rem;">No audit log entries yet.</td></tr>
+            <tr><td colspan="5" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No entries match the current filters.{% else %}No audit log entries yet.{% endif %}</td></tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
 
-{% if total_pages > 1 %}
-<div class="pagination">
-    {% if page > 1 %}<a href="/audit?page={{ page - 1 }}" class="btn btn-secondary btn-sm">← Previous</a>{% endif %}
-    <span class="text-muted">Page {{ page }} of {{ total_pages }}</span>
-    {% if page < total_pages %}<a href="/audit?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next →</a>{% endif %}
+{# ── Pagination ── #}
+<div class="pagination" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; margin-top:0.75rem;">
+    <div style="display:flex; align-items:center; gap:0.5rem;">
+        <span class="text-muted" style="font-size:0.85rem;">
+            {% if total > 0 %}
+            Showing {{ (page - 1) * per_page + 1 }}–{{ [page * per_page, total] | min }} of {{ total }}
+            {% else %}
+            No entries
+            {% endif %}
+        </span>
+        <span class="text-muted" style="font-size:0.85rem;">·</span>
+        <label class="text-muted" style="font-size:0.85rem;">
+            Per page:
+            <select onchange="window.location.href=this.value" style="padding:0.2rem 0.4rem; font-size:0.8rem; background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px;">
+                {% for size in [25, 50, 100] %}
+                <option value="{{ page_url(1) | replace('per_page=' ~ per_page, 'per_page=' ~ size) }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </div>
+    {% if total_pages > 1 %}
+    <div style="display:flex; align-items:center; gap:0.3rem;">
+        {% if page > 1 %}
+        <a href="{{ page_url(1) }}" class="btn btn-secondary btn-sm" title="First page">«</a>
+        <a href="{{ page_url(page - 1) }}" class="btn btn-secondary btn-sm">‹ Prev</a>
+        {% endif %}
+        {% set start_page = [1, page - 2] | max %}
+        {% set end_page = [total_pages, page + 2] | min %}
+        {% for p in range(start_page, end_page + 1) %}
+        {% if p == page %}
+        <span class="btn btn-primary btn-sm" style="pointer-events:none;">{{ p }}</span>
+        {% else %}
+        <a href="{{ page_url(p) }}" class="btn btn-secondary btn-sm">{{ p }}</a>
+        {% endif %}
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="{{ page_url(page + 1) }}" class="btn btn-secondary btn-sm">Next ›</a>
+        <a href="{{ page_url(total_pages) }}" class="btn btn-secondary btn-sm" title="Last page">»</a>
+        {% endif %}
+    </div>
+    {% endif %}
 </div>
-{% endif %}
 {% endblock %}

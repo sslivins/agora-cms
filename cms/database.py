@@ -265,6 +265,13 @@ async def run_migrations():
                         .values(permissions=perms)
                     )
 
+        # -- audit_log.description --
+        has_desc = await conn.run_sync(lambda c: _has_column(c, "audit_log", "description"))
+        if not has_desc:
+            await conn.execute(text(
+                "ALTER TABLE audit_log ADD COLUMN description TEXT"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

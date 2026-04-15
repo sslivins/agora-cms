@@ -789,6 +789,24 @@ tr.highlight-new td {
 .device-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
 .device-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
 .device-detail td:first-child { padding: 0; }
+.audit-row { cursor: pointer; }
+.audit-row:hover td { background: rgba(255,255,255,0.04); }
+.audit-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
+.audit-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.audit-detail td:first-child { padding: 0; }
+.audit-json {
+    background: var(--bg-dark, #1a1a2e);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-size: 0.8rem;
+    font-family: monospace;
+    overflow-x: auto;
+    max-height: 300px;
+    margin: 0;
+    white-space: pre;
+    color: var(--text-muted);
+}
 .detail-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));

@@ -273,7 +273,13 @@ async def regenerate_api_key(
 
     await audit_log(db, user=user, action="api_key.regenerate",
                     resource_type="api_key", resource_id=str(key_id),
-                    details={"key_name": api_key.name, "owner_id": str(api_key.user_id)})
+                    details={
+                        "key_name": api_key.name,
+                        "key_type": api_key.key_type,
+                        "owner_id": str(api_key.user_id),
+                        "owner_username": (api_key.user.username if api_key.user else None),
+                        "actor_username": user.username,
+                    })
 
     # Notify key owner if it's not the admin's own key
     if api_key.user_id and api_key.user_id != user.id:
@@ -320,7 +326,13 @@ async def delete_api_key(
 
     await audit_log(db, user=user, action="api_key.revoke",
                     resource_type="api_key", resource_id=str(key_id),
-                    details={"key_name": key_name, "owner_id": str(owner_id)})
+                    details={
+                        "key_name": key_name,
+                        "key_type": api_key.key_type,
+                        "owner_id": str(owner_id),
+                        "owner_username": (api_key.user.username if api_key.user else None),
+                        "actor_username": user.username,
+                    })
     await db.delete(api_key)
 
     # Notify key owner if it's not the admin's own key

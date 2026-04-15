@@ -200,6 +200,20 @@ function toggleAsset(row) {
     }
 }
 
+function toggleAuditRow(row) {
+    const auditId = row.dataset.auditId;
+    const detail = row.nextElementSibling;
+    if (!detail || detail.dataset.detailFor !== auditId) return;
+    const isOpen = row.classList.contains("expanded");
+    if (isOpen) {
+        row.classList.remove("expanded");
+        detail.style.display = "none";
+    } else {
+        row.classList.add("expanded");
+        detail.style.display = "";
+    }
+}
+
 // ── API helpers ──
 async function apiCall(method, url, body = null) {
     const opts = { method, headers: {} };
