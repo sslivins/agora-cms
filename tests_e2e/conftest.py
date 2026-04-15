@@ -119,11 +119,12 @@ def e2e_server(e2e_port, tmp_path_factory):
     if using_sqlite:
         # Monkey-patch run_migrations to skip PostgreSQL-specific ALTER TYPE commands
         import cms.database as db_mod
+        from shared import database as _shared_db
         _orig_run_migrations = db_mod.run_migrations
 
         async def _sqlite_safe_migrations():
             """Only run create_all (skip ALTER TYPE for pg_enum)."""
-            async with db_mod._engine.begin() as conn:
+            async with _shared_db._engine.begin() as conn:
                 await conn.run_sync(db_mod.Base.metadata.create_all)
 
         db_mod.run_migrations = _sqlite_safe_migrations
