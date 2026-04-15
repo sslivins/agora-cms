@@ -9,10 +9,11 @@ class TestLoopEndTimeComputation:
     start_time + (loop_count × asset duration_seconds)."""
 
     async def _create_device_and_asset(self, db_session, duration_seconds=634.0):
-        """Helper: create an adopted device and a video asset with known duration."""
+        """Helper: create an adopted device, group, and a video asset with known duration."""
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="Loop Test Group")
         device = Device(id="loop-pi", name="Loop Test", status=DeviceStatus.ADOPTED)
         asset = Asset(
             filename="bbb.mp4",
@@ -21,17 +22,19 @@ class TestLoopEndTimeComputation:
             checksum="abc123",
             duration_seconds=duration_seconds,
         )
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
-        return device.id, str(asset.id)
+        return str(group.id), str(asset.id)
 
     async def test_end_time_computed_when_loop_count_set(self, client, db_session):
         """With loop_count=1 and a 634s asset, end_time should be start + 634s."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration_seconds=634.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration_seconds=634.0)
 
         resp = await client.post("/api/schedules", json={
             "name": "Auto End",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00:00",
             "loop_count": 1,
@@ -44,11 +47,11 @@ class TestLoopEndTimeComputation:
 
     async def test_end_time_computed_multiple_loops(self, client, db_session):
         """With loop_count=3 and a 600s (10 min) asset, end_time = start + 1800s."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration_seconds=600.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration_seconds=600.0)
 
         resp = await client.post("/api/schedules", json={
             "name": "Triple Loop",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "14:00:00",
             "loop_count": 3,
@@ -60,11 +63,11 @@ class TestLoopEndTimeComputation:
 
     async def test_end_time_overridden_when_loop_count_set(self, client, db_session):
         """If both end_time and loop_count are provided, computed value wins."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration_seconds=600.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration_seconds=600.0)
 
         resp = await client.post("/api/schedules", json={
             "name": "Override End",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00:00",
             "end_time": "23:00:00",  # user-provided, should be overridden
@@ -77,11 +80,11 @@ class TestLoopEndTimeComputation:
 
     async def test_end_time_still_required_without_loop_count(self, client, db_session):
         """Without loop_count, end_time is still required."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "No End Time",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00:00",
         })
@@ -90,8 +93,9 @@ class TestLoopEndTimeComputation:
     async def test_no_duration_requires_end_time(self, client, db_session):
         """If asset has no duration (e.g. image), end_time is required even with loop_count."""
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="Image Test Group")
         device = Device(id="img-pi", name="Image Test", status=DeviceStatus.ADOPTED)
         asset = Asset(
             filename="splash.png",
@@ -100,12 +104,14 @@ class TestLoopEndTimeComputation:
             checksum="def456",
             duration_seconds=None,  # no duration
         )
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
 
         resp = await client.post("/api/schedules", json={
             "name": "Image Loop",
-            "device_id": device.id,
+            "group_id": str(group.id),
             "asset_id": str(asset.id),
             "start_time": "10:00:00",
             "loop_count": 5,

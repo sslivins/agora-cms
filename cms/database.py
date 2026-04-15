@@ -144,6 +144,13 @@ async def run_migrations():
                 "ALTER TABLE devices ADD COLUMN timezone VARCHAR(64)"
             ))
 
+        # -- devices.location --
+        has_location = await conn.run_sync(lambda c: _has_column(c, "devices", "location"))
+        if not has_location:
+            await conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN location VARCHAR(255) DEFAULT ''"
+            ))
+
         # -- api_keys.user_id (RBAC) --
         has_user_id = await conn.run_sync(lambda c: _has_column(c, "api_keys", "user_id"))
         if not has_user_id:

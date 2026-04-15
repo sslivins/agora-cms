@@ -39,6 +39,7 @@ class Device(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # Pi serial or UUID
     name: Mapped[str] = mapped_column(String(100), default="")
+    location: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[DeviceStatus] = mapped_column(
         Enum(DeviceStatus), default=DeviceStatus.PENDING
     )

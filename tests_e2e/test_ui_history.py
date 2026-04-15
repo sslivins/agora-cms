@@ -75,12 +75,16 @@ class TestDashboardRecentActivity:
         run_async(register())
         api.post("/api/devices/e2e-hist-pi/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-e2e-hist-pi"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/e2e-hist-pi", json={"group_id": group_id})
+
         upload = api.create_asset(filename="e2e-history.mp4")
         asset_id = upload.json()["id"]
 
         sched = api.post("/api/schedules", json={
             "name": "E2E History Schedule",
-            "device_id": "e2e-hist-pi",
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "00:00",
             "end_time": "23:59",

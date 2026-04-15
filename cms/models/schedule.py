@@ -16,12 +16,9 @@ class Schedule(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 
-    # Target: device or group (one must be set)
-    device_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("devices.id"), nullable=True
-    )
-    group_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("device_groups.id"), nullable=True
+    # Target: group
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("device_groups.id"), nullable=False
     )
 
     # What to play
@@ -52,5 +49,4 @@ class Schedule(Base):
 
     # Relationships
     asset: Mapped["Asset"] = relationship(back_populates="schedules")
-    device: Mapped["Device | None"] = relationship()
-    group: Mapped["DeviceGroup | None"] = relationship()
+    group: Mapped["DeviceGroup"] = relationship()

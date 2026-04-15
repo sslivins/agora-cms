@@ -786,9 +786,6 @@ class TestSchedulerGroupScoping:
         ctx, page = _login_as(browser_instance, base_url, user["email"], user["password"])
         try:
             page.goto("/schedules")
-            page.wait_for_selector("#target_type")
-
-            page.select_option("#target_type", "group")
 
             target_select = page.locator("#target_id")
             options = target_select.locator("option").all()

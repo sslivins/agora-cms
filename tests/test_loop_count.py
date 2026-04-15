@@ -63,7 +63,7 @@ class TestScheduleSchemaLoopCount:
         from cms.schemas.schedule import ScheduleCreate
 
         sched = ScheduleCreate(
-            name="Test", device_id="pi-001", asset_id=uuid.uuid4(),
+            name="Test", group_id=uuid.uuid4(), asset_id=uuid.uuid4(),
             start_time="08:00", end_time="12:00",
         )
         assert sched.loop_count is None
@@ -72,7 +72,7 @@ class TestScheduleSchemaLoopCount:
         from cms.schemas.schedule import ScheduleCreate
 
         sched = ScheduleCreate(
-            name="Test", device_id="pi-001", asset_id=uuid.uuid4(),
+            name="Test", group_id=uuid.uuid4(), asset_id=uuid.uuid4(),
             start_time="08:00", end_time="12:00", loop_count=10,
         )
         assert sched.loop_count == 10
@@ -83,7 +83,7 @@ class TestScheduleSchemaLoopCount:
 
         with pytest.raises(ValidationError, match="end_time is required"):
             ScheduleCreate(
-                name="Test", device_id="pi-001", asset_id=uuid.uuid4(),
+                name="Test", group_id=uuid.uuid4(), asset_id=uuid.uuid4(),
                 start_time="08:00",
             )
 
@@ -92,7 +92,7 @@ class TestScheduleSchemaLoopCount:
         from cms.schemas.schedule import ScheduleCreate
 
         sched = ScheduleCreate(
-            name="Test", device_id="pi-001", asset_id=uuid.uuid4(),
+            name="Test", group_id=uuid.uuid4(), asset_id=uuid.uuid4(),
             start_time="08:00", loop_count=3,
         )
         assert sched.loop_count == 3
@@ -166,17 +166,20 @@ class TestComputeEndTime:
 class TestScheduleLoopCountCRUD:
     async def _create_device_and_asset(self, db_session, duration=30.0):
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="Loop Test Group")
         device = Device(id="loop-pi", name="Loop Test", status=DeviceStatus.ADOPTED)
         asset = Asset(
             filename="loop.mp4", asset_type=AssetType.VIDEO,
             size_bytes=100, checksum="lll",
             duration_seconds=duration,
         )
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
-        return device.id, str(asset.id)
+        return str(group.id), str(asset.id)
 
     async def _create_second_asset(self, db_session, duration=60.0):
         """Create a second asset with a different duration for swap tests."""
@@ -194,11 +197,11 @@ class TestScheduleLoopCountCRUD:
     # ── Create tests ──
 
     async def test_create_with_loop_count(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "Counted Loop",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -212,11 +215,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_create_end_time_overridden_by_loop_count(self, client, db_session):
         """User-provided end_time should be overridden when loop_count is set."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "Override End",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "23:59",  # this should be ignored
@@ -230,11 +233,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_create_with_loop_count_no_end_time(self, client, db_session):
         """Creating with loop_count and no end_time should work — end_time is computed."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "No End Time",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00",
             "loop_count": 3,
@@ -246,11 +249,11 @@ class TestScheduleLoopCountCRUD:
         assert data["loop_count"] == 3
 
     async def test_create_without_loop_count(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "Infinite Loop",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -263,11 +266,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_create_no_end_time_no_loop_count_fails(self, client, db_session):
         """Omitting both end_time and loop_count should fail."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "Bad Schedule",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
         })
@@ -275,11 +278,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_create_loop_count_no_duration_fails(self, client, db_session):
         """Asset without duration_seconds should fail when loop_count is set."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration=None)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration=None)
 
         resp = await client.post("/api/schedules", json={
             "name": "No Duration",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "loop_count": 5,
@@ -291,11 +294,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_set_loop_count(self, client, db_session):
         """Setting loop_count on a schedule without one should recompute end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
             "name": "Will Update",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -313,11 +316,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_change_loop_count(self, client, db_session):
         """Changing loop_count value should recompute end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
             "name": "Change Loops",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "09:00",
             "loop_count": 4,
@@ -336,11 +339,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_clear_loop_count(self, client, db_session):
         """Clearing loop_count should preserve existing end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
             "name": "Will Clear",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "loop_count": 5,
@@ -360,12 +363,12 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_asset_recomputes_end_time(self, client, db_session):
         """Changing asset_id on a schedule with loop_count should recompute end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
         asset2_id = await self._create_second_asset(db_session, duration=60.0)
 
         create = await client.post("/api/schedules", json={
             "name": "Asset Swap",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00",
             "loop_count": 3,
@@ -383,12 +386,12 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_asset_without_loop_count_no_recompute(self, client, db_session):
         """Changing asset_id on a schedule WITHOUT loop_count should NOT touch end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
         asset2_id = await self._create_second_asset(db_session, duration=60.0)
 
         create = await client.post("/api/schedules", json={
             "name": "No Recompute",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00",
             "end_time": "18:00",
@@ -404,11 +407,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_start_time_recomputes_end_time(self, client, db_session):
         """Changing start_time on a schedule with loop_count should recompute end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
 
         create = await client.post("/api/schedules", json={
             "name": "Start Shift",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "loop_count": 4,
@@ -425,11 +428,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_start_time_without_loop_count_no_recompute(self, client, db_session):
         """Changing start_time WITHOUT loop_count should NOT touch end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
             "name": "No Recompute Start",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -444,11 +447,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_update_start_time_and_loop_count_together(self, client, db_session):
         """Changing both start_time and loop_count should use new values for computation."""
-        device_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
+        group_id, asset_id = await self._create_device_and_asset(db_session, duration=30.0)
 
         create = await client.post("/api/schedules", json={
             "name": "Combined Update",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -467,11 +470,11 @@ class TestScheduleLoopCountCRUD:
     # ── Persistence test ──
 
     async def test_loop_count_persists_through_list(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         await client.post("/api/schedules", json={
             "name": "Persistent",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "loop_count": 7,
@@ -489,11 +492,11 @@ class TestScheduleLoopCountCRUD:
 
     async def test_unrelated_update_preserves_end_time(self, client, db_session):
         """Updating name/priority/enabled should NOT recompute end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
             "name": "Won't Change End",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "loop_count": 5,

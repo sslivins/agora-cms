@@ -358,9 +358,8 @@ async def create_schedule(
     name: str,
     asset_id: str,
     start_time: str,
+    group_id: str,
     end_time: str | None = None,
-    device_id: str | None = None,
-    group_id: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     days_of_week: list[int] | None = None,
@@ -370,8 +369,7 @@ async def create_schedule(
 ) -> str:
     """Create a new playback schedule.
 
-    Assigns an asset to play on a device or group during a time window.
-    Either device_id or group_id must be provided (not both).
+    Assigns an asset to play on a device group during a time window.
 
     IMPORTANT — loop_count vs end_time:
     When loop_count is set, end_time is IGNORED and overridden to
@@ -388,9 +386,8 @@ async def create_schedule(
         name: Schedule display name.
         asset_id: UUID of the asset to play.
         start_time: Start time in HH:MM:SS format (e.g. "08:00:00"), interpreted in the CMS server's timezone.
+        group_id: Target group UUID.
         end_time: End time in HH:MM:SS format. IGNORED when loop_count is set (auto-computed to start_time + loop_count × asset_duration).
-        device_id: Target device ID (provide this OR group_id).
-        group_id: Target group UUID (provide this OR device_id).
         start_date: Optional start date in ISO format (e.g. "2026-04-10T00:00:00Z").
         end_date: Optional end date in ISO format.
         days_of_week: Optional list of ISO weekday numbers (1=Monday, 7=Sunday).
@@ -404,15 +401,12 @@ async def create_schedule(
         "name": name,
         "asset_id": asset_id,
         "start_time": start_time,
+        "group_id": group_id,
         "priority": priority,
         "enabled": enabled,
     }
     if end_time:
         data["end_time"] = end_time
-    if device_id:
-        data["device_id"] = device_id
-    if group_id:
-        data["group_id"] = group_id
     if start_date:
         data["start_date"] = start_date
     if end_date:
@@ -431,7 +425,6 @@ async def update_schedule(
     schedule_id: str,
     name: str | None = None,
     asset_id: str | None = None,
-    device_id: str | None = None,
     group_id: str | None = None,
     start_time: str | None = None,
     end_time: str | None = None,
@@ -448,7 +441,6 @@ async def update_schedule(
         schedule_id: UUID of the schedule to update.
         name: New display name.
         asset_id: New asset UUID.
-        device_id: New target device ID.
         group_id: New target group UUID.
         start_time: New start time (HH:MM:SS).
         end_time: New end time (HH:MM:SS).
@@ -462,7 +454,7 @@ async def update_schedule(
     if err := _check_permission("update_schedule"):
         return err
     fields = {}
-    for key in ("name", "asset_id", "device_id", "group_id", "start_time",
+    for key in ("name", "asset_id", "group_id", "start_time",
                 "end_time", "start_date", "end_date", "days_of_week",
                 "priority", "enabled", "loop_count"):
         val = locals()[key]
@@ -487,18 +479,18 @@ async def delete_schedule(schedule_id: str) -> str:
 
 @mcp.tool()
 async def play_now(
-    device_id: str,
+    group_id: str,
     asset_id: str,
     name: str | None = None,
 ) -> str:
-    """Immediately play an asset on a device. Creates a high-priority schedule
+    """Immediately play an asset on a device group. Creates a high-priority schedule
     for today with an all-day time window so playback starts right away.
 
     When done, call end_schedule_now with the returned schedule ID to stop
     playback, or delete_schedule to remove it entirely.
 
     Args:
-        device_id: The device ID to play on.
+        group_id: The target group UUID to play on.
         asset_id: UUID of the asset to play.
         name: Optional schedule name. Defaults to "<asset_filename> — Play Now".
     """
@@ -517,7 +509,7 @@ async def play_now(
     data = {
         "name": name,
         "asset_id": asset_id,
-        "device_id": device_id,
+        "group_id": group_id,
         "start_time": "00:00:00",
         "end_time": "23:59:00",
         "start_date": f"{today}T00:00:00Z",

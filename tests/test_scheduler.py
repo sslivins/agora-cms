@@ -331,14 +331,15 @@ class TestBuildDeviceSync:
         """Device gets its assigned schedule."""
         await self._setup_tz(db)
         asset = Asset(filename="video.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="abc")
-        db.add(asset)
+        group = DeviceGroup(name="Test Group")
+        db.add_all([asset, group])
         await db.flush()
 
-        device = await self._setup_device(db)
+        device = await self._setup_device(db, group=group)
 
         sched = Schedule(
             name="Test",
-            device_id="sync-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),
@@ -422,14 +423,15 @@ class TestBuildDeviceSync:
         """Schedule with end_date in the past is excluded."""
         await self._setup_tz(db)
         asset = Asset(filename="old.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="old")
-        db.add(asset)
+        group = DeviceGroup(name="Expired Group")
+        db.add_all([asset, group])
         await db.flush()
 
-        await self._setup_device(db)
+        await self._setup_device(db, group=group)
 
         sched = Schedule(
             name="Expired",
-            device_id="sync-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),
@@ -445,15 +447,16 @@ class TestBuildDeviceSync:
         """Naive end_date (as returned by aiosqlite) must not crash build_device_sync."""
         await self._setup_tz(db)
         asset = Asset(filename="naive.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="nv")
-        db.add(asset)
+        group = DeviceGroup(name="Naive Group")
+        db.add_all([asset, group])
         await db.flush()
 
-        await self._setup_device(db)
+        await self._setup_device(db, group=group)
 
         # Naive datetime — no tzinfo, mimics what aiosqlite returns
         sched = Schedule(
             name="Naive Dates",
-            device_id="sync-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),
@@ -478,14 +481,15 @@ class TestBuildDeviceSync:
         from unittest.mock import patch
         await self._setup_tz(db, tz="America/Los_Angeles")
         asset = Asset(filename="tz-test.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="tz")
-        db.add(asset)
+        group = DeviceGroup(name="TZ Group")
+        db.add_all([asset, group])
         await db.flush()
 
-        await self._setup_device(db)
+        await self._setup_device(db, group=group)
 
         sched = Schedule(
             name="TZ End Date",
-            device_id="sync-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(20, 0),
             end_time=time(22, 0),
@@ -510,14 +514,15 @@ class TestBuildDeviceSync:
         """Disabled schedule is excluded from sync."""
         await self._setup_tz(db)
         asset = Asset(filename="dis.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="dis")
-        db.add(asset)
+        group = DeviceGroup(name="Disabled Group")
+        db.add_all([asset, group])
         await db.flush()
 
-        await self._setup_device(db)
+        await self._setup_device(db, group=group)
 
         sched = Schedule(
             name="Disabled",
-            device_id="sync-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),
@@ -529,19 +534,21 @@ class TestBuildDeviceSync:
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.schedules == []
 
-    async def test_other_device_schedule_excluded(self, db):
-        """Schedule for a different device is not included."""
+    async def test_other_group_schedule_excluded(self, db):
+        """Schedule for a different group is not included."""
         await self._setup_tz(db)
         asset = Asset(filename="other.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="oth")
+        other_group = DeviceGroup(name="Other Group")
         other_device = Device(id="other-pi", name="Other", status=DeviceStatus.ADOPTED)
-        db.add_all([asset, other_device])
+        db.add_all([asset, other_group, other_device])
         await db.flush()
+        other_device.group_id = other_group.id
 
         await self._setup_device(db)
 
         sched = Schedule(
             name="Not Mine",
-            device_id="other-pi",
+            group_id=other_group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),
@@ -655,13 +662,12 @@ class TestDatesOverlap:
 
 
 class TestSchedulesConflict:
-    def _make(self, device_id="dev-1", group_id=None, priority=0,
+    def _make(self, group_id=None, priority=0,
               start_time=time(9, 0), end_time=time(17, 0),
               start_date=None, end_date=None, days_of_week=None):
         return Schedule(
             name="test",
             asset_id=uuid.uuid4(),
-            device_id=device_id,
             group_id=group_id,
             enabled=True,
             start_time=start_time,
@@ -673,42 +679,50 @@ class TestSchedulesConflict:
         )
 
     def test_conflict_same_target_same_priority(self):
-        a = self._make()
-        b = self._make()
+        gid = uuid.uuid4()
+        a = self._make(group_id=gid)
+        b = self._make(group_id=gid)
         assert schedules_conflict(a, b) is True
 
     def test_no_conflict_different_priority(self):
-        a = self._make(priority=0)
-        b = self._make(priority=1)
+        gid = uuid.uuid4()
+        a = self._make(group_id=gid, priority=0)
+        b = self._make(group_id=gid, priority=1)
         assert schedules_conflict(a, b) is False
 
-    def test_no_conflict_different_device(self):
-        a = self._make(device_id="dev-1")
-        b = self._make(device_id="dev-2")
+    def test_no_conflict_different_group(self):
+        a = self._make(group_id=uuid.uuid4())
+        b = self._make(group_id=uuid.uuid4())
         assert schedules_conflict(a, b) is False
 
     def test_no_conflict_different_times(self):
-        a = self._make(start_time=time(9, 0), end_time=time(12, 0))
-        b = self._make(start_time=time(14, 0), end_time=time(17, 0))
+        gid = uuid.uuid4()
+        a = self._make(group_id=gid, start_time=time(9, 0), end_time=time(12, 0))
+        b = self._make(group_id=gid, start_time=time(14, 0), end_time=time(17, 0))
         assert schedules_conflict(a, b) is False
 
     def test_no_conflict_different_days(self):
-        a = self._make(days_of_week=[1, 2, 3])
-        b = self._make(days_of_week=[4, 5, 6])
+        gid = uuid.uuid4()
+        a = self._make(group_id=gid, days_of_week=[1, 2, 3])
+        b = self._make(group_id=gid, days_of_week=[4, 5, 6])
         assert schedules_conflict(a, b) is False
 
     def test_no_conflict_different_dates(self):
-        a = self._make(start_date=datetime(2026, 1, 1), end_date=datetime(2026, 1, 31))
-        b = self._make(start_date=datetime(2026, 3, 1), end_date=datetime(2026, 3, 31))
+        gid = uuid.uuid4()
+        a = self._make(group_id=gid, start_date=datetime(2026, 1, 1), end_date=datetime(2026, 1, 31))
+        b = self._make(group_id=gid, start_date=datetime(2026, 3, 1), end_date=datetime(2026, 3, 31))
         assert schedules_conflict(a, b) is False
 
     def test_conflict_overlapping_everything(self):
+        gid = uuid.uuid4()
         a = self._make(
+            group_id=gid,
             start_time=time(8, 0), end_time=time(12, 0),
             days_of_week=[1, 2, 3],
             start_date=datetime(2026, 4, 1), end_date=datetime(2026, 4, 30),
         )
         b = self._make(
+            group_id=gid,
             start_time=time(10, 0), end_time=time(14, 0),
             days_of_week=[3, 4, 5],
             start_date=datetime(2026, 4, 15), end_date=datetime(2026, 5, 15),

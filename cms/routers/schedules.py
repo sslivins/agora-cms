@@ -14,7 +14,6 @@ from cms.auth import require_auth, require_permission, get_user_group_ids, verif
 from cms.database import get_db
 from cms.permissions import SCHEDULES_READ, SCHEDULES_WRITE
 from cms.models.asset import Asset
-from cms.models.device import Device
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
@@ -37,7 +36,6 @@ def _schedule_to_out(s: Schedule) -> ScheduleOut:
     return ScheduleOut(
         **{c.key: getattr(s, c.key) for c in Schedule.__table__.columns},
         asset_filename=s.asset.filename if s.asset else None,
-        device_name=s.device.name if s.device else None,
         group_name=s.group.name if s.group else None,
     )
 
@@ -45,7 +43,6 @@ def _schedule_to_out(s: Schedule) -> ScheduleOut:
 def _eager_options():
     return [
         selectinload(Schedule.asset),
-        selectinload(Schedule.device),
         selectinload(Schedule.group),
     ]
 
@@ -57,11 +54,6 @@ async def _verify_schedule_access(schedule: Schedule, request: Request, db) -> N
         return
     if schedule.group_id:
         await verify_resource_group_access(user, db, schedule.group_id)
-    elif schedule.device_id:
-        dev = await db.execute(select(Device).where(Device.id == schedule.device_id))
-        device = dev.scalar_one_or_none()
-        if device:
-            await verify_resource_group_access(user, db, device.group_id)
 
 
 @router.get("", response_model=List[ScheduleOut], dependencies=[Depends(require_permission(SCHEDULES_READ))])
@@ -73,12 +65,9 @@ async def list_schedules(request: Request, db: AsyncSession = Depends(get_db)):
     query = select(Schedule).options(*_eager_options()).order_by(Schedule.priority.desc(), Schedule.name)
     if not is_admin:
         if group_ids:
-            # Include schedules targeting the user's groups (directly or via device)
+            # Include schedules targeting the user's groups
             query = query.where(
                 Schedule.group_id.in_(group_ids)
-                | Schedule.device_id.in_(
-                    select(Device.id).where(Device.group_id.in_(group_ids))
-                )
             )
         else:
             query = query.where(False)
@@ -109,9 +98,7 @@ async def _unique_name(name: str, db: AsyncSession, exclude_id=None) -> str:
 async def _check_conflicts(schedule: Schedule, db: AsyncSession, exclude_id=None):
     """Raise 409 if an existing schedule conflicts (same target, priority, overlapping window)."""
     q = select(Schedule).where(Schedule.enabled == True)
-    if schedule.device_id:
-        q = q.where(Schedule.device_id == schedule.device_id)
-    elif schedule.group_id:
+    if schedule.group_id:
         q = q.where(Schedule.group_id == schedule.group_id)
     else:
         return

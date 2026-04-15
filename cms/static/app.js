@@ -271,6 +271,12 @@ async function setDeviceTimezone(deviceId, tz) {
     else showToast("Timezone update failed", true);
 }
 
+async function setDeviceField(deviceId, field, value) {
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { [field]: value || "" });
+    if (resp && resp.ok) showToast(`${field.charAt(0).toUpperCase() + field.slice(1)} updated`);
+    else showToast(`${field} update failed`, true);
+}
+
 async function setGroupDefaultAsset(groupId, assetId) {
     const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Group default asset updated");
@@ -278,16 +284,63 @@ async function setGroupDefaultAsset(groupId, assetId) {
 }
 
 async function adoptDevice(deviceId, deviceName) {
-    const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`);
-    if (resp && resp.ok) location.reload();
-    else if (resp) {
-        const err = await resp.json().catch(() => null);
-        showToast(err?.detail || "Failed to adopt device", true);
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    // Build group options from __adoptGroups if available
+    let groupOptions = '<option value="">— No group —</option>';
+    if (typeof __adoptGroups !== 'undefined') {
+        __adoptGroups.forEach(g => {
+            groupOptions += `<option value="${g.id}">${g.name}</option>`;
+        });
     }
+
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    box.style.minWidth = "400px";
+    box.innerHTML = `
+        <h3 style="margin-bottom: 1rem;">Adopt Device</h3>
+        <p style="margin-bottom: 1rem; color: var(--text-secondary);">Configure this device before adopting it.</p>
+        <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="adopt-name" value="${deviceName}" placeholder="Device name">
+        </div>
+        <div class="form-group">
+            <label>Location</label>
+            <input type="text" id="adopt-location" placeholder="e.g. Lobby, Conference Room A">
+        </div>
+        <div class="form-group">
+            <label>Group</label>
+            <select id="adopt-group">${groupOptions}</select>
+        </div>
+        <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
+            <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+            <button class="btn btn-primary" id="adopt-confirm">Adopt</button>
+        </div>
+    `;
+    overlay.appendChild(box);
+    overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+
+    box.querySelector("#adopt-confirm").onclick = async () => {
+        const name = box.querySelector("#adopt-name").value.trim();
+        const loc = box.querySelector("#adopt-location").value.trim();
+        const groupId = box.querySelector("#adopt-group").value;
+        const body = {};
+        if (name) body.name = name;
+        if (loc) body.location = loc;
+        if (groupId) body.group_id = groupId;
+        const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`, body);
+        if (resp && resp.ok) window.location.reload();
+        else {
+            const err = await resp.json().catch(() => null);
+            showToast(err?.detail || "Failed to adopt device", true);
+        }
+    };
 }
 
 async function deleteDevice(deviceId) {
-    let msg = "Delete this device? Any schedules targeting only this device will also be removed.";
+    let msg = "Delete this device? It will need to be re-adopted to reconnect.";
     if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
     if (!await showConfirm(msg)) return;
     const resp = await apiCall("DELETE", `/api/devices/${deviceId}`);
@@ -790,10 +843,8 @@ async function createSchedule(form) {
     if (endTime) body.end_time = endTime.length <= 5 ? endTime + ":00" : endTime;
     // Explicit loop count
     if (hasLoopCount) body.loop_count = parseInt(loopCountVal);
-    // Target
-    const target = data.get("target_type");
-    if (target === "device") body.device_id = data.get("target_id");
-    else body.group_id = data.get("target_id");
+    // Target — always group
+    body.group_id = data.get("group_id");
     // Optional date range
     if (data.get("start_date")) body.start_date = data.get("start_date") + "T00:00:00Z";
     if (data.get("end_date")) body.end_date = data.get("end_date") + "T23:59:59Z";

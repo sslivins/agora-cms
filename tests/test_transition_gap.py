@@ -27,7 +27,6 @@ def _make_schedule(
     priority: int = 0,
     name: str = "test",
     asset_filename: str = "video.mp4",
-    device_id: str | None = None,
     group_id=None,
     enabled: bool = True,
 ) -> Schedule:
@@ -39,7 +38,6 @@ def _make_schedule(
     s = Schedule(
         name=name,
         asset_id=uuid.uuid4(),
-        device_id=device_id,
         group_id=group_id,
         enabled=enabled,
         start_time=start_time,
@@ -77,8 +75,9 @@ class TestTransitionGap:
     def test_active_schedule_not_yet_in_now_playing_stays_visible(self):
         """A schedule that just entered its window (not yet in now_playing)
         should appear in upcoming with ``starting=True``."""
+        gid = uuid.uuid4()
         s = _make_schedule(
-            time(10, 0), time(11, 0), name="Morning Show", device_id="d1",
+            time(10, 0), time(11, 0), name="Morning Show", group_id=gid,
         )
         # It's 10:05 — schedule is active but scheduler hasn't processed it
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
@@ -92,8 +91,9 @@ class TestTransitionGap:
     def test_starting_entry_has_zero_countdown(self):
         """A starting entry should have starts_in_seconds=0 and an appropriate
         countdown string."""
+        gid = uuid.uuid4()
         s = _make_schedule(
-            time(10, 0), time(11, 0), name="Show", device_id="d1",
+            time(10, 0), time(11, 0), name="Show", group_id=gid,
         )
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
 
@@ -103,8 +103,9 @@ class TestTransitionGap:
     def test_starting_entry_disappears_once_in_now_playing(self):
         """Once the scheduler processes it (appears in now_playing), it should
         no longer appear in upcoming."""
+        gid = uuid.uuid4()
         s = _make_schedule(
-            time(10, 0), time(11, 0), name="Show", device_id="d1",
+            time(10, 0), time(11, 0), name="Show", group_id=gid,
         )
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
         now_playing = [_now_playing_entry(s, "d1")]
@@ -114,8 +115,9 @@ class TestTransitionGap:
 
     def test_skipped_schedule_not_shown_as_starting(self):
         """A schedule that was skipped/ended should NOT appear as starting."""
+        gid = uuid.uuid4()
         s = _make_schedule(
-            time(10, 0), time(11, 0), name="Ended", device_id="d1",
+            time(10, 0), time(11, 0), name="Ended", group_id=gid,
         )
         _skipped[str(s.id)] = datetime(2026, 3, 28, 11, 0)
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
@@ -138,11 +140,12 @@ class TestPreemptionTransitionGap:
     def test_new_higher_priority_schedule_shows_starting(self):
         """Higher-priority schedule just entered its window — should show as
         starting, not vanish."""
+        gid = uuid.uuid4()
         low = _make_schedule(
-            time(8, 0), time(12, 0), priority=1, name="Low", device_id="d1",
+            time(8, 0), time(12, 0), priority=1, name="Low", group_id=gid,
         )
         high = _make_schedule(
-            time(10, 0), time(11, 0), priority=10, name="High", device_id="d1",
+            time(10, 0), time(11, 0), priority=10, name="High", group_id=gid,
         )
         # 10:02 — both active, but scheduler still shows low as winner
         now = datetime(2026, 3, 28, 10, 2, tzinfo=timezone.utc)
@@ -158,11 +161,12 @@ class TestPreemptionTransitionGap:
         """When neither schedule is in now_playing yet, the higher-priority
         one shows as starting and the lower-priority one shows as preempted
         or starting."""
+        gid = uuid.uuid4()
         low = _make_schedule(
-            time(10, 0), time(12, 0), priority=1, name="Low", device_id="d1",
+            time(10, 0), time(12, 0), priority=1, name="Low", group_id=gid,
         )
         high = _make_schedule(
-            time(10, 0), time(11, 0), priority=10, name="High", device_id="d1",
+            time(10, 0), time(11, 0), priority=10, name="High", group_id=gid,
         )
         now = datetime(2026, 3, 28, 10, 2, tzinfo=timezone.utc)
         now_playing = []  # neither processed yet
@@ -176,8 +180,9 @@ class TestPreemptionTransitionGap:
 
     def test_starting_entry_has_standard_fields(self):
         """Starting entries should include all standard upcoming fields."""
+        gid = uuid.uuid4()
         s = _make_schedule(
-            time(10, 0), time(11, 0), name="Show", device_id="d1",
+            time(10, 0), time(11, 0), name="Show", group_id=gid,
         )
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
 
@@ -209,7 +214,7 @@ class TestGroupScheduleTransitionGap:
         group_id = uuid.uuid4()
         s = _make_schedule(
             time(10, 0), time(11, 0), name="Group Show",
-            device_id=None, group_id=group_id,
+            group_id=group_id,
         )
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
         now_playing = []
@@ -225,7 +230,7 @@ class TestGroupScheduleTransitionGap:
         group_id = uuid.uuid4()
         s = _make_schedule(
             time(10, 0), time(11, 0), name="Group Show",
-            device_id=None, group_id=group_id,
+            group_id=group_id,
         )
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
         # Scheduler expanded group to d1, d2 — both entries use same schedule_id

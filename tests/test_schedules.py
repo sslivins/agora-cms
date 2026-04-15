@@ -5,23 +5,26 @@ import pytest
 
 @pytest.mark.asyncio
 class TestScheduleCRUD:
-    async def _create_device_and_asset(self, db_session):
-        """Helper: create a device and an asset for scheduling."""
+    async def _create_group_and_asset(self, db_session):
+        """Helper: create a device, group, and asset for scheduling."""
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="Test Group")
         device = Device(id="sched-pi", name="Schedule Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="aaa")
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
-        return device.id, str(asset.id)
+        return str(group.id), str(asset.id)
 
     async def test_create_schedule(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "Morning Loop",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -30,20 +33,19 @@ class TestScheduleCRUD:
         assert resp.status_code == 201
         data = resp.json()
         assert data["name"] == "Morning Loop"
-        assert data["device_id"] == device_id
         assert data["asset_id"] == asset_id
         assert data["priority"] == 5
         assert data["enabled"] is True
 
     async def test_list_schedules(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         await client.post("/api/schedules", json={
-            "name": "S1", "device_id": device_id, "asset_id": asset_id,
+            "name": "S1", "group_id": group_id, "asset_id": asset_id,
             "start_time": "08:00", "end_time": "12:00",
         })
         await client.post("/api/schedules", json={
-            "name": "S2", "device_id": device_id, "asset_id": asset_id,
+            "name": "S2", "group_id": group_id, "asset_id": asset_id,
             "start_time": "13:00", "end_time": "17:00",
         })
 
@@ -52,10 +54,10 @@ class TestScheduleCRUD:
         assert len(resp.json()) == 2
 
     async def test_update_schedule(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
-            "name": "Old", "device_id": device_id, "asset_id": asset_id,
+            "name": "Old", "group_id": group_id, "asset_id": asset_id,
             "start_time": "08:00", "end_time": "12:00",
         })
         sched_id = create.json()["id"]
@@ -66,10 +68,10 @@ class TestScheduleCRUD:
         assert resp.json()["priority"] == 10
 
     async def test_toggle_schedule(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
-            "name": "Toggle Me", "device_id": device_id, "asset_id": asset_id,
+            "name": "Toggle Me", "group_id": group_id, "asset_id": asset_id,
             "start_time": "08:00", "end_time": "12:00",
         })
         sched_id = create.json()["id"]
@@ -79,10 +81,10 @@ class TestScheduleCRUD:
         assert resp.json()["enabled"] is False
 
     async def test_delete_schedule(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         create = await client.post("/api/schedules", json={
-            "name": "Delete Me", "device_id": device_id, "asset_id": asset_id,
+            "name": "Delete Me", "group_id": group_id, "asset_id": asset_id,
             "start_time": "08:00", "end_time": "12:00",
         })
         sched_id = create.json()["id"]
@@ -94,7 +96,7 @@ class TestScheduleCRUD:
         assert len(resp.json()) == 0
 
     async def test_schedule_requires_target(self, client, db_session):
-        _, asset_id = await self._create_device_and_asset(db_session)
+        _, asset_id = await self._create_group_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "No Target", "asset_id": asset_id,
@@ -122,28 +124,12 @@ class TestScheduleCRUD:
         assert resp.status_code == 201
         assert resp.json()["group_id"] == group_id
 
-    async def test_schedule_both_targets_rejected(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
-
-        group_resp = await client.post("/api/devices/groups/", json={"name": "Both"})
-        group_id = group_resp.json()["id"]
-
-        resp = await client.post("/api/schedules", json={
-            "name": "Both Targets",
-            "device_id": device_id,
-            "group_id": group_id,
-            "asset_id": asset_id,
-            "start_time": "08:00",
-            "end_time": "12:00",
-        })
-        assert resp.status_code == 422
-
     async def test_schedule_with_days_of_week(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
             "name": "Weekdays Only",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "17:00",
@@ -162,10 +148,10 @@ class TestScheduleCRUD:
 
     async def test_reject_end_date_before_start_date(self, client, db_session):
         """Server should reject a schedule where end_date < start_date."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
         resp = await client.post("/api/schedules", json={
             "name": "Bad Dates",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -176,10 +162,10 @@ class TestScheduleCRUD:
 
     async def test_reject_same_start_end_time(self, client, db_session):
         """Server should reject a schedule where start_time == end_time."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
         resp = await client.post("/api/schedules", json={
             "name": "Zero Window",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00",
             "end_time": "10:00",
@@ -188,10 +174,10 @@ class TestScheduleCRUD:
 
     async def test_update_reject_end_date_before_start_date(self, client, db_session):
         """Server should reject an update that sets end_date < start_date."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
         create = await client.post("/api/schedules", json={
             "name": "Will Edit",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -204,11 +190,11 @@ class TestScheduleCRUD:
         assert resp.status_code == 422
 
     async def test_reject_conflict_same_priority(self, client, db_session):
-        """Server should reject a schedule that conflicts (same device, same priority, overlapping time)."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        """Server should reject a schedule that conflicts (same group, same priority, overlapping time)."""
+        group_id, asset_id = await self._create_group_and_asset(db_session)
         resp1 = await client.post("/api/schedules", json={
             "name": "Morning",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -216,7 +202,7 @@ class TestScheduleCRUD:
         assert resp1.status_code == 201
         resp2 = await client.post("/api/schedules", json={
             "name": "Overlap",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00",
             "end_time": "14:00",
@@ -226,10 +212,10 @@ class TestScheduleCRUD:
 
     async def test_allow_overlap_different_priority(self, client, db_session):
         """Overlapping schedules with different priorities are allowed."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
         await client.post("/api/schedules", json={
             "name": "Low",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -237,7 +223,7 @@ class TestScheduleCRUD:
         })
         resp = await client.post("/api/schedules", json={
             "name": "High",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -257,17 +243,20 @@ class TestScheduleUI:
         including ``editSchedule()``.  The edit button silently did nothing.
         """
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="Edit Group")
         device = Device(id="edit-pi", name="Edit Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="edit.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="eee")
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
 
         # Create a schedule so the Edit button is rendered
         resp = await client.post("/api/schedules", json={
             "name": "Editable",
-            "device_id": "edit-pi",
+            "group_id": str(group.id),
             "asset_id": str(asset.id),
             "start_time": "09:00",
             "end_time": "17:00",
@@ -336,22 +325,25 @@ class TestScheduleNaiveDatetime:
     TypeError: can't compare offset-naive and offset-aware datetimes
     """
 
-    async def _create_device_and_asset(self, db_session):
+    async def _create_group_and_asset(self, db_session):
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="TZ Test Group")
         device = Device(id="tz-pi", name="TZ Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="tz.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ttt")
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
-        return device.id, str(asset.id)
+        return str(group.id), str(asset.id)
 
     async def test_create_with_naive_date_strings(self, client, db_session):
         """Creating a schedule with naive date strings (no timezone) should succeed."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
         resp = await client.post("/api/schedules", json={
             "name": "Naive Dates",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -366,12 +358,12 @@ class TestScheduleNaiveDatetime:
         This is the exact scenario from the browser — the edit modal sends
         dates like "2026-04-01" without timezone info.
         """
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         # Create without dates
         create = await client.post("/api/schedules", json={
             "name": "Edit Dates",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "09:00",
             "end_time": "17:00",
@@ -395,12 +387,12 @@ class TestScheduleNaiveDatetime:
 
     async def test_create_then_full_edit(self, client, db_session):
         """Full create → edit flow mimicking the browser's behavior."""
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_group_and_asset(db_session)
 
         # Create
         create = await client.post("/api/schedules", json={
             "name": "Full Flow",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "12:00",
@@ -413,8 +405,7 @@ class TestScheduleNaiveDatetime:
         resp = await client.patch(f"/api/schedules/{sched_id}", json={
             "name": "Full Flow Updated",
             "asset_id": asset_id,
-            "device_id": device_id,
-            "group_id": None,
+            "group_id": group_id,
             "start_time": "10:00:00",
             "end_time": "18:00:00",
             "start_date": "2026-05-01",
@@ -436,24 +427,27 @@ class TestEndNowClearedOnEdit:
 
     async def _seed(self, db_session):
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
 
+        group = DeviceGroup(name="End Now Group")
         device = Device(id="end-now-pi", name="End Now Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="bbb")
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
-        return device.id, str(asset.id)
+        return str(group.id), str(asset.id)
 
     async def test_patch_clears_end_now_skip(self, client, db_session):
         """PATCH /api/schedules/<id> should clear any active End Now skip."""
         from cms.services.scheduler import _skipped
 
-        device_id, asset_id = await self._seed(db_session)
+        group_id, asset_id = await self._seed(db_session)
 
         # Create a schedule
         create = await client.post("/api/schedules", json={
             "name": "End Now Test",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "17:00",
@@ -477,11 +471,11 @@ class TestEndNowClearedOnEdit:
         """Toggling enabled on a skipped schedule should clear the skip."""
         from cms.services.scheduler import _skipped
 
-        device_id, asset_id = await self._seed(db_session)
+        group_id, asset_id = await self._seed(db_session)
 
         create = await client.post("/api/schedules", json={
             "name": "Toggle Skip Test",
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "17:00",

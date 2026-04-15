@@ -242,14 +242,15 @@ class TestSyncTimezone:
             size_bytes=1000,
             checksum="abc",
         )
-        db.add(asset)
+        group = DeviceGroup(name="TZ Group")
+        db.add_all([asset, group])
         await db.flush()
 
-        await self._setup_device(db)
+        await self._setup_device(db, group=group)
 
         sched = Schedule(
             name="TZ Schedule",
-            device_id="tz-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),

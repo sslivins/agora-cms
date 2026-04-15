@@ -25,7 +25,6 @@ def _make_schedule(
     priority: int = 0,
     name: str = "test",
     asset_filename: str = "video.mp4",
-    device_id: str | None = None,
     group_id=None,
     enabled: bool = True,
     days_of_week=None,
@@ -40,7 +39,6 @@ def _make_schedule(
     s = Schedule(
         name=name,
         asset_id=uuid.uuid4(),
-        device_id=device_id,
         group_id=group_id,
         enabled=enabled,
         start_time=start_time,
@@ -80,13 +78,14 @@ class TestPreemptedInUpcoming:
 
     def test_preempted_schedule_appears_in_upcoming(self):
         """Low-priority schedule preempted by high-priority shows in Coming Up."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 15), time(8, 20), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 16, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -98,13 +97,14 @@ class TestPreemptedInUpcoming:
 
     def test_preempted_schedule_has_resumes_at(self):
         """Preempted entry includes resumes_at time."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 15), time(8, 20), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 16, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -114,13 +114,14 @@ class TestPreemptedInUpcoming:
 
     def test_preempted_countdown_shows_resume_time(self):
         """Countdown says 'resumes in ...' instead of normal countdown."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(8, 30), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         # At 8:05, high playing, low preempted, resumes in 25 min
         now = datetime(2026, 3, 28, 8, 5, tzinfo=timezone.utc)
@@ -131,13 +132,14 @@ class TestPreemptedInUpcoming:
 
     def test_winning_schedule_excluded_from_upcoming(self):
         """The currently-winning schedule does not appear in Coming Up."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 15), time(8, 20), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 16, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -148,13 +150,14 @@ class TestPreemptedInUpcoming:
 
     def test_preempted_entry_day_label_is_today(self):
         """Preempted entries are always labeled as 'today'."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(8, 30), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 10, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -171,7 +174,7 @@ class TestLegacyBehavior:
 
     def test_active_excluded_without_now_playing(self):
         """Without now_playing, active schedules are simply excluded."""
-        s = _make_schedule(time(9, 0), time(17, 0), name="Active", device_id="d1")
+        s = _make_schedule(time(9, 0), time(17, 0), name="Active", group_id=uuid.uuid4())
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
 
         result = get_upcoming_schedules([s], now, UTC)
@@ -179,7 +182,7 @@ class TestLegacyBehavior:
 
     def test_active_excluded_with_none_now_playing(self):
         """Explicitly passing None acts the same as omitting."""
-        s = _make_schedule(time(9, 0), time(17, 0), name="Active", device_id="d1")
+        s = _make_schedule(time(9, 0), time(17, 0), name="Active", group_id=uuid.uuid4())
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
 
         result = get_upcoming_schedules([s], now, UTC, now_playing=None)
@@ -202,7 +205,7 @@ class TestSkippedNotPreempted:
         """A schedule that was 'Ended Now' should not appear in upcoming."""
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Ended",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         _skipped[str(low.id)] = datetime(2026, 3, 28, 17, 0)
 
@@ -215,13 +218,14 @@ class TestSkippedNotPreempted:
     def test_skipped_while_preempted_hidden(self):
         """A skipped schedule doesn't show as preempted even if a higher-priority
         schedule would normally preempt it."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Skipped Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(17, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         _skipped[str(low.id)] = datetime(2026, 3, 28, 17, 0)
 
@@ -243,7 +247,7 @@ class TestDeviceOffline:
         show as starting (scheduler hasn't processed them yet)."""
         s = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Offline",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
 
@@ -251,43 +255,11 @@ class TestDeviceOffline:
         assert len(result) == 1
         assert result[0]["starting"] is True
 
-    def test_offline_device_shows_device_offline(self):
-        """When offline_device_ids is passed, an active schedule on an offline
-        device shows device_offline=True instead of starting=True."""
-        s = _make_schedule(
-            time(8, 0), time(17, 0), priority=1, name="Offline",
-            device_id="d1",
-        )
-        now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
-
-        result = get_upcoming_schedules(
-            [s], now, UTC, now_playing=[], offline_device_ids={"d1"},
-        )
-        assert len(result) == 1
-        assert result[0].get("device_offline") is True
-        assert result[0].get("starting") is not True
-
-    def test_online_device_still_shows_starting(self):
-        """When a device is NOT in offline_device_ids, active schedules
-        with no winner still show starting=True (not device_offline)."""
-        s = _make_schedule(
-            time(8, 0), time(17, 0), priority=1, name="Online",
-            device_id="d1",
-        )
-        now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
-
-        result = get_upcoming_schedules(
-            [s], now, UTC, now_playing=[], offline_device_ids=set(),
-        )
-        assert len(result) == 1
-        assert result[0]["starting"] is True
-        assert result[0].get("device_offline") is not True
-
     def test_sole_schedule_on_connected_device_not_preempted(self):
         """A single active schedule that IS the winner should not be in upcoming."""
         s = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Winner",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
         np = [_now_playing_entry(s, "d1")]
@@ -303,21 +275,26 @@ class TestSamePriorityConflict:
     """Two same-priority schedules on the same device: loser not shown as preempted."""
 
     def test_same_priority_loser_hidden(self):
-        """Same-priority loser doesn't appear as preempted (no higher-priority preemptor)."""
+        """Same-priority loser with no higher-priority preemptor shows as
+        'starting' (scheduler can't distinguish device-level losers with group targets)."""
+        gid = uuid.uuid4()
         a = _make_schedule(
             time(8, 0), time(9, 0), priority=5, name="A",
-            device_id="d1",
+            group_id=gid,
         )
         b = _make_schedule(
             time(8, 0), time(9, 0), priority=5, name="B",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 30, tzinfo=timezone.utc)
         # B won arbitrarily
         np = [_now_playing_entry(b, "d1")]
 
         result = get_upcoming_schedules([a, b], now, UTC, now_playing=np)
-        assert len(result) == 0
+        # A is not preempted (same priority) and not winning — shows as starting
+        assert len(result) == 1
+        assert result[0]["schedule_name"] == "A"
+        assert result[0].get("starting") is True
 
 
 # ── Multiple preempting schedules (chaining) ──
@@ -328,17 +305,18 @@ class TestChainPreemption:
 
     def test_resume_at_latest_preemptor(self):
         """When two preempting schedules overlap, resumes_at uses the later end time."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(10, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         mid = _make_schedule(
             time(8, 15), time(8, 30), priority=5, name="Mid",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 10), time(9, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 20, tzinfo=timezone.utc)
         # High wins
@@ -353,17 +331,18 @@ class TestChainPreemption:
 
     def test_mid_priority_also_preempted(self):
         """A mid-priority schedule preempted by a high-priority also appears."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(10, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         mid = _make_schedule(
             time(8, 0), time(9, 30), priority=5, name="Mid",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(9, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 30, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -376,13 +355,14 @@ class TestChainPreemption:
 
     def test_mid_preempted_resumes_at_high_end(self):
         """Mid-priority preempted by high-priority resumes when high ends."""
+        gid = uuid.uuid4()
         mid = _make_schedule(
             time(8, 0), time(9, 30), priority=5, name="Mid",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(9, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 30, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -426,10 +406,10 @@ class TestGroupPreemption:
             time(8, 0), time(9, 0), priority=1, name="Group Sched",
             group_id=gid,
         )
-        # Device-targeted high-priority only on d1
+        # High-priority schedule on a different group, only on d1
         device_sched = _make_schedule(
             time(8, 0), time(8, 30), priority=10, name="Device High",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         now = datetime(2026, 3, 28, 8, 10, tzinfo=timezone.utc)
         # Group schedule wins on d2, device_sched wins on d1
@@ -452,13 +432,14 @@ class TestOvernightPreemption:
 
     def test_overnight_low_preempted(self):
         """Overnight low-priority schedule preempted by high-priority mid-night."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(22, 0), time(6, 0), priority=1, name="Overnight Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(23, 0), time(1, 0), priority=10, name="Late Night High",
-            device_id="d1",
+            group_id=gid,
         )
         # It's midnight, both active
         now = datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc)
@@ -479,13 +460,15 @@ class TestDifferentDevices:
 
     def test_different_device_not_preempted(self):
         """A schedule on device A is not preempted by one on device B."""
+        gid1 = uuid.uuid4()
+        gid2 = uuid.uuid4()
         a = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Device A",
-            device_id="d1",
+            group_id=gid1,
         )
         b = _make_schedule(
             time(8, 0), time(9, 0), priority=10, name="Device B",
-            device_id="d2",
+            group_id=gid2,
         )
         now = datetime(2026, 3, 28, 8, 30, tzinfo=timezone.utc)
         # b wins on d2, a's device d1 has no winner → a not in now_playing
@@ -506,17 +489,19 @@ class TestPreemptedSorting:
 
     def test_preempted_sorted_by_resume_time(self):
         """Preempted entries sort by resume time, interleaved with future entries."""
+        gid1 = uuid.uuid4()
+        gid2 = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(10, 0), priority=1, name="Preempted",
-            device_id="d1",
+            group_id=gid1,
         )
         high = _make_schedule(
             time(8, 0), time(8, 45), priority=10, name="High",
-            device_id="d1",
+            group_id=gid1,
         )
         future = _make_schedule(
             time(9, 0), time(10, 0), priority=1, name="Future",
-            device_id="d2",
+            group_id=gid2,
         )
         # At 8:30, high is playing, low is preempted (resumes at 8:45)
         # Future starts at 9:00
@@ -536,13 +521,14 @@ class TestFindResumeTime:
     """Direct tests for the _find_resume_time helper."""
 
     def test_single_preemptor(self):
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 15), time(8, 45), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         local_now = datetime(2026, 3, 28, 8, 20)
         result = _find_resume_time(low, [low, high], local_now)
@@ -552,7 +538,7 @@ class TestFindResumeTime:
         """No higher-priority schedule → None."""
         s = _make_schedule(
             time(8, 0), time(9, 0), priority=10, name="Highest",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         local_now = datetime(2026, 3, 28, 8, 30)
         result = _find_resume_time(s, [s], local_now)
@@ -560,13 +546,14 @@ class TestFindResumeTime:
 
     def test_same_priority_not_preemptor(self):
         """Same-priority schedules don't preempt."""
+        gid = uuid.uuid4()
         a = _make_schedule(
             time(8, 0), time(9, 0), priority=5, name="A",
-            device_id="d1",
+            group_id=gid,
         )
         b = _make_schedule(
             time(8, 0), time(9, 0), priority=5, name="B",
-            device_id="d1",
+            group_id=gid,
         )
         local_now = datetime(2026, 3, 28, 8, 30)
         result = _find_resume_time(a, [a, b], local_now)
@@ -574,30 +561,33 @@ class TestFindResumeTime:
 
     def test_different_device_not_preemptor(self):
         """Higher priority on a different device doesn't preempt."""
+        gid1 = uuid.uuid4()
+        gid2 = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid1,
         )
         high = _make_schedule(
             time(8, 0), time(9, 0), priority=10, name="High",
-            device_id="d2",
+            group_id=gid2,
         )
         local_now = datetime(2026, 3, 28, 8, 30)
         result = _find_resume_time(low, [low, high], local_now)
         assert result is None
 
     def test_multiple_preemptors_uses_latest_end(self):
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(10, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         mid = _make_schedule(
             time(8, 0), time(8, 30), priority=5, name="Mid",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(9, 15), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         local_now = datetime(2026, 3, 28, 8, 20)
         result = _find_resume_time(low, [low, mid, high], local_now)
@@ -605,13 +595,14 @@ class TestFindResumeTime:
 
     def test_disabled_schedule_not_preemptor(self):
         """A disabled higher-priority schedule doesn't preempt."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(9, 0), priority=10, name="Disabled High",
-            device_id="d1", enabled=False,
+            group_id=gid, enabled=False,
         )
         local_now = datetime(2026, 3, 28, 8, 30)
         result = _find_resume_time(low, [low, high], local_now)
@@ -619,13 +610,14 @@ class TestFindResumeTime:
 
     def test_preemptor_not_active_now(self):
         """A higher-priority schedule not currently active doesn't preempt."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(15, 0), time(16, 0), priority=10, name="Future High",
-            device_id="d1",
+            group_id=gid,
         )
         local_now = datetime(2026, 3, 28, 10, 0)
         result = _find_resume_time(low, [low, high], local_now)
@@ -633,13 +625,14 @@ class TestFindResumeTime:
 
     def test_overnight_preemptor(self):
         """Overnight preempting schedule correctly computes end time."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(22, 0), time(6, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(23, 0), time(2, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         local_now = datetime(2026, 3, 29, 0, 30)  # 12:30 AM
         result = _find_resume_time(low, [low, high], local_now)
@@ -654,13 +647,14 @@ class TestTimezonePreemption:
 
     def test_pacific_timezone_preemption(self):
         """Preemption detected correctly in Pacific timezone."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(10, 0), time(12, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(10, 0), time(11, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         # 5:30 PM UTC = 10:30 AM Pacific
         now = datetime(2026, 3, 28, 17, 30, tzinfo=timezone.utc)
@@ -678,7 +672,7 @@ class TestTimezonePreemption:
         # Schedule 9-17 local (Pacific). At 5 PM UTC = 10 AM Pacific, it IS active.
         s = _make_schedule(
             time(9, 0), time(17, 0), priority=1, name="Pacific Active",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         now = datetime(2026, 3, 28, 17, 0, tzinfo=timezone.utc)
         tz = ZoneInfo("America/Los_Angeles")
@@ -697,13 +691,14 @@ class TestPreemptedEntryFields:
 
     def test_full_entry_fields(self):
         """Preempted entry has all expected fields."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(10, 0), priority=1, name="Low Priority",
-            device_id="d1", asset_filename="background.mp4",
+            group_id=gid, asset_filename="background.mp4",
         )
         high = _make_schedule(
             time(8, 30), time(9, 0), priority=10, name="High Priority",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 8, 35, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -720,18 +715,19 @@ class TestPreemptedEntryFields:
         assert entry["preempted"] is True
         assert entry["resumes_at"] == "9:00 AM"
         assert entry["day_label"] == "today"
-        assert entry["target_type"] == "device"
+        assert entry["target_type"] == "group"
         assert "resumes in" in entry["countdown"]
 
     def test_resume_countdown_less_than_minute(self):
         """When resume is <1 minute away, countdown says so."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(9, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(8, 30), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         # 29 seconds before 8:30
         now = datetime(2026, 3, 28, 8, 29, 31, tzinfo=timezone.utc)
@@ -742,13 +738,14 @@ class TestPreemptedEntryFields:
 
     def test_resume_countdown_hours(self):
         """When resume is hours away, countdown shows hours."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(12, 0), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 9, 30, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
@@ -758,13 +755,14 @@ class TestPreemptedEntryFields:
 
     def test_resume_countdown_singular(self):
         """Singular forms for 1 hour/minute."""
+        gid = uuid.uuid4()
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Low",
-            device_id="d1",
+            group_id=gid,
         )
         high = _make_schedule(
             time(8, 0), time(9, 1), priority=10, name="High",
-            device_id="d1",
+            group_id=gid,
         )
         now = datetime(2026, 3, 28, 9, 0, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
