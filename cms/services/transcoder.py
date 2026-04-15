@@ -153,4 +153,4 @@ async def notify_worker(db) -> None:
             queue.send_message("transcode")
             logger.debug("Enqueued transcode-jobs queue message")
     except Exception:
-        logger.debug("Azure queue enqueue failed (non-critical)", exc_info=True)
+        logger.warning("Azure queue enqueue failed", exc_info=True)
