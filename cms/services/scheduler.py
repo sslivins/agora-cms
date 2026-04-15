@@ -757,6 +757,60 @@ async def evaluate_schedules() -> None:
                     did, info.get("schedule_name", "?"),
                 )
 
+        # ── Seed _now_playing from live device state ──
+        # After a CMS restart _now_playing is empty but devices may still be
+        # playing.  Correlate live device state with active schedules so the
+        # dashboard shows "Currently Playing" without waiting for a new
+        # PLAYBACK_STARTED event.
+        from shared.models.asset import AssetType
+
+        live_states = {
+            s["device_id"]: s for s in device_manager.get_all_states()
+        }
+        for s in active:
+            if not s.asset:
+                continue
+            target_ids = await _get_target_device_ids(s, db)
+            for did in target_ids:
+                if did in _now_playing:
+                    continue  # already tracked
+                live = live_states.get(did)
+                if not live or live.get("mode") != "play":
+                    continue
+                # Determine what asset identifier the device would report
+                is_webpage = s.asset.asset_type == AssetType.WEBPAGE
+                expected_raw = s.asset.url if is_webpage else s.asset.filename
+                if live.get("asset") != expected_raw:
+                    continue
+                # Device is playing this schedule's asset — seed now_playing
+                display_name = expected_raw
+                if is_webpage:
+                    display_name = (
+                        s.asset.original_filename
+                        or s.asset.filename
+                        or expected_raw
+                    )
+                device_name = all_adopted.get(did, did)
+                now_entry = {
+                    "device_id": did,
+                    "device_name": device_name,
+                    "schedule_id": str(s.id),
+                    "schedule_name": s.name,
+                    "asset_filename": display_name,
+                    "asset_raw": expected_raw,
+                    "since": utc_now.isoformat(),
+                    "source": "inferred",
+                    "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
+                    "start_time_raw": s.start_time.strftime("%H:%M:%S"),
+                    "end_time_raw": s.end_time.strftime("%H:%M:%S"),
+                }
+                _now_playing[did] = now_entry
+                logger.info(
+                    "Seeded now_playing for device %s from live state "
+                    "(schedule %s, asset %s)",
+                    did, s.name, display_name,
+                )
+
         await db.commit()
 
 
