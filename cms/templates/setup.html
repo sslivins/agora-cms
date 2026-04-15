@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block title %}Setup — Agora CMS{% endblock %}
+{% block nav %}
+<header>
+    <div class="nav-brand">Agora CMS</div>
+</header>
+{% endblock %}
+{% block content %}
+<div class="setup-wrap">
+    <div class="card setup-card">
+        <h2>Welcome to Agora CMS</h2>
+        <p class="text-muted" style="margin-bottom: 1.5rem;">
+            Let's get your system configured. This wizard will guide you through the essential setup steps.
+        </p>
+
+        <!-- Progress bar -->
+        <div class="setup-progress">
+            <div class="setup-step active" data-step="1"><span class="step-num">1</span> Account</div>
+            <div class="setup-step" data-step="2"><span class="step-num">2</span> Email</div>
+            <div class="setup-step" data-step="3"><span class="step-num">3</span> Timezone</div>
+            <div class="setup-step" data-step="4"><span class="step-num">4</span> MCP</div>
+        </div>
+
+        <div id="setup-error" class="login-error" style="display:none;"></div>
+
+        <!-- Step 1: Admin Account -->
+        <div class="setup-panel" id="step-1">
+            <h3>Create Admin Account</h3>
+            <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+                Create your administrator account. The default admin account will be deactivated.
+            </p>
+            <div class="form-group">
+                <label for="admin-name">Display Name</label>
+                <input type="text" id="admin-name" placeholder="e.g. John Smith" required autofocus>
+            </div>
+            <div class="form-group">
+                <label for="admin-email">Email</label>
+                <input type="email" id="admin-email" placeholder="admin@example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="admin-password">Password</label>
+                <input type="password" id="admin-password" placeholder="Min 6 characters" required minlength="6">
+            </div>
+            <div class="form-group">
+                <label for="admin-confirm">Confirm Password</label>
+                <input type="password" id="admin-confirm" placeholder="Repeat password" required minlength="6">
+            </div>
+            <div class="setup-actions">
+                <div></div>
+                <button class="btn btn-primary" onclick="submitAccount()">Next →</button>
+            </div>
+        </div>
+
+        <!-- Step 2: SMTP -->
+        <div class="setup-panel" id="step-2" style="display:none;">
+            <h3>Email Configuration</h3>
+            <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+                Configure outgoing email for welcome emails, notifications, and alerts.
+                You can skip this and configure it later in Settings.
+            </p>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="smtp-host">SMTP Host</label>
+                    <input type="text" id="smtp-host" placeholder="e.g. smtp.gmail.com">
+                </div>
+                <div class="form-group">
+                    <label for="smtp-port">Port</label>
+                    <input type="number" id="smtp-port" placeholder="587" value="587" style="max-width: 100px;">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="smtp-username">Username</label>
+                    <input type="text" id="smtp-username" placeholder="SMTP username or email">
+                </div>
+                <div class="form-group">
+                    <label for="smtp-password">Password</label>
+                    <input type="password" id="smtp-password" placeholder="SMTP password">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="smtp-from">From Email</label>
+                    <input type="email" id="smtp-from" placeholder="e.g. noreply@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="smtp-test-email">Test Recipient</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <input type="email" id="smtp-test-email" placeholder="your@email.com" style="flex: 1;">
+                        <button type="button" class="btn btn-secondary" onclick="testSmtp()">Send Test</button>
+                    </div>
+                </div>
+            </div>
+            <div class="setup-actions">
+                <button class="btn btn-secondary" onclick="goToStep(1)">← Back</button>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-secondary" onclick="goToStep(3)">Skip</button>
+                    <button class="btn btn-primary" onclick="submitSmtp()">Next →</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Timezone -->
+        <div class="setup-panel" id="step-3" style="display:none;">
+            <h3>Timezone</h3>
+            <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+                Set the default timezone for schedule evaluation and device time sync.
+            </p>
+            <div class="form-group">
+                <label for="setup-timezone">CMS Timezone</label>
+                <select id="setup-timezone" style="max-width: 400px;">
+                    {% for tz in timezones %}
+                    <option value="{{ tz.value }}"{% if tz.value == "UTC" %} selected{% endif %}>{{ tz.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="setup-actions">
+                <button class="btn btn-secondary" onclick="goToStep(2)">← Back</button>
+                <button class="btn btn-primary" onclick="submitTimezone()">Next →</button>
+            </div>
+        </div>
+
+        <!-- Step 4: MCP Server -->
+        <div class="setup-panel" id="step-4" style="display:none;">
+            <h3>MCP Server</h3>
+            <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+                The Model Context Protocol (MCP) server allows AI agents (e.g. GitHub Copilot)
+                to manage the CMS programmatically. You can change this later in Settings.
+            </p>
+            <label class="mcp-toggle-row" style="margin-bottom: 1.5rem;">
+                <input type="checkbox" id="setup-mcp-enabled">
+                <span>Enable MCP Server</span>
+            </label>
+            <div class="setup-actions">
+                <button class="btn btn-secondary" onclick="goToStep(3)">← Back</button>
+                <button class="btn btn-primary" onclick="submitMcpAndFinish()">Finish Setup</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.setup-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 2rem 1rem;
+}
+.setup-card {
+    max-width: 600px;
+    width: 100%;
+}
+.setup-progress {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 0;
+}
+.setup-step {
+    flex: 1;
+    text-align: center;
+    padding: 0.5rem 0.25rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+}
+.setup-step .step-num {
+    display: inline-block;
+    width: 1.4em;
+    height: 1.4em;
+    line-height: 1.4em;
+    border-radius: 50%;
+    background: var(--border);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-right: 0.25rem;
+    text-align: center;
+}
+.setup-step.active {
+    color: var(--accent, #e94560);
+    border-bottom-color: var(--accent, #e94560);
+}
+.setup-step.active .step-num {
+    background: var(--accent, #e94560);
+    color: #fff;
+}
+.setup-step.done {
+    color: var(--success, #4caf50);
+}
+.setup-step.done .step-num {
+    background: var(--success, #4caf50);
+    color: #fff;
+}
+.setup-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+</style>
+
+<script>
+(function() {
+    let currentStep = 1;
+
+    function showError(msg) {
+        const el = document.getElementById("setup-error");
+        el.textContent = msg;
+        el.style.display = msg ? "" : "none";
+    }
+
+    window.goToStep = function(step) {
+        document.getElementById("step-" + currentStep).style.display = "none";
+        document.getElementById("step-" + step).style.display = "";
+        currentStep = step;
+        showError("");
+
+        document.querySelectorAll(".setup-step").forEach(el => {
+            const s = parseInt(el.dataset.step);
+            el.classList.remove("active");
+            if (s === step) el.classList.add("active");
+        });
+    };
+
+    window.submitAccount = async function() {
+        const name = document.getElementById("admin-name").value.trim();
+        const email = document.getElementById("admin-email").value.trim();
+        const password = document.getElementById("admin-password").value;
+        const confirm = document.getElementById("admin-confirm").value;
+
+        if (!name) { showError("Display name is required"); return; }
+        if (!email || !email.includes("@")) { showError("A valid email address is required"); return; }
+        if (password.length < 6) { showError("Password must be at least 6 characters"); return; }
+        if (password !== confirm) { showError("Passwords do not match"); return; }
+
+        try {
+            const resp = await fetch("/setup/account", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({display_name: name, email: email, password: password}),
+            });
+            const data = await resp.json();
+            if (!resp.ok) { showError(data.error || "Failed to create account"); return; }
+            markDone(1);
+            goToStep(2);
+        } catch (err) {
+            showError("Network error — please try again");
+        }
+    };
+
+    window.submitSmtp = async function() {
+        const host = document.getElementById("smtp-host").value.trim();
+        if (!host) { showError("SMTP host is required, or click Skip"); return; }
+
+        const body = {
+            host: host,
+            port: parseInt(document.getElementById("smtp-port").value) || 587,
+            username: document.getElementById("smtp-username").value.trim(),
+            password: document.getElementById("smtp-password").value,
+            from_email: document.getElementById("smtp-from").value.trim(),
+        };
+
+        try {
+            const resp = await fetch("/setup/smtp", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(body),
+            });
+            if (!resp.ok) { showError("Failed to save SMTP settings"); return; }
+            markDone(2);
+            goToStep(3);
+        } catch (err) {
+            showError("Network error — please try again");
+        }
+    };
+
+    window.testSmtp = async function() {
+        const host = document.getElementById("smtp-host").value.trim();
+        if (!host) { showError("Enter SMTP settings first"); return; }
+
+        // Save first, then test
+        const body = {
+            host: host,
+            port: parseInt(document.getElementById("smtp-port").value) || 587,
+            username: document.getElementById("smtp-username").value.trim(),
+            password: document.getElementById("smtp-password").value,
+            from_email: document.getElementById("smtp-from").value.trim(),
+        };
+        try {
+            await fetch("/setup/smtp", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(body),
+            });
+        } catch { /* ignore save error for test */ }
+
+        const testEmail = document.getElementById("smtp-test-email").value.trim();
+        if (!testEmail) { showError("Enter a test recipient email"); return; }
+
+        try {
+            const resp = await fetch("/setup/smtp/test", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({to_email: testEmail}),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showError("");
+                showToast("Test email sent — check your inbox");
+            } else {
+                showError("Test failed: " + (data.message || "Unknown error"));
+            }
+        } catch (err) {
+            showError("Failed to send test email");
+        }
+    };
+
+    window.submitTimezone = async function() {
+        const tz = document.getElementById("setup-timezone").value;
+        try {
+            const resp = await fetch("/setup/timezone", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({timezone: tz}),
+            });
+            if (!resp.ok) { showError("Failed to save timezone"); return; }
+            markDone(3);
+            goToStep(4);
+        } catch (err) {
+            showError("Network error — please try again");
+        }
+    };
+
+    window.submitMcpAndFinish = async function() {
+        const enabled = document.getElementById("setup-mcp-enabled").checked;
+        try {
+            // Save MCP setting
+            await fetch("/setup/mcp", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled: enabled}),
+            });
+            // Mark setup complete
+            const resp = await fetch("/setup/complete", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: "{}",
+            });
+            if (!resp.ok) { showError("Failed to complete setup"); return; }
+            // Redirect to dashboard
+            window.location.href = "/";
+        } catch (err) {
+            showError("Network error — please try again");
+        }
+    };
+
+    function markDone(step) {
+        const el = document.querySelector('.setup-step[data-step="' + step + '"]');
+        if (el) {
+            el.classList.remove("active");
+            el.classList.add("done");
+        }
+    }
+})();
+</script>
+{% endblock %}

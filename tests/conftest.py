@@ -159,6 +159,13 @@ async def app(db_engine, tmp_path):
         seed_db.add(admin_user)
         await seed_db.commit()
 
+    # Mark first-run setup as completed so existing tests are not
+    # redirected to the setup wizard.
+    async with factory() as seed_db:
+        from cms.auth import set_setting, SETTING_SETUP_COMPLETED
+        await set_setting(seed_db, SETTING_SETUP_COMPLETED, "true")
+        await seed_db.commit()
+
     # Point the DB module at our test engine so any code that
     # accesses database globals directly (e.g. WebSocket handler) works.
     import cms.database as db_mod
@@ -177,6 +184,10 @@ async def app(db_engine, tmp_path):
     shared_db_mod._engine = None
     shared_db_mod._session_factory = None
     get_settings.cache_clear()
+
+    # Reset the setup-wizard in-memory cache between tests.
+    import cms.main as _main_mod
+    _main_mod._setup_completed_cache = None
 
 
 @pytest_asyncio.fixture

@@ -27,7 +27,7 @@ logging.getLogger().addHandler(_buf_handler)
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -396,6 +396,49 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Setup-wizard redirect middleware
+# ---------------------------------------------------------------------------
+_SETUP_ALLOWED_PREFIXES = ("/setup", "/static", "/healthz", "/api/devices/ws")
+
+# Cache the setup status in-memory to avoid DB queries on every request.
+# Set to True once first-run wizard is completed; reset on app restart.
+_setup_completed_cache: bool | None = None
+
+
+async def _is_setup_completed(db: AsyncSession) -> bool:
+    """Return True when the first-run setup wizard has been completed."""
+    global _setup_completed_cache  # noqa: PLW0603
+    if _setup_completed_cache is True:
+        return True
+    from cms.auth import get_setting, SETTING_SETUP_COMPLETED
+    val = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if val == "true":
+        _setup_completed_cache = True
+        return True
+    return False
+
+
+@app.middleware("http")
+async def setup_redirect_middleware(request: Request, call_next):
+    """Redirect every request to /setup until the first-run wizard is done."""
+    path = request.url.path
+    if not any(path.startswith(p) for p in _SETUP_ALLOWED_PREFIXES):
+        if _setup_completed_cache is not True:
+            from cms.database import _session_factory
+            if _session_factory is not None:
+                async with _session_factory() as db:
+                    if not await _is_setup_completed(db):
+                        accept = request.headers.get("accept", "")
+                        if "text/html" in accept:
+                            return RedirectResponse(url="/setup", status_code=303)
+                        return JSONResponse(
+                            status_code=503,
+                            content={"detail": "First-run setup has not been completed."},
+                        )
+    return await call_next(request)
 
 
 @app.exception_handler(HTTPException)

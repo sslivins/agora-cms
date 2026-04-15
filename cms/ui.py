@@ -15,6 +15,7 @@ from cms.auth import (
     SETTING_MCP_ENABLED,
     SETTING_MCP_SERVICE_KEY_HASH,
     SETTING_PASSWORD_HASH,
+    SETTING_SETUP_COMPLETED,
     SETTING_SMTP_FROM_EMAIL,
     SETTING_SMTP_HOST,
     SETTING_SMTP_PASSWORD,
@@ -256,6 +257,189 @@ async def force_password_change_submit(
     await db.commit()
 
     return RedirectResponse(url="/", status_code=303)
+
+
+# ── First-run setup wizard ──
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request, db: AsyncSession = Depends(get_db)):
+    """Render the first-run setup wizard."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return RedirectResponse(url="/", status_code=303)
+
+    tz_options = build_tz_options()
+    return templates.TemplateResponse(request, "setup.html", {
+        "timezones": tz_options,
+    })
+
+
+@router.post("/setup/account")
+async def setup_account_create(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 1: Create a new admin account and deactivate the default one."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    data = await request.json()
+    display_name = (data.get("display_name") or "").strip()
+    email = (data.get("email") or "").strip()
+    password = data.get("password") or ""
+
+    if not display_name:
+        return JSONResponse({"error": "Display name is required"}, status_code=400)
+    if not email or "@" not in email:
+        return JSONResponse({"error": "A valid email address is required"}, status_code=400)
+    if len(password) < 6:
+        return JSONResponse({"error": "Password must be at least 6 characters"}, status_code=400)
+
+    # Check if email already exists (non-default admin)
+    from sqlalchemy import select as sa_select
+    existing = await db.execute(
+        sa_select(User).where(User.email == email)
+    )
+    if existing.scalar_one_or_none():
+        return JSONResponse({"error": "A user with this email already exists"}, status_code=409)
+
+    # Get admin role
+    from cms.models.user import Role
+    result = await db.execute(sa_select(Role).where(Role.name == "Admin"))
+    admin_role = result.scalar_one_or_none()
+    if admin_role is None:
+        return JSONResponse({"error": "Admin role not found"}, status_code=500)
+
+    # Create the new admin account
+    import uuid
+    username = f"admin-{uuid.uuid4().hex[:8]}"
+    new_admin = User(
+        username=username,
+        email=email,
+        display_name=display_name,
+        password_hash=hash_password(password),
+        role_id=admin_role.id,
+        is_active=True,
+        must_change_password=False,
+    )
+    db.add(new_admin)
+
+    # Deactivate the default admin account
+    default_admin = await db.execute(
+        sa_select(User).where(User.username == settings.admin_username)
+    )
+    default_admin_user = default_admin.scalar_one_or_none()
+    if default_admin_user and default_admin_user.email != email:
+        default_admin_user.is_active = False
+
+    await db.commit()
+
+    # Auto-login the new admin
+    serializer = URLSafeTimedSerializer(settings.secret_key)
+    token = serializer.dumps({"user_id": str(new_admin.id)})
+    response = JSONResponse({"status": "ok"})
+    response.set_cookie(
+        COOKIE_NAME, token, max_age=MAX_AGE, httponly=True, samesite="lax"
+    )
+    return response
+
+
+@router.post("/setup/smtp")
+async def setup_smtp(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 2: Save SMTP configuration (optional — can be skipped)."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    data = await request.json()
+    await set_setting(db, SETTING_SMTP_HOST, data.get("host", ""))
+    await set_setting(db, SETTING_SMTP_PORT, str(data.get("port", 587)))
+    await set_setting(db, SETTING_SMTP_USERNAME, data.get("username", ""))
+    if data.get("password"):
+        await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
+    await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    return {"status": "ok"}
+
+
+@router.post("/setup/smtp/test")
+async def setup_smtp_test(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Test SMTP configuration during setup wizard."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    data = await request.json()
+    to_email = (data.get("to_email") or "").strip()
+    if not to_email:
+        return JSONResponse({"success": False, "message": "Recipient email required"}, status_code=400)
+
+    from cms.services.email_service import get_smtp_settings, test_smtp_connection
+    smtp_cfg = await get_smtp_settings(db)
+    success, message = test_smtp_connection(smtp_cfg, to_email)
+    return {"success": success, "message": message}
+
+
+@router.post("/setup/timezone")
+async def setup_timezone(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 3: Set CMS timezone."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    data = await request.json()
+    tz = (data.get("timezone") or "").strip()
+    if tz not in canonical_timezones():
+        return JSONResponse({"error": "Invalid timezone"}, status_code=400)
+
+    await set_setting(db, SETTING_TIMEZONE, tz)
+    return {"status": "ok"}
+
+
+@router.post("/setup/mcp")
+async def setup_mcp(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 4: Enable or disable MCP server."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    data = await request.json()
+    enabled = data.get("enabled", False)
+    await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
+    return {"status": "ok"}
+
+
+@router.post("/setup/complete")
+async def setup_complete(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark setup as complete — wizard will no longer appear."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+
+    # Clear the in-memory cache so middleware stops redirecting
+    import cms.main as _main_module
+    _main_module._setup_completed_cache = True
+
+    return {"status": "ok"}
 
 
 # ── Dashboard ──
