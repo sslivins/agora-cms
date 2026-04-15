@@ -14,6 +14,7 @@ from shared.database import Base
 class AssetType(str, PyEnum):
     VIDEO = "video"
     IMAGE = "image"
+    WEBPAGE = "webpage"
 
 
 class VariantStatus(str, PyEnum):
@@ -54,6 +55,9 @@ class Asset(Base):
     bitrate: Mapped[int | None] = mapped_column(Integer, nullable=True)  # bps
     frame_rate: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "30" or "29.97"
     color_space: Mapped[str | None] = mapped_column(String(64), nullable=True)  # e.g. "bt709", "bt2020"
+
+    # URL for webpage assets (only populated when asset_type == WEBPAGE)
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
     # (Schedule is a CMS-only model, not available in the worker package)

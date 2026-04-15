@@ -46,6 +46,38 @@
         <button type="submit" class="btn btn-primary" id="upload-submit" style="margin-top:0.75rem" disabled>Upload</button>
     </form>
 </div>
+
+<div class="card">
+    <h2>Add Webpage URL</h2>
+    <form id="webpage-form" onsubmit="event.preventDefault(); addWebpageAsset(this)">
+        <div class="form-group">
+            <label for="webpage-url">URL</label>
+            <input type="url" id="webpage-url" name="url" placeholder="https://example.com" required class="form-control">
+        </div>
+        <div class="form-group" style="margin-top:0.5rem;">
+            <label for="webpage-name">Display Name <span class="text-muted">(optional)</span></label>
+            <input type="text" id="webpage-name" name="name" placeholder="Auto-generated from URL if blank" class="form-control">
+        </div>
+        {% if user_groups | length > 0 %}
+        <div style="margin-top:0.75rem;">
+            <label>Assign to groups</label>
+            <div id="webpage-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; min-height:1.6rem; align-items:center;">
+                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                    <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('webpage-group-popup')" title="Add group">+</button>
+                    <div id="webpage-group-popup" class="group-popup" style="display:none;">
+                        {% for g in user_groups %}
+                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                onclick="event.stopPropagation(); pickWebpageGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
+                        {% endfor %}
+                    </div>
+                </span>
+            </div>
+        </div>
+        {% endif %}
+        <div id="webpage-status" class="form-status"></div>
+        <button type="submit" class="btn btn-primary" id="webpage-submit" style="margin-top:0.75rem">Add URL</button>
+    </form>
+</div>
 {% endif %}
 
 <div class="card">
@@ -86,11 +118,17 @@
                     {% endif %}
                 </td>
                 <td>
+                    {% if a.asset_type.value == 'webpage' %}
+                    —
+                    {% else %}
                     {% set mb = a.size_bytes / 1048576 %}
                     {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
+                    {% endif %}
                 </td>
                 <td data-live-variants="{{ a.id }}">
-                    {% if a.variant_total > 0 %}
+                    {% if a.asset_type.value == 'webpage' %}
+                    —
+                    {% elif a.variant_total > 0 %}
                     {% if a.variant_failed > 0 and a.variant_ready > 0 %}
                         <span class="has-tooltip"><span class="badge badge-partial">Partial</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_failed }} failed</span></span>
                     {% elif a.variant_failed > 0 %}
@@ -109,7 +147,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if a.asset_type.value == 'image' %}
+                    {% if a.asset_type.value == 'image' or a.asset_type.value == 'webpage' %}
                     —
                     {% elif a.duration_seconds %}
                         {% set h = (a.duration_seconds // 3600) | int %}
@@ -121,7 +159,11 @@
                     {% endif %}
                 </td>
                 <td class="actions" onclick="event.stopPropagation()">
+                    {% if a.asset_type.value == 'webpage' %}
+                    <a href="{{ a.url }}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open URL</a>
+                    {% else %}
                     <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
+                    {% endif %}
                     {% if 'assets:write' in user_perms %}
                     {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
                     {% if is_owner %}
@@ -143,6 +185,12 @@
                 <td></td>
                 <td colspan="7">
                     <div class="detail-grid">
+                        {% if a.asset_type.value == 'webpage' and a.url %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">URL</span>
+                            <span class="detail-value"><a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a></span>
+                        </div>
+                        {% endif %}
                         <div class="detail-item">
                             <span class="detail-label">Uploaded</span>
                             <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%b %d, %Y %I:%M %p') }}</span>

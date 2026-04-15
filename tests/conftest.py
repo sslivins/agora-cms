@@ -162,8 +162,11 @@ async def app(db_engine, tmp_path):
     # Point the DB module at our test engine so any code that
     # accesses database globals directly (e.g. WebSocket handler) works.
     import cms.database as db_mod
+    import shared.database as shared_db_mod
     db_mod._engine = db_engine
     db_mod._session_factory = factory
+    shared_db_mod._engine = db_engine
+    shared_db_mod._session_factory = factory
 
     yield fastapi_app
 
@@ -171,6 +174,8 @@ async def app(db_engine, tmp_path):
     fastapi_app.router.lifespan_context = original_router_lifespan
     db_mod._engine = None
     db_mod._session_factory = None
+    shared_db_mod._engine = None
+    shared_db_mod._session_factory = None
     get_settings.cache_clear()
 
 

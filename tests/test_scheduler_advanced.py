@@ -1020,58 +1020,86 @@ class TestDashboardCountdownAttribute:
 
     async def test_data_remaining_attr_rendered(self, client, db_session):
         """The now-playing row should have data-remaining='N' for the JS countdown."""
+        import re
+        import hashlib
         _now_playing.clear()
-        # Dashboard needs a timezone setting
         db_session.add(CMSSetting(key="timezone", value="UTC"))
+        await db_session.flush()
+
+        # Create a real device + schedule so compute_now_playing() finds it
+        dev = Device(id="dash-dev", name="Dashboard Dev",
+                     status=DeviceStatus.ADOPTED,
+                     device_auth_token_hash=hashlib.sha256(b"t").hexdigest())
+        db_session.add(dev)
+        await db_session.flush()
+
+        asset = Asset(id=uuid.uuid4(), filename="clip.mp4",
+                      asset_type=AssetType.VIDEO, checksum="abc")
+        group = DeviceGroup(id=uuid.uuid4(), name="Countdown Group")
+        db_session.add_all([asset, group])
+        await db_session.flush()
+
+        from sqlalchemy import update
+        await db_session.execute(
+            update(Device).where(Device.id == "dash-dev").values(group_id=group.id)
+        )
+
+        schedule = Schedule(
+            id=uuid.uuid4(), name="Countdown Sched", asset_id=asset.id,
+            group_id=group.id, start_time=time(0, 0, 0),
+            end_time=time(23, 59, 59), enabled=True, priority=0,
+        )
+        db_session.add(schedule)
         await db_session.commit()
 
-        _now_playing["dash-dev"] = {
-            "device_id": "dash-dev",
-            "device_name": "Dashboard Dev",
-            "schedule_id": "sched-abc",
-            "schedule_name": "Countdown Sched",
-            "asset_filename": "clip.mp4",
-            "end_time": "11:59 PM",
-            "remaining": "less than a minute",
-            "remaining_seconds": 22,
-            "since": datetime.now(timezone.utc).isoformat(),
-        }
-
-        try:
-            resp = await client.get("/")
-            assert resp.status_code == 200
-            html = resp.text
-            assert 'data-remaining="22"' in html
-            assert "less than a minute" in html
-        finally:
-            _now_playing.clear()
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Verify data-remaining attribute is rendered with some positive value
+        assert re.search(r'data-remaining="\d+"', html), \
+            "data-remaining attribute not found in dashboard HTML"
 
     async def test_data_remaining_attr_large_value(self, client, db_session):
         """data-remaining should render even for values > 30s (JS ignores them)."""
+        import re
+        import hashlib
         _now_playing.clear()
         db_session.add(CMSSetting(key="timezone", value="UTC"))
+        await db_session.flush()
+
+        dev = Device(id="dash-dev2", name="Dashboard Dev 2",
+                     status=DeviceStatus.ADOPTED,
+                     device_auth_token_hash=hashlib.sha256(b"t2").hexdigest())
+        db_session.add(dev)
+        await db_session.flush()
+
+        asset = Asset(id=uuid.uuid4(), filename="movie.mp4",
+                      asset_type=AssetType.VIDEO, checksum="xyz")
+        group = DeviceGroup(id=uuid.uuid4(), name="Long Sched Group")
+        db_session.add_all([asset, group])
+        await db_session.flush()
+
+        from sqlalchemy import update
+        await db_session.execute(
+            update(Device).where(Device.id == "dash-dev2").values(group_id=group.id)
+        )
+
+        schedule = Schedule(
+            id=uuid.uuid4(), name="Long Sched", asset_id=asset.id,
+            group_id=group.id, start_time=time(0, 0, 0),
+            end_time=time(23, 59, 59), enabled=True, priority=0,
+        )
+        db_session.add(schedule)
         await db_session.commit()
 
-        _now_playing["dash-dev2"] = {
-            "device_id": "dash-dev2",
-            "device_name": "Dashboard Dev 2",
-            "schedule_id": "sched-xyz",
-            "schedule_name": "Long Sched",
-            "asset_filename": "movie.mp4",
-            "end_time": "6:00 PM",
-            "remaining": "2 hours",
-            "remaining_seconds": 7200,
-            "since": datetime.now(timezone.utc).isoformat(),
-        }
-
-        try:
-            resp = await client.get("/")
-            assert resp.status_code == 200
-            html = resp.text
-            assert 'data-remaining="7200"' in html
-            assert "2 hours" in html
-        finally:
-            _now_playing.clear()
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Verify data-remaining attribute is rendered with some positive value
+        match = re.search(r'data-remaining="(\d+)"', html)
+        assert match, "data-remaining attribute not found in dashboard HTML"
+        remaining = int(match.group(1))
+        assert remaining > 30, f"Expected remaining > 30s, got {remaining}"
 
 
 @pytest.mark.asyncio

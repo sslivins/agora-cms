@@ -400,35 +400,40 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 asset_name = msg.get("asset", "")
                 device_ts = msg.get("timestamp", "")
 
-                # Look up the schedule for rich now-playing info
+                # Look up the schedule (with asset) for display name resolution
                 sched_result = await db.execute(
-                    select(Schedule).where(Schedule.id == schedule_id)
+                    select(Schedule)
+                    .options(selectinload(Schedule.asset))
+                    .where(Schedule.id == schedule_id)
                 )
                 sched = sched_result.scalar_one_or_none()
 
-                device_name = device.name or device_id
-                now_entry = {
-                    "device_id": device_id,
-                    "device_name": device_name,
-                    "schedule_id": schedule_id,
-                    "schedule_name": schedule_name,
-                    "asset_filename": asset_name,
-                    "since": device_ts or datetime.now(timezone.utc).isoformat(),
-                    "source": "device",
-                }
-                # Enrich with schedule time info if available
-                if sched:
-                    now_entry["end_time"] = sched.end_time.strftime("%I:%M %p").lstrip("0")
-                    now_entry["start_time_raw"] = sched.start_time.strftime("%H:%M:%S")
-                    now_entry["end_time_raw"] = sched.end_time.strftime("%H:%M:%S")
+                # For webpage assets the device sends the raw URL as
+                # ``asset``; prefer the human-readable display name
+                # stored in the DB (original_filename / filename).
+                display_name = asset_name
+                if sched and sched.asset:
+                    if sched.asset.asset_type == AssetType.WEBPAGE:
+                        display_name = (
+                            sched.asset.original_filename
+                            or sched.asset.filename
+                            or asset_name
+                        )
 
-                set_now_playing(device_id, now_entry)
+                device_name = device.name or device_id
+
+                # Store minimal confirmation — the dashboard computes
+                # the rest from the DB via compute_now_playing().
+                set_now_playing(device_id, {
+                    "schedule_id": schedule_id,
+                    "since": device_ts or datetime.now(timezone.utc).isoformat(),
+                })
 
                 await log_schedule_event(
                     db, ScheduleLogEvent.STARTED,
                     schedule_name=schedule_name,
                     device_name=device_name,
-                    asset_filename=asset_name,
+                    asset_filename=display_name,
                     schedule_id=schedule_id,
                     device_id=device_id,
                 )
@@ -444,13 +449,29 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 asset_name = msg.get("asset", "")
                 device_name = device.name or device_id
 
+                # Resolve display name for webpage assets
+                ended_display_name = asset_name
+                ended_sched_result = await db.execute(
+                    select(Schedule)
+                    .options(selectinload(Schedule.asset))
+                    .where(Schedule.id == schedule_id)
+                )
+                ended_sched = ended_sched_result.scalar_one_or_none()
+                if ended_sched and ended_sched.asset:
+                    if ended_sched.asset.asset_type == AssetType.WEBPAGE:
+                        ended_display_name = (
+                            ended_sched.asset.original_filename
+                            or ended_sched.asset.filename
+                            or asset_name
+                        )
+
                 clear_now_playing(device_id)
 
                 await log_schedule_event(
                     db, ScheduleLogEvent.ENDED,
                     schedule_name=schedule_name,
                     device_name=device_name,
-                    asset_filename=asset_name,
+                    asset_filename=ended_display_name,
                     schedule_id=schedule_id,
                     device_id=device_id,
                 )

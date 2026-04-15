@@ -88,7 +88,14 @@ async def check_for_updates():
 
 @router.get("", response_model=List[DeviceOut], dependencies=[Depends(require_permission(DEVICES_READ))])
 async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
-    from cms.services.scheduler import get_now_playing
+    from cms.services.scheduler import compute_now_playing
+    from cms.auth import SETTING_TIMEZONE, get_setting
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, timezone
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(timezone.utc)
 
     user = getattr(request.state, "user", None)
     group_ids = await get_user_group_ids(user, db) if user else []
@@ -105,7 +112,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(query)
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
-    scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
+    scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     from cms.services.version_checker import is_update_available
     return [
@@ -133,12 +140,20 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{device_id}", response_model=DeviceOut, dependencies=[Depends(require_permission(DEVICES_READ))])
 async def get_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
-    from cms.services.scheduler import get_now_playing
+    from cms.services.scheduler import compute_now_playing
+    from cms.auth import SETTING_TIMEZONE
+    from cms.ui import get_setting
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, timezone
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(timezone.utc)
 
     device = await _get_device_with_access(device_id, request, db)
     await db.refresh(device, ["group"])
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
-    scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
+    scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     from cms.services.version_checker import is_update_available
     return DeviceOut(

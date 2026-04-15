@@ -660,6 +660,79 @@ function toggleUploadGlobal(cb) {
     }
 }
 
+// ── Webpage asset creation ──
+
+async function addWebpageAsset(form) {
+    const urlInput = document.getElementById("webpage-url");
+    const nameInput = document.getElementById("webpage-name");
+    const statusEl = document.getElementById("webpage-status");
+    const submitBtn = document.getElementById("webpage-submit");
+    const url = urlInput.value.trim();
+    if (!url) return;
+
+    // Collect group IDs
+    const badges = document.querySelectorAll("#webpage-groups-badges .badge[data-group-id]");
+    const groupIds = Array.from(badges).map(b => b.dataset.groupId);
+
+    submitBtn.disabled = true;
+    statusEl.textContent = "Adding webpage...";
+    statusEl.className = "form-status";
+
+    try {
+        const resp = await fetch("/api/assets/webpage", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                url: url,
+                name: nameInput.value.trim(),
+                group_ids: groupIds,
+            }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        statusEl.textContent = "✓ Webpage added successfully";
+        statusEl.className = "form-status text-success";
+        urlInput.value = "";
+        nameInput.value = "";
+        setTimeout(() => location.reload(), 800);
+    } catch (e) {
+        statusEl.textContent = "✗ " + e.message;
+        statusEl.className = "form-status text-danger";
+        submitBtn.disabled = false;
+    }
+}
+
+function pickWebpageGroup(gid, name) {
+    const container = document.getElementById("webpage-groups-badges");
+    if (!container || container.querySelector(`.badge[data-group-id="${gid}"]`)) return;
+    const plusBtn = container.querySelector(".group-picker-wrap");
+    const badge = document.createElement("span");
+    badge.className = "badge badge-processing";
+    badge.dataset.groupId = gid;
+    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="removeWebpageGroup(this.parentElement)">&times;</button>`;
+    container.insertBefore(badge, plusBtn);
+    const popup = document.getElementById("webpage-group-popup");
+    if (popup) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "none";
+        _syncPlusButton(popup);
+    }
+    closeAllGroupPopups();
+}
+
+function removeWebpageGroup(badge) {
+    const gid = badge.dataset.groupId;
+    badge.remove();
+    const popup = document.getElementById("webpage-group-popup");
+    if (popup && gid) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "";
+        _syncPlusButton(popup);
+    }
+}
+
 // ── Group popup (shared for upload + detail row) ──
 function openGroupPopup(popupId) {
     closeAllGroupPopups();

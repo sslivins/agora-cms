@@ -251,6 +251,24 @@ async def run_migrations():
                 "ALTER TABLE audit_log ADD COLUMN description TEXT"
             ))
 
+        # -- assets.url (webpage asset URL) --
+        has_url = await conn.run_sync(lambda c: _has_column(c, "assets", "url"))
+        if not has_url:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN url VARCHAR(2048)"
+            ))
+
+        # -- Add 'WEBPAGE' value to assettype enum --
+        asset_enum_exists = await conn.execute(
+            text("SELECT 1 FROM pg_type WHERE typname = 'assettype'")
+        )
+        if asset_enum_exists.scalar():
+            has_webpage = await conn.execute(
+                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'WEBPAGE' AND enumtypid = 'assettype'::regtype")
+            )
+            if not has_webpage.scalar():
+                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'WEBPAGE'"))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

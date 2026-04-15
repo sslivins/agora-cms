@@ -127,6 +127,8 @@ class ScheduleEntry(BaseModel):
     name: str
     asset: str
     asset_checksum: Optional[str] = None  # SHA-256 of the file the device should have
+    asset_type: Optional[str] = None  # "video", "image", "webpage" — helps device choose playback mode
+    url: Optional[str] = None  # URL to render (webpage assets only)
     start_time: str          # "HH:MM:SS"
     end_time: str            # "HH:MM:SS"
     start_date: Optional[str] = None  # "YYYY-MM-DD" or null (open-ended)
