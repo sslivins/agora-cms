@@ -48,6 +48,15 @@ param cmsImage string = ''
 @description('MCP server container image (e.g., agoracr.azurecr.io/agora-cms-mcp:latest)')
 param mcpImage string = ''
 
+@description('Worker container image (e.g., agoracr.azurecr.io/agora-worker:latest)')
+param workerImage string = ''
+
+@description('Worker container CPU cores (Container Apps Job: up to 4.0)')
+param workerCpu string = '4.0'
+
+@description('Worker container memory (must be 2× CPU, e.g. 4.0→8Gi)')
+param workerMemory string = '8Gi'
+
 @description('CMS container CPU cores (Consumption tier: 0.25–2.0 in 0.25 steps)')
 @allowed(['0.25', '0.5', '0.75', '1.0', '1.25', '1.5', '1.75', '2.0'])
 param cmsCpu string = '1.0'
@@ -72,6 +81,7 @@ var keyVaultName = '${prefix}-vault'
 var containerAppsEnvName = '${prefix}-env'
 var cmsAppName = '${prefix}-cms'
 var mcpAppName = '${prefix}-mcp'
+var workerJobName = '${prefix}-worker'
 
 // ── Networking ──
 module networking 'modules/networking.bicep' = {
@@ -135,6 +145,7 @@ var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${postgresAdminPas
 // Use provided images or default to ACR-based names
 var resolvedCmsImage = !empty(cmsImage) ? cmsImage : '${acr.outputs.acrLoginServer}/agora-cms:latest'
 var resolvedMcpImage = !empty(mcpImage) ? mcpImage : '${acr.outputs.acrLoginServer}/agora-cms-mcp:latest'
+var resolvedWorkerImage = !empty(workerImage) ? workerImage : '${acr.outputs.acrLoginServer}/agora-worker:latest'
 
 // ── Container Apps (CMS + MCP) ──
 module containerApps 'modules/containerApps.bicep' = {
@@ -170,6 +181,12 @@ module containerApps 'modules/containerApps.bicep' = {
     // MCP
     mcpAppName: mcpAppName
     mcpImage: resolvedMcpImage
+
+    // Worker Job
+    workerJobName: workerJobName
+    workerImage: resolvedWorkerImage
+    workerCpu: workerCpu
+    workerMemory: workerMemory
 
     // Key Vault (service key exchange)
     keyVaultUri: keyVault.outputs.keyVaultUri

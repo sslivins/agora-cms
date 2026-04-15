@@ -60,6 +60,16 @@ jobs:
             ghcr.io/sslivins/agora-cms-mcp:latest
             ghcr.io/sslivins/agora-cms-mcp:${{ steps.version.outputs.version }}
 
+      - name: Build and push Worker to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          push: true
+          tags: |
+            ghcr.io/sslivins/agora-worker:latest
+            ghcr.io/sslivins/agora-worker:${{ steps.version.outputs.version }}
+
       # ── ACR (Azure deployment) ──
       - name: Log in to Azure
         uses: azure/login@v2
@@ -89,6 +99,16 @@ jobs:
             ${{ env.ACR_REGISTRY }}/agora-cms-mcp:latest
             ${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ steps.version.outputs.version }}
 
+      - name: Push Worker image to ACR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          push: true
+          tags: |
+            ${{ env.ACR_REGISTRY }}/agora-worker:latest
+            ${{ env.ACR_REGISTRY }}/agora-worker:${{ steps.version.outputs.version }}
+
   deploy:
     needs: publish
     runs-on: ubuntu-latest
@@ -114,6 +134,13 @@ jobs:
             --name agoracms-mcp \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}
+
+      - name: Deploy Worker job
+        run: |
+          az containerapp job update \
+            --name agoracms-worker \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}
 
   verify:
     needs: [publish, deploy]

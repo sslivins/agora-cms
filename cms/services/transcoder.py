@@ -130,10 +130,27 @@ def get_transcode_status() -> dict:
 
 
 async def notify_worker(db) -> None:
-    """Send a PostgreSQL NOTIFY to wake the transcode worker."""
+    """Wake the transcode worker.
+
+    Docker Compose: sends a PostgreSQL NOTIFY on the transcode_jobs channel.
+    Azure:          also enqueues a message on the Azure Storage Queue so
+                    the Container Apps Job scales up.
+    """
     from sqlalchemy import text
     try:
         await db.execute(text("NOTIFY transcode_jobs"))
         await db.commit()
     except Exception:
         logger.debug("NOTIFY transcode_jobs failed (non-critical)", exc_info=True)
+
+    # Azure Storage Queue trigger (Container Apps Job)
+    try:
+        import os
+        conn_str = os.environ.get("AGORA_CMS_AZURE_STORAGE_CONNECTION_STRING")
+        if conn_str:
+            from azure.storage.queue import QueueClient
+            queue = QueueClient.from_connection_string(conn_str, "transcode-jobs")
+            queue.send_message("transcode")
+            logger.debug("Enqueued transcode-jobs queue message")
+    except Exception:
+        logger.debug("Azure queue enqueue failed (non-critical)", exc_info=True)

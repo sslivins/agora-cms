@@ -41,6 +41,17 @@ resource transcodeShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2
   }
 }
 
+// ── Queue (transcode job trigger for worker Container Apps Job) ──
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource transcodeQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: 'transcode-jobs'
+}
+
 // ── Blob containers (permanent asset storage) ──
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storageAccount
