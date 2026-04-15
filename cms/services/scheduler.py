@@ -811,6 +811,14 @@ async def evaluate_schedules() -> None:
                     "(schedule %s, asset %s)",
                     did, s.name, display_name,
                 )
+                await _log_event(
+                    db, ScheduleLogEvent.STARTED,
+                    schedule_name=s.name,
+                    device_name=device_name,
+                    asset_filename=display_name,
+                    schedule_id=s.id, device_id=did,
+                    details="Inferred from live device state",
+                )
 
         await db.commit()
 
