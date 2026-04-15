@@ -14,9 +14,9 @@ from tests_e2e.fake_device import FakeDevice
 
 
 def _ensure_device_and_asset(api, ws_url, device_id):
-    """Register + adopt a device and ensure at least one asset exists.
+    """Register + adopt a device, create a group, and ensure at least one asset exists.
 
-    Returns the asset filename for use in the schedule form.
+    Returns (asset_filename, group_id) for use in the schedule form.
     """
     async def register():
         async with FakeDevice(device_id, ws_url) as dev:
@@ -25,6 +25,10 @@ def _ensure_device_and_asset(api, ws_url, device_id):
     run_async(register())
     api.post(f"/api/devices/{device_id}/adopt")
 
+    group_resp = api.post("/api/devices/groups/", json={"name": f"Group-{device_id}"})
+    group_id = group_resp.json()["id"]
+    api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
+
     assets = api.get("/api/assets")
     if not assets.json():
         api.create_asset("e2e-shared-test.mp4")
@@ -32,14 +36,14 @@ def _ensure_device_and_asset(api, ws_url, device_id):
         if not assets.json():
             pytest.skip("Could not create test asset (ffprobe not available)")
 
-    return assets.json()[0]["filename"]
+    return assets.json()[0]["filename"], group_id
 
 
-def _fill_create_form(page, name, asset_name, device_id, start, end):
-    """Fill the schedule create form, explicitly targeting a specific device."""
+def _fill_create_form(page, name, asset_name, group_id, start, end):
+    """Fill the schedule create form, explicitly targeting a specific group."""
     page.fill('input[name="name"]', name)
     page.select_option('select[name="asset_id"]', label=asset_name)
-    page.select_option('select[name="target_id"]', value=device_id)
+    page.select_option('select[name="group_id"]', value=group_id)
     page.fill('input[name="start_time"]', start)
     page.fill('input[name="end_time"]', end)
 
@@ -49,12 +53,12 @@ class TestScheduleCreate:
 
     def test_create_schedule_appears_in_active_table(self, page: Page, api, ws_url):
         """Create a schedule and verify it appears in the Active Schedules table."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "sched-test-001")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-test-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "E2E Active Check", asset_name, "sched-test-001", "09:00", "17:00")
+        _fill_create_form(page, "E2E Active Check", asset_name, group_id, "09:00", "17:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
@@ -65,12 +69,12 @@ class TestScheduleCreate:
 
     def test_create_schedule_exists_in_api(self, page: Page, api, ws_url):
         """After form submit, the schedule must exist in the REST API."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "sched-api-001")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-api-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "E2E API Verify", asset_name, "sched-api-001", "10:00", "11:00")
+        _fill_create_form(page, "E2E API Verify", asset_name, group_id, "10:00", "11:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
@@ -88,7 +92,7 @@ class TestScheduleCreate:
         Regression coverage: if the form silently fails (e.g. GET instead of
         POST), the schedule won't exist and won't appear on the dashboard.
         """
-        asset_name = _ensure_device_and_asset(api, ws_url, "sched-dash-001")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-dash-001")
 
         # Pick a start time 2 hours from now (UTC) so it's "upcoming today"
         now_utc = datetime.now(timezone.utc)
@@ -98,7 +102,7 @@ class TestScheduleCreate:
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "E2E Dashboard Check", asset_name, "sched-dash-001", start, end)
+        _fill_create_form(page, "E2E Dashboard Check", asset_name, group_id, start, end)
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
@@ -125,7 +129,7 @@ class TestScheduleCreate:
         browser fell through to the default GET submission.  The JS POST
         could race the navigation and sometimes succeed, hiding the bug.
         """
-        asset_name = _ensure_device_and_asset(api, ws_url, "create-post-001")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "create-post-001")
 
         # Track all requests to /schedules
         requests_log = []
@@ -135,7 +139,7 @@ class TestScheduleCreate:
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "POST Not GET Test", asset_name, "create-post-001", "08:00", "18:00")
+        _fill_create_form(page, "POST Not GET Test", asset_name, group_id, "08:00", "18:00")
 
         # Clear log to only capture the submit request
         requests_log.clear()
@@ -186,6 +190,10 @@ class TestScheduleEditModal:
         run_async(setup())
         api.post("/api/devices/edit-modal-001/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-edit-modal-001"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/edit-modal-001", json={"group_id": group_id})
+
         resp = api.create_asset("edit-test.mp4")
         assets = api.get("/api/assets")
         if not assets.json():
@@ -196,7 +204,7 @@ class TestScheduleEditModal:
         # Create a schedule via API
         api.post("/api/schedules", json={
             "name": "Editable Schedule",
-            "device_id": "edit-modal-001",
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "09:00",
             "end_time": "17:00",
@@ -237,6 +245,10 @@ class TestScheduleEditModal:
         run_async(setup())
         api.post("/api/devices/edit-save-001/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-edit-save-001"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/edit-save-001", json={"group_id": group_id})
+
         assets = api.get("/api/assets")
         if not assets.json():
             pytest.skip("No assets available")
@@ -245,7 +257,7 @@ class TestScheduleEditModal:
 
         api.post("/api/schedules", json={
             "name": "Will Rename",
-            "device_id": "edit-save-001",
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "10:00",
             "end_time": "11:00",
@@ -286,6 +298,10 @@ class TestScheduleEditModal:
         run_async(setup())
         api.post("/api/devices/edit-cancel-001/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-edit-cancel-001"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/edit-cancel-001", json={"group_id": group_id})
+
         assets = api.get("/api/assets")
         if not assets.json():
             pytest.skip("No assets available")
@@ -294,7 +310,7 @@ class TestScheduleEditModal:
 
         api.post("/api/schedules", json={
             "name": "Dont Change Me",
-            "device_id": "edit-cancel-001",
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "08:00",
             "end_time": "09:00",
@@ -330,13 +346,17 @@ class TestScheduleToggle:
         run_async(setup())
         api.post("/api/devices/toggle-001/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-toggle-001"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/toggle-001", json={"group_id": group_id})
+
         assets = api.get("/api/assets")
         if not assets.json():
             pytest.skip("No assets available")
 
         api.post("/api/schedules", json={
             "name": "Toggle Test",
-            "device_id": "toggle-001",
+            "group_id": group_id,
             "asset_id": assets.json()[0]["id"],
             "start_time": "08:00",
             "end_time": "12:00",
@@ -370,13 +390,17 @@ class TestScheduleDelete:
         run_async(setup())
         api.post("/api/devices/delete-001/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-delete-001"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/delete-001", json={"group_id": group_id})
+
         assets = api.get("/api/assets")
         if not assets.json():
             pytest.skip("No assets available")
 
         api.post("/api/schedules", json={
             "name": "Delete Me Please",
-            "device_id": "delete-001",
+            "group_id": group_id,
             "asset_id": assets.json()[0]["id"],
             "start_time": "08:00",
             "end_time": "12:00",
@@ -405,7 +429,7 @@ class TestScheduleEditWithDates:
     and UTC date comparison bugs."""
 
     def _setup_schedule(self, page, api, ws_url, device_id, name):
-        """Helper: register device and create a schedule."""
+        """Helper: register device, create group, and create a schedule."""
         async def register():
             async with FakeDevice(device_id, ws_url) as dev:
                 await dev.send_status()
@@ -413,13 +437,17 @@ class TestScheduleEditWithDates:
         run_async(register())
         api.post(f"/api/devices/{device_id}/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": f"Group-{device_id}"})
+        group_id = group_resp.json()["id"]
+        api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
+
         assets = api.get("/api/assets")
         if not assets.json():
             pytest.skip("No assets available")
 
         api.post("/api/schedules", json={
             "name": name,
-            "device_id": device_id,
+            "group_id": group_id,
             "asset_id": assets.json()[0]["id"],
             "start_time": "09:00",
             "end_time": "23:59",
@@ -553,105 +581,17 @@ class TestScheduleEditWithDates:
         expect(page.locator("td", has_text="Date Today Test")).to_be_visible()
 
 
-class TestScheduleTargetDropdown:
-    """Target dropdown must update when switching between device/group."""
-
-    def test_switch_to_group_hides_device_options(self, page: Page, api, ws_url):
-        """Switching target type to 'group' must hide device options and show
-        group options.  The selected value must change to a group."""
-        _ensure_device_and_asset(api, ws_url, "target-dd-001")
-        api.post("/api/devices/groups/", json={"name": "Target Test Group"})
-
-        page.goto("/schedules")
-        page.wait_for_load_state("domcontentloaded")
-
-        target_sel = page.locator("#target_id")
-
-        # Sanity: device option is visible initially
-        expect(target_sel.locator("option[data-type='device']:not([hidden])")).to_have_count(
-            target_sel.locator("option[data-type='device']").count()
-        )
-
-        # Switch to group
-        page.select_option("#target_type", "group")
-
-        # All device options must be hidden
-        visible_device_opts = target_sel.locator("option[data-type='device']:not([hidden])")
-        expect(visible_device_opts).to_have_count(0)
-
-        # At least one group option must be visible
-        visible_group_opts = target_sel.locator("option[data-type='group']:not([hidden])")
-        assert visible_group_opts.count() > 0, "No group options visible after switching to group"
-
-        # The selected value must be a group option
-        selected_type = target_sel.locator("option:checked").get_attribute("data-type")
-        assert selected_type == "group", (
-            f"Expected selected option to be a group, got data-type='{selected_type}'"
-        )
-
-    def test_switch_to_group_no_groups_shows_empty(self, page: Page, api, ws_url):
-        """When no groups exist, switching to 'group' target type must not
-        leave a device option selected — the select value must not be a
-        device ID that would be submitted with the form."""
-        _ensure_device_and_asset(api, ws_url, "target-dd-002")
-
-        # Delete all groups through the API to ensure none exist
-        groups = api.get("/api/devices/groups/").json()
-        for g in groups:
-            api.delete(f"/api/devices/groups/{g['id']}")
-
-        page.goto("/schedules")
-        page.wait_for_load_state("domcontentloaded")
-
-        # Remember a device ID so we can verify it's NOT selected after switch
-        device_value = page.locator("#target_id").input_value()
-        assert device_value, "Expected a device to be pre-selected"
-
-        # Switch to group
-        page.select_option("#target_type", "group")
-
-        # The select's submitted value must NOT be the device ID
-        current_value = page.locator("#target_id").input_value()
-        assert current_value != device_value, (
-            f"Device option '{device_value}' is still the select value after switching to group"
-        )
-
-    def test_switch_back_to_device_restores_options(self, page: Page, api, ws_url):
-        """Switching from group back to device must show device options again."""
-        _ensure_device_and_asset(api, ws_url, "target-dd-003")
-        api.post("/api/devices/groups/", json={"name": "Switchback Group"})
-
-        page.goto("/schedules")
-        page.wait_for_load_state("domcontentloaded")
-
-        # Switch to group, then back to device
-        page.select_option("#target_type", "group")
-        page.select_option("#target_type", "device")
-
-        target_sel = page.locator("#target_id")
-
-        # Device options must be visible
-        visible_device_opts = target_sel.locator("option[data-type='device']:not([hidden])")
-        assert visible_device_opts.count() > 0, "No device options visible after switching back"
-
-        # Selected must be a device
-        selected_type = target_sel.locator("option:checked").get_attribute("data-type")
-        assert selected_type == "device", (
-            f"Expected selected option to be a device, got data-type='{selected_type}'"
-        )
-
-
 class TestScheduleDescriptionColumn:
     """The Schedule column must show human-readable descriptions."""
 
     def test_every_day_schedule_shows_every_day(self, page: Page, api, ws_url):
         """A schedule with all days and no date range should say 'Every day'."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "desc-col-001")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Desc Every Day", asset_name, "desc-col-001", "09:00", "17:00")
+        _fill_create_form(page, "Desc Every Day", asset_name, group_id, "09:00", "17:00")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
@@ -664,12 +604,12 @@ class TestScheduleDescriptionColumn:
 
     def test_one_shot_schedule_shows_once(self, page: Page, api, ws_url):
         """A schedule with same start/end date should say 'Once on ...'."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "desc-col-002")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-002")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Desc One Shot", asset_name, "desc-col-002", "14:00", "16:00")
+        _fill_create_form(page, "Desc One Shot", asset_name, group_id, "14:00", "16:00")
         # Set both dates to the same future date
         page.fill('input[name="start_date"]', "2027-06-15")
         page.fill('input[name="end_date"]', "2027-06-15")
@@ -683,7 +623,7 @@ class TestScheduleDescriptionColumn:
 
     def test_weekday_schedule_shows_weekdays(self, page: Page, api, ws_url):
         """A schedule with Mon-Fri should say 'Weekdays'."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "desc-col-003")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-003")
 
         # Create via API with specific days
         assets = api.get("/api/assets").json()
@@ -691,7 +631,7 @@ class TestScheduleDescriptionColumn:
         api.post("/api/schedules", json={
             "name": "Desc Weekdays",
             "asset_id": asset_id,
-            "device_id": "desc-col-003",
+            "group_id": group_id,
             "start_time": "08:00:00",
             "end_time": "17:00:00",
             "days_of_week": [1, 2, 3, 4, 5],
@@ -712,12 +652,12 @@ class TestScheduleEditSummaryBanner:
 
     def test_edit_modal_shows_summary(self, page: Page, api, ws_url):
         """Opening the edit modal must display the schedule summary banner."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "edit-sum-001")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "edit-sum-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Edit Summary Test", asset_name, "edit-sum-001", "10:00", "12:00")
+        _fill_create_form(page, "Edit Summary Test", asset_name, group_id, "10:00", "12:00")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
@@ -733,12 +673,12 @@ class TestScheduleEditSummaryBanner:
 
     def test_edit_modal_summary_updates_on_time_change(self, page: Page, api, ws_url):
         """Changing times in the edit modal must update the summary banner."""
-        asset_name = _ensure_device_and_asset(api, ws_url, "edit-sum-002")
+        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "edit-sum-002")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Edit Summary Update", asset_name, "edit-sum-002", "10:00", "12:00")
+        _fill_create_form(page, "Edit Summary Update", asset_name, group_id, "10:00", "12:00")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 

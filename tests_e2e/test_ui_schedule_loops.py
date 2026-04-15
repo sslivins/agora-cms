@@ -20,7 +20,7 @@ ASSET_DURATION = 600  # 10 minutes = 600 seconds
 
 
 def _setup_device_and_asset(page: Page, api, ws_url, device_id: str):
-    """Register + adopt a device, upload an asset, return the asset id."""
+    """Register + adopt a device, create a group, upload an asset, return (asset_id, group_id)."""
     async def register():
         async with FakeDevice(device_id, ws_url) as dev:
             await dev.send_status()
@@ -28,11 +28,15 @@ def _setup_device_and_asset(page: Page, api, ws_url, device_id: str):
     run_async(register())
     api.post(f"/api/devices/{device_id}/adopt")
 
+    group_resp = api.post("/api/devices/groups/", json={"name": f"Group-{device_id}"})
+    group_id = group_resp.json()["id"]
+    api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
+
     api.create_asset("loop-test.mp4")
     assets = api.get("/api/assets").json()
     if not assets:
         pytest.skip("Could not create test asset (ffprobe not available)")
-    return assets[0]["id"]
+    return assets[0]["id"], group_id
 
 
 def _go_to_schedules_and_inject_duration(page: Page, asset_id: str, duration: float):
@@ -56,7 +60,7 @@ class TestLoopSummaryDisplay:
         """When the time window is an exact multiple of asset duration,
         the summary should say 'N loops' (without 'exactly' — that word is
         reserved for an explicit loop_count set via round up/down)."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-exact-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-exact-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Exact Loop Test")
@@ -77,7 +81,7 @@ class TestLoopSummaryDisplay:
     def test_cut_short_loops_shown(self, page: Page, api, ws_url):
         """When loops don't divide evenly, the summary should show
         'last loop cut short' with round-up and round-down buttons."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-cut-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-cut-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Cut Short Test")
@@ -99,7 +103,7 @@ class TestLoopSummaryDisplay:
 
     def test_no_loop_info_without_asset(self, page: Page, api, ws_url):
         """No loop info should appear when no asset is selected."""
-        _setup_device_and_asset(page, api, ws_url, "loop-noasset-001")
+        _asset_id, _group_id = _setup_device_and_asset(page, api, ws_url, "loop-noasset-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
@@ -122,7 +126,7 @@ class TestRoundButtons:
     def test_round_down_adjusts_end_time(self, page: Page, api, ws_url):
         """Clicking 'Round down' should shorten the window to fit
         fewer complete loops."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-rdown-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-rdown-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Round Down Test")
@@ -149,7 +153,7 @@ class TestRoundButtons:
     def test_round_up_adjusts_end_time(self, page: Page, api, ws_url):
         """Clicking 'Round up' should extend the window to fit
         one more complete loop."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-rup-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-rup-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Round Up Test")
@@ -175,7 +179,7 @@ class TestRoundButtons:
 
     def test_round_down_then_no_buttons(self, page: Page, api, ws_url):
         """After rounding, the buttons should disappear since loops are exact."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-gone-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-gone-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Buttons Gone Test")
@@ -196,7 +200,7 @@ class TestOneShotLoopSummary:
 
     def test_oneshot_shows_loop_info(self, page: Page, api, ws_url):
         """A one-shot schedule should also display loop info."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-1shot-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-1shot-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "One Shot Loop Test")
@@ -216,7 +220,7 @@ class TestOneShotLoopSummary:
 
     def test_oneshot_round_up_works(self, page: Page, api, ws_url):
         """Round up button should work in one-shot mode too."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-1shot-002")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-1shot-002")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "One Shot Round Up")
@@ -240,7 +244,7 @@ class TestAssetDurationDisplay:
 
     def test_duration_in_dropdown(self, page: Page, api, ws_url):
         """Video assets with duration should show it in parentheses."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-dd-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-dd-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
@@ -256,7 +260,7 @@ class TestAssetDurationDisplay:
 
     def test_summary_updates_on_asset_change(self, page: Page, api, ws_url):
         """Changing the asset dropdown should update the loop info."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-asc-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-asc-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Asset Change Test")
@@ -286,7 +290,7 @@ class TestNoJsErrors:
         js_errors = []
         page.on("pageerror", lambda err: js_errors.append(str(err)))
 
-        asset_id = _setup_device_and_asset(page, api, ws_url, "loop-noerr-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "loop-noerr-001")
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "JS Error Test")
@@ -314,13 +318,13 @@ class TestNoJsErrors:
         assert not js_errors, f"JavaScript errors during loop interaction: {js_errors}"
 
 
-def _create_schedule_via_api(api, device_id, asset_id, start_time="09:00:00",
+def _create_schedule_via_api(api, group_id, asset_id, start_time="09:00:00",
                               end_time="10:25:00", name="Edit Test",
                               loop_count=None):
     """Create a schedule via REST API and return the schedule dict."""
     body = {
         "name": name,
-        "device_id": device_id,
+        "group_id": group_id,
         "asset_id": asset_id,
         "start_time": start_time,
         "end_time": end_time,
@@ -351,9 +355,9 @@ class TestEditPreserveDuration:
     def test_edit_start_preserves_duration(self, page: Page, api, ws_url):
         """Changing start time in edit should shift end time by same duration."""
         device_id = "edit-dur-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         sched = _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="09:00:00", end_time="11:00:00",
             name="Preserve Duration Start",
         )
@@ -371,9 +375,9 @@ class TestEditPreserveDuration:
     def test_edit_end_preserves_duration(self, page: Page, api, ws_url):
         """Changing end time in edit should shift start time by same duration."""
         device_id = "edit-dur-002"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         sched = _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="09:00:00", end_time="11:00:00",
             name="Preserve Duration End",
         )
@@ -391,9 +395,9 @@ class TestEditPreserveDuration:
     def test_edit_both_times_no_constraint(self, page: Page, api, ws_url):
         """Changing both start and end should not auto-adjust."""
         device_id = "edit-dur-003"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         sched = _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="09:00:00", end_time="11:00:00",
             name="Both Times Changed",
         )
@@ -420,11 +424,11 @@ class TestEditClearLoopCount:
     def test_edit_loop_count_cleared_on_duration_change(self, page: Page, api, ws_url):
         """When loop_count is cleared in the edit modal, end_time should re-enable."""
         device_id = "edit-lc-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
 
         # Create schedule WITHOUT loop_count (asset has no real duration)
         sched = _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="09:00:00", end_time="10:20:00",
             name="Clear Loop Count",
         )
@@ -460,7 +464,7 @@ class TestEditClearLoopCount:
     def test_create_loop_count_cleared_on_time_change(self, page: Page, api, ws_url):
         """On the create form, clearing loop_count re-enables end_time for manual input."""
         device_id = "create-lc-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Create Clear LC")
@@ -503,7 +507,7 @@ class TestSubOneLoop:
     def test_short_duration_shows_loop_info(self, page: Page, api, ws_url):
         """When schedule is shorter than half the asset, loop info should
         still be displayed (not silently empty)."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "sub1-short-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "sub1-short-001")
         _go_to_schedules_and_inject_duration(page, asset_id, self.LONG_ASSET)
 
         page.fill('input[name="name"]', "Short Duration Test")
@@ -519,7 +523,7 @@ class TestSubOneLoop:
 
     def test_sub_one_loop_no_round_down_to_zero(self, page: Page, api, ws_url):
         """When loops < 1, 'Round down (0)' must never appear."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "sub1-no0-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "sub1-no0-001")
         _go_to_schedules_and_inject_duration(page, asset_id, self.LONG_ASSET)
 
         page.fill('input[name="name"]', "No Zero Round Test")
@@ -538,7 +542,7 @@ class TestSubOneLoop:
     def test_sub_one_loop_round_up_to_one(self, page: Page, api, ws_url):
         """Clicking Round up (1) for a sub-one-loop schedule should set
         end time to start + 1 full asset duration."""
-        asset_id = _setup_device_and_asset(page, api, ws_url, "sub1-rup-001")
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, "sub1-rup-001")
         _go_to_schedules_and_inject_duration(page, asset_id, self.LONG_ASSET)
 
         page.fill('input[name="name"]', "Sub-One Round Up")
@@ -566,12 +570,12 @@ class TestLoopCountFormSubmit:
         """Set loop_count on the create form, submit, and verify the POST
         request includes end_time even though the input is disabled."""
         device_id = "lc-submit-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "LC Submit Test")
         page.select_option('select[name="asset_id"]', value=asset_id)
-        page.select_option('select[name="target_id"]', value=device_id)
+        page.select_option('select[name="group_id"]', value=group_id)
         page.fill('input[name="start_time"]', "09:00")
         page.fill('input[name="end_time"]', "10:00")
         page.dispatch_event('input[name="end_time"]', "change")
@@ -614,12 +618,12 @@ class TestLoopCountFormSubmit:
         """Reproduce the exact bug: set time + loop_count, then adjust start_time.
         The auto-computed end_time updates, and the POST must include it."""
         device_id = "lc-adjust-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "LC Adjust Start")
         page.select_option('select[name="asset_id"]', value=asset_id)
-        page.select_option('select[name="target_id"]', value=device_id)
+        page.select_option('select[name="group_id"]', value=group_id)
         page.fill('input[name="start_time"]', "05:59")
         page.fill('input[name="end_time"]', "06:00")
         page.dispatch_event('input[name="end_time"]', "change")
@@ -674,7 +678,7 @@ class TestSecondPrecisionEndTime:
     def test_short_clip_loop_count_shows_seconds(self, page: Page, api, ws_url):
         """A 3-second clip with loop_count=1 should show end_time with seconds offset."""
         device_id = "sec-prec-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
 
         page.fill('input[name="name"]', "Seconds Precision")
@@ -693,7 +697,7 @@ class TestSecondPrecisionEndTime:
     def test_short_clip_multi_loop_shows_seconds(self, page: Page, api, ws_url):
         """A 3-second clip with loop_count=10 → end_time = start + 30s."""
         device_id = "sec-prec-002"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
 
         page.fill('input[name="name"]', "Multi Loop Seconds")
@@ -711,7 +715,7 @@ class TestSecondPrecisionEndTime:
     def test_longer_clip_still_correct_with_seconds(self, page: Page, api, ws_url):
         """A 10-minute clip (600s) × 3 loops = 30 min, should render as HH:MM:SS."""
         device_id = "sec-prec-003"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, ASSET_DURATION)
 
         page.fill('input[name="name"]', "Normal Clip Seconds")
@@ -729,7 +733,7 @@ class TestSecondPrecisionEndTime:
 
     def test_time_inputs_default_step(self, page: Page, api, ws_url):
         """Verify time inputs use default step (no step attribute) for minute-level picker."""
-        _setup_device_and_asset(page, api, ws_url, "sec-step-001")
+        _asset_id, _group_id = _setup_device_and_asset(page, api, ws_url, "sec-step-001")
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
@@ -749,7 +753,7 @@ class TestSchedulePreviewSubMinuteDuration:
     def test_preview_shows_seconds_not_24hrs(self, page: Page, api, ws_url):
         """A 20s clip × 1 loop should show '20 sec' not '24 hrs'."""
         device_id = "prev-sec-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
 
         page.fill('input[name="name"]', "Short Preview")
@@ -771,7 +775,7 @@ class TestSchedulePreviewSubMinuteDuration:
     def test_preview_no_midnight_warning_for_sub_minute(self, page: Page, api, ws_url):
         """Sub-minute durations should never trigger the midnight warning."""
         device_id = "prev-sec-002"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, 5)  # 5-second clip
 
         page.fill('input[name="name"]', "No Midnight Warn")
@@ -792,7 +796,7 @@ class TestSchedulePreviewSubMinuteDuration:
     def test_preview_minutes_and_seconds(self, page: Page, api, ws_url):
         """A duration of e.g. 1 min 40 sec should show both units."""
         device_id = "prev-sec-003"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, self.SHORT_ASSET)
 
         page.fill('input[name="name"]', "Min and Sec")
@@ -812,7 +816,7 @@ class TestSchedulePreviewSubMinuteDuration:
     def test_preview_exact_minutes_no_trailing_sec(self, page: Page, api, ws_url):
         """A duration that's an exact number of minutes should NOT show '0 sec'."""
         device_id = "prev-sec-004"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
         _go_to_schedules_and_inject_duration(page, asset_id, 30)  # 30-second clip
 
         page.fill('input[name="name"]', "Exact Minutes")
@@ -841,10 +845,10 @@ class TestActiveTableAndEditNoFalseOvernight:
         """A saved schedule with start=09:00:00 end=09:00:05 must NOT show
         '24 hrs' in the active schedules table description."""
         device_id = "tbl-24h-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
 
         _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="09:00:00", end_time="09:00:05",
             name="Short Clip Table",
         )
@@ -868,10 +872,10 @@ class TestActiveTableAndEditNoFalseOvernight:
         """When start and end times share the same HH:MM (differ only in
         seconds), the table must not show '24 hrs'."""
         device_id = "tbl-24h-002"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
 
         _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="14:30:00", end_time="14:30:45",
             name="Same Minute Sched",
         )
@@ -891,10 +895,10 @@ class TestActiveTableAndEditNoFalseOvernight:
         """Opening the edit modal for a sub-minute schedule must NOT show
         'Spans midnight' in the summary preview."""
         device_id = "edit-mid-001"
-        asset_id = _setup_device_and_asset(page, api, ws_url, device_id)
+        asset_id, group_id = _setup_device_and_asset(page, api, ws_url, device_id)
 
         _create_schedule_via_api(
-            api, device_id, asset_id,
+            api, group_id, asset_id,
             start_time="12:00:00", end_time="12:00:30",
             name="Edit Short Clip",
         )

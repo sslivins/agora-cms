@@ -24,20 +24,10 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label><span class="has-tooltip">Target Type<span class="tooltip">Choose whether to target a single device or an entire group of devices</span></span></label>
-                <select name="target_type" id="target_type" onchange="updateTargetOptions()">
-                    <option value="device">Device</option>
-                    <option value="group">Group</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label><span class="has-tooltip">Target<span class="tooltip">The specific device or group this schedule applies to</span></span></label>
-                <select name="target_id" id="target_id" required onchange="filterAssetsByTarget()">
-                    {% for d in devices %}
-                    <option value="{{ d.id }}" data-type="device">{{ d.name or d.id }}</option>
-                    {% endfor %}
+                <label><span class="has-tooltip">Group<span class="tooltip">The device group this schedule applies to</span></span></label>
+                <select name="group_id" id="target_id" required onchange="filterAssetsByTarget()">
                     {% for g in groups %}
-                    <option value="{{ g.id }}" data-type="group">{{ g.name }}</option>
+                    <option value="{{ g.id }}">{{ g.name }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -129,9 +119,7 @@
                 <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
                 <td class="cell-truncate"><span class="cell-text">{{ s.asset.filename if s.asset else '—' }}</span></td>
                 <td>
-                    {% if s.device %}{{ s.device.name or s.device.id }}
-                    {% elif s.group %}{{ s.group.name }}
-                    {% else %}—{% endif %}
+                    {{ s.group.name if s.group else '—' }}
                 </td>
                 <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
@@ -188,9 +176,7 @@
                 <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
                 <td class="cell-truncate"><span class="cell-text">{{ s.asset.filename if s.asset else '—' }}</span></td>
                 <td>
-                    {% if s.device %}{{ s.device.name or s.device.id }}
-                    {% elif s.group %}{{ s.group.name }}
-                    {% else %}—{% endif %}
+                    {{ s.group.name if s.group else '—' }}
                 </td>
                 <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
                 <td>{{ s.priority }}</td>
@@ -215,7 +201,6 @@
 <script>
 const _scheduleData = {
     assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.filename }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
-    devices: [{% for d in devices %}{"id":"{{ d.id }}","name":"{{ d.name or d.id }}","group":"{{ d.group_id or '' }}"}{% if not loop.last %},{% endif %}{% endfor %}],
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
     isAdmin: {{ 'true' if is_admin else 'false' }}
 };
@@ -252,49 +237,13 @@ function saveTimezone(tz) {
     {% endif %}
 })();
 
-function _populateTargetSelect(selectEl, type, selectedId) {
-    const items = type === 'group' ? _scheduleData.groups : _scheduleData.devices;
-    selectEl.innerHTML = '';
-    if (items.length === 0) {
-        const ph = document.createElement('option');
-        ph.value = '';
-        ph.textContent = type === 'group' ? 'No groups available' : 'No devices available';
-        ph.disabled = true;
-        ph.selected = true;
-        selectEl.appendChild(ph);
-        return;
-    }
-    for (const item of items) {
-        const opt = document.createElement('option');
-        opt.value = item.id;
-        opt.textContent = item.name;
-        opt.dataset.type = type;
-        if (selectedId && item.id === selectedId) opt.selected = true;
-        selectEl.appendChild(opt);
-    }
-}
-
-function updateTargetOptions() {
-    const type = document.getElementById('target_type').value;
-    const selectEl = document.getElementById('target_id');
-    _populateTargetSelect(selectEl, type);
-    filterAssetsByTarget();
-}
-
 function filterAssetsByTarget() {
     if (_scheduleData.isAdmin) return;  // Admins see all assets
-    const targetType = document.getElementById('target_type').value;
     const targetId = document.getElementById('target_id').value;
     if (!targetId) return;
 
-    // Find the group(s) associated with the target
-    let targetGroupId = null;
-    if (targetType === 'group') {
-        targetGroupId = targetId;
-    } else {
-        const dev = _scheduleData.devices.find(d => d.id === targetId);
-        targetGroupId = dev ? dev.group : null;
-    }
+    // Target is always a group
+    const targetGroupId = targetId;
 
     const assetSel = document.querySelector('[name="asset_id"]');
     if (!assetSel) return;
@@ -400,7 +349,7 @@ function computeLoopEndTime(container) {
 
 // ── Create form setup ──
 document.addEventListener("DOMContentLoaded", function() {
-    updateTargetOptions();
+    filterAssetsByTarget();
 
     // Populate schedule descriptions in the Active Schedules table
     document.querySelectorAll('td.schedule-desc').forEach(td => {
@@ -777,8 +726,6 @@ function editSchedule(s) {
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
 
-    const assets = _scheduleData.assets;
-    const devices = _scheduleData.devices;
     const groups = _scheduleData.groups;
 
     const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -789,7 +736,7 @@ function editSchedule(s) {
         return `<label><input type="checkbox" name="edit_day_${num}" ${checked}> ${name}</label>`;
     }).join(" ");
 
-    const assetOpts = assets.map(a => {
+    const assetOpts = _scheduleData.assets.map(a => {
         let label = a.name;
         if (a.duration) {
             const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
@@ -798,8 +745,9 @@ function editSchedule(s) {
         return `<option value="${a.id}" ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
     }).join("");
 
-    const targetType = s.device_id ? "device" : "group";
-    const targetId = s.device_id || s.group_id;
+    const groupOpts = groups.map(g =>
+        `<option value="${g.id}" ${g.id === s.group_id ? "selected" : ""}>${g.name}</option>`
+    ).join("");
 
     const currentTz = document.getElementById('_tz').value;
     const tzOptions = _tzList.map(tz =>
@@ -820,18 +768,9 @@ function editSchedule(s) {
             <label><span class="has-tooltip">Asset<span class="tooltip">The media file to play</span></span></label>
             <select id="edit-asset">${assetOpts}</select>
         </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label>Target Type</label>
-                <select id="edit-target-type" onchange="updateEditTargetOptions()">
-                    <option value="device" ${targetType === "device" ? "selected" : ""}>Device</option>
-                    <option value="group" ${targetType === "group" ? "selected" : ""}>Group</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Target</label>
-                <select id="edit-target"></select>
-            </div>
+        <div class="form-group">
+            <label>Group</label>
+            <select id="edit-group">${groupOpts}</select>
         </div>
         <div class="form-row">
             <div class="form-group">
@@ -880,7 +819,6 @@ function editSchedule(s) {
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
-    _populateTargetSelect(document.getElementById('edit-target'), targetType, targetId);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     box.querySelector("#edit-cancel").onclick = () => overlay.remove();
 
@@ -1022,13 +960,11 @@ function editSchedule(s) {
             const cb = box.querySelector(`[name="edit_day_${i}"]`);
             if (cb && cb.checked) days.push(i);
         }
-        const editTargetType = box.querySelector("#edit-target-type").value;
-        const editTargetId = box.querySelector("#edit-target").value;
+        const editGroupId = box.querySelector("#edit-group").value;
         const body = {
             name: box.querySelector("#edit-name").value,
             asset_id: box.querySelector("#edit-asset").value,
-            device_id: editTargetType === "device" ? editTargetId : null,
-            group_id: editTargetType === "group" ? editTargetId : null,
+            group_id: editGroupId,
             start_time: startTime.length <= 5 ? startTime + ":00" : startTime,
             end_time: endTime ? (endTime.length <= 5 ? endTime + ":00" : endTime) : null,
             start_date: startDate || null,
@@ -1047,10 +983,5 @@ function editSchedule(s) {
     };
 }
 
-function updateEditTargetOptions() {
-    const type = document.getElementById('edit-target-type').value;
-    const selectEl = document.getElementById('edit-target');
-    _populateTargetSelect(selectEl, type);
-}
 </script>
 {% endblock %}

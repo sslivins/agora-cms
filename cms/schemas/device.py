@@ -14,6 +14,7 @@ class DeviceOut(BaseModel):
 
     id: str
     name: str
+    location: str = ""
     status: DeviceStatus
     group_id: Optional[uuid.UUID] = None
     group_name: Optional[str] = None
@@ -37,6 +38,7 @@ class DeviceOut(BaseModel):
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
+    location: Optional[str] = None
     status: Optional[DeviceStatus] = None
     group_id: Optional[uuid.UUID] = None
     default_asset_id: Optional[uuid.UUID] = None

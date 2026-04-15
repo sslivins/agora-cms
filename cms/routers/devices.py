@@ -4,6 +4,7 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -346,12 +347,21 @@ async def toggle_device_local_api(
     return {"ok": True}
 
 
+class AdoptRequest(BaseModel):
+    name: str | None = None
+    location: str | None = None
+    group_id: uuid.UUID | None = None
+
+
 @router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
-async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def adopt_device(device_id: str, request: Request, data: AdoptRequest | None = None, db: AsyncSession = Depends(get_db)):
     """Adopt a pending device or re-adopt an orphaned one.
 
     For pending devices: sets status to adopted and assigns an auth token on next connect.
     For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
+
+    Optionally accepts a JSON body with name, location, and group_id to configure
+    the device during adoption.
 
     In both cases, a wipe_assets command is sent so the device starts fresh
     without stale content from a previous adoption.
@@ -368,6 +378,14 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
         device.status = DeviceStatus.ADOPTED
     else:
         raise HTTPException(status_code=400, detail="Device is already adopted")
+
+    if data:
+        if data.name:
+            device.name = data.name
+        if data.location:
+            device.location = data.location
+        if data.group_id:
+            device.group_id = data.group_id
 
     await db.commit()
 
@@ -392,13 +410,9 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
 
     # Remove referencing rows before deleting the device
     from cms.models.asset import DeviceAsset
-    from cms.models.schedule import Schedule
 
     await db.execute(
         DeviceAsset.__table__.delete().where(DeviceAsset.device_id == device_id)
-    )
-    await db.execute(
-        Schedule.__table__.delete().where(Schedule.device_id == device_id)
     )
 
     await db.delete(device)

@@ -173,24 +173,11 @@ def get_upcoming_schedules(
             resume_at = _find_resume_time(s, schedules, local_now)
             if resume_at is not None:
                 results.append(_preempted_entry(s, local_now, resume_at))
-            elif s.device_id and s.device_id in _winning_by_did:
-                # Device already has a winner. Only show "starting" if this
-                # schedule has higher priority (about to preempt).
-                current_winner = _winning_by_did[s.device_id]
-                current_priority = _sched_priority.get(current_winner["schedule_id"], 0)
-                if s.priority > current_priority:
-                    results.append(_starting_entry(s, local_now))
-                # else: same or lower priority → genuinely lost → hide
             else:
-                # No winner yet for this target (device or group) — scheduler
+                # No winner yet for this target — scheduler
                 # hasn't evaluated.  Show as "starting" so the schedule
                 # doesn't vanish from the dashboard during the transition.
-                # If the target device is offline, flag it so the dashboard
-                # can show a "Device Offline" badge instead of "Starting…".
                 entry = _starting_entry(s, local_now)
-                if s.device_id and s.device_id in _offline:
-                    entry["starting"] = False
-                    entry["device_offline"] = True
                 results.append(entry)
             continue
 
@@ -247,17 +234,13 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
         if mins > 0:
             countdown += f", {mins} minute{'s' if mins != 1 else ''}"
 
-    target_name = None
-    if s.group:
-        target_name = s.group.name
-    elif s.device:
-        target_name = s.device.name or s.device_id
+    target_name = s.group.name if s.group else None
 
     return {
         "schedule_name": s.name,
         "asset_filename": s.asset.filename if s.asset else "—",
         "target_name": target_name or "—",
-        "target_type": "group" if s.group_id else "device",
+        "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -283,10 +266,9 @@ def _find_resume_time(preempted: Schedule, all_schedules: list, local_now: datet
             continue
         if not _matches_now(other, local_now):
             continue
-        # Must target the same device or group
+        # Must target the same group
         same_target = (
-            (preempted.device_id and other.device_id == preempted.device_id)
-            or (preempted.group_id and other.group_id == preempted.group_id)
+            preempted.group_id and other.group_id == preempted.group_id
         )
         if not same_target:
             continue
@@ -307,11 +289,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
     duration_secs = int((end_dt - start_dt).total_seconds())
 
-    target_name = None
-    if s.group:
-        target_name = s.group.name
-    elif s.device:
-        target_name = s.device.name or s.device_id
+    target_name = s.group.name if s.group else None
 
     resume_dt = datetime.combine(local_now.date(), resume_at)
     if resume_at <= local_now.time():
@@ -334,7 +312,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
         "schedule_name": s.name,
         "asset_filename": s.asset.filename if s.asset else "—",
         "target_name": target_name or "—",
-        "target_type": "group" if s.group_id else "device",
+        "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -356,17 +334,13 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
     duration_mins = int((end_dt - start_dt).total_seconds() / 60)
     duration_secs = int((end_dt - start_dt).total_seconds())
 
-    target_name = None
-    if s.group:
-        target_name = s.group.name
-    elif s.device:
-        target_name = s.device.name or s.device_id
+    target_name = s.group.name if s.group else None
 
     return {
         "schedule_name": s.name,
         "asset_filename": s.asset.filename if s.asset else "—",
         "target_name": target_name or "—",
-        "target_type": "group" if s.group_id else "device",
+        "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -464,14 +438,11 @@ def _dates_overlap(
 def schedules_conflict(a: Schedule, b: Schedule) -> bool:
     """Check if two schedules conflict (same target, same priority, overlapping windows)."""
     # Must share the same target
-    if a.device_id and b.device_id:
-        if a.device_id != b.device_id:
-            return False
-    elif a.group_id and b.group_id:
+    if a.group_id and b.group_id:
         if a.group_id != b.group_id:
             return False
     else:
-        return False  # Different target types
+        return False  # No shared target
 
     if a.priority != b.priority:
         return False
@@ -484,10 +455,8 @@ def schedules_conflict(a: Schedule, b: Schedule) -> bool:
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
-    """Resolve target device IDs for a schedule."""
-    if schedule.device_id:
-        return [schedule.device_id]
-    elif schedule.group_id:
+    """Resolve target device IDs for a schedule's group."""
+    if schedule.group_id:
         result = await db.execute(
             select(Device.id).where(
                 Device.group_id == schedule.group_id,
@@ -591,7 +560,6 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
-            selectinload(Schedule.device),
             selectinload(Schedule.group),
         )
         .where(Schedule.enabled == True)  # noqa: E712
@@ -696,7 +664,6 @@ async def evaluate_schedules() -> None:
             select(Schedule)
             .options(
                 selectinload(Schedule.asset),
-                selectinload(Schedule.device),
                 selectinload(Schedule.group),
             )
             .where(Schedule.enabled == True)  # noqa: E712

@@ -93,6 +93,19 @@
                 <span class="detail-value monospace">{{ d.id }}</span>
             </div>
             <div class="detail-item">
+                <span class="detail-label">Location</span>
+                <span class="detail-value">
+                    {% if 'devices:write' in user_perms %}
+                    <input type="text" class="inline-edit" value="{{ d.location or '' }}"
+                           placeholder="e.g. Lobby, Conference Room A"
+                           onclick="event.stopPropagation()"
+                           onchange="setDeviceField('{{ d.id }}', 'location', this.value)">
+                    {% else %}
+                    {{ d.location or '—' }}
+                    {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
                 <span class="detail-label">Device Type</span>
                 <span class="detail-value">{{ d.device_type or '—' }}</span>
             </div>
@@ -372,6 +385,12 @@
 
 {% block scripts %}
 <script>
+const __adoptGroups = [
+    {% for g in groups %}
+    {id: "{{ g.id }}", name: "{{ g.name }}"}{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
+
 function toggleGroup(header) {
     const panel = header.closest('.group-panel');
     const body = panel.querySelector('.group-body');

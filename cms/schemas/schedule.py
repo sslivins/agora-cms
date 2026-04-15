@@ -9,8 +9,7 @@ from pydantic import BaseModel, field_validator, model_validator
 
 class ScheduleCreate(BaseModel):
     name: str
-    device_id: Optional[str] = None
-    group_id: Optional[uuid.UUID] = None
+    group_id: uuid.UUID
     asset_id: uuid.UUID
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
@@ -33,14 +32,6 @@ class ScheduleCreate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def check_target(self):
-        if not self.device_id and not self.group_id:
-            raise ValueError("Either device_id or group_id must be set")
-        if self.device_id and self.group_id:
-            raise ValueError("Set device_id or group_id, not both")
-        return self
-
-    @model_validator(mode="after")
     def check_dates_and_times(self):
         if self.end_time is not None and self.start_time == self.end_time:
             raise ValueError("Start time and end time cannot be the same")
@@ -54,7 +45,6 @@ class ScheduleCreate(BaseModel):
 
 class ScheduleUpdate(BaseModel):
     name: Optional[str] = None
-    device_id: Optional[str] = None
     group_id: Optional[uuid.UUID] = None
     asset_id: Optional[uuid.UUID] = None
     start_date: Optional[datetime] = None
@@ -93,11 +83,9 @@ class ScheduleOut(BaseModel):
 
     id: uuid.UUID
     name: str
-    device_id: Optional[str] = None
-    group_id: Optional[uuid.UUID] = None
+    group_id: uuid.UUID
     asset_id: uuid.UUID
     asset_filename: Optional[str] = None
-    device_name: Optional[str] = None
     group_name: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None

@@ -106,25 +106,12 @@ class TestScheduleSchemas:
                 end_time="12:00",
             )
 
-    def test_schedule_create_rejects_both_targets(self):
-        from cms.schemas.schedule import ScheduleCreate
-
-        with pytest.raises(ValidationError):
-            ScheduleCreate(
-                name="Both",
-                device_id="pi-001",
-                group_id=uuid.uuid4(),
-                asset_id=uuid.uuid4(),
-                start_time="08:00",
-                end_time="12:00",
-            )
-
-    def test_schedule_create_with_device(self):
+    def test_schedule_create_with_group(self):
         from cms.schemas.schedule import ScheduleCreate
 
         sched = ScheduleCreate(
             name="Valid",
-            device_id="pi-001",
+            group_id=uuid.uuid4(),
             asset_id=uuid.uuid4(),
             start_time="08:00",
             end_time="12:00",

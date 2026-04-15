@@ -43,7 +43,6 @@ def _make_schedule(
     priority: int = 0,
     name: str = "test",
     asset_id=None,
-    device_id=None,
     group_id=None,
     start_date=None,
     end_date=None,
@@ -52,7 +51,6 @@ def _make_schedule(
     s = Schedule(
         name=name,
         asset_id=asset_id or uuid.uuid4(),
-        device_id=device_id,
         group_id=group_id,
         enabled=enabled,
         start_time=start_time,
@@ -72,7 +70,6 @@ def _make_schedule_with_asset(
     priority: int = 0,
     name: str = "test",
     asset_filename: str = "video.mp4",
-    device_id: str | None = None,
     group_id=None,
     days_of_week=None,
     enabled: bool = True,
@@ -84,7 +81,6 @@ def _make_schedule_with_asset(
         end_time=end_time,
         priority=priority,
         name=name,
-        device_id=device_id,
         group_id=group_id,
         days_of_week=days_of_week,
         enabled=enabled,
@@ -162,7 +158,7 @@ class TestSkipSchedule:
         """After clearing a skip, the schedule should appear in upcoming again."""
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Resumed",
-            device_id="d1",
+            group_id=uuid.uuid4(),
         )
         skip_schedule_until(str(low.id), datetime(2026, 3, 28, 17, 0))
 
@@ -205,7 +201,7 @@ class TestClearSyncHash:
 
 
 class TestPrioritySelection:
-    """Test that the highest-priority active schedule wins per device."""
+    """Test that the highest-priority active schedule wins per group."""
 
     def test_matches_now_ignores_priority(self):
         """Priority doesn't affect _matches_now; it only matters in winner selection."""
@@ -217,80 +213,86 @@ class TestPrioritySelection:
 
     def test_two_overlapping_schedules_different_priorities(self):
         """Simulates the winner-selection loop from evaluate_schedules."""
-        low = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", device_id="d1")
-        high = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="High", device_id="d1")
+        gid = uuid.uuid4()
+        low = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", group_id=gid)
+        high = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="High", group_id=gid)
         now = datetime(2026, 3, 28, 12, 0)
 
         active = [s for s in [low, high] if _matches_now(s, now)]
         assert len(active) == 2
 
         # Replicate winner selection logic
-        device_winner = {}
+        group_winner = {}
         for s in active:
             if not s.asset:
                 continue
-            did = s.device_id
-            existing = device_winner.get(did)
+            g = s.group_id
+            existing = group_winner.get(g)
             if existing is None or s.priority > existing.priority:
-                device_winner[did] = s
+                group_winner[g] = s
 
-        assert device_winner["d1"].name == "High"
-        assert device_winner["d1"].priority == 10
+        assert group_winner[gid].name == "High"
+        assert group_winner[gid].priority == 10
 
     def test_equal_priority_last_wins(self):
         """When priorities are equal, the last one processed wins."""
-        s1 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="First", device_id="d1")
-        s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="Second", device_id="d1")
+        gid = uuid.uuid4()
+        s1 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="First", group_id=gid)
+        s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="Second", group_id=gid)
         now = datetime(2026, 3, 28, 12, 0)
 
         active = [s for s in [s1, s2] if _matches_now(s, now)]
-        device_winner = {}
+        group_winner = {}
         for s in active:
-            did = s.device_id
-            existing = device_winner.get(did)
+            g = s.group_id
+            existing = group_winner.get(g)
             if existing is None or s.priority > existing.priority:
-                device_winner[did] = s
+                group_winner[g] = s
 
         # With equal priority, `>` is False so the first one stays
-        assert device_winner["d1"].name == "First"
+        assert group_winner[gid].name == "First"
 
     def test_three_schedules_highest_wins(self):
-        low = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", device_id="d1")
-        mid = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="Mid", device_id="d1")
-        high = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="High", device_id="d1")
+        gid = uuid.uuid4()
+        low = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", group_id=gid)
+        mid = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="Mid", group_id=gid)
+        high = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="High", group_id=gid)
         now = datetime(2026, 3, 28, 12, 0)
 
         active = [s for s in [low, mid, high] if _matches_now(s, now)]
-        device_winner = {}
+        group_winner = {}
         for s in active:
-            did = s.device_id
-            existing = device_winner.get(did)
+            g = s.group_id
+            existing = group_winner.get(g)
             if existing is None or s.priority > existing.priority:
-                device_winner[did] = s
+                group_winner[g] = s
 
-        assert device_winner["d1"].name == "High"
+        assert group_winner[gid].name == "High"
 
-    def test_different_devices_get_different_winners(self):
-        """Each device picks its own highest-priority schedule."""
-        s1 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="A-Low", device_id="d1")
-        s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="A-High", device_id="d1")
-        s3 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="B-Only", device_id="d2")
+    def test_different_groups_get_different_winners(self):
+        """Each group picks its own highest-priority schedule."""
+        gid1 = uuid.uuid4()
+        gid2 = uuid.uuid4()
+        s1 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="A-Low", group_id=gid1)
+        s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="A-High", group_id=gid1)
+        s3 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=5, name="B-Only", group_id=gid2)
         now = datetime(2026, 3, 28, 12, 0)
 
         active = [s for s in [s1, s2, s3] if _matches_now(s, now)]
-        device_winner = {}
+        group_winner = {}
         for s in active:
-            did = s.device_id
-            existing = device_winner.get(did)
+            g = s.group_id
+            existing = group_winner.get(g)
             if existing is None or s.priority > existing.priority:
-                device_winner[did] = s
+                group_winner[g] = s
 
-        assert device_winner["d1"].name == "A-High"
-        assert device_winner["d2"].name == "B-Only"
+        assert group_winner[gid1].name == "A-High"
+        assert group_winner[gid2].name == "B-Only"
 
     def test_no_winner_when_no_active(self):
         """No active schedules means no winners."""
-        s = _make_schedule_with_asset(time(9, 0), time(10, 0), priority=5, name="Morning", device_id="d1")
+        gid = uuid.uuid4()
+        s = _make_schedule_with_asset(time(9, 0), time(10, 0), priority=5, name="Morning", group_id=gid)
         now = datetime(2026, 3, 28, 15, 0)  # 3 PM, outside 9-10
 
         active = [sched for sched in [s] if _matches_now(sched, now)]
@@ -298,26 +300,28 @@ class TestPrioritySelection:
 
     def test_priority_with_partial_overlap(self):
         """One schedule is active, the other isn't — only the active one wins."""
-        morning = _make_schedule_with_asset(time(8, 0), time(12, 0), priority=1, name="Morning", device_id="d1")
-        afternoon = _make_schedule_with_asset(time(13, 0), time(17, 0), priority=10, name="Afternoon", device_id="d1")
+        gid = uuid.uuid4()
+        morning = _make_schedule_with_asset(time(8, 0), time(12, 0), priority=1, name="Morning", group_id=gid)
+        afternoon = _make_schedule_with_asset(time(13, 0), time(17, 0), priority=10, name="Afternoon", group_id=gid)
         now = datetime(2026, 3, 28, 10, 0)  # 10 AM
 
         active = [s for s in [morning, afternoon] if _matches_now(s, now)]
         assert len(active) == 1
 
-        device_winner = {}
+        group_winner = {}
         for s in active:
-            did = s.device_id
-            existing = device_winner.get(did)
+            g = s.group_id
+            existing = group_winner.get(g)
             if existing is None or s.priority > existing.priority:
-                device_winner[did] = s
+                group_winner[g] = s
 
-        assert device_winner["d1"].name == "Morning"
+        assert group_winner[gid].name == "Morning"
 
     def test_skipped_schedule_excluded_from_active(self):
         """Skipped schedules are filtered out of the active list."""
-        s1 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="High", device_id="d1")
-        s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", device_id="d1")
+        gid = uuid.uuid4()
+        s1 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=10, name="High", group_id=gid)
+        s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", group_id=gid)
         now = datetime(2026, 3, 28, 12, 0)
 
         _skipped.clear()
@@ -342,7 +346,7 @@ class TestUpcomingSchedules:
     def _make_full_schedule(
         self, start_time, end_time, name="Upcoming",
         enabled=True, days_of_week=None, start_date=None, end_date=None,
-        device_id=None, group_id=None,
+        group_id=None,
     ):
         s = _make_schedule_with_asset(
             start_time=start_time,
@@ -350,7 +354,6 @@ class TestUpcomingSchedules:
             name=name,
             enabled=enabled,
             days_of_week=days_of_week,
-            device_id=device_id,
             group_id=group_id,
         )
         s.start_date = start_date
@@ -530,35 +533,38 @@ class TestUpcomingSchedules:
 @pytest.mark.asyncio
 class TestUniqueScheduleName:
     async def _create_device_and_asset(self, db_session):
+        group = DeviceGroup(name="Dedup Group")
         device = Device(id="dedup-pi", name="Dedup Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="dedup.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ded")
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
-        return device.id, str(asset.id)
+        return str(group.id), str(asset.id)
 
     async def test_duplicate_name_gets_suffix(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp1 = await client.post("/api/schedules", json={
-            "name": "Morning", "device_id": device_id, "asset_id": asset_id,
+            "name": "Morning", "group_id": group_id, "asset_id": asset_id,
             "start_time": "08:00", "end_time": "12:00",
         })
         assert resp1.status_code == 201
         assert resp1.json()["name"] == "Morning"
 
         resp2 = await client.post("/api/schedules", json={
-            "name": "Morning", "device_id": device_id, "asset_id": asset_id,
+            "name": "Morning", "group_id": group_id, "asset_id": asset_id,
             "start_time": "13:00", "end_time": "17:00",
         })
         assert resp2.status_code == 201
         assert resp2.json()["name"] == "Morning (2)"
 
     async def test_triple_duplicate(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         for i in range(3):
             resp = await client.post("/api/schedules", json={
-                "name": "Repeat", "device_id": device_id, "asset_id": asset_id,
+                "name": "Repeat", "group_id": group_id, "asset_id": asset_id,
                 "start_time": "08:00", "end_time": "12:00",
                 "priority": i,
             })
@@ -571,10 +577,10 @@ class TestUniqueScheduleName:
         assert "Repeat (3)" in names
 
     async def test_unique_name_not_modified(self, client, db_session):
-        device_id, asset_id = await self._create_device_and_asset(db_session)
+        group_id, asset_id = await self._create_device_and_asset(db_session)
 
         resp = await client.post("/api/schedules", json={
-            "name": "Unique", "device_id": device_id, "asset_id": asset_id,
+            "name": "Unique", "group_id": group_id, "asset_id": asset_id,
             "start_time": "08:00", "end_time": "12:00",
         })
         assert resp.status_code == 201
@@ -587,15 +593,18 @@ class TestUniqueScheduleName:
 @pytest.mark.asyncio
 class TestEndNowEndpoint:
     async def _create_schedule(self, client, db_session):
+        group = DeviceGroup(name="End Now Group")
         device = Device(id="end-now-pi", name="End Now Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="end.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="end")
         setting = CMSSetting(key="timezone", value="UTC")
-        db_session.add_all([device, asset, setting])
+        db_session.add_all([group, device, asset, setting])
+        await db_session.flush()
+        device.group_id = group.id
         await db_session.commit()
 
         resp = await client.post("/api/schedules", json={
             "name": "End Me",
-            "device_id": device.id,
+            "group_id": str(group.id),
             "asset_id": str(asset.id),
             "start_time": "08:00",
             "end_time": "17:00",
@@ -659,13 +668,15 @@ class TestBuildDeviceSyncSkipped:
     async def _setup(self, db):
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="skip-test.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="skp")
+        group = DeviceGroup(name="Skip Group")
         device = Device(id="skip-pi-01", name="Skip Test", status=DeviceStatus.ADOPTED)
-        db.add_all([setting, asset, device])
+        db.add_all([setting, asset, group, device])
         await db.flush()
+        device.group_id = group.id
 
         sched = Schedule(
             name="Skippable",
-            device_id="skip-pi-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),
@@ -710,15 +721,17 @@ class TestNowPlayingCleanup:
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="test-video.mp4", asset_type=AssetType.VIDEO,
                       size_bytes=1000, checksum="abc123")
+        group = DeviceGroup(name="Cleanup Group")
         device = Device(id="np-cleanup-01", name="Cleanup Test",
                         status=DeviceStatus.ADOPTED)
-        db_session.add_all([setting, asset, device])
+        db_session.add_all([setting, asset, group, device])
         await db_session.flush()
+        device.group_id = group.id
 
         # Create schedule
         sched = Schedule(
             name="Play Now Test",
-            device_id="np-cleanup-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(0, 0),
             end_time=time(23, 59),
@@ -791,14 +804,16 @@ class TestNowPlayingCleanup:
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="fk-test.mp4", asset_type=AssetType.VIDEO,
                       size_bytes=1000, checksum="fk123")
+        group = DeviceGroup(name="FK Group")
         device = Device(id="np-fk-01", name="FK Test",
                         status=DeviceStatus.ADOPTED)
-        db_session.add_all([setting, asset, device])
+        db_session.add_all([setting, asset, group, device])
         await db_session.flush()
+        device.group_id = group.id
 
         sched = Schedule(
             name="Will Be Deleted",
-            device_id="np-fk-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(0, 0),
             end_time=time(23, 59),
@@ -1081,17 +1096,19 @@ class TestMissedGracePeriod:
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="grace.mp4", asset_type=AssetType.VIDEO,
                       size_bytes=1000, checksum="grace1")
+        group = DeviceGroup(name="Grace Group")
         device = Device(id="grace-dev-01", name="Grace Device",
                         status=DeviceStatus.ADOPTED)
         # A second device that IS connected (so scheduler doesn't skip)
         dummy = Device(id="grace-dummy", name="Dummy",
                        status=DeviceStatus.ADOPTED)
-        db_session.add_all([setting, asset, device, dummy])
+        db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
+        device.group_id = group.id
 
         sched = Schedule(
             name="Grace Test",
-            device_id="grace-dev-01",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(0, 0),
             end_time=time(23, 59, 59),
@@ -1133,16 +1150,18 @@ class TestMissedGracePeriod:
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="grace2.mp4", asset_type=AssetType.VIDEO,
                       size_bytes=1000, checksum="grace2")
+        group = DeviceGroup(name="Grace Group 2")
         device = Device(id="grace-dev-02", name="Grace Device 2",
                         status=DeviceStatus.ADOPTED)
         dummy = Device(id="grace-dummy-2", name="Dummy 2",
                        status=DeviceStatus.ADOPTED)
-        db_session.add_all([setting, asset, device, dummy])
+        db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
+        device.group_id = group.id
 
         sched = Schedule(
             name="Grace Test 2",
-            device_id="grace-dev-02",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(0, 0),
             end_time=time(23, 59, 59),
@@ -1183,14 +1202,16 @@ class TestMissedGracePeriod:
         setting = CMSSetting(key="timezone", value="UTC")
         asset = Asset(filename="grace3.mp4", asset_type=AssetType.VIDEO,
                       size_bytes=1000, checksum="grace3")
+        group = DeviceGroup(name="Grace Group 3")
         device = Device(id="grace-dev-03", name="Grace Device 3",
                         status=DeviceStatus.ADOPTED)
-        db_session.add_all([setting, asset, device])
+        db_session.add_all([setting, asset, group, device])
         await db_session.flush()
+        device.group_id = group.id
 
         sched = Schedule(
             name="Grace Test 3",
-            device_id="grace-dev-03",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(0, 0),
             end_time=time(23, 59, 59),

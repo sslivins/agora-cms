@@ -131,6 +131,10 @@ class TestScheduleSync:
         run_async(register())
         api.post("/api/devices/sched-sync-001/adopt")
 
+        group_resp = api.post("/api/devices/groups/", json={"name": "Group-sched-sync-001"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/sched-sync-001", json={"group_id": group_id})
+
         # Upload a test asset (fake content — probe will fail but asset still created)
         api.create_asset("sync-test.mp4")
         assets = api.get("/api/assets")
@@ -140,7 +144,7 @@ class TestScheduleSync:
 
         resp = api.post("/api/schedules", json={
             "name": "Device Sync Test",
-            "device_id": "sched-sync-001",
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "00:00",
             "end_time": "23:59",

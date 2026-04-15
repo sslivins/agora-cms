@@ -213,20 +213,25 @@ class TestDeviceCRUD:
         assert resp.status_code == 404
 
     async def test_delete_device_with_schedules(self, client, db_session):
-        """Deleting a device that has schedules should succeed and remove the schedules."""
+        """Deleting a device that has device_assets should succeed even if
+        the device's group has schedules (schedules are group-level now)."""
         from datetime import time
         from cms.models.asset import Asset, AssetType
-        from cms.models.device import Device, DeviceStatus
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
         from cms.models.schedule import Schedule
 
-        device = Device(id="del-sched-pi", name="Del Sched", status=DeviceStatus.ADOPTED)
+        group = DeviceGroup(name="Del Sched Group")
+        db_session.add(group)
+        await db_session.flush()
+
+        device = Device(id="del-sched-pi", name="Del Sched", status=DeviceStatus.ADOPTED, group_id=group.id)
         asset = Asset(filename="test.mp4", asset_type=AssetType.VIDEO, size_bytes=5000, checksum="abc")
         db_session.add_all([device, asset])
         await db_session.flush()
 
         schedule = Schedule(
             name="Test Schedule",
-            device_id="del-sched-pi",
+            group_id=group.id,
             asset_id=asset.id,
             start_time=time(9, 0),
             end_time=time(17, 0),

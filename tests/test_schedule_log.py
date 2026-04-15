@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
-from cms.models.device import Device, DeviceStatus
+from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 
@@ -83,14 +83,16 @@ class TestScheduleLogModel:
 
     async def test_with_foreign_keys(self, db):
         """schedule_id and device_id link to real records when available."""
+        group = DeviceGroup(name="Log Test Group")
         device = Device(id="log-pi", name="Log Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="clip.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="abc")
-        db.add_all([device, asset])
+        db.add_all([group, device, asset])
         await db.flush()
+        device.group_id = group.id
 
         schedule = Schedule(
             name="Linked Schedule",
-            device_id=device.id,
+            group_id=group.id,
             asset_id=asset.id,
             start_time=datetime.strptime("08:00", "%H:%M").time(),
             end_time=datetime.strptime("12:00", "%H:%M").time(),
@@ -149,14 +151,16 @@ class TestLogEventHelper:
     async def test_log_event_with_ids(self, db):
         from cms.services.scheduler import _log_event
 
+        group = DeviceGroup(name="Log Event Group")
         device = Device(id="log-dev-1", name="Log Dev", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="log.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="log1")
-        db.add_all([device, asset])
+        db.add_all([group, device, asset])
         await db.flush()
+        device.group_id = group.id
 
         schedule = Schedule(
             name="Test",
-            device_id=device.id,
+            group_id=group.id,
             asset_id=asset.id,
             start_time=datetime.strptime("08:00", "%H:%M").time(),
             end_time=datetime.strptime("12:00", "%H:%M").time(),
@@ -186,14 +190,16 @@ class TestEndNowLogsSkipped:
     """Test that the end-now API endpoint logs SKIPPED events."""
 
     async def _seed(self, db_session):
+        group = DeviceGroup(name="Skip Group")
         device = Device(id="skip-pi", name="Skip Test", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="skip-video.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ccc")
-        db_session.add_all([device, asset])
+        db_session.add_all([group, device, asset])
         await db_session.flush()
+        device.group_id = group.id
 
         schedule = Schedule(
             name="Skippable Schedule",
-            device_id=device.id,
+            group_id=group.id,
             asset_id=asset.id,
             start_time=datetime.strptime("00:00", "%H:%M").time(),
             end_time=datetime.strptime("23:59", "%H:%M").time(),

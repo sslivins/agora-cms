@@ -18,6 +18,10 @@ def _ensure_device_and_asset(api, ws_url, device_id):
     run_async(register())
     api.post(f"/api/devices/{device_id}/adopt")
 
+    group_resp = api.post("/api/devices/groups/", json={"name": f"Group-{device_id}"})
+    group_id = group_resp.json()["id"]
+    api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
+
     assets = api.get("/api/assets")
     if not assets.json():
         api.create_asset("e2e-expired-test.mp4")
@@ -25,7 +29,7 @@ def _ensure_device_and_asset(api, ws_url, device_id):
         if not assets.json():
             pytest.skip("Could not create test asset")
 
-    return assets.json()[0]
+    return assets.json()[0], group_id
 
 
 class TestExpiredSchedulesPanel:
@@ -33,13 +37,13 @@ class TestExpiredSchedulesPanel:
 
     def test_expired_schedule_in_expired_panel(self, page: Page, api, ws_url):
         """A schedule with past end_date appears under 'Expired Schedules'."""
-        asset = _ensure_device_and_asset(api, ws_url, "exp-e2e-001")
+        asset, group_id = _ensure_device_and_asset(api, ws_url, "exp-e2e-001")
 
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
         week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
         resp = api.post("/api/schedules", json={
             "name": "E2E Past Event",
-            "device_id": "exp-e2e-001",
+            "group_id": group_id,
             "asset_id": asset["id"],
             "start_time": "09:00",
             "end_time": "17:00",
@@ -61,7 +65,7 @@ class TestExpiredSchedulesPanel:
 
     def test_no_expired_panel_without_expired_schedules(self, page: Page, api, ws_url):
         """Panel should not appear when all schedules are active."""
-        _ensure_device_and_asset(api, ws_url, "exp-e2e-002")
+        _, group_id = _ensure_device_and_asset(api, ws_url, "exp-e2e-002")
 
         # Clean up any existing schedules
         for s in api.get("/api/schedules").json():
@@ -71,7 +75,7 @@ class TestExpiredSchedulesPanel:
         asset = api.get("/api/assets").json()[0]
         api.post("/api/schedules", json={
             "name": "E2E Active Only",
-            "device_id": "exp-e2e-002",
+            "group_id": group_id,
             "asset_id": asset["id"],
             "start_time": "08:00",
             "end_time": "20:00",
@@ -85,12 +89,12 @@ class TestExpiredSchedulesPanel:
 
     def test_expired_schedule_edit_button_works(self, page: Page, api, ws_url):
         """Clicking Edit on an expired schedule should open the edit modal."""
-        asset = _ensure_device_and_asset(api, ws_url, "exp-e2e-003")
+        asset, group_id = _ensure_device_and_asset(api, ws_url, "exp-e2e-003")
 
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
         api.post("/api/schedules", json={
             "name": "E2E Editable Expired",
-            "device_id": "exp-e2e-003",
+            "group_id": group_id,
             "asset_id": asset["id"],
             "start_time": "10:00",
             "end_time": "11:00",
@@ -111,12 +115,12 @@ class TestExpiredSchedulesPanel:
 
     def test_expired_schedule_delete(self, page: Page, api, ws_url):
         """Deleting an expired schedule should remove it from the panel."""
-        asset = _ensure_device_and_asset(api, ws_url, "exp-e2e-004")
+        asset, group_id = _ensure_device_and_asset(api, ws_url, "exp-e2e-004")
 
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
         resp = api.post("/api/schedules", json={
             "name": "E2E Delete Expired",
-            "device_id": "exp-e2e-004",
+            "group_id": group_id,
             "asset_id": asset["id"],
             "start_time": "14:00",
             "end_time": "15:00",

@@ -76,7 +76,6 @@ def schedule_json(s):
         "id": str(s.id),
         "name": s.name,
         "asset_id": str(s.asset_id),
-        "device_id": s.device_id,
         "group_id": str(s.group_id) if s.group_id else None,
         "start_time": s.start_time.strftime("%H:%M"),
         "end_time": s.end_time.strftime("%H:%M"),
@@ -408,7 +407,6 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
-            selectinload(Schedule.device),
             selectinload(Schedule.group),
         )
         .where(Schedule.enabled == True)
@@ -417,9 +415,6 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         if group_ids:
             upcoming_query = upcoming_query.where(
                 Schedule.group_id.in_(group_ids)
-                | Schedule.device_id.in_(
-                    select(Device.id).where(Device.group_id.in_(group_ids))
-                )
             )
         else:
             upcoming_query = upcoming_query.where(sqlalchemy.false())
@@ -573,7 +568,6 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
-            selectinload(Schedule.device),
             selectinload(Schedule.group),
         )
         .where(Schedule.enabled == True)
@@ -582,9 +576,6 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         if group_ids:
             upcoming_q = upcoming_q.where(
                 Schedule.group_id.in_(group_ids)
-                | Schedule.device_id.in_(
-                    select(Device.id).where(Device.group_id.in_(group_ids))
-                )
             )
         else:
             upcoming_q = upcoming_q.where(sqlalchemy.false())
@@ -960,7 +951,6 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         select(Schedule)
         .options(
             selectinload(Schedule.asset),
-            selectinload(Schedule.device),
             selectinload(Schedule.group),
         )
         .order_by(Schedule.priority.desc(), Schedule.name)
@@ -969,9 +959,6 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         if group_ids:
             sched_query = sched_query.where(
                 Schedule.group_id.in_(group_ids)
-                | Schedule.device_id.in_(
-                    select(Device.id).where(Device.group_id.in_(group_ids))
-                )
             )
         else:
             sched_query = sched_query.where(sqlalchemy.false())
@@ -1017,11 +1004,6 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     for a in assets:
         a._group_ids_json = asset_group_map.get(str(a.id), [])
 
-    devices_q = await db.execute(
-        select(Device).where(Device.status == DeviceStatus.ADOPTED).order_by(Device.name)
-    )
-    devices = devices_q.scalars().all()
-
     groups_query_sched = select(DeviceGroup).order_by(DeviceGroup.name)
     if not is_admin:
         if group_ids:
@@ -1030,14 +1012,6 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
             groups_query_sched = groups_query_sched.where(sqlalchemy.false())
     groups_q = await db.execute(groups_query_sched)
     groups = groups_q.scalars().all()
-
-    # Scope devices to user's groups
-    if not is_admin:
-        if group_ids:
-            group_id_set = set(group_ids)
-            devices = [d for d in devices if d.group_id and d.group_id in group_id_set]
-        else:
-            devices = []
 
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     timezone_saved = (await get_setting(db, SETTING_TIMEZONE)) is not None
@@ -1073,7 +1047,6 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "schedules": active_schedules,
         "expired_schedules": expired_schedules,
         "assets": assets,
-        "devices": devices,
         "groups": groups,
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,

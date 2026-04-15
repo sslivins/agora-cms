@@ -107,14 +107,19 @@ class TestDeleteDeviceWithSchedules:
 
         api.post("/api/devices/del-e2e-001/adopt")
 
-        # Create an asset and schedule targeting this device
+        # Create a group and assign the device to it
+        group_resp = api.post("/api/devices/groups/", json={"name": "Del Test Group"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/del-e2e-001", json={"group_id": group_id})
+
+        # Create an asset and schedule targeting the group
         asset_resp = api.create_asset()
         assert asset_resp.status_code == 201
         asset_id = asset_resp.json()["id"]
 
         sched_resp = api.post("/api/schedules", json={
             "name": "Delete Test Schedule",
-            "device_id": "del-e2e-001",
+            "group_id": group_id,
             "asset_id": asset_id,
             "start_time": "09:00",
             "end_time": "17:00",
