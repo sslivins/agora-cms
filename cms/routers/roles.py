@@ -64,7 +64,12 @@ async def create_role(
     db.add(role)
     await db.flush()
     await audit_log(db, user=_user, action="role.create", resource_type="role",
-                    resource_id=str(role.id), details={"name": data.name},
+                    resource_id=str(role.id),
+                    details={
+                        "name": data.name,
+                        "permissions_count": len(data.permissions),
+                        "actor_username": _user.username,
+                    },
                     request=request)
     await db.commit()
     await db.refresh(role)
@@ -102,9 +107,12 @@ async def update_role(
     if data.description is not None:
         role.description = data.description
 
+    details = data.model_dump(exclude_unset=True)
+    details["role_name"] = role.name
+    details["actor_username"] = _user.username
     await audit_log(db, user=_user, action="role.update", resource_type="role",
                     resource_id=str(role_id),
-                    details=data.model_dump(exclude_unset=True),
+                    details=details,
                     request=request)
     await db.commit()
     await db.refresh(role)
@@ -134,7 +142,11 @@ async def delete_role(
         raise HTTPException(status_code=409, detail="Cannot delete role with assigned users")
 
     await audit_log(db, user=_user, action="role.delete", resource_type="role",
-                    resource_id=str(role_id), details={"name": role.name},
+                    resource_id=str(role_id),
+                    details={
+                        "name": role.name,
+                        "actor_username": _user.username,
+                    },
                     request=request)
     await db.delete(role)
     await db.commit()

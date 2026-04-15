@@ -13,6 +13,7 @@ class AuditLogRead(BaseModel):
     user_id: uuid.UUID | None = None
     username: str | None = None
     action: str
+    description: str | None = None
     resource_type: str
     resource_id: str | None = None
     details: dict | None = None

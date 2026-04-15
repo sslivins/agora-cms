@@ -19,6 +19,76 @@ if TYPE_CHECKING:
     from cms.models.user import User
 
 
+# Keys added by callers for context but not useful in user-facing descriptions
+_INTERNAL_DETAIL_KEYS = frozenset({
+    "actor_username", "target_username", "target_display_name",
+    "owner_username", "owner_id", "on_behalf_of", "auth_method",
+    "role_name", "permissions_count",
+})
+
+
+def build_description(action: str, details: dict | None = None) -> str:
+    """Build a human-readable description from action + details."""
+    d = details or {}
+
+    target = d.get("target_username") or d.get("email") or d.get("target_display_name")
+    actor = d.get("actor_username")
+
+    if action == "user.create":
+        msg = f"Created user '{target}'" if target else "Created a user"
+        email = d.get("email")
+        if email and target and email != target:
+            msg += f" ({email})"
+        return msg
+
+    if action == "user.update":
+        label = f"user '{target}'" if target else "a user"
+        if d.get("is_active") is False:
+            return f"Deactivated {label}"
+        if d.get("is_active") is True:
+            return f"Activated {label}"
+        changes = [k for k in d if k not in _INTERNAL_DETAIL_KEYS and k != "email"]
+        if changes:
+            return f"Updated {label} ({', '.join(changes)})"
+        return f"Updated {label}"
+
+    if action == "user.delete":
+        msg = f"Deleted user '{target}'" if target else "Deleted a user"
+        email = d.get("email")
+        if email and target and email != target:
+            msg += f" ({email})"
+        return msg
+
+    if action == "role.create":
+        name = d.get("name", "unknown")
+        count = d.get("permissions_count")
+        if count is not None:
+            return f"Created role '{name}' with {count} permissions"
+        return f"Created role '{name}'"
+
+    if action == "role.update":
+        name = d.get("role_name") or d.get("name") or "unknown"
+        changes = [k for k in d if k not in _INTERNAL_DETAIL_KEYS and k != "name"]
+        if changes:
+            return f"Updated role '{name}' ({', '.join(changes)})"
+        return f"Updated role '{name}'"
+
+    if action == "role.delete":
+        name = d.get("name", "unknown")
+        return f"Deleted role '{name}'"
+
+    if action == "api_key.regenerate":
+        key_name = d.get("key_name", "unknown")
+        return f"Regenerated API key '{key_name}'"
+
+    if action == "api_key.revoke":
+        key_name = d.get("key_name", "unknown")
+        return f"Revoked API key '{key_name}'"
+
+    # Fallback: titlecase the action
+    return action.replace(".", " ").replace("_", " ").title()
+
+
 async def audit_log(
     db: AsyncSession,
     *,
@@ -46,12 +116,15 @@ async def audit_log(
         details["on_behalf_of"] = request.state.on_behalf_of
         details["auth_method"] = "mcp_service"
 
+    description = build_description(action, details)
+
     entry = AuditLog(
         user_id=user.id if user else None,
         action=action,
         resource_type=resource_type,
         resource_id=resource_id,
         details=details if details else None,
+        description=description,
         ip_address=ip,
     )
     db.add(entry)

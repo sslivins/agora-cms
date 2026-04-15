@@ -173,7 +173,13 @@ async def create_user(
         db.add(UserGroup(user_id=user.id, group_id=gid))
 
     await audit_log(db, user=_user, action="user.create", resource_type="user",
-                    resource_id=str(user.id), details={"email": data.email},
+                    resource_id=str(user.id),
+                    details={
+                        "email": data.email,
+                        "target_username": username,
+                        "target_display_name": data.display_name,
+                        "actor_username": _user.username,
+                    },
                     request=request)
     await db.commit()
     await db.refresh(user, ["role"])
@@ -240,6 +246,9 @@ async def update_user(
             db.add(UserGroup(user_id=user.id, group_id=gid))
 
     details = data.model_dump(exclude_unset=True, exclude={"password"}, mode="json")
+    details["target_username"] = user.username
+    details["target_display_name"] = user.display_name
+    details["actor_username"] = _admin.username
     await audit_log(db, user=_admin, action="user.update", resource_type="user",
                     resource_id=str(user_id),
                     details=details,
@@ -271,7 +280,13 @@ async def delete_user(
     await db.execute(delete(UserGroup).where(UserGroup.user_id == user_id))
 
     await audit_log(db, user=_admin, action="user.delete", resource_type="user",
-                    resource_id=str(user_id), details={"email": user.email},
+                    resource_id=str(user_id),
+                    details={
+                        "email": user.email,
+                        "target_username": user.username,
+                        "target_display_name": user.display_name,
+                        "actor_username": _admin.username,
+                    },
                     request=request)
     await db.delete(user)
     await db.commit()

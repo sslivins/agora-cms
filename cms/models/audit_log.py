@@ -23,6 +23,7 @@ class AuditLog(Base):
     resource_type: Mapped[str] = mapped_column(String(50), default="")
     resource_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

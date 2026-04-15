@@ -27,24 +27,36 @@ async def list_audit_logs(
     user_id: uuid.UUID | None = Query(None, description="Filter by acting user"),
     since: datetime | None = Query(None, description="Only entries after this timestamp"),
     until: datetime | None = Query(None, description="Only entries before this timestamp"),
+    q: str | None = Query(None, description="Free-text search across description, action, resource_type"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    q = select(AuditLog).options(selectinload(AuditLog.user))
+    from sqlalchemy import or_
+
+    stmt = select(AuditLog).options(selectinload(AuditLog.user))
 
     if action:
-        q = q.where(AuditLog.action == action)
+        stmt = stmt.where(AuditLog.action == action)
     if resource_type:
-        q = q.where(AuditLog.resource_type == resource_type)
+        stmt = stmt.where(AuditLog.resource_type == resource_type)
     if user_id:
-        q = q.where(AuditLog.user_id == user_id)
+        stmt = stmt.where(AuditLog.user_id == user_id)
     if since:
-        q = q.where(AuditLog.created_at >= since)
+        stmt = stmt.where(AuditLog.created_at >= since)
     if until:
-        q = q.where(AuditLog.created_at <= until)
+        stmt = stmt.where(AuditLog.created_at <= until)
+    if q and q.strip():
+        like_q = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                AuditLog.description.ilike(like_q),
+                AuditLog.action.ilike(like_q),
+                AuditLog.resource_type.ilike(like_q),
+            )
+        )
 
-    q = q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
-    result = await db.execute(q)
+    stmt = stmt.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
+    result = await db.execute(stmt)
     entries = result.scalars().all()
 
     return [
@@ -53,6 +65,7 @@ async def list_audit_logs(
             user_id=e.user_id,
             username=e.user.username if e.user else None,
             action=e.action,
+            description=e.description,
             resource_type=e.resource_type,
             resource_id=e.resource_id,
             details=e.details,

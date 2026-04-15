@@ -1505,6 +1505,12 @@ async def history_page(
 async def audit_page(
     request: Request,
     page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=100),
+    q: str = Query(""),
+    action: str = Query(""),
+    user_id: str = Query(""),
+    since: str = Query(""),
+    until: str = Query(""),
     _user: User = Depends(require_permission("audit:read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1513,27 +1519,122 @@ async def audit_page(
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
     tz = ZoneInfo(tz_name)
 
-    per_page = 50
-    offset = (page - 1) * per_page
+    # Build filter conditions
+    conditions = []
+    if q.strip():
+        like_q = f"%{q.strip()}%"
+        from sqlalchemy import or_
+        conditions.append(
+            or_(
+                AuditLog.description.ilike(like_q),
+                AuditLog.action.ilike(like_q),
+                AuditLog.resource_type.ilike(like_q),
+            )
+        )
+    if action.strip():
+        conditions.append(AuditLog.action == action.strip())
+    if user_id.strip():
+        uval = user_id.strip()
+        # Try as UUID (real user FK), else match actor_username in details
+        import uuid as _uuid
+        try:
+            uid = _uuid.UUID(uval)
+            conditions.append(AuditLog.user_id == uid)
+        except ValueError:
+            conditions.append(
+                AuditLog.details["actor_username"].astext == uval
+            )
+    if since.strip():
+        from datetime import datetime as _dt
+        try:
+            since_dt = _dt.fromisoformat(since.strip())
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=tz)
+            conditions.append(AuditLog.created_at >= since_dt)
+        except ValueError:
+            pass
+    if until.strip():
+        from datetime import datetime as _dt
+        try:
+            until_dt = _dt.fromisoformat(until.strip())
+            if until_dt.tzinfo is None:
+                until_dt = until_dt.replace(tzinfo=tz)
+            conditions.append(AuditLog.created_at <= until_dt)
+        except ValueError:
+            pass
 
-    count_result = await db.execute(select(func.count()).select_from(AuditLog))
+    # Count with filters
+    count_q = select(func.count()).select_from(AuditLog)
+    for cond in conditions:
+        count_q = count_q.where(cond)
+    count_result = await db.execute(count_q)
     total = count_result.scalar()
     total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
 
-    result = await db.execute(
+    offset = (page - 1) * per_page
+    query = (
         select(AuditLog)
         .options(selectinload(AuditLog.user))
         .order_by(AuditLog.created_at.desc())
         .limit(per_page)
         .offset(offset)
     )
+    for cond in conditions:
+        query = query.where(cond)
+    result = await db.execute(query)
     entries = result.scalars().all()
+
+    # Distinct actions and users for filter dropdowns
+    actions_result = await db.execute(
+        select(AuditLog.action).distinct().order_by(AuditLog.action)
+    )
+    available_actions = [r[0] for r in actions_result.all()]
+
+    # Build user dropdown: combine real User records with actor_username from details
+    from cms.models.user import User as UserModel
+    from sqlalchemy import cast, String
+
+    # Real users linked by FK
+    user_ids_result = await db.execute(
+        select(AuditLog.user_id).distinct().where(AuditLog.user_id.isnot(None))
+    )
+    audit_user_ids = [r[0] for r in user_ids_result.all()]
+    user_map: dict[str, str] = {}  # value -> display label
+    if audit_user_ids:
+        users_result = await db.execute(
+            select(UserModel).where(UserModel.id.in_(audit_user_ids))
+        )
+        for u in users_result.scalars().all():
+            user_map[str(u.id)] = u.display_name or u.username
+
+    # Also pull distinct actor_username from details JSON
+    actor_result = await db.execute(
+        select(AuditLog.details["actor_username"].astext)
+        .distinct()
+        .where(AuditLog.details["actor_username"].astext.isnot(None))
+        .where(AuditLog.details["actor_username"].astext != "")
+    )
+    for r in actor_result.all():
+        name = r[0]
+        if name and name not in user_map.values():
+            user_map[name] = name
+
+    audit_users = sorted(user_map.items(), key=lambda x: x[1].lower())
 
     return templates.TemplateResponse(request, "audit.html", {
         "active_tab": "audit",
         "tz": tz,
         "entries": entries,
         "page": page,
+        "per_page": per_page,
         "total_pages": total_pages,
         "total": total,
+        "filter_q": q.strip(),
+        "filter_action": action.strip(),
+        "filter_user_id": user_id.strip(),
+        "filter_since": since.strip(),
+        "filter_until": until.strip(),
+        "available_actions": available_actions,
+        "audit_users": audit_users,
     })
