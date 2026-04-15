@@ -47,7 +47,7 @@
         {% if 'devices:write' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onfocus="this.dataset.prev = this.value" onchange="setDefaultAsset('{{ d.id }}', this.value, this)">
             <option value="">None (use group)</option>
-            {% for a in assets %}
+            {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
             <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
             {% endfor %}
         </select>
@@ -333,7 +333,7 @@
                 {% if 'groups:write' in user_perms %}
                 <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
                     <option value="">No default asset</option>
-                    {% for a in assets %}
+                    {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
                     <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
                     {% endfor %}
                 </select>

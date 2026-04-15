@@ -28,7 +28,7 @@
                 <select name="asset_id" required onchange="onAssetTypeChange(this)">
                     <option value="">Select asset...</option>
                     {% for a in assets %}
-                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">{{ a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% elif a.asset_type.value == 'webpage' %} 🌐{% endif %}</option>
+                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">{{ a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% elif a.asset_type.value == 'webpage' %} 🌐{% elif a.asset_type.value == 'stream' %} 📡{% endif %}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -270,6 +270,7 @@ function filterAssetsByTarget() {
             opt.dataset.assetType = a.type || '';
             let label = a.name;
             if (a.type === 'webpage') label += ' 🌐';
+            else if (a.type === 'stream') label += ' 📡';
             else if (a.duration) label += ` (${Math.floor(a.duration/60)}:${String(Math.round(a.duration%60)).padStart(2,'0')})`;
             opt.textContent = label;
             if (a.id === currentVal) opt.selected = true;
@@ -778,6 +779,7 @@ function editSchedule(s) {
     const assetOpts = _scheduleData.assets.map(a => {
         let label = a.name;
         if (a.type === 'webpage') label += ' 🌐';
+        else if (a.type === 'stream') label += ' 📡';
         else if (a.duration) {
             const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
             label += ` (${m}:${String(s).padStart(2,'0')})`;

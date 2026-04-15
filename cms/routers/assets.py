@@ -508,6 +508,103 @@ async def create_webpage_asset(
     return asset
 
 
+@router.post("/stream", response_model=AssetOut, status_code=201)
+async def create_stream_asset(
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a stream asset from a video stream URL (HLS, DASH, RTMP, etc.)."""
+    body = await request.json()
+    url = body.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Stream URL is required")
+
+    # Stream URLs support more schemes than webpages
+    _allowed_schemes = ("http", "https", "rtmp", "rtmps", "rtsp", "rtsps", "mms", "mmsh")
+    if not any(url.startswith(s + "://") for s in _allowed_schemes):
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL must start with one of: {', '.join(s + '://' for s in _allowed_schemes)}",
+        )
+    if len(url) > 2048:
+        raise HTTPException(status_code=400, detail="URL too long (max 2048 characters)")
+
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL must contain a valid hostname")
+    # Block loopback/internal addresses (SSRF risk)
+    hostname = parsed.hostname or ""
+    _blocked = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    if hostname in _blocked or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
+
+    # Check for duplicate stream URL
+    dup_q = await db.execute(
+        select(Asset).where(Asset.url == url, Asset.asset_type == AssetType.STREAM)
+    )
+    if dup_q.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="A stream asset with this URL already exists")
+
+    is_live = body.get("is_live", True)
+
+    # Use provided name or derive from URL
+    name = body.get("name", "").strip()
+    if not name:
+        name = parsed.netloc + (parsed.path if parsed.path != "/" else "")
+        if len(name) > 200:
+            name = name[:200]
+
+    # Check for duplicate filename
+    existing = await db.execute(select(Asset).where(Asset.filename == name))
+    if existing.scalar_one_or_none():
+        import hashlib as _hl
+        suffix = _hl.md5(url.encode()).hexdigest()[:6]
+        name = f"{name} ({suffix})"
+
+    # Resolve group UUIDs
+    resolved_groups: list[uuid.UUID] = []
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    raw_ids = body.get("group_ids", [])
+    if isinstance(raw_ids, str):
+        raw_ids = [g.strip() for g in raw_ids.split(",") if g.strip()]
+    group_id = body.get("group_id")
+    if group_id and not raw_ids:
+        raw_ids = [group_id]
+    for gid in raw_ids:
+        try:
+            parsed_id = uuid.UUID(str(gid))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid group_id: {gid}")
+        if not is_admin and parsed_id not in user_groups:
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        resolved_groups.append(parsed_id)
+
+    make_global = (not resolved_groups and is_admin)
+
+    asset = Asset(
+        filename=name,
+        asset_type=AssetType.STREAM,
+        size_bytes=0,
+        checksum="",
+        url=url,
+        is_live=is_live,
+        is_global=make_global,
+        uploaded_by_user_id=user.id,
+    )
+    db.add(asset)
+    await db.flush()
+
+    for gid in resolved_groups:
+        db.add(GroupAsset(asset_id=asset.id, group_id=gid))
+
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
 async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     """Create pending AssetVariant rows for all device profiles."""
     result = await db.execute(select(DeviceProfile))

@@ -8,8 +8,14 @@
 </div>
 
 {% if 'assets:write' in user_perms %}
-<div class="card">
-    <h2>Upload</h2>
+<div class="card" style="padding:0; overflow:hidden;">
+    <div class="sub-tabs" style="margin-bottom:0;">
+        <a href="#" class="sub-tab active" onclick="event.preventDefault(); switchAddTab('upload')">Upload File</a>
+        <a href="#" class="sub-tab" onclick="event.preventDefault(); switchAddTab('webpage')">Webpage URL</a>
+        <a href="#" class="sub-tab" onclick="event.preventDefault(); switchAddTab('stream')">Video Stream</a>
+    </div>
+
+    <div id="add-tab-upload" class="tab-content active" style="padding:1.25rem;">
     <form id="upload-form" onsubmit="event.preventDefault(); uploadAsset(this)" enctype="multipart/form-data">
         <div class="upload-area" id="drop-zone">
             <p id="drop-label">Drag &amp; drop a file here, or</p>
@@ -45,10 +51,9 @@
         <div id="upload-status" class="form-status"></div>
         <button type="submit" class="btn btn-primary" id="upload-submit" style="margin-top:0.75rem" disabled>Upload</button>
     </form>
-</div>
+    </div>
 
-<div class="card">
-    <h2>Add Webpage URL</h2>
+    <div id="add-tab-webpage" class="tab-content" style="padding:1.25rem;">
     <form id="webpage-form" onsubmit="event.preventDefault(); addWebpageAsset(this)">
         <div class="form-group">
             <label for="webpage-url">URL</label>
@@ -77,6 +82,49 @@
         <div id="webpage-status" class="form-status"></div>
         <button type="submit" class="btn btn-primary" id="webpage-submit" style="margin-top:0.75rem">Add URL</button>
     </form>
+    </div>
+
+    <div id="add-tab-stream" class="tab-content" style="padding:1.25rem;">
+    <form id="stream-form" onsubmit="event.preventDefault(); addStreamAsset(this)">
+        <div class="form-group">
+            <label for="stream-url">Stream URL</label>
+            <input type="url" id="stream-url" name="url" placeholder="https://example.com/live/stream.m3u8" required class="form-control">
+            <small class="text-muted">Supports HLS (.m3u8), DASH (.mpd), RTMP, RTSP, and HTTP progressive streams</small>
+        </div>
+        <div class="form-group" style="margin-top:0.5rem;">
+            <label for="stream-name">Display Name <span class="text-muted">(optional)</span></label>
+            <input type="text" id="stream-name" name="name" placeholder="Auto-generated from URL if blank" class="form-control">
+        </div>
+        <div class="form-group" style="margin-top:0.5rem;">
+            <label style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer; white-space:nowrap;">
+                <span class="toggle-switch">
+                    <input type="checkbox" id="stream-is-live" name="is_live" checked>
+                    <span class="slider"></span>
+                </span>
+                Live stream
+                <span class="text-muted" title="When checked, streams directly to devices in real time. When unchecked, the stream is captured and converted to a video file for scheduled playback.">ⓘ</span>
+            </label>
+        </div>
+        {% if user_groups | length > 0 %}
+        <div style="margin-top:0.75rem;">
+            <label>Assign to groups</label>
+            <div id="stream-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; min-height:1.6rem; align-items:center;">
+                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                    <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('stream-group-popup')" title="Add group">+</button>
+                    <div id="stream-group-popup" class="group-popup" style="display:none;">
+                        {% for g in user_groups %}
+                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                onclick="event.stopPropagation(); pickStreamGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
+                        {% endfor %}
+                    </div>
+                </span>
+            </div>
+        </div>
+        {% endif %}
+        <div id="stream-status" class="form-status"></div>
+        <button type="submit" class="btn btn-primary" id="stream-submit" style="margin-top:0.75rem">Add Stream</button>
+    </form>
+    </div>
 </div>
 {% endif %}
 
@@ -118,7 +166,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if a.asset_type.value == 'webpage' %}
+                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
                     —
                     {% else %}
                     {% set mb = a.size_bytes / 1048576 %}
@@ -126,7 +174,7 @@
                     {% endif %}
                 </td>
                 <td data-live-variants="{{ a.id }}">
-                    {% if a.asset_type.value == 'webpage' %}
+                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
                     —
                     {% elif a.variant_total > 0 %}
                     {% if a.variant_failed > 0 and a.variant_ready > 0 %}
@@ -147,7 +195,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if a.asset_type.value == 'image' or a.asset_type.value == 'webpage' %}
+                    {% if a.asset_type.value == 'image' or a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
                     —
                     {% elif a.duration_seconds %}
                         {% set h = (a.duration_seconds // 3600) | int %}
@@ -161,6 +209,8 @@
                 <td class="actions" onclick="event.stopPropagation()">
                     {% if a.asset_type.value == 'webpage' %}
                     <a href="{{ a.url }}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open URL</a>
+                    {% elif a.asset_type.value == 'stream' %}
+                    <a href="{{ a.url }}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open Stream</a>
                     {% else %}
                     <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
                     {% endif %}
@@ -185,7 +235,7 @@
                 <td></td>
                 <td colspan="7">
                     <div class="detail-grid">
-                        {% if a.asset_type.value == 'webpage' and a.url %}
+                        {% if (a.asset_type.value == 'webpage' or a.asset_type.value == 'stream') and a.url %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">URL</span>
                             <span class="detail-value"><a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a></span>
@@ -361,6 +411,16 @@
 {% block scripts %}
 <script>
 (function() {
+    // Tab switching for add-asset panel
+    window.switchAddTab = function(tab) {
+        document.querySelectorAll('[id^="add-tab-"]').forEach(el => el.classList.remove('active'));
+        document.getElementById('add-tab-' + tab).classList.add('active');
+        const tabs = document.querySelectorAll('.card .sub-tabs .sub-tab');
+        tabs.forEach(t => t.classList.remove('active'));
+        const labels = {upload: 'Upload File', webpage: 'Webpage URL', stream: 'Video Stream'};
+        tabs.forEach(t => { if (t.textContent.trim() === labels[tab]) t.classList.add('active'); });
+    };
+
     // User context for scope rebuilds
     const __userGroups = [{% for g in user_groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}];
     const __isAdmin = {{ 'true' if is_admin else 'false' }};

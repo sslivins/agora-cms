@@ -408,12 +408,12 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 )
                 sched = sched_result.scalar_one_or_none()
 
-                # For webpage assets the device sends the raw URL as
+                # For webpage/stream assets the device sends the raw URL as
                 # ``asset``; prefer the human-readable display name
                 # stored in the DB (original_filename / filename).
                 display_name = asset_name
                 if sched and sched.asset:
-                    if sched.asset.asset_type == AssetType.WEBPAGE:
+                    if sched.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM):
                         display_name = (
                             sched.asset.original_filename
                             or sched.asset.filename
@@ -458,7 +458,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 )
                 ended_sched = ended_sched_result.scalar_one_or_none()
                 if ended_sched and ended_sched.asset:
-                    if ended_sched.asset.asset_type == AssetType.WEBPAGE:
+                    if ended_sched.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM):
                         ended_display_name = (
                             ended_sched.asset.original_filename
                             or ended_sched.asset.filename

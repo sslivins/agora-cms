@@ -248,12 +248,6 @@ async function assignGroup(deviceId, groupId) {
 }
 
 async function setDefaultAsset(deviceId, assetId, selectEl) {
-    if (isDevicePlaying(deviceId)) {
-        if (!await showConfirm("This device is currently playing.\n\nChanging the default asset will interrupt playback. Continue?")) {
-            if (selectEl) selectEl.value = selectEl.dataset.prev || "";
-            return;
-        }
-    }
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Default asset updated");
     else showToast("Update failed", true);
@@ -795,6 +789,79 @@ function removeWebpageGroup(badge) {
     const gid = badge.dataset.groupId;
     badge.remove();
     const popup = document.getElementById("webpage-group-popup");
+    if (popup && gid) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "";
+        _syncPlusButton(popup);
+    }
+}
+
+// ── Stream asset functions ──
+async function addStreamAsset(form) {
+    const urlInput = document.getElementById("stream-url");
+    const nameInput = document.getElementById("stream-name");
+    const isLiveEl = document.getElementById("stream-is-live");
+    const statusEl = document.getElementById("stream-status");
+    const submitBtn = document.getElementById("stream-submit");
+    const url = urlInput.value.trim();
+    if (!url) return;
+
+    const badges = document.querySelectorAll("#stream-groups-badges .badge[data-group-id]");
+    const groupIds = Array.from(badges).map(b => b.dataset.groupId);
+
+    submitBtn.disabled = true;
+    statusEl.textContent = "Adding stream...";
+    statusEl.className = "form-status";
+
+    try {
+        const resp = await fetch("/api/assets/stream", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                url: url,
+                name: nameInput.value.trim(),
+                is_live: isLiveEl.checked,
+                group_ids: groupIds,
+            }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        statusEl.textContent = "✓ Stream added successfully";
+        statusEl.className = "form-status text-success";
+        urlInput.value = "";
+        nameInput.value = "";
+        setTimeout(() => location.reload(), 800);
+    } catch (e) {
+        statusEl.textContent = "✗ " + e.message;
+        statusEl.className = "form-status text-danger";
+        submitBtn.disabled = false;
+    }
+}
+
+function pickStreamGroup(gid, name) {
+    const container = document.getElementById("stream-groups-badges");
+    if (!container || container.querySelector(`.badge[data-group-id="${gid}"]`)) return;
+    const plusBtn = container.querySelector(".group-picker-wrap");
+    const badge = document.createElement("span");
+    badge.className = "badge badge-processing";
+    badge.dataset.groupId = gid;
+    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="removeStreamGroup(this.parentElement)">&times;</button>`;
+    container.insertBefore(badge, plusBtn);
+    const popup = document.getElementById("stream-group-popup");
+    if (popup) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "none";
+        _syncPlusButton(popup);
+    }
+    closeAllGroupPopups();
+}
+
+function removeStreamGroup(badge) {
+    const gid = badge.dataset.groupId;
+    badge.remove();
+    const popup = document.getElementById("stream-group-popup");
     if (popup && gid) {
         const btn = popup.querySelector(`[data-group-id="${gid}"]`);
         if (btn) btn.style.display = "";

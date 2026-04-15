@@ -258,7 +258,7 @@ async def run_migrations():
                 "ALTER TABLE assets ADD COLUMN url VARCHAR(2048)"
             ))
 
-        # -- Add 'WEBPAGE' value to assettype enum --
+        # -- Add 'WEBPAGE' and 'STREAM' values to assettype enum --
         asset_enum_exists = await conn.execute(
             text("SELECT 1 FROM pg_type WHERE typname = 'assettype'")
         )
@@ -268,6 +268,19 @@ async def run_migrations():
             )
             if not has_webpage.scalar():
                 await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'WEBPAGE'"))
+
+            has_stream = await conn.execute(
+                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'STREAM' AND enumtypid = 'assettype'::regtype")
+            )
+            if not has_stream.scalar():
+                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'STREAM'"))
+
+        # -- assets.is_live (stream live vs capture mode) --
+        has_is_live = await conn.run_sync(lambda c: _has_column(c, "assets", "is_live"))
+        if not has_is_live:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN is_live BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
 
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
