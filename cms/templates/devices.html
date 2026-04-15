@@ -337,7 +337,11 @@
                     <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
                     {% endfor %}
                 </select>
-                <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')"><span class="has-tooltip">Remove<span class="tooltip">Remove this group — devices will be ungrouped</span></span></button>
+                {% if g.schedule_count %}
+                <button class="btn btn-danger btn-sm" disabled><span class="has-tooltip">Delete<span class="tooltip">Cannot delete — used by {{ g.schedule_count }} schedule{{ 's' if g.schedule_count != 1 }}. Remove from all schedules first.</span></span></button>
+                {% else %}
+                <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')"><span class="has-tooltip">Delete<span class="tooltip">Delete this group — devices will be ungrouped</span></span></button>
+                {% endif %}
                 {% else %}
                 <span class="text-muted">{{ (assets | selectattr('id', 'equalto', g.default_asset_id) | first).filename if g.default_asset_id else 'No default asset' }}</span>
                 {% endif %}

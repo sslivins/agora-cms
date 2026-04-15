@@ -39,9 +39,9 @@ class TestGroupRemoveButtons:
         page.wait_for_load_state("domcontentloaded")
         expect(page.locator("strong", has_text="Remove Test Group")).to_be_visible(timeout=5000)
 
-        # Click the Remove button on the group header (not the per-device Remove buttons)
+        # Click the Delete button on the group header (not the per-device Remove buttons)
         group_panel = page.locator('[data-group-id="' + group_id + '"]')
-        remove_btn = group_panel.locator(".group-actions button", has_text="Remove")
+        remove_btn = group_panel.locator(".group-actions button", has_text="Delete")
         remove_btn.click()
 
         # Confirm the modal
@@ -111,3 +111,85 @@ class TestGroupRemoveButtons:
 
         # Device C should still exist on the page (ungrouped)
         expect(page.locator('[data-device-id="grp-rm-003"]').first).to_be_visible(timeout=3000)
+
+    def test_group_remove_blocked_by_schedule(self, page: Page, api, ws_url, e2e_server):
+        """Remove button should be disabled when a group has active schedules."""
+        self._register_and_adopt(api, ws_url, "grp-sched-001", "Sched Device")
+
+        resp = api.post("/api/devices/groups/", json={"name": "Scheduled Group"})
+        assert resp.status_code == 201
+        group_id = resp.json()["id"]
+        api.patch("/api/devices/grp-sched-001", json={"group_id": group_id})
+
+        # Create an asset and a schedule targeting this group
+        assets = api.get("/api/assets")
+        if not assets.json():
+            api.create_asset("grp-block-test.mp4")
+            assets = api.get("/api/assets")
+            if not assets.json():
+                pytest.skip("Could not create test asset")
+
+        sched_resp = api.post("/api/schedules", json={
+            "name": "Blocking Schedule",
+            "group_id": group_id,
+            "asset_id": assets.json()[0]["id"],
+            "start_time": "08:00",
+            "end_time": "20:00",
+        })
+        assert sched_resp.status_code == 201
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+
+        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        expect(group_panel).to_be_visible(timeout=5000)
+
+        # The Delete button should be disabled
+        remove_btn = group_panel.locator(".group-actions button:has-text('Delete')")
+        expect(remove_btn).to_be_visible(timeout=3000)
+        expect(remove_btn).to_be_disabled()
+
+        # Tooltip should mention schedule(s)
+        tooltip = remove_btn.locator(".tooltip")
+        expect(tooltip).to_contain_text("schedule")
+
+    def test_group_remove_enabled_after_schedule_deleted(self, page: Page, api, ws_url, e2e_server):
+        """Remove button should become enabled after the schedule referencing the group is deleted."""
+        self._register_and_adopt(api, ws_url, "grp-unsched-001", "Unsched Device")
+
+        resp = api.post("/api/devices/groups/", json={"name": "Was Scheduled Group"})
+        assert resp.status_code == 201
+        group_id = resp.json()["id"]
+        api.patch("/api/devices/grp-unsched-001", json={"group_id": group_id})
+
+        assets = api.get("/api/assets")
+        if not assets.json():
+            api.create_asset("grp-unblock-test.mp4")
+            assets = api.get("/api/assets")
+            if not assets.json():
+                pytest.skip("Could not create test asset")
+
+        sched_resp = api.post("/api/schedules", json={
+            "name": "Temp Schedule",
+            "group_id": group_id,
+            "asset_id": assets.json()[0]["id"],
+            "start_time": "08:00",
+            "end_time": "20:00",
+        })
+        assert sched_resp.status_code == 201
+        sched_id = sched_resp.json()["id"]
+
+        # Delete the schedule
+        del_resp = api.delete(f"/api/schedules/{sched_id}")
+        assert del_resp.status_code == 200
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+
+        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        expect(group_panel).to_be_visible(timeout=5000)
+
+        # The Delete button should now be enabled
+        remove_btn = group_panel.locator(".group-actions button", has_text="Delete")
+        expect(remove_btn).to_be_visible(timeout=3000)
+        expect(remove_btn).to_be_enabled()

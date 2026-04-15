@@ -366,6 +366,56 @@ class TestScheduleUI:
 
 
 @pytest.mark.asyncio
+class TestScheduleDeletePlayingWarning:
+    """Verify the schedules page injects _playingScheduleIds so the JS
+    delete confirmation can warn when a schedule is currently playing."""
+
+    async def _seed(self, db_session):
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.models.schedule import Schedule
+        from datetime import time
+
+        group = DeviceGroup(name="Lobby")
+        device = Device(id="warn-pi", name="Warning Test", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="ad.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=100, checksum="warn1")
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
+
+        sched = Schedule(name="Active Ad", asset_id=asset.id, group_id=group.id,
+                         start_time=time(0, 0), end_time=time(23, 59), priority=1)
+        db_session.add(sched)
+        await db_session.commit()
+        return str(sched.id), str(device.id)
+
+    async def test_playing_schedule_id_injected(self, client, db_session):
+        """When a schedule is currently playing, its ID appears in _playingScheduleIds."""
+        from unittest.mock import patch
+        sched_id, device_id = await self._seed(db_session)
+
+        fake_np = [{"schedule_id": sched_id, "device_id": device_id}]
+        with patch("cms.services.scheduler.get_now_playing", return_value=fake_np):
+            resp = await client.get("/schedules")
+
+        assert resp.status_code == 200
+        assert sched_id in resp.text
+        assert "_playingScheduleIds" in resp.text
+
+    async def test_no_playing_schedule_empty_array(self, client, db_session):
+        """When nothing is playing, _playingScheduleIds is an empty array."""
+        await self._seed(db_session)
+
+        from unittest.mock import patch
+        with patch("cms.services.scheduler.get_now_playing", return_value=[]):
+            resp = await client.get("/schedules")
+
+        assert resp.status_code == 200
+        assert "_playingScheduleIds = []" in resp.text
+
+
+@pytest.mark.asyncio
 class TestScheduleNaiveDatetime:
     """Regression: naive datetime strings from the browser caused a 500 error
     when updating schedules because the scheduler compared them with

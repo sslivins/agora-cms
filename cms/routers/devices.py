@@ -576,6 +576,8 @@ async def update_group(
 
 @router.delete("/groups/{group_id}", dependencies=[Depends(require_permission(GROUPS_WRITE))])
 async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    from cms.models.schedule import Schedule
+
     result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
     group = result.scalar_one_or_none()
     if not group:
@@ -584,6 +586,17 @@ async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession =
     user = getattr(request.state, "user", None)
     if user:
         await verify_resource_group_access(user, db, group_id)
+
+    # Block deletion if any schedule references this group
+    sched_count = await db.scalar(
+        select(func.count()).select_from(Schedule).where(Schedule.group_id == group_id)
+    )
+    if sched_count:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete — group is used by {sched_count} schedule(s). Remove it from all schedules first.",
+        )
+
     await db.delete(group)
     await db.commit()
     return {"deleted": str(group_id)}

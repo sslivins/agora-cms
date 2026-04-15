@@ -216,6 +216,7 @@ const _scheduleData = {
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
     isAdmin: {{ 'true' if is_admin else 'false' }}
 };
+window._playingScheduleIds = {{ playing_schedule_ids | tojson }};
 
 const _tzList = JSON.parse(document.getElementById('_tzOptions').value);
 const _currentTz = document.getElementById('_tz').value;

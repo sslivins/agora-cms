@@ -154,6 +154,20 @@ class FakeDevice:
         }
         await self.ws.send(json.dumps(msg))
 
+    async def send_playback_started(self, schedule_id: str, schedule_name: str, asset: str):
+        """Notify the CMS that this device started playing a scheduled asset."""
+        from datetime import datetime, timezone
+        msg = {
+            "type": "playback_started",
+            "protocol_version": PROTOCOL_VERSION,
+            "device_id": self.device_id,
+            "schedule_id": schedule_id,
+            "schedule_name": schedule_name,
+            "asset": asset,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        await self.ws.send(json.dumps(msg))
+
     def get_messages_by_type(self, msg_type: str) -> list[dict]:
         """Get all received messages of a specific type."""
         return [m for m in self.received if m.get("type") == msg_type]
