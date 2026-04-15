@@ -141,6 +141,7 @@ async def notify_worker(db) -> None:
         await db.execute(text("NOTIFY transcode_jobs"))
         await db.commit()
     except Exception:
+        await db.rollback()
         logger.debug("NOTIFY transcode_jobs failed (non-critical)", exc_info=True)
 
     # Azure Storage Queue trigger (Container Apps Job)
