@@ -15,6 +15,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
 
 from shared.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from shared.models.device_profile import DeviceProfile
@@ -241,7 +242,10 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     if not source_path.is_file():
         variant.status = VariantStatus.FAILED
         variant.error_message = "Source file not found"
-        await db.commit()
+        try:
+            await db.commit()
+        except SQLAlchemyError:
+            logger.warning("Variant %s deleted (source not found path)", variant.id)
         return
 
     # Mark as processing
@@ -272,7 +276,10 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                 variant.status = VariantStatus.FAILED
                 variant.error_message = "Image conversion failed"
                 variant.progress = 0.0
-                await db.commit()
+                try:
+                    await db.commit()
+                except SQLAlchemyError:
+                    logger.warning("Variant %s deleted (image conversion failed path)", variant.id)
                 return
 
             file_size = output_path.stat().st_size
@@ -291,7 +298,11 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                 if val is not None:
                     setattr(variant, key, val)
 
-            await db.commit()
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                logger.warning("Variant %s deleted before image completion recorded", variant.id)
+                return
             logger.info("Image variant complete: %s (%d bytes)", variant.filename, variant.size_bytes)
 
             # Sync variant to cloud storage
@@ -303,7 +314,11 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             variant.status = VariantStatus.FAILED
             variant.error_message = str(e)[:500]
             variant.progress = 0.0
-            await db.commit()
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                logger.warning("Variant %s deleted (image error path)", variant.id)
+                return
             logger.exception("Image variant error for %s", variant.filename)
             return
 
@@ -342,9 +357,16 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                     h, m, s = int(match.group(1)), int(match.group(2)), float(match.group(3))
                     elapsed = h * 3600 + m * 60 + s
                     pct = min(99.0, (elapsed / duration) * 100)
-                    if pct - last_progress_update >= 1.0:
+                    # Only update if progress moved forward (monotonic)
+                    if pct > last_progress_update and pct - last_progress_update >= 1.0:
                         variant.progress = round(pct, 1)
-                        await db.commit()
+                        try:
+                            await db.commit()
+                        except SQLAlchemyError:
+                            # Variant was deleted while transcoding — abort
+                            logger.warning("Variant %s deleted during transcode, aborting", variant.id)
+                            proc.kill()
+                            return
                         last_progress_update = pct
 
         await proc.wait()
@@ -359,8 +381,12 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             variant.status = VariantStatus.FAILED
             variant.error_message = f"ffmpeg exit code {proc.returncode}: {error_text}"
             variant.progress = 0.0
-            await db.commit()
-            logger.error("Transcode failed for %s: exit %d", variant.filename, proc.returncode)
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                logger.warning("Variant %s deleted before failure could be recorded", variant.id)
+            else:
+                logger.error("Transcode failed for %s: exit %d", variant.filename, proc.returncode)
             return
 
         # Success
@@ -380,7 +406,11 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             if val is not None:
                 setattr(variant, key, val)
 
-        await db.commit()
+        try:
+            await db.commit()
+        except SQLAlchemyError:
+            logger.warning("Variant %s deleted before completion could be recorded", variant.id)
+            return
         logger.info("Transcode complete: %s (%d bytes)", variant.filename, variant.size_bytes)
 
         # Sync variant to cloud storage
@@ -392,7 +422,11 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         variant.status = VariantStatus.FAILED
         variant.error_message = str(e)[:500]
         variant.progress = 0.0
-        await db.commit()
+        try:
+            await db.commit()
+        except SQLAlchemyError:
+            logger.warning("Variant %s deleted during transcode (error path)", variant.id)
+            return
         logger.exception("Transcode error for %s", variant.filename)
 
 
