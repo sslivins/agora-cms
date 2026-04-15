@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from cms import database as _db
+from shared.database import get_session_factory as _get_session_factory
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
@@ -646,12 +646,13 @@ async def evaluate_schedules() -> None:
     if not device_manager.connected_count:
         return
 
-    if _db._session_factory is None:
+    sf = _get_session_factory()
+    if sf is None:
         return
 
     now = datetime.now(timezone.utc)
 
-    async with _db._session_factory() as db:
+    async with sf() as db:
         # Read timezone for schedule evaluation
         tz_result = await db.execute(
             select(CMSSetting.value).where(CMSSetting.key == "timezone")
