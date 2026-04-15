@@ -13,7 +13,7 @@
         {{ d.name or d.id }}
         {% endif %}
     </td>
-    <td>
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}">
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
         {% elif d.status.value == 'pending' %}
@@ -62,12 +62,12 @@
         </select>
         {% endif %}
     </td>
-    <td data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
+    <td data-live-storage-pct="{{ d.id }}" data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
         {% if d.storage_capacity_mb > 0 %}
         {{ ((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int }}% free
         {% else %}—{% endif %}
     </td>
-    <td class="actions" onclick="event.stopPropagation()">
+    <td class="actions" data-live-actions="{{ d.id }}" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
         {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
@@ -115,27 +115,29 @@
             </div>
             <div class="detail-item">
                 <span class="detail-label">IP Address</span>
-                <span class="detail-value monospace">{{ d.ip_address or '—' }}</span>
+                <span class="detail-value monospace" data-live-ip="{{ d.id }}">{{ d.ip_address or '—' }}</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Firmware Version</span>
-                <span class="detail-value">{{ d.firmware_version or '—' }}{% if d.update_available %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
+                <span class="detail-value">{{ d.firmware_version or '—' }}{% if d.update_available and 'devices:manage' in user_perms %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Storage</span>
-                <span class="detail-value" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
+                <span class="detail-value" data-live-storage="{{ d.id }}" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ d.storage_used_mb }} / {{ d.storage_capacity_mb }} MB</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">CPU Temperature</span>
+                <span class="detail-value" data-live-temp="{{ d.id }}">
                 {% if d.cpu_temp_c is not none %}
-                <span class="detail-value{% if d.cpu_temp_c >= 80 %} text-danger{% elif d.cpu_temp_c >= 70 %} text-warning{% endif %}">{{ d.cpu_temp_c | round(1) }}°C{% if d.cpu_temp_c >= 80 %} <span class="badge badge-temp-critical">Critical</span>{% elif d.cpu_temp_c >= 70 %} <span class="badge badge-temp-warning">Warning</span>{% endif %}</span>
+                <span class="{% if d.cpu_temp_c >= 80 %}text-danger{% elif d.cpu_temp_c >= 70 %}text-warning{% endif %}">{{ d.cpu_temp_c | round(1) }}°C{% if d.cpu_temp_c >= 80 %} <span class="badge badge-temp-critical">Critical</span>{% elif d.cpu_temp_c >= 70 %} <span class="badge badge-temp-warning">Warning</span>{% endif %}</span>
                 {% else %}
-                <span class="detail-value text-muted">—</span>
+                <span class="text-muted">—</span>
                 {% endif %}
+                </span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Last Seen</span>
-                <span class="detail-value" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
+                <span class="detail-value" data-live-lastseen="{{ d.id }}" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
             </div>
             {% if 'devices:manage' in user_perms %}
             <div class="detail-item">
@@ -150,7 +152,7 @@
                 </span>
             </div>
             {% endif %}
-            {% if d.is_online %}
+            <div class="online-detail-fields" data-live-online-section="{{ d.id }}" {% if not d.is_online %}style="display:none"{% endif %}>
             <div class="detail-item">
                 <span class="detail-label">Asset</span>
                 <span class="detail-value" data-live-asset="{{ d.id }}">
@@ -193,22 +195,26 @@
                     {% endif %}
                 </span>
             </div>
-            {% endif %}
+            </div>
         </div>
-        {% if d.is_online and 'devices:manage' in user_perms %}
-        <div class="detail-toolbar">
+        {% if 'devices:manage' in user_perms %}
+        <div class="detail-toolbar" data-live-toolbar="{{ d.id }}" {% if not d.is_online %}style="display:none"{% endif %}>
             <span class="detail-label">Actions</span>
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button><span class="tooltip">Set the password for this device's local web UI</span></span>
+            <span data-live-ssh-btn="{{ d.id }}">
             {% if d.ssh_enabled %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>
             {% else %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', true)">Enable SSH</button><span class="tooltip">SSH is currently disabled — click to enable</span></span>
             {% endif %}
+            </span>
+            <span data-live-localapi-btn="{{ d.id }}">
             {% if d.local_api_enabled is not none and not d.local_api_enabled %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', true)">Enable Local API</button><span class="tooltip">Device REST API is disabled — click to re-enable</span></span>
             {% else %}
             <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', false)">Disable Local API</button><span class="tooltip">Disable the device's local REST API</span></span>
             {% endif %}
+            </span>
             <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
             <span class="has-tooltip"><button class="btn btn-warn btn-sm" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')">Factory Reset</button><span class="tooltip">Wipe all data and return device to setup mode</span></span>
         </div>
@@ -228,7 +234,7 @@
         {{ d.name or d.id }}
         {% endif %}
     </td>
-    <td>
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}">
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">Re-flashed device — needs re-adoption</span></span>
         {% elif d.status.value == 'pending' %}
@@ -439,7 +445,8 @@ function applyAssetTooltips() {
 }
 
 (function() {
-    let knownState = "{{ devices | map(attribute='id') | join(',') }}:{{ devices | map(attribute='status') | join(',') }}:{{ devices | map(attribute='firmware_version') | join(',') }}:{{ devices | map(attribute='is_online') | join(',') }}:{{ devices | map(attribute='is_upgrading') | join(',') }}";
+    const __canManage = {{ 'true' if 'devices:manage' in user_perms else 'false' }};
+    let knownDeviceIds = new Set({{ devices | map(attribute='id') | list | tojson }});
 
     function buildPipelineBadge(device) {
         if (device.pipeline_state === "PLAYING") return '<span class="badge badge-online">Playing</span>';
@@ -459,15 +466,77 @@ function applyAssetTooltips() {
         return '<span class="text-muted">—</span>';
     }
 
+    function buildStatusBadge(d) {
+        if (d.status === "orphaned") return '<span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">Re-flashed device — needs re-adoption</span></span>';
+        if (d.status === "pending") {
+            if (d.is_online) return '<span class="badge badge-pending">Pending</span>';
+            return '<span class="badge badge-offline">Pending (Offline)</span>';
+        }
+        if (d.is_online) return '<span class="badge badge-online">Online</span>';
+        return '<span class="badge badge-offline">Offline</span>';
+    }
+
+    function buildTempDisplay(d) {
+        if (d.cpu_temp_c == null) return '<span class="text-muted">—</span>';
+        const t = d.cpu_temp_c.toFixed(1);
+        let cls = '', badge = '';
+        if (d.cpu_temp_c >= 80) { cls = 'text-danger'; badge = ' <span class="badge badge-temp-critical">Critical</span>'; }
+        else if (d.cpu_temp_c >= 70) { cls = 'text-warning'; badge = ' <span class="badge badge-temp-warning">Warning</span>'; }
+        return '<span class="' + cls + '">' + t + '°C' + badge + '</span>';
+    }
+
+    function buildActionButtons(d) {
+        let html = '';
+        if (d.status === "pending" || d.status === "orphaned") {
+            if (__canManage) html += '<span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice(\'' + d.id + '\', \'' + (d.name || d.id).replace(/'/g, "\\'") + '\')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>';
+        } else if (d.is_upgrading) {
+            html += '<span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>';
+        } else if (d.is_online && d.update_available && __canManage) {
+            html += '<span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice(\'' + d.id + '\', \'' + (d.name || d.id).replace(/'/g, "\\'") + '\')">Update</button><span class="tooltip">Update firmware</span></span>';
+        }
+        if (__canManage) html += '<span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice(\'' + d.id + '\')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>';
+        return html;
+    }
+
+    function buildSshButton(d) {
+        if (d.ssh_enabled) return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh(\'' + d.id + '\', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>';
+        return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh(\'' + d.id + '\', true)">Enable SSH</button><span class="tooltip">SSH is currently disabled — click to enable</span></span>';
+    }
+
+    function buildLocalApiButton(d) {
+        if (d.local_api_enabled != null && !d.local_api_enabled) return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi(\'' + d.id + '\', true)">Enable Local API</button><span class="tooltip">Device REST API is disabled — click to re-enable</span></span>';
+        return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi(\'' + d.id + '\', false)">Disable Local API</button><span class="tooltip">Disable the device\'s local REST API</span></span>';
+    }
+
     function updateLiveFields(devices) {
         for (const d of devices) {
-            // Update data-playing on device rows
+            // ── Collapsed row: data-playing attribute ──
             const rows = document.querySelectorAll(`tr.device-row[data-device-id="${d.id}"]`);
             for (const row of rows) {
                 if (d.has_active_schedule) row.dataset.playing = "true";
                 else delete row.dataset.playing;
             }
-            // Update expanded detail panels
+
+            // ── Collapsed row: status badge ──
+            document.querySelectorAll(`[data-live-status="${d.id}"]`).forEach(el => {
+                el.innerHTML = buildStatusBadge(d);
+            });
+
+            // ── Collapsed row: storage percentage ──
+            const storagePctEl = document.querySelector(`[data-live-storage-pct="${d.id}"]`);
+            if (storagePctEl) {
+                const cap = parseInt(storagePctEl.dataset.storageMb) || 0;
+                if (cap > 0) {
+                    const used = d.storage_used_mb != null ? d.storage_used_mb : parseInt(storagePctEl.dataset.usedMb) || 0;
+                    storagePctEl.textContent = Math.round((cap - used) / cap * 100) + '% free';
+                }
+            }
+
+            // ── Collapsed row: action buttons ──
+            const actionsEl = document.querySelector(`[data-live-actions="${d.id}"]`);
+            if (actionsEl) actionsEl.innerHTML = buildActionButtons(d);
+
+            // ── Detail panel: display, pipeline, asset ──
             const displayEl = document.querySelector(`[data-live-display="${d.id}"]`);
             if (displayEl) {
                 if (d.display_connected === null || d.display_connected === undefined) displayEl.innerHTML = '<span class="text-muted">—</span>';
@@ -478,6 +547,41 @@ function applyAssetTooltips() {
             if (pipelineEl) pipelineEl.innerHTML = buildPipelineBadge(d);
             const assetEl = document.querySelector(`[data-live-asset="${d.id}"]`);
             if (assetEl) assetEl.innerHTML = buildAssetDisplay(d);
+
+            // ── Detail panel: CPU temperature ──
+            const tempEl = document.querySelector(`[data-live-temp="${d.id}"]`);
+            if (tempEl) tempEl.innerHTML = buildTempDisplay(d);
+
+            // ── Detail panel: IP address ──
+            const ipEl = document.querySelector(`[data-live-ip="${d.id}"]`);
+            if (ipEl) ipEl.textContent = d.ip_address || '—';
+
+            // ── Detail panel: storage detail ──
+            const storageEl = document.querySelector(`[data-live-storage="${d.id}"]`);
+            if (storageEl) {
+                const cap = parseInt(storageEl.dataset.storageMb) || 0;
+                const used = d.storage_used_mb != null ? d.storage_used_mb : parseInt(storageEl.dataset.usedMb) || 0;
+                storageEl.textContent = used + ' / ' + cap + ' MB';
+                storageEl.dataset.usedMb = used;
+            }
+
+            // ── Detail panel: last seen ──
+            const lastSeenEl = document.querySelector(`[data-live-lastseen="${d.id}"]`);
+            if (lastSeenEl && d.is_online) {
+                lastSeenEl.textContent = 'Now';
+            }
+
+            // ── Detail panel: online-only sections visibility ──
+            const onlineSection = document.querySelector(`[data-live-online-section="${d.id}"]`);
+            if (onlineSection) onlineSection.style.display = d.is_online ? '' : 'none';
+            const toolbar = document.querySelector(`[data-live-toolbar="${d.id}"]`);
+            if (toolbar) toolbar.style.display = d.is_online ? '' : 'none';
+
+            // ── Detail panel: SSH / Local API toggle buttons ──
+            const sshBtn = document.querySelector(`[data-live-ssh-btn="${d.id}"]`);
+            if (sshBtn) sshBtn.innerHTML = buildSshButton(d);
+            const apiBtn = document.querySelector(`[data-live-localapi-btn="${d.id}"]`);
+            if (apiBtn) apiBtn.innerHTML = buildLocalApiButton(d);
         }
         requestAnimationFrame(applyAssetTooltips);
     }
@@ -490,17 +594,17 @@ function applyAssetTooltips() {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;
             const devices = await resp.json();
-            const state = devices.map(d => d.id).join(",") + ":" + devices.map(d => d.status).join(",") + ":" + devices.map(d => d.firmware_version || "").join(",") + ":" + devices.map(d => d.is_online).join(",") + ":" + devices.map(d => d.is_upgrading).join(",");
 
-            // Always update live fields in-place (asset, pipeline badges)
+            // Always update all live fields inline
             updateLiveFields(devices);
 
-            // Full reload only when structural state changes and no panel is open
-            if (state !== knownState) {
-                if (document.querySelector(".device-row.expanded") || document.querySelector(".group-panel.expanded")) {
-                    knownState = state;  // acknowledge change, reload when panel closes
-                } else {
+            // Structural reload only when devices are added or removed
+            const newIds = new Set(devices.map(d => d.id));
+            if (newIds.size !== knownDeviceIds.size || ![...newIds].every(id => knownDeviceIds.has(id))) {
+                if (!document.querySelector(".device-row.expanded") && !document.querySelector(".group-panel.expanded")) {
                     location.reload();
+                } else {
+                    knownDeviceIds = newIds;
                 }
             }
         } catch (e) { /* ignore */ }
