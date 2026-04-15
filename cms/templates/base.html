@@ -18,7 +18,7 @@
         <div class="header-actions">
             {% if request.state.user is defined and request.state.user %}
             <a href="/profile" class="header-greeting">{{ request.state.user.display_name or request.state.user.email }}</a>
-            {% if request.state.user.groups is defined %}
+            {% if request.state.user.groups is defined and 'groups:view_all' not in user_perms %}
             <span class="header-groups has-tooltip">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 {% set group_names = request.state.user.groups | map(attribute='group') | selectattr('name') | map(attribute='name') | list %}
