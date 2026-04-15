@@ -670,9 +670,21 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     groups_q = await db.execute(groups_query)
     groups = groups_q.scalars().all()
 
-    # Attach device_count and is_online to each group's devices
+    # Count schedules per group (for disabling delete button)
+    from cms.models.schedule import Schedule as ScheduleModel
+    group_sched_counts: dict[uuid.UUID, int] = {}
+    if groups:
+        sched_rows = (await db.execute(
+            select(ScheduleModel.group_id, func.count())
+            .where(ScheduleModel.group_id.in_([g.id for g in groups]))
+            .group_by(ScheduleModel.group_id)
+        )).all()
+        group_sched_counts = {gid: cnt for gid, cnt in sched_rows}
+
+    # Attach device_count, schedule_count, and is_online to each group's devices
     for g in groups:
         g.device_count = len(g.devices)
+        g.schedule_count = group_sched_counts.get(g.id, 0)
         for d in g.devices:
             d.is_online = device_manager.is_connected(d.id)
             state = live_states.get(d.id)
@@ -1056,6 +1068,12 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     tz_options = build_tz_options()
 
+    # Determine which schedules are currently playing on at least one device
+    from cms.services.scheduler import get_now_playing as _get_now_playing
+    playing_schedule_ids = list({
+        np["schedule_id"] for np in _get_now_playing() if "schedule_id" in np
+    })
+
     return templates.TemplateResponse(request, "schedules.html", {
         "active_tab": "schedules",
         "schedules": active_schedules,
@@ -1066,6 +1084,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         "timezone_saved": timezone_saved,
         "tz_options": tz_options,
         "is_admin": is_admin,
+        "playing_schedule_ids": playing_schedule_ids,
     })
 
 

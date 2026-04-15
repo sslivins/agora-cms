@@ -530,6 +530,62 @@ class TestDeviceGroups:
         resp = await client.get("/api/devices/groups/")
         assert len(resp.json()) == 0
 
+    async def test_delete_group_blocked_by_schedule(self, client, db_session):
+        """Deleting a group used by a schedule should return 409."""
+        from cms.models.asset import Asset, AssetType
+
+        resp = await client.post("/api/devices/groups/", json={"name": "Scheduled Group"})
+        group_id = resp.json()["id"]
+
+        asset = Asset(filename="block.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="blk")
+        db_session.add(asset)
+        await db_session.commit()
+
+        sched_resp = await client.post("/api/schedules", json={
+            "name": "Blocks Delete",
+            "group_id": group_id,
+            "asset_id": str(asset.id),
+            "start_time": "08:00",
+            "end_time": "12:00",
+        })
+        assert sched_resp.status_code == 201
+
+        resp = await client.delete(f"/api/devices/groups/{group_id}")
+        assert resp.status_code == 409
+        assert "schedule" in resp.json()["detail"].lower()
+
+        # Group should still exist
+        resp = await client.get("/api/devices/groups/")
+        assert any(g["id"] == group_id for g in resp.json())
+
+    async def test_delete_group_allowed_after_schedule_removed(self, client, db_session):
+        """Deleting a group should succeed once all schedules are removed."""
+        from cms.models.asset import Asset, AssetType
+
+        resp = await client.post("/api/devices/groups/", json={"name": "Freed Group"})
+        group_id = resp.json()["id"]
+
+        asset = Asset(filename="free.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="fre")
+        db_session.add(asset)
+        await db_session.commit()
+
+        sched_resp = await client.post("/api/schedules", json={
+            "name": "Temporary",
+            "group_id": group_id,
+            "asset_id": str(asset.id),
+            "start_time": "08:00",
+            "end_time": "12:00",
+        })
+        sched_id = sched_resp.json()["id"]
+
+        # Delete the schedule first
+        del_sched = await client.delete(f"/api/schedules/{sched_id}")
+        assert del_sched.status_code == 200
+
+        # Now group deletion should succeed
+        resp = await client.delete(f"/api/devices/groups/{group_id}")
+        assert resp.status_code == 200
+
     async def test_assign_device_to_group(self, client, db_session):
         from cms.models.device import Device, DeviceStatus
 
@@ -1156,3 +1212,53 @@ class TestWipeAssetsOnAdoptDelete:
         resp = await client.delete("/api/devices/wipe-del-off")
         assert resp.status_code == 200
         assert resp.json()["deleted"] == "wipe-del-off"
+
+
+@pytest.mark.asyncio
+class TestGroupDeleteButtonUI:
+    """The group delete button should be disabled when schedules reference the group."""
+
+    async def test_delete_button_disabled_with_schedule(self, client, db_session):
+        """Group with active schedule should show disabled Remove button with tooltip."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import DeviceGroup
+        from cms.models.schedule import Schedule
+        import datetime
+
+        group = DeviceGroup(name="Protected Group")
+        asset = Asset(filename="ui.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ui1")
+        db_session.add_all([group, asset])
+        await db_session.flush()
+        sched = Schedule(
+            name="Blocker",
+            group_id=group.id,
+            asset_id=asset.id,
+            start_time=datetime.time(8, 0),
+            end_time=datetime.time(12, 0),
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        html = resp.text
+
+        # The Remove button for this group should be disabled
+        assert "Cannot delete" in html
+        assert "1 schedule" in html
+        # Should NOT have the clickable deleteGroup for this group
+        assert f"deleteGroup('{group.id}')" not in html
+
+    async def test_delete_button_enabled_without_schedule(self, client, db_session):
+        """Group without schedules should show enabled Remove button."""
+        from cms.models.device import DeviceGroup
+
+        group = DeviceGroup(name="Free Group")
+        db_session.add(group)
+        await db_session.commit()
+
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        html = resp.text
+
+        assert f"deleteGroup('{group.id}')" in html

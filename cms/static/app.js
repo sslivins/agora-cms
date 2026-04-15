@@ -845,7 +845,11 @@ async function toggleGlobal(assetId) {
 
 // ── Schedule actions ──
 async function deleteSchedule(scheduleId) {
-    if (!await showConfirm("Delete this schedule?")) return;
+    const playing = (window._playingScheduleIds || []).includes(scheduleId);
+    const msg = playing
+        ? "This schedule is currently playing. Deleting it will immediately stop playback on all devices in the group."
+        : "Delete this schedule?";
+    if (!await showConfirm(msg)) return;
     const resp = await apiCall("DELETE", `/api/schedules/${scheduleId}`);
     if (resp && resp.ok) location.reload();
 }

@@ -697,3 +697,127 @@ class TestScheduleEditSummaryBanner:
         assert updated_text != initial_text, (
             f"Summary did not update after time change. Still: {initial_text}"
         )
+
+
+class TestScheduleDeletePlayingWarning:
+    """Delete button should warn when a schedule is currently playing."""
+
+    def _run_playing_device(self, ws_url, device_id, schedule_id, schedule_name, asset_name):
+        """Run a FakeDevice in a background thread that reports playback_started."""
+        import asyncio
+        import threading
+
+        ready_event = threading.Event()
+        stop_event = threading.Event()
+
+        async def _device_loop():
+            dev = FakeDevice(device_id, ws_url)
+            await dev.connect()
+            await dev.send_status(mode="play", asset=asset_name)
+            await dev.send_playback_started(schedule_id, schedule_name, asset_name)
+            # Give the CMS a moment to process the playback_started message
+            await asyncio.sleep(0.5)
+            ready_event.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.2)
+            await dev.disconnect()
+
+        thread = threading.Thread(target=lambda: asyncio.run(_device_loop()), daemon=True)
+        thread.start()
+        ready_event.wait(timeout=15)
+        return stop_event, thread
+
+    def test_delete_playing_schedule_shows_warning(self, page: Page, api, ws_url, e2e_server):
+        """Deleting a currently-playing schedule must show a playback warning."""
+        # Set up device + group + asset
+        async def register():
+            async with FakeDevice("sched-play-001", ws_url) as dev:
+                await dev.send_status()
+        run_async(register())
+        api.post("/api/devices/sched-play-001/adopt")
+
+        group_resp = api.post("/api/devices/groups/", json={"name": "PlayWarn Group"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/sched-play-001", json={"group_id": group_id})
+
+        assets = api.get("/api/assets")
+        if not assets.json():
+            api.create_asset("play-warn-test.mp4")
+            assets = api.get("/api/assets")
+            if not assets.json():
+                pytest.skip("Could not create test asset")
+
+        asset = assets.json()[0]
+        sched_resp = api.post("/api/schedules", json={
+            "name": "Playing Now",
+            "group_id": group_id,
+            "asset_id": asset["id"],
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        assert sched_resp.status_code == 201
+        sched_id = sched_resp.json()["id"]
+
+        # Start a device that reports playback_started for this schedule
+        stop, thread = self._run_playing_device(
+            ws_url, "sched-play-001", sched_id, "Playing Now", asset["filename"]
+        )
+        try:
+            page.goto("/schedules")
+            page.wait_for_load_state("domcontentloaded")
+
+            row = page.locator("tr", has_text="Playing Now")
+            row.locator("button", has_text="Delete").click()
+
+            modal = page.locator(".modal-overlay")
+            expect(modal).to_be_visible(timeout=3000)
+            expect(modal).to_contain_text("currently playing")
+            expect(modal).to_contain_text("stop playback")
+
+            # Cancel — don't actually delete
+            modal.locator("button", has_text="Cancel").click()
+            expect(modal).to_be_hidden()
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+    def test_delete_non_playing_schedule_generic_confirm(self, page: Page, api, ws_url, e2e_server):
+        """Deleting a schedule that is NOT playing should show generic confirm."""
+        async def register():
+            async with FakeDevice("sched-noplay-001", ws_url) as dev:
+                await dev.send_status()
+        run_async(register())
+        api.post("/api/devices/sched-noplay-001/adopt")
+
+        group_resp = api.post("/api/devices/groups/", json={"name": "NoPlayWarn Group"})
+        group_id = group_resp.json()["id"]
+        api.patch("/api/devices/sched-noplay-001", json={"group_id": group_id})
+
+        assets = api.get("/api/assets")
+        if not assets.json():
+            api.create_asset("noplay-warn-test.mp4")
+            assets = api.get("/api/assets")
+            if not assets.json():
+                pytest.skip("Could not create test asset")
+
+        api.post("/api/schedules", json={
+            "name": "Not Playing Schedule",
+            "group_id": group_id,
+            "asset_id": assets.json()[0]["id"],
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+
+        row = page.locator("tr", has_text="Not Playing Schedule")
+        row.locator("button", has_text="Delete").click()
+
+        modal = page.locator(".modal-overlay")
+        expect(modal).to_be_visible(timeout=3000)
+        # Should NOT contain playing warning
+        expect(modal).not_to_contain_text("currently playing")
+
+        modal.locator("button", has_text="Cancel").click()
+        expect(modal).to_be_hidden()
