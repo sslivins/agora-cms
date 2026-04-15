@@ -323,9 +323,9 @@ async def delete_schedule(schedule_id: uuid.UUID, request: Request, db: AsyncSes
     target_ids = await _get_target_device_ids(schedule, db)
     await db.delete(schedule)
     await db.commit()
-    # Clear now-playing entries for this schedule immediately
-    from cms.services.scheduler import clear_now_playing, _now_playing
-    stale = [did for did, info in _now_playing.items()
+    # Clear confirmed-playing entries for this schedule immediately
+    from cms.services.scheduler import clear_now_playing, _confirmed_playing
+    stale = [did for did, info in _confirmed_playing.items()
              if info.get("schedule_id") == str(schedule_id)]
     for did in stale:
         clear_now_playing(did)

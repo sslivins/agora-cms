@@ -23,8 +23,10 @@ logger = logging.getLogger("agora.cms.scheduler")
 # Track last sync hash per device to avoid re-sending identical syncs
 _last_sync_hash: dict[str, str] = {}
 
-# Rich now-playing info for the dashboard
-_now_playing: dict[str, dict] = {}
+# Confirmed playback: minimal tracking of what each device has confirmed
+# it's playing.  Populated by WS PLAYBACK_STARTED, cleared by PLAYBACK_ENDED
+# or device disconnect.  Only stores {device_id: {schedule_id, since}}.
+_confirmed_playing: dict[str, dict] = {}
 
 # Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
 _skipped: dict[str, datetime] = {}
@@ -88,32 +90,32 @@ log_schedule_event = _log_event
 
 
 def get_now_playing() -> list[dict]:
-    """Return a list of currently active schedule playbacks for the dashboard.
+    """Return a list of confirmed playback entries (minimal).
 
-    Returns shallow copies so callers (dashboard routes) can annotate entries
-    with transient keys like ``mismatch`` / ``starting`` without polluting
-    the canonical scheduler state.
+    For the full dashboard view with schedule details, use
+    ``compute_now_playing()`` instead.  This is kept for callers that
+    only need to know *which devices* are currently scheduled.
     """
-    return [d.copy() for d in _now_playing.values()]
+    return [d.copy() for d in _confirmed_playing.values()]
 
 
 def set_now_playing(device_id: str, entry: dict) -> None:
-    """Set the now-playing entry for a device (called by WS handler on PLAYBACK_STARTED)."""
-    _now_playing[device_id] = entry
+    """Record that a device confirmed playback (called by WS handler on PLAYBACK_STARTED)."""
+    _confirmed_playing[device_id] = entry
 
 
 def clear_now_playing(device_id: str) -> dict | None:
-    """Remove and return the now-playing entry for a device (called by WS handler on PLAYBACK_ENDED)."""
-    return _now_playing.pop(device_id, None)
+    """Remove confirmed playback for a device (called by WS handler on PLAYBACK_ENDED)."""
+    return _confirmed_playing.pop(device_id, None)
 
 
 def skip_schedule_until(schedule_id: str, until: datetime) -> None:
     """Skip a schedule's current occurrence until the given local datetime."""
     _skipped[schedule_id] = until
-    # Remove from now_playing immediately
-    to_remove = [did for did, info in _now_playing.items() if info.get("schedule_id") == schedule_id]
+    # Remove from confirmed_playing immediately
+    to_remove = [did for did, info in _confirmed_playing.items() if info.get("schedule_id") == schedule_id]
     for did in to_remove:
-        _now_playing.pop(did, None)
+        _confirmed_playing.pop(did, None)
 
 
 def clear_schedule_skip(schedule_id: str) -> None:
@@ -124,6 +126,106 @@ def clear_schedule_skip(schedule_id: str) -> None:
 def clear_sync_hash(device_id: str) -> None:
     """Clear the cached sync hash for a device so the next eval re-sends."""
     _last_sync_hash.pop(device_id, None)
+
+
+async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
+    """Compute the "currently playing" list from the DB + live device state.
+
+    This is the **single source of truth** for dashboard rendering.  It queries
+    active schedules from the DB, resolves target devices, and enriches each
+    entry with live device state and confirmed-playback info.
+
+    Returns a list of dicts ready for the dashboard template / JSON API.
+    """
+    from shared.models.asset import AssetType
+
+    local_now = now.astimezone(tz).replace(tzinfo=None)
+
+    # Get all enabled schedules with their assets and groups
+    result = await db.execute(
+        select(Schedule)
+        .options(
+            selectinload(Schedule.asset),
+            selectinload(Schedule.group),
+        )
+        .where(Schedule.enabled == True)  # noqa: E712
+    )
+    schedules = result.scalars().all()
+
+    # Filter to currently active schedules (in their time window, not skipped)
+    active = [
+        s for s in schedules
+        if _matches_now(s, local_now) and str(s.id) not in _skipped
+    ]
+
+    if not active:
+        return []
+
+    # Resolve target devices for each active schedule
+    now_playing = []
+    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+
+    # Get device names
+    all_device_ids = set()
+    schedule_targets: list[tuple] = []  # (schedule, [device_ids])
+    for s in active:
+        if not s.asset:
+            continue
+        target_ids = await _get_target_device_ids(s, db)
+        schedule_targets.append((s, target_ids))
+        all_device_ids.update(target_ids)
+
+    # Fetch device names in one query
+    if all_device_ids:
+        name_q = await db.execute(
+            select(Device.id, Device.name).where(Device.id.in_(all_device_ids))
+        )
+        device_names = {r[0]: (r[1] or r[0]) for r in name_q.all()}
+    else:
+        device_names = {}
+
+    # Build per-device entries, picking highest-priority schedule per device
+    device_schedule: dict[str, tuple] = {}  # device_id -> (priority, schedule)
+    for s, target_ids in schedule_targets:
+        for did in target_ids:
+            existing = device_schedule.get(did)
+            if existing is None or s.priority > existing[0]:
+                device_schedule[did] = (s.priority, s)
+
+    for did, (_, s) in device_schedule.items():
+        is_webpage = s.asset.asset_type == AssetType.WEBPAGE
+        asset_raw = s.asset.url if is_webpage else s.asset.filename
+        display_name = asset_raw
+        if is_webpage:
+            display_name = (
+                s.asset.original_filename
+                or s.asset.filename
+                or asset_raw
+            )
+
+        device_name = device_names.get(did, did)
+        confirmed = _confirmed_playing.get(did)
+        # Use confirmed "since" if this device confirmed THIS schedule
+        since = now.isoformat()
+        if confirmed and confirmed.get("schedule_id") == str(s.id):
+            since = confirmed.get("since", since)
+
+        entry = {
+            "device_id": did,
+            "device_name": device_name,
+            "schedule_id": str(s.id),
+            "schedule_name": s.name,
+            "asset_filename": display_name,
+            "asset_raw": asset_raw,
+            "since": since,
+            "source": "confirmed" if (confirmed and confirmed.get("schedule_id") == str(s.id)) else "scheduled",
+            "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
+            "start_time_raw": s.start_time.strftime("%H:%M:%S"),
+            "end_time_raw": s.end_time.strftime("%H:%M:%S"),
+        }
+        now_playing.append(entry)
+
+    return now_playing
 
 
 def get_upcoming_schedules(
@@ -739,85 +841,48 @@ async def evaluate_schedules() -> None:
         for k in stale_offline:
             del _offline_since[k]
 
-        # Clean up _now_playing for devices that disconnected
-        stale = [did for did in list(_now_playing) if did not in connected]
+        # Clean up _confirmed_playing for devices that disconnected
+        stale = [did for did in list(_confirmed_playing) if did not in connected]
         for did in stale:
-            _now_playing.pop(did, None)
+            _confirmed_playing.pop(did, None)
 
-        # Clean up _now_playing entries whose schedule window has expired
+        # Clean up _confirmed_playing entries whose schedule window has expired
         active_sids = {str(s.id) for s in active}
-        expired_np = [
-            did for did, info in list(_now_playing.items())
+        expired_cp = [
+            did for did, info in list(_confirmed_playing.items())
             if info.get("schedule_id") and str(info["schedule_id"]) not in active_sids
         ]
-        for did in expired_np:
-            info = _now_playing.pop(did, None)
-            if info:
-                logger.info(
-                    "Cleared stale now_playing for device %s (schedule %s expired)",
-                    did, info.get("schedule_name", "?"),
-                )
+        for did in expired_cp:
+            _confirmed_playing.pop(did, None)
 
-        # ── Seed _now_playing from live device state ──
-        # After a CMS restart _now_playing is empty but devices may still be
-        # playing.  Correlate live device state with active schedules so the
-        # dashboard shows "Currently Playing" without waiting for a new
-        # PLAYBACK_STARTED event.
-        from shared.models.asset import AssetType
-
+        # Seed _confirmed_playing from live device state after CMS restart
         live_states = {
             s["device_id"]: s for s in device_manager.get_all_states()
         }
+        from shared.models.asset import AssetType
         for s in active:
             if not s.asset:
                 continue
             target_ids = await _get_target_device_ids(s, db)
             for did in target_ids:
-                if did in _now_playing:
-                    continue  # already tracked
+                if did in _confirmed_playing:
+                    continue
                 live = live_states.get(did)
                 if not live or live.get("mode") != "play":
                     continue
-                # Determine what asset identifier the device would report
                 is_webpage = s.asset.asset_type == AssetType.WEBPAGE
                 expected_raw = s.asset.url if is_webpage else s.asset.filename
                 if live.get("asset") != expected_raw:
                     continue
-                # Device is playing this schedule's asset — seed now_playing
-                display_name = expected_raw
-                if is_webpage:
-                    display_name = (
-                        s.asset.original_filename
-                        or s.asset.filename
-                        or expected_raw
-                    )
-                device_name = all_adopted.get(did, did)
-                now_entry = {
-                    "device_id": did,
-                    "device_name": device_name,
+                # Device is playing this schedule's asset — seed confirmed
+                _confirmed_playing[did] = {
                     "schedule_id": str(s.id),
-                    "schedule_name": s.name,
-                    "asset_filename": display_name,
-                    "asset_raw": expected_raw,
                     "since": utc_now.isoformat(),
-                    "source": "inferred",
-                    "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
-                    "start_time_raw": s.start_time.strftime("%H:%M:%S"),
-                    "end_time_raw": s.end_time.strftime("%H:%M:%S"),
                 }
-                _now_playing[did] = now_entry
                 logger.info(
-                    "Seeded now_playing for device %s from live state "
-                    "(schedule %s, asset %s)",
-                    did, s.name, display_name,
-                )
-                await _log_event(
-                    db, ScheduleLogEvent.STARTED,
-                    schedule_name=s.name,
-                    device_name=device_name,
-                    asset_filename=display_name,
-                    schedule_id=s.id, device_id=did,
-                    details="Inferred from live device state",
+                    "Seeded confirmed_playing for device %s from live state "
+                    "(schedule %s)",
+                    did, s.name,
                 )
 
         await db.commit()

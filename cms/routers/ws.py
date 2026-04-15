@@ -400,7 +400,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 asset_name = msg.get("asset", "")
                 device_ts = msg.get("timestamp", "")
 
-                # Look up the schedule (with asset) for rich now-playing info
+                # Look up the schedule (with asset) for display name resolution
                 sched_result = await db.execute(
                     select(Schedule)
                     .options(selectinload(Schedule.asset))
@@ -421,23 +421,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                         )
 
                 device_name = device.name or device_id
-                now_entry = {
-                    "device_id": device_id,
-                    "device_name": device_name,
-                    "schedule_id": schedule_id,
-                    "schedule_name": schedule_name,
-                    "asset_filename": display_name,
-                    "asset_raw": asset_name,
-                    "since": device_ts or datetime.now(timezone.utc).isoformat(),
-                    "source": "device",
-                }
-                # Enrich with schedule time info if available
-                if sched:
-                    now_entry["end_time"] = sched.end_time.strftime("%I:%M %p").lstrip("0")
-                    now_entry["start_time_raw"] = sched.start_time.strftime("%H:%M:%S")
-                    now_entry["end_time_raw"] = sched.end_time.strftime("%H:%M:%S")
 
-                set_now_playing(device_id, now_entry)
+                # Store minimal confirmation — the dashboard computes
+                # the rest from the DB via compute_now_playing().
+                set_now_playing(device_id, {
+                    "schedule_id": schedule_id,
+                    "since": device_ts or datetime.now(timezone.utc).isoformat(),
+                })
 
                 await log_schedule_event(
                     db, ScheduleLogEvent.STARTED,

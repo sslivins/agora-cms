@@ -264,7 +264,7 @@ async def force_password_change_submit(
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from datetime import datetime as _dt, timezone as _tz
-    from cms.services.scheduler import get_now_playing, get_upcoming_schedules
+    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules
     from cms.auth import get_user_group_ids
 
     # CMS timezone
@@ -330,14 +330,14 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     orphaned_q = await db.execute(orphan_query)
     orphaned_devices = orphaned_q.scalars().all()
 
-    # Now Playing — enrich with actual device state for mismatch detection
-    now_playing = get_now_playing()
+    # Now Playing — computed from DB + live device state
+    now_playing = await compute_now_playing(db, tz, now)
     # Scope now_playing to user's visible devices (admins see all)
     if not is_admin:
         visible_device_ids = {d.id for d in all_devices}
         now_playing = [np for np in now_playing if np["device_id"] in visible_device_ids]
 
-    # Recompute remaining_seconds fresh (scheduler tick is every 15s)
+    # Compute remaining_seconds from schedule end times
     from datetime import time as _time, timedelta as _td
     local_now = now.astimezone(tz)
     for np in now_playing:
@@ -371,10 +371,6 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             since = _dt.fromisoformat(np["since"])
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
-                # Only show "starting" if the device isn't playing yet.
-                # If it's playing a different asset (e.g. higher-priority
-                # schedule preempted but _now_playing is stale), don't
-                # flip the badge — the device is working fine.
                 if actual_mode != "play":
                     if not device_manager.is_connected(did):
                         np["device_offline"] = True
@@ -481,7 +477,7 @@ async def server_time_json(db: AsyncSession = Depends(get_db)):
 async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""
     from datetime import datetime as _dt, timezone as _tz
-    from cms.services.scheduler import get_now_playing, get_upcoming_schedules
+    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules
     from cms.auth import get_user_group_ids
 
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
@@ -519,13 +515,12 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     all_device_ids = [r[0] for r in devices_q.all()]
     offline_ids = [did for did in all_device_ids if not device_manager.is_connected(did)]
 
-    now_playing = get_now_playing()
+    now_playing = await compute_now_playing(db, tz, now)
     # Scope now_playing to user's visible devices
     visible_device_set = set(all_device_ids)
     now_playing = [np for np in now_playing if np["device_id"] in visible_device_set]
 
-    # Recompute remaining_seconds fresh (scheduler tick is every 15s, too stale
-    # for a smooth client-side countdown)
+    # Compute remaining_seconds from schedule end times
     from datetime import time as _time, timedelta as _td
     local_now = now.astimezone(tz)
     for np in now_playing:
@@ -620,8 +615,14 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/devices", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
-    from cms.services.scheduler import get_now_playing
+    from cms.services.scheduler import compute_now_playing
     from cms.auth import get_user_group_ids
+    from zoneinfo import ZoneInfo
+    from cms.config import get_settings
+
+    settings = get_settings()
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(timezone.utc)
 
     user = getattr(request.state, "user", None)
     group_ids = await get_user_group_ids(user, db) if user else []
@@ -639,7 +640,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(device_query)
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
-    scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
+    scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
     for d in devices:
         d.is_online = device_manager.is_connected(d.id)
         state = live_states.get(d.id)
