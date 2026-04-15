@@ -445,6 +445,12 @@ async def create_webpage_asset(
     # Block dangerous schemes that could slip through URL encoding tricks
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Only http and https URLs are allowed")
+    # Block loopback/internal addresses — these would resolve on the Pi
+    # device and could expose local services (SSRF risk)
+    hostname = parsed.hostname or ""
+    _blocked = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    if hostname in _blocked or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
 
     # Use provided name or derive from URL
     name = body.get("name", "").strip()
