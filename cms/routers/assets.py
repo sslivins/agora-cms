@@ -223,7 +223,7 @@ async def assets_status_json(
     for a in result.scalars().all():
         variants = []
         a_ready = a_processing = a_failed = 0
-        for v in a.variants:
+        for v in sorted(a.variants, key=lambda v: (v.profile.name if v.profile else "")):
             vd = {
                 "id": str(v.id),
                 "profile_name": v.profile.name if v.profile else "",

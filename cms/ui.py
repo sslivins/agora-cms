@@ -874,6 +874,8 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
             all_group_assets.setdefault(ga.asset_id, []).append(ga)
 
     for a in assets:
+        # Sort variants by profile name for consistent display order
+        a.variants.sort(key=lambda v: (v.profile.name if v.profile else ""))
         total = len(a.variants)
         ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
         processing = sum(1 for v in a.variants if v.status == VariantStatus.PROCESSING)
