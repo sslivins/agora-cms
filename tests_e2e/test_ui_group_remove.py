@@ -150,7 +150,7 @@ class TestGroupRemoveButtons:
         expect(remove_btn).to_be_disabled()
 
         # Tooltip should mention schedule(s)
-        tooltip = group_panel.locator(".group-actions .tooltip")
+        tooltip = remove_btn.locator(".tooltip")
         expect(tooltip).to_contain_text("schedule")
 
     def test_group_remove_enabled_after_schedule_deleted(self, page: Page, api, ws_url, e2e_server):
