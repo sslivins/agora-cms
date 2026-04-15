@@ -427,9 +427,10 @@ async def setup_redirect_middleware(request: Request, call_next):
     path = request.url.path
     if not any(path.startswith(p) for p in _SETUP_ALLOWED_PREFIXES):
         if _setup_completed_cache is not True:
-            from cms.database import _session_factory
-            if _session_factory is not None:
-                async with _session_factory() as db:
+            from cms.database import get_session_factory
+            _sf = get_session_factory()
+            if _sf is not None:
+                async with _sf() as db:
                     if not await _is_setup_completed(db):
                         accept = request.headers.get("accept", "")
                         if "text/html" in accept:
