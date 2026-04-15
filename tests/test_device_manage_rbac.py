@@ -292,14 +292,15 @@ class TestDeviceManageUI:
 
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
-        assert "adoptDevice" not in resp.text
+        # Operator should not have manage permission → __canManage = false
+        assert "__canManage = false" in resp.text
 
     async def test_operator_no_delete_button(self, operator_client, test_device):
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
-        assert "deleteDevice" not in resp.text
+        assert "__canManage = false" in resp.text
 
     async def test_admin_sees_delete_button(self, client, test_device):
         resp = await client.get("/devices")
         assert resp.status_code == 200
-        assert "deleteDevice" in resp.text
+        assert "__canManage = true" in resp.text

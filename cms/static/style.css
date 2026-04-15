@@ -11,9 +11,33 @@
     --warning: #f39c12;
     --danger: #e74c3c;
     --radius: 8px;
+    --border: #0f3460;
+    --select-bg: var(--bg);
+    --select-border: var(--primary);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ── Global select styling ── */
+select {
+    background: var(--select-bg);
+    color: var(--text);
+    border: 1px solid var(--select-border);
+    border-radius: var(--radius);
+    padding: 0.4rem 1.8rem 0.4rem 0.5rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    color-scheme: dark;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 10px 6px;
+}
+select:hover { border-color: var(--accent); }
+select:focus { border-color: var(--accent); outline: none; }
+select option { background: var(--surface); color: var(--text); }
 
 a { color: var(--accent); }
 a:hover { color: var(--accent-hover); }
@@ -420,11 +444,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn-secondary { background: var(--primary); color: var(--text); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 .btn:disabled, .btn[disabled] { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
-.inline-edit { background: transparent; border: 1px solid transparent; color: var(--text); padding: 0.2rem 0.4rem; border-radius: 4px; width: 100%; font-size: 0.9rem; min-width: 8rem; }
-.inline-edit:hover { border-color: var(--border); }
-.inline-edit:focus { border-color: var(--accent); outline: none; background: var(--bg); }
-select.inline-edit { cursor: pointer; }
-select.inline-edit option { background: var(--card-bg); color: var(--text); }
+.inline-edit { background-color: var(--select-bg); border: 1px solid var(--select-border); color: var(--text); padding: 0.2rem 0.4rem; border-radius: var(--radius); width: 100%; font-size: 0.9rem; min-width: 8rem; }
+.inline-edit:hover { border-color: var(--accent); }
+.inline-edit:focus { border-color: var(--accent); outline: none; }
+select.inline-edit { width: 100%; min-width: 8rem; }
+select.inline-edit:hover { border-color: var(--accent); }
 .btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text); }
 .btn-small:hover { opacity: 0.85; }
 .btn-small.btn-warn { background: var(--warning); color: #000; }
@@ -454,19 +478,22 @@ select.inline-edit option { background: var(--card-bg); color: var(--text); }
 .form-group textarea {
     width: 100%;
     padding: 0.5rem 0.75rem;
-    background: var(--bg);
+    background-color: var(--select-bg);
     color: var(--text);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--select-border);
     border-radius: var(--radius);
     font-size: 0.9rem;
     color-scheme: dark;
 }
+.form-group select {
+    padding-right: 1.8rem;
+}
 /* Polished time inputs */
 .form-input-dark {
     padding: 0.5rem 0.75rem;
-    background: var(--bg);
+    background-color: var(--select-bg);
     color: var(--text);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--select-border);
     border-radius: var(--radius);
     font-size: 0.9rem;
     color-scheme: dark;

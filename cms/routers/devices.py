@@ -106,6 +106,8 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
+
+    from cms.services.version_checker import is_update_available
     return [
         DeviceOut(
             **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
@@ -116,6 +118,13 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             playback_asset=live_states[d.id]["asset"] if d.id in live_states else None,
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
             display_connected=live_states[d.id]["display_connected"] if d.id in live_states else None,
+            cpu_temp_c=live_states[d.id]["cpu_temp_c"] if d.id in live_states else None,
+            ip_address=live_states[d.id]["ip_address"] if d.id in live_states else None,
+            ssh_enabled=live_states[d.id]["ssh_enabled"] if d.id in live_states else None,
+            local_api_enabled=live_states[d.id]["local_api_enabled"] if d.id in live_states else None,
+            error=live_states[d.id]["error"] if d.id in live_states else None,
+            uptime_seconds=live_states[d.id]["uptime_seconds"] if d.id in live_states else 0,
+            update_available=is_update_available(d.firmware_version),
             has_active_schedule=d.id in scheduled_device_ids,
         )
         for d in devices
@@ -130,6 +139,8 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
     await db.refresh(device, ["group"])
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in get_now_playing()}
+
+    from cms.services.version_checker import is_update_available
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
@@ -139,6 +150,13 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         playback_asset=live_states[device.id]["asset"] if device.id in live_states else None,
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
         display_connected=live_states[device.id]["display_connected"] if device.id in live_states else None,
+        cpu_temp_c=live_states[device.id]["cpu_temp_c"] if device.id in live_states else None,
+        ip_address=live_states[device.id]["ip_address"] if device.id in live_states else None,
+        ssh_enabled=live_states[device.id]["ssh_enabled"] if device.id in live_states else None,
+        local_api_enabled=live_states[device.id]["local_api_enabled"] if device.id in live_states else None,
+        error=live_states[device.id]["error"] if device.id in live_states else None,
+        uptime_seconds=live_states[device.id]["uptime_seconds"] if device.id in live_states else 0,
+        update_available=is_update_available(device.firmware_version),
         has_active_schedule=device.id in scheduled_device_ids,
     )
 

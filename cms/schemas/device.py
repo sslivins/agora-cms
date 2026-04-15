@@ -34,6 +34,14 @@ class DeviceOut(BaseModel):
     pipeline_state: Optional[str] = None
     display_connected: Optional[bool] = None
     has_active_schedule: bool = False
+    # Live state fields from device_manager
+    cpu_temp_c: Optional[float] = None
+    ip_address: Optional[str] = None
+    ssh_enabled: Optional[bool] = None
+    local_api_enabled: Optional[bool] = None
+    error: Optional[str] = None
+    update_available: bool = False
+    uptime_seconds: int = 0
 
 
 class DeviceUpdate(BaseModel):
