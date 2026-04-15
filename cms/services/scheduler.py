@@ -743,6 +743,20 @@ async def evaluate_schedules() -> None:
         for did in stale:
             _now_playing.pop(did, None)
 
+        # Clean up _now_playing entries whose schedule window has expired
+        active_sids = {str(s.id) for s in active}
+        expired_np = [
+            did for did, info in list(_now_playing.items())
+            if info.get("schedule_id") and str(info["schedule_id"]) not in active_sids
+        ]
+        for did in expired_np:
+            info = _now_playing.pop(did, None)
+            if info:
+                logger.info(
+                    "Cleared stale now_playing for device %s (schedule %s expired)",
+                    did, info.get("schedule_name", "?"),
+                )
+
         await db.commit()
 
 
