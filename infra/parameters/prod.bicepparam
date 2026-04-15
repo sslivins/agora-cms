@@ -3,9 +3,12 @@ using '../main.bicep'
 // ──────────────────────────────────────────────────────────────
 // prod.bicepparam — Production parameter values
 //
-// Fill in the secure values before deploying:
+// Deployed automatically by the CD pipeline on every merge to main.
+// Secure values are passed from GitHub Secrets — never commit them here.
+//
+// Manual deploy:
 //   az deployment group create \
-//     --resource-group agora-cms-rg \
+//     --resource-group agoracms-cms-rg \
 //     --template-file infra/main.bicep \
 //     --parameters infra/parameters/prod.bicepparam \
 //     --parameters postgresAdminPassword='<secure>' \
@@ -13,20 +16,20 @@ using '../main.bicep'
 //                  cmsAdminPassword='<secure>'
 // ──────────────────────────────────────────────────────────────
 
-param prefix = 'agora'
-param location = 'westus2'
+param prefix = 'agoracms'
+param location = 'westus3'
 
 param postgresAdminLogin = 'agoraadmin'
 param cmsAdminUsername = 'admin'
 
-// Secure params — pass via CLI or Key Vault reference, never commit values:
+// Secure params — passed via CLI or GitHub Secrets, never commit values:
 // param postgresAdminPassword = '<set-via-cli>'
 // param cmsSecretKey = '<set-via-cli>'
 // param cmsAdminPassword = '<set-via-cli>'
 
-// Your Azure AD object ID (run: az ad signed-in-user show --query id -o tsv)
-param adminPrincipalId = '<your-azure-ad-object-id>'
+param adminPrincipalId = '224d9903-ad74-4629-982b-1db94580d901'
 
-// Container images — leave empty to use ACR defaults, or override:
-// param cmsImage = 'agoraacr.azurecr.io/agora-cms:latest'
-// param mcpImage = 'agoraacr.azurecr.io/agora-cms-mcp:latest'
+// Container images — set by CD pipeline via --parameters override:
+// param cmsImage = 'agoracmsacr.azurecr.io/agora-cms:latest'
+// param mcpImage = 'agoracmsacr.azurecr.io/agora-cms-mcp:latest'
+// param workerImage = 'agoracmsacr.azurecr.io/agora-worker:latest'
