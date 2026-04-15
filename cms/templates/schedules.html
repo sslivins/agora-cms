@@ -6,6 +6,17 @@
 {% if 'schedules:write' in user_perms %}
 <div class="card">
     <h2>Create Schedule</h2>
+    {% if not groups %}
+    <p class="text-muted empty-state">
+        ⚠️ No groups available. Schedules target device groups, so you need to
+        <a href="/devices">create a group</a> before you can create a schedule.
+    </p>
+    {% elif not assets %}
+    <p class="text-muted empty-state">
+        ⚠️ No assets uploaded. You need to <a href="/assets">upload an asset</a>
+        before you can create a schedule.
+    </p>
+    {% else %}
     <form onsubmit="event.preventDefault(); createSchedule(this)" novalidate>
         <div class="form-row">
             <div class="form-group">
@@ -87,6 +98,7 @@
         <div id="schedule-summary" class="schedule-summary" style="display:none;"></div>
         <button type="submit" class="btn btn-primary">Create Schedule</button>
     </form>
+    {% endif %}
 </div>
 {% endif %}
 

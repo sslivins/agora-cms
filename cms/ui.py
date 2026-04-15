@@ -436,6 +436,17 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     )
     recent_activity = recent_q.scalars().all()
 
+    # Groups for the adoption modal dropdown
+    # Admins see all groups; scoped users see only their assigned groups.
+    adoption_groups_query = select(DeviceGroup).order_by(DeviceGroup.name)
+    if not is_admin:
+        if group_ids:
+            adoption_groups_query = adoption_groups_query.where(DeviceGroup.id.in_(group_ids))
+        else:
+            adoption_groups_query = adoption_groups_query.where(sqlalchemy.false())
+    adoption_groups_q = await db.execute(adoption_groups_query)
+    adoption_groups = adoption_groups_q.scalars().all()
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_tab": "dashboard",
         "tz": tz,
@@ -448,6 +459,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "upcoming_today": upcoming_today,
         "upcoming_tomorrow": upcoming_tomorrow,
         "recent_activity": recent_activity,
+        "adoption_groups": adoption_groups,
     })
 
 

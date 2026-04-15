@@ -248,6 +248,101 @@ class TestAdoptionUI:
         assert "Lobby" in html
         assert "Kitchen" in html
 
+    async def test_adoption_groups_js_array_contains_group_data(self, client, db_session, app):
+        """The _adoptionGroups JS array must contain parseable group objects, not just mention the name."""
+        import json
+        import re
+
+        group = await _create_group(db_session, name="Conference Rooms")
+
+        resp = await client.get("/devices")
+        html = resp.text
+
+        # Extract the _adoptionGroups array value from the rendered JS
+        match = re.search(r"window\._adoptionGroups\s*=\s*(\[.*?\]);", html, re.DOTALL)
+        assert match, "_adoptionGroups assignment not found in rendered HTML"
+
+        # The JS array uses unquoted keys like { id: "...", name: "..." }
+        # Convert to valid JSON by quoting the keys
+        raw = match.group(1)
+        raw_json = re.sub(r'(\b)(id|name)(\s*:)', r'"\2"\3', raw)
+        groups_data = json.loads(raw_json)
+
+        assert len(groups_data) >= 1
+        names = [g["name"] for g in groups_data]
+        assert "Conference Rooms" in names
+        # Verify id is a valid UUID string
+        group_entry = next(g for g in groups_data if g["name"] == "Conference Rooms")
+        assert len(group_entry["id"]) == 36  # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+    async def test_adoption_groups_special_chars_safe(self, client, db_session, app):
+        """Group names with special characters must not break the JS."""
+        import json
+        import re
+
+        await _create_group(db_session, name='O\'Malley & "Friends"')
+
+        resp = await client.get("/devices")
+        html = resp.text
+
+        match = re.search(r"window\._adoptionGroups\s*=\s*(\[.*?\]);", html, re.DOTALL)
+        assert match, "_adoptionGroups assignment not found"
+
+        raw = match.group(1)
+        raw_json = re.sub(r'(\b)(id|name)(\s*:)', r'"\2"\3', raw)
+        groups_data = json.loads(raw_json)
+
+        names = [g["name"] for g in groups_data]
+        assert 'O\'Malley & "Friends"' in names
+
+
+@pytest.mark.asyncio
+class TestDashboardAdoptionGroups:
+    """The dashboard also has Adopt buttons — it must inject _adoptionGroups too."""
+
+    async def test_dashboard_has_adoption_groups(self, client, db_session, app):
+        """Dashboard page must inject _adoptionGroups for the adopt modal."""
+        await _create_group(db_session, name="Lobby Screens")
+
+        resp = await client.get("/")
+        html = resp.text
+        assert "_adoptionGroups" in html
+        assert "Lobby Screens" in html
+
+    async def test_dashboard_adoption_groups_parseable(self, client, db_session, app):
+        """Dashboard _adoptionGroups must be a parseable JS array with correct data."""
+        import json
+        import re
+
+        g = await _create_group(db_session, name="Main Hall")
+
+        resp = await client.get("/")
+        html = resp.text
+
+        match = re.search(r"window\._adoptionGroups\s*=\s*(\[.*?\]);", html, re.DOTALL)
+        assert match, "_adoptionGroups not found in dashboard HTML"
+
+        raw = match.group(1)
+        raw_json = re.sub(r'(\b)(id|name)(\s*:)', r'"\2"\3', raw)
+        groups_data = json.loads(raw_json)
+
+        assert len(groups_data) >= 1
+        names = [g["name"] for g in groups_data]
+        assert "Main Hall" in names
+
+    async def test_dashboard_no_groups_empty_array(self, client, db_session, app):
+        """With no groups, _adoptionGroups should be an empty array."""
+        import re
+
+        resp = await client.get("/")
+        html = resp.text
+
+        match = re.search(r"window\._adoptionGroups\s*=\s*(\[.*?\]);", html, re.DOTALL)
+        assert match, "_adoptionGroups not found in dashboard HTML"
+
+        raw = match.group(1).strip()
+        assert raw == "[]" or raw.strip() == "[]" or not raw.strip().strip("[]").strip()
+
 
 # ── Schema Tests ──
 
