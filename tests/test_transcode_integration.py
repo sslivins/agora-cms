@@ -536,7 +536,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "test.png", width=640, height=480)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -554,7 +554,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "test.webp", fmt="webp")
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -569,7 +569,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "test.bmp", fmt="bmp")
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -581,7 +581,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "test.tiff", fmt="tiff")
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -603,7 +603,7 @@ class TestImageConversion:
         )
 
         out = tmp_path / "output.jpg"
-        success = asyncio.get_event_loop().run_until_complete(
+        success = asyncio.run(
             convert_image_to_jpeg(avif_path, out)
         )
 
@@ -615,7 +615,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "test.jpg", width=800, height=600)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -632,7 +632,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "big.png", width=3840, height=2160)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -647,7 +647,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "big.webp", width=3840, height=2160, fmt="webp")
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -662,7 +662,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "big.bmp", width=2560, height=1440, fmt="bmp")
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
         )
         assert result is True
@@ -677,7 +677,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "big.png", width=3840, height=2160)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
         )
         assert result is True
@@ -692,7 +692,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "wide.png", width=3840, height=2160)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
         )
         assert result is True
@@ -708,7 +708,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "portrait.png", width=1080, height=1920)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=720, max_height=1280)
         )
         assert result is True
@@ -725,7 +725,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "small.png", width=320, height=240)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -740,7 +740,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "exact.png", width=1920, height=1080)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -755,7 +755,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "big.png", width=3840, height=2160)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
         assert result is True
@@ -770,7 +770,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "wide.png", width=2560, height=720)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -785,7 +785,7 @@ class TestImageConversion:
         src = gen_image(tmp_path / "tall.png", width=720, height=2560)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -809,7 +809,7 @@ class TestHeicConversion:
         src = gen_heic(tmp_path / "photo.heic")
         out = tmp_path / "photo.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -824,7 +824,7 @@ class TestHeicConversion:
         src = write_embedded_heic(tmp_path / "embedded.heic")
         out = tmp_path / "embedded.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out)
         )
 
@@ -845,7 +845,7 @@ class TestHeicConversion:
         src = gen_heic(tmp_path / "big.heic", width=4000, height=3000)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -860,7 +860,7 @@ class TestHeicConversion:
         src = gen_heic(tmp_path / "small.heic", width=320, height=240)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1920, max_height=1080)
         )
         assert result is True
@@ -875,7 +875,7 @@ class TestHeicConversion:
         src = gen_heic(tmp_path / "big.heic", width=4000, height=3000)
         out = tmp_path / "output.jpg"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             convert_image_to_jpeg(src, out, max_width=1280, max_height=720)
         )
         assert result is True
@@ -897,7 +897,7 @@ class TestProbeMedia:
         """probe_media should detect H.264 codec, dimensions, audio."""
         src = gen_video(tmp_path / "test.mp4", width=640, height=480)
 
-        meta = asyncio.get_event_loop().run_until_complete(probe_media(src))
+        meta = asyncio.run(probe_media(src))
 
         assert meta["video_codec"] == "h264"
         assert meta["width"] == 640
@@ -910,7 +910,7 @@ class TestProbeMedia:
         src = gen_video(tmp_path / "test.mp4", vcodec="libx265",
                         extra_args=["-x265-params", "log-level=error"])
 
-        meta = asyncio.get_event_loop().run_until_complete(probe_media(src))
+        meta = asyncio.run(probe_media(src))
 
         assert meta["video_codec"] == "hevc"
 
@@ -918,7 +918,7 @@ class TestProbeMedia:
         """probe_media on a JPEG should return friendly format and null video fields."""
         src = gen_image(tmp_path / "test.jpg", width=800, height=600)
 
-        meta = asyncio.get_event_loop().run_until_complete(probe_media(src))
+        meta = asyncio.run(probe_media(src))
 
         assert meta["width"] == 800
         assert meta["height"] == 600
@@ -931,7 +931,7 @@ class TestProbeMedia:
         """probe_media on a PNG should return 'png' and null video fields."""
         src = gen_image(tmp_path / "test.png", width=640, height=480, fmt="png")
 
-        meta = asyncio.get_event_loop().run_until_complete(probe_media(src))
+        meta = asyncio.run(probe_media(src))
 
         assert meta["video_codec"] == "png"
         assert meta["frame_rate"] is None
