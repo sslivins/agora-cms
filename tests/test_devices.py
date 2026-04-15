@@ -1,5 +1,8 @@
 """Tests for device API endpoints."""
 
+import uuid
+from datetime import time
+
 import pytest
 
 
@@ -332,27 +335,37 @@ class TestDevicePlaybackFields:
             device_manager.disconnect("pb-live")
 
     async def test_has_active_schedule_from_scheduler(self, client, db_session):
-        """Device with an active schedule in _now_playing should have has_active_schedule=True."""
-        from cms.models.device import Device, DeviceStatus
-        from cms.services import scheduler
+        """Device with an active schedule in DB should have has_active_schedule=True."""
+        from cms.models.device import Device, DeviceStatus, DeviceGroup
+        from shared.models.asset import Asset, AssetType
+        from cms.models.schedule import Schedule
 
         device = Device(id="pb-sched", name="pb-sched", status=DeviceStatus.ADOPTED)
         db_session.add(device)
+        await db_session.flush()
+
+        asset = Asset(id=uuid.uuid4(), filename="scheduled.mp4",
+                      asset_type=AssetType.VIDEO, checksum="abc")
+        group = DeviceGroup(id=uuid.uuid4(), name="sched-group")
+        db_session.add_all([asset, group])
+        await db_session.flush()
+
+        from sqlalchemy import update
+        await db_session.execute(
+            update(Device).where(Device.id == "pb-sched").values(group_id=group.id)
+        )
+
+        schedule = Schedule(
+            id=uuid.uuid4(), name="Test Sched", asset_id=asset.id,
+            group_id=group.id, start_time=time(0, 0, 0),
+            end_time=time(23, 59, 59), enabled=True, priority=0,
+        )
+        db_session.add(schedule)
         await db_session.commit()
 
-        # Inject into scheduler _now_playing dict
-        scheduler._now_playing["pb-sched"] = {
-            "device_id": "pb-sched",
-            "schedule_id": "fake-sched-id",
-            "asset": "scheduled.mp4",
-        }
-
-        try:
-            resp = await client.get("/api/devices")
-            dev = [d for d in resp.json() if d["id"] == "pb-sched"][0]
-            assert dev["has_active_schedule"] is True
-        finally:
-            scheduler._now_playing.pop("pb-sched", None)
+        resp = await client.get("/api/devices")
+        dev = [d for d in resp.json() if d["id"] == "pb-sched"][0]
+        assert dev["has_active_schedule"] is True
 
     async def test_splash_mode_fields(self, client, db_session):
         """Device showing splash should report mode=splash and no asset."""
@@ -416,25 +429,36 @@ class TestGetSingleDevice:
 
     async def test_get_device_has_active_schedule(self, client, db_session):
         """Single device endpoint should include has_active_schedule from scheduler."""
-        from cms.models.device import Device, DeviceStatus
-        from cms.services import scheduler
+        from cms.models.device import Device, DeviceStatus, DeviceGroup
+        from shared.models.asset import Asset, AssetType
+        from cms.models.schedule import Schedule
 
         device = Device(id="single-sched", name="single-sched", status=DeviceStatus.ADOPTED)
         db_session.add(device)
+        await db_session.flush()
+
+        asset = Asset(id=uuid.uuid4(), filename="scheduled.mp4",
+                      asset_type=AssetType.VIDEO, checksum="abc")
+        group = DeviceGroup(id=uuid.uuid4(), name="single-sched-group")
+        db_session.add_all([asset, group])
+        await db_session.flush()
+
+        from sqlalchemy import update
+        await db_session.execute(
+            update(Device).where(Device.id == "single-sched").values(group_id=group.id)
+        )
+
+        schedule = Schedule(
+            id=uuid.uuid4(), name="Single Sched", asset_id=asset.id,
+            group_id=group.id, start_time=time(0, 0, 0),
+            end_time=time(23, 59, 59), enabled=True, priority=0,
+        )
+        db_session.add(schedule)
         await db_session.commit()
 
-        scheduler._now_playing["single-sched"] = {
-            "device_id": "single-sched",
-            "schedule_id": "fake-sched-id",
-            "asset": "scheduled.mp4",
-        }
-
-        try:
-            resp = await client.get("/api/devices/single-sched")
-            assert resp.status_code == 200
-            assert resp.json()["has_active_schedule"] is True
-        finally:
-            scheduler._now_playing.pop("single-sched", None)
+        resp = await client.get("/api/devices/single-sched")
+        assert resp.status_code == 200
+        assert resp.json()["has_active_schedule"] is True
 
     async def test_get_device_offline_defaults(self, client, db_session):
         """Offline device via single endpoint should have null playback fields."""
