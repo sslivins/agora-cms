@@ -59,6 +59,15 @@ from cms.timezones import build_tz_options, canonical_timezones
 
 from cms.mcp_utils import notify_mcp_reload as _notify_mcp_reload
 
+
+async def _get_setup_user(request: Request, settings, db):
+    """Extract and resolve the user from the session cookie. Returns None if not authenticated."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return None
+    return await _resolve_user_from_session(cookie, settings, db)
+
+
 # Canonical IANA timezones for dropdowns — sorted for readability.
 COMMON_TIMEZONES = sorted(canonical_timezones())
 
@@ -263,28 +272,43 @@ async def force_password_change_submit(
 
 
 @router.get("/setup", response_class=HTMLResponse)
-async def setup_page(request: Request, db: AsyncSession = Depends(get_db)):
+async def setup_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
     """Render the first-run setup wizard."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return RedirectResponse(url="/", status_code=303)
 
+    # Require login — redirect to login page if not authenticated
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
     tz_options = build_tz_options()
     return templates.TemplateResponse(request, "setup.html", {
         "timezones": tz_options,
+        "user": user,
     })
 
 
 @router.post("/setup/account")
-async def setup_account_create(
+async def setup_account_update(
     request: Request,
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
-    """Step 1: Create a new admin account and deactivate the default one."""
+    """Step 1: Update the admin account with a new display name, email, and password."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    # Require login
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     data = await request.json()
     display_name = (data.get("display_name") or "").strip()
@@ -298,64 +322,38 @@ async def setup_account_create(
     if len(password) < 6:
         return JSONResponse({"error": "Password must be at least 6 characters"}, status_code=400)
 
-    # Check if email already exists (non-default admin)
+    # Check if email is taken by a different user
     from sqlalchemy import select as sa_select
     existing = await db.execute(
-        sa_select(User).where(User.email == email)
+        sa_select(User).where(User.email == email, User.id != user.id)
     )
     if existing.scalar_one_or_none():
         return JSONResponse({"error": "A user with this email already exists"}, status_code=409)
 
-    # Get admin role
-    from cms.models.user import Role
-    result = await db.execute(sa_select(Role).where(Role.name == "Admin"))
-    admin_role = result.scalar_one_or_none()
-    if admin_role is None:
-        return JSONResponse({"error": "Admin role not found"}, status_code=500)
-
-    # Create the new admin account
-    import uuid
-    username = f"admin-{uuid.uuid4().hex[:8]}"
-    new_admin = User(
-        username=username,
-        email=email,
-        display_name=display_name,
-        password_hash=hash_password(password),
-        role_id=admin_role.id,
-        is_active=True,
-        must_change_password=False,
-    )
-    db.add(new_admin)
-
-    # Deactivate the default admin account
-    default_admin = await db.execute(
-        sa_select(User).where(User.username == settings.admin_username)
-    )
-    default_admin_user = default_admin.scalar_one_or_none()
-    if default_admin_user and default_admin_user.email != email:
-        default_admin_user.is_active = False
+    # Update the current admin account
+    user.display_name = display_name
+    user.email = email
+    user.password_hash = hash_password(password)
+    user.must_change_password = False
 
     await db.commit()
 
-    # Auto-login the new admin
-    serializer = URLSafeTimedSerializer(settings.secret_key)
-    token = serializer.dumps({"user_id": str(new_admin.id)})
-    response = JSONResponse({"status": "ok"})
-    response.set_cookie(
-        COOKIE_NAME, token, max_age=MAX_AGE, httponly=True, samesite="lax"
-    )
-    return response
+    return JSONResponse({"status": "ok"})
 
 
 @router.post("/setup/smtp")
 async def setup_smtp(
     request: Request,
+    settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
     """Step 2: Save SMTP configuration (optional — can be skipped)."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     data = await request.json()
     await set_setting(db, SETTING_SMTP_HOST, data.get("host", ""))
@@ -370,12 +368,16 @@ async def setup_smtp(
 @router.post("/setup/smtp/test")
 async def setup_smtp_test(
     request: Request,
+    settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
     """Test SMTP configuration during setup wizard."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     data = await request.json()
     to_email = (data.get("to_email") or "").strip()
@@ -391,12 +393,16 @@ async def setup_smtp_test(
 @router.post("/setup/timezone")
 async def setup_timezone(
     request: Request,
+    settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
     """Step 3: Set CMS timezone."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     data = await request.json()
     tz = (data.get("timezone") or "").strip()
@@ -410,12 +416,16 @@ async def setup_timezone(
 @router.post("/setup/mcp")
 async def setup_mcp(
     request: Request,
+    settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
     """Step 4: Enable or disable MCP server."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     data = await request.json()
     enabled = data.get("enabled", False)
@@ -426,12 +436,16 @@ async def setup_mcp(
 @router.post("/setup/complete")
 async def setup_complete(
     request: Request,
+    settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
     """Mark setup as complete — wizard will no longer appear."""
     completed = await get_setting(db, SETTING_SETUP_COMPLETED)
     if completed == "true":
         return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     await set_setting(db, SETTING_SETUP_COMPLETED, "true")
 

@@ -25,20 +25,22 @@
 
         <!-- Step 1: Admin Account -->
         <div class="setup-panel" id="step-1">
-            <h3>Create Admin Account</h3>
+            <h3>Personalize Your Account</h3>
             <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
-                Create your administrator account. The default admin account will be deactivated.
+                Set your display name, email, and a new password to replace the default credentials.
             </p>
             <div class="form-group">
                 <label for="admin-name">Display Name</label>
-                <input type="text" id="admin-name" placeholder="e.g. John Smith" required autofocus>
+                <input type="text" id="admin-name" placeholder="e.g. John Smith"
+                       value="{{ user.display_name or '' }}" required autofocus>
             </div>
             <div class="form-group">
                 <label for="admin-email">Email</label>
-                <input type="email" id="admin-email" placeholder="admin@example.com" required>
+                <input type="email" id="admin-email" placeholder="admin@example.com"
+                       value="{{ user.email or '' }}" required>
             </div>
             <div class="form-group">
-                <label for="admin-password">Password</label>
+                <label for="admin-password">New Password</label>
                 <input type="password" id="admin-password" placeholder="Min 6 characters" required minlength="6">
             </div>
             <div class="form-group">

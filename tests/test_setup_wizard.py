@@ -116,6 +116,20 @@ async def setup_app(db_engine, tmp_path):
 
 @pytest_asyncio.fixture
 async def setup_client(setup_app):
+    """Authenticated client for setup wizard tests (logged in as default admin)."""
+    transport = ASGITransport(app=setup_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Login with default admin credentials
+        resp = await ac.post(
+            "/login",
+            data={"username": "admin", "password": "testpass"},
+            follow_redirects=False,
+        )
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def unauthed_setup_client(setup_app):
     """Unauthenticated client for setup wizard tests."""
     transport = ASGITransport(app=setup_app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -126,9 +140,9 @@ async def setup_client(setup_app):
 
 
 @pytest.mark.anyio
-async def test_redirect_to_setup_when_not_completed(setup_client):
+async def test_redirect_to_setup_when_not_completed(unauthed_setup_client):
     """HTML requests should redirect to /setup when setup is incomplete."""
-    resp = await setup_client.get(
+    resp = await unauthed_setup_client.get(
         "/", headers={"accept": "text/html"}, follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -136,9 +150,9 @@ async def test_redirect_to_setup_when_not_completed(setup_client):
 
 
 @pytest.mark.anyio
-async def test_api_returns_503_when_not_completed(setup_client):
+async def test_api_returns_503_when_not_completed(unauthed_setup_client):
     """API requests should get 503 when setup is incomplete."""
-    resp = await setup_client.get(
+    resp = await unauthed_setup_client.get(
         "/api/devices", headers={"accept": "application/json"},
     )
     assert resp.status_code == 503
@@ -146,8 +160,27 @@ async def test_api_returns_503_when_not_completed(setup_client):
 
 
 @pytest.mark.anyio
-async def test_setup_page_accessible_when_not_completed(setup_client):
-    """GET /setup should render the wizard when setup is incomplete."""
+async def test_setup_page_redirects_to_login_when_unauthenticated(unauthed_setup_client):
+    """GET /setup should redirect to /login when not logged in."""
+    resp = await unauthed_setup_client.get(
+        "/setup", headers={"accept": "text/html"}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+
+
+@pytest.mark.anyio
+async def test_login_accessible_during_setup(unauthed_setup_client):
+    """The login page should be accessible even when setup is incomplete."""
+    resp = await unauthed_setup_client.get(
+        "/login", headers={"accept": "text/html"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_setup_page_accessible_when_authenticated(setup_client):
+    """GET /setup should render the wizard when logged in and setup incomplete."""
     resp = await setup_client.get("/setup", headers={"accept": "text/html"})
     assert resp.status_code == 200
     assert "Welcome to Agora CMS" in resp.text
@@ -161,42 +194,33 @@ async def test_setup_page_redirects_when_completed(client):
     assert resp.headers["location"] == "/"
 
 
-# ── Account creation ──
+# ── Account update ──
 
 
 @pytest.mark.anyio
-async def test_account_creation(setup_client, db_session):
-    """POST /setup/account should create a new admin and deactivate default."""
+async def test_account_update(setup_client, db_session):
+    """POST /setup/account should update the logged-in admin's profile."""
     resp = await setup_client.post("/setup/account", json={
-        "display_name": "New Admin",
-        "email": "newadmin@example.com",
+        "display_name": "Updated Admin",
+        "email": "updated@example.com",
         "password": "securepass123",
     })
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
 
-    # Session cookie should be set (auto-login)
-    assert "agora_cms_session" in resp.cookies
-
-    # New admin exists in DB
-    result = await db_session.execute(
-        select(User).where(User.email == "newadmin@example.com")
-    )
-    new_admin = result.scalar_one()
-    assert new_admin.display_name == "New Admin"
-    assert new_admin.is_active is True
-
-    # Default admin should be deactivated
+    # Admin should be updated in DB
     result = await db_session.execute(
         select(User).where(User.username == "admin")
     )
-    default_admin = result.scalar_one()
-    assert default_admin.is_active is False
+    admin = result.scalar_one()
+    assert admin.display_name == "Updated Admin"
+    assert admin.email == "updated@example.com"
+    assert admin.is_active is True
 
 
 @pytest.mark.anyio
-async def test_account_creation_validates_email(setup_client):
+async def test_account_update_validates_email(setup_client):
     """POST /setup/account should reject invalid emails."""
     resp = await setup_client.post("/setup/account", json={
         "display_name": "Test",
@@ -208,7 +232,7 @@ async def test_account_creation_validates_email(setup_client):
 
 
 @pytest.mark.anyio
-async def test_account_creation_validates_short_password(setup_client):
+async def test_account_update_validates_short_password(setup_client):
     """POST /setup/account should reject passwords < 6 chars."""
     resp = await setup_client.post("/setup/account", json={
         "display_name": "Test",
@@ -217,6 +241,17 @@ async def test_account_creation_validates_short_password(setup_client):
     })
     assert resp.status_code == 400
     assert "6 characters" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_account_update_rejects_unauthenticated(unauthed_setup_client):
+    """POST /setup/account should return 401 without a session."""
+    resp = await unauthed_setup_client.post("/setup/account", json={
+        "display_name": "Hacker",
+        "email": "hack@example.com",
+        "password": "password123",
+    })
+    assert resp.status_code == 401
 
 
 # ── SMTP ──
@@ -300,11 +335,11 @@ async def test_setup_complete_prevents_reentry(setup_client):
 
 @pytest.mark.anyio
 async def test_normal_routes_accessible_after_setup(setup_client):
-    """After setup + login, normal routes should be accessible."""
-    # Create account (gets auto-logged-in)
+    """After setup, normal routes should be accessible."""
+    # Update account
     resp = await setup_client.post("/setup/account", json={
         "display_name": "Admin",
-        "email": "admin2@example.com",
+        "email": "admin@example.com",
         "password": "password123",
     })
     assert resp.status_code == 200

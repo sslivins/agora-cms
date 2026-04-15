@@ -401,7 +401,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Setup-wizard redirect middleware
 # ---------------------------------------------------------------------------
-_SETUP_ALLOWED_PREFIXES = ("/setup", "/static", "/healthz", "/api/devices/ws")
+_SETUP_ALLOWED_PREFIXES = ("/setup", "/static", "/healthz", "/api/devices/ws", "/login")
 
 # Cache the setup status in-memory to avoid DB queries on every request.
 # Set to True once first-run wizard is completed; reset on app restart.
