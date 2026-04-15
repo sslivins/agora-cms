@@ -437,11 +437,18 @@ async def create_webpage_asset(
     if len(url) > 2048:
         raise HTTPException(status_code=400, detail="URL too long (max 2048 characters)")
 
+    # Validate URL structure
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.netloc or "." not in parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL must contain a valid hostname (e.g. example.com)")
+    # Block dangerous schemes that could slip through URL encoding tricks
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http and https URLs are allowed")
+
     # Use provided name or derive from URL
     name = body.get("name", "").strip()
     if not name:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
         name = parsed.netloc + (parsed.path if parsed.path != "/" else "")
         if len(name) > 200:
             name = name[:200]
