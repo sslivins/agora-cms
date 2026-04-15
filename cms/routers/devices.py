@@ -4,7 +4,6 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,6 +17,7 @@ from cms.permissions import (
 from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.schemas.device import (
+    AdoptRequest,
     DeviceGroupCreate,
     DeviceGroupOut,
     DeviceGroupUpdate,
@@ -365,14 +365,8 @@ async def toggle_device_local_api(
     return {"ok": True}
 
 
-class AdoptRequest(BaseModel):
-    name: str | None = None
-    location: str | None = None
-    group_id: uuid.UUID | None = None
-
-
 @router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
-async def adopt_device(device_id: str, request: Request, data: AdoptRequest | None = None, db: AsyncSession = Depends(get_db)):
+async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db), body: AdoptRequest = AdoptRequest()):
     """Adopt a pending device or re-adopt an orphaned one.
 
     For pending devices: sets status to adopted and assigns an auth token on next connect.
@@ -383,6 +377,8 @@ async def adopt_device(device_id: str, request: Request, data: AdoptRequest | No
 
     In both cases, a wipe_assets command is sent so the device starts fresh
     without stale content from a previous adoption.
+
+    Accepts optional name and group_id to configure the device during adoption.
     """
     device = await _get_device_with_access(device_id, request, db)
 
@@ -397,13 +393,17 @@ async def adopt_device(device_id: str, request: Request, data: AdoptRequest | No
     else:
         raise HTTPException(status_code=400, detail="Device is already adopted")
 
-    if data:
-        if data.name:
-            device.name = data.name
-        if data.location:
-            device.location = data.location
-        if data.group_id:
-            device.group_id = data.group_id
+    # Apply optional name, location, and group assignment
+    if body.name is not None:
+        device.name = body.name
+    if body.location is not None:
+        device.location = body.location
+    if body.group_id is not None:
+        # Verify the group exists
+        grp = await db.execute(select(DeviceGroup).where(DeviceGroup.id == body.group_id))
+        if not grp.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Group not found")
+        device.group_id = body.group_id
 
     await db.commit()
 

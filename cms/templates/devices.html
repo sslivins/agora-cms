@@ -394,12 +394,6 @@
 
 {% block scripts %}
 <script>
-const __adoptGroups = [
-    {% for g in groups %}
-    {id: "{{ g.id }}", name: "{{ g.name }}"}{% if not loop.last %},{% endif %}
-    {% endfor %}
-];
-
 function toggleGroup(header) {
     const panel = header.closest('.group-panel');
     const body = panel.querySelector('.group-body');
@@ -446,6 +440,13 @@ function applyAssetTooltips() {
         }
     });
 }
+
+// Pass groups data to JS for the adoption modal
+window._adoptionGroups = [
+    {% for g in groups %}
+    { id: "{{ g.id }}", name: "{{ g.name | e }}" }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
 
 (function() {
     const __canManage = {{ 'true' if 'devices:manage' in user_perms else 'false' }};

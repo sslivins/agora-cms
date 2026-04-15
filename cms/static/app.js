@@ -284,59 +284,112 @@ async function setGroupDefaultAsset(groupId, assetId) {
 }
 
 async function adoptDevice(deviceId, deviceName) {
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-
-    // Build group options from __adoptGroups if available
-    let groupOptions = '<option value="">— No group —</option>';
-    if (typeof __adoptGroups !== 'undefined') {
-        __adoptGroups.forEach(g => {
-            groupOptions += `<option value="${g.id}">${g.name}</option>`;
-        });
+    // Show adoption modal with name + optional location + optional group
+    const groups = window._adoptionGroups || [];
+    const result = await showAdoptModal(deviceName || deviceId, groups);
+    if (!result) return;
+    const body = { name: result.name };
+    if (result.location) body.location = result.location;
+    if (result.group_id) body.group_id = result.group_id;
+    const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`, body);
+    if (resp && resp.ok) location.reload();
+    else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to adopt device", true);
     }
+}
 
-    const box = document.createElement("div");
-    box.className = "modal-box";
-    box.style.minWidth = "400px";
-    box.innerHTML = `
-        <h3 style="margin-bottom: 1rem;">Adopt Device</h3>
-        <p style="margin-bottom: 1rem; color: var(--text-secondary);">Configure this device before adopting it.</p>
-        <div class="form-group">
-            <label>Name</label>
-            <input type="text" id="adopt-name" value="${deviceName}" placeholder="Device name">
-        </div>
-        <div class="form-group">
-            <label>Location</label>
-            <input type="text" id="adopt-location" placeholder="e.g. Lobby, Conference Room A">
-        </div>
-        <div class="form-group">
-            <label>Group</label>
-            <select id="adopt-group">${groupOptions}</select>
-        </div>
-        <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
-            <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
-            <button class="btn btn-primary" id="adopt-confirm">Adopt</button>
-        </div>
-    `;
-    overlay.appendChild(box);
-    overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
+function showAdoptModal(defaultName, groups) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        const box = document.createElement("div");
+        box.className = "modal-box";
 
-    box.querySelector("#adopt-confirm").onclick = async () => {
-        const name = box.querySelector("#adopt-name").value.trim();
-        const loc = box.querySelector("#adopt-location").value.trim();
-        const groupId = box.querySelector("#adopt-group").value;
-        const body = {};
-        if (name) body.name = name;
-        if (loc) body.location = loc;
-        if (groupId) body.group_id = groupId;
-        const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`, body);
-        if (resp && resp.ok) window.location.reload();
-        else {
-            const err = await resp.json().catch(() => null);
-            showToast(err?.detail || "Failed to adopt device", true);
-        }
-    };
+        const title = document.createElement("h3");
+        title.textContent = "Adopt Device";
+        title.style.margin = "0 0 1rem 0";
+
+        // Name field (required)
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "Device Name";
+        nameLabel.className = "modal-label";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.className = "modal-input";
+        nameInput.value = defaultName;
+        nameInput.placeholder = "Enter device name";
+
+        // Location field (optional)
+        const locLabel = document.createElement("label");
+        locLabel.textContent = "Location (optional)";
+        locLabel.className = "modal-label";
+        const locInput = document.createElement("input");
+        locInput.type = "text";
+        locInput.className = "modal-input";
+        locInput.placeholder = "e.g. Lobby, Conference Room A";
+
+        // Group field (optional)
+        const groupLabel = document.createElement("label");
+        groupLabel.textContent = "Group (optional)";
+        groupLabel.className = "modal-label";
+        const groupSelect = document.createElement("select");
+        groupSelect.className = "modal-input";
+        const noneOpt = document.createElement("option");
+        noneOpt.value = "";
+        noneOpt.textContent = "None";
+        groupSelect.appendChild(noneOpt);
+        groups.forEach(g => {
+            const opt = document.createElement("option");
+            opt.value = g.id;
+            opt.textContent = g.name;
+            groupSelect.appendChild(opt);
+        });
+
+        // Actions
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.textContent = "Cancel";
+        const adoptBtn = document.createElement("button");
+        adoptBtn.className = "btn btn-primary";
+        adoptBtn.textContent = "Adopt";
+        adoptBtn.disabled = !nameInput.value.trim();
+
+        // Validation: disable adopt when name is empty
+        nameInput.addEventListener("input", () => {
+            adoptBtn.disabled = !nameInput.value.trim();
+        });
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(adoptBtn);
+        box.appendChild(title);
+        box.appendChild(nameLabel);
+        box.appendChild(nameInput);
+        box.appendChild(locLabel);
+        box.appendChild(locInput);
+        box.appendChild(groupLabel);
+        box.appendChild(groupSelect);
+        box.appendChild(actions);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        nameInput.focus();
+        nameInput.select();
+
+        const close = (val) => { overlay.remove(); resolve(val); };
+        cancelBtn.onclick = () => close(null);
+        adoptBtn.onclick = () => {
+            if (!nameInput.value.trim()) return;
+            close({ name: nameInput.value.trim(), location: locInput.value.trim() || null, group_id: groupSelect.value || null });
+        };
+        nameInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && nameInput.value.trim()) {
+                close({ name: nameInput.value.trim(), location: locInput.value.trim() || null, group_id: groupSelect.value || null });
+            }
+        });
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    });
 }
 
 async function deleteDevice(deviceId) {
