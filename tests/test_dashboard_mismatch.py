@@ -7,7 +7,8 @@ badge instead of 'Starting…' or 'Not Playing'.
 """
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+import uuid
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -28,6 +29,41 @@ async def _seed_device(db_session, device_id="mismatch-01", name="Test Device"):
     return device
 
 
+async def _seed_schedule(db_session, device_id="mismatch-01",
+                         asset_filename="sony-clip.mp4",
+                         schedule_name="Sony Schedule"):
+    from shared.models.asset import Asset, AssetType
+    from cms.models.device import DeviceGroup
+    from cms.models.schedule import Schedule
+    from sqlalchemy import update
+
+    asset = Asset(id=uuid.uuid4(), filename=asset_filename,
+                  asset_type=AssetType.VIDEO, checksum="abc123")
+    db_session.add(asset)
+
+    group = DeviceGroup(id=uuid.uuid4(), name=f"Test Group {uuid.uuid4().hex[:6]}")
+    db_session.add(group)
+    await db_session.flush()
+
+    await db_session.execute(
+        update(Device).where(Device.id == device_id).values(group_id=group.id)
+    )
+
+    schedule = Schedule(
+        id=uuid.uuid4(),
+        name=schedule_name,
+        asset_id=asset.id,
+        group_id=group.id,
+        start_time=time(0, 0, 0),
+        end_time=time(23, 59, 59),
+        enabled=True,
+        priority=0,
+    )
+    db_session.add(schedule)
+    await db_session.commit()
+    return schedule, asset, group
+
+
 def _fake_connect(device_id, mode="splash", asset=None):
     class FakeWS:
         pass
@@ -35,21 +71,12 @@ def _fake_connect(device_id, mode="splash", asset=None):
     device_manager.update_status(device_id, mode=mode, asset=asset)
 
 
-def _seed_now_playing(device_id, device_name, schedule_name, asset_filename, since=None):
+def _seed_confirmed(device_id, schedule_id, since=None):
     if since is None:
-        # Default to 60s ago — outside the 45s grace period so existing
-        # mismatch tests keep their "Not Playing" behaviour.
         since = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
-    _sched._now_playing[device_id] = {
-        "device_id": device_id,
-        "device_name": device_name,
-        "schedule_id": "sched-1",
-        "schedule_name": schedule_name,
-        "asset_filename": asset_filename,
-        "since": since or datetime.now(timezone.utc).isoformat(),
-        "end_time": "5:00 PM",
-        "remaining": "30 minutes",
-        "remaining_seconds": 1800,
+    _sched._confirmed_playing[device_id] = {
+        "schedule_id": str(schedule_id),
+        "since": since,
     }
 
 
@@ -58,8 +85,9 @@ class TestDashboardMismatch:
     async def test_mismatch_shown_when_device_on_splash(self, app, db_session, client):
         """Device should be playing per schedule but is on splash → 'Not Playing' badge."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="splash", asset=None)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4")
+        _seed_confirmed("mismatch-01", schedule.id)
 
         try:
             resp = await client.get("/")
@@ -70,13 +98,14 @@ class TestDashboardMismatch:
             assert "card-playing-mismatch" in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_no_mismatch_when_playing_correct_asset(self, app, db_session, client):
         """Device is playing the scheduled asset → 'Playing' badge, no warning."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="play", asset="sony-clip.mp4")
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4")
+        _seed_confirmed("mismatch-01", schedule.id)
 
         try:
             resp = await client.get("/")
@@ -87,13 +116,14 @@ class TestDashboardMismatch:
             assert "card-playing-mismatch" not in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_mismatch_when_playing_wrong_asset(self, app, db_session, client):
         """Device is playing a different asset than scheduled → mismatch warning."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="play", asset="other-video.mp4")
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4")
+        _seed_confirmed("mismatch-01", schedule.id)
 
         try:
             resp = await client.get("/")
@@ -103,13 +133,14 @@ class TestDashboardMismatch:
             assert "badge-missed" in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_mismatch_in_json_api(self, app, db_session, client):
         """The /api/dashboard JSON endpoint should include mismatch flag in now_playing."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="splash", asset=None)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4")
+        _seed_confirmed("mismatch-01", schedule.id)
 
         try:
             resp = await client.get("/api/dashboard")
@@ -119,13 +150,14 @@ class TestDashboardMismatch:
             assert data["now_playing"][0]["mismatch"] is True
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_no_mismatch_in_json_api(self, app, db_session, client):
         """JSON endpoint shows mismatch=False when device is playing correctly."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="play", asset="sony-clip.mp4")
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4")
+        _seed_confirmed("mismatch-01", schedule.id)
 
         try:
             resp = await client.get("/api/dashboard")
@@ -135,7 +167,7 @@ class TestDashboardMismatch:
             assert data["now_playing"][0]["mismatch"] is False
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
 
 @pytest.mark.asyncio
@@ -145,10 +177,10 @@ class TestDashboardStartingGrace:
     async def test_starting_badge_within_grace_period(self, app, db_session, client):
         """Within 45s of activation, a mismatched device shows 'Starting...' not 'Not Playing'."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="splash", asset=None)
-        since = datetime.now(timezone.utc) - timedelta(seconds=10)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/")
@@ -160,15 +192,15 @@ class TestDashboardStartingGrace:
             assert "badge-missed" not in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_mismatch_after_grace_period(self, app, db_session, client):
         """After 45s, a mismatched device shows 'Not Playing' as before."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="splash", asset=None)
-        since = datetime.now(timezone.utc) - timedelta(seconds=60)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/")
@@ -179,15 +211,15 @@ class TestDashboardStartingGrace:
             assert "Starting" not in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_starting_in_json_api(self, app, db_session, client):
         """JSON endpoint returns starting=True during the grace period."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="splash", asset=None)
-        since = datetime.now(timezone.utc) - timedelta(seconds=5)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/api/dashboard")
@@ -198,15 +230,15 @@ class TestDashboardStartingGrace:
             assert np["starting"] is True
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_no_starting_when_playing_correctly(self, app, db_session, client):
         """A device playing the correct asset should show 'Playing', not 'Starting...'."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="play", asset="sony-clip.mp4")
-        since = datetime.now(timezone.utc) - timedelta(seconds=5)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/")
@@ -217,7 +249,7 @@ class TestDashboardStartingGrace:
             assert "Not Playing" not in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_starting_clears_after_device_begins_playing(self, app, db_session, client):
         """Starting badge must clear once the device transitions to playing.
@@ -231,9 +263,9 @@ class TestDashboardStartingGrace:
         stayed stuck on 'Starting…'.
         """
         await _seed_device(db_session)
-        since = datetime.now(timezone.utc) - timedelta(seconds=10)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        schedule, asset, group = await _seed_schedule(db_session)
+        since = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             # 1) Device not playing yet → "Starting…" during grace period
@@ -262,16 +294,16 @@ class TestDashboardStartingGrace:
             assert "Starting" not in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_no_starting_when_playing_different_asset(self, app, db_session, client):
         """When device is playing (a different asset due to preemption), don't
         show 'Starting...' — the device is working fine, _now_playing is just stale."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="play", asset="other-video.mp4")
-        since = datetime.now(timezone.utc) - timedelta(seconds=10)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/api/dashboard")
@@ -282,15 +314,15 @@ class TestDashboardStartingGrace:
             )
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_no_starting_when_playing_different_asset_html(self, app, db_session, client):
         """HTML dashboard should not show Starting badge when device plays a different asset."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         _fake_connect("mismatch-01", mode="play", asset="other-video.mp4")
-        since = datetime.now(timezone.utc) - timedelta(seconds=10)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/")
@@ -300,7 +332,7 @@ class TestDashboardStartingGrace:
             assert "badge-started" in html
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
 
 @pytest.mark.asyncio
@@ -311,10 +343,10 @@ class TestDashboardDeviceOffline:
     async def test_offline_badge_in_now_playing_html(self, app, db_session, client):
         """An offline device in now_playing shows 'Device Offline' badge, not 'Not Playing'."""
         await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
         # Do NOT call _fake_connect — device stays offline
-        since = datetime.now(timezone.utc) - timedelta(seconds=60)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        since = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/")
@@ -326,14 +358,14 @@ class TestDashboardDeviceOffline:
             assert "badge-missed" not in html
             assert "Starting" not in html
         finally:
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_offline_badge_in_now_playing_json(self, app, db_session, client):
         """JSON endpoint returns device_offline=True for offline devices."""
         await _seed_device(db_session)
-        since = datetime.now(timezone.utc) - timedelta(seconds=60)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        schedule, asset, group = await _seed_schedule(db_session)
+        since = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/api/dashboard")
@@ -343,14 +375,14 @@ class TestDashboardDeviceOffline:
             assert np["mismatch"] is False
             assert np.get("starting") is not True
         finally:
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_offline_badge_during_grace_period(self, app, db_session, client):
         """Within the 45s grace period, an offline device shows 'Device Offline' not 'Starting…'."""
         await _seed_device(db_session)
-        since = datetime.now(timezone.utc) - timedelta(seconds=10)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        schedule, asset, group = await _seed_schedule(db_session)
+        since = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             resp = await client.get("/")
@@ -361,15 +393,15 @@ class TestDashboardDeviceOffline:
             assert "Starting" not in html
             assert "badge-processing" not in html
         finally:
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
 
     async def test_offline_to_online_transition(self, app, db_session, client):
         """When an offline device reconnects, the badge should transition from
         'Device Offline' to 'Starting…' and then to 'Playing'."""
         await _seed_device(db_session)
-        since = datetime.now(timezone.utc) - timedelta(seconds=10)
-        _seed_now_playing("mismatch-01", "Test Device", "Sony Schedule", "sony-clip.mp4",
-                          since=since.isoformat())
+        schedule, asset, group = await _seed_schedule(db_session)
+        since = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=since)
 
         try:
             # 1) Device offline → "Device Offline" badge
@@ -393,4 +425,4 @@ class TestDashboardDeviceOffline:
             assert np3["mismatch"] is False
         finally:
             device_manager.disconnect("mismatch-01")
-            _sched._now_playing.pop("mismatch-01", None)
+            _sched._confirmed_playing.pop("mismatch-01", None)
