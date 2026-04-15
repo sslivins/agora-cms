@@ -139,13 +139,9 @@ module keyVault 'modules/keyVault.bicep' = {
 }
 
 // ── Build database connection string ──
-// Use the private IP directly rather than the FQDN to avoid DNS resolution
-// issues in Container Apps environments where private DNS zone resolution
-// can be unreliable.  The first usable IP in a /24 subnet is always .4.
-var postgresPrivateIp = '10.0.2.4'
 // URL-encode the '@' in the password so asyncpg parses the URL correctly
 var encodedPassword = replace(postgresAdminPassword, '@', '%40')
-var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${encodedPassword}@${postgresPrivateIp}:5432/${postgres.outputs.databaseName}?ssl=require'
+var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${encodedPassword}@${postgres.outputs.serverFqdn}:5432/${postgres.outputs.databaseName}?ssl=require'
 
 // ── Determine container images ──
 // Use provided images or default to ACR-based names
