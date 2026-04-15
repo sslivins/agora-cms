@@ -427,6 +427,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     "schedule_id": schedule_id,
                     "schedule_name": schedule_name,
                     "asset_filename": display_name,
+                    "asset_raw": asset_name,
                     "since": device_ts or datetime.now(timezone.utc).isoformat(),
                     "source": "device",
                 }

@@ -360,7 +360,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         live = live_states.get(did, {})
         actual_mode = live.get("mode", "unknown")
         actual_asset = live.get("asset")
-        expected_asset = np.get("asset_filename")
+        expected_asset = np.get("asset_raw") or np.get("asset_filename")
         # Mismatch: schedule says play this asset, but device isn't playing it
         np["actual_mode"] = actual_mode
         np["actual_asset"] = actual_asset
@@ -549,7 +549,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         live = live_states.get(did, {})
         actual_mode = live.get("mode", "unknown")
         actual_asset = live.get("asset")
-        np["mismatch"] = actual_mode != "play" or actual_asset != np.get("asset_filename")
+        np["mismatch"] = actual_mode != "play" or actual_asset != (np.get("asset_raw") or np.get("asset_filename"))
         if np["mismatch"] and np.get("since"):
             since = _dt.fromisoformat(np["since"])
             if (now - since).total_seconds() < 45:
