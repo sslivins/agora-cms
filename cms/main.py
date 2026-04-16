@@ -48,84 +48,31 @@ logger = logging.getLogger("agora.cms")
 
 
 async def _seed_profiles(db):
-    """Create built-in device profiles if they don't exist."""
+    """Create built-in device profiles if they don't exist.
+
+    Existing built-in profiles are left as-is — admin customizations
+    are preserved.  Use POST /api/profiles/{id}/reset to restore defaults.
+    """
     from sqlalchemy import select
     from cms.models.device_profile import DeviceProfile
+    from cms.routers.profiles import BUILTIN_PROFILES
 
     existing = await db.execute(select(DeviceProfile.name))
     existing_names = {r[0] for r in existing.all()}
 
-    defaults = [
-        {
-            "name": "pi-zero-2w",
-            "description": "Raspberry Pi Zero 2 W — H.264 Main, 1080p30",
-            "video_codec": "h264",
-            "video_profile": "main",
-            "max_width": 1920,
-            "max_height": 1080,
-            "max_fps": 30,
-            "crf": 23,
-            "audio_codec": "aac",
-            "audio_bitrate": "128k",
-            "builtin": True,
-        },
-        {
-            "name": "pi-4",
-            "description": "Raspberry Pi 4 — HEVC Main, 1080p30",
-            "video_codec": "h265",
-            "video_profile": "main",
-            "max_width": 1920,
-            "max_height": 1080,
-            "max_fps": 30,
-            "crf": 23,
-            "audio_codec": "aac",
-            "audio_bitrate": "128k",
-            "builtin": True,
-        },
-        {
-            "name": "pi-5",
-            "description": "Raspberry Pi 5 / CM5 — HEVC Main, 1080p60",
-            "video_codec": "h265",
-            "video_profile": "main",
-            "max_width": 1920,
-            "max_height": 1080,
-            "max_fps": 60,
-            "crf": 23,
-            "audio_codec": "aac",
-            "audio_bitrate": "128k",
-            "builtin": True,
-        },
-    ]
-
-    for d in defaults:
-        if d["name"] not in existing_names:
-            profile = DeviceProfile(**d)
+    for name, defaults in BUILTIN_PROFILES.items():
+        if name not in existing_names:
+            profile = DeviceProfile(name=name, builtin=True, **defaults)
             db.add(profile)
             await db.commit()
             await db.refresh(profile)
-            logger.info("Seeded device profile: %s", d["name"])
+            logger.info("Seeded device profile: %s", name)
 
             # Queue transcoding for any existing video assets
             from cms.services.transcoder import enqueue_for_new_profile
             count = await enqueue_for_new_profile(profile.id, db)
             if count:
-                logger.info("Enqueued %d variants for new profile %s", count, d["name"])
-        else:
-            # Reset built-in profile to canonical defaults
-            result = await db.execute(
-                select(DeviceProfile).where(DeviceProfile.name == d["name"])
-            )
-            profile = result.scalar_one()
-            changed = False
-            for field, value in d.items():
-                if field == "name":
-                    continue
-                if getattr(profile, field) != value:
-                    setattr(profile, field, value)
-                    changed = True
-            if changed:
-                await db.commit()
-                logger.info("Reset built-in profile to defaults: %s", d["name"])
+                logger.info("Enqueued %d variants for new profile %s", count, name)
 
     # Ensure all video assets have variants for all profiles (handles gaps)
     from cms.services.transcoder import enqueue_for_new_profile

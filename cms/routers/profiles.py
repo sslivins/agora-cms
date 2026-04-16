@@ -18,6 +18,54 @@ from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_p
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
 
+# ── Built-in profile canonical defaults ──────────────────────────────
+# Used by _seed_profiles (startup) and the reset-to-defaults endpoint.
+
+BUILTIN_PROFILES = {
+    "pi-zero-2w": {
+        "description": "Raspberry Pi Zero 2 W — H.264 Main, 1080p30",
+        "video_codec": "h264",
+        "video_profile": "main",
+        "max_width": 1920,
+        "max_height": 1080,
+        "max_fps": 30,
+        "crf": 23,
+        "video_bitrate": "",
+        "pixel_format": "auto",
+        "color_space": "auto",
+        "audio_codec": "aac",
+        "audio_bitrate": "128k",
+    },
+    "pi-4": {
+        "description": "Raspberry Pi 4 — HEVC Main, 1080p30",
+        "video_codec": "h265",
+        "video_profile": "main",
+        "max_width": 1920,
+        "max_height": 1080,
+        "max_fps": 30,
+        "crf": 23,
+        "video_bitrate": "",
+        "pixel_format": "auto",
+        "color_space": "auto",
+        "audio_codec": "aac",
+        "audio_bitrate": "128k",
+    },
+    "pi-5": {
+        "description": "Raspberry Pi 5 / CM5 — HEVC Main, 1080p60",
+        "video_codec": "h265",
+        "video_profile": "main",
+        "max_width": 1920,
+        "max_height": 1080,
+        "max_fps": 60,
+        "crf": 23,
+        "video_bitrate": "",
+        "pixel_format": "auto",
+        "color_space": "auto",
+        "audio_codec": "aac",
+        "audio_bitrate": "128k",
+    },
+}
+
 # ── Codec/profile compatibility rules ────────────────────────────────
 
 # Profiles restricted to 4:2:0 chroma subsampling
@@ -190,8 +238,6 @@ async def update_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    if profile.builtin:
-        raise HTTPException(status_code=400, detail="Cannot edit built-in profile")
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -389,6 +435,96 @@ async def copy_profile(
         device_count=0,
         total_variants=count,
         ready_variants=0,
+        created_at=profile.created_at,
+    )
+
+
+@router.post("/{profile_id}/reset", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
+async def reset_profile(
+    profile_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset a built-in profile to its canonical default values."""
+    result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if not profile.builtin:
+        raise HTTPException(status_code=400, detail="Only built-in profiles can be reset")
+    if profile.name not in BUILTIN_PROFILES:
+        raise HTTPException(status_code=400, detail="No defaults found for this profile")
+
+    defaults = BUILTIN_PROFILES[profile.name]
+
+    # Detect whether any transcoding-relevant field will change
+    transcode_changed = any(
+        field in _TRANSCODE_FIELDS and getattr(profile, field) != value
+        for field, value in defaults.items()
+    )
+
+    # Apply defaults
+    for field, value in defaults.items():
+        setattr(profile, field, value)
+
+    # Reset variants if transcoding fields changed
+    if transcode_changed:
+        cancel_profile_transcodes(profile_id)
+        var_result = await db.execute(
+            select(AssetVariant).where(
+                AssetVariant.profile_id == profile_id,
+                AssetVariant.status.in_([
+                    VariantStatus.READY,
+                    VariantStatus.FAILED,
+                    VariantStatus.PROCESSING,
+                ]),
+            )
+        )
+        for variant in var_result.scalars().all():
+            variant.status = VariantStatus.PENDING
+            variant.progress = 0.0
+            variant.error_message = ""
+
+    await db.commit()
+
+    if transcode_changed:
+        await notify_worker(db)
+
+    await db.refresh(profile)
+
+    dev_count = await db.execute(
+        select(func.count(Device.id)).where(Device.profile_id == profile.id)
+    )
+    total_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == profile.id)
+    )
+    ready_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(
+            AssetVariant.profile_id == profile.id,
+            AssetVariant.status == VariantStatus.READY,
+        )
+    )
+
+    return ProfileOut(
+        id=profile.id,
+        name=profile.name,
+        description=profile.description,
+        video_codec=profile.video_codec,
+        video_profile=profile.video_profile,
+        max_width=profile.max_width,
+        max_height=profile.max_height,
+        max_fps=profile.max_fps,
+        video_bitrate=profile.video_bitrate,
+        crf=profile.crf,
+        pixel_format=profile.pixel_format,
+        color_space=profile.color_space,
+        audio_codec=profile.audio_codec,
+        audio_bitrate=profile.audio_bitrate,
+        builtin=profile.builtin,
+        device_count=dev_count.scalar() or 0,
+        total_variants=total_var.scalar() or 0,
+        ready_variants=ready_var.scalar() or 0,
         created_at=profile.created_at,
     )
 
