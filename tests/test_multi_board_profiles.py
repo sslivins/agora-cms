@@ -80,8 +80,8 @@ class TestMultiBoardProfileSeeding:
         profiles = {p.name for p in result.scalars().all()}
         assert profiles == {"pi-zero-2w", "pi-4", "pi-5"}
 
-    async def test_seed_resets_modified_pi4(self, db_session):
-        """If pi-4 profile was modified, seed resets it to defaults."""
+    async def test_seed_preserves_modified_pi4(self, db_session):
+        """If pi-4 profile was modified, seed should preserve customizations."""
         profile = DeviceProfile(
             name="pi-4",
             description="Modified",
@@ -99,11 +99,12 @@ class TestMultiBoardProfileSeeding:
         await _seed_profiles(db_session)
 
         await db_session.refresh(profile)
-        assert profile.description == "Raspberry Pi 4 — HEVC Main, 1080p30"
-        assert profile.video_profile == "main"
-        assert profile.max_width == 1920
-        assert profile.max_fps == 30
-        assert profile.crf == 23
+        # Customizations should be preserved (seed no longer resets)
+        assert profile.description == "Modified"
+        assert profile.video_profile == "high"
+        assert profile.max_width == 1280
+        assert profile.max_fps == 60
+        assert profile.crf == 18
 
 
 # ── Device type mapping ──

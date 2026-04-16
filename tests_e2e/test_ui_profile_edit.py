@@ -93,10 +93,10 @@ class TestProfileTableAutoDisplay:
 
 @pytest.mark.e2e
 class TestProfileEditCodecDisplay:
-    """Edit modal should show the video codec (read-only)."""
+    """Edit modal should show the video codec as an editable dropdown."""
 
     def test_edit_modal_shows_video_codec(self, page: Page, api, e2e_server):
-        """The edit modal should display the video codec as read-only info."""
+        """The edit modal should display the video codec as a select dropdown."""
         resp = api.post("/api/profiles", json={
             "name": "codec-test",
             "video_codec": "h264",
@@ -116,11 +116,13 @@ class TestProfileEditCodecDisplay:
         # Should show "Video Codec" label in the modal
         expect(modal.locator("label", has_text="Video Codec")).to_be_visible(timeout=2000)
 
-        # Should show "H.264" as the codec value (disabled input)
-        expect(modal.locator("input[disabled][value='H.264']")).to_be_visible(timeout=2000)
+        # Should have a codec dropdown with h264 selected
+        codec_select = modal.locator("select#ep-vc")
+        expect(codec_select).to_be_visible(timeout=2000)
+        assert codec_select.input_value() == "h264"
 
     def test_edit_modal_shows_h265_codec(self, page: Page, api, e2e_server):
-        """Edit modal should display H.265 codec correctly."""
+        """Edit modal should display H.265 codec selected in dropdown."""
         resp = api.post("/api/profiles", json={
             "name": "codec-h265",
             "video_codec": "h265",
@@ -137,8 +139,10 @@ class TestProfileEditCodecDisplay:
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
 
-        # Should show H.265/HEVC (disabled input)
-        expect(modal.locator("input[disabled][value='H.265 (HEVC)']")).to_be_visible(timeout=2000)
+        # Should have h265 selected in the codec dropdown
+        codec_select = modal.locator("select#ep-vc")
+        expect(codec_select).to_be_visible(timeout=2000)
+        assert codec_select.input_value() == "h265"
 
 
 @pytest.mark.e2e

@@ -13,6 +13,7 @@ from cms.permissions import PROFILES_READ, PROFILES_WRITE
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
 from cms.models.device_profile import DeviceProfile
+from cms.profile_defaults import BUILTIN_PROFILES
 from cms.schemas.profile import ProfileCreate, ProfileOut, ProfileUpdate
 from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_profile, notify_worker
 
@@ -172,7 +173,7 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
 
 # Fields that affect transcoding output — changes require re-encoding variants
 _TRANSCODE_FIELDS = {
-    "video_profile", "max_width", "max_height", "max_fps",
+    "video_codec", "video_profile", "max_width", "max_height", "max_fps",
     "crf", "video_bitrate", "pixel_format", "color_space",
     "audio_codec", "audio_bitrate",
 }
@@ -190,8 +191,6 @@ async def update_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    if profile.builtin:
-        raise HTTPException(status_code=400, detail="Cannot edit built-in profile")
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -389,6 +388,96 @@ async def copy_profile(
         device_count=0,
         total_variants=count,
         ready_variants=0,
+        created_at=profile.created_at,
+    )
+
+
+@router.post("/{profile_id}/reset", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
+async def reset_profile(
+    profile_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset a built-in profile to its canonical default values."""
+    result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if not profile.builtin:
+        raise HTTPException(status_code=400, detail="Only built-in profiles can be reset")
+    if profile.name not in BUILTIN_PROFILES:
+        raise HTTPException(status_code=400, detail="No defaults found for this profile")
+
+    defaults = BUILTIN_PROFILES[profile.name]
+
+    # Detect whether any transcoding-relevant field will change
+    transcode_changed = any(
+        field in _TRANSCODE_FIELDS and getattr(profile, field) != value
+        for field, value in defaults.items()
+    )
+
+    # Apply defaults
+    for field, value in defaults.items():
+        setattr(profile, field, value)
+
+    # Reset variants if transcoding fields changed
+    if transcode_changed:
+        cancel_profile_transcodes(profile_id)
+        var_result = await db.execute(
+            select(AssetVariant).where(
+                AssetVariant.profile_id == profile_id,
+                AssetVariant.status.in_([
+                    VariantStatus.READY,
+                    VariantStatus.FAILED,
+                    VariantStatus.PROCESSING,
+                ]),
+            )
+        )
+        for variant in var_result.scalars().all():
+            variant.status = VariantStatus.PENDING
+            variant.progress = 0.0
+            variant.error_message = ""
+
+    await db.commit()
+
+    if transcode_changed:
+        await notify_worker(db)
+
+    await db.refresh(profile)
+
+    dev_count = await db.execute(
+        select(func.count(Device.id)).where(Device.profile_id == profile.id)
+    )
+    total_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == profile.id)
+    )
+    ready_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(
+            AssetVariant.profile_id == profile.id,
+            AssetVariant.status == VariantStatus.READY,
+        )
+    )
+
+    return ProfileOut(
+        id=profile.id,
+        name=profile.name,
+        description=profile.description,
+        video_codec=profile.video_codec,
+        video_profile=profile.video_profile,
+        max_width=profile.max_width,
+        max_height=profile.max_height,
+        max_fps=profile.max_fps,
+        video_bitrate=profile.video_bitrate,
+        crf=profile.crf,
+        pixel_format=profile.pixel_format,
+        color_space=profile.color_space,
+        audio_codec=profile.audio_codec,
+        audio_bitrate=profile.audio_bitrate,
+        builtin=profile.builtin,
+        device_count=dev_count.scalar() or 0,
+        total_variants=total_var.scalar() or 0,
+        ready_variants=ready_var.scalar() or 0,
         created_at=profile.created_at,
     )
 

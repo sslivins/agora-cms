@@ -23,7 +23,7 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>Video Codec</label>
+                <label>Video Codec <span class="has-tooltip"><span class="info-icon">ℹ</span><span class="tooltip">Hardware support varies by device. Unsupported codecs fall back to software decoding, which may not play smoothly.</span></span></label>
                 <select name="video_codec">
                     <option value="h264" selected>H.264</option>
                     <option value="h265">H.265 (HEVC)</option>
@@ -55,11 +55,11 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>CRF (quality)</label>
+                <label>CRF (quality) <span class="has-tooltip"><span class="info-icon">ℹ</span><span class="tooltip">Provides consistent visual quality throughout the video. Lower values provide higher quality but larger files. Range 0–51, default 23. Ignored when bitrate is set.</span></span></label>
                 <input type="number" name="crf" value="23" min="0" max="51" oninput="toggleBitrateCreate(this.form)">
             </div>
             <div class="form-group">
-                <label>Video Bitrate (Mbps)</label>
+                <label>Video Bitrate (Mbps) <span class="has-tooltip"><span class="info-icon">ℹ</span><span class="tooltip">Caps the bitrate to a fixed limit in Mbps. Gives predictable file sizes but quality may vary. Leave empty to use CRF instead.</span></span></label>
                 <input type="number" name="video_bitrate" min="0" step="0.1" placeholder="Empty = use CRF" oninput="toggleBitrateCreate(this.form)">
             </div>
         </div>
@@ -132,7 +132,7 @@
                     {{ p.name }}
                     {% if p.builtin %}<span class="badge badge-builtin">built-in</span>{% endif %}
                 </td>
-                <td>{{ p.video_codec }} / {{ p.video_profile }}</td>
+                <td>{% if p.video_codec == 'h264' %}H.264{% elif p.video_codec == 'h265' %}HEVC{% elif p.video_codec == 'av1' %}AV1{% else %}{{ p.video_codec }}{% endif %} / {{ p.video_profile | capitalize }}</td>
                 <td>{{ p.max_width }}×{{ p.max_height }}</td>
                 <td>{{ p.max_fps }}</td>
                 <td>{% if p.video_bitrate %}{{ p.video_bitrate }} Mbps{% else %}CRF {{ p.crf }}{% endif %}</td>
@@ -154,11 +154,11 @@
                 </td>
                 <td>
                     {% if 'profiles:write' in user_perms %}
-                    {% if not p.builtin %}
                     <button class="btn btn-secondary btn-sm" onclick="editProfile('{{ p.id }}')">Edit</button>
-                    {% endif %}
                     <button class="btn btn-secondary btn-sm" onclick="copyProfile('{{ p.id }}', '{{ p.name }}')">Copy</button>
-                    {% if not p.builtin %}
+                    {% if p.builtin %}
+                    <button class="btn btn-secondary btn-sm" onclick="resetProfile('{{ p.id }}', '{{ p.name }}')">Reset</button>
+                    {% else %}
                     <button class="btn btn-danger btn-sm" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
                     {% endif %}
                     {% endif %}
@@ -352,7 +352,9 @@ async function editProfile(profileId) {
         <h3 style="margin-bottom:1rem">Edit Profile: ${p.name}</h3>
         <div class="form-group"><label>Description</label><input type="text" id="ep-desc" value="${p.description || ''}"></div>
         <div class="form-row">
-            <div class="form-group"><label>Video Codec</label><input type="text" value="${CODEC_LABELS[p.video_codec] || p.video_codec}" disabled style="opacity:0.7;cursor:not-allowed"></div>
+            <div class="form-group"><label>Video Codec <span class="has-tooltip"><span class="info-icon">ℹ</span><span class="tooltip">Hardware support varies by device. Unsupported codecs fall back to software decoding, which may not play smoothly.</span></span></label>
+                <select id="ep-vc"><option value="h264" ${p.video_codec==='h264'?'selected':''}>H.264</option><option value="h265" ${p.video_codec==='h265'?'selected':''}>H.265 (HEVC)</option><option value="av1" ${p.video_codec==='av1'?'selected':''}>AV1 (SVT-AV1)</option></select>
+            </div>
             <div class="form-group"><label>Video Profile</label>
                 <select id="ep-vprofile"><option value="baseline" ${p.video_profile==='baseline'?'selected':''}>Baseline</option><option value="main" ${p.video_profile==='main'?'selected':''}>Main</option><option value="high" ${p.video_profile==='high'?'selected':''}>High</option></select>
             </div>
@@ -365,8 +367,8 @@ async function editProfile(profileId) {
             <div class="form-group"><label>Max Height</label><input type="number" id="ep-h" value="${p.max_height}"></div>
         </div>
         <div class="form-row">
-            <div class="form-group"><label>CRF</label><input type="number" id="ep-crf" value="${p.crf}" min="0" max="51" oninput="toggleBitrateEdit()"></div>
-            <div class="form-group"><label>Video Bitrate (Mbps)</label><input type="number" id="ep-vbr" value="${p.video_bitrate || ''}" min="0" step="0.1" oninput="toggleBitrateEdit()"></div>
+            <div class="form-group"><label>CRF <span class="has-tooltip"><span class="info-icon">ℹ</span><span class="tooltip">Provides consistent visual quality throughout the video. Lower values provide higher quality but larger files. Range 0–51, default 23. Ignored when bitrate is set.</span></span></label><input type="number" id="ep-crf" value="${p.crf}" min="0" max="51" oninput="toggleBitrateEdit()"></div>
+            <div class="form-group"><label>Video Bitrate (Mbps) <span class="has-tooltip"><span class="info-icon">ℹ</span><span class="tooltip">Caps the bitrate to a fixed limit in Mbps. Gives predictable file sizes but quality may vary. Leave empty to use CRF instead.</span></span></label><input type="number" id="ep-vbr" value="${p.video_bitrate || ''}" min="0" step="0.1" placeholder="Empty = use CRF" oninput="toggleBitrateEdit()"></div>
         </div>
         <div class="form-row">
             <div class="form-group"><label>Pixel Format</label>
@@ -384,21 +386,32 @@ async function editProfile(profileId) {
         </div>
         <div class="modal-actions">
             <button class="btn btn-secondary" id="ep-cancel">Cancel</button>
-            <button class="btn btn-primary" id="ep-save">Save</button>
+            <button class="btn btn-primary" id="ep-save" disabled>Save</button>
         </div>
     `;
     overlay.appendChild(box);
     document.body.appendChild(overlay);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+
     box.querySelector("#ep-cancel").onclick = () => overlay.remove();
 
+    // Dirty-check: enable Save only when something changed
+    const allFields = ['ep-desc','ep-vc','ep-vprofile','ep-w','ep-h','ep-fps','ep-crf','ep-vbr','ep-pf','ep-cs','ep-ac','ep-abr'];
+    const original = {};
+    allFields.forEach(id => { const el = box.querySelector('#'+id); if (el) original[id] = el.value; });
+    const saveBtn = box.querySelector("#ep-save");
+    function checkDirty() {
+        const dirty = allFields.some(id => { const el = box.querySelector('#'+id); return el && el.value !== original[id]; });
+        saveBtn.disabled = !dirty;
+    }
+    allFields.forEach(id => { const el = box.querySelector('#'+id); if (el) el.addEventListener('input', checkDirty); if (el) el.addEventListener('change', checkDirty); });
+
     // Apply encoder constraints for pixel format and color space in edit modal
-    const epCodec = document.createElement('input');
-    epCodec.type = 'hidden'; epCodec.value = p.video_codec;
+    const epCodecSel = box.querySelector("#ep-vc");
     const epPfSel = box.querySelector("#ep-pf");
     const epCsSel = box.querySelector("#ep-cs");
     const epVpSel = box.querySelector("#ep-vprofile");
-    const refreshEditConstraints = () => applyCodecConstraints(epCodec, epPfSel, epVpSel.value, epCsSel);
+    const refreshEditConstraints = () => applyCodecConstraints(epCodecSel, epPfSel, epVpSel.value, epCsSel);
+    epCodecSel.addEventListener('change', refreshEditConstraints);
     epVpSel.addEventListener('change', refreshEditConstraints);
     refreshEditConstraints();
     toggleBitrateEdit();
@@ -406,6 +419,7 @@ async function editProfile(profileId) {
     box.querySelector("#ep-save").onclick = async () => {
         const body = {
             description: box.querySelector("#ep-desc").value,
+            video_codec: box.querySelector("#ep-vc").value,
             video_profile: box.querySelector("#ep-vprofile").value,
             max_width: parseInt(box.querySelector("#ep-w").value),
             max_height: parseInt(box.querySelector("#ep-h").value),
@@ -419,7 +433,7 @@ async function editProfile(profileId) {
         };
 
         // Check if any transcoding-relevant fields changed
-        const transFields = ['video_profile','max_width','max_height','max_fps','crf','video_bitrate','pixel_format','color_space','audio_codec','audio_bitrate'];
+        const transFields = ['video_codec','video_profile','max_width','max_height','max_fps','crf','video_bitrate','pixel_format','color_space','audio_codec','audio_bitrate'];
         const changed = transFields.some(f => String(body[f]) !== String(p[f] ?? ''));
         if (changed && p.total_variants > 0) {
             if (!await showConfirm('Changing these settings will re-transcode all existing variants for this profile. This may take a while depending on the number of assets.')) return;
@@ -457,6 +471,30 @@ async function copyProfile(profileId, name) {
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Copy failed", true);
+    }
+}
+
+async function resetProfile(profileId, name) {
+    // Fetch current profile to check if transcoding fields differ from defaults
+    const listResp = await fetch(`/api/profiles`);
+    if (!listResp.ok) return;
+    const profiles = await listResp.json();
+    const p = profiles.find(x => x.id === profileId);
+    if (!p) return;
+
+    let msg = `Reset profile "${name}" to factory defaults?`;
+    if (p.total_variants > 0) {
+        msg += '\n\nIf transcoding settings differ from defaults, all existing variants will be re-transcoded.';
+    }
+    if (!await showConfirm(msg)) return;
+
+    const resp = await apiCall("POST", `/api/profiles/${profileId}/reset`);
+    if (resp && resp.ok) {
+        showToast(`Profile "${name}" reset to defaults`);
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Reset failed", true);
     }
 }
 
