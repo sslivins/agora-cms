@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_profile import DeviceProfile
 
 
 # ── Helpers ──
@@ -41,6 +42,13 @@ async def _create_group(db_session, name="Test Group"):
     return group
 
 
+async def _create_profile(db_session, name="Test Profile"):
+    profile = DeviceProfile(name=name)
+    db_session.add(profile)
+    await db_session.commit()
+    return profile
+
+
 # ── API Tests: Adopt with name and group ──
 
 
@@ -50,9 +58,10 @@ class TestAdoptWithName:
 
     async def test_adopt_with_name(self, client, db_session):
         await _create_pending_device(db_session)
+        profile = await _create_profile(db_session)
         resp = await client.post(
             "/api/devices/adopt-test-001/adopt",
-            json={"name": "Living Room Display"},
+            json={"name": "Living Room Display", "profile_id": str(profile.id)},
         )
         assert resp.status_code == 200
 
@@ -64,7 +73,11 @@ class TestAdoptWithName:
 
     async def test_adopt_without_name_keeps_original(self, client, db_session):
         await _create_pending_device(db_session, name="original-name")
-        resp = await client.post("/api/devices/adopt-test-001/adopt")
+        profile = await _create_profile(db_session)
+        resp = await client.post(
+            "/api/devices/adopt-test-001/adopt",
+            json={"profile_id": str(profile.id)},
+        )
         assert resp.status_code == 200
 
         resp = await client.get("/api/devices")
@@ -72,18 +85,19 @@ class TestAdoptWithName:
         assert dev["name"] == "original-name"
 
     async def test_adopt_with_empty_body(self, client, db_session):
+        """Empty body should fail validation (profile_id is required)."""
         await _create_pending_device(db_session)
         resp = await client.post(
             "/api/devices/adopt-test-001/adopt",
             json={},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
     async def test_adopt_no_body_at_all(self, client, db_session):
-        """Backwards-compatible: no JSON body should still work."""
+        """No JSON body should fail validation (profile_id is required)."""
         await _create_pending_device(db_session)
         resp = await client.post("/api/devices/adopt-test-001/adopt")
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -93,10 +107,11 @@ class TestAdoptWithGroup:
     async def test_adopt_with_group(self, client, db_session):
         await _create_pending_device(db_session)
         group = await _create_group(db_session)
+        profile = await _create_profile(db_session)
 
         resp = await client.post(
             "/api/devices/adopt-test-001/adopt",
-            json={"group_id": str(group.id)},
+            json={"group_id": str(group.id), "profile_id": str(profile.id)},
         )
         assert resp.status_code == 200
 
@@ -107,10 +122,11 @@ class TestAdoptWithGroup:
     async def test_adopt_with_name_and_group(self, client, db_session):
         await _create_pending_device(db_session)
         group = await _create_group(db_session, name="Lobby Screens")
+        profile = await _create_profile(db_session)
 
         resp = await client.post(
             "/api/devices/adopt-test-001/adopt",
-            json={"name": "Front Desk", "group_id": str(group.id)},
+            json={"name": "Front Desk", "group_id": str(group.id), "profile_id": str(profile.id)},
         )
         assert resp.status_code == 200
 
@@ -121,18 +137,23 @@ class TestAdoptWithGroup:
 
     async def test_adopt_with_nonexistent_group(self, client, db_session):
         await _create_pending_device(db_session)
+        profile = await _create_profile(db_session)
         fake_id = str(uuid.uuid4())
 
         resp = await client.post(
             "/api/devices/adopt-test-001/adopt",
-            json={"group_id": fake_id},
+            json={"group_id": fake_id, "profile_id": str(profile.id)},
         )
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
     async def test_adopt_without_group_leaves_ungrouped(self, client, db_session):
         await _create_pending_device(db_session)
-        resp = await client.post("/api/devices/adopt-test-001/adopt")
+        profile = await _create_profile(db_session)
+        resp = await client.post(
+            "/api/devices/adopt-test-001/adopt",
+            json={"profile_id": str(profile.id)},
+        )
         assert resp.status_code == 200
 
         resp = await client.get("/api/devices")
@@ -146,9 +167,10 @@ class TestAdoptOrphaned:
 
     async def test_adopt_orphaned_with_name(self, client, db_session):
         await _create_orphaned_device(db_session)
+        profile = await _create_profile(db_session)
         resp = await client.post(
             "/api/devices/adopt-orphan-001/adopt",
-            json={"name": "Restored Display"},
+            json={"name": "Restored Display", "profile_id": str(profile.id)},
         )
         assert resp.status_code == 200
 
@@ -160,10 +182,11 @@ class TestAdoptOrphaned:
     async def test_adopt_orphaned_with_group(self, client, db_session):
         await _create_orphaned_device(db_session)
         group = await _create_group(db_session)
+        profile = await _create_profile(db_session)
 
         resp = await client.post(
             "/api/devices/adopt-orphan-001/adopt",
-            json={"group_id": str(group.id)},
+            json={"group_id": str(group.id), "profile_id": str(profile.id)},
         )
         assert resp.status_code == 200
 
@@ -180,17 +203,29 @@ class TestAdoptValidation:
         device = Device(id="already-adopted", name="x", status=DeviceStatus.ADOPTED)
         db_session.add(device)
         await db_session.commit()
+        profile = await _create_profile(db_session)
 
-        resp = await client.post("/api/devices/already-adopted/adopt")
+        resp = await client.post(
+            "/api/devices/already-adopted/adopt",
+            json={"profile_id": str(profile.id)},
+        )
         assert resp.status_code == 400
 
-    async def test_adopt_nonexistent_device(self, client):
-        resp = await client.post("/api/devices/no-such-device/adopt")
+    async def test_adopt_nonexistent_device(self, client, db_session):
+        profile = await _create_profile(db_session)
+        resp = await client.post(
+            "/api/devices/no-such-device/adopt",
+            json={"profile_id": str(profile.id)},
+        )
         assert resp.status_code == 404
 
     async def test_adopt_requires_auth(self, unauthed_client, db_session):
         await _create_pending_device(db_session)
-        resp = await unauthed_client.post("/api/devices/adopt-test-001/adopt")
+        profile = await _create_profile(db_session)
+        resp = await unauthed_client.post(
+            "/api/devices/adopt-test-001/adopt",
+            json={"profile_id": str(profile.id)},
+        )
         # Should redirect to login or return 401/403
         assert resp.status_code in (302, 401, 403)
 
@@ -350,33 +385,43 @@ class TestDashboardAdoptionGroups:
 class TestAdoptRequestSchema:
     """Test the AdoptRequest pydantic schema."""
 
-    def test_empty_is_valid(self):
+    def test_profile_id_required(self):
         from cms.schemas.device import AdoptRequest
-        req = AdoptRequest()
+        with pytest.raises(Exception):
+            AdoptRequest()
+
+    def test_profile_only(self):
+        from cms.schemas.device import AdoptRequest
+        pid = uuid.uuid4()
+        req = AdoptRequest(profile_id=pid)
+        assert req.profile_id == pid
         assert req.name is None
         assert req.group_id is None
 
-    def test_name_only(self):
+    def test_name_and_profile(self):
         from cms.schemas.device import AdoptRequest
-        req = AdoptRequest(name="My Device")
+        pid = uuid.uuid4()
+        req = AdoptRequest(name="My Device", profile_id=pid)
         assert req.name == "My Device"
+        assert req.profile_id == pid
         assert req.group_id is None
 
-    def test_group_only(self):
+    def test_all_fields(self):
         from cms.schemas.device import AdoptRequest
         gid = uuid.uuid4()
-        req = AdoptRequest(group_id=gid)
-        assert req.name is None
-        assert req.group_id == gid
-
-    def test_both_fields(self):
-        from cms.schemas.device import AdoptRequest
-        gid = uuid.uuid4()
-        req = AdoptRequest(name="Display", group_id=gid)
+        pid = uuid.uuid4()
+        req = AdoptRequest(name="Display", group_id=gid, profile_id=pid)
         assert req.name == "Display"
         assert req.group_id == gid
+        assert req.profile_id == pid
 
     def test_invalid_group_id(self):
         from cms.schemas.device import AdoptRequest
+        pid = uuid.uuid4()
         with pytest.raises(Exception):
-            AdoptRequest(group_id="not-a-uuid")
+            AdoptRequest(group_id="not-a-uuid", profile_id=pid)
+
+    def test_invalid_profile_id(self):
+        from cms.schemas.device import AdoptRequest
+        with pytest.raises(Exception):
+            AdoptRequest(profile_id="not-a-uuid")

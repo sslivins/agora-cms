@@ -13,9 +13,17 @@ import pytest
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_profile import DeviceProfile
 
 
 # ── Helpers ──
+
+
+async def _create_profile(db_session, name="Test Profile"):
+    profile = DeviceProfile(name=name)
+    db_session.add(profile)
+    await db_session.flush()
+    return profile
 
 
 async def _seed_group_and_asset(db):
@@ -196,10 +204,12 @@ class TestAdoptionFlow:
         """Adopting with a name body should set the device name."""
         device = Device(id="adopt-name-pi", name="adopt-name-pi", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         resp = await client.post("/api/devices/adopt-name-pi/adopt", json={
             "name": "Reception Display",
+            "profile_id": str(profile.id),
         })
         assert resp.status_code == 200
 
@@ -212,10 +222,12 @@ class TestAdoptionFlow:
         """Adopting with a location body should set the device location."""
         device = Device(id="adopt-loc-pi", name="adopt-loc-pi", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         resp = await client.post("/api/devices/adopt-loc-pi/adopt", json={
             "location": "Main Entrance",
+            "profile_id": str(profile.id),
         })
         assert resp.status_code == 200
 
@@ -231,10 +243,12 @@ class TestAdoptionFlow:
 
         device = Device(id="adopt-grp-pi", name="adopt-grp-pi", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         resp = await client.post("/api/devices/adopt-grp-pi/adopt", json={
             "group_id": str(group.id),
+            "profile_id": str(profile.id),
         })
         assert resp.status_code == 200
 
@@ -250,12 +264,14 @@ class TestAdoptionFlow:
 
         device = Device(id="adopt-full-pi", name="adopt-full-pi", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         resp = await client.post("/api/devices/adopt-full-pi/adopt", json={
             "name": "Lobby Screen 1",
             "location": "Building A Lobby",
             "group_id": str(group.id),
+            "profile_id": str(profile.id),
         })
         assert resp.status_code == 200
 
@@ -266,27 +282,24 @@ class TestAdoptionFlow:
         assert dev["group_id"] == str(group.id)
         assert dev["status"] == "adopted"
 
-    async def test_adopt_without_body_still_works(self, client, db_session):
-        """Adopting without a body should still work (backwards compatible)."""
+    async def test_adopt_without_body_returns_422(self, client, db_session):
+        """Adopting without a body should return 422 (profile_id is required)."""
         device = Device(id="adopt-nobody-pi", name="adopt-nobody-pi", status=DeviceStatus.PENDING)
         db_session.add(device)
         await db_session.commit()
 
         resp = await client.post("/api/devices/adopt-nobody-pi/adopt")
-        assert resp.status_code == 200
-
-        resp = await client.get("/api/devices")
-        dev = next(d for d in resp.json() if d["id"] == "adopt-nobody-pi")
-        assert dev["status"] == "adopted"
-        assert dev["name"] == "adopt-nobody-pi"  # unchanged
+        assert resp.status_code == 422
 
     async def test_adopt_already_adopted_with_body(self, client, db_session):
         """Adopting an already-adopted device should still return 400."""
         device = Device(id="adopt-dup-pi", name="adopt-dup-pi", status=DeviceStatus.ADOPTED)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         resp = await client.post("/api/devices/adopt-dup-pi/adopt", json={
             "name": "New Name",
+            "profile_id": str(profile.id),
         })
         assert resp.status_code == 400

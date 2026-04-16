@@ -81,6 +81,7 @@ class AdoptRequest(BaseModel):
     name: Optional[str] = None
     location: Optional[str] = None
     group_id: Optional[uuid.UUID] = None
+    profile_id: uuid.UUID
 
 
 class SetPasswordRequest(BaseModel):

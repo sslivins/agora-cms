@@ -283,6 +283,11 @@ window._adoptionGroups = [
     { id: {{ g.id | string | tojson }}, name: {{ g.name | tojson }} }{% if not loop.last %},{% endif %}
     {% endfor %}
 ];
+window._adoptionProfiles = [
+    {% for p in adoption_profiles %}
+    { id: {{ p.id | string | tojson }}, name: {{ p.name | tojson }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
 
 async function endNow(scheduleId) {
     if (!await showConfirm('End this schedule now? It will resume at its next scheduled time.')) return;

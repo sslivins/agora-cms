@@ -284,11 +284,12 @@ async function setGroupDefaultAsset(groupId, assetId) {
 }
 
 async function adoptDevice(deviceId, deviceName) {
-    // Show adoption modal with name + optional location + optional group
+    // Show adoption modal with name + optional location + optional group + required profile
     const groups = window._adoptionGroups || [];
-    const result = await showAdoptModal(deviceName || deviceId, groups);
+    const profiles = window._adoptionProfiles || [];
+    const result = await showAdoptModal(deviceName || deviceId, groups, profiles);
     if (!result) return;
-    const body = { name: result.name };
+    const body = { name: result.name, profile_id: result.profile_id };
     if (result.location) body.location = result.location;
     if (result.group_id) body.group_id = result.group_id;
     const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`, body);
@@ -299,7 +300,7 @@ async function adoptDevice(deviceId, deviceName) {
     }
 }
 
-function showAdoptModal(defaultName, groups) {
+function showAdoptModal(defaultName, groups, profiles) {
     return new Promise((resolve) => {
         const overlay = document.createElement("div");
         overlay.className = "modal-overlay";
@@ -319,6 +320,25 @@ function showAdoptModal(defaultName, groups) {
         nameInput.className = "modal-input";
         nameInput.value = defaultName;
         nameInput.placeholder = "Enter device name";
+
+        // Encoder Profile field (required)
+        const profileLabel = document.createElement("label");
+        profileLabel.textContent = "Encoder Profile";
+        profileLabel.className = "modal-label";
+        const profileSelect = document.createElement("select");
+        profileSelect.className = "modal-input";
+        const profilePlaceholder = document.createElement("option");
+        profilePlaceholder.value = "";
+        profilePlaceholder.textContent = "Select a profile…";
+        profilePlaceholder.disabled = true;
+        profilePlaceholder.selected = true;
+        profileSelect.appendChild(profilePlaceholder);
+        (profiles || []).forEach(p => {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = p.name;
+            profileSelect.appendChild(opt);
+        });
 
         // Location field (optional)
         const locLabel = document.createElement("label");
@@ -355,11 +375,20 @@ function showAdoptModal(defaultName, groups) {
         const adoptBtn = document.createElement("button");
         adoptBtn.className = "btn btn-primary";
         adoptBtn.textContent = "Adopt";
-        adoptBtn.disabled = !nameInput.value.trim();
 
-        // Validation: disable adopt when name is empty
-        nameInput.addEventListener("input", () => {
-            adoptBtn.disabled = !nameInput.value.trim();
+        const validateForm = () => {
+            adoptBtn.disabled = !nameInput.value.trim() || !profileSelect.value;
+        };
+        validateForm();
+
+        nameInput.addEventListener("input", validateForm);
+        profileSelect.addEventListener("change", validateForm);
+
+        const getResult = () => ({
+            name: nameInput.value.trim(),
+            profile_id: profileSelect.value,
+            location: locInput.value.trim() || null,
+            group_id: groupSelect.value || null,
         });
 
         actions.appendChild(cancelBtn);
@@ -367,6 +396,8 @@ function showAdoptModal(defaultName, groups) {
         box.appendChild(title);
         box.appendChild(nameLabel);
         box.appendChild(nameInput);
+        box.appendChild(profileLabel);
+        box.appendChild(profileSelect);
         box.appendChild(locLabel);
         box.appendChild(locInput);
         box.appendChild(groupLabel);
@@ -380,12 +411,12 @@ function showAdoptModal(defaultName, groups) {
         const close = (val) => { overlay.remove(); resolve(val); };
         cancelBtn.onclick = () => close(null);
         adoptBtn.onclick = () => {
-            if (!nameInput.value.trim()) return;
-            close({ name: nameInput.value.trim(), location: locInput.value.trim() || null, group_id: groupSelect.value || null });
+            if (!nameInput.value.trim() || !profileSelect.value) return;
+            close(getResult());
         };
         nameInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && nameInput.value.trim()) {
-                close({ name: nameInput.value.trim(), location: locInput.value.trim() || null, group_id: groupSelect.value || null });
+            if (e.key === "Enter" && nameInput.value.trim() && profileSelect.value) {
+                close(getResult());
             }
         });
         overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
@@ -523,6 +554,44 @@ function previewAsset(assetId, filename, assetType) {
     box.appendChild(header);
 
     const url = `/api/assets/${assetId}/preview`;
+    if (assetType === "video") {
+        const video = document.createElement("video");
+        video.src = url;
+        video.controls = true;
+        video.autoplay = true;
+        video.className = "preview-media";
+        box.appendChild(video);
+    } else {
+        const img = document.createElement("img");
+        img.src = url;
+        img.className = "preview-media";
+        box.appendChild(img);
+    }
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", esc); } });
+}
+
+function previewVariant(variantId, filename, assetType, profileName) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const box = document.createElement("div");
+    box.className = "modal-box preview-box";
+    const header = document.createElement("div");
+    header.className = "preview-header";
+    const title = document.createElement("span");
+    title.textContent = profileName ? filename + " (" + profileName + ")" : filename || "Variant Preview";
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "btn btn-secondary btn-sm";
+    closeBtn.textContent = "Close";
+    closeBtn.onclick = () => overlay.remove();
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    box.appendChild(header);
+
+    const url = `/api/assets/variants/${variantId}/preview`;
     if (assetType === "video") {
         const video = document.createElement("video");
         video.src = url;

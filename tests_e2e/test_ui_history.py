@@ -73,7 +73,13 @@ class TestDashboardRecentActivity:
                 await dev.send_status()
 
         run_async(register())
-        api.post("/api/devices/e2e-hist-pi/adopt")
+
+        # Adopt requires a profile_id
+        profiles = api.get("/api/profiles").json()
+        assert profiles, "No profiles seeded"
+        profile_id = profiles[0]["id"]
+        resp = api.post("/api/devices/e2e-hist-pi/adopt", json={"profile_id": profile_id})
+        assert resp.status_code == 200, f"Adopt failed: {resp.status_code} {resp.text}"
 
         group_resp = api.post("/api/devices/groups/", json={"name": "Group-e2e-hist-pi"})
         group_id = group_resp.json()["id"]

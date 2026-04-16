@@ -27,6 +27,20 @@ def _login_cookies(base_url: str) -> dict:
         return dict(r.cookies)
 
 
+def _get_first_profile_id(api) -> str:
+    """Return the ID of the first available device profile."""
+    resp = api.get("/api/profiles")
+    profiles = resp.json()
+    assert profiles, "No profiles seeded — cannot adopt without a profile_id"
+    return profiles[0]["id"]
+
+
+def _adopt(api, device_id: str) -> httpx.Response:
+    """Adopt a device with a valid profile_id."""
+    profile_id = _get_first_profile_id(api)
+    return api.post(f"/api/devices/{device_id}/adopt", json={"profile_id": profile_id})
+
+
 class TestDeviceRegistration:
     """New device connects and registers with the CMS."""
 
@@ -62,7 +76,7 @@ class TestDeviceRegistration:
         assert saved_token
 
         # Adopt the device so it receives sync on reconnect
-        resp = api.post("/api/devices/reconnect-001/adopt")
+        resp = _adopt(api, "reconnect-001")
         assert resp.status_code == 200
 
         # Reconnect with the saved token
@@ -87,7 +101,7 @@ class TestDeviceAdoption:
 
         run_async(register())
 
-        resp = api.post("/api/devices/adopt-001/adopt")
+        resp = _adopt(api, "adopt-001")
         assert resp.status_code == 200
 
         resp = api.get("/api/devices/adopt-001")
@@ -104,7 +118,7 @@ class TestDeviceAdoption:
                 await dev.send_status()
 
         run_async(register())
-        api.post("/api/devices/apikey-001/adopt")
+        _adopt(api, "apikey-001")
 
         async def reconnect():
             async with FakeDevice("apikey-001", ws_url, auth_token=saved_token) as dev:
@@ -129,7 +143,7 @@ class TestScheduleSync:
                 await dev.send_status()
 
         run_async(register())
-        api.post("/api/devices/sched-sync-001/adopt")
+        _adopt(api, "sched-sync-001")
 
         group_resp = api.post("/api/devices/groups/", json={"name": "Group-sched-sync-001"})
         group_id = group_resp.json()["id"]
@@ -185,7 +199,9 @@ class TestDeviceDashboard:
 
         cookies = _login_cookies(base_url)
         with httpx.Client(base_url=base_url, cookies=cookies) as c:
-            c.post("/api/devices/dash-001/adopt")
+            profiles = c.get("/api/profiles").json()
+            pid = profiles[0]["id"]
+            c.post("/api/devices/dash-001/adopt", json={"profile_id": pid})
 
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
@@ -215,7 +231,9 @@ class TestDeviceCommands:
                     )
                     cookies = dict(r.cookies)
 
-                    await c.post("/api/devices/reboot-001/adopt", cookies=cookies)
+                    profiles_resp = await c.get("/api/profiles", cookies=cookies)
+                    pid = profiles_resp.json()[0]["id"]
+                    await c.post("/api/devices/reboot-001/adopt", cookies=cookies, json={"profile_id": pid})
                     await dev.send_status()
                     await asyncio.sleep(0.5)
                     await c.post("/api/devices/reboot-001/reboot", cookies=cookies)

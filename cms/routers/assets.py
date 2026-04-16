@@ -602,6 +602,27 @@ async def preview_asset(
     return FileResponse(path=file_path, media_type=media_type)
 
 
+@router.get("/variants/{variant_id}/preview", dependencies=[Depends(require_permission(ASSETS_READ))])
+async def preview_variant(
+    variant_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    result = await db.execute(select(AssetVariant).where(AssetVariant.id == variant_id))
+    variant = result.scalar_one_or_none()
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variant not found")
+
+    file_path = settings.asset_storage_path / "variants" / variant.filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Variant file not found on disk")
+
+    ext = "." + variant.filename.rsplit(".", 1)[-1].lower()
+    media_type = MIME_TYPES.get(ext, "application/octet-stream")
+
+    return FileResponse(path=file_path, media_type=media_type)
+
+
 @router.delete("/{asset_id}")
 async def delete_asset(
     asset_id: uuid.UUID,
