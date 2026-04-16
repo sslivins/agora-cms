@@ -140,9 +140,36 @@ jobs:
               deployRoleAssignments=false \
               cmsImage='${{ env.ACR_REGISTRY }}/agora-cms:${{ needs.publish.outputs.version }}' \
               mcpImage='${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}' \
-              workerImage='${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}' \
-              cmsCustomDomain='${{ vars.CMS_CUSTOM_DOMAIN }}' \
-              mcpCustomDomain='${{ vars.MCP_CUSTOM_DOMAIN }}'
+              workerImage='${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}'
+
+      - name: Bind custom domains (if configured)
+        if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
+        run: |
+          ENV_NAME="${{ vars.INFRA_PREFIX }}-env"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+
+          bind_domain() {
+            local APP_NAME="$1" DOMAIN="$2"
+            [ -z "$DOMAIN" ] && return 0
+
+            # Check if already bound
+            EXISTING=$(az containerapp hostname list --name "$APP_NAME" --resource-group "$RG" --query "[?name=='$DOMAIN'].name" -o tsv 2>/dev/null)
+            if [ "$EXISTING" = "$DOMAIN" ]; then
+              echo "✅ $DOMAIN already bound to $APP_NAME"
+              return 0
+            fi
+
+            echo "Binding $DOMAIN to $APP_NAME..."
+            az containerapp hostname bind \
+              --name "$APP_NAME" \
+              --resource-group "$RG" \
+              --hostname "$DOMAIN" \
+              --environment "$ENV_NAME" \
+              --validation-method CNAME || echo "⚠️ Failed to bind $DOMAIN (may need manual setup)"
+          }
+
+          bind_domain "${{ vars.INFRA_PREFIX }}-cms" "${{ vars.CMS_CUSTOM_DOMAIN }}"
+          bind_domain "${{ vars.INFRA_PREFIX }}-mcp" "${{ vars.MCP_CUSTOM_DOMAIN }}"
 
   verify:
     needs: [publish, deploy]

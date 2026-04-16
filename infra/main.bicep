@@ -60,12 +60,6 @@ param workerMemory string = '8Gi'
 @description('Deploy RBAC role assignments (requires Owner/UAA). Set false for CD pipelines with Contributor-only access.')
 param deployRoleAssignments bool = true
 
-@description('Custom domain for CMS app (e.g., agora.mennlabs.com). Leave empty to skip.')
-param cmsCustomDomain string = ''
-
-@description('Custom domain for MCP app (e.g., mcp.agora.mennlabs.com). Leave empty to skip.')
-param mcpCustomDomain string = ''
-
 @description('CMS container CPU cores (Consumption tier: 0.25–2.0 in 0.25 steps)')
 @allowed(['0.25', '0.5', '0.75', '1.0', '1.25', '1.5', '1.75', '2.0'])
 param cmsCpu string = '1.0'
@@ -202,10 +196,6 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Key Vault (service key exchange)
     keyVaultUri: keyVault.outputs.keyVaultUri
-
-    // Custom domains (optional)
-    cmsCustomDomain: cmsCustomDomain
-    mcpCustomDomain: mcpCustomDomain
   }
 }
 
