@@ -36,7 +36,7 @@ async def _trigger_eval():
 def _schedule_to_out(s: Schedule) -> ScheduleOut:
     return ScheduleOut(
         **{c.key: getattr(s, c.key) for c in Schedule.__table__.columns},
-        asset_filename=s.asset.filename if s.asset else None,
+        asset_filename=(s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else None,
         group_name=s.group.name if s.group else None,
     )
 
@@ -389,7 +389,7 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
                 schedule_name=schedule.name,
                 device_id=did,
                 device_name=dev_names.get(did, did),
-                asset_filename=schedule.asset.filename,
+                asset_filename=schedule.asset.display_name or schedule.asset.original_filename or schedule.asset.filename,
                 event=ScheduleLogEvent.SKIPPED,
                 details="Ended early by admin",
             ))
