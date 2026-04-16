@@ -262,9 +262,11 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         "-reconnect_delay_max", "5",
         "-t", str(asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS),
         "-i", url,
-        # Copy codecs (no re-encode during capture — transcoding happens later)
+        # Copy codecs (no re-encode during capture — transcoding happens later).
+        # Do NOT use +faststart here: this is an intermediate file read only by
+        # the worker.  The second-pass rewrite corrupts data on Azure Files SMB
+        # mounts due to the seek-heavy I/O pattern over the network filesystem.
         "-c", "copy",
-        "-movflags", "+faststart",
         str(capture_path),
     ]
 
