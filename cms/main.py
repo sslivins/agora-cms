@@ -55,7 +55,7 @@ async def _seed_profiles(db):
     """
     from sqlalchemy import select
     from cms.models.device_profile import DeviceProfile
-    from cms.routers.profiles import BUILTIN_PROFILES
+    from cms.profile_defaults import BUILTIN_PROFILES
 
     existing = await db.execute(select(DeviceProfile.name))
     existing_names = {r[0] for r in existing.all()}
