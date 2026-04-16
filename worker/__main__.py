@@ -158,6 +158,36 @@ async def _listen_mode_robust(settings: WorkerSettings) -> None:
         await conn.close()
 
 
+async def _drain_queue(settings: WorkerSettings) -> int:
+    """Dequeue and delete all messages from the Azure Storage Queue.
+
+    Returns the number of messages drained.  This prevents KEDA from
+    re-triggering the job for messages that have already been acted on.
+    """
+    conn_str = settings.azure_storage_connection_string
+    if not conn_str:
+        return 0
+
+    try:
+        from azure.storage.queue import QueueClient
+        queue = QueueClient.from_connection_string(conn_str, "transcode-jobs")
+        drained = 0
+        while True:
+            msgs = queue.receive_messages(messages_per_page=32, visibility_timeout=30)
+            batch = list(msgs)
+            if not batch:
+                break
+            for msg in batch:
+                queue.delete_message(msg)
+                drained += 1
+        if drained:
+            logger.info("Drained %d message(s) from transcode-jobs queue", drained)
+        return drained
+    except Exception:
+        logger.warning("Failed to drain transcode-jobs queue", exc_info=True)
+        return 0
+
+
 async def _queue_mode(settings: WorkerSettings) -> None:
     """Queue mode — process all pending variants, then exit."""
     session_factory = get_session_factory()
@@ -168,6 +198,10 @@ async def _queue_mode(settings: WorkerSettings) -> None:
 
     count = await process_pending(session_factory, asset_dir)
     logger.info("Queue mode: processed %d variant(s), exiting", count)
+
+    # Drain the Azure Storage Queue so KEDA doesn't re-trigger for
+    # messages that have already been acted on.
+    await _drain_queue(settings)
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:

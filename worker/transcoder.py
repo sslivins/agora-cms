@@ -172,6 +172,8 @@ def _build_ffmpeg_args_safe(
 
     args = [
         "ffmpeg", "-y",
+        # Tolerate corrupt frames (e.g. bad NAL units from HLS captures)
+        "-err_detect", "ignore_err",
         "-i", str(source_path),
         "-c:v", encoder,
     ]
@@ -277,7 +279,8 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         _active_process = None
 
         if proc.returncode != 0:
-            error_text = stderr_data.decode("utf-8", errors="replace")[-500:]
+            full_text = stderr_data.decode("utf-8", errors="replace")
+            error_text = full_text[:500] if len(full_text) <= 500 else full_text[:250] + "\n…\n" + full_text[-250:]
             logger.error("Stream capture failed for %s: exit %d\n%s", url, proc.returncode, error_text)
             return None
 
@@ -503,7 +506,8 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                 _cancelled_variant_ids.discard(variant.id)
                 logger.info("Transcode cancelled for %s (profile updated)", variant.filename)
                 return
-            error_text = stderr_data.decode("utf-8", errors="replace")[-500:]
+            full_text = stderr_data.decode("utf-8", errors="replace")
+            error_text = full_text[:500] if len(full_text) <= 500 else full_text[:250] + "\n…\n" + full_text[-250:]
             msg = f"ffmpeg exit code {proc.returncode}: {error_text}"
             await _mark_failed(variant, source, msg, db)
             return
