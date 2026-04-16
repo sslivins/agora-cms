@@ -180,3 +180,63 @@ class TestDevicesPageVisibility:
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
         assert "Orphaned Device" not in resp.text
+
+
+# ── Devices page column visibility ──
+
+
+@pytest.mark.asyncio
+class TestDevicesPageColumns:
+    """Verify Actions/Profile columns are hidden for operators, and column alignment is correct."""
+
+    async def test_admin_sees_actions_column(self, client, seed_devices):
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert ">Actions<" in resp.text
+
+    async def test_admin_sees_profile_column(self, client, seed_devices):
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert ">Profile<" in resp.text
+
+    async def test_operator_no_actions_column(self, operator_client, seed_devices):
+        """The main Devices table should not have an Actions header for operators."""
+        import re
+        resp = await operator_client.get("/devices")
+        assert resp.status_code == 200
+        # Find the first thead (main Devices table) and verify no Actions header
+        thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
+        assert thead_match
+        assert ">Actions<" not in thead_match.group(1)
+
+    async def test_operator_no_profile_column(self, operator_client, seed_devices):
+        resp = await operator_client.get("/devices")
+        assert resp.status_code == 200
+        assert ">Profile<" not in resp.text
+
+    async def test_operator_storage_column_present(self, operator_client, seed_devices):
+        """Storage column should still be visible for operators."""
+        resp = await operator_client.get("/devices")
+        assert resp.status_code == 200
+        assert ">Storage<" in resp.text
+
+    async def test_operator_column_count_matches(self, operator_client, seed_devices):
+        """Without manage, header should have 6 columns (expand, name, status, group, splash, storage)."""
+        import re
+        resp = await operator_client.get("/devices")
+        assert resp.status_code == 200
+        # Find the first thead and count <th> tags in it
+        thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
+        assert thead_match
+        th_count = thead_match.group(1).count("<th")
+        assert th_count == 6
+
+    async def test_admin_column_count_matches(self, client, seed_devices):
+        """With manage, header should have 8 columns (expand, name, status, group, splash, profile, storage, actions)."""
+        import re
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
+        assert thead_match
+        th_count = thead_match.group(1).count("<th")
+        assert th_count == 8
