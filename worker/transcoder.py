@@ -204,10 +204,16 @@ def _build_ffmpeg_args_safe(
         "-b:a", profile.audio_bitrate,
     ])
 
-    ext = output_path.suffix.lower()
-    if ext != ".mkv":
-        args.append("-movflags")
-        args.append("+faststart")
+    # +faststart rewrites the entire file (moving moov atom to front).
+    # On Azure Files SMB mounts, this seek-heavy second pass corrupts
+    # data blocks.  Azure Blob Storage serves variants with HTTP range
+    # requests, so progressive-download optimisation is unnecessary.
+    # When running on local storage the rewrite would be safe, but we
+    # skip it unconditionally for consistency.
+    # ext = output_path.suffix.lower()
+    # if ext != ".mkv":
+    #     args.append("-movflags")
+    #     args.append("+faststart")
 
     args.append(str(output_path))
 
