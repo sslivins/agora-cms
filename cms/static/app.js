@@ -509,7 +509,6 @@ function showAdoptModal(defaultName, groups, profiles) {
                 close(getResult());
             }
         });
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
     });
 }
 
