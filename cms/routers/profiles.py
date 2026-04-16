@@ -173,7 +173,7 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
 
 # Fields that affect transcoding output — changes require re-encoding variants
 _TRANSCODE_FIELDS = {
-    "video_profile", "max_width", "max_height", "max_fps",
+    "video_codec", "video_profile", "max_width", "max_height", "max_fps",
     "crf", "video_bitrate", "pixel_format", "color_space",
     "audio_codec", "audio_bitrate",
 }
