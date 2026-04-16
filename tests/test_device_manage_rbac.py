@@ -10,6 +10,8 @@ import uuid
 
 import pytest
 import pytest_asyncio
+
+from cms.models.device_profile import DeviceProfile
 from httpx import ASGITransport, AsyncClient
 
 from cms.permissions import (
@@ -162,10 +164,14 @@ class TestDeviceManageEndpoints:
             result = await db.execute(select(Device).where(Device.id == test_device))
             d = result.scalar_one()
             d.status = DeviceStatus.PENDING
+            profile = DeviceProfile(name="Test Profile")
+            db.add(profile)
+            await db.flush()
+            profile_id = str(profile.id)
             await db.commit()
             break
 
-        resp = await client.post(f"/api/devices/{test_device}/adopt")
+        resp = await client.post(f"/api/devices/{test_device}/adopt", json={"profile_id": profile_id})
         assert resp.status_code == 200
 
     async def test_operator_cannot_reboot(self, operator_client, test_device):

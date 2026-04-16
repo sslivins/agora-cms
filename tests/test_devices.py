@@ -5,6 +5,15 @@ from datetime import time
 
 import pytest
 
+from cms.models.device_profile import DeviceProfile
+
+
+async def _create_profile(db_session, name="Test Profile"):
+    profile = DeviceProfile(name=name)
+    db_session.add(profile)
+    await db_session.flush()
+    return profile
+
 
 @pytest.mark.asyncio
 class TestListDevices:
@@ -78,9 +87,10 @@ class TestDeviceCRUD:
 
         device = Device(id="test-pi-003", name="test-pi-003", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
-        resp = await client.post("/api/devices/test-pi-003/adopt")
+        resp = await client.post("/api/devices/test-pi-003/adopt", json={"profile_id": str(profile.id)})
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
@@ -98,9 +108,10 @@ class TestDeviceCRUD:
             device_auth_token_hash="oldhash",
         )
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
-        resp = await client.post("/api/devices/test-pi-orphan/adopt")
+        resp = await client.post("/api/devices/test-pi-orphan/adopt", json={"profile_id": str(profile.id)})
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
@@ -114,9 +125,10 @@ class TestDeviceCRUD:
 
         device = Device(id="test-pi-adopted", name="test-pi-adopted", status=DeviceStatus.ADOPTED)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
-        resp = await client.post("/api/devices/test-pi-adopted/adopt")
+        resp = await client.post("/api/devices/test-pi-adopted/adopt", json={"profile_id": str(profile.id)})
         assert resp.status_code == 400
 
     async def test_update_device_default_asset(self, client, db_session):
@@ -1135,6 +1147,7 @@ class TestWipeAssetsOnAdoptDelete:
 
         device = Device(id="wipe-adopt", name="wipe-adopt", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         sent_messages = []
@@ -1146,7 +1159,7 @@ class TestWipeAssetsOnAdoptDelete:
         device_manager.register("wipe-adopt", FakeWS())
 
         try:
-            resp = await client.post("/api/devices/wipe-adopt/adopt")
+            resp = await client.post("/api/devices/wipe-adopt/adopt", json={"profile_id": str(profile.id)})
             assert resp.status_code == 200
 
             wipe_msgs = [m for m in sent_messages if m.get("type") == "wipe_assets"]
@@ -1166,6 +1179,7 @@ class TestWipeAssetsOnAdoptDelete:
             device_auth_token_hash="oldhash",
         )
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
         sent_messages = []
@@ -1177,7 +1191,7 @@ class TestWipeAssetsOnAdoptDelete:
         device_manager.register("wipe-orphan", FakeWS())
 
         try:
-            resp = await client.post("/api/devices/wipe-orphan/adopt")
+            resp = await client.post("/api/devices/wipe-orphan/adopt", json={"profile_id": str(profile.id)})
             assert resp.status_code == 200
 
             wipe_msgs = [m for m in sent_messages if m.get("type") == "wipe_assets"]
@@ -1219,9 +1233,10 @@ class TestWipeAssetsOnAdoptDelete:
 
         device = Device(id="wipe-offline", name="wipe-offline", status=DeviceStatus.PENDING)
         db_session.add(device)
+        profile = await _create_profile(db_session)
         await db_session.commit()
 
-        resp = await client.post("/api/devices/wipe-offline/adopt")
+        resp = await client.post("/api/devices/wipe-offline/adopt", json={"profile_id": str(profile.id)})
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
