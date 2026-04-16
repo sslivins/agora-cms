@@ -60,8 +60,9 @@ class Asset(Base):
     # URL for webpage/stream assets (populated when asset_type is WEBPAGE or STREAM)
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    # True = play directly on device (live stream); False = capture via FFmpeg to MP4
-    is_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # True = capture stream via FFmpeg and transcode to local video files for offline playback
+    # False (default) = stream directly to devices in real time
+    save_locally: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
     # (Schedule is a CMS-only model, not available in the worker package)

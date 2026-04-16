@@ -39,4 +39,4 @@ class AssetOut(BaseModel):
     is_global: bool = False
     uploaded_by_user_id: Optional[uuid.UUID] = None
     url: Optional[str] = None
-    is_live: bool = False
+    save_locally: bool = False

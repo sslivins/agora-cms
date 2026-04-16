@@ -547,7 +547,7 @@ async def create_stream_asset(
     if dup_q.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="A stream asset with this URL already exists")
 
-    is_live = body.get("is_live", True)
+    save_locally = body.get("save_locally", False)
 
     # Use provided name or derive from URL
     name = body.get("name", "").strip()
@@ -590,7 +590,7 @@ async def create_stream_asset(
         size_bytes=0,
         checksum="",
         url=url,
-        is_live=is_live,
+        save_locally=save_locally,
         is_global=make_global,
         uploaded_by_user_id=user.id,
     )
@@ -599,6 +599,13 @@ async def create_stream_asset(
 
     for gid in resolved_groups:
         db.add(GroupAsset(asset_id=asset.id, group_id=gid))
+
+    # If save_locally is enabled, enqueue transcoding so the worker
+    # will capture the stream and create variants for each device profile
+    if save_locally:
+        await _enqueue_transcoding(asset, db)
+        from cms.services.transcoder import notify_worker
+        await notify_worker(db)
 
     await db.commit()
     await db.refresh(asset)

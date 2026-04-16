@@ -275,11 +275,23 @@ async def run_migrations():
             if not has_stream.scalar():
                 await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'STREAM'"))
 
-        # -- assets.is_live (stream live vs capture mode) --
+        # -- assets.save_locally (stream capture mode) --
+        # Renamed from is_live with reversed semantics:
+        #   is_live=True (live stream) → save_locally=False
+        #   is_live=False (capture)    → save_locally=True
+        has_save_locally = await conn.run_sync(lambda c: _has_column(c, "assets", "save_locally"))
         has_is_live = await conn.run_sync(lambda c: _has_column(c, "assets", "is_live"))
-        if not has_is_live:
+        if not has_save_locally and has_is_live:
+            # Rename column and flip values
             await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN is_live BOOLEAN NOT NULL DEFAULT FALSE"
+                "ALTER TABLE assets RENAME COLUMN is_live TO save_locally"
+            ))
+            await conn.execute(text(
+                "UPDATE assets SET save_locally = NOT save_locally"
+            ))
+        elif not has_save_locally:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN save_locally BOOLEAN NOT NULL DEFAULT FALSE"
             ))
 
     # Run create_all again in case migrations added models with new relationships
