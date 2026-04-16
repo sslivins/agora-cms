@@ -508,6 +508,218 @@ async def create_webpage_asset(
     return asset
 
 
+@router.post("/stream", response_model=AssetOut, status_code=201)
+async def create_stream_asset(
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a stream asset from a video stream URL (HLS, DASH, RTMP, etc.)."""
+    body = await request.json()
+    url = body.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Stream URL is required")
+
+    # Stream URLs support more schemes than webpages
+    _allowed_schemes = ("http", "https", "rtmp", "rtmps", "rtsp", "rtsps", "mms", "mmsh")
+    if not any(url.startswith(s + "://") for s in _allowed_schemes):
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL must start with one of: {', '.join(s + '://' for s in _allowed_schemes)}",
+        )
+    if len(url) > 2048:
+        raise HTTPException(status_code=400, detail="URL too long (max 2048 characters)")
+
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL must contain a valid hostname")
+    # Block loopback/internal addresses (SSRF risk)
+    hostname = parsed.hostname or ""
+    _blocked = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    if hostname in _blocked or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
+
+    # Check for duplicate stream URL (per type)
+    save_locally = body.get("save_locally", False)
+    target_type = AssetType.SAVED_STREAM if save_locally else AssetType.STREAM
+
+    # Capture duration for live streams being saved
+    capture_duration = body.get("capture_duration")
+    if capture_duration is not None:
+        try:
+            capture_duration = int(capture_duration)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="capture_duration must be an integer (seconds)")
+        if capture_duration < 10:
+            raise HTTPException(status_code=400, detail="Capture duration must be at least 10 seconds")
+        max_allowed = 14400  # 4 hours
+        if capture_duration > max_allowed:
+            raise HTTPException(status_code=400, detail=f"Capture duration cannot exceed {max_allowed} seconds (4 hours)")
+
+    dup_q = await db.execute(
+        select(Asset).where(
+            Asset.url == url,
+            Asset.asset_type == target_type,
+        ).limit(1)
+    )
+    if dup_q.scalar_one_or_none():
+        mode = "saved stream" if save_locally else "live stream"
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {mode} asset with this URL already exists",
+        )
+
+    # Use provided name or derive from URL
+    name = body.get("name", "").strip()
+    if not name:
+        name = parsed.netloc + (parsed.path if parsed.path != "/" else "")
+        if len(name) > 200:
+            name = name[:200]
+
+    # Check for duplicate filename
+    existing = await db.execute(select(Asset).where(Asset.filename == name))
+    if existing.scalar_one_or_none():
+        import hashlib as _hl
+        suffix = _hl.md5(url.encode()).hexdigest()[:6]
+        name = f"{name} ({suffix})"
+
+    # Resolve group UUIDs
+    resolved_groups: list[uuid.UUID] = []
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    raw_ids = body.get("group_ids", [])
+    if isinstance(raw_ids, str):
+        raw_ids = [g.strip() for g in raw_ids.split(",") if g.strip()]
+    group_id = body.get("group_id")
+    if group_id and not raw_ids:
+        raw_ids = [group_id]
+    for gid in raw_ids:
+        try:
+            parsed_id = uuid.UUID(str(gid))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid group_id: {gid}")
+        if not is_admin and parsed_id not in user_groups:
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        resolved_groups.append(parsed_id)
+
+    make_global = (not resolved_groups and is_admin)
+
+    asset = Asset(
+        filename=name,
+        asset_type=target_type,
+        size_bytes=0,
+        checksum="",
+        url=url,
+        is_global=make_global,
+        uploaded_by_user_id=user.id,
+        capture_duration=capture_duration if target_type == AssetType.SAVED_STREAM else None,
+    )
+    db.add(asset)
+    await db.flush()
+
+    for gid in resolved_groups:
+        db.add(GroupAsset(asset_id=asset.id, group_id=gid))
+
+    # If save_locally is enabled, enqueue transcoding so the worker
+    # will capture the stream and create variants for each device profile
+    if target_type == AssetType.SAVED_STREAM:
+        await _enqueue_transcoding(asset, db)
+        from cms.services.transcoder import notify_worker
+        await notify_worker(db)
+
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
+@router.patch("/{asset_id}", response_model=AssetOut)
+async def update_asset(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update asset properties (currently: display_name)."""
+    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    body = await request.json()
+
+    if "display_name" in body:
+        name = (body["display_name"] or "").strip()
+        if name and len(name) > 255:
+            raise HTTPException(status_code=400, detail="Name too long (max 255 characters)")
+        asset.display_name = name if name else None
+
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
+@router.post("/{asset_id}/recapture")
+async def recapture_stream(
+    asset_id: uuid.UUID,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Re-capture a SAVED_STREAM asset: re-downloads the stream, overwrites
+    the capture file, and resets all variants to PENDING for retranscoding."""
+    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    if asset.asset_type != AssetType.SAVED_STREAM:
+        raise HTTPException(status_code=400, detail="Only saved-stream assets can be re-captured")
+
+    if not asset.url:
+        raise HTTPException(status_code=400, detail="Asset has no stream URL")
+
+    # Delete existing capture file
+    storage = get_storage()
+    capture_path = settings.asset_storage_path / asset.filename
+    if capture_path.is_file():
+        capture_path.unlink()
+    await storage.on_file_deleted(asset.filename)
+
+    # Reset filename to display name so worker re-captures
+    asset.filename = asset.original_filename or f"{asset.id}_capture.mp4"
+    asset.original_filename = None
+    asset.checksum = ""
+    asset.size_bytes = 0
+
+    # Delete variant files and reset to PENDING
+    from cms.services.transcoder import cancel_asset_transcodes
+    cancel_asset_transcodes(asset_id)
+
+    variants_dir = settings.asset_storage_path / "variants"
+    var_result = await db.execute(
+        select(AssetVariant).where(AssetVariant.source_asset_id == asset_id)
+    )
+    for variant in var_result.scalars().all():
+        vpath = variants_dir / variant.filename
+        if vpath.is_file():
+            vpath.unlink()
+        await storage.on_file_deleted(f"variants/{variant.filename}")
+        variant.status = VariantStatus.PENDING
+        variant.progress = 0.0
+        variant.retry_count = 0
+        variant.checksum = ""
+        variant.size_bytes = 0
+
+    await db.commit()
+
+    # Notify worker to pick up the pending variants
+    from cms.services.transcoder import notify_worker
+    await notify_worker(db)
+
+    return {"recaptured": True, "asset_id": str(asset_id)}
+
+
 async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     """Create pending AssetVariant rows for all device profiles."""
     result = await db.execute(select(DeviceProfile))

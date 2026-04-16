@@ -20,6 +20,13 @@ from cms.services.device_manager import device_manager
 
 logger = logging.getLogger("agora.cms.scheduler")
 
+
+def _asset_display_name(asset) -> str:
+    """Return the best human-readable name for an asset."""
+    if asset is None:
+        return "—"
+    return asset.display_name or asset.original_filename or asset.filename
+
 # Track last sync hash per device to avoid re-sending identical syncs
 _last_sync_hash: dict[str, str] = {}
 
@@ -31,6 +38,23 @@ _now_playing = _confirmed_playing  # backwards-compat alias for tests
 
 # Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
 _skipped: dict[str, datetime] = {}
+_skipped_loaded: bool = False
+
+
+async def _ensure_skips_loaded(db) -> None:
+    """Load persisted skips from DB on first call after restart."""
+    global _skipped_loaded
+    if _skipped_loaded:
+        return
+    skip_result = await db.execute(
+        select(Schedule.id, Schedule.skipped_until)
+        .where(Schedule.skipped_until.isnot(None))
+    )
+    for sid, until in skip_result.all():
+        _skipped[str(sid)] = until.replace(tzinfo=None) if until.tzinfo else until
+    _skipped_loaded = True
+    if _skipped:
+        logger.info("Loaded %d persisted schedule skips from DB", len(_skipped))
 
 # Track which schedule+device combos we've already logged as MISSED this eval cycle
 # Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
@@ -138,6 +162,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
 
     Returns a list of dicts ready for the dashboard template / JSON API.
     """
+    await _ensure_skips_loaded(db)
     from shared.models.asset import AssetType
 
     local_now = now.astimezone(tz).replace(tzinfo=None)
@@ -194,15 +219,12 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
                 device_schedule[did] = (s.priority, s)
 
     for did, (_, s) in device_schedule.items():
-        is_webpage = s.asset.asset_type == AssetType.WEBPAGE
-        asset_raw = s.asset.url if is_webpage else s.asset.filename
-        display_name = asset_raw
-        if is_webpage:
-            display_name = (
-                s.asset.original_filename
-                or s.asset.filename
-                or asset_raw
-            )
+        is_saved_stream = s.asset.asset_type == AssetType.SAVED_STREAM
+        is_url_asset = (
+            s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+        )
+        asset_raw = s.asset.url if is_url_asset else s.asset.filename
+        display_name = _asset_display_name(s.asset)
 
         device_name = device_names.get(did, did)
         confirmed = _confirmed_playing.get(did)
@@ -341,7 +363,7 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
 
     return {
         "schedule_name": s.name,
-        "asset_filename": s.asset.filename if s.asset else "—",
+        "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
@@ -413,7 +435,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
 
     return {
         "schedule_name": s.name,
-        "asset_filename": s.asset.filename if s.asset else "—",
+        "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
@@ -441,7 +463,7 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
 
     return {
         "schedule_name": s.name,
-        "asset_filename": s.asset.filename if s.asset else "—",
+        "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
@@ -579,15 +601,23 @@ def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = N
     elif s.asset:
         checksum = s.asset.checksum or None
 
-    # For webpage assets, include the URL and skip the checksum
-    is_webpage = s.asset and s.asset.asset_type == AssetType.WEBPAGE
+    # SAVED_STREAM assets behave like normal videos (file download)
+    # STREAM assets are URL-based (direct stream playback)
+    is_saved_stream = (
+        s.asset
+        and s.asset.asset_type == AssetType.SAVED_STREAM
+    )
+    is_url_asset = (
+        s.asset
+        and s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+    )
     return ScheduleEntry(
         id=str(s.id),
         name=s.name,
         asset=s.asset.filename,
-        asset_checksum=None if is_webpage else checksum,
-        asset_type=s.asset.asset_type.value if s.asset else None,
-        url=s.asset.url if is_webpage else None,
+        asset_checksum=None if is_url_asset else checksum,
+        asset_type="video" if is_saved_stream else (s.asset.asset_type.value if s.asset else None),
+        url=s.asset.url if is_url_asset else None,
         start_time=s.start_time.strftime("%H:%M:%S"),
         end_time=s.end_time.strftime("%H:%M:%S"),
         start_date=s.start_date.date().isoformat() if s.start_date else None,
@@ -715,6 +745,8 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
 async def push_sync_to_device(device_id: str, db) -> None:
     """Build and push a fresh sync to a single connected device."""
+    await _ensure_skips_loaded(db)
+
     if not device_manager.is_connected(device_id):
         return
 
@@ -756,6 +788,8 @@ async def evaluate_schedules() -> None:
     now = datetime.now(timezone.utc)
 
     async with sf() as db:
+        await _ensure_skips_loaded(db)
+
         # Read timezone for schedule evaluation
         tz_result = await db.execute(
             select(CMSSetting.value).where(CMSSetting.key == "timezone")
@@ -780,13 +814,21 @@ async def evaluate_schedules() -> None:
         )
         schedules = result.scalars().all()
 
-        # Purge expired skips
+        # Purge expired skips (memory + DB)
         expired = [sid for sid, until in _skipped.items() if local_now >= until]
         for sid in expired:
             _skipped.pop(sid, None)
+            # Clear DB column
+            await db.execute(
+                Schedule.__table__.update()
+                .where(Schedule.id == sid)
+                .values(skipped_until=None)
+            )
             # Clear sync hash so the schedule gets re-pushed on next eval
             for did in connected:
                 _last_sync_hash.pop(did, None)
+        if expired:
+            await db.commit()
 
         active = [
             s for s in schedules
@@ -822,7 +864,7 @@ async def evaluate_schedules() -> None:
                         db, ScheduleLogEvent.MISSED,
                         schedule_name=s.name,
                         device_name=all_adopted.get(did, did),
-                        asset_filename=s.asset.filename,
+                        asset_filename=_asset_display_name(s.asset),
                         schedule_id=s.id, device_id=did,
                         details=f"Device offline for {int(elapsed)}s",
                     )
@@ -872,7 +914,11 @@ async def evaluate_schedules() -> None:
                 if not live or live.get("mode") != "play":
                     continue
                 is_webpage = s.asset.asset_type == AssetType.WEBPAGE
-                expected_raw = s.asset.url if is_webpage else s.asset.filename
+                is_saved_stream = s.asset.asset_type == AssetType.SAVED_STREAM
+                is_url_asset = (
+                    s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+                )
+                expected_raw = s.asset.url if is_url_asset else s.asset.filename
                 if live.get("asset") != expected_raw:
                     continue
                 # Device is playing this schedule's asset — seed confirmed

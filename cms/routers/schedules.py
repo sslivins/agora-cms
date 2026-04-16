@@ -36,7 +36,7 @@ async def _trigger_eval():
 def _schedule_to_out(s: Schedule) -> ScheduleOut:
     return ScheduleOut(
         **{c.key: getattr(s, c.key) for c in Schedule.__table__.columns},
-        asset_filename=s.asset.filename if s.asset else None,
+        asset_filename=(s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else None,
         group_name=s.group.name if s.group else None,
     )
 
@@ -191,20 +191,22 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=422, detail="Asset not found")
 
     is_webpage = asset.asset_type == AssetType.WEBPAGE
+    is_live_stream = asset.asset_type == AssetType.STREAM
+    is_url_asset = is_webpage or is_live_stream
 
-    # Webpage assets cannot use loop_count (no duration)
-    if is_webpage and data.loop_count is not None:
+    # Webpage/live-stream assets cannot use loop_count (no duration)
+    if is_url_asset and data.loop_count is not None:
         raise HTTPException(
             status_code=422,
-            detail="Webpage assets do not support loop count (no duration).",
+            detail="Webpage and live stream assets do not support loop count (no duration).",
         )
 
-    # Webpage assets require Pi 5+ devices
-    if is_webpage and data.group_id:
+    # Webpage/live-stream assets require Pi 5+ devices
+    if is_url_asset and data.group_id:
         await _validate_webpage_group(data.group_id, db)
 
     # Auto-compute end_time when loop_count is set
-    if not is_webpage:
+    if not is_url_asset:
         computed = await _resolve_loop_end_time(
             data.loop_count, data.asset_id, data.start_time, db,
         )
@@ -220,7 +222,7 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
         if fields.get("end_time") is None:
             raise HTTPException(
                 status_code=422,
-                detail="end_time is required for webpage assets.",
+                detail="end_time is required for webpage/stream assets.",
             )
 
     schedule = Schedule(**fields)
@@ -263,20 +265,22 @@ async def update_schedule(
 
     updates = data.model_dump(exclude_unset=True)
 
-    # Check if the resulting asset is a webpage type (current or updated)
+    # Check if the resulting asset is a webpage/stream type (current or updated)
     target_asset_id = updates.get("asset_id", schedule.asset_id)
     target_asset = await db.get(Asset, target_asset_id)
     is_webpage = target_asset and target_asset.asset_type == AssetType.WEBPAGE
+    is_live_stream = target_asset and target_asset.asset_type == AssetType.STREAM
+    is_url_asset = is_webpage or is_live_stream
 
-    # Webpage assets cannot use loop_count
-    if is_webpage and updates.get("loop_count") is not None:
+    # Webpage/live-stream assets cannot use loop_count
+    if is_url_asset and updates.get("loop_count") is not None:
         raise HTTPException(
             status_code=422,
-            detail="Webpage assets do not support loop count (no duration).",
+            detail="Webpage and live stream assets do not support loop count (no duration).",
         )
 
-    # Validate Pi5 when switching to a webpage asset or changing the group
-    if is_webpage and ("asset_id" in updates or "group_id" in updates):
+    # Validate Pi5 when switching to a webpage/stream asset or changing the group
+    if is_url_asset and ("asset_id" in updates or "group_id" in updates):
         target_group_id = updates.get("group_id", schedule.group_id)
         if target_group_id:
             await _validate_webpage_group(target_group_id, db)
@@ -284,7 +288,7 @@ async def update_schedule(
     # Recompute end_time when loop_count changes (or when asset/start_time
     # change on a schedule that already has loop_count set).
     loop_count = updates.get("loop_count", schedule.loop_count)
-    if not is_webpage and loop_count is not None and (
+    if not is_url_asset and loop_count is not None and (
         "loop_count" in updates or "asset_id" in updates or "start_time" in updates
     ):
         asset_id = updates.get("asset_id", schedule.asset_id)
@@ -295,10 +299,11 @@ async def update_schedule(
 
     for field, value in updates.items():
         setattr(schedule, field, value)
+    # Clear any active "End Now" skip so the schedule is re-evaluated
+    schedule.skipped_until = None
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
     await db.commit()
 
-    # Clear any active "End Now" skip so the schedule is re-evaluated
     clear_schedule_skip(str(schedule_id))
 
     result = await db.execute(
@@ -371,6 +376,11 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
 
     skip_schedule_until(str(schedule.id), end_today)
 
+    # Persist to DB so it survives restarts
+    schedule.skipped_until = end_today
+    db.add(schedule)
+    await db.commit()
+
     # Log SKIPPED event for each target device
     from cms.models.device import Device
     target_ids = await _get_target_device_ids(schedule, db)
@@ -385,7 +395,7 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
                 schedule_name=schedule.name,
                 device_id=did,
                 device_name=dev_names.get(did, did),
-                asset_filename=schedule.asset.filename,
+                asset_filename=schedule.asset.display_name or schedule.asset.original_filename or schedule.asset.filename,
                 event=ScheduleLogEvent.SKIPPED,
                 details="Ended early by admin",
             ))

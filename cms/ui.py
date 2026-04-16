@@ -842,6 +842,14 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     devices = result.scalars().all()
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
+
+    # Build URL→display name map for resolving playback_asset on URL-based assets
+    assets_early_q = await db.execute(select(Asset).order_by(Asset.filename))
+    assets_early = assets_early_q.scalars().all()
+    _url_display = {}
+    for a in assets_early:
+        if a.url:
+            _url_display.setdefault(a.url, a.filename)
     for d in devices:
         d.is_online = device_manager.is_connected(d.id)
         state = live_states.get(d.id)
@@ -849,6 +857,8 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.ip_address = state["ip_address"] if state else None
         d.playback_mode = state["mode"] if state else None
         d.playback_asset = state["asset"] if state else None
+        if d.playback_asset and d.playback_asset in _url_display:
+            d.playback_asset = _url_display[d.playback_asset]
         d.pipeline_state = state["pipeline_state"] if state else None
         d.started_at = state["started_at"] if state else None
         d.playback_position_ms = state["playback_position_ms"] if state else None
@@ -894,6 +904,8 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.ip_address = state["ip_address"] if state else None
             d.playback_mode = state["mode"] if state else None
             d.playback_asset = state["asset"] if state else None
+            if d.playback_asset and d.playback_asset in _url_display:
+                d.playback_asset = _url_display[d.playback_asset]
             d.pipeline_state = state["pipeline_state"] if state else None
             d.started_at = state["started_at"] if state else None
             d.playback_position_ms = state["playback_position_ms"] if state else None
@@ -906,8 +918,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     # Devices not assigned to any group
     ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]
 
-    assets_q = await db.execute(select(Asset).order_by(Asset.filename))
-    assets = assets_q.scalars().all()
+    assets = assets_early
 
     profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
     profiles = profiles_q.scalars().all()

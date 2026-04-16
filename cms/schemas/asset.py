@@ -31,6 +31,7 @@ class AssetOut(BaseModel):
     id: uuid.UUID
     filename: str
     original_filename: Optional[str] = None
+    display_name: Optional[str] = None
     asset_type: AssetType
     size_bytes: int
     checksum: str
@@ -39,3 +40,4 @@ class AssetOut(BaseModel):
     is_global: bool = False
     uploaded_by_user_id: Optional[uuid.UUID] = None
     url: Optional[str] = None
+    capture_duration: Optional[int] = None

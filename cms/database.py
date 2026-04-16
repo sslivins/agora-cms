@@ -258,7 +258,7 @@ async def run_migrations():
                 "ALTER TABLE assets ADD COLUMN url VARCHAR(2048)"
             ))
 
-        # -- Add 'WEBPAGE' value to assettype enum --
+        # -- Add 'WEBPAGE' and 'STREAM' values to assettype enum --
         asset_enum_exists = await conn.execute(
             text("SELECT 1 FROM pg_type WHERE typname = 'assettype'")
         )
@@ -268,6 +268,69 @@ async def run_migrations():
             )
             if not has_webpage.scalar():
                 await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'WEBPAGE'"))
+
+            has_stream = await conn.execute(
+                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'STREAM' AND enumtypid = 'assettype'::regtype")
+            )
+            if not has_stream.scalar():
+                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'STREAM'"))
+
+            has_saved_stream = await conn.execute(
+                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'SAVED_STREAM' AND enumtypid = 'assettype'::regtype")
+            )
+            if not has_saved_stream.scalar():
+                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'SAVED_STREAM'"))
+
+    # -- Migrate save_locally/is_live STREAM assets → SAVED_STREAM type --
+    # Must be a separate transaction: PG requires new enum values to be committed first
+    async with _shared_db._engine.begin() as conn:
+        has_save_locally = await conn.run_sync(lambda c: _has_column(c, "assets", "save_locally"))
+        has_is_live = await conn.run_sync(lambda c: _has_column(c, "assets", "is_live"))
+
+        if has_is_live and not has_save_locally:
+            await conn.execute(text(
+                "UPDATE assets SET asset_type = 'SAVED_STREAM' "
+                "WHERE asset_type = 'STREAM' AND is_live = false"
+            ))
+            await conn.execute(text("ALTER TABLE assets DROP COLUMN is_live"))
+        elif has_save_locally:
+            await conn.execute(text(
+                "UPDATE assets SET asset_type = 'SAVED_STREAM' "
+                "WHERE asset_type = 'STREAM' AND save_locally = true"
+            ))
+            await conn.execute(text("ALTER TABLE assets DROP COLUMN save_locally"))
+
+    # -- asset_variants.retry_count --
+    async with _shared_db._engine.begin() as conn:
+        has_retry = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "retry_count"))
+        if not has_retry:
+            await conn.execute(text(
+                "ALTER TABLE asset_variants ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
+            ))
+
+    # -- assets.capture_duration --
+    async with _shared_db._engine.begin() as conn:
+        has_cap_dur = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_duration"))
+        if not has_cap_dur:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN capture_duration INTEGER"
+            ))
+
+    # -- assets.display_name --
+    async with _shared_db._engine.begin() as conn:
+        has_display_name = await conn.run_sync(lambda c: _has_column(c, "assets", "display_name"))
+        if not has_display_name:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN display_name VARCHAR(255)"
+            ))
+
+    # -- schedules.skipped_until (persist "End Now" across restarts) --
+    async with _shared_db._engine.begin() as conn:
+        has_skipped = await conn.run_sync(lambda c: _has_column(c, "schedules", "skipped_until"))
+        if not has_skipped:
+            await conn.execute(text(
+                "ALTER TABLE schedules ADD COLUMN skipped_until TIMESTAMPTZ"
+            ))
 
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:

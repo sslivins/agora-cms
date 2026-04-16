@@ -43,6 +43,10 @@ class Schedule(Base):
     # Exact loop count — None means infinite looping (fill the time window)
     loop_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # "End Now" persistence: skip this schedule until this UTC datetime.
+    # Cleared automatically when the skip expires, or when the schedule is updated.
+    skipped_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -40,7 +40,7 @@ class TestGroupRemoveButtons:
         expect(page.locator("strong", has_text="Remove Test Group")).to_be_visible(timeout=5000)
 
         # Click the Delete button on the group header (not the per-device Remove buttons)
-        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         remove_btn = group_panel.locator(".group-actions button", has_text="Delete")
         remove_btn.click()
 
@@ -77,14 +77,14 @@ class TestGroupRemoveButtons:
         page.wait_for_load_state("domcontentloaded")
 
         # Expand the group
-        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         expect(group_panel).to_be_visible(timeout=5000)
         group_panel.locator(".group-header").click()
 
         # Find Device C's row within the group and click its Remove button
         group_body = group_panel.locator(".group-body")
         expect(group_body).to_be_visible(timeout=3000)
-        device_row = group_body.locator('[data-device-id="grp-rm-003"]')
+        device_row = group_body.locator('tr[data-device-id="grp-rm-003"]')
         expect(device_row).to_be_visible(timeout=3000)
         device_row.locator("button", has_text="Remove").click()
 
@@ -98,16 +98,16 @@ class TestGroupRemoveButtons:
         expect(page.locator("strong", has_text="Single Remove Group")).to_be_visible(timeout=5000)
 
         # Expand the group again
-        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         group_panel.locator(".group-header").click()
         group_body = group_panel.locator(".group-body")
         expect(group_body).to_be_visible(timeout=3000)
 
         # Device D should still be in the group
-        expect(group_body.locator('[data-device-id="grp-rm-004"]')).to_be_visible(timeout=3000)
+        expect(group_body.locator('tr[data-device-id="grp-rm-004"]')).to_be_visible(timeout=3000)
 
         # Device C should NOT be in the group (removed)
-        expect(group_body.locator('[data-device-id="grp-rm-003"]')).to_have_count(0)
+        expect(group_body.locator('tr[data-device-id="grp-rm-003"]')).to_have_count(0)
 
         # Device C should still exist on the page (ungrouped)
         expect(page.locator('[data-device-id="grp-rm-003"]').first).to_be_visible(timeout=3000)
@@ -141,7 +141,7 @@ class TestGroupRemoveButtons:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         expect(group_panel).to_be_visible(timeout=5000)
 
         # The Delete button should be disabled
@@ -186,7 +186,7 @@ class TestGroupRemoveButtons:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        group_panel = page.locator('[data-group-id="' + group_id + '"]')
+        group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         expect(group_panel).to_be_visible(timeout=5000)
 
         # The Delete button should now be enabled

@@ -25,6 +25,26 @@ from shared.services.storage import get_storage
 
 logger = logging.getLogger("agora.worker.transcoder")
 
+# Maximum duration to capture from a stream (seconds).  Prevents runaway
+# captures of truly-live streams that never end.
+STREAM_CAPTURE_MAX_SECONDS = int(os.environ.get("AGORA_STREAM_CAPTURE_MAX_SECONDS", "14400"))  # 4 hours
+
+# Max retries for SAVED_STREAM failures (network issues, timing, etc.)
+STREAM_MAX_RETRIES = int(os.environ.get("AGORA_STREAM_MAX_RETRIES", "3"))
+
+# Errors that should NOT be retried (bad input, not transient)
+_NO_RETRY_ERRORS = {"Image conversion failed", "Invalid data found"}
+
+
+def _should_retry(variant: AssetVariant, source: Asset) -> bool:
+    """Return True if this variant failure is retryable."""
+    if source.asset_type != AssetType.SAVED_STREAM:
+        return False
+    if variant.retry_count >= STREAM_MAX_RETRIES:
+        return False
+    msg = variant.error_message or ""
+    return not any(pat in msg for pat in _NO_RETRY_ERRORS)
+
 
 # ── Active transcode tracking (cancel support) ─────────────────
 
@@ -211,7 +231,120 @@ async def _get_duration(source_path: Path) -> float | None:
         return None
 
 
+# ── Stream capture ──────────────────────────────────────────────
+
+async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Path | None:
+    """Download a stream URL to a local MP4 file using FFmpeg.
+
+    Returns the path to the captured file, or None on failure.
+    The captured file is stored as the asset's source file so subsequent
+    per-profile transcoding can pick it up like any uploaded video.
+    """
+    global _active_process
+
+    url = asset.url
+    if not url:
+        return None
+
+    capture_filename = f"{asset.id}_capture.mp4"
+    capture_path = asset_dir / capture_filename
+
+    logger.info("Capturing stream %s → %s (max %ds)", url, capture_filename,
+                asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS)
+
+    args = [
+        "ffmpeg", "-y",
+        # Network / stream input options
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-t", str(asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS),
+        "-i", url,
+        # Copy codecs (no re-encode during capture — transcoding happens later)
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(capture_path),
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _active_process = proc
+        _, stderr_data = await proc.communicate()
+        _active_process = None
+
+        if proc.returncode != 0:
+            error_text = stderr_data.decode("utf-8", errors="replace")[-500:]
+            logger.error("Stream capture failed for %s: exit %d\n%s", url, proc.returncode, error_text)
+            return None
+
+        if not capture_path.is_file() or capture_path.stat().st_size == 0:
+            logger.error("Stream capture produced empty file for %s", url)
+            return None
+
+        # Probe the captured file for metadata
+        meta = await probe_media(capture_path)
+        file_size = capture_path.stat().st_size
+        sha = hashlib.sha256()
+        with open(capture_path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                sha.update(chunk)
+
+        # Formalize: store display name in original_filename, set filename
+        # to the actual capture file so delete/retranscode/storage all work.
+        if asset.filename != capture_filename:
+            asset.original_filename = asset.filename
+            asset.filename = capture_filename
+
+        # Update the source asset with captured file metadata
+        asset.size_bytes = file_size
+        asset.checksum = sha.hexdigest()
+        for key, val in meta.items():
+            if val is not None and hasattr(asset, key):
+                setattr(asset, key, val)
+
+        await db.commit()
+
+        # Sync captured file to cloud storage
+        storage = get_storage()
+        await storage.on_file_stored(capture_filename)
+
+        logger.info(
+            "Stream capture complete: %s (%d bytes, %.1fs)",
+            capture_filename, file_size, meta.get("duration_seconds") or 0,
+        )
+        return capture_path
+
+    except Exception as e:
+        _active_process = None
+        logger.exception("Stream capture error for %s: %s", url, e)
+        return None
+
+
 # ── Single variant transcoding ──────────────────────────────────
+
+async def _mark_failed(variant: AssetVariant, source: Asset, message: str, db: AsyncSession) -> None:
+    """Mark a variant as FAILED or schedule a retry for SAVED_STREAM assets."""
+    variant.error_message = message[:500]
+    if _should_retry(variant, source):
+        variant.status = VariantStatus.PENDING
+        variant.retry_count += 1
+        variant.progress = 0.0
+        logger.warning(
+            "Variant %s retry %d/%d: %s",
+            variant.id, variant.retry_count, STREAM_MAX_RETRIES, message,
+        )
+    else:
+        variant.status = VariantStatus.FAILED
+        variant.progress = 0.0
+        logger.error("Variant %s failed permanently: %s", variant.id, message)
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        logger.warning("Variant %s deleted before failure recorded", variant.id)
 
 async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Path) -> None:
     """Transcode a single variant using ffmpeg."""
@@ -219,8 +352,19 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     source = variant.source_asset
     profile = variant.profile
 
+    # SAVED_STREAM assets: capture the stream if not already done
+    if source.asset_type == AssetType.SAVED_STREAM:
+        source_path = asset_dir / source.filename
+        if not source_path.is_file():
+            # First variant for this stream — capture it
+            result = await _capture_stream(source, asset_dir, db)
+            if result is None:
+                await _mark_failed(variant, source, "Stream capture failed", db)
+                return
+            await db.refresh(source)  # reload after capture set filename
+            source_path = asset_dir / source.filename
     # Use original source file when available
-    if source.original_filename:
+    elif source.original_filename:
         original_path = asset_dir / "originals" / source.original_filename
         if original_path.is_file():
             source_path = original_path
@@ -240,12 +384,7 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         output_path = variants_dir / variant.filename
 
     if not source_path.is_file():
-        variant.status = VariantStatus.FAILED
-        variant.error_message = "Source file not found"
-        try:
-            await db.commit()
-        except SQLAlchemyError:
-            logger.warning("Variant %s deleted (source not found path)", variant.id)
+        await _mark_failed(variant, source, "Source file not found", db)
         return
 
     # Mark as processing
@@ -273,13 +412,7 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                 max_height=profile.max_height,
             )
             if not ok:
-                variant.status = VariantStatus.FAILED
-                variant.error_message = "Image conversion failed"
-                variant.progress = 0.0
-                try:
-                    await db.commit()
-                except SQLAlchemyError:
-                    logger.warning("Variant %s deleted (image conversion failed path)", variant.id)
+                await _mark_failed(variant, source, "Image conversion failed", db)
                 return
 
             file_size = output_path.stat().st_size
@@ -311,14 +444,7 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 
             return
         except Exception as e:
-            variant.status = VariantStatus.FAILED
-            variant.error_message = str(e)[:500]
-            variant.progress = 0.0
-            try:
-                await db.commit()
-            except SQLAlchemyError:
-                logger.warning("Variant %s deleted (image error path)", variant.id)
-                return
+            await _mark_failed(variant, source, str(e)[:500], db)
             logger.exception("Image variant error for %s", variant.filename)
             return
 
@@ -378,15 +504,8 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                 logger.info("Transcode cancelled for %s (profile updated)", variant.filename)
                 return
             error_text = stderr_data.decode("utf-8", errors="replace")[-500:]
-            variant.status = VariantStatus.FAILED
-            variant.error_message = f"ffmpeg exit code {proc.returncode}: {error_text}"
-            variant.progress = 0.0
-            try:
-                await db.commit()
-            except SQLAlchemyError:
-                logger.warning("Variant %s deleted before failure could be recorded", variant.id)
-            else:
-                logger.error("Transcode failed for %s: exit %d", variant.filename, proc.returncode)
+            msg = f"ffmpeg exit code {proc.returncode}: {error_text}"
+            await _mark_failed(variant, source, msg, db)
             return
 
         # Success
@@ -419,14 +538,7 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
 
     except Exception as e:
         _active_process = None
-        variant.status = VariantStatus.FAILED
-        variant.error_message = str(e)[:500]
-        variant.progress = 0.0
-        try:
-            await db.commit()
-        except SQLAlchemyError:
-            logger.warning("Variant %s deleted during transcode (error path)", variant.id)
-            return
+        await _mark_failed(variant, source, str(e)[:500], db)
         logger.exception("Transcode error for %s", variant.filename)
 
 

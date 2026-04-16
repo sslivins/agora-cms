@@ -165,6 +165,7 @@ class FetchAssetMessage(BaseMessage):
     download_url: str
     checksum: str
     size_bytes: int
+    asset_type: Optional[str] = None  # video, image, saved_stream — helps device route to correct dir
 
 
 class DeleteAssetMessage(BaseMessage):

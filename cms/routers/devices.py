@@ -115,6 +115,21 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
+    # Build URL→display name map for resolving URL-based asset names
+    from shared.models.asset import Asset as AssetModel
+    url_assets_q = await db.execute(
+        select(AssetModel.url, AssetModel.filename).where(AssetModel.url.isnot(None))
+    )
+    _url_display = {}
+    for url, fname in url_assets_q.all():
+        _url_display.setdefault(url, fname)
+
+    def _resolve_asset_name(device_id: str) -> str | None:
+        if device_id not in live_states:
+            return None
+        raw = live_states[device_id]["asset"]
+        return _url_display.get(raw, raw) if raw else raw
+
     from cms.services.version_checker import is_update_available
     return [
         DeviceOut(
@@ -123,7 +138,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             is_online=device_manager.is_connected(d.id),
             is_upgrading=d.id in _upgrading,
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
-            playback_asset=live_states[d.id]["asset"] if d.id in live_states else None,
+            playback_asset=_resolve_asset_name(d.id),
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
             display_connected=live_states[d.id]["display_connected"] if d.id in live_states else None,
             cpu_temp_c=live_states[d.id]["cpu_temp_c"] if d.id in live_states else None,
@@ -156,6 +171,17 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
+    # Resolve URL-based asset names
+    raw_asset = live_states[device.id]["asset"] if device.id in live_states else None
+    if raw_asset:
+        from shared.models.asset import Asset as AssetModel
+        url_q = await db.execute(
+            select(AssetModel.filename).where(AssetModel.url == raw_asset).limit(1)
+        )
+        resolved = url_q.scalar_one_or_none()
+        if resolved:
+            raw_asset = resolved
+
     from cms.services.version_checker import is_update_available
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
@@ -163,7 +189,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         is_online=device_manager.is_connected(device.id),
         is_upgrading=device.id in _upgrading,
         playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
-        playback_asset=live_states[device.id]["asset"] if device.id in live_states else None,
+        playback_asset=raw_asset,
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
         display_connected=live_states[device.id]["display_connected"] if device.id in live_states else None,
         cpu_temp_c=live_states[device.id]["cpu_temp_c"] if device.id in live_states else None,

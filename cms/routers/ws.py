@@ -76,7 +76,10 @@ async def _resolve_asset_for_device(
     """
     storage = get_storage()
 
-    if asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE) and device.profile_id:
+    # Saved streams behave like videos for download purposes
+    is_file_asset = asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE, AssetType.SAVED_STREAM)
+
+    if is_file_asset and device.profile_id:
         result = await db.execute(
             select(AssetVariant).where(
                 AssetVariant.source_asset_id == asset.id,
@@ -95,6 +98,7 @@ async def _resolve_asset_for_device(
                     download_url=download_url,
                     checksum=variant.checksum,
                     size_bytes=variant.size_bytes,
+                    asset_type=asset.asset_type.value,
                 )
             # Variant exists but not ready — skip for now
             return None
@@ -107,6 +111,7 @@ async def _resolve_asset_for_device(
         download_url=download_url,
         checksum=asset.checksum,
         size_bytes=asset.size_bytes,
+        asset_type=asset.asset_type.value,
     )
 
 
@@ -408,17 +413,17 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 )
                 sched = sched_result.scalar_one_or_none()
 
-                # For webpage assets the device sends the raw URL as
+                # For webpage/stream assets the device sends the raw URL as
                 # ``asset``; prefer the human-readable display name
                 # stored in the DB (original_filename / filename).
                 display_name = asset_name
                 if sched and sched.asset:
-                    if sched.asset.asset_type == AssetType.WEBPAGE:
-                        display_name = (
-                            sched.asset.original_filename
-                            or sched.asset.filename
-                            or asset_name
-                        )
+                    display_name = (
+                        sched.asset.display_name
+                        or sched.asset.original_filename
+                        or sched.asset.filename
+                        or asset_name
+                    )
 
                 device_name = device.name or device_id
 
@@ -458,12 +463,12 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 )
                 ended_sched = ended_sched_result.scalar_one_or_none()
                 if ended_sched and ended_sched.asset:
-                    if ended_sched.asset.asset_type == AssetType.WEBPAGE:
-                        ended_display_name = (
-                            ended_sched.asset.original_filename
-                            or ended_sched.asset.filename
-                            or asset_name
-                        )
+                    ended_display_name = (
+                        ended_sched.asset.display_name
+                        or ended_sched.asset.original_filename
+                        or ended_sched.asset.filename
+                        or asset_name
+                    )
 
                 clear_now_playing(device_id)
 

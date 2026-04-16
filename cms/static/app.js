@@ -102,6 +102,14 @@ function showToast(message, isError = false) {
     setTimeout(() => el.remove(), 3000);
 }
 
+function extractErrorMsg(err, fallback) {
+    if (!err) return fallback || "Unknown error";
+    const d = err.detail;
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map(e => e.msg || e.message || JSON.stringify(e)).join('; ');
+    return fallback || JSON.stringify(err);
+}
+
 // ── Formatters (run on page load) ──
 function humanStorage(mb) {
     if (mb >= 1024) return (mb / 1024).toFixed(1) + " GB";
@@ -241,6 +249,48 @@ async function renameDevice(deviceId, newName) {
     else showToast("Rename failed", true);
 }
 
+function editDeviceName(el) {
+    const deviceId = el.dataset.deviceId;
+    const fallback = el.dataset.fallback;
+    const currentName = el.textContent.trim();
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName === fallback ? '' : currentName;
+    input.placeholder = fallback;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; width:100%; max-width:220px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newName = input.value.trim();
+        if (newName !== currentName && (newName || currentName !== fallback)) {
+            const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { name: newName });
+            if (resp && resp.ok) {
+                el.textContent = newName || fallback;
+                showToast("Device renamed");
+            } else {
+                el.textContent = currentName;
+                showToast("Rename failed", true);
+            }
+        } else {
+            el.textContent = currentName;
+        }
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); el.textContent = currentName; parent.replaceChild(el, input); }
+    });
+    input.addEventListener('click', e => e.stopPropagation());
+}
+
 async function assignGroup(deviceId, groupId) {
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { group_id: groupId || null });
     if (resp && resp.ok) showToast("Group updated");
@@ -248,12 +298,6 @@ async function assignGroup(deviceId, groupId) {
 }
 
 async function setDefaultAsset(deviceId, assetId, selectEl) {
-    if (isDevicePlaying(deviceId)) {
-        if (!await showConfirm("This device is currently playing.\n\nChanging the default asset will interrupt playback. Continue?")) {
-            if (selectEl) selectEl.value = selectEl.dataset.prev || "";
-            return;
-        }
-    }
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Default asset updated");
     else showToast("Update failed", true);
@@ -281,6 +325,52 @@ async function setGroupDefaultAsset(groupId, assetId) {
     const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, { default_asset_id: assetId || null });
     if (resp && resp.ok) showToast("Group default asset updated");
     else showToast("Update failed", true);
+}
+
+function editGroupField(el) {
+    const groupId = el.dataset.groupId;
+    const field = el.dataset.field;
+    const placeholder = el.dataset.placeholder || '';
+    const currentText = el.textContent.trim();
+    const isPlaceholder = placeholder && currentText === placeholder;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = isPlaceholder ? '' : currentText;
+    input.placeholder = placeholder || field;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; display:inline-block; width:auto; min-width:120px; max-width:300px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newVal = input.value.trim();
+        if (newVal !== currentText && (newVal || !isPlaceholder)) {
+            const body = {};
+            body[field] = newVal || null;
+            const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, body);
+            if (resp && resp.ok) {
+                el.textContent = newVal || placeholder || '';
+                showToast("Group updated");
+            } else {
+                el.textContent = currentText;
+                showToast("Update failed", true);
+            }
+        } else {
+            el.textContent = currentText;
+        }
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); el.textContent = currentText; parent.replaceChild(el, input); }
+    });
+    input.addEventListener('click', e => e.stopPropagation());
 }
 
 async function adoptDevice(deviceId, deviceName) {
@@ -612,6 +702,61 @@ function previewVariant(variantId, filename, assetType, profileName) {
     document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", esc); } });
 }
 
+async function editAssetName(el) {
+    const assetId = el.dataset.assetId;
+    const currentName = el.textContent.trim();
+
+    // Replace span with an input
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; width:100%; max-width:300px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newName = input.value.trim();
+        if (newName && newName !== currentName) {
+            try {
+                const resp = await fetch(`/api/assets/${assetId}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({display_name: newName}),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    showToast(extractErrorMsg(err) || 'Rename failed', true);
+                    revert();
+                    return;
+                }
+                el.textContent = newName;
+                // Update tooltip too
+                const tooltip = parent.querySelector('.tooltip');
+                if (tooltip) tooltip.textContent = newName;
+            } catch (e) {
+                showToast('Rename failed: ' + e.message, true);
+                revert();
+                return;
+            }
+        }
+        parent.replaceChild(el, input);
+    }
+
+    function revert() {
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); revert(); }
+    });
+}
+
 async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
@@ -619,6 +764,22 @@ async function deleteAsset(assetId, filename) {
     else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Delete failed", true);
+    }
+}
+
+async function recaptureStream(assetId, displayName) {
+    if (!await showConfirm(
+        "Re-capture \"" + (displayName || "this stream") + "\"?\n\n" +
+        "This will re-download the stream and redo all transcodes. " +
+        "The existing file and all variants will be overwritten."
+    )) return;
+    const resp = await apiCall("POST", `/api/assets/${assetId}/recapture`);
+    if (resp && resp.ok) {
+        showToast("Re-capture started — variants will be re-transcoded.");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -795,6 +956,226 @@ function removeWebpageGroup(badge) {
     const gid = badge.dataset.groupId;
     badge.remove();
     const popup = document.getElementById("webpage-group-popup");
+    if (popup && gid) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "";
+        _syncPlusButton(popup);
+    }
+}
+
+// ── Stream asset functions ──
+
+// State from the most recent probe
+let _lastProbe = null;
+
+function _formatDuration(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function _formatBitrate(kbps) {
+    if (kbps >= 1000) return (kbps / 1000).toFixed(1) + ' Mbps';
+    return kbps + ' kbps';
+}
+
+async function probeStreamUrl(url) {
+    const card = document.getElementById('stream-info-card');
+    const content = document.getElementById('stream-info-content');
+    _lastProbe = null;
+
+    if (!url || !url.trim()) {
+        card.style.display = 'none';
+        onSaveLocallyChanged();
+        return;
+    }
+
+    content.innerHTML = '<span style="color:var(--text-muted)">⏳ Inspecting stream…</span>';
+    card.style.display = 'block';
+
+    try {
+        const resp = await fetch('/api/streams/probe?url=' + encodeURIComponent(url.trim()));
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            content.innerHTML = '<span style="color:var(--danger)">⚠ ' + (err.detail || 'Failed to probe stream') + '</span>';
+            return;
+        }
+        const info = await resp.json();
+        _lastProbe = info;
+
+        let html = '<div style="display:flex; gap:1.5rem; flex-wrap:wrap; align-items:flex-start;">';
+
+        // Stream type indicator
+        const isLive = info.is_live;
+        const typeLabel = isLive ? '🔴 Live Stream' : (isLive === false ? '📼 VOD' : '❓ Unknown');
+        html += '<div><strong>' + typeLabel + '</strong></div>';
+
+        // Info columns
+        html += '<div style="display:grid; grid-template-columns:auto auto; gap:0.15rem 0.75rem; font-size:0.82rem;">';
+
+        if (info.type)
+            html += '<span style="color:var(--text-muted)">Format:</span><span>' + info.type.toUpperCase() + '</span>';
+        if (info.resolution)
+            html += '<span style="color:var(--text-muted)">Resolution:</span><span>' + info.resolution + '</span>';
+        if (info.codecs)
+            html += '<span style="color:var(--text-muted)">Codec:</span><span>' + info.codecs + '</span>';
+        else if (info.video_codec)
+            html += '<span style="color:var(--text-muted)">Codec:</span><span>' + info.video_codec + (info.audio_codec ? ' + ' + info.audio_codec : '') + '</span>';
+        if (info.frame_rate)
+            html += '<span style="color:var(--text-muted)">Frame rate:</span><span>' + info.frame_rate + ' fps</span>';
+        if (info.duration_seconds)
+            html += '<span style="color:var(--text-muted)">Duration:</span><span>' + _formatDuration(info.duration_seconds) + '</span>';
+
+        html += '</div>';
+
+        // Variants list
+        if (info.variants && info.variants.length > 1) {
+            html += '<div style="font-size:0.82rem;">';
+            html += '<span style="color:var(--text-muted)">Variants (' + info.variants.length + '):</span><br>';
+            info.variants.sort((a, b) => (b.bandwidth_kbps || 0) - (a.bandwidth_kbps || 0));
+            for (const v of info.variants) {
+                const parts = [];
+                if (v.resolution) parts.push(v.resolution);
+                if (v.bandwidth_kbps) parts.push(_formatBitrate(v.bandwidth_kbps));
+                html += '<span style="margin-left:0.5rem;">' + parts.join(' · ') + '</span><br>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+        content.innerHTML = html;
+
+    } catch (e) {
+        content.innerHTML = '<span style="color:var(--danger)">⚠ ' + e.message + '</span>';
+    }
+
+    onSaveLocallyChanged();
+}
+
+function onSaveLocallyChanged() {
+    const saveLocally = document.getElementById('stream-save-locally').checked;
+    const durGroup = document.getElementById('stream-duration-group');
+    const durSelect = document.getElementById('stream-capture-duration');
+    const customInput = document.getElementById('stream-capture-custom');
+
+    // Show duration field when saving a live stream
+    const isLive = _lastProbe && _lastProbe.is_live;
+    if (saveLocally && isLive) {
+        durGroup.style.display = 'block';
+        durSelect.required = true;
+    } else {
+        durGroup.style.display = 'none';
+        durSelect.required = false;
+        durSelect.value = '';
+        customInput.style.display = 'none';
+    }
+}
+
+// Handle custom duration dropdown
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('stream-capture-duration');
+    const custom = document.getElementById('stream-capture-custom');
+    if (sel) {
+        sel.addEventListener('change', () => {
+            custom.style.display = sel.value === 'custom' ? 'inline-block' : 'none';
+            if (sel.value !== 'custom') custom.value = '';
+        });
+    }
+});
+
+function _getCaptureDuration() {
+    const sel = document.getElementById('stream-capture-duration');
+    if (!sel || !sel.value) return null;
+    if (sel.value === 'custom') {
+        const v = parseInt(document.getElementById('stream-capture-custom').value, 10);
+        return isNaN(v) ? null : v;
+    }
+    return parseInt(sel.value, 10);
+}
+
+async function addStreamAsset(form) {
+    const urlInput = document.getElementById("stream-url");
+    const nameInput = document.getElementById("stream-name");
+    const saveLocallyEl = document.getElementById("stream-save-locally");
+    const statusEl = document.getElementById("stream-status");
+    const submitBtn = document.getElementById("stream-submit");
+    const url = urlInput.value.trim();
+    if (!url) return;
+
+    const badges = document.querySelectorAll("#stream-groups-badges .badge[data-group-id]");
+    const groupIds = Array.from(badges).map(b => b.dataset.groupId);
+
+    // Build payload
+    const payload = {
+        url: url,
+        name: nameInput.value.trim(),
+        save_locally: saveLocallyEl.checked,
+        group_ids: groupIds,
+    };
+
+    // Add capture_duration if saving a live stream
+    if (saveLocallyEl.checked && _lastProbe && _lastProbe.is_live) {
+        const dur = _getCaptureDuration();
+        if (!dur) {
+            statusEl.textContent = "✗ Please select a capture duration for this live stream";
+            statusEl.className = "form-status text-danger";
+            return;
+        }
+        payload.capture_duration = dur;
+    }
+
+    submitBtn.disabled = true;
+    statusEl.textContent = "Adding stream...";
+    statusEl.className = "form-status";
+
+    try {
+        const resp = await fetch("/api/assets/stream", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(extractErrorMsg(err));
+        }
+        statusEl.textContent = "✓ Stream added successfully";
+        statusEl.className = "form-status text-success";
+        urlInput.value = "";
+        nameInput.value = "";
+        document.getElementById('stream-info-card').style.display = 'none';
+        _lastProbe = null;
+        setTimeout(() => location.reload(), 800);
+    } catch (e) {
+        statusEl.textContent = "✗ " + e.message;
+        statusEl.className = "form-status text-danger";
+        submitBtn.disabled = false;
+    }
+}
+
+function pickStreamGroup(gid, name) {
+    const container = document.getElementById("stream-groups-badges");
+    if (!container || container.querySelector(`.badge[data-group-id="${gid}"]`)) return;
+    const plusBtn = container.querySelector(".group-picker-wrap");
+    const badge = document.createElement("span");
+    badge.className = "badge badge-processing";
+    badge.dataset.groupId = gid;
+    badge.innerHTML = `${name} <button class="btn-x" type="button" onclick="removeStreamGroup(this.parentElement)">&times;</button>`;
+    container.insertBefore(badge, plusBtn);
+    const popup = document.getElementById("stream-group-popup");
+    if (popup) {
+        const btn = popup.querySelector(`[data-group-id="${gid}"]`);
+        if (btn) btn.style.display = "none";
+        _syncPlusButton(popup);
+    }
+    closeAllGroupPopups();
+}
+
+function removeStreamGroup(badge) {
+    const gid = badge.dataset.groupId;
+    badge.remove();
+    const popup = document.getElementById("stream-group-popup");
     if (popup && gid) {
         const btn = popup.querySelector(`[data-group-id="${gid}"]`);
         if (btn) btn.style.display = "";
@@ -1059,7 +1440,7 @@ async function createSchedule(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
     return false;
 }
@@ -1096,7 +1477,7 @@ async function createUser(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1184,7 +1565,7 @@ async function deleteUser(userId, email) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1195,7 +1576,7 @@ async function toggleUserActive(userId, active) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1213,7 +1594,7 @@ async function createRole(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1245,7 +1626,7 @@ async function updateRole(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1257,6 +1638,6 @@ async function deleteRole(roleId, roleName) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }

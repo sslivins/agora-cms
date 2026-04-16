@@ -15,6 +15,8 @@ class AssetType(str, PyEnum):
     VIDEO = "video"
     IMAGE = "image"
     WEBPAGE = "webpage"
+    STREAM = "stream"          # live stream — played directly via URL
+    SAVED_STREAM = "saved_stream"  # captured stream — downloaded & transcoded for offline playback
 
 
 class VariantStatus(str, PyEnum):
@@ -30,6 +32,7 @@ class Asset(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     filename: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)  # set when converted (e.g. HEIC→JPG)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)  # user-editable friendly name
     asset_type: Mapped[AssetType] = mapped_column(Enum(AssetType), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     checksum: Mapped[str] = mapped_column(String(64), default="")  # SHA-256
@@ -56,8 +59,11 @@ class Asset(Base):
     frame_rate: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "30" or "29.97"
     color_space: Mapped[str | None] = mapped_column(String(64), nullable=True)  # e.g. "bt709", "bt2020"
 
-    # URL for webpage assets (only populated when asset_type == WEBPAGE)
+    # URL for webpage/stream assets (populated when asset_type is WEBPAGE, STREAM, or SAVED_STREAM)
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+    # Max capture duration in seconds (for SAVED_STREAM of live sources)
+    capture_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
     # (Schedule is a CMS-only model, not available in the worker package)
@@ -97,6 +103,7 @@ class AssetVariant(Base):
     )
     progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0.0 to 100.0
     error_message: Mapped[str] = mapped_column(Text, default="")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
