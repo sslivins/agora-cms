@@ -19,6 +19,7 @@ import sys
 
 from worker.config import WorkerSettings
 from worker.transcoder import process_pending, recover_interrupted
+from shared.models import AssetVariant, VariantStatus
 
 from shared.config import SharedSettings
 from shared.database import init_db, get_session_factory, dispose_db
@@ -199,9 +200,20 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     count = await process_pending(session_factory, asset_dir)
     logger.info("Queue mode: processed %d variant(s), exiting", count)
 
-    # Drain the Azure Storage Queue so KEDA doesn't re-trigger for
-    # messages that have already been acted on.
-    await _drain_queue(settings)
+    # Only drain the queue when no PENDING variants remain.  If we
+    # deferred work (e.g. stream sibling-check), leave the messages so
+    # KEDA keeps firing workers that can pick up the work later.
+    async with session_factory() as db:
+        from sqlalchemy import select as sa_select
+        remaining = await db.execute(
+            sa_select(AssetVariant.id)
+            .where(AssetVariant.status == VariantStatus.PENDING)
+            .limit(1)
+        )
+        if remaining.scalar_one_or_none() is None:
+            await _drain_queue(settings)
+        else:
+            logger.info("PENDING variants remain — leaving queue messages for KEDA")
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
