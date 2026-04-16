@@ -112,6 +112,10 @@ def e2e_server(e2e_port, tmp_path_factory):
         col = Notification.__table__.columns["details"]
         col.type = SA_JSON()
 
+        from cms.models.device_event import DeviceEvent
+        col = DeviceEvent.__table__.columns["details"]
+        col.type = SA_JSON()
+
     # Clear cached settings so they pick up the new env vars
     from cms.auth import get_settings
     get_settings.cache_clear()
