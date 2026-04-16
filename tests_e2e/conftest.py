@@ -138,7 +138,7 @@ def e2e_server(e2e_port, tmp_path_factory):
         app,
         host="127.0.0.1",
         port=e2e_port,
-        log_level="warning",
+        log_level="info" if os.environ.get("CI") else "warning",
     )
     server = uvicorn.Server(config)
 
@@ -162,29 +162,50 @@ def e2e_server(e2e_port, tmp_path_factory):
     # blocked by the setup wizard middleware.
     # Walk through the setup wizard via HTTP to set the flag properly,
     # avoiding async event-loop cross-thread issues with direct DB access.
-    import httpx
+    # Retry the whole sequence if the server drops the connection (CI flake).
     base = f"http://127.0.0.1:{e2e_port}"
-    with httpx.Client(base_url=base, follow_redirects=False) as c:
-        # Login with default admin credentials
-        c.post("/login", data={
-            "username": os.environ.get("AGORA_CMS_ADMIN_USERNAME", "admin"),
-            "password": os.environ["AGORA_CMS_ADMIN_PASSWORD"],
-        })
-        # Step 1: account update (submit with defaults)
-        c.post("/setup/account", data={
-            "display_name": "Admin",
-            "email": "admin@localhost",
-            "password": "",
-            "password_confirm": "",
-        })
-        # Step 2: skip SMTP (empty form)
-        c.post("/setup/smtp", data={})
-        # Step 3: timezone
-        c.post("/setup/timezone", data={"timezone": "UTC"})
-        # Step 4: MCP
-        c.post("/setup/mcp", json={"enabled": False})
-        # Finish: mark setup as complete
-        c.post("/setup/complete")
+
+    def _complete_setup_wizard():
+        with httpx.Client(base_url=base, follow_redirects=False, timeout=10.0) as c:
+            c.post("/login", data={
+                "username": os.environ.get("AGORA_CMS_ADMIN_USERNAME", "admin"),
+                "password": os.environ["AGORA_CMS_ADMIN_PASSWORD"],
+            })
+            c.post("/setup/account", data={
+                "display_name": "Admin",
+                "email": "admin@localhost",
+                "password": "",
+                "password_confirm": "",
+            })
+            c.post("/setup/smtp", data={})
+            c.post("/setup/timezone", data={"timezone": "UTC"})
+            c.post("/setup/mcp", json={"enabled": False})
+            c.post("/setup/complete")
+
+    last_exc = None
+    for attempt in range(3):
+        try:
+            _complete_setup_wizard()
+            break
+        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError) as exc:
+            last_exc = exc
+            time.sleep(2)
+    else:
+        raise RuntimeError(
+            f"Setup wizard failed after 3 attempts: {last_exc}"
+        ) from last_exc
+
+    # Post-setup health check — confirm server is still responsive
+    for _ in range(50):
+        try:
+            r = httpx.get(f"{base}/healthz", timeout=2.0)
+            if r.status_code == 200:
+                break
+        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout):
+            pass
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Server not responding after setup wizard completed")
 
     yield server
 
