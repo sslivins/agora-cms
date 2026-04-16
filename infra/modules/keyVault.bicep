@@ -26,8 +26,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
+param deployRoleAssignments bool = true
+
 // Grant the admin principal "Key Vault Secrets Officer" role
-resource adminSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource adminSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments) {
   scope: keyVault
   name: guid(keyVault.id, adminPrincipalId, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
   properties: {

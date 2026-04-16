@@ -57,6 +57,9 @@ param workerCpu string = '4.0'
 @description('Worker container memory (must be 2× CPU, e.g. 4.0→8Gi)')
 param workerMemory string = '8Gi'
 
+@description('Deploy RBAC role assignments (requires Owner/UAA). Set false for CD pipelines with Contributor-only access.')
+param deployRoleAssignments bool = true
+
 @description('CMS container CPU cores (Consumption tier: 0.25–2.0 in 0.25 steps)')
 @allowed(['0.25', '0.5', '0.75', '1.0', '1.25', '1.5', '1.75', '2.0'])
 param cmsCpu string = '1.0'
@@ -134,6 +137,7 @@ module keyVault 'modules/keyVault.bicep' = {
     location: location
     keyVaultName: keyVaultName
     adminPrincipalId: adminPrincipalId
+    deployRoleAssignments: deployRoleAssignments
     tags: tags
   }
 }
@@ -201,7 +205,7 @@ resource existingKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 }
 
 // CMS: Key Vault Secrets Officer (read + write service key)
-resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments) {
   name: guid(existingKeyVault.id, cmsAppName, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
   scope: existingKeyVault
   properties: {
@@ -212,7 +216,7 @@ resource cmsKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 }
 
 // MCP: Key Vault Secrets User (read-only service key)
-resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments) {
   name: guid(existingKeyVault.id, mcpAppName, '4633458b-17de-408a-b874-0445c86b69e6')
   scope: existingKeyVault
   properties: {

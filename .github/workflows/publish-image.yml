@@ -137,6 +137,7 @@ jobs:
               cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
               adminPrincipalId='224d9903-ad74-4629-982b-1db94580d901' \
+              deployRoleAssignments=false \
               cmsImage='${{ env.ACR_REGISTRY }}/agora-cms:${{ needs.publish.outputs.version }}' \
               mcpImage='${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}' \
               workerImage='${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}'
