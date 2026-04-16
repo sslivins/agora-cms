@@ -76,7 +76,12 @@ async def _resolve_asset_for_device(
     """
     storage = get_storage()
 
-    if asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE) and device.profile_id:
+    # Saved streams behave like videos for download purposes
+    is_file_asset = asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE) or (
+        asset.asset_type == AssetType.STREAM and asset.save_locally
+    )
+
+    if is_file_asset and device.profile_id:
         result = await db.execute(
             select(AssetVariant).where(
                 AssetVariant.source_asset_id == asset.id,
