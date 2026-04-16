@@ -106,7 +106,7 @@ resource transcodeStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01
 // ── Managed Certificates for custom domains ──
 resource cmsManagedCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' = if (!empty(cmsCustomDomain)) {
   parent: containerAppsEnv
-  name: 'cert-cms-custom'
+  name: 'mc-cms-custom'
   location: location
   properties: {
     subjectName: cmsCustomDomain
@@ -116,7 +116,7 @@ resource cmsManagedCert 'Microsoft.App/managedEnvironments/managedCertificates@2
 
 resource mcpManagedCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' = if (!empty(mcpCustomDomain)) {
   parent: containerAppsEnv
-  name: 'cert-mcp-custom'
+  name: 'mc-mcp-custom'
   location: location
   properties: {
     subjectName: mcpCustomDomain

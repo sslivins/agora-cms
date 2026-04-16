@@ -20,10 +20,10 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U agora_test"
+          --health-cmd "pg_isready -U agora_test -d agora_test"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
     env:
       AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
     steps:
@@ -80,10 +80,10 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U agora_test"
+          --health-cmd "pg_isready -U agora_test -d agora_e2e"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
     env:
       AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_e2e
     steps:
@@ -121,6 +121,19 @@ jobs:
       - name: Install Playwright system deps only
         if: steps.pw-cache.outputs.cache-hit == 'true'
         run: python -m playwright install-deps chromium
+
+      - name: Wait for PostgreSQL database
+        run: |
+          for i in $(seq 1 30); do
+            if PGPASSWORD=agora_test psql -h localhost -U agora_test -d agora_e2e -c 'SELECT 1' >/dev/null 2>&1; then
+              echo "✅ Database agora_e2e ready (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting for database... (attempt $i)"
+            sleep 2
+          done
+          echo "❌ Database not ready after 60s"
+          exit 1
 
       - name: Run E2E tests
         run: python -m pytest tests_e2e/ --tb=short -q
