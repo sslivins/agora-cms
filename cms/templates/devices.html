@@ -48,11 +48,11 @@
         <select class="inline-edit" onclick="event.stopPropagation()" onfocus="this.dataset.prev = this.value" onchange="setDefaultAsset('{{ d.id }}', this.value, this)">
             <option value="">None (use group)</option>
             {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
-            <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
+            <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}>{{ a.display_name or a.original_filename or a.filename }}</option>
             {% endfor %}
         </select>
         {% else %}
-        {{ d.default_asset.filename if d.default_asset else '—' }}
+        {{ (d.default_asset.display_name or d.default_asset.original_filename or d.default_asset.filename) if d.default_asset else '—' }}
         {% endif %}
     </td>
     <td>
@@ -334,7 +334,7 @@
                 <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
                     <option value="">No default asset</option>
                     {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
-                    <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}>{{ a.filename }}</option>
+                    <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}>{{ a.display_name or a.original_filename or a.filename }}</option>
                     {% endfor %}
                 </select>
                 {% if g.schedule_count %}
@@ -343,7 +343,7 @@
                 <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')"><span class="has-tooltip">Delete<span class="tooltip">Delete this group — devices will be ungrouped</span></span></button>
                 {% endif %}
                 {% else %}
-                <span class="text-muted">{{ (assets | selectattr('id', 'equalto', g.default_asset_id) | first).filename if g.default_asset_id else 'No default asset' }}</span>
+                <span class="text-muted">{% if g.default_asset_id %}{% set da = (assets | selectattr('id', 'equalto', g.default_asset_id) | first) %}{{ da.display_name or da.original_filename or da.filename }}{% else %}No default asset{% endif %}</span>
                 {% endif %}
             </span>
         </div>
