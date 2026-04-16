@@ -292,6 +292,12 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
             while chunk := f.read(1024 * 1024):
                 sha.update(chunk)
 
+        # Formalize: store display name in original_filename, set filename
+        # to the actual capture file so delete/retranscode/storage all work.
+        if asset.filename != capture_filename:
+            asset.original_filename = asset.filename
+            asset.filename = capture_filename
+
         # Update the source asset with captured file metadata
         asset.size_bytes = file_size
         asset.checksum = sha.hexdigest()
@@ -345,19 +351,17 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     source = variant.source_asset
     profile = variant.profile
 
-    # SAVED_STREAM assets: capture the stream first
+    # SAVED_STREAM assets: capture the stream if not already done
     if source.asset_type == AssetType.SAVED_STREAM:
-        capture_filename = f"{source.id}_capture.mp4"
-        capture_path = asset_dir / capture_filename
-
-        if not capture_path.is_file():
+        source_path = asset_dir / source.filename
+        if not source_path.is_file():
             # First variant for this stream — capture it
             result = await _capture_stream(source, asset_dir, db)
             if result is None:
                 await _mark_failed(variant, source, "Stream capture failed", db)
                 return
-
-        source_path = capture_path
+            await db.refresh(source)  # reload after capture set filename
+            source_path = asset_dir / source.filename
     # Use original source file when available
     elif source.original_filename:
         original_path = asset_dir / "originals" / source.original_filename

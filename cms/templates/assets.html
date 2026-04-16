@@ -216,6 +216,9 @@
                     {% endif %}
                     {% if 'assets:write' in user_perms %}
                     {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
+                    {% if a.asset_type.value == 'saved_stream' and is_owner %}
+                    <button class="btn btn-warning btn-sm" onclick="recaptureStream('{{ a.id }}', '{{ a.original_filename or a.filename }}')">Re-capture</button>
+                    {% endif %}
                     {% if is_owner %}
                     {% if a.schedule_count > 0 %}
                     <span class="has-tooltip" style="pointer-events:auto; display:inline-block">
@@ -235,7 +238,7 @@
                 <td></td>
                 <td colspan="7">
                     <div class="detail-grid">
-                        {% if (a.asset_type.value == 'webpage' or a.asset_type.value == 'stream') and a.url %}
+                        {% if (a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' or a.asset_type.value == 'saved_stream') and a.url %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">URL</span>
                             <span class="detail-value"><a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a></span>

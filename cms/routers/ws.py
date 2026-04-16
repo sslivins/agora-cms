@@ -98,6 +98,7 @@ async def _resolve_asset_for_device(
                     download_url=download_url,
                     checksum=variant.checksum,
                     size_bytes=variant.size_bytes,
+                    asset_type=asset.asset_type.value,
                 )
             # Variant exists but not ready — skip for now
             return None
@@ -110,6 +111,7 @@ async def _resolve_asset_for_device(
         download_url=download_url,
         checksum=asset.checksum,
         size_bytes=asset.size_bytes,
+        asset_type=asset.asset_type.value,
     )
 
 

@@ -624,6 +624,22 @@ async function deleteAsset(assetId, filename) {
     }
 }
 
+async function recaptureStream(assetId, displayName) {
+    if (!await showConfirm(
+        "Re-capture \"" + (displayName || "this stream") + "\"?\n\n" +
+        "This will re-download the stream and redo all transcodes. " +
+        "The existing file and all variants will be overwritten."
+    )) return;
+    const resp = await apiCall("POST", `/api/assets/${assetId}/recapture`);
+    if (resp && resp.ok) {
+        showToast("Re-capture started — variants will be re-transcoded.");
+        location.reload();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(extractErrorMsg(err), true);
+    }
+}
+
 async function uploadAsset(form) {
     const fileInput = document.getElementById("file-input");
     if (!fileInput || !fileInput.files.length) return false;

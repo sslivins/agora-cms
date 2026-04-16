@@ -619,6 +619,67 @@ async def create_stream_asset(
     return asset
 
 
+@router.post("/{asset_id}/recapture")
+async def recapture_stream(
+    asset_id: uuid.UUID,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Re-capture a SAVED_STREAM asset: re-downloads the stream, overwrites
+    the capture file, and resets all variants to PENDING for retranscoding."""
+    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    if asset.asset_type != AssetType.SAVED_STREAM:
+        raise HTTPException(status_code=400, detail="Only saved-stream assets can be re-captured")
+
+    if not asset.url:
+        raise HTTPException(status_code=400, detail="Asset has no stream URL")
+
+    # Delete existing capture file
+    storage = get_storage()
+    capture_path = settings.asset_storage_path / asset.filename
+    if capture_path.is_file():
+        capture_path.unlink()
+    await storage.on_file_deleted(asset.filename)
+
+    # Reset filename to display name so worker re-captures
+    asset.filename = asset.original_filename or f"{asset.id}_capture.mp4"
+    asset.original_filename = None
+    asset.checksum = ""
+    asset.size_bytes = 0
+
+    # Delete variant files and reset to PENDING
+    from cms.services.transcoder import cancel_asset_transcodes
+    cancel_asset_transcodes(asset_id)
+
+    variants_dir = settings.asset_storage_path / "variants"
+    var_result = await db.execute(
+        select(AssetVariant).where(AssetVariant.source_asset_id == asset_id)
+    )
+    for variant in var_result.scalars().all():
+        vpath = variants_dir / variant.filename
+        if vpath.is_file():
+            vpath.unlink()
+        await storage.on_file_deleted(f"variants/{variant.filename}")
+        variant.status = VariantStatus.PENDING
+        variant.progress = 0.0
+        variant.retry_count = 0
+        variant.checksum = ""
+        variant.size_bytes = 0
+
+    await db.commit()
+
+    # Notify worker to pick up the pending variants
+    from cms.services.transcoder import notify_worker
+    await notify_worker(db)
+
+    return {"recaptured": True, "asset_id": str(asset_id)}
+
+
 async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
     """Create pending AssetVariant rows for all device profiles."""
     result = await db.execute(select(DeviceProfile))

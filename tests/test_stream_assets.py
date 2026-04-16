@@ -349,3 +349,69 @@ class TestSavedStreamSchedulerBehavior:
         asset = await _create_stream_asset(db_session)
         assert asset.asset_type == AssetType.STREAM
         assert asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+
+
+# ── Capture formalization & recapture ────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestCaptureFormalization:
+
+    async def test_recapture_rejects_non_saved_stream(self, client, db_session):
+        """Recapture endpoint rejects non-SAVED_STREAM assets."""
+        asset = await _create_stream_asset(db_session)
+        assert asset.asset_type == AssetType.STREAM
+
+        resp = await client.post(f"/api/assets/{asset.id}/recapture")
+        assert resp.status_code == 400
+        assert "saved-stream" in resp.json()["detail"].lower()
+
+    async def test_recapture_resets_variants(self, client, db_session):
+        """Recapture resets all variants to PENDING."""
+        group = await _seed_group_and_device(db_session)
+        asset = await _create_stream_asset(
+            db_session, asset_type=AssetType.SAVED_STREAM,
+            url="https://example.com/recapture-test.m3u8",
+        )
+        # Simulate post-capture state
+        asset.original_filename = "Recapture Test"
+        asset.filename = f"{asset.id}_capture.mp4"
+        asset.checksum = "abc123"
+        asset.size_bytes = 1000
+
+        profile = DeviceProfile(name="Test Prof", video_codec="libx264", audio_codec="aac")
+        db_session.add(profile)
+        await db_session.flush()
+
+        variant = AssetVariant(
+            source_asset_id=asset.id,
+            profile_id=profile.id,
+            filename=f"{uuid.uuid4()}.mp4",
+            status=VariantStatus.READY,
+            checksum="variant_hash",
+            size_bytes=500,
+        )
+        db_session.add(variant)
+        await db_session.commit()
+
+        resp = await client.post(f"/api/assets/{asset.id}/recapture")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["recaptured"] is True
+
+        # Variant should be reset
+        await db_session.refresh(variant)
+        assert variant.status == VariantStatus.PENDING
+        assert variant.progress == 0.0
+        assert variant.retry_count == 0
+
+        # Asset should be reset for re-capture
+        await db_session.refresh(asset)
+        assert asset.checksum == ""
+        assert asset.size_bytes == 0
+
+    async def test_recapture_404_for_missing_asset(self, client, db_session):
+        """Recapture returns 404 for nonexistent asset."""
+        fake_id = uuid.uuid4()
+        resp = await client.post(f"/api/assets/{fake_id}/recapture")
+        assert resp.status_code == 404
