@@ -20,10 +20,10 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U agora_test"
+          --health-cmd "pg_isready -U agora_test -d agora_test"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
     env:
       AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
     steps:
@@ -80,10 +80,10 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U agora_test"
+          --health-cmd "pg_isready -U agora_test -d agora_e2e"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
     env:
       AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_e2e
     steps:
