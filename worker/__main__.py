@@ -177,12 +177,13 @@ async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
     for attempt in range(1, max_retries + 1):
         try:
             async with session_factory() as db:
-                # Check both base table and latest enum value
+                # Check both base table and latest migration columns/enums
                 await db.execute(text("SELECT 1 FROM asset_variants LIMIT 0"))
                 await db.execute(text(
                     "SELECT 1 FROM pg_enum WHERE enumlabel = 'SAVED_STREAM' "
                     "AND enumtypid = 'assettype'::regtype"
                 ))
+                await db.execute(text("SELECT retry_count FROM asset_variants LIMIT 0"))
                 return
         except Exception:
             if attempt == max_retries:

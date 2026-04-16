@@ -300,6 +300,14 @@ async def run_migrations():
             ))
             await conn.execute(text("ALTER TABLE assets DROP COLUMN save_locally"))
 
+    # -- asset_variants.retry_count --
+    async with _shared_db._engine.begin() as conn:
+        has_retry = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "retry_count"))
+        if not has_retry:
+            await conn.execute(text(
+                "ALTER TABLE asset_variants ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

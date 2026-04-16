@@ -99,6 +99,7 @@ class AssetVariant(Base):
     )
     progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0.0 to 100.0
     error_message: Mapped[str] = mapped_column(Text, default="")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
