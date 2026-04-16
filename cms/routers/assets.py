@@ -544,6 +544,19 @@ async def create_stream_asset(
     save_locally = body.get("save_locally", False)
     target_type = AssetType.SAVED_STREAM if save_locally else AssetType.STREAM
 
+    # Capture duration for live streams being saved
+    capture_duration = body.get("capture_duration")
+    if capture_duration is not None:
+        try:
+            capture_duration = int(capture_duration)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="capture_duration must be an integer (seconds)")
+        if capture_duration < 10:
+            raise HTTPException(status_code=400, detail="Capture duration must be at least 10 seconds")
+        max_allowed = 14400  # 4 hours
+        if capture_duration > max_allowed:
+            raise HTTPException(status_code=400, detail=f"Capture duration cannot exceed {max_allowed} seconds (4 hours)")
+
     dup_q = await db.execute(
         select(Asset).where(
             Asset.url == url,
@@ -600,6 +613,7 @@ async def create_stream_asset(
         url=url,
         is_global=make_global,
         uploaded_by_user_id=user.id,
+        capture_duration=capture_duration if target_type == AssetType.SAVED_STREAM else None,
     )
     db.add(asset)
     await db.flush()

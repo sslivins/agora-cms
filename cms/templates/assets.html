@@ -88,9 +88,16 @@
     <form id="stream-form" onsubmit="event.preventDefault(); addStreamAsset(this)">
         <div class="form-group">
             <label for="stream-url">Stream URL</label>
-            <input type="url" id="stream-url" name="url" placeholder="https://example.com/live/stream.m3u8" required class="form-control">
+            <input type="url" id="stream-url" name="url" placeholder="https://example.com/live/stream.m3u8" required class="form-control"
+                   onblur="probeStreamUrl(this.value)">
             <small class="text-muted">Supports HLS (.m3u8), DASH (.mpd), RTMP, RTSP, and HTTP progressive streams</small>
         </div>
+
+        <!-- Stream info card (populated by probe) -->
+        <div id="stream-info-card" style="display:none; margin-top:0.75rem; padding:0.75rem 1rem; border-radius:var(--radius); background:var(--surface-alt); border:1px solid var(--border); font-size:0.85rem;">
+            <div id="stream-info-content"></div>
+        </div>
+
         <div class="form-group" style="margin-top:0.5rem;">
             <label for="stream-name">Display Name <span class="text-muted">(optional)</span></label>
             <input type="text" id="stream-name" name="name" placeholder="Auto-generated from URL if blank" class="form-control">
@@ -98,13 +105,33 @@
         <div class="form-group" style="margin-top:0.5rem;">
             <label style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer; white-space:nowrap;">
                 <span class="toggle-switch">
-                    <input type="checkbox" id="stream-save-locally" name="save_locally">
+                    <input type="checkbox" id="stream-save-locally" name="save_locally" onchange="onSaveLocallyChanged()">
                     <span class="slider"></span>
                 </span>
                 Save locally
                 <span class="text-muted" title="When enabled, the stream is captured and converted to a video file for offline playback on devices. When disabled, streams directly to devices in real time.">ⓘ</span>
             </label>
         </div>
+
+        <!-- Capture duration (shown for live + save locally) -->
+        <div id="stream-duration-group" class="form-group" style="display:none; margin-top:0.5rem;">
+            <label for="stream-capture-duration">Capture Duration</label>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <select id="stream-capture-duration" class="form-control" style="width:auto;">
+                    <option value="">— Select —</option>
+                    <option value="300">5 minutes</option>
+                    <option value="900">15 minutes</option>
+                    <option value="1800">30 minutes</option>
+                    <option value="3600">1 hour</option>
+                    <option value="7200">2 hours</option>
+                    <option value="14400">4 hours</option>
+                    <option value="custom">Custom…</option>
+                </select>
+                <input type="number" id="stream-capture-custom" class="form-control" style="display:none; width:100px;" min="10" max="14400" placeholder="sec">
+            </div>
+            <small class="text-muted">How long to record this live stream before stopping</small>
+        </div>
+
         {% if user_groups | length > 0 %}
         <div style="margin-top:0.75rem;">
             <label>Assign to groups</label>

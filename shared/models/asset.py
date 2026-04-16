@@ -61,6 +61,9 @@ class Asset(Base):
     # URL for webpage/stream assets (populated when asset_type is WEBPAGE, STREAM, or SAVED_STREAM)
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
+    # Max capture duration in seconds (for SAVED_STREAM of live sources)
+    capture_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
     # (Schedule is a CMS-only model, not available in the worker package)
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="asset")

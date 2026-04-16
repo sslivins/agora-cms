@@ -415,3 +415,178 @@ class TestCaptureFormalization:
         fake_id = uuid.uuid4()
         resp = await client.post(f"/api/assets/{fake_id}/recapture")
         assert resp.status_code == 404
+
+
+# ── Stream Probe Tests ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestStreamProbe:
+    """Tests for the stream probe endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, client, db_session):
+        self.client = client
+        self.db = db_session
+
+    async def test_probe_hls_master_live(self, client, monkeypatch):
+        """Probe correctly identifies a live HLS master playlist."""
+        master_m3u8 = (
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2",FRAME-RATE=30\n'
+            "720p.m3u8\n"
+            '#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2",FRAME-RATE=30\n'
+            "360p.m3u8\n"
+        )
+        # Child playlist — live (no EXT-X-ENDLIST)
+        child_m3u8 = (
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:100\n"
+            "#EXTINF:4,\nseg100.ts\n#EXTINF:4,\nseg101.ts\n"
+        )
+
+        import httpx
+
+        class FakeResp:
+            status_code = 200
+            text = ""
+            def raise_for_status(self): pass
+
+        call_count = 0
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def get(self, url, **kw):
+                nonlocal call_count
+                r = FakeResp()
+                r.text = master_m3u8 if call_count == 0 else child_m3u8
+                call_count += 1
+                return r
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+
+        resp = await client.get("/api/streams/probe?url=https://example.com/live/master.m3u8")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_live"] is True
+        assert data["type"] == "hls"
+        assert data["resolution"] == "1280x720"
+        assert data["codecs"] == "H.264 + AAC"
+        assert len(data["variants"]) == 2
+
+    async def test_probe_hls_vod(self, client, monkeypatch):
+        """Probe correctly identifies a VOD HLS playlist with duration."""
+        master_m3u8 = (
+            "#EXTM3U\n"
+            '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"\n'
+            "1080p.m3u8\n"
+        )
+        child_m3u8 = (
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n"
+            "#EXTINF:10.0,\nseg0.ts\n#EXTINF:10.0,\nseg1.ts\n#EXTINF:10.0,\nseg2.ts\n"
+            "#EXTINF:5.5,\nseg3.ts\n#EXT-X-ENDLIST\n"
+        )
+
+        import httpx
+        class FakeResp:
+            status_code = 200; text = ""
+            def raise_for_status(self): pass
+        call_count = 0
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def get(self, url, **kw):
+                nonlocal call_count
+                r = FakeResp()
+                r.text = master_m3u8 if call_count == 0 else child_m3u8
+                call_count += 1
+                return r
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+
+        resp = await client.get("/api/streams/probe?url=https://example.com/vod/master.m3u8")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_live"] is False
+        assert data["duration_seconds"] == 35.5  # 10+10+10+5.5
+        assert len(data["variants"]) == 1
+
+    async def test_probe_rtmp_always_live(self, client, monkeypatch):
+        """RTMP URLs are always reported as live."""
+        import asyncio
+        async def fake_ffprobe(url):
+            return {"resolution": "1920x1080", "video_codec": "H264"}
+        monkeypatch.setattr("cms.routers.stream_probe._ffprobe_url", fake_ffprobe)
+
+        resp = await client.get("/api/streams/probe?url=rtmp://stream.example.com/live/key")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_live"] is True
+        assert data["type"] == "rtmp_rtsp"
+
+    async def test_probe_invalid_url(self, client):
+        """Probe rejects invalid URLs."""
+        resp = await client.get("/api/streams/probe?url=not-a-url")
+        assert resp.status_code == 400
+
+
+# ── Capture Duration Tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestCaptureDuration:
+    """Tests for capture_duration on saved stream assets."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, client, db_session):
+        self.client = client
+        self.db = db_session
+
+    async def test_saved_stream_with_capture_duration(self, client, db_session):
+        """Saved stream accepts capture_duration."""
+        group = await _seed_group_and_device(db_session)
+        resp = await client.post("/api/assets/stream", json={
+            "url": "https://live.example.com/feed.m3u8",
+            "save_locally": True,
+            "capture_duration": 1800,
+            "group_ids": [str(group.id)],
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["capture_duration"] == 1800
+
+    async def test_capture_duration_too_short(self, client, db_session):
+        """Capture duration below 10s is rejected."""
+        group = await _seed_group_and_device(db_session)
+        resp = await client.post("/api/assets/stream", json={
+            "url": "https://live.example.com/short.m3u8",
+            "save_locally": True,
+            "capture_duration": 5,
+            "group_ids": [str(group.id)],
+        })
+        assert resp.status_code == 400
+        assert "at least 10" in resp.json()["detail"]
+
+    async def test_capture_duration_too_long(self, client, db_session):
+        """Capture duration above 4 hours is rejected."""
+        group = await _seed_group_and_device(db_session)
+        resp = await client.post("/api/assets/stream", json={
+            "url": "https://live.example.com/long.m3u8",
+            "save_locally": True,
+            "capture_duration": 99999,
+            "group_ids": [str(group.id)],
+        })
+        assert resp.status_code == 400
+        assert "4 hours" in resp.json()["detail"]
+
+    async def test_live_stream_ignores_capture_duration(self, client, db_session):
+        """Live streams (not saved) ignore capture_duration."""
+        group = await _seed_group_and_device(db_session)
+        resp = await client.post("/api/assets/stream", json={
+            "url": "https://live.example.com/nodur.m3u8",
+            "save_locally": False,
+            "capture_duration": 1800,
+            "group_ids": [str(group.id)],
+        })
+        assert resp.status_code == 201
+        assert resp.json()["capture_duration"] is None

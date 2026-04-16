@@ -308,6 +308,14 @@ async def run_migrations():
                 "ALTER TABLE asset_variants ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
             ))
 
+    # -- assets.capture_duration --
+    async with _shared_db._engine.begin() as conn:
+        has_cap_dur = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_duration"))
+        if not has_cap_dur:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN capture_duration INTEGER"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

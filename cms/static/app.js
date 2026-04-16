@@ -821,6 +821,137 @@ function removeWebpageGroup(badge) {
 }
 
 // ── Stream asset functions ──
+
+// State from the most recent probe
+let _lastProbe = null;
+
+function _formatDuration(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function _formatBitrate(kbps) {
+    if (kbps >= 1000) return (kbps / 1000).toFixed(1) + ' Mbps';
+    return kbps + ' kbps';
+}
+
+async function probeStreamUrl(url) {
+    const card = document.getElementById('stream-info-card');
+    const content = document.getElementById('stream-info-content');
+    _lastProbe = null;
+
+    if (!url || !url.trim()) {
+        card.style.display = 'none';
+        onSaveLocallyChanged();
+        return;
+    }
+
+    content.innerHTML = '<span style="color:var(--text-muted)">⏳ Inspecting stream…</span>';
+    card.style.display = 'block';
+
+    try {
+        const resp = await fetch('/api/streams/probe?url=' + encodeURIComponent(url.trim()));
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            content.innerHTML = '<span style="color:var(--danger)">⚠ ' + (err.detail || 'Failed to probe stream') + '</span>';
+            return;
+        }
+        const info = await resp.json();
+        _lastProbe = info;
+
+        let html = '<div style="display:flex; gap:1.5rem; flex-wrap:wrap; align-items:flex-start;">';
+
+        // Stream type indicator
+        const isLive = info.is_live;
+        const typeLabel = isLive ? '🔴 Live Stream' : (isLive === false ? '📼 VOD' : '❓ Unknown');
+        html += '<div><strong>' + typeLabel + '</strong></div>';
+
+        // Info columns
+        html += '<div style="display:grid; grid-template-columns:auto auto; gap:0.15rem 0.75rem; font-size:0.82rem;">';
+
+        if (info.type)
+            html += '<span style="color:var(--text-muted)">Format:</span><span>' + info.type.toUpperCase() + '</span>';
+        if (info.resolution)
+            html += '<span style="color:var(--text-muted)">Resolution:</span><span>' + info.resolution + '</span>';
+        if (info.codecs)
+            html += '<span style="color:var(--text-muted)">Codec:</span><span>' + info.codecs + '</span>';
+        else if (info.video_codec)
+            html += '<span style="color:var(--text-muted)">Codec:</span><span>' + info.video_codec + (info.audio_codec ? ' + ' + info.audio_codec : '') + '</span>';
+        if (info.frame_rate)
+            html += '<span style="color:var(--text-muted)">Frame rate:</span><span>' + info.frame_rate + ' fps</span>';
+        if (info.duration_seconds)
+            html += '<span style="color:var(--text-muted)">Duration:</span><span>' + _formatDuration(info.duration_seconds) + '</span>';
+
+        html += '</div>';
+
+        // Variants list
+        if (info.variants && info.variants.length > 1) {
+            html += '<div style="font-size:0.82rem;">';
+            html += '<span style="color:var(--text-muted)">Variants (' + info.variants.length + '):</span><br>';
+            info.variants.sort((a, b) => (b.bandwidth_kbps || 0) - (a.bandwidth_kbps || 0));
+            for (const v of info.variants) {
+                const parts = [];
+                if (v.resolution) parts.push(v.resolution);
+                if (v.bandwidth_kbps) parts.push(_formatBitrate(v.bandwidth_kbps));
+                html += '<span style="margin-left:0.5rem;">' + parts.join(' · ') + '</span><br>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+        content.innerHTML = html;
+
+    } catch (e) {
+        content.innerHTML = '<span style="color:var(--danger)">⚠ ' + e.message + '</span>';
+    }
+
+    onSaveLocallyChanged();
+}
+
+function onSaveLocallyChanged() {
+    const saveLocally = document.getElementById('stream-save-locally').checked;
+    const durGroup = document.getElementById('stream-duration-group');
+    const durSelect = document.getElementById('stream-capture-duration');
+    const customInput = document.getElementById('stream-capture-custom');
+
+    // Show duration field when saving a live stream
+    const isLive = _lastProbe && _lastProbe.is_live;
+    if (saveLocally && isLive) {
+        durGroup.style.display = 'block';
+        durSelect.required = true;
+    } else {
+        durGroup.style.display = 'none';
+        durSelect.required = false;
+        durSelect.value = '';
+        customInput.style.display = 'none';
+    }
+}
+
+// Handle custom duration dropdown
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('stream-capture-duration');
+    const custom = document.getElementById('stream-capture-custom');
+    if (sel) {
+        sel.addEventListener('change', () => {
+            custom.style.display = sel.value === 'custom' ? 'inline-block' : 'none';
+            if (sel.value !== 'custom') custom.value = '';
+        });
+    }
+});
+
+function _getCaptureDuration() {
+    const sel = document.getElementById('stream-capture-duration');
+    if (!sel || !sel.value) return null;
+    if (sel.value === 'custom') {
+        const v = parseInt(document.getElementById('stream-capture-custom').value, 10);
+        return isNaN(v) ? null : v;
+    }
+    return parseInt(sel.value, 10);
+}
+
 async function addStreamAsset(form) {
     const urlInput = document.getElementById("stream-url");
     const nameInput = document.getElementById("stream-name");
@@ -833,6 +964,25 @@ async function addStreamAsset(form) {
     const badges = document.querySelectorAll("#stream-groups-badges .badge[data-group-id]");
     const groupIds = Array.from(badges).map(b => b.dataset.groupId);
 
+    // Build payload
+    const payload = {
+        url: url,
+        name: nameInput.value.trim(),
+        save_locally: saveLocallyEl.checked,
+        group_ids: groupIds,
+    };
+
+    // Add capture_duration if saving a live stream
+    if (saveLocallyEl.checked && _lastProbe && _lastProbe.is_live) {
+        const dur = _getCaptureDuration();
+        if (!dur) {
+            statusEl.textContent = "✗ Please select a capture duration for this live stream";
+            statusEl.className = "form-status text-danger";
+            return;
+        }
+        payload.capture_duration = dur;
+    }
+
     submitBtn.disabled = true;
     statusEl.textContent = "Adding stream...";
     statusEl.className = "form-status";
@@ -841,21 +991,18 @@ async function addStreamAsset(form) {
         const resp = await fetch("/api/assets/stream", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                url: url,
-                name: nameInput.value.trim(),
-                save_locally: saveLocallyEl.checked,
-                group_ids: groupIds,
-            }),
+            body: JSON.stringify(payload),
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            throw new Error(err.detail || `HTTP ${resp.status}`);
+            throw new Error(extractErrorMsg(err));
         }
         statusEl.textContent = "✓ Stream added successfully";
         statusEl.className = "form-status text-success";
         urlInput.value = "";
         nameInput.value = "";
+        document.getElementById('stream-info-card').style.display = 'none';
+        _lastProbe = null;
         setTimeout(() => location.reload(), 800);
     } catch (e) {
         statusEl.textContent = "✗ " + e.message;

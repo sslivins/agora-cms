@@ -249,7 +249,8 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
     capture_filename = f"{asset.id}_capture.mp4"
     capture_path = asset_dir / capture_filename
 
-    logger.info("Capturing stream %s → %s (max %ds)", url, capture_filename, STREAM_CAPTURE_MAX_SECONDS)
+    logger.info("Capturing stream %s → %s (max %ds)", url, capture_filename,
+                asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS)
 
     args = [
         "ffmpeg", "-y",
@@ -257,7 +258,7 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-t", str(STREAM_CAPTURE_MAX_SECONDS),
+        "-t", str(asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS),
         "-i", url,
         # Copy codecs (no re-encode during capture — transcoding happens later)
         "-c", "copy",
