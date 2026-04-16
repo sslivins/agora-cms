@@ -140,7 +140,9 @@ jobs:
               deployRoleAssignments=false \
               cmsImage='${{ env.ACR_REGISTRY }}/agora-cms:${{ needs.publish.outputs.version }}' \
               mcpImage='${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}' \
-              workerImage='${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}'
+              workerImage='${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}' \
+              cmsCustomDomain='${{ vars.CMS_CUSTOM_DOMAIN }}' \
+              mcpCustomDomain='${{ vars.MCP_CUSTOM_DOMAIN }}'
 
   verify:
     needs: [publish, deploy]

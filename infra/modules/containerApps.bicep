@@ -51,6 +51,12 @@ param workerMemory string = '8Gi'
 // ── Azure Key Vault (service key exchange) ──
 param keyVaultUri string = ''
 
+// ── Custom domains (optional) ──
+@description('Custom domain for CMS app (e.g., agora.mennlabs.com). Leave empty to skip.')
+param cmsCustomDomain string = ''
+@description('Custom domain for MCP app (e.g., mcp.agora.mennlabs.com). Leave empty to skip.')
+param mcpCustomDomain string = ''
+
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${environmentName}-logs'
@@ -97,6 +103,27 @@ resource transcodeStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01
   }
 }
 
+// ── Managed Certificates for custom domains ──
+resource cmsManagedCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' = if (!empty(cmsCustomDomain)) {
+  parent: containerAppsEnv
+  name: 'cert-cms-custom'
+  location: location
+  properties: {
+    subjectName: cmsCustomDomain
+    domainControlValidation: 'CNAME'
+  }
+}
+
+resource mcpManagedCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' = if (!empty(mcpCustomDomain)) {
+  parent: containerAppsEnv
+  name: 'cert-mcp-custom'
+  location: location
+  properties: {
+    subjectName: mcpCustomDomain
+    domainControlValidation: 'CNAME'
+  }
+}
+
 // ── CMS Container App ──
 resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: cmsAppName
@@ -113,6 +140,13 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8080
         transport: 'auto' // supports both HTTP and WebSocket
         allowInsecure: false
+        customDomains: !empty(cmsCustomDomain) ? [
+          {
+            name: cmsCustomDomain
+            certificateId: cmsManagedCert.id
+            bindingType: 'SniEnabled'
+          }
+        ] : []
       }
       registries: [
         {
@@ -238,6 +272,13 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8000
         transport: 'auto'
         allowInsecure: false
+        customDomains: !empty(mcpCustomDomain) ? [
+          {
+            name: mcpCustomDomain
+            certificateId: mcpManagedCert.id
+            bindingType: 'SniEnabled'
+          }
+        ] : []
       }
       registries: [
         {
