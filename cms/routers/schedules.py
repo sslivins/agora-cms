@@ -379,6 +379,7 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
     # Persist to DB so it survives restarts
     schedule.skipped_until = end_today
     db.add(schedule)
+    await db.commit()
 
     # Log SKIPPED event for each target device
     from cms.models.device import Device
