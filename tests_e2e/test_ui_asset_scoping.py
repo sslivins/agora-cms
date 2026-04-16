@@ -274,7 +274,7 @@ class TestUIAssetVisibility:
             ctx, page = _login_as(browser_instance, base_url, "admin", "testpass")
             page.goto("/assets")
             page.wait_for_selector("table")
-            row = page.locator("tr", has_text="e2e-scope-badge.png")
+            row = page.locator("tr.asset-row", has_text="e2e-scope-badge.png")
             scope_cell = row.locator("td:nth-child(4)")
             assert "E2E-GroupA" in scope_cell.text_content(), "Scope should show group name"
         finally:

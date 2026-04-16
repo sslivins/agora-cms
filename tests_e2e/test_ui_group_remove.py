@@ -84,7 +84,7 @@ class TestGroupRemoveButtons:
         # Find Device C's row within the group and click its Remove button
         group_body = group_panel.locator(".group-body")
         expect(group_body).to_be_visible(timeout=3000)
-        device_row = group_body.locator('[data-device-id="grp-rm-003"]')
+        device_row = group_body.locator('tr[data-device-id="grp-rm-003"]')
         expect(device_row).to_be_visible(timeout=3000)
         device_row.locator("button", has_text="Remove").click()
 
@@ -104,10 +104,10 @@ class TestGroupRemoveButtons:
         expect(group_body).to_be_visible(timeout=3000)
 
         # Device D should still be in the group
-        expect(group_body.locator('[data-device-id="grp-rm-004"]')).to_be_visible(timeout=3000)
+        expect(group_body.locator('tr[data-device-id="grp-rm-004"]')).to_be_visible(timeout=3000)
 
         # Device C should NOT be in the group (removed)
-        expect(group_body.locator('[data-device-id="grp-rm-003"]')).to_have_count(0)
+        expect(group_body.locator('tr[data-device-id="grp-rm-003"]')).to_have_count(0)
 
         # Device C should still exist on the page (ungrouped)
         expect(page.locator('[data-device-id="grp-rm-003"]').first).to_be_visible(timeout=3000)
