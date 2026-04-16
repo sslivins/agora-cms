@@ -38,6 +38,23 @@ _now_playing = _confirmed_playing  # backwards-compat alias for tests
 
 # Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
 _skipped: dict[str, datetime] = {}
+_skipped_loaded: bool = False
+
+
+async def _ensure_skips_loaded(db) -> None:
+    """Load persisted skips from DB on first call after restart."""
+    global _skipped_loaded
+    if _skipped_loaded:
+        return
+    skip_result = await db.execute(
+        select(Schedule.id, Schedule.skipped_until)
+        .where(Schedule.skipped_until.isnot(None))
+    )
+    for sid, until in skip_result.all():
+        _skipped[str(sid)] = until.replace(tzinfo=None) if until.tzinfo else until
+    _skipped_loaded = True
+    if _skipped:
+        logger.info("Loaded %d persisted schedule skips from DB", len(_skipped))
 
 # Track which schedule+device combos we've already logged as MISSED this eval cycle
 # Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
@@ -145,6 +162,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
 
     Returns a list of dicts ready for the dashboard template / JSON API.
     """
+    await _ensure_skips_loaded(db)
     from shared.models.asset import AssetType
 
     local_now = now.astimezone(tz).replace(tzinfo=None)
@@ -727,6 +745,8 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
 async def push_sync_to_device(device_id: str, db) -> None:
     """Build and push a fresh sync to a single connected device."""
+    await _ensure_skips_loaded(db)
+
     if not device_manager.is_connected(device_id):
         return
 
@@ -768,6 +788,8 @@ async def evaluate_schedules() -> None:
     now = datetime.now(timezone.utc)
 
     async with sf() as db:
+        await _ensure_skips_loaded(db)
+
         # Read timezone for schedule evaluation
         tz_result = await db.execute(
             select(CMSSetting.value).where(CMSSetting.key == "timezone")
@@ -792,13 +814,21 @@ async def evaluate_schedules() -> None:
         )
         schedules = result.scalars().all()
 
-        # Purge expired skips
+        # Purge expired skips (memory + DB)
         expired = [sid for sid, until in _skipped.items() if local_now >= until]
         for sid in expired:
             _skipped.pop(sid, None)
+            # Clear DB column
+            await db.execute(
+                Schedule.__table__.update()
+                .where(Schedule.id == sid)
+                .values(skipped_until=None)
+            )
             # Clear sync hash so the schedule gets re-pushed on next eval
             for did in connected:
                 _last_sync_hash.pop(did, None)
+        if expired:
+            await db.commit()
 
         active = [
             s for s in schedules

@@ -324,6 +324,14 @@ async def run_migrations():
                 "ALTER TABLE assets ADD COLUMN display_name VARCHAR(255)"
             ))
 
+    # -- schedules.skipped_until (persist "End Now" across restarts) --
+    async with _shared_db._engine.begin() as conn:
+        has_skipped = await conn.run_sync(lambda c: _has_column(c, "schedules", "skipped_until"))
+        if not has_skipped:
+            await conn.execute(text(
+                "ALTER TABLE schedules ADD COLUMN skipped_until TIMESTAMPTZ"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

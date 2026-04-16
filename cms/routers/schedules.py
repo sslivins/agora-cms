@@ -299,10 +299,11 @@ async def update_schedule(
 
     for field, value in updates.items():
         setattr(schedule, field, value)
+    # Clear any active "End Now" skip so the schedule is re-evaluated
+    schedule.skipped_until = None
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
     await db.commit()
 
-    # Clear any active "End Now" skip so the schedule is re-evaluated
     clear_schedule_skip(str(schedule_id))
 
     result = await db.execute(
@@ -374,6 +375,10 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
         end_today += timedelta(days=1)
 
     skip_schedule_until(str(schedule.id), end_today)
+
+    # Persist to DB so it survives restarts
+    schedule.skipped_until = end_today
+    db.add(schedule)
 
     # Log SKIPPED event for each target device
     from cms.models.device import Device
