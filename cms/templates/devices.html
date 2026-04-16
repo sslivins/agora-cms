@@ -451,6 +451,11 @@ window._adoptionGroups = [
     { id: {{ g.id | string | tojson }}, name: {{ g.name | tojson }} }{% if not loop.last %},{% endif %}
     {% endfor %}
 ];
+window._adoptionProfiles = [
+    {% for p in profiles %}
+    { id: {{ p.id | string | tojson }}, name: {{ p.name | tojson }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
 
 (function() {
     const __canManage = {{ 'true' if 'devices:manage' in user_perms else 'false' }};

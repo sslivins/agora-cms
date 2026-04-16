@@ -641,6 +641,9 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     adoption_groups_q = await db.execute(adoption_groups_query)
     adoption_groups = adoption_groups_q.scalars().all()
 
+    adoption_profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
+    adoption_profiles = adoption_profiles_q.scalars().all()
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_tab": "dashboard",
         "tz": tz,
@@ -654,6 +657,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "upcoming_tomorrow": upcoming_tomorrow,
         "recent_activity": recent_activity,
         "adoption_groups": adoption_groups,
+        "adoption_profiles": adoption_profiles,
     })
 
 

@@ -16,6 +16,7 @@ from cms.permissions import (
 )
 from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_profile import DeviceProfile
 from cms.schemas.device import (
     AdoptRequest,
     DeviceGroupCreate,
@@ -381,7 +382,7 @@ async def toggle_device_local_api(
 
 
 @router.post("/{device_id}/adopt", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
-async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db), body: AdoptRequest = AdoptRequest()):
+async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Adopt a pending device or re-adopt an orphaned one.
 
     For pending devices: sets status to adopted and assigns an auth token on next connect.
@@ -419,6 +420,12 @@ async def adopt_device(device_id: str, request: Request, db: AsyncSession = Depe
         if not grp.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Group not found")
         device.group_id = body.group_id
+
+    # Verify and assign the encoder profile (required)
+    prof = await db.execute(select(DeviceProfile).where(DeviceProfile.id == body.profile_id))
+    if not prof.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    device.profile_id = body.profile_id
 
     await db.commit()
 

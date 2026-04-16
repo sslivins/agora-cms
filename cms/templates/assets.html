@@ -250,16 +250,7 @@
                             <span class="detail-value monospace">{{ a.filename }}</span>
                         </div>
                         {% endif %}
-                        <div class="detail-item">
-                            <span class="detail-label">Checksum</span>
-                            <span class="detail-value">
-                                <span class="checksum-wrap has-tooltip">
-                                    <span class="checksum-text">{{ a.checksum }}</span>
-                                    <button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, '{{ a.checksum }}')" type="button">Copy</button>
-                                    <span class="tooltip">{{ a.checksum }}</span>
-                                </span>
-                            </span>
-                        </div>
+
                         {% if 'assets:write' in user_perms %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">Scope</span>
@@ -316,7 +307,7 @@
                                     <th>Format</th>
                                     {% endif %}
                                     <th>Size</th>
-                                    <th>Checksum</th>
+                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody data-live-variant-table="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">
@@ -347,12 +338,8 @@
                                         {% else %}—{% endif %}
                                     </td>
                                     <td>
-                                        {% if v.checksum %}
-                                        <span class="checksum-wrap has-tooltip">
-                                            <span class="checksum-text">{{ v.checksum }}</span>
-                                            <button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, '{{ v.checksum }}')" type="button">Copy</button>
-                                            <span class="tooltip">{{ v.checksum }}</span>
-                                        </span>
+                                        {% if v.status.value == 'ready' %}
+                                        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); previewVariant('{{ v.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}', '{{ v.profile.name if v.profile else '' }}')">Preview</button>
                                         {% else %}—{% endif %}
                                     </td>
                                 </tr>
@@ -598,30 +585,22 @@
             // Codec / Format
             cells[3].textContent = v.video_codec || '—';
             if (isImage) {
-                // Image layout: Profile | Status | Resolution | Format | Size | Checksum
+                // Image layout: Profile | Status | Resolution | Format | Size | Preview
                 cells[4].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '\u2014';
-                if (cells[5] && v.checksum) {
-                    cells[5].innerHTML = '<span class="checksum-wrap has-tooltip">' +
-                        '<span class="checksum-text">' + v.checksum.replace(/</g, '&lt;') + '</span>' +
-                        '<button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, \'' + v.checksum + '\')" type="button">Copy</button>' +
-                        '<span class="tooltip">' + v.checksum.replace(/</g, '&lt;') + '</span></span>';
-                } else if (cells[5]) {
-                    cells[5].textContent = '\u2014';
+                if (cells[5]) {
+                    cells[5].innerHTML = v.status === 'ready'
+                        ? '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); previewVariant(\'' + v.id + '\', \'\', \'' + tbody.getAttribute('data-asset-type') + '\', \'' + (v.profile_name || '') + '\')">Preview</button>'
+                        : '\u2014';
                 }
             } else {
-                // Video layout: Profile | Status | Resolution | Codec | Bitrate | FPS | Size | Checksum
+                // Video layout: Profile | Status | Resolution | Codec | Bitrate | FPS | Size | Preview
                 cells[4].textContent = v.bitrate ? (v.bitrate / 1000000).toFixed(1) + ' Mbps' : '—';
                 cells[5].textContent = v.frame_rate ? v.frame_rate + ' fps' : '—';
                 cells[6].textContent = v.size_bytes > 0 ? formatSize(v.size_bytes) : '\u2014';
                 if (cells[7]) {
-                    if (v.checksum) {
-                        cells[7].innerHTML = '<span class="checksum-wrap has-tooltip">' +
-                            '<span class="checksum-text">' + v.checksum.replace(/</g, '&lt;') + '</span>' +
-                            '<button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, \'' + v.checksum + '\')" type="button">Copy</button>' +
-                            '<span class="tooltip">' + v.checksum.replace(/</g, '&lt;') + '</span></span>';
-                    } else {
-                        cells[7].textContent = '\u2014';
-                    }
+                    cells[7].innerHTML = v.status === 'ready'
+                        ? '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); previewVariant(\'' + v.id + '\', \'\', \'' + tbody.getAttribute('data-asset-type') + '\', \'' + (v.profile_name || '') + '\')">Preview</button>'
+                        : '\u2014';
                 }
             }
         });
