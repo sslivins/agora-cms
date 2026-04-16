@@ -31,6 +31,7 @@ class AssetOut(BaseModel):
     id: uuid.UUID
     filename: str
     original_filename: Optional[str] = None
+    display_name: Optional[str] = None
     asset_type: AssetType
     size_bytes: int
     checksum: str

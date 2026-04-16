@@ -633,6 +633,32 @@ async def create_stream_asset(
     return asset
 
 
+@router.patch("/{asset_id}", response_model=AssetOut)
+async def update_asset(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update asset properties (currently: display_name)."""
+    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    body = await request.json()
+
+    if "display_name" in body:
+        name = (body["display_name"] or "").strip()
+        if name and len(name) > 255:
+            raise HTTPException(status_code=400, detail="Name too long (max 255 characters)")
+        asset.display_name = name if name else None
+
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
 @router.post("/{asset_id}/recapture")
 async def recapture_stream(
     asset_id: uuid.UUID,

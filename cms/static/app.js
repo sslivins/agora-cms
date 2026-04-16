@@ -614,6 +614,61 @@ function previewVariant(variantId, filename, assetType, profileName) {
     document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", esc); } });
 }
 
+async function editAssetName(el) {
+    const assetId = el.dataset.assetId;
+    const currentName = el.textContent.trim();
+
+    // Replace span with an input
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; width:100%; max-width:300px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newName = input.value.trim();
+        if (newName && newName !== currentName) {
+            try {
+                const resp = await fetch(`/api/assets/${assetId}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({display_name: newName}),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    showToast(extractErrorMsg(err) || 'Rename failed', true);
+                    revert();
+                    return;
+                }
+                el.textContent = newName;
+                // Update tooltip too
+                const tooltip = parent.querySelector('.tooltip');
+                if (tooltip) tooltip.textContent = newName;
+            } catch (e) {
+                showToast('Rename failed: ' + e.message, true);
+                revert();
+                return;
+            }
+        }
+        parent.replaceChild(el, input);
+    }
+
+    function revert() {
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); revert(); }
+    });
+}
+
 async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);

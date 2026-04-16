@@ -32,6 +32,7 @@ class Asset(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     filename: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)  # set when converted (e.g. HEIC→JPG)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)  # user-editable friendly name
     asset_type: Mapped[AssetType] = mapped_column(Enum(AssetType), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     checksum: Mapped[str] = mapped_column(String(64), default="")  # SHA-256

@@ -316,6 +316,14 @@ async def run_migrations():
                 "ALTER TABLE assets ADD COLUMN capture_duration INTEGER"
             ))
 
+    # -- assets.display_name --
+    async with _shared_db._engine.begin() as conn:
+        has_display_name = await conn.run_sync(lambda c: _has_column(c, "assets", "display_name"))
+        if not has_display_name:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN display_name VARCHAR(255)"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

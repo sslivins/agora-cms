@@ -161,7 +161,7 @@
         <thead>
             <tr>
                 <th style="width:2rem"></th>
-                <th class="col-filename">Filename</th>
+                <th class="col-filename">Name</th>
                 <th>Type</th>
                 <th>Scope</th>
                 <th>Size</th>
@@ -174,7 +174,12 @@
             {% for a in assets %}
             <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
                 <td class="expand-toggle">▶</td>
-                <td class="wrap asset-filename-cell"><span class="has-tooltip"><span class="asset-filename-truncate">{{ a.original_filename or a.filename }}</span><span class="tooltip">{{ a.original_filename or a.filename }}</span></span></td>
+                <td class="wrap asset-filename-cell">
+                    <span class="has-tooltip">
+                        <span class="asset-filename-truncate editable-name" data-asset-id="{{ a.id }}" onclick="event.stopPropagation(); editAssetName(this)" title="Click to rename">{{ a.display_name or a.original_filename or a.filename }}</span>
+                        <span class="tooltip">{{ a.display_name or a.original_filename or a.filename }}</span>
+                    </span>
+                </td>
                 <td><span class="badge badge-{{ a.asset_type.value }}">{% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
                 <td>
                     {% if a.is_global %}
@@ -244,7 +249,7 @@
                     {% if 'assets:write' in user_perms %}
                     {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
                     {% if a.asset_type.value == 'saved_stream' and is_owner %}
-                    <button class="btn btn-warning btn-sm" onclick="recaptureStream('{{ a.id }}', '{{ a.original_filename or a.filename }}')">Re-capture</button>
+                    <button class="btn btn-warning btn-sm" onclick="recaptureStream('{{ a.id }}', '{{ a.display_name or a.original_filename or a.filename }}')">Re-capture</button>
                     {% endif %}
                     {% if is_owner %}
                     {% if a.schedule_count > 0 %}
@@ -324,13 +329,21 @@
                             <span class="detail-value">{{ a.color_space }}</span>
                         </div>
                         {% endif %}
-                        {% if a.original_filename %}
                         <div class="detail-item">
                             <span class="detail-label">Stored As</span>
                             <span class="detail-value monospace">{{ a.filename }}</span>
                         </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Checksum</span>
+                            <span class="detail-value">
+                                <span class="checksum-wrap has-tooltip">
+                                    <span class="checksum-text">{{ a.checksum }}</span>
+                                    <button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, '{{ a.checksum }}')" type="button">Copy</button>
+                                    <span class="tooltip">{{ a.checksum }}</span>
+                                </span>
+                            </span>
+                        </div>
                         {% endif %}
-
                         {% if 'assets:write' in user_perms %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">Scope</span>
