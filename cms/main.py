@@ -27,7 +27,7 @@ logging.getLogger().addHandler(_buf_handler)
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -332,6 +332,27 @@ async def lifespan(app: FastAPI):
     async for db in get_db():
         await _seed_roles(db)
 
+    # Auto-mark setup as completed for existing deployments that are
+    # upgrading from a version before the setup wizard was added.
+    # Must run BEFORE ensure_admin_credentials so we can distinguish
+    # "admin already existed" (upgrade) from "no admin yet" (fresh).
+    async for db in get_db():
+        from cms.auth import get_setting, set_setting, SETTING_SETUP_COMPLETED
+        completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+        if completed is None:
+            from sqlalchemy import select as _sel
+            from cms.models.user import User
+            result = await db.execute(
+                _sel(User).where(
+                    User.username == settings.admin_username,
+                    User.is_active.is_(True),
+                ).limit(1)
+            )
+            if result.scalar_one_or_none() is not None:
+                await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+                await db.commit()
+                logger.info("Existing deployment detected — setup wizard skipped")
+
     # Seed admin credentials from env vars if not already in DB
     async for db in get_db():
         await ensure_admin_credentials(db, settings)
@@ -396,6 +417,50 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Setup-wizard redirect middleware
+# ---------------------------------------------------------------------------
+_SETUP_ALLOWED_PREFIXES = ("/setup", "/static", "/healthz", "/api/devices/ws", "/login")
+
+# Cache the setup status in-memory to avoid DB queries on every request.
+# Set to True once first-run wizard is completed; reset on app restart.
+_setup_completed_cache: bool | None = None
+
+
+async def _is_setup_completed(db: AsyncSession) -> bool:
+    """Return True when the first-run setup wizard has been completed."""
+    global _setup_completed_cache  # noqa: PLW0603
+    if _setup_completed_cache is True:
+        return True
+    from cms.auth import get_setting, SETTING_SETUP_COMPLETED
+    val = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if val == "true":
+        _setup_completed_cache = True
+        return True
+    return False
+
+
+@app.middleware("http")
+async def setup_redirect_middleware(request: Request, call_next):
+    """Redirect every request to /setup until the first-run wizard is done."""
+    path = request.url.path
+    if not any(path.startswith(p) for p in _SETUP_ALLOWED_PREFIXES):
+        if _setup_completed_cache is not True:
+            from cms.database import get_session_factory
+            _sf = get_session_factory()
+            if _sf is not None:
+                async with _sf() as db:
+                    if not await _is_setup_completed(db):
+                        accept = request.headers.get("accept", "")
+                        if "text/html" in accept:
+                            return RedirectResponse(url="/setup", status_code=303)
+                        return JSONResponse(
+                            status_code=503,
+                            content={"detail": "First-run setup has not been completed."},
+                        )
+    return await call_next(request)
 
 
 @app.exception_handler(HTTPException)

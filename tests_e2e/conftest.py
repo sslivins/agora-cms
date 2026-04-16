@@ -158,6 +158,34 @@ def e2e_server(e2e_port, tmp_path_factory):
     else:
         raise RuntimeError("E2E server failed to start")
 
+    # Mark first-run setup as completed so existing tests aren't
+    # blocked by the setup wizard middleware.
+    # Walk through the setup wizard via HTTP to set the flag properly,
+    # avoiding async event-loop cross-thread issues with direct DB access.
+    import httpx
+    base = f"http://127.0.0.1:{e2e_port}"
+    with httpx.Client(base_url=base, follow_redirects=False) as c:
+        # Login with default admin credentials
+        c.post("/login", data={
+            "username": os.environ.get("AGORA_CMS_ADMIN_USERNAME", "admin"),
+            "password": os.environ["AGORA_CMS_ADMIN_PASSWORD"],
+        })
+        # Step 1: account update (submit with defaults)
+        c.post("/setup/account", data={
+            "display_name": "Admin",
+            "email": "admin@localhost",
+            "password": "",
+            "password_confirm": "",
+        })
+        # Step 2: skip SMTP (empty form)
+        c.post("/setup/smtp", data={})
+        # Step 3: timezone
+        c.post("/setup/timezone", data={"timezone": "UTC"})
+        # Step 4: MCP
+        c.post("/setup/mcp", json={"enabled": False})
+        # Finish: mark setup as complete
+        c.post("/setup/complete")
+
     yield server
 
     server.should_exit = True
@@ -246,3 +274,42 @@ def api(context: BrowserContext, base_url: str):
     helper = ApiHelper()
     yield helper
     helper._client.close()
+
+
+@pytest.fixture
+def setup_incomplete(e2e_server):
+    """Temporarily clear setup_completed so the setup wizard is active.
+
+    Restores the flag after the test so other tests are not affected.
+    Creates a fresh async engine to avoid event-loop cross-thread issues
+    with the server's engine running in uvicorn's thread.
+    """
+    import cms.main as main_mod
+
+    def _run_sql(sql_text, params=None):
+        """Run SQL via a temporary async engine in a fresh event loop."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy import text as sa_text
+
+        db_url = os.environ["AGORA_CMS_DATABASE_URL"]
+
+        async def _exec():
+            engine = create_async_engine(db_url)
+            async with engine.begin() as conn:
+                await conn.execute(sa_text(sql_text), params or {})
+            await engine.dispose()
+
+        run_async(_exec())
+
+    # Clear the flag
+    _run_sql("DELETE FROM cms_settings WHERE key = 'setup_completed'")
+    main_mod._setup_completed_cache = None
+
+    yield
+
+    # Restore the flag
+    _run_sql(
+        "INSERT INTO cms_settings (key, value) VALUES ('setup_completed', 'true') "
+        "ON CONFLICT (key) DO UPDATE SET value = 'true'"
+    )
+    main_mod._setup_completed_cache = True

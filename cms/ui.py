@@ -15,6 +15,7 @@ from cms.auth import (
     SETTING_MCP_ENABLED,
     SETTING_MCP_SERVICE_KEY_HASH,
     SETTING_PASSWORD_HASH,
+    SETTING_SETUP_COMPLETED,
     SETTING_SMTP_FROM_EMAIL,
     SETTING_SMTP_HOST,
     SETTING_SMTP_PASSWORD,
@@ -57,6 +58,15 @@ from zoneinfo import ZoneInfo
 from cms.timezones import build_tz_options, canonical_timezones
 
 from cms.mcp_utils import notify_mcp_reload as _notify_mcp_reload
+
+
+async def _get_setup_user(request: Request, settings, db):
+    """Extract and resolve the user from the session cookie. Returns None if not authenticated."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return None
+    return await _resolve_user_from_session(cookie, settings, db)
+
 
 # Canonical IANA timezones for dropdowns — sorted for readability.
 COMMON_TIMEZONES = sorted(canonical_timezones())
@@ -256,6 +266,194 @@ async def force_password_change_submit(
     await db.commit()
 
     return RedirectResponse(url="/", status_code=303)
+
+
+# ── First-run setup wizard ──
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Render the first-run setup wizard."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return RedirectResponse(url="/", status_code=303)
+
+    # Require login — redirect to login page if not authenticated
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    tz_options = build_tz_options()
+    return templates.TemplateResponse(request, "setup.html", {
+        "timezones": tz_options,
+        "user": user,
+    })
+
+
+@router.post("/setup/account")
+async def setup_account_update(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 1: Update the admin account with a new display name, email, and password."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+
+    # Require login
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    data = await request.json()
+    display_name = (data.get("display_name") or "").strip()
+    email = (data.get("email") or "").strip()
+    password = data.get("password") or ""
+
+    if not display_name:
+        return JSONResponse({"error": "Display name is required"}, status_code=400)
+    if not email or "@" not in email:
+        return JSONResponse({"error": "A valid email address is required"}, status_code=400)
+    if len(password) < 6:
+        return JSONResponse({"error": "Password must be at least 6 characters"}, status_code=400)
+
+    # Check if email is taken by a different user
+    from sqlalchemy import select as sa_select
+    existing = await db.execute(
+        sa_select(User).where(User.email == email, User.id != user.id)
+    )
+    if existing.scalar_one_or_none():
+        return JSONResponse({"error": "A user with this email already exists"}, status_code=409)
+
+    # Update the current admin account
+    user.display_name = display_name
+    user.email = email
+    user.password_hash = hash_password(password)
+    user.must_change_password = False
+
+    await db.commit()
+
+    return JSONResponse({"status": "ok"})
+
+
+@router.post("/setup/smtp")
+async def setup_smtp(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 2: Save SMTP configuration (optional — can be skipped)."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    data = await request.json()
+    await set_setting(db, SETTING_SMTP_HOST, data.get("host", ""))
+    await set_setting(db, SETTING_SMTP_PORT, str(data.get("port", 587)))
+    await set_setting(db, SETTING_SMTP_USERNAME, data.get("username", ""))
+    if data.get("password"):
+        await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
+    await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    return {"status": "ok"}
+
+
+@router.post("/setup/smtp/test")
+async def setup_smtp_test(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Test SMTP configuration during setup wizard."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    data = await request.json()
+    to_email = (data.get("to_email") or "").strip()
+    if not to_email:
+        return JSONResponse({"success": False, "message": "Recipient email required"}, status_code=400)
+
+    from cms.services.email_service import get_smtp_settings, test_smtp_connection
+    smtp_cfg = await get_smtp_settings(db)
+    success, message = test_smtp_connection(smtp_cfg, to_email)
+    return {"success": success, "message": message}
+
+
+@router.post("/setup/timezone")
+async def setup_timezone(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 3: Set CMS timezone."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    data = await request.json()
+    tz = (data.get("timezone") or "").strip()
+    if tz not in canonical_timezones():
+        return JSONResponse({"error": "Invalid timezone"}, status_code=400)
+
+    await set_setting(db, SETTING_TIMEZONE, tz)
+    return {"status": "ok"}
+
+
+@router.post("/setup/mcp")
+async def setup_mcp(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 4: Enable or disable MCP server."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    data = await request.json()
+    enabled = data.get("enabled", False)
+    await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
+    return {"status": "ok"}
+
+
+@router.post("/setup/complete")
+async def setup_complete(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark setup as complete — wizard will no longer appear."""
+    completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+    if completed == "true":
+        return JSONResponse({"error": "Setup already completed"}, status_code=400)
+    user = await _get_setup_user(request, settings, db)
+    if user is None:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+
+    # Clear the in-memory cache so middleware stops redirecting
+    import cms.main as _main_module
+    _main_module._setup_completed_cache = True
+
+    return {"status": "ok"}
 
 
 # ── Dashboard ──

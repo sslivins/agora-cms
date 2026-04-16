@@ -35,6 +35,7 @@ SETTING_SMTP_PORT = "smtp_port"
 SETTING_SMTP_USERNAME = "smtp_username"
 SETTING_SMTP_PASSWORD = "smtp_password"
 SETTING_SMTP_FROM_EMAIL = "smtp_from_email"
+SETTING_SETUP_COMPLETED = "setup_completed"
 
 
 @lru_cache
