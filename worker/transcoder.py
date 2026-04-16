@@ -309,8 +309,8 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     source = variant.source_asset
     profile = variant.profile
 
-    # Stream assets with save_locally: capture the stream first
-    if source.asset_type == AssetType.STREAM and getattr(source, "save_locally", False):
+    # SAVED_STREAM assets: capture the stream first
+    if source.asset_type == AssetType.SAVED_STREAM:
         capture_filename = f"{source.id}_capture.mp4"
         capture_path = asset_dir / capture_filename
 

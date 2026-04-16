@@ -77,9 +77,7 @@ async def _resolve_asset_for_device(
     storage = get_storage()
 
     # Saved streams behave like videos for download purposes
-    is_file_asset = asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE) or (
-        asset.asset_type == AssetType.STREAM and asset.save_locally
-    )
+    is_file_asset = asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE, AssetType.SAVED_STREAM)
 
     if is_file_asset and device.profile_id:
         result = await db.execute(
@@ -418,7 +416,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 # stored in the DB (original_filename / filename).
                 display_name = asset_name
                 if sched and sched.asset:
-                    if sched.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM):
+                    if sched.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM, AssetType.SAVED_STREAM):
                         display_name = (
                             sched.asset.original_filename
                             or sched.asset.filename
@@ -463,7 +461,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 )
                 ended_sched = ended_sched_result.scalar_one_or_none()
                 if ended_sched and ended_sched.asset:
-                    if ended_sched.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM):
+                    if ended_sched.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM, AssetType.SAVED_STREAM):
                         ended_display_name = (
                             ended_sched.asset.original_filename
                             or ended_sched.asset.filename

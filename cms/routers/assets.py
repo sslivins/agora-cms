@@ -540,21 +540,21 @@ async def create_stream_asset(
     if hostname in _blocked or hostname.endswith(".local"):
         raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
 
-    # Check for duplicate stream URL
+    # Check for duplicate stream URL (per type)
     save_locally = body.get("save_locally", False)
+    target_type = AssetType.SAVED_STREAM if save_locally else AssetType.STREAM
 
     dup_q = await db.execute(
         select(Asset).where(
             Asset.url == url,
-            Asset.asset_type == AssetType.STREAM,
-            Asset.save_locally == save_locally,
+            Asset.asset_type == target_type,
         ).limit(1)
     )
     if dup_q.scalar_one_or_none():
-        mode = "save-locally" if save_locally else "live"
+        mode = "saved stream" if save_locally else "live stream"
         raise HTTPException(
             status_code=409,
-            detail=f"A {mode} stream asset with this URL already exists",
+            detail=f"A {mode} asset with this URL already exists",
         )
 
     # Use provided name or derive from URL
@@ -594,11 +594,10 @@ async def create_stream_asset(
 
     asset = Asset(
         filename=name,
-        asset_type=AssetType.STREAM,
+        asset_type=target_type,
         size_bytes=0,
         checksum="",
         url=url,
-        save_locally=save_locally,
         is_global=make_global,
         uploaded_by_user_id=user.id,
     )
@@ -610,7 +609,7 @@ async def create_stream_asset(
 
     # If save_locally is enabled, enqueue transcoding so the worker
     # will capture the stream and create variants for each device profile
-    if save_locally:
+    if target_type == AssetType.SAVED_STREAM:
         await _enqueue_transcoding(asset, db)
         from cms.services.transcoder import notify_worker
         await notify_worker(db)

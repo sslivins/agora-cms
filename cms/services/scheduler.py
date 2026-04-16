@@ -194,13 +194,9 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
                 device_schedule[did] = (s.priority, s)
 
     for did, (_, s) in device_schedule.items():
-        is_saved_stream = (
-            s.asset.asset_type == AssetType.STREAM
-            and getattr(s.asset, "save_locally", False)
-        )
+        is_saved_stream = s.asset.asset_type == AssetType.SAVED_STREAM
         is_url_asset = (
             s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
-            and not is_saved_stream
         )
         asset_raw = s.asset.url if is_url_asset else s.asset.filename
         display_name = asset_raw
@@ -586,17 +582,15 @@ def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = N
     elif s.asset:
         checksum = s.asset.checksum or None
 
-    # Streams with save_locally=True behave like normal videos (file download)
-    # Streams with save_locally=False are URL-based (direct stream playback)
+    # SAVED_STREAM assets behave like normal videos (file download)
+    # STREAM assets are URL-based (direct stream playback)
     is_saved_stream = (
         s.asset
-        and s.asset.asset_type == AssetType.STREAM
-        and getattr(s.asset, "save_locally", False)
+        and s.asset.asset_type == AssetType.SAVED_STREAM
     )
     is_url_asset = (
         s.asset
         and s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
-        and not is_saved_stream
     )
     return ScheduleEntry(
         id=str(s.id),
@@ -889,13 +883,9 @@ async def evaluate_schedules() -> None:
                 if not live or live.get("mode") != "play":
                     continue
                 is_webpage = s.asset.asset_type == AssetType.WEBPAGE
-                is_saved_stream = (
-                    s.asset.asset_type == AssetType.STREAM
-                    and getattr(s.asset, "save_locally", False)
-                )
+                is_saved_stream = s.asset.asset_type == AssetType.SAVED_STREAM
                 is_url_asset = (
                     s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
-                    and not is_saved_stream
                 )
                 expected_raw = s.asset.url if is_url_asset else s.asset.filename
                 if live.get("asset") != expected_raw:

@@ -275,24 +275,30 @@ async def run_migrations():
             if not has_stream.scalar():
                 await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'STREAM'"))
 
-        # -- assets.save_locally (stream capture mode) --
-        # Renamed from is_live with reversed semantics:
-        #   is_live=True (live stream) → save_locally=False
-        #   is_live=False (capture)    → save_locally=True
+            has_saved_stream = await conn.execute(
+                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'SAVED_STREAM' AND enumtypid = 'assettype'::regtype")
+            )
+            if not has_saved_stream.scalar():
+                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'SAVED_STREAM'"))
+
+    # -- Migrate save_locally/is_live STREAM assets → SAVED_STREAM type --
+    # Must be a separate transaction: PG requires new enum values to be committed first
+    async with _shared_db._engine.begin() as conn:
         has_save_locally = await conn.run_sync(lambda c: _has_column(c, "assets", "save_locally"))
         has_is_live = await conn.run_sync(lambda c: _has_column(c, "assets", "is_live"))
-        if not has_save_locally and has_is_live:
-            # Rename column and flip values
+
+        if has_is_live and not has_save_locally:
             await conn.execute(text(
-                "ALTER TABLE assets RENAME COLUMN is_live TO save_locally"
+                "UPDATE assets SET asset_type = 'SAVED_STREAM' "
+                "WHERE asset_type = 'STREAM' AND is_live = false"
             ))
+            await conn.execute(text("ALTER TABLE assets DROP COLUMN is_live"))
+        elif has_save_locally:
             await conn.execute(text(
-                "UPDATE assets SET save_locally = NOT save_locally"
+                "UPDATE assets SET asset_type = 'SAVED_STREAM' "
+                "WHERE asset_type = 'STREAM' AND save_locally = true"
             ))
-        elif not has_save_locally:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN save_locally BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
+            await conn.execute(text("ALTER TABLE assets DROP COLUMN save_locally"))
 
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:

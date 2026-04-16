@@ -15,7 +15,8 @@ class AssetType(str, PyEnum):
     VIDEO = "video"
     IMAGE = "image"
     WEBPAGE = "webpage"
-    STREAM = "stream"
+    STREAM = "stream"          # live stream — played directly via URL
+    SAVED_STREAM = "saved_stream"  # captured stream — downloaded & transcoded for offline playback
 
 
 class VariantStatus(str, PyEnum):
@@ -57,12 +58,8 @@ class Asset(Base):
     frame_rate: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "30" or "29.97"
     color_space: Mapped[str | None] = mapped_column(String(64), nullable=True)  # e.g. "bt709", "bt2020"
 
-    # URL for webpage/stream assets (populated when asset_type is WEBPAGE or STREAM)
+    # URL for webpage/stream assets (populated when asset_type is WEBPAGE, STREAM, or SAVED_STREAM)
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
-
-    # True = capture stream via FFmpeg and transcode to local video files for offline playback
-    # False (default) = stream directly to devices in real time
-    save_locally: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
     # (Schedule is a CMS-only model, not available in the worker package)
