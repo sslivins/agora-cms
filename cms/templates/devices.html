@@ -278,7 +278,7 @@
     <th>Name</th>
     <th>Status</th>
     <th>Group</th>
-    <th>Default Splash Screen</th>
+    <th>Device Splash Screen</th>
     {% if 'devices:manage' in user_perms %}<th>Profile</th>{% endif %}
     <th>Storage</th>
     <th>Actions</th>
@@ -334,7 +334,7 @@
             {% endif %}
             <span class="badge badge-count">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
             <span class="group-actions" onclick="event.stopPropagation()">
-                <span class="has-tooltip inline-label">Splash<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
+                <span class="has-tooltip inline-label">Group Splash Screen<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
                 {% if 'groups:write' in user_perms %}
                 <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
                     <option value="">No default asset</option>
