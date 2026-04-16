@@ -152,14 +152,23 @@ jobs:
             local APP_NAME="$1" DOMAIN="$2"
             [ -z "$DOMAIN" ] && return 0
 
-            # Check if already bound
-            EXISTING=$(az containerapp hostname list --name "$APP_NAME" --resource-group "$RG" --query "[?name=='$DOMAIN'].name" -o tsv 2>/dev/null)
-            if [ "$EXISTING" = "$DOMAIN" ]; then
-              echo "✅ $DOMAIN already bound to $APP_NAME"
+            # Check if already bound with cert
+            BINDING=$(az containerapp hostname list --name "$APP_NAME" --resource-group "$RG" \
+              --query "[?name=='$DOMAIN'].bindingType" -o tsv 2>/dev/null)
+            if [ "$BINDING" = "SniEnabled" ]; then
+              echo "✅ $DOMAIN already bound with cert to $APP_NAME"
               return 0
             fi
 
-            echo "Binding $DOMAIN to $APP_NAME..."
+            # Step 1: Add hostname to app (creates unbound entry)
+            echo "Adding hostname $DOMAIN to $APP_NAME..."
+            az containerapp hostname add \
+              --name "$APP_NAME" \
+              --resource-group "$RG" \
+              --hostname "$DOMAIN" 2>/dev/null || true
+
+            # Step 2: Bind with managed certificate
+            echo "Binding managed certificate for $DOMAIN..."
             az containerapp hostname bind \
               --name "$APP_NAME" \
               --resource-group "$RG" \
