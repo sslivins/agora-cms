@@ -361,7 +361,30 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     if source.asset_type == AssetType.SAVED_STREAM:
         source_path = asset_dir / source.filename
         if not source_path.is_file():
-            # First variant for this stream — capture it
+            # Guard against parallel workers: if another worker is already
+            # processing (and therefore capturing) a variant for the same
+            # stream, back off so we don't write to the same file from two
+            # FFmpeg processes.
+            sibling = await db.execute(
+                select(AssetVariant.id)
+                .where(
+                    AssetVariant.source_asset_id == source.id,
+                    AssetVariant.status == VariantStatus.PROCESSING,
+                    AssetVariant.id != variant.id,
+                )
+                .limit(1)
+            )
+            if sibling.scalar_one_or_none() is not None:
+                logger.info(
+                    "Variant %s: another worker is capturing stream %s — deferring",
+                    variant.id, source.id,
+                )
+                variant.status = VariantStatus.PENDING
+                variant.progress = 0
+                await db.commit()
+                return
+
+            # We're the only worker for this stream — capture it
             result = await _capture_stream(source, asset_dir, db)
             if result is None:
                 await _mark_failed(variant, source, "Stream capture failed", db)
@@ -575,18 +598,35 @@ async def process_pending(session_factory, asset_dir: Path) -> int:
     """Process all pending variants. Returns number processed."""
     count = 0
     while True:
+        # ── Claim one PENDING variant atomically ──
+        # FOR UPDATE SKIP LOCKED prevents parallel KEDA-triggered workers
+        # from grabbing the same row.  Setting PROCESSING inside the same
+        # short transaction makes the claim visible immediately.
+        variant_id = None
         async with session_factory() as db:
             result = await db.execute(
                 select(AssetVariant)
                 .where(AssetVariant.status == VariantStatus.PENDING)
                 .order_by(AssetVariant.created_at)
                 .limit(1)
+                .with_for_update(skip_locked=True)
             )
             variant = result.scalar_one_or_none()
-
             if variant is None:
                 break
+            variant_id = variant.id
+            variant.status = VariantStatus.PROCESSING
+            variant.progress = 0.0
+            await db.commit()
 
+        # ── Process in a fresh session (row lock released above) ──
+        async with session_factory() as db:
+            result = await db.execute(
+                select(AssetVariant).where(AssetVariant.id == variant_id)
+            )
+            variant = result.scalar_one_or_none()
+            if variant is None:
+                continue
             await _transcode_one(variant, db, asset_dir)
             count += 1
 
