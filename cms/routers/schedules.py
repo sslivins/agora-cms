@@ -191,7 +191,7 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=422, detail="Asset not found")
 
     is_webpage = asset.asset_type == AssetType.WEBPAGE
-    is_live_stream = asset.asset_type == AssetType.STREAM and asset.is_live
+    is_live_stream = asset.asset_type == AssetType.STREAM and not asset.save_locally
     is_url_asset = is_webpage or is_live_stream
 
     # Webpage/live-stream assets cannot use loop_count (no duration)
@@ -269,7 +269,7 @@ async def update_schedule(
     target_asset_id = updates.get("asset_id", schedule.asset_id)
     target_asset = await db.get(Asset, target_asset_id)
     is_webpage = target_asset and target_asset.asset_type == AssetType.WEBPAGE
-    is_live_stream = target_asset and target_asset.asset_type == AssetType.STREAM and target_asset.is_live
+    is_live_stream = target_asset and target_asset.asset_type == AssetType.STREAM and not target_asset.save_locally
     is_url_asset = is_webpage or is_live_stream
 
     # Webpage/live-stream assets cannot use loop_count

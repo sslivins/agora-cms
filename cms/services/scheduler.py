@@ -194,7 +194,14 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
                 device_schedule[did] = (s.priority, s)
 
     for did, (_, s) in device_schedule.items():
-        is_url_asset = s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+        is_saved_stream = (
+            s.asset.asset_type == AssetType.STREAM
+            and getattr(s.asset, "save_locally", False)
+        )
+        is_url_asset = (
+            s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+            and not is_saved_stream
+        )
         asset_raw = s.asset.url if is_url_asset else s.asset.filename
         display_name = asset_raw
         if is_url_asset:
@@ -579,14 +586,24 @@ def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = N
     elif s.asset:
         checksum = s.asset.checksum or None
 
-    # For webpage/stream assets, include the URL and skip the checksum
-    is_url_asset = s.asset and s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+    # Streams with save_locally=True behave like normal videos (file download)
+    # Streams with save_locally=False are URL-based (direct stream playback)
+    is_saved_stream = (
+        s.asset
+        and s.asset.asset_type == AssetType.STREAM
+        and getattr(s.asset, "save_locally", False)
+    )
+    is_url_asset = (
+        s.asset
+        and s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+        and not is_saved_stream
+    )
     return ScheduleEntry(
         id=str(s.id),
         name=s.name,
         asset=s.asset.filename,
         asset_checksum=None if is_url_asset else checksum,
-        asset_type=s.asset.asset_type.value if s.asset else None,
+        asset_type="video" if is_saved_stream else (s.asset.asset_type.value if s.asset else None),
         url=s.asset.url if is_url_asset else None,
         start_time=s.start_time.strftime("%H:%M:%S"),
         end_time=s.end_time.strftime("%H:%M:%S"),
@@ -872,7 +889,14 @@ async def evaluate_schedules() -> None:
                 if not live or live.get("mode") != "play":
                     continue
                 is_webpage = s.asset.asset_type == AssetType.WEBPAGE
-                is_url_asset = s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+                is_saved_stream = (
+                    s.asset.asset_type == AssetType.STREAM
+                    and getattr(s.asset, "save_locally", False)
+                )
+                is_url_asset = (
+                    s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
+                    and not is_saved_stream
+                )
                 expected_raw = s.asset.url if is_url_asset else s.asset.filename
                 if live.get("asset") != expected_raw:
                     continue

@@ -800,7 +800,7 @@ function removeWebpageGroup(badge) {
 async function addStreamAsset(form) {
     const urlInput = document.getElementById("stream-url");
     const nameInput = document.getElementById("stream-name");
-    const isLiveEl = document.getElementById("stream-is-live");
+    const saveLocallyEl = document.getElementById("stream-save-locally");
     const statusEl = document.getElementById("stream-status");
     const submitBtn = document.getElementById("stream-submit");
     const url = urlInput.value.trim();
@@ -820,7 +820,7 @@ async function addStreamAsset(form) {
             body: JSON.stringify({
                 url: url,
                 name: nameInput.value.trim(),
-                is_live: isLiveEl.checked,
+                save_locally: saveLocallyEl.checked,
                 group_ids: groupIds,
             }),
         });

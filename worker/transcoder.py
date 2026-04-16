@@ -215,6 +215,92 @@ async def _get_duration(source_path: Path) -> float | None:
         return None
 
 
+# ── Stream capture ──────────────────────────────────────────────
+
+async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Path | None:
+    """Download a stream URL to a local MP4 file using FFmpeg.
+
+    Returns the path to the captured file, or None on failure.
+    The captured file is stored as the asset's source file so subsequent
+    per-profile transcoding can pick it up like any uploaded video.
+    """
+    global _active_process
+
+    url = asset.url
+    if not url:
+        return None
+
+    capture_filename = f"{asset.id}_capture.mp4"
+    capture_path = asset_dir / capture_filename
+
+    logger.info("Capturing stream %s → %s (max %ds)", url, capture_filename, STREAM_CAPTURE_MAX_SECONDS)
+
+    args = [
+        "ffmpeg", "-y",
+        # Network / stream input options
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-t", str(STREAM_CAPTURE_MAX_SECONDS),
+        "-i", url,
+        # Copy codecs (no re-encode during capture — transcoding happens later)
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(capture_path),
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _active_process = proc
+        _, stderr_data = await proc.communicate()
+        _active_process = None
+
+        if proc.returncode != 0:
+            error_text = stderr_data.decode("utf-8", errors="replace")[-500:]
+            logger.error("Stream capture failed for %s: exit %d\n%s", url, proc.returncode, error_text)
+            return None
+
+        if not capture_path.is_file() or capture_path.stat().st_size == 0:
+            logger.error("Stream capture produced empty file for %s", url)
+            return None
+
+        # Probe the captured file for metadata
+        meta = await probe_media(capture_path)
+        file_size = capture_path.stat().st_size
+        sha = hashlib.sha256()
+        with open(capture_path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                sha.update(chunk)
+
+        # Update the source asset with captured file metadata
+        asset.size_bytes = file_size
+        asset.checksum = sha.hexdigest()
+        for key, val in meta.items():
+            if val is not None and hasattr(asset, key):
+                setattr(asset, key, val)
+
+        await db.commit()
+
+        # Sync captured file to cloud storage
+        storage = get_storage()
+        await storage.on_file_stored(capture_filename)
+
+        logger.info(
+            "Stream capture complete: %s (%d bytes, %.1fs)",
+            capture_filename, file_size, meta.get("duration_seconds") or 0,
+        )
+        return capture_path
+
+    except Exception as e:
+        _active_process = None
+        logger.exception("Stream capture error for %s: %s", url, e)
+        return None
+
+
 # ── Single variant transcoding ──────────────────────────────────
 
 async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Path) -> None:
@@ -223,8 +309,26 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     source = variant.source_asset
     profile = variant.profile
 
+    # Stream assets with save_locally: capture the stream first
+    if source.asset_type == AssetType.STREAM and getattr(source, "save_locally", False):
+        capture_filename = f"{source.id}_capture.mp4"
+        capture_path = asset_dir / capture_filename
+
+        if not capture_path.is_file():
+            # First variant for this stream — capture it
+            result = await _capture_stream(source, asset_dir, db)
+            if result is None:
+                variant.status = VariantStatus.FAILED
+                variant.error_message = "Stream capture failed"
+                try:
+                    await db.commit()
+                except SQLAlchemyError:
+                    logger.warning("Variant %s deleted (stream capture failed path)", variant.id)
+                return
+
+        source_path = capture_path
     # Use original source file when available
-    if source.original_filename:
+    elif source.original_filename:
         original_path = asset_dir / "originals" / source.original_filename
         if original_path.is_file():
             source_path = original_path

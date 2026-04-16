@@ -98,11 +98,11 @@
         <div class="form-group" style="margin-top:0.5rem;">
             <label style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer; white-space:nowrap;">
                 <span class="toggle-switch">
-                    <input type="checkbox" id="stream-is-live" name="is_live" checked>
+                    <input type="checkbox" id="stream-save-locally" name="save_locally">
                     <span class="slider"></span>
                 </span>
-                Live stream
-                <span class="text-muted" title="When checked, streams directly to devices in real time. When unchecked, the stream is captured and converted to a video file for scheduled playback.">ⓘ</span>
+                Save locally
+                <span class="text-muted" title="When enabled, the stream is captured and converted to a video file for offline playback on devices. When disabled, streams directly to devices in real time.">ⓘ</span>
             </label>
         </div>
         {% if user_groups | length > 0 %}
