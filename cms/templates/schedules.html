@@ -1024,7 +1024,7 @@ function editSchedule(s) {
         if (resp && resp.ok) { overlay.remove(); location.reload(); }
         else {
             const err = await resp.json().catch(() => null);
-            showToast((err && err.detail) || "Failed to update schedule", true);
+            showToast(extractErrorMsg(err, "Failed to update schedule"), true);
         }
     };
 }

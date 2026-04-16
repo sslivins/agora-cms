@@ -102,6 +102,14 @@ function showToast(message, isError = false) {
     setTimeout(() => el.remove(), 3000);
 }
 
+function extractErrorMsg(err, fallback) {
+    if (!err) return fallback || "Unknown error";
+    const d = err.detail;
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map(e => e.msg || e.message || JSON.stringify(e)).join('; ');
+    return fallback || JSON.stringify(err);
+}
+
 // ── Formatters (run on page load) ──
 function humanStorage(mb) {
     if (mb >= 1024) return (mb / 1024).toFixed(1) + " GB";
@@ -1126,7 +1134,7 @@ async function createSchedule(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
     return false;
 }
@@ -1163,7 +1171,7 @@ async function createUser(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1251,7 +1259,7 @@ async function deleteUser(userId, email) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1262,7 +1270,7 @@ async function toggleUserActive(userId, active) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1280,7 +1288,7 @@ async function createRole(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1312,7 +1320,7 @@ async function updateRole(form) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
 
@@ -1324,6 +1332,6 @@ async function deleteRole(roleId, roleName) {
         location.reload();
     } else if (resp) {
         const err = await resp.json();
-        showToast(err.detail || JSON.stringify(err), true);
+        showToast(extractErrorMsg(err), true);
     }
 }
