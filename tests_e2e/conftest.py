@@ -158,6 +158,20 @@ def e2e_server(e2e_port, tmp_path_factory):
     else:
         raise RuntimeError("E2E server failed to start")
 
+    # Mark first-run setup as completed so existing tests aren't
+    # blocked by the setup wizard middleware.
+    async def _mark_setup_done():
+        from shared.database import get_session_factory
+        from cms.auth import set_setting, SETTING_SETUP_COMPLETED
+        import cms.main as main_mod
+        sf = get_session_factory()
+        async with sf() as db:
+            await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+            await db.commit()
+        main_mod._setup_completed_cache = True
+
+    run_async(_mark_setup_done())
+
     yield server
 
     server.should_exit = True
@@ -246,3 +260,38 @@ def api(context: BrowserContext, base_url: str):
     helper = ApiHelper()
     yield helper
     helper._client.close()
+
+
+@pytest.fixture
+def setup_incomplete(e2e_server):
+    """Temporarily clear setup_completed so the setup wizard is active.
+
+    Restores the flag after the test so other tests are not affected.
+    """
+    async def _clear():
+        from shared.database import get_session_factory
+        from cms.auth import SETTING_SETUP_COMPLETED
+        from cms.models.setting import CMSSetting
+        from sqlalchemy import delete
+        import cms.main as main_mod
+        sf = get_session_factory()
+        async with sf() as db:
+            await db.execute(
+                delete(CMSSetting).where(CMSSetting.key == SETTING_SETUP_COMPLETED)
+            )
+            await db.commit()
+        main_mod._setup_completed_cache = None
+
+    async def _restore():
+        from shared.database import get_session_factory
+        from cms.auth import set_setting, SETTING_SETUP_COMPLETED
+        import cms.main as main_mod
+        sf = get_session_factory()
+        async with sf() as db:
+            await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+            await db.commit()
+        main_mod._setup_completed_cache = True
+
+    run_async(_clear())
+    yield
+    run_async(_restore())
