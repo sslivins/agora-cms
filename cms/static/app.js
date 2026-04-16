@@ -327,6 +327,52 @@ async function setGroupDefaultAsset(groupId, assetId) {
     else showToast("Update failed", true);
 }
 
+function editGroupField(el) {
+    const groupId = el.dataset.groupId;
+    const field = el.dataset.field;
+    const placeholder = el.dataset.placeholder || '';
+    const currentText = el.textContent.trim();
+    const isPlaceholder = placeholder && currentText === placeholder;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = isPlaceholder ? '' : currentText;
+    input.placeholder = placeholder || field;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; display:inline-block; width:auto; min-width:120px; max-width:300px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newVal = input.value.trim();
+        if (newVal !== currentText && (newVal || !isPlaceholder)) {
+            const body = {};
+            body[field] = newVal || null;
+            const resp = await apiCall("PATCH", `/api/devices/groups/${groupId}`, body);
+            if (resp && resp.ok) {
+                el.textContent = newVal || placeholder || '';
+                showToast("Group updated");
+            } else {
+                el.textContent = currentText;
+                showToast("Update failed", true);
+            }
+        } else {
+            el.textContent = currentText;
+        }
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); el.textContent = currentText; parent.replaceChild(el, input); }
+    });
+    input.addEventListener('click', e => e.stopPropagation());
+}
+
 async function adoptDevice(deviceId, deviceName) {
     // Show adoption modal with name + optional location + optional group + required profile
     const groups = window._adoptionGroups || [];

@@ -325,8 +325,13 @@
          ondrop="dropDevice(event, '{{ g.id }}'); this.classList.remove('drag-over')">
         <div class="group-header" onclick="toggleGroup(this)">
             <span class="expand-toggle">▶</span>
+            {% if 'groups:write' in user_perms %}
+            <strong><span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="{{ g.id }}" data-field="name">{{ g.name }}</span></strong>
+            <span class="text-muted">— <span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="{{ g.id }}" data-field="description" data-placeholder="No description">{{ g.description or 'No description' }}</span></span>
+            {% else %}
             <strong>{{ g.name }}</strong>
             <span class="text-muted">— {{ g.description or 'No description' }}</span>
+            {% endif %}
             <span class="badge badge-count">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
             <span class="group-actions" onclick="event.stopPropagation()">
                 <span class="has-tooltip inline-label">Splash<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
