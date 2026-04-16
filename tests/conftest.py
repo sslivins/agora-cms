@@ -34,7 +34,6 @@ def _patch_array_columns():
     from cms.models.user import Role
     from cms.models.audit_log import AuditLog
     from cms.models.notification import Notification
-    from cms.models.device_event import DeviceEvent
     col = Schedule.__table__.columns["days_of_week"]
     col.type = JSON()
     col = Role.__table__.columns["permissions"]
@@ -42,8 +41,6 @@ def _patch_array_columns():
     col = AuditLog.__table__.columns["details"]
     col.type = JSON()
     col = Notification.__table__.columns["details"]
-    col.type = JSON()
-    col = DeviceEvent.__table__.columns["details"]
     col.type = JSON()
 
 

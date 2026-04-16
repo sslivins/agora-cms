@@ -168,9 +168,6 @@ class TestScheduleSync:
         async def reconnect():
             async with FakeDevice("sched-sync-001", ws_url, auth_token=saved_token) as dev:
                 await dev.send_status()
-                # If sync wasn't in the initial burst, wait a bit longer
-                if not dev.sync_message:
-                    await dev.wait_for_message("sync", timeout=10.0)
                 return dev.sync_message
 
         sync = run_async(reconnect())
