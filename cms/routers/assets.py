@@ -541,13 +541,21 @@ async def create_stream_asset(
         raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
 
     # Check for duplicate stream URL
+    save_locally = body.get("save_locally", False)
+
     dup_q = await db.execute(
-        select(Asset).where(Asset.url == url, Asset.asset_type == AssetType.STREAM).limit(1)
+        select(Asset).where(
+            Asset.url == url,
+            Asset.asset_type == AssetType.STREAM,
+            Asset.save_locally == save_locally,
+        ).limit(1)
     )
     if dup_q.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="A stream asset with this URL already exists")
-
-    save_locally = body.get("save_locally", False)
+        mode = "save-locally" if save_locally else "live"
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {mode} stream asset with this URL already exists",
+        )
 
     # Use provided name or derive from URL
     name = body.get("name", "").strip()
