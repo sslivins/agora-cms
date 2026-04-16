@@ -542,7 +542,7 @@ async def create_stream_asset(
 
     # Check for duplicate stream URL
     dup_q = await db.execute(
-        select(Asset).where(Asset.url == url, Asset.asset_type == AssetType.STREAM)
+        select(Asset).where(Asset.url == url, Asset.asset_type == AssetType.STREAM).limit(1)
     )
     if dup_q.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="A stream asset with this URL already exists")
