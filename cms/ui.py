@@ -40,7 +40,7 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE
+from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, has_permission
 from cms.auth import get_user_group_ids
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
@@ -475,19 +475,25 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     group_ids = await get_user_group_ids(user, db) if user else []
     is_admin = group_ids is None
 
-    # Pending devices
-    pending_query = select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
-    if not is_admin:
-        if group_ids:
-            pending_query = pending_query.where(
-                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
-            )
-        else:
-            pending_query = pending_query.where(Device.group_id.is_(None))
-    pending_q = await db.execute(pending_query)
-    pending_devices = pending_q.scalars().all()
-    for d in pending_devices:
-        d.is_online = device_manager.is_connected(d.id)
+    # Pending devices (only visible to users with devices:manage)
+    user_perms = user.role.permissions if user and user.role else []
+    can_manage = has_permission(user_perms, DEVICES_MANAGE)
+
+    if can_manage:
+        pending_query = select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
+        if not is_admin:
+            if group_ids:
+                pending_query = pending_query.where(
+                    (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+                )
+            else:
+                pending_query = pending_query.where(Device.group_id.is_(None))
+        pending_q = await db.execute(pending_query)
+        pending_devices = pending_q.scalars().all()
+        for d in pending_devices:
+            d.is_online = device_manager.is_connected(d.id)
+    else:
+        pending_devices = []
 
     # All adopted devices
     devices_query = (
@@ -511,22 +517,25 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     # Offline devices (adopted but not connected)
     offline_devices = [d for d in all_devices if not d.is_online]
 
-    # Orphaned devices
-    orphan_query = (
-        select(Device)
-        .options(selectinload(Device.group))
-        .where(Device.status == DeviceStatus.ORPHANED)
-        .order_by(Device.name, Device.id)
-    )
-    if not is_admin:
-        if group_ids:
-            orphan_query = orphan_query.where(
-                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
-            )
-        else:
-            orphan_query = orphan_query.where(Device.group_id.is_(None))
-    orphaned_q = await db.execute(orphan_query)
-    orphaned_devices = orphaned_q.scalars().all()
+    # Orphaned devices (only visible to users with devices:manage)
+    if can_manage:
+        orphan_query = (
+            select(Device)
+            .options(selectinload(Device.group))
+            .where(Device.status == DeviceStatus.ORPHANED)
+            .order_by(Device.name, Device.id)
+        )
+        if not is_admin:
+            if group_ids:
+                orphan_query = orphan_query.where(
+                    (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
+                )
+            else:
+                orphan_query = orphan_query.where(Device.group_id.is_(None))
+        orphaned_q = await db.execute(orphan_query)
+        orphaned_devices = orphaned_q.scalars().all()
+    else:
+        orphaned_devices = []
 
     # Now Playing — computed from DB + live device state
     now_playing = await compute_now_playing(db, tz, now)
@@ -698,17 +707,23 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
             return q.where((Device.group_id.in_(group_ids)) | (Device.group_id.is_(None)))
         return q.where(Device.group_id.is_(None))
 
-    # Pending device IDs
-    pending_q = await db.execute(
-        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.PENDING))
-    )
-    pending_ids = [r[0] for r in pending_q.all()]
+    # Pending/orphaned device IDs (only for users with devices:manage)
+    user_perms = user.role.permissions if user and user.role else []
+    can_manage = has_permission(user_perms, DEVICES_MANAGE)
 
-    # Orphaned device IDs
-    orphaned_q = await db.execute(
-        _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ORPHANED))
-    )
-    orphaned_ids = [r[0] for r in orphaned_q.all()]
+    if can_manage:
+        pending_q = await db.execute(
+            _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.PENDING))
+        )
+        pending_ids = [r[0] for r in pending_q.all()]
+
+        orphaned_q = await db.execute(
+            _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ORPHANED))
+        )
+        orphaned_ids = [r[0] for r in orphaned_q.all()]
+    else:
+        pending_ids = []
+        orphaned_ids = []
 
     # Online status (adopted devices only)
     devices_q = await db.execute(
@@ -829,7 +844,13 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     group_ids = await get_user_group_ids(user, db) if user else []
     is_admin = group_ids is None
 
+    # Only show pending/orphaned devices to users with devices:manage
+    user_perms = user.role.permissions if user and user.role else []
+    can_manage = has_permission(user_perms, DEVICES_MANAGE)
+
     device_query = select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
+    if not can_manage:
+        device_query = device_query.where(Device.status == DeviceStatus.ADOPTED)
     if not is_admin:
         if group_ids:
             device_query = device_query.where(

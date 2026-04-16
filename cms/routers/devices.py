@@ -102,7 +102,14 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     group_ids = await get_user_group_ids(user, db) if user else []
     is_admin = group_ids is None
 
+    # Hide pending/orphaned devices from users without devices:manage
+    from cms.permissions import has_permission
+    user_perms = user.role.permissions if user and user.role else []
+    can_manage = has_permission(user_perms, DEVICES_MANAGE)
+
     query = select(Device).options(selectinload(Device.group)).order_by(Device.registered_at)
+    if not can_manage:
+        query = query.where(Device.status == DeviceStatus.ADOPTED)
     if not is_admin:
         # Non-admin: only devices in user's groups
         if group_ids:
