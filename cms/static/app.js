@@ -249,6 +249,48 @@ async function renameDevice(deviceId, newName) {
     else showToast("Rename failed", true);
 }
 
+function editDeviceName(el) {
+    const deviceId = el.dataset.deviceId;
+    const fallback = el.dataset.fallback;
+    const currentName = el.textContent.trim();
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName === fallback ? '' : currentName;
+    input.placeholder = fallback;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; width:100%; max-width:220px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newName = input.value.trim();
+        if (newName !== currentName && (newName || currentName !== fallback)) {
+            const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { name: newName });
+            if (resp && resp.ok) {
+                el.textContent = newName || fallback;
+                showToast("Device renamed");
+            } else {
+                el.textContent = currentName;
+                showToast("Rename failed", true);
+            }
+        } else {
+            el.textContent = currentName;
+        }
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); el.textContent = currentName; parent.replaceChild(el, input); }
+    });
+    input.addEventListener('click', e => e.stopPropagation());
+}
+
 async function assignGroup(deviceId, groupId) {
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { group_id: groupId || null });
     if (resp && resp.ok) showToast("Group updated");
