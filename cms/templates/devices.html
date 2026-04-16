@@ -55,41 +55,37 @@
         {{ (d.default_asset.display_name or d.default_asset.original_filename or d.default_asset.filename) if d.default_asset else '—' }}
         {% endif %}
     </td>
+    {% if 'devices:manage' in user_perms %}
     <td>
-        {% if 'devices:manage' in user_perms %}
         <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
             {% endfor %}
         </select>
-        {% endif %}
     </td>
+    {% endif %}
     <td data-live-storage-pct="{{ d.id }}" data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
         {% if d.storage_capacity_mb > 0 %}
         {{ ((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int }}% free
         {% else %}—{% endif %}
     </td>
+    {% if 'devices:manage' in user_perms %}
     <td class="actions" data-live-actions="{{ d.id }}" onclick="event.stopPropagation()">
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
-        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
-        {% endif %}
         {% elif d.is_upgrading %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
         {% elif d.is_online and d.update_available %}
-        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button><span class="tooltip">Update firmware from {{ d.firmware_version }} to {{ latest_version }}</span></span>
         {% endif %}
-        {% endif %}
-        {% if 'devices:manage' in user_perms %}
         <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>
-        {% endif %}
     </td>
+    {% endif %}
 </tr>
 <tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
     <td></td>
-    <td colspan="{% if 'devices:manage' in user_perms %}7{% else %}6{% endif %}">
+    <td colspan="{% if 'devices:manage' in user_perms %}7{% else %}5{% endif %}">
         <div class="detail-grid">
             <div class="detail-item">
                 <span class="detail-label">Device ID</span>
@@ -281,7 +277,7 @@
     <th>Device Splash Screen</th>
     {% if 'devices:manage' in user_perms %}<th>Profile</th>{% endif %}
     <th>Storage</th>
-    <th>Actions</th>
+    {% if 'devices:manage' in user_perms %}<th>Actions</th>{% endif %}
 </tr>
 {% endset %}
 
@@ -308,7 +304,7 @@
             {% for d in devices %}
             {{ device_row(d, groups, assets, profiles) }}
             {% else %}
-            <tr><td colspan="{% if 'devices:manage' in user_perms %}8{% else %}7{% endif %}" class="empty">No devices registered yet</td></tr>
+            <tr><td colspan="{% if 'devices:manage' in user_perms %}8{% else %}6{% endif %}" class="empty">No devices registered yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
