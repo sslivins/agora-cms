@@ -148,7 +148,7 @@
             <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
                 <td class="expand-toggle">▶</td>
                 <td class="wrap asset-filename-cell"><span class="has-tooltip"><span class="asset-filename-truncate">{{ a.original_filename or a.filename }}</span><span class="tooltip">{{ a.original_filename or a.filename }}</span></span></td>
-                <td><span class="badge badge-{{ a.asset_type.value }}">{{ a.asset_type.value | capitalize }}</span></td>
+                <td><span class="badge badge-{{ a.asset_type.value }}">{% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
                 <td>
                     {% if a.is_global %}
                     <span class="badge badge-ready">Global</span>

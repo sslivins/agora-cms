@@ -367,6 +367,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-image { background: #8e44ad; color: var(--text); }
 .badge-webpage { background: #2980b9; color: var(--text); }
 .badge-stream { background: #e67e22; color: var(--text); }
+.badge-saved_stream { background: #d35400; color: var(--text); }
 .badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
 .badge-processing { background: #3498db; color: #fff; margin-left: 0.4rem; }
 .badge-overflow { background: #3498db; color: #fff; margin-left: 0.15rem; font-size: 0.75rem; cursor: default; }
