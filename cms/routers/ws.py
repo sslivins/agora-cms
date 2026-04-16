@@ -28,6 +28,7 @@ from cms.schemas.protocol import (
     SyncMessage,
 )
 from cms.services.device_manager import device_manager
+from cms.services.alert_service import alert_service
 from cms.services.scheduler import build_device_sync, log_schedule_event, set_now_playing, clear_now_playing
 from cms.services.storage import get_storage
 
@@ -171,6 +172,9 @@ async def _generate_and_push_api_key(device: Device, websocket: WebSocket, db: A
 async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
     await websocket.accept()
     device_id = None
+    device = None
+    _group_id = None
+    _group_name = ""
 
     try:
         # ── 1. Wait for register message ──
@@ -294,6 +298,17 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         client_ip = raw.get("ip_address") or (websocket.client.host if websocket.client else None)
         device_manager.register(device_id, websocket, ip_address=client_ip)
 
+        # ── 3b. Notify alert service of reconnection ──
+        _group_name = device.group.name if device.group else ""
+        _group_id = str(device.group_id) if device.group_id else None
+        alert_service.device_reconnected(
+            device_id,
+            device_name=device.name or device_id,
+            group_id=_group_id,
+            group_name=_group_name,
+            status=device.status.value,
+        )
+
         # ── 4. Build base URL for asset downloads ──
         base_url = get_asset_base_url(websocket)
         settings = get_settings()
@@ -353,6 +368,16 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     ssh_enabled=msg.get("ssh_enabled"),
                     local_api_enabled=msg.get("local_api_enabled"),
                     display_connected=msg.get("display_connected"),
+                )
+
+                # Check temperature thresholds
+                alert_service.check_temperature(
+                    device_id,
+                    cpu_temp_c=msg.get("cpu_temp_c"),
+                    device_name=device.name or device_id,
+                    group_id=_group_id,
+                    group_name=_group_name,
+                    status=device.status.value,
                 )
 
                 # Rotate API key if due
@@ -503,6 +528,14 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
     finally:
         if device_id:
             device_manager.disconnect(device_id)
+            # Notify alert service of disconnection
+            alert_service.device_disconnected(
+                device_id,
+                device_name=device.name if device else device_id,
+                group_id=_group_id if device else None,
+                group_name=_group_name if device else "",
+                status=device.status.value if device else "pending",
+            )
             # Clear upgrade-in-progress flag so the device can be upgraded again after reconnect
             from cms.routers.devices import _upgrading
             _upgrading.discard(device_id)
