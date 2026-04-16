@@ -895,10 +895,11 @@ tr.highlight-new td {
 .group-panel.expanded .group-header .expand-toggle { transform: rotate(90deg); display: inline-block; }
 .group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text); padding: 0.15rem 0.5rem; border-radius: 10px; }
 .group-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
-.inline-label { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+.group-actions .btn-sm { font-size: 0.9rem; }
+.inline-label { font-size: 0.9rem; color: var(--text-muted); white-space: nowrap; }
 .group-body { padding: 0 1rem 0.75rem; }
 .group-body table { margin: 0; }
-.inline-edit-sm { font-size: 0.8rem; padding: 0.2rem 0.4rem; }
+.inline-edit-sm { font-size: 0.9rem; padding: 0.2rem 0.4rem; }
 
 /* Draggable devices */
 .draggable-device { cursor: grab; }
