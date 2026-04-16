@@ -20,6 +20,13 @@ from cms.services.device_manager import device_manager
 
 logger = logging.getLogger("agora.cms.scheduler")
 
+
+def _asset_display_name(asset) -> str:
+    """Return the best human-readable name for an asset."""
+    if asset is None:
+        return "—"
+    return asset.display_name or asset.original_filename or asset.filename
+
 # Track last sync hash per device to avoid re-sending identical syncs
 _last_sync_hash: dict[str, str] = {}
 
@@ -199,13 +206,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
             s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
         )
         asset_raw = s.asset.url if is_url_asset else s.asset.filename
-        display_name = asset_raw
-        if is_url_asset:
-            display_name = (
-                s.asset.original_filename
-                or s.asset.filename
-                or asset_raw
-            )
+        display_name = _asset_display_name(s.asset)
 
         device_name = device_names.get(did, did)
         confirmed = _confirmed_playing.get(did)
@@ -344,7 +345,7 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
 
     return {
         "schedule_name": s.name,
-        "asset_filename": s.asset.filename if s.asset else "—",
+        "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
@@ -416,7 +417,7 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
 
     return {
         "schedule_name": s.name,
-        "asset_filename": s.asset.filename if s.asset else "—",
+        "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
@@ -444,7 +445,7 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
 
     return {
         "schedule_name": s.name,
-        "asset_filename": s.asset.filename if s.asset else "—",
+        "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
@@ -833,7 +834,7 @@ async def evaluate_schedules() -> None:
                         db, ScheduleLogEvent.MISSED,
                         schedule_name=s.name,
                         device_name=all_adopted.get(did, did),
-                        asset_filename=s.asset.filename,
+                        asset_filename=_asset_display_name(s.asset),
                         schedule_id=s.id, device_id=did,
                         details=f"Device offline for {int(elapsed)}s",
                     )
