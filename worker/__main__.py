@@ -171,13 +171,15 @@ async def _queue_mode(settings: WorkerSettings) -> None:
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
-    """Block until the CMS has created the database schema."""
+    """Block until the CMS has created/migrated the database schema."""
     from sqlalchemy import text
     session_factory = get_session_factory()
     for attempt in range(1, max_retries + 1):
         try:
             async with session_factory() as db:
+                # Check both base table and latest migration column
                 await db.execute(text("SELECT 1 FROM asset_variants LIMIT 0"))
+                await db.execute(text("SELECT save_locally FROM assets LIMIT 0"))
                 return
         except Exception:
             if attempt == max_retries:
