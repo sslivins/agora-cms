@@ -25,6 +25,10 @@ from shared.services.storage import get_storage
 
 logger = logging.getLogger("agora.worker.transcoder")
 
+# Maximum duration to capture from a stream (seconds).  Prevents runaway
+# captures of truly-live streams that never end.
+STREAM_CAPTURE_MAX_SECONDS = int(os.environ.get("AGORA_STREAM_CAPTURE_MAX_SECONDS", "14400"))  # 4 hours
+
 
 # ── Active transcode tracking (cancel support) ─────────────────
 
