@@ -16,8 +16,8 @@ permissions:
   id-token: write  # OIDC token for Azure login
 
 env:
-  ACR_REGISTRY: agoracmsacr.azurecr.io
-  AZURE_RESOURCE_GROUP: agoracms-cms-rg
+  ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
 
 jobs:
   publish:
@@ -132,11 +132,11 @@ jobs:
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
-              prefix='agoracms' \
+              prefix='${{ vars.INFRA_PREFIX }}' \
               postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
               cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
-              adminPrincipalId='224d9903-ad74-4629-982b-1db94580d901' \
+              adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=false \
               cmsImage='${{ env.ACR_REGISTRY }}/agora-cms:${{ needs.publish.outputs.version }}' \
               mcpImage='${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}' \
@@ -158,7 +158,7 @@ jobs:
         run: |
           EXPECTED="${{ needs.publish.outputs.version }}"
           FQDN=$(az containerapp show \
-            --name agoracms-cms \
+            --name ${{ vars.INFRA_PREFIX }}-cms \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --query "properties.configuration.ingress.fqdn" -o tsv)
           URL="https://${FQDN}/healthz"
