@@ -1,9 +1,9 @@
-"""E2E tests for built-in profile protection and copy button.
+"""E2E tests for built-in profile UI: edit, reset, copy, and delete.
 
 Verifies that:
-- Built-in profiles do NOT show Edit or Delete buttons.
-- Built-in profiles DO show a Copy button.
-- Non-built-in profiles show Edit, Copy, and Delete buttons.
+- Built-in profiles DO show Edit, Copy, and Reset buttons.
+- Built-in profiles do NOT show Delete buttons.
+- Non-built-in profiles show Edit, Copy, and Delete buttons (no Reset).
 - Clicking Copy creates a new profile row with 'Copy of' prefix.
 """
 
@@ -13,18 +13,26 @@ from playwright.sync_api import Page, expect
 
 @pytest.mark.e2e
 class TestBuiltinProfileUI:
-    """Built-in profiles should hide Edit/Delete and show Copy."""
+    """Built-in profiles should show Edit/Copy/Reset but hide Delete."""
 
-    def test_builtin_has_no_edit_button(self, page: Page, e2e_server):
-        """Built-in profile rows should not have Edit buttons."""
+    def test_builtin_has_edit_button(self, page: Page, e2e_server):
+        """Built-in profile rows should have Edit buttons."""
         page.goto("/profiles")
         page.wait_for_load_state("domcontentloaded")
 
         rows = page.locator("tr", has=page.locator(".badge-builtin"))
         expect(rows.first).to_be_visible()
-        # None of the built-in rows should have an Edit button
         for i in range(rows.count()):
-            expect(rows.nth(i).locator("button", has_text="Edit")).to_have_count(0)
+            expect(rows.nth(i).locator("button", has_text="Edit")).to_be_visible()
+
+    def test_builtin_has_reset_button(self, page: Page, e2e_server):
+        """Built-in profile rows should have Reset buttons."""
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+
+        rows = page.locator("tr", has=page.locator(".badge-builtin"))
+        for i in range(rows.count()):
+            expect(rows.nth(i).locator("button", has_text="Reset")).to_be_visible()
 
     def test_builtin_has_no_delete_button(self, page: Page, e2e_server):
         """Built-in profile rows should not have Delete buttons."""
@@ -45,7 +53,7 @@ class TestBuiltinProfileUI:
             expect(rows.nth(i).locator("button", has_text="Copy")).to_be_visible()
 
     def test_custom_profile_has_all_buttons(self, page: Page, api, e2e_server):
-        """Non-built-in profile should show Edit, Copy, and Delete buttons."""
+        """Non-built-in profile should show Edit, Copy, and Delete buttons (no Reset)."""
         resp = api.post("/api/profiles", json={
             "name": "e2e-custom-btns",
             "video_codec": "h264",
@@ -59,6 +67,7 @@ class TestBuiltinProfileUI:
         expect(row.locator("button", has_text="Edit")).to_be_visible()
         expect(row.locator("button", has_text="Copy")).to_be_visible()
         expect(row.locator("button", has_text="Delete")).to_be_visible()
+        expect(row.locator("button", has_text="Reset")).to_have_count(0)
 
 
 @pytest.mark.e2e
