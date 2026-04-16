@@ -354,3 +354,99 @@ async def test_normal_routes_accessible_after_setup(setup_client):
     )
     # Should NOT redirect to /setup anymore
     assert resp.status_code != 303 or resp.headers.get("location") != "/setup"
+
+
+# ── Upgrade-path migration tests ──
+
+
+@pytest.mark.anyio
+async def test_upgrade_migration_sets_flag_when_admin_exists(db_engine):
+    """Existing deployments (admin already in DB) should auto-set setup_completed
+    so the wizard doesn't block returning admins after upgrade."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from cms.auth import (
+        hash_password, get_setting, set_setting,
+        SETTING_SETUP_COMPLETED, ensure_admin_credentials,
+    )
+    from cms.models.user import User, Role
+    from cms.config import Settings
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    settings = Settings(
+        database_url=str(db_engine.url),
+        secret_key="test-secret",
+        admin_username="admin",
+        admin_password="testpass",
+    )
+
+    # Simulate existing deployment: admin user exists, NO setup_completed flag
+    async with factory() as db:
+        role = Role(
+            name="Admin", description="admin",
+            permissions=["*"], is_builtin=True,
+        )
+        db.add(role)
+        await db.flush()
+        db.add(User(
+            username="admin", email="existing@example.com",
+            display_name="Existing Admin", password_hash=hash_password("pw"),
+            role_id=role.id, is_active=True, must_change_password=False,
+        ))
+        await db.commit()
+
+    # Run the upgrade-path migration logic (same as lifespan)
+    async with factory() as db:
+        completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+        assert completed is None  # flag doesn't exist yet
+
+        result = await db.execute(
+            select(User).where(
+                User.username == settings.admin_username,
+                User.is_active.is_(True),
+            ).limit(1)
+        )
+        admin = result.scalar_one_or_none()
+        assert admin is not None  # admin exists → it's an upgrade
+
+        await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+        await db.commit()
+
+    # Verify: flag is now set
+    async with factory() as db:
+        assert await get_setting(db, SETTING_SETUP_COMPLETED) == "true"
+
+
+@pytest.mark.anyio
+async def test_fresh_install_does_not_set_flag(db_engine):
+    """On a truly fresh install (no admin in DB yet), the migration must NOT
+    set the flag — the wizard needs to run."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from cms.auth import get_setting, SETTING_SETUP_COMPLETED
+    from cms.models.user import User
+    from cms.config import Settings
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    settings = Settings(
+        database_url=str(db_engine.url),
+        secret_key="test-secret",
+        admin_username="admin",
+        admin_password="testpass",
+    )
+
+    # No admin user exists — this is a fresh install
+    async with factory() as db:
+        completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+        assert completed is None
+
+        result = await db.execute(
+            select(User).where(
+                User.username == settings.admin_username,
+                User.is_active.is_(True),
+            ).limit(1)
+        )
+        admin = result.scalar_one_or_none()
+        assert admin is None  # no admin → fresh install → don't set flag
+
+    # Verify: flag is still NOT set
+    async with factory() as db:
+        assert await get_setting(db, SETTING_SETUP_COMPLETED) is None

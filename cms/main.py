@@ -332,6 +332,27 @@ async def lifespan(app: FastAPI):
     async for db in get_db():
         await _seed_roles(db)
 
+    # Auto-mark setup as completed for existing deployments that are
+    # upgrading from a version before the setup wizard was added.
+    # Must run BEFORE ensure_admin_credentials so we can distinguish
+    # "admin already existed" (upgrade) from "no admin yet" (fresh).
+    async for db in get_db():
+        from cms.auth import get_setting, set_setting, SETTING_SETUP_COMPLETED
+        completed = await get_setting(db, SETTING_SETUP_COMPLETED)
+        if completed is None:
+            from sqlalchemy import select as _sel
+            from cms.models.user import User
+            result = await db.execute(
+                _sel(User).where(
+                    User.username == settings.admin_username,
+                    User.is_active.is_(True),
+                ).limit(1)
+            )
+            if result.scalar_one_or_none() is not None:
+                await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+                await db.commit()
+                logger.info("Existing deployment detected — setup wizard skipped")
+
     # Seed admin credentials from env vars if not already in DB
     async for db in get_db():
         await ensure_admin_credentials(db, settings)
