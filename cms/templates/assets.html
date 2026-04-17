@@ -220,6 +220,8 @@
                     {% else %}
                         <span class="badge badge-pending">Queued</span>
                     {% endif %}
+                    {% elif a.asset_type.value == 'saved_stream' %}
+                        <span class="has-tooltip"><span class="badge badge-pending">Pending</span><span class="tooltip">Waiting for stream capture to complete</span></span>
                     {% elif a.asset_type.value == 'image' %}
                     —
                     {% else %}
@@ -439,6 +441,14 @@
                             </tbody>
                         </table>
                     </div>
+                    {% elif a.asset_type.value == 'saved_stream' %}
+                    <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
+                        <span class="detail-label">Variants</span>
+                        <div style="margin-top: 0.35rem; font-size: 0.85rem;">
+                            <span class="badge badge-pending">Pending</span>
+                            <span class="text-muted" style="margin-left: 0.5rem;">Waiting for stream capture to complete</span>
+                        </div>
+                    </div>
                     {% endif %}
                 </td>
             </tr>
@@ -633,7 +643,13 @@
     };
 
     function buildVariantBadge(a) {
-        if (a.variant_total === 0) return '<span class="text-muted">none</span>';
+        if (a.variant_total === 0) {
+            if (a.asset_type === 'saved_stream') {
+                return '<span class="has-tooltip"><span class="badge badge-pending">Pending</span>' +
+                    '<span class="tooltip">Waiting for stream capture to complete</span></span>';
+            }
+            return '<span class="text-muted">none</span>';
+        }
         if (a.variant_failed > 0 && a.variant_ready > 0) {
             return '<span class="has-tooltip"><span class="badge badge-partial">Partial</span>' +
                 '<span class="tooltip">' + a.variant_ready + ' of ' + a.variant_total + ' ready, ' + a.variant_failed + ' failed</span></span>';
@@ -715,6 +731,21 @@
             if (variantCell) variantCell.innerHTML = buildVariantBadge(a);
             // Update expanded detail panel variant table
             updateVariantTable(a.id, a.variants);
+        }
+        // Detect saved_stream assets that just got their variants: DOM still shows
+        // the "Pending" placeholder (no tbody) but server now has variants. Reload
+        // so Jinja can render the real variants table (profile names, etc).
+        for (const a of assets) {
+            if (a.asset_type === 'saved_stream' && a.variant_total > 0) {
+                const detailRow = document.querySelector('tr.asset-detail[data-detail-for="' + a.id + '"]');
+                if (detailRow && !detailRow.querySelector('[data-live-variant-table="' + a.id + '"]')) {
+                    const expanded = [...document.querySelectorAll('.asset-row.expanded')]
+                        .map(r => r.dataset.assetId).filter(Boolean);
+                    if (expanded.length) sessionStorage.setItem('expandedAssets', JSON.stringify(expanded));
+                    location.reload();
+                    return;
+                }
+            }
         }
     }
 
