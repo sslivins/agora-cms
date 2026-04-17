@@ -373,6 +373,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-overflow { background: #3498db; color: #fff; margin-left: 0.15rem; font-size: 0.75rem; cursor: default; }
 .badge-ready { background: var(--success); color: #000; margin-left: 0.4rem; }
 .badge-failed { background: var(--danger); color: #fff; margin-left: 0.4rem; }
+.badge-cancelled { background: #7f8c8d; color: #fff; margin-left: 0.4rem; }
 .badge-partial { background: var(--warning); color: #000; margin-left: 0.4rem; }
 .badge-temp-warning { background: var(--warning); color: #000; }
 .badge-temp-critical { background: var(--danger); color: #fff; }

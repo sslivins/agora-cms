@@ -431,9 +431,12 @@ async def _queue_mode(settings: WorkerSettings) -> None:
 
     # ── Finalize ──
     if cancel_observed:
-        # User soft-deleted the asset mid-transcode and the heartbeat killed
-        # ffmpeg.  Mark the job CANCELLED and drop the queue message so it
-        # doesn't redeliver.  The reaper will clean up blobs + rows shortly.
+        # Cancel was requested (asset soft-delete or profile-change variant
+        # swap) and the heartbeat killed ffmpeg.  Mark the job CANCELLED and
+        # also transition the variant row to CANCELLED so it's clearly
+        # distinguishable from a real FAILED transcode in the UI and so the
+        # supersede/reap sweeps can clean it up.  The reaper tolerates a
+        # missing output blob.
         async with session_factory() as db:
             from sqlalchemy import update as _sa_update
             await db.execute(
@@ -441,9 +444,19 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 .where(Job.id == job_id)
                 .values(
                     status=JobStatus.CANCELLED,
-                    error_message="cancelled mid-transcode (asset deleted)",
+                    error_message="cancelled mid-transcode",
                 )
             )
+            if job.type == JobType.VARIANT_TRANSCODE:
+                await db.execute(
+                    _sa_update(AssetVariant)
+                    .where(AssetVariant.id == job.target_id)
+                    .values(
+                        status=VariantStatus.CANCELLED,
+                        progress=0.0,
+                        error_message="cancelled mid-transcode",
+                    )
+                )
             await db.commit()
         try:
             queue.delete_message(msg, pop_receipt=current_popreceipt)

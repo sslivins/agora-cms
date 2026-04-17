@@ -621,9 +621,10 @@ async def supersede_ready_variants_once(db) -> int:
     A variant V is considered "superseded" when there exists another
     non-deleted AssetVariant V' with the same (source_asset_id,
     profile_id) where V'.status = READY and V'.created_at > V.created_at.
-    Only V's that are themselves READY (or FAILED, which can never be
-    promoted above a newer READY) are soft-deleted here — still-PENDING
-    or PROCESSING sibling jobs are left to run their course.
+    Only V's that are themselves in a terminal state — READY, FAILED, or
+    CANCELLED — are soft-deleted here; none of those can ever be promoted
+    above a newer READY.  Still-PENDING or PROCESSING sibling jobs are
+    left to run their course.
 
     Returns the number of variants soft-deleted this pass.
     """
@@ -648,7 +649,11 @@ async def supersede_ready_variants_once(db) -> int:
     result = await db.execute(
         select(V).where(
             V.deleted_at.is_(None),
-            V.status.in_([_VariantStatus.READY, _VariantStatus.FAILED]),
+            V.status.in_([
+                _VariantStatus.READY,
+                _VariantStatus.FAILED,
+                _VariantStatus.CANCELLED,
+            ]),
             newer_exists,
         )
     )

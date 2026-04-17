@@ -365,6 +365,18 @@ async def run_migrations():
             if not has_cancelled.scalar():
                 await conn.execute(text("ALTER TYPE jobstatus ADD VALUE IF NOT EXISTS 'CANCELLED'"))
 
+    # -- Add 'CANCELLED' value to variantstatus enum --
+    async with _shared_db._engine.begin() as conn:
+        var_enum_exists = await conn.execute(
+            text("SELECT 1 FROM pg_type WHERE typname = 'variantstatus'")
+        )
+        if var_enum_exists.scalar():
+            has_v_cancelled = await conn.execute(
+                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'CANCELLED' AND enumtypid = 'variantstatus'::regtype")
+            )
+            if not has_v_cancelled.scalar():
+                await conn.execute(text("ALTER TYPE variantstatus ADD VALUE IF NOT EXISTS 'CANCELLED'"))
+
     # -- device_events.device_id: drop NOT NULL so system events (CMS_STARTED/STOPPED) can omit it --
     async with _shared_db._engine.begin() as conn:
         def _is_nullable(connection, table_name, column_name):
