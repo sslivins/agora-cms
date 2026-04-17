@@ -387,6 +387,18 @@ async def run_migrations():
         if has_retry:
             await conn.execute(text("ALTER TABLE asset_variants DROP COLUMN retry_count"))
 
+    # -- asset_variants.deleted_at (soft-delete marker for supersession) --
+    async with _shared_db._engine.begin() as conn:
+        has_v_deleted_at = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "deleted_at"))
+        if not has_v_deleted_at:
+            await conn.execute(text(
+                "ALTER TABLE asset_variants ADD COLUMN deleted_at TIMESTAMPTZ"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_asset_variants_deleted_at "
+                "ON asset_variants (deleted_at)"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

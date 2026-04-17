@@ -1,4 +1,13 @@
-"""Tests for re-transcoding variants when profile settings change."""
+"""Tests for re-transcoding variants when profile settings change.
+
+With the "latest-READY-wins" variant-swap model (see plan.md), a
+transcoding-relevant profile edit no longer mutates the existing variant
+row; instead a fresh variant row with a new UUID is inserted so that the
+old ffmpeg run and the new one write to *different* blob paths, eliminating
+the in-place reset race.  The old variant stays READY (so devices keep
+serving the last good blob) until the reaper supersession sweep marks it
+soft-deleted.
+"""
 
 import uuid
 
@@ -9,10 +18,12 @@ from sqlalchemy import select
 
 @pytest.mark.asyncio
 class TestProfileUpdateRetranscode:
-    """Updating transcoding-relevant profile settings should reset variants."""
+    """Updating transcoding-relevant profile settings should create a fresh
+    variant row while preserving the old READY variant for device playback."""
 
-    async def test_changing_crf_resets_ready_variants(self, client, db_session):
-        """Changing CRF should reset READY variants back to PENDING."""
+    async def test_changing_crf_creates_new_pending_variant(self, client, db_session):
+        """Changing CRF must insert a new PENDING variant with a fresh UUID
+        while leaving the original READY variant intact (deleted_at IS NULL)."""
         from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
         from cms.models.device_profile import DeviceProfile
 
@@ -27,29 +38,48 @@ class TestProfileUpdateRetranscode:
         db_session.add(asset)
         await db_session.flush()
 
-        variant = AssetVariant(
+        orig_variant = AssetVariant(
             source_asset_id=asset.id,
             profile_id=profile.id,
             filename=f"{uuid.uuid4()}.mp4",
             status=VariantStatus.READY,
             size_bytes=500,
         )
-        db_session.add(variant)
+        db_session.add(orig_variant)
         await db_session.commit()
+        orig_id = orig_variant.id
+        orig_filename = orig_variant.filename
 
-        # Update CRF
         resp = await client.put(
             f"/api/profiles/{profile.id}",
             json={"crf": 18},
         )
         assert resp.status_code == 200
 
-        # Variant should be reset to PENDING
-        await db_session.refresh(variant)
-        assert variant.status == VariantStatus.PENDING
+        # Old variant is still READY and still undeleted — device playback
+        # keeps working until the new variant takes over and the reaper
+        # supersedes the old one.
+        db_session.expunge_all()
+        result = await db_session.execute(
+            select(AssetVariant).where(AssetVariant.profile_id == profile.id)
+        )
+        variants = result.scalars().all()
+        assert len(variants) == 2, (
+            f"expected 2 variants (old READY + new PENDING), got {len(variants)}"
+        )
 
-    async def test_changing_description_does_not_retranscode(self, client, db_session):
-        """Changing description should NOT reset variants."""
+        old = next(v for v in variants if v.id == orig_id)
+        new = next(v for v in variants if v.id != orig_id)
+        assert old.status == VariantStatus.READY
+        assert old.deleted_at is None
+        assert old.filename == orig_filename
+        assert new.status == VariantStatus.PENDING
+        assert new.deleted_at is None
+        assert new.filename != orig_filename, "new variant must have fresh blob path"
+        assert new.source_asset_id == asset.id
+
+    async def test_changing_description_does_not_create_variant(self, client, db_session):
+        """Changing description should NOT create a new variant."""
         from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
         from cms.models.device_profile import DeviceProfile
 
@@ -80,11 +110,16 @@ class TestProfileUpdateRetranscode:
         )
         assert resp.status_code == 200
 
-        await db_session.refresh(variant)
-        assert variant.status == VariantStatus.READY
+        db_session.expunge_all()
+        result = await db_session.execute(
+            select(AssetVariant).where(AssetVariant.profile_id == profile.id)
+        )
+        variants = result.scalars().all()
+        assert len(variants) == 1
+        assert variants[0].status == VariantStatus.READY
 
-    async def test_changing_resolution_resets_variants(self, client, db_session):
-        """Changing max_width should reset READY variants."""
+    async def test_changing_resolution_creates_new_pending_variant(self, client, db_session):
+        """Changing max_width must insert a new PENDING variant row."""
         from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
         from cms.models.device_profile import DeviceProfile
 
@@ -115,11 +150,19 @@ class TestProfileUpdateRetranscode:
         )
         assert resp.status_code == 200
 
-        await db_session.refresh(variant)
-        assert variant.status == VariantStatus.PENDING
+        db_session.expunge_all()
+        result = await db_session.execute(
+            select(AssetVariant).where(
+                AssetVariant.profile_id == profile.id,
+                AssetVariant.status == VariantStatus.PENDING,
+            )
+        )
+        pending = result.scalars().all()
+        assert len(pending) == 1, "exactly one new PENDING variant expected"
 
-    async def test_retranscode_response_shows_zero_ready(self, client, db_session):
-        """After a transcoding-relevant change, ready_variants should be 0."""
+    async def test_retranscode_response_counts_both_old_and_new(self, client, db_session):
+        """After a transcoding-relevant change, total_variants includes both
+        the preserved READY row and the freshly-created PENDING row."""
         from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
         from cms.models.device_profile import DeviceProfile
 
@@ -150,8 +193,85 @@ class TestProfileUpdateRetranscode:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total_variants"] == 1
-        assert data["ready_variants"] == 0
+        # Old READY row is preserved; new PENDING row added → 2 total, 1 ready
+        assert data["total_variants"] == 2
+        assert data["ready_variants"] == 1
+
+    async def test_double_edit_creates_two_new_variants(self, client, db_session):
+        """Two back-to-back PUTs must cancel V_new1 and create V_new2.
+
+        This is the corner case that motivated the swap design: a user
+        hits save, realises they want to change another field, hits save
+        again.  Both in-flight jobs must be flagged cancel_requested and
+        a fresh variant inserted for the most recent PUT.
+        """
+        from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+        from shared.models.job import Job, JobStatus, JobType
+
+        profile = DeviceProfile(name="double-edit", video_codec="h264", crf=23)
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(
+            filename="double-edit.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=1000, checksum="abc",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        orig = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{uuid.uuid4()}.mp4", status=VariantStatus.READY,
+        )
+        db_session.add(orig)
+        await db_session.commit()
+
+        resp1 = await client.put(
+            f"/api/profiles/{profile.id}",
+            json={"crf": 20},
+        )
+        assert resp1.status_code == 200
+
+        resp2 = await client.put(
+            f"/api/profiles/{profile.id}",
+            json={"video_bitrate": "5M"},
+        )
+        assert resp2.status_code == 200
+
+        db_session.expunge_all()
+        result = await db_session.execute(
+            select(AssetVariant)
+            .where(AssetVariant.profile_id == profile.id)
+            .order_by(AssetVariant.created_at.asc())
+        )
+        variants = result.scalars().all()
+        assert len(variants) == 3, (
+            f"expected 3 variants (original READY + 2 new PENDING), "
+            f"got {len(variants)}"
+        )
+        # Original READY preserved
+        assert variants[0].id == orig.id
+        assert variants[0].status == VariantStatus.READY
+        # Two new PENDING rows, fresh filenames
+        assert {v.status for v in variants[1:]} == {VariantStatus.PENDING}
+        assert len({v.filename for v in variants}) == 3
+
+        # All jobs targeting variants[1] (V_new1) must be cancel_requested
+        # since the second PUT flagged them.  Job for variants[2] (V_new2)
+        # remains active.
+        jobs_result = await db_session.execute(
+            select(Job).where(
+                Job.type == JobType.VARIANT_TRANSCODE,
+                Job.target_id.in_([variants[1].id, variants[2].id]),
+            )
+        )
+        jobs = jobs_result.scalars().all()
+        jobs_by_target = {j.target_id: j for j in jobs}
+        assert variants[1].id in jobs_by_target, "V_new1 should have had a job"
+        assert jobs_by_target[variants[1].id].cancel_requested is True
+        assert variants[2].id in jobs_by_target, "V_new2 should have a job"
+        assert jobs_by_target[variants[2].id].cancel_requested is False
 
 
 @pytest.mark.asyncio
@@ -228,7 +348,7 @@ class TestProfileChangeFlagsActiveJobs:
         assert resp.status_code == 200
 
         from shared.models.job import Job
-        db_session.expire_all()
+        db_session.expunge_all()
         result = await db_session.execute(select(Job).where(Job.id == job_id))
         j = result.scalar_one_or_none()
         assert j is not None and j.cancel_requested is True

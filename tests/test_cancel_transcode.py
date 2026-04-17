@@ -25,7 +25,11 @@ class TestProfileUpdateResetsProcessing:
 
     @pytest.mark.asyncio
     async def test_processing_variant_reset_to_pending(self, client, db_session):
-        """Editing a profile should reset PROCESSING variants, not just READY/FAILED."""
+        """Editing a profile while a variant is PROCESSING must cancel the
+        existing job and create a new PENDING variant row (swap semantics)."""
+        from sqlalchemy import select
+        from shared.models.job import Job, JobType, JobStatus
+
         # Create profile
         profile = DeviceProfile(name="cancel-test", video_codec="h264", video_profile="main")
         db_session.add(profile)
@@ -49,7 +53,17 @@ class TestProfileUpdateResetsProcessing:
             progress=42.0,
         )
         db_session.add(variant)
+        await db_session.flush()
+
+        job = Job(
+            type=JobType.VARIANT_TRANSCODE,
+            target_id=variant.id,
+            status=JobStatus.PROCESSING,
+        )
+        db_session.add(job)
         await db_session.commit()
+        orig_variant_id = variant.id
+        orig_job_id = job.id
 
         # Update profile with a transcoding-relevant change
         resp = await client.put(
@@ -58,10 +72,25 @@ class TestProfileUpdateResetsProcessing:
         )
         assert resp.status_code == 200
 
-        # Verify the PROCESSING variant was reset to PENDING
-        await db_session.refresh(variant)
-        assert variant.status == VariantStatus.PENDING
-        assert variant.progress == 0.0
+        db_session.expunge_all()
+        # Old variant row is still PROCESSING — worker will SIGTERM ffmpeg
+        # when it picks up cancel_requested.  A NEW PENDING variant row has
+        # been inserted with a fresh UUID.
+        variants = (await db_session.execute(
+            select(AssetVariant).where(AssetVariant.profile_id == profile.id)
+        )).scalars().all()
+        assert len(variants) == 2
+        old = next(v for v in variants if v.id == orig_variant_id)
+        new = next(v for v in variants if v.id != orig_variant_id)
+        assert old.status == VariantStatus.PROCESSING
+        assert new.status == VariantStatus.PENDING
+        assert new.filename != old.filename
+
+        # The old in-flight job is flagged for cooperative cancellation.
+        flagged_job = (await db_session.execute(
+            select(Job).where(Job.id == orig_job_id)
+        )).scalar_one()
+        assert flagged_job.cancel_requested is True
 
     @pytest.mark.asyncio
     async def test_non_transcode_change_leaves_processing_alone(self, client, db_session):

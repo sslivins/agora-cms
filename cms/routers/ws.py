@@ -81,26 +81,49 @@ async def _resolve_asset_for_device(
     is_file_asset = asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE, AssetType.SAVED_STREAM)
 
     if is_file_asset and device.profile_id:
-        result = await db.execute(
-            select(AssetVariant).where(
+        # "Latest-READY-wins": with the variant-swap model multiple variant
+        # rows may exist transiently for the same (asset, profile) pair.
+        # Pick the most recently created READY non-deleted variant so devices
+        # always get the freshest completed transcode.  If no READY variant
+        # exists yet, we must still signal "not available" (rather than
+        # falling through to the untranscoded source) when there IS a
+        # non-terminal variant in flight.
+        ready_result = await db.execute(
+            select(AssetVariant)
+            .where(
                 AssetVariant.source_asset_id == asset.id,
                 AssetVariant.profile_id == device.profile_id,
+                AssetVariant.status == VariantStatus.READY,
+                AssetVariant.deleted_at.is_(None),
             )
+            .order_by(AssetVariant.created_at.desc())
+            .limit(1)
         )
-        variant = result.scalar_one_or_none()
+        variant = ready_result.scalars().first()
         if variant:
-            if variant.status == VariantStatus.READY:
-                api_url = f"{base_url}/api/assets/variants/{variant.id}/download"
-                download_url = await storage.get_device_download_url(
-                    f"variants/{variant.filename}", api_url,
-                )
-                return FetchAssetMessage(
-                    asset_name=asset.filename,
-                    download_url=download_url,
-                    checksum=variant.checksum,
-                    size_bytes=variant.size_bytes,
-                    asset_type=asset.asset_type.value,
-                )
+            api_url = f"{base_url}/api/assets/variants/{variant.id}/download"
+            download_url = await storage.get_device_download_url(
+                f"variants/{variant.filename}", api_url,
+            )
+            return FetchAssetMessage(
+                asset_name=asset.filename,
+                download_url=download_url,
+                checksum=variant.checksum,
+                size_bytes=variant.size_bytes,
+                asset_type=asset.asset_type.value,
+            )
+
+        # No READY variant — check if any non-deleted variant is in flight.
+        inflight = await db.execute(
+            select(AssetVariant.id)
+            .where(
+                AssetVariant.source_asset_id == asset.id,
+                AssetVariant.profile_id == device.profile_id,
+                AssetVariant.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+        if inflight.scalar_one_or_none() is not None:
             # Variant exists but not ready — skip for now
             return None
 

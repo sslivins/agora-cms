@@ -290,8 +290,17 @@ class TestResetProfile:
         resp = await client.post(f"/api/profiles/{profile.id}/reset")
         assert resp.status_code == 200
 
-        await db_session.refresh(variant)
-        assert variant.status == VariantStatus.PENDING
+        # New swap semantics: old READY variant is preserved; a fresh
+        # PENDING variant row is inserted with a new UUID filename.
+        db_session.expunge_all()
+        result = await db_session.execute(
+            select(AssetVariant).where(AssetVariant.profile_id == profile.id)
+        )
+        variants = result.scalars().all()
+        assert len(variants) == 2
+        statuses = {v.status for v in variants}
+        assert VariantStatus.READY in statuses
+        assert VariantStatus.PENDING in statuses
 
     async def test_reset_no_retranscode_when_unchanged(self, client, db_session):
         """Reset on a builtin already at defaults should not retranscode."""
