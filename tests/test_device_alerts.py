@@ -143,7 +143,13 @@ class TestOfflineDetection:
 
     @pytest.mark.asyncio
     async def test_reconnect_cancels_grace_period(self, app, seed_group_and_device, fresh_alert_service):
-        """Reconnecting before grace period expires prevents offline notification."""
+        """Reconnecting before grace period expires prevents the offline *notification*.
+
+        Note: since the event/notification split, the OFFLINE DeviceEvent is
+        logged immediately on disconnect regardless of grace, but the bell
+        notification is only created after grace expires. A quick reconnect
+        cancels the pending notification timer.
+        """
         info = seed_group_and_device
         svc = fresh_alert_service
 
@@ -165,13 +171,13 @@ class TestOfflineDetection:
         from cms.database import get_db
         factory = app.dependency_overrides[get_db]
         async for db in factory():
-            events = (await db.execute(
-                select(DeviceEvent).where(
-                    DeviceEvent.device_id == info["device_id"],
-                    DeviceEvent.event_type == DeviceEventType.OFFLINE,
+            # No offline *notification* should have been created
+            notifs = (await db.execute(
+                select(Notification).where(
+                    Notification.group_id == uuid.UUID(info["group_id"]),
                 )
             )).scalars().all()
-            assert len(events) == 0
+            assert not any("offline" in n.title.lower() for n in notifs)
             break
 
     @pytest.mark.asyncio
