@@ -138,12 +138,15 @@ def get_transcode_status() -> dict:
     return {}
 
 
-async def notify_worker(db) -> None:
+async def notify_worker(db, count: int = 1) -> None:
     """Wake the transcode worker.
 
     Docker Compose: sends a PostgreSQL NOTIFY on the transcode_jobs channel.
-    Azure:          also enqueues a message on the Azure Storage Queue so
-                    the Container Apps Job scales up.
+    Azure:          enqueues ``count`` messages on the Azure Storage Queue so
+                    KEDA scales the Container Apps Job up to ``count`` parallel
+                    worker executions (capped by the job's ``maxExecutions``).
+                    Pass the number of variants that became PENDING to fan out
+                    the transcoding work in parallel.
     """
     from sqlalchemy import text
     # Only attempt NOTIFY on PostgreSQL — it is a PostgreSQL-specific command.
@@ -158,15 +161,21 @@ async def notify_worker(db) -> None:
             await db.rollback()
             logger.debug("NOTIFY transcode_jobs failed (non-critical)", exc_info=True)
 
-    # Azure Storage Queue trigger (Container Apps Job)
+    # Azure Storage Queue trigger (Container Apps Job).  One message per pending
+    # unit of work so KEDA fans out to parallel worker replicas.  Workers use
+    # ``FOR UPDATE SKIP LOCKED`` to claim distinct variants, and ``_drain_queue``
+    # clears any leftover messages once all PENDING work is done.
+    if count < 1:
+        return
     try:
         import os
         conn_str = os.environ.get("AGORA_CMS_AZURE_STORAGE_CONNECTION_STRING")
         if conn_str:
             from azure.storage.queue import QueueClient
             queue = QueueClient.from_connection_string(conn_str, "transcode-jobs")
-            queue.send_message("transcode")
-            logger.debug("Enqueued transcode-jobs queue message")
+            for _ in range(count):
+                queue.send_message("transcode")
+            logger.debug("Enqueued %d transcode-jobs queue message(s)", count)
     except Exception:
         logger.warning("Azure queue enqueue failed", exc_info=True)
 
@@ -253,7 +262,7 @@ async def stream_capture_monitor_loop() -> None:
                 for asset in ready_assets:
                     count = await _enqueue_transcoding_for_asset(asset, db)
                     if count:
-                        await notify_worker(db)
+                        await notify_worker(db, count=count)
                         logger.info(
                             "Stream capture complete for %s — enqueued %d variant(s)",
                             asset.id, count,
@@ -289,7 +298,7 @@ async def stream_capture_monitor_loop() -> None:
 
                 if reset_count:
                     await db.commit()
-                    await notify_worker(db)
+                    await notify_worker(db, count=reset_count)
                     logger.warning(
                         "Reset %d stale PROCESSING variant(s) to PENDING", reset_count,
                     )
