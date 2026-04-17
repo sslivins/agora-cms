@@ -1,2 +1,3 @@
 last-run-logs.txt
 .env
+.fixtures_cache/

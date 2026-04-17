@@ -243,6 +243,21 @@ def admin_credentials() -> tuple[str, str]:
     return ("admin", "nightly-testpass")
 
 
+# Post-OOBE admin creds — test_01_oobe.py personalizes the admin account to
+# these values during the wizard walk, and every subsequent phase uses them
+# to log in. Kept here (not in test_01_oobe) so other phase test modules can
+# depend on them without importing from a test module.
+POST_OOBE_ADMIN_NAME = "Nightly Admin"
+POST_OOBE_ADMIN_EMAIL = "nightly-admin@agora.test"
+POST_OOBE_ADMIN_PASSWORD = "nightly-newpass-123"
+
+
+@pytest.fixture
+def post_oobe_admin() -> tuple[str, str]:
+    """(email, password) of the admin account after the OOBE wizard has run."""
+    return (POST_OOBE_ADMIN_EMAIL, POST_OOBE_ADMIN_PASSWORD)
+
+
 # ── Playwright fixtures ──
 #
 # Imported lazily so users running just the sanity tests without playwright
@@ -276,6 +291,33 @@ def browser_context(playwright_browser, cms_base_url: str):
 def page(browser_context):
     pg = browser_context.new_page()
     try:
+        yield pg
+    finally:
+        pg.close()
+
+
+@pytest.fixture
+def authenticated_page(browser_context, post_oobe_admin: tuple[str, str]):
+    """A Page already logged in as the post-OOBE admin.
+
+    Depends on `test_01_oobe.py` having walked the wizard earlier in the
+    session. Later phases import this fixture instead of re-walking the
+    wizard.
+
+    Playwright's `page.request` inherits cookies from the browser context,
+    so tests using this fixture can also drive `/api/*` endpoints with the
+    authenticated session.
+    """
+    import re
+    pg = browser_context.new_page()
+    email, password = post_oobe_admin
+    try:
+        pg.goto("/login")
+        pg.fill('input[name="email"]', email)
+        pg.fill('input[name="password"]', password)
+        pg.click('button[type="submit"]')
+        pg.wait_for_url(re.compile(r".*/(?!login).*$|.*/$|.*/dashboard.*"), timeout=15_000)
+        assert "/login" not in pg.url, f"login with post-OOBE creds failed, still on {pg.url}"
         yield pg
     finally:
         pg.close()

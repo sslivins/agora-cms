@@ -23,13 +23,14 @@ import re
 
 from playwright.sync_api import Page, expect
 
+from tests.nightly.conftest import (
+    POST_OOBE_ADMIN_EMAIL as NEW_ADMIN_EMAIL,
+    POST_OOBE_ADMIN_NAME as NEW_ADMIN_NAME,
+    POST_OOBE_ADMIN_PASSWORD as NEW_ADMIN_PASSWORD,
+)
 from tests.nightly.helpers.mailpit import MailpitClient
 
 
-# Test data — kept local to the module so other tests can pick their own.
-NEW_ADMIN_NAME = "Nightly Admin"
-NEW_ADMIN_EMAIL = "nightly-admin@agora.test"
-NEW_ADMIN_PASSWORD = "nightly-newpass-123"
 SMTP_TEST_RECIPIENT = "smtp-probe@agora.test"
 
 
