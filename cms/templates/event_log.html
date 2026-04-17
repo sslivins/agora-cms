@@ -78,7 +78,7 @@
         <tbody id="event-log-tbody">
             {% for event in events %}
             <tr data-event-id="{{ event.id }}">
-                <td style="white-space:nowrap;" data-utc="{{ event.created_at.isoformat() }}">{{ event.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td style="white-space:nowrap;" data-utc="{{ event.created_at.isoformat() }}">{{ event.created_at.astimezone(tz).strftime('%b %d, %Y %I:%M:%S %p') }}</td>
                 <td>
                     {% if event.event_type == 'online' %}
                     <span class="badge badge-online">Online</span>
@@ -179,12 +179,13 @@
 
     const EMPTY_ROW_SELECTOR = "tr td[colspan]";
 
-    // Format ISO timestamp to local tz (browser handles tz conversion)
+    // Format ISO timestamp to local tz — matches the global [data-utc] formatter in app.js
     function formatTime(iso) {
         try {
             const d = new Date(iso);
-            const pad = (n) => String(n).padStart(2, "0");
-            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            if (isNaN(d)) return iso;
+            return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+                + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
         } catch {
             return iso;
         }
