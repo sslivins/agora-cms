@@ -75,10 +75,10 @@
                 <th>Details</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="event-log-tbody">
             {% for event in events %}
-            <tr>
-                <td style="white-space:nowrap;">{{ event.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <tr data-event-id="{{ event.id }}">
+                <td style="white-space:nowrap;" data-utc="{{ event.created_at.isoformat() }}">{{ event.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
                 <td>
                     {% if event.event_type == 'online' %}
                     <span class="badge badge-online">Online</span>
@@ -163,4 +163,131 @@
     </div>
     {% endif %}
 </div>
+
+{# ── Live auto-refresh (page 1 only, respects active filters) ── #}
+{% if page == 1 %}
+<script>
+(function() {
+    const tbody = document.getElementById("event-log-tbody");
+    if (!tbody) return;
+
+    const FILTER_EVENT_TYPE = {{ filter_event_type | tojson }};
+    const FILTER_DEVICE_ID = {{ filter_device_id | tojson }};
+    const FILTER_GROUP_ID = {{ filter_group_id | tojson }};
+    const PER_PAGE = {{ per_page }};
+    const POLL_INTERVAL_MS = 15000;
+
+    const EMPTY_ROW_SELECTOR = "tr td[colspan]";
+
+    // Format ISO timestamp to local tz (browser handles tz conversion)
+    function formatTime(iso) {
+        try {
+            const d = new Date(iso);
+            const pad = (n) => String(n).padStart(2, "0");
+            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        } catch {
+            return iso;
+        }
+    }
+
+    function badge(eventType) {
+        const map = {
+            online: ["badge-online", "Online"],
+            offline: ["badge-offline", "Offline"],
+            temp_high: ["badge-warning", "Temp High"],
+            temp_cleared: ["badge-success", "Temp Cleared"],
+            cms_started: ["badge-online", "CMS Started"],
+            cms_stopped: ["badge-offline", "CMS Stopped"],
+        };
+        const [cls, label] = map[eventType] || ["badge-muted", eventType];
+        return `<span class="badge ${cls}">${label}</span>`;
+    }
+
+    function renderDetails(ev) {
+        const d = ev.details || {};
+        if (ev.event_type === "temp_high" || ev.event_type === "temp_cleared") {
+            return `${d.temperature ?? "?"}°C (threshold: ${d.threshold ?? "?"}°C)`;
+        }
+        if (ev.event_type === "offline" && d.grace_period !== undefined) {
+            return `Grace period: ${d.grace_period}s`;
+        }
+        if (ev.event_type === "online") return "Back online";
+        if ((ev.event_type === "cms_started" || ev.event_type === "cms_stopped") && d.version) {
+            return `Version ${d.version}`;
+        }
+        return ev.details ? JSON.stringify(ev.details) : "—";
+    }
+
+    function escapeHtml(s) {
+        return String(s ?? "").replace(/[&<>"']/g, c => (
+            {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
+        ));
+    }
+
+    function rowHtml(ev) {
+        const deviceCell = ev.device_id
+            ? escapeHtml(ev.device_name)
+            : '<span class="text-muted">— System —</span>';
+        return `
+            <td style="white-space:nowrap;" data-utc="${escapeHtml(ev.created_at)}">${formatTime(ev.created_at)}</td>
+            <td>${badge(ev.event_type)}</td>
+            <td>${deviceCell}</td>
+            <td>${escapeHtml(ev.group_name) || "—"}</td>
+            <td>${escapeHtml(renderDetails(ev))}</td>
+        `;
+    }
+
+    async function poll() {
+        // Skip polling when tab is hidden to avoid wasted traffic
+        if (document.hidden) return;
+
+        const params = new URLSearchParams();
+        if (FILTER_EVENT_TYPE) params.set("event_type", FILTER_EVENT_TYPE);
+        if (FILTER_DEVICE_ID) params.set("device_id", FILTER_DEVICE_ID);
+        if (FILTER_GROUP_ID) params.set("group_id", FILTER_GROUP_ID);
+        params.set("limit", PER_PAGE);
+
+        try {
+            const resp = await fetch("/api/device-events?" + params.toString());
+            if (!resp.ok) return;
+            const events = await resp.json();
+
+            // Collect existing IDs to detect new ones
+            const existingIds = new Set(
+                Array.from(tbody.querySelectorAll("tr[data-event-id]"))
+                    .map(tr => tr.dataset.eventId)
+            );
+
+            // API returns newest first — iterate in reverse so oldest new event
+            // is inserted first and newest ends up at the very top
+            const newEvents = events.filter(e => !existingIds.has(e.id));
+            if (newEvents.length === 0) return;
+
+            // Remove the empty-state row if present
+            const emptyRow = tbody.querySelector(EMPTY_ROW_SELECTOR);
+            if (emptyRow) emptyRow.parentElement.remove();
+
+            for (let i = newEvents.length - 1; i >= 0; i--) {
+                const ev = newEvents[i];
+                const tr = document.createElement("tr");
+                tr.dataset.eventId = ev.id;
+                tr.innerHTML = rowHtml(ev);
+                tr.style.background = "rgba(46, 204, 113, 0.08)"; // subtle highlight
+                tbody.insertBefore(tr, tbody.firstChild);
+                // Fade the highlight out after a moment
+                setTimeout(() => { tr.style.transition = "background 2s"; tr.style.background = ""; }, 50);
+            }
+
+            // Trim to PER_PAGE rows (don't let the page grow unbounded)
+            const rows = tbody.querySelectorAll("tr[data-event-id]");
+            for (let i = PER_PAGE; i < rows.length; i++) rows[i].remove();
+        } catch {
+            // Silent — don't spam toasts on transient network errors
+        }
+    }
+
+    setInterval(poll, POLL_INTERVAL_MS);
+})();
+</script>
+{% endif %}
 {% endblock %}
