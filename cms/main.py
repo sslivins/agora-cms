@@ -342,9 +342,42 @@ async def lifespan(app: FastAPI):
     key_rotation_task = asyncio.create_task(service_key_rotation_loop())
     alert_refresh_task = asyncio.create_task(_alert_settings_refresh_loop())
 
+    # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
+    try:
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+        async for db in get_db():
+            db.add(DeviceEvent(
+                device_id=None,
+                device_name="CMS",
+                group_id=None,
+                group_name="",
+                event_type=DeviceEventType.CMS_STARTED,
+                details={"version": __version__},
+            ))
+            await db.commit()
+            break
+    except Exception:
+        logger.exception("Failed to log CMS_STARTED event")
+
     logger.info("Agora CMS %s started", __version__)
     yield
-    # Shutdown
+    # Shutdown — log CMS shutdown first so the event is persisted before tasks stop
+    try:
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+        async for db in get_db():
+            db.add(DeviceEvent(
+                device_id=None,
+                device_name="CMS",
+                group_id=None,
+                group_name="",
+                event_type=DeviceEventType.CMS_STOPPED,
+                details={"version": __version__},
+            ))
+            await db.commit()
+            break
+    except Exception:
+        logger.exception("Failed to log CMS_STOPPED event")
+
     scheduler_task.cancel()
     backfill_task.cancel()
     version_check_task.cancel()

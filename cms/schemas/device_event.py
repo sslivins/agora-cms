@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 class DeviceEventOut(BaseModel):
     id: uuid.UUID
-    device_id: str
+    device_id: str | None = None
     device_name: str
     group_id: uuid.UUID | None = None
     group_name: str = ""

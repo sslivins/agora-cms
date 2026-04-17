@@ -1792,17 +1792,24 @@ async def event_log_page(
 
     user_perms = user.role.permissions if user.role else []
 
-    # RBAC: restrict to user's groups unless they have view_all
+    # RBAC: restrict to user's groups unless they have view_all.
+    # System events (device_id IS NULL, e.g. CMS started/stopped) are always visible.
     rbac_conditions = []
     if GROUPS_VIEW_ALL not in user_perms:
+        from sqlalchemy import or_
         gid_result = await db.execute(
             select(UserGroup.group_id).where(UserGroup.user_id == user.id)
         )
         user_gids = [r[0] for r in gid_result.all()]
         if user_gids:
-            rbac_conditions.append(DeviceEvent.group_id.in_(user_gids))
+            rbac_conditions.append(
+                or_(
+                    DeviceEvent.device_id.is_(None),
+                    DeviceEvent.group_id.in_(user_gids),
+                )
+            )
         else:
-            rbac_conditions.append(sqlalchemy.false())
+            rbac_conditions.append(DeviceEvent.device_id.is_(None))
 
     # Build filter conditions
     conditions = list(rbac_conditions)
@@ -1858,8 +1865,12 @@ async def event_log_page(
     result = await db.execute(query)
     events = result.scalars().all()
 
-    # Distinct devices for filter dropdown (RBAC-filtered)
-    dev_q = select(DeviceEvent.device_id, DeviceEvent.device_name).distinct()
+    # Distinct devices for filter dropdown (RBAC-filtered, excludes system events)
+    dev_q = (
+        select(DeviceEvent.device_id, DeviceEvent.device_name)
+        .distinct()
+        .where(DeviceEvent.device_id.isnot(None))
+    )
     for cond in rbac_conditions:
         dev_q = dev_q.where(cond)
     dev_result = await db.execute(dev_q.order_by(DeviceEvent.device_name))

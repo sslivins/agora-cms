@@ -20,6 +20,8 @@
                     <option value="offline" {% if filter_event_type == 'offline' %}selected{% endif %}>Offline</option>
                     <option value="temp_high" {% if filter_event_type == 'temp_high' %}selected{% endif %}>Temperature High</option>
                     <option value="temp_cleared" {% if filter_event_type == 'temp_cleared' %}selected{% endif %}>Temperature Cleared</option>
+                    <option value="cms_started" {% if filter_event_type == 'cms_started' %}selected{% endif %}>CMS Started</option>
+                    <option value="cms_stopped" {% if filter_event_type == 'cms_stopped' %}selected{% endif %}>CMS Stopped</option>
                 </select>
             </div>
             <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
@@ -86,11 +88,15 @@
                     <span class="badge badge-warning">Temp High</span>
                     {% elif event.event_type == 'temp_cleared' %}
                     <span class="badge badge-success">Temp Cleared</span>
+                    {% elif event.event_type == 'cms_started' %}
+                    <span class="badge badge-online">CMS Started</span>
+                    {% elif event.event_type == 'cms_stopped' %}
+                    <span class="badge badge-offline">CMS Stopped</span>
                     {% else %}
                     <span class="badge badge-muted">{{ event.event_type }}</span>
                     {% endif %}
                 </td>
-                <td>{{ event.device_name }}</td>
+                <td>{% if event.device_id %}{{ event.device_name }}{% else %}<span class="text-muted">— System —</span>{% endif %}</td>
                 <td>{{ event.group_name or '—' }}</td>
                 <td>
                     {% if event.event_type == 'temp_high' and event.details %}
@@ -101,6 +107,8 @@
                     Grace period: {{ event.details.grace_period }}s
                     {% elif event.event_type == 'online' %}
                     Back online
+                    {% elif event.event_type in ['cms_started', 'cms_stopped'] and event.details and event.details.version %}
+                    Version {{ event.details.version }}
                     {% else %}
                     {{ event.details | tojson if event.details else '—' }}
                     {% endif %}

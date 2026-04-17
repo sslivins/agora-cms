@@ -24,15 +24,25 @@ async def _user_group_ids(user: User, db: AsyncSession) -> list[uuid.UUID]:
 
 
 def _base_query(user: User, group_ids: list[uuid.UUID]):
-    """Build a base query filtered to events the user can see."""
+    """Build a base query filtered to events the user can see.
+
+    System events (device_id IS NULL, e.g. CMS started/stopped) are always visible.
+    Device events are gated by group membership unless user has groups:view_all.
+    """
+    from sqlalchemy import or_
     perms = user.role.permissions if user.role else []
     q = select(DeviceEvent)
     if GROUPS_VIEW_ALL not in perms:
         if group_ids:
-            q = q.where(DeviceEvent.group_id.in_(group_ids))
+            q = q.where(
+                or_(
+                    DeviceEvent.device_id.is_(None),           # system events
+                    DeviceEvent.group_id.in_(group_ids),       # user's groups
+                )
+            )
         else:
-            # User has no groups — return nothing
-            q = q.where(False)
+            # User has no groups — show only system events
+            q = q.where(DeviceEvent.device_id.is_(None))
     return q
 
 

@@ -332,6 +332,22 @@ async def run_migrations():
                 "ALTER TABLE schedules ADD COLUMN skipped_until TIMESTAMPTZ"
             ))
 
+    # -- device_events.device_id: drop NOT NULL so system events (CMS_STARTED/STOPPED) can omit it --
+    async with _shared_db._engine.begin() as conn:
+        def _is_nullable(connection, table_name, column_name):
+            insp = sa_inspect(connection)
+            if not insp.has_table(table_name):
+                return True
+            for col in insp.get_columns(table_name):
+                if col["name"] == column_name:
+                    return col.get("nullable", True)
+            return True
+        is_nullable = await conn.run_sync(lambda c: _is_nullable(c, "device_events", "device_id"))
+        if not is_nullable:
+            await conn.execute(text(
+                "ALTER TABLE device_events ALTER COLUMN device_id DROP NOT NULL"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

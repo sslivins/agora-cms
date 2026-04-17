@@ -16,6 +16,8 @@ class DeviceEventType(str, PyEnum):
     OFFLINE = "offline"
     TEMP_HIGH = "temp_high"
     TEMP_CLEARED = "temp_cleared"
+    CMS_STARTED = "cms_started"
+    CMS_STOPPED = "cms_stopped"
 
 
 class DeviceEvent(Base):
@@ -24,10 +26,10 @@ class DeviceEvent(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    device_id: Mapped[str] = mapped_column(
+    device_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("devices.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     device_name: Mapped[str] = mapped_column(
