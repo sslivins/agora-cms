@@ -24,6 +24,7 @@ from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
 from cms.models.user import User
 from cms.schemas.asset import AssetOut
+from cms.services.audit_service import audit_log
 from cms.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,7 @@ async def list_assets(
 @router.post("/upload", response_model=AssetOut, status_code=201)
 async def upload_asset(
     file: UploadFile,
+    request: Request,
     user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -419,6 +421,21 @@ async def upload_asset(
         from cms.services.transcoder import notify_worker
         await notify_worker(db, count=variant_count)
 
+    await audit_log(
+        db, user=user, action="asset.upload", resource_type="asset",
+        resource_id=str(asset.id),
+        description=f"Uploaded {asset_type.value} asset '{final_filename}'",
+        details={
+            "filename": final_filename,
+            "asset_type": asset_type.value,
+            "size_bytes": len(content),
+            "group_ids": [str(g) for g in resolved_groups],
+            "is_global": make_global,
+        },
+        request=request,
+    )
+    await db.commit()
+
     return asset
 
 
@@ -504,6 +521,14 @@ async def create_webpage_asset(
     for gid in resolved_groups:
         db.add(GroupAsset(asset_id=asset.id, group_id=gid))
 
+    await audit_log(
+        db, user=user, action="asset.create_webpage", resource_type="asset",
+        resource_id=str(asset.id),
+        description=f"Created webpage asset '{name}' ({url})",
+        details={"filename": name, "url": url, "group_ids": [str(g) for g in resolved_groups],
+                 "is_global": make_global},
+        request=request,
+    )
     await db.commit()
     await db.refresh(asset)
     return asset
@@ -626,6 +651,21 @@ async def create_stream_asset(
     # Variant creation happens later — the CMS monitor loop detects the
     # completed capture and enqueues transcoding, identical to the upload flow.
 
+    await audit_log(
+        db, user=user, action="asset.create_stream", resource_type="asset",
+        resource_id=str(asset.id),
+        description=f"Created {target_type.value} asset '{name}' ({url})",
+        details={
+            "filename": name,
+            "url": url,
+            "asset_type": target_type.value,
+            "save_locally": save_locally,
+            "capture_duration": capture_duration,
+            "group_ids": [str(g) for g in resolved_groups],
+            "is_global": make_global,
+        },
+        request=request,
+    )
     await db.commit()
     await db.refresh(asset)
 
@@ -652,12 +692,23 @@ async def update_asset(
 
     body = await request.json()
 
+    changes: dict = {}
     if "display_name" in body:
         name = (body["display_name"] or "").strip()
         if name and len(name) > 255:
             raise HTTPException(status_code=400, detail="Name too long (max 255 characters)")
+        old = asset.display_name
         asset.display_name = name if name else None
+        changes["display_name"] = {"old": old, "new": asset.display_name}
 
+    if changes:
+        await audit_log(
+            db, user=user, action="asset.update", resource_type="asset",
+            resource_id=str(asset_id),
+            description=f"Updated asset '{asset.filename}' ({', '.join(sorted(changes.keys()))})",
+            details=changes,
+            request=request,
+        )
     await db.commit()
     await db.refresh(asset)
     return asset
@@ -666,6 +717,7 @@ async def update_asset(
 @router.post("/{asset_id}/recapture")
 async def recapture_stream(
     asset_id: uuid.UUID,
+    request: Request,
     user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -723,6 +775,15 @@ async def recapture_stream(
     # itself (worker must re-capture the stream before variants can transcode).
     from cms.services.transcoder import notify_worker
     await notify_worker(db, count=max(reset_count, 1))
+
+    await audit_log(
+        db, user=user, action="asset.recapture", resource_type="asset",
+        resource_id=str(asset_id),
+        description=f"Recaptured saved-stream asset '{asset.filename}'",
+        details={"variants_reset": reset_count},
+        request=request,
+    )
+    await db.commit()
 
     return {"recaptured": True, "asset_id": str(asset_id)}
 
@@ -852,6 +913,7 @@ async def preview_variant(
 @router.delete("/{asset_id}")
 async def delete_asset(
     asset_id: uuid.UUID,
+    request: Request,
     user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -930,9 +992,17 @@ async def delete_asset(
     for ga in ga_result.scalars().all():
         await db.delete(ga)
 
+    asset_filename = asset.filename
+    await audit_log(
+        db, user=user, action="asset.delete", resource_type="asset",
+        resource_id=str(asset_id),
+        description=f"Deleted asset '{asset_filename}'",
+        details={"filename": asset_filename, "asset_type": asset.asset_type.value},
+        request=request,
+    )
     await db.delete(asset)
     await db.commit()
-    return {"deleted": asset.filename}
+    return {"deleted": asset_filename}
 
 
 # ── Asset sharing & global toggle ──
@@ -970,6 +1040,13 @@ async def share_asset(
         return {"status": "already_shared"}
 
     db.add(GroupAsset(asset_id=asset_id, group_id=group_id))
+    await audit_log(
+        db, user=user, action="asset.share", resource_type="asset",
+        resource_id=str(asset_id),
+        description=f"Shared asset '{asset.filename}' with group '{group.name}'",
+        details={"group_id": str(group_id), "group_name": group.name},
+        request=request,
+    )
     await db.commit()
     return {"status": "shared", "asset_id": str(asset_id), "group_id": str(group_id)}
 
@@ -996,6 +1073,13 @@ async def unshare_asset(
     if not ga:
         raise HTTPException(status_code=404, detail="Asset is not shared with this group")
     await db.delete(ga)
+    await audit_log(
+        db, user=user, action="asset.unshare", resource_type="asset",
+        resource_id=str(asset_id),
+        description=f"Unshared asset {asset_id} from group {group_id}",
+        details={"group_id": str(group_id)},
+        request=request,
+    )
     await db.commit()
 
     # Check if asset is still visible to the requesting user after unshare
@@ -1018,6 +1102,14 @@ async def toggle_asset_global(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     asset.is_global = not asset.is_global
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="asset.toggle_global", resource_type="asset",
+        resource_id=str(asset_id),
+        description=f"{'Marked' if asset.is_global else 'Unmarked'} asset '{asset.filename}' as global",
+        details={"is_global": asset.is_global},
+        request=request,
+    )
     await db.commit()
     return {"is_global": asset.is_global}
 

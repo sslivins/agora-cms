@@ -19,6 +19,7 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict, evaluate_schedules
+from cms.services.audit_service import audit_log
 
 logger = logging.getLogger("agora.cms.schedules")
 
@@ -181,7 +182,7 @@ async def _resolve_loop_end_time(
 
 
 @router.post("", response_model=ScheduleOut, status_code=201, dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
-async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_db)):
+async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSession = Depends(get_db)):
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
 
@@ -228,6 +229,21 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     schedule = Schedule(**fields)
     await _check_conflicts(schedule, db)
     db.add(schedule)
+    await db.flush()
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="schedule.create", resource_type="schedule",
+        resource_id=str(schedule.id),
+        description=f"Created schedule '{schedule.name}'",
+        details={
+            "name": schedule.name,
+            "asset_id": str(schedule.asset_id),
+            "group_id": str(schedule.group_id) if schedule.group_id else None,
+            "priority": schedule.priority,
+            "enabled": schedule.enabled,
+        },
+        request=request,
+    )
     await db.commit()
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule.id)
@@ -302,6 +318,15 @@ async def update_schedule(
     # Clear any active "End Now" skip so the schedule is re-evaluated
     schedule.skipped_until = None
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="schedule.update", resource_type="schedule",
+        resource_id=str(schedule_id),
+        description=f"Updated schedule '{schedule.name}' ({', '.join(sorted(updates.keys()))})",
+        details={k: (str(v) if isinstance(v, uuid.UUID) else (v.isoformat() if hasattr(v, 'isoformat') else v))
+                 for k, v in updates.items()},
+        request=request,
+    )
     await db.commit()
 
     clear_schedule_skip(str(schedule_id))
@@ -324,8 +349,17 @@ async def delete_schedule(schedule_id: uuid.UUID, request: Request, db: AsyncSes
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
     await _verify_schedule_access(schedule, request, db)
+    schedule_name = schedule.name
     # Resolve target devices before deleting the schedule
     target_ids = await _get_target_device_ids(schedule, db)
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="schedule.delete", resource_type="schedule",
+        resource_id=str(schedule_id),
+        description=f"Deleted schedule '{schedule_name}'",
+        details={"name": schedule_name},
+        request=request,
+    )
     await db.delete(schedule)
     await db.commit()
     # Clear confirmed-playing entries for this schedule immediately
@@ -379,6 +413,14 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
     # Persist to DB so it survives restarts
     schedule.skipped_until = end_today
     db.add(schedule)
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="schedule.end_now", resource_type="schedule",
+        resource_id=str(schedule_id),
+        description=f"Ended schedule '{schedule.name}' early (resumes at {end_today.isoformat()})",
+        details={"resumes_after": end_today.isoformat()},
+        request=request,
+    )
     await db.commit()
 
     # Log SKIPPED event for each target device

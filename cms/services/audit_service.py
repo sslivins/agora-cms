@@ -96,6 +96,7 @@ async def audit_log(
     action: str,
     resource_type: str = "",
     resource_id: str | None = None,
+    description: str | None = None,
     details: dict | None = None,
     request: Request | None = None,
 ) -> AuditLog:
@@ -103,6 +104,9 @@ async def audit_log(
 
     When the request is made via the MCP service key, the real user identity
     from X-On-Behalf-Of is recorded in details['on_behalf_of'].
+
+    If ``description`` is supplied it is stored verbatim; otherwise a summary
+    is auto-generated from ``action`` + ``details`` via :func:`build_description`.
     """
     ip = None
     if request and request.client:
@@ -116,7 +120,8 @@ async def audit_log(
         details["on_behalf_of"] = request.state.on_behalf_of
         details["auth_method"] = "mcp_service"
 
-    description = build_description(action, details)
+    if description is None:
+        description = build_description(action, details)
 
     entry = AuditLog(
         user_id=user.id if user else None,
