@@ -375,9 +375,9 @@ async def reap_deleted_assets_once(db, settings=None) -> int:
             )
         )
         if active_count:
-            logger.debug(
-                "Reaper: asset %s has %d active job(s), skipping",
-                asset.id, active_count,
+            logger.info(
+                "Reaper: asset %s (%s) has %d active job(s), skipping hard-delete",
+                asset.id, asset.filename, active_count,
             )
             continue
 
