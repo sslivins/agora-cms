@@ -248,6 +248,8 @@ async def update_profile(
             variant.error_message = ""
             reset_ids.append(variant.id)
 
+    reset_count = len(reset_ids)
+
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="profile.update", resource_type="profile",
@@ -265,8 +267,6 @@ async def update_profile(
     # Enqueue jobs for variants reset to PENDING
     if transcode_changed and reset_ids:
         await enqueue_variants(db, reset_ids)
-
-    reset_count = len(reset_ids)
 
     await db.refresh(profile)
 
@@ -492,6 +492,8 @@ async def reset_profile(
             variant.error_message = ""
             reset_ids.append(variant.id)
 
+    reset_count = len(reset_ids)
+
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="profile.reset", resource_type="profile",
@@ -504,8 +506,6 @@ async def reset_profile(
 
     if transcode_changed and reset_ids:
         await enqueue_variants(db, reset_ids)
-
-    reset_count = len(reset_ids)
 
     await db.refresh(profile)
 
