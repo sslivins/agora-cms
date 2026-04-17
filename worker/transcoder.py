@@ -363,42 +363,9 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     source = variant.source_asset
     profile = variant.profile
 
-    # SAVED_STREAM assets: capture the stream if not already done
-    if source.asset_type == AssetType.SAVED_STREAM:
-        source_path = asset_dir / source.filename
-        if not source_path.is_file():
-            # Guard against parallel workers: if another worker is already
-            # processing (and therefore capturing) a variant for the same
-            # stream, back off so we don't write to the same file from two
-            # FFmpeg processes.
-            sibling = await db.execute(
-                select(AssetVariant.id)
-                .where(
-                    AssetVariant.source_asset_id == source.id,
-                    AssetVariant.status == VariantStatus.PROCESSING,
-                    AssetVariant.id != variant.id,
-                )
-                .limit(1)
-            )
-            if sibling.scalar_one_or_none() is not None:
-                logger.info(
-                    "Variant %s: another worker is capturing stream %s — deferring",
-                    variant.id, source.id,
-                )
-                variant.status = VariantStatus.PENDING
-                variant.progress = 0
-                await db.commit()
-                return
-
-            # We're the only worker for this stream — capture it
-            result = await _capture_stream(source, asset_dir, db)
-            if result is None:
-                await _mark_failed(variant, source, "Stream capture failed", db)
-                return
-            await db.refresh(source)  # reload after capture set filename
-            source_path = asset_dir / source.filename
-    # Use original source file when available
-    elif source.original_filename:
+    # Resolve source file path.  For uploads and captured streams, prefer
+    # the original file when present (better quality than any variant).
+    if source.original_filename:
         original_path = asset_dir / "originals" / source.original_filename
         if original_path.is_file():
             source_path = original_path
@@ -598,6 +565,69 @@ async def recover_interrupted(session_factory) -> int:
                 len(stuck),
             )
         return len(stuck)
+
+
+async def process_captures(session_factory, asset_dir: Path) -> int:
+    """Find SAVED_STREAM assets that need capturing and capture them.
+
+    A SAVED_STREAM needs capture when it has a URL, has no variants yet,
+    and its source file does not exist on disk (i.e. hasn't been captured).
+    Uses FOR UPDATE SKIP LOCKED so parallel workers don't grab the same
+    stream.
+
+    Returns the number of streams captured.
+    """
+    from sqlalchemy import func
+
+    count = 0
+    while True:
+        asset_id = None
+
+        # ── Claim one uncaptured SAVED_STREAM atomically ──
+        async with session_factory() as db:
+            # Subquery: assets that already have at least one variant
+            has_variants = (
+                select(AssetVariant.source_asset_id)
+                .group_by(AssetVariant.source_asset_id)
+                .having(func.count() > 0)
+                .correlate(Asset)
+            )
+            result = await db.execute(
+                select(Asset)
+                .where(
+                    Asset.asset_type == AssetType.SAVED_STREAM,
+                    Asset.url.isnot(None),
+                    Asset.size_bytes == 0,  # not yet captured (capture sets this)
+                    Asset.id.notin_(has_variants),  # no variants created yet
+                )
+                .order_by(Asset.uploaded_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            asset = result.scalar_one_or_none()
+            if asset is None:
+                break
+            asset_id = asset.id
+            logger.info("Claiming stream capture for asset %s (%s)", asset.id, asset.url)
+
+        # ── Capture in a fresh session (row lock released above) ──
+        async with session_factory() as db:
+            result = await db.execute(
+                select(Asset).where(Asset.id == asset_id)
+            )
+            asset = result.scalar_one_or_none()
+            if asset is None:
+                continue
+
+            capture_path = await _capture_stream(asset, asset_dir, db)
+            if capture_path is None:
+                logger.error("Stream capture failed for asset %s", asset.id)
+                # Leave the asset as-is — the CMS monitor can retry or alert
+            else:
+                count += 1
+                logger.info("Stream capture complete for asset %s", asset.id)
+
+    return count
 
 
 async def process_pending(session_factory, asset_dir: Path) -> int:

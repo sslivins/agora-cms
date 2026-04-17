@@ -18,7 +18,7 @@ import signal
 import sys
 
 from worker.config import WorkerSettings
-from worker.transcoder import process_pending, recover_interrupted
+from worker.transcoder import process_captures, process_pending, recover_interrupted
 from shared.models import AssetVariant, VariantStatus
 
 from shared.config import SharedSettings
@@ -53,6 +53,9 @@ async def _listen_mode(settings: WorkerSettings) -> None:
     await recover_interrupted(session_factory)
 
     # Process any already-pending work before entering the listen loop
+    captures = await process_captures(session_factory, asset_dir)
+    if captures:
+        logger.info("Captured %d stream(s) on startup", captures)
     count = await process_pending(session_factory, asset_dir)
     if count:
         logger.info("Processed %d pending variant(s) on startup", count)
@@ -92,6 +95,9 @@ async def _listen_mode(settings: WorkerSettings) -> None:
             except asyncio.TimeoutError:
                 pass  # poll timeout — check for work
 
+            captures = await process_captures(session_factory, asset_dir)
+            if captures:
+                logger.info("Captured %d stream(s)", captures)
             count = await process_pending(session_factory, asset_dir)
             if count:
                 logger.info("Processed %d variant(s)", count)
@@ -151,6 +157,9 @@ async def _listen_mode_robust(settings: WorkerSettings) -> None:
             if shutdown.is_set():
                 break
 
+            captures = await process_captures(session_factory, asset_dir)
+            if captures:
+                logger.info("Captured %d stream(s)", captures)
             count = await process_pending(session_factory, asset_dir)
             if count:
                 logger.info("Processed %d variant(s)", count)
@@ -190,30 +199,25 @@ async def _drain_queue(settings: WorkerSettings) -> int:
 
 
 async def _queue_mode(settings: WorkerSettings) -> None:
-    """Queue mode — process all pending variants, then exit."""
+    """Queue mode — capture streams then process variants, then exit."""
     session_factory = get_session_factory()
     asset_dir = settings.asset_storage_path
 
     # Crash recovery
     await recover_interrupted(session_factory)
 
+    # Phase 1: capture any uncaptured streams
+    captures = await process_captures(session_factory, asset_dir)
+    if captures:
+        logger.info("Queue mode: captured %d stream(s)", captures)
+
+    # Phase 2: transcode pending variants (including any freshly enqueued
+    # by the CMS monitor after a capture completes)
     count = await process_pending(session_factory, asset_dir)
     logger.info("Queue mode: processed %d variant(s), exiting", count)
 
-    # Only drain the queue when no PENDING variants remain.  If we
-    # deferred work (e.g. stream sibling-check), leave the messages so
-    # KEDA keeps firing workers that can pick up the work later.
-    async with session_factory() as db:
-        from sqlalchemy import select as sa_select
-        remaining = await db.execute(
-            sa_select(AssetVariant.id)
-            .where(AssetVariant.status == VariantStatus.PENDING)
-            .limit(1)
-        )
-        if remaining.scalar_one_or_none() is None:
-            await _drain_queue(settings)
-        else:
-            logger.info("PENDING variants remain — leaving queue messages for KEDA")
+    # Drain the queue so KEDA doesn't re-trigger for already-handled messages
+    await _drain_queue(settings)
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:

@@ -43,6 +43,7 @@ from cms.services.storage import (
 )
 from cms.services.version_checker import version_check_loop
 from cms.services.device_purge import device_purge_loop
+from cms.services.transcoder import stream_capture_monitor_loop
 
 logger = logging.getLogger("agora.cms")
 
@@ -323,6 +324,7 @@ async def lifespan(app: FastAPI):
     version_check_task = asyncio.create_task(version_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
     key_rotation_task = asyncio.create_task(service_key_rotation_loop())
+    capture_monitor_task = asyncio.create_task(stream_capture_monitor_loop())
 
     logger.info("Agora CMS %s started", __version__)
     yield
@@ -332,6 +334,7 @@ async def lifespan(app: FastAPI):
     version_check_task.cancel()
     device_purge_task.cancel()
     key_rotation_task.cancel()
+    capture_monitor_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -350,6 +353,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await key_rotation_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await capture_monitor_task
     except asyncio.CancelledError:
         pass
     # Close storage backend (Azure: close async blob client)
