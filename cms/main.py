@@ -43,7 +43,7 @@ from cms.services.storage import (
 )
 from cms.services.version_checker import version_check_loop
 from cms.services.device_purge import device_purge_loop
-from cms.services.transcoder import stream_capture_monitor_loop
+from cms.services.transcoder import stream_capture_monitor_loop, deleted_asset_reaper_loop
 
 logger = logging.getLogger("agora.cms")
 
@@ -345,6 +345,7 @@ async def lifespan(app: FastAPI):
     key_rotation_task = asyncio.create_task(service_key_rotation_loop())
     alert_refresh_task = asyncio.create_task(_alert_settings_refresh_loop())
     capture_monitor_task = asyncio.create_task(stream_capture_monitor_loop())
+    reaper_task = asyncio.create_task(deleted_asset_reaper_loop())
 
     # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
     try:
@@ -389,6 +390,7 @@ async def lifespan(app: FastAPI):
     key_rotation_task.cancel()
     alert_refresh_task.cancel()
     capture_monitor_task.cancel()
+    reaper_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -415,6 +417,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await capture_monitor_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await reaper_task
     except asyncio.CancelledError:
         pass
     # Close storage backend (Azure: close async blob client)

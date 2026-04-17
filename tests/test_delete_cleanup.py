@@ -128,8 +128,9 @@ class TestDeleteAssetCleansVariants:
         return asset
 
     async def test_variant_records_deleted(self, client, db_session, app):
-        """Variant DB rows should be removed when source asset is deleted."""
+        """After reaper runs, variant DB rows should be removed."""
         from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
         settings = app.dependency_overrides[get_settings]()
 
         profile = DeviceProfile(name="da-prof", video_codec="h264", video_profile="main")
@@ -149,14 +150,19 @@ class TestDeleteAssetCleansVariants:
         resp = await client.delete(f"/api/assets/{asset.id}")
         assert resp.status_code == 200
 
+        # Soft delete: row still exists but marked deleted.  Reaper tick
+        # finalizes removal because there are no active Jobs.
+        await reap_deleted_assets_once(db_session)
+
         result = await db_session.execute(
             select(AssetVariant).where(AssetVariant.id == vid)
         )
         assert result.scalar_one_or_none() is None
 
     async def test_variant_files_deleted(self, client, db_session, app):
-        """Variant files on disk should be removed when source asset is deleted."""
+        """After reaper runs, variant files on disk should be removed."""
         from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
         settings = app.dependency_overrides[get_settings]()
 
         profile = DeviceProfile(name="da-prof-files", video_codec="h264", video_profile="main")
@@ -173,7 +179,6 @@ class TestDeleteAssetCleansVariants:
         db_session.add(variant)
         await db_session.commit()
 
-        # Create the variant file on disk
         variants_dir = settings.asset_storage_path / "variants"
         variants_dir.mkdir(parents=True, exist_ok=True)
         vfile = variants_dir / variant.filename
@@ -182,11 +187,14 @@ class TestDeleteAssetCleansVariants:
 
         resp = await client.delete(f"/api/assets/{asset.id}")
         assert resp.status_code == 200
-        assert not vfile.is_file(), "Variant file should be deleted from disk"
 
-    async def test_delete_asset_cancels_active_transcode(self, client, db_session, app):
-        """Deleting an asset should cancel an active transcode for that asset."""
+        await reap_deleted_assets_once(db_session, settings=settings)
+        assert not vfile.is_file(), "Variant file should be deleted from disk after reap"
+
+    async def test_delete_asset_flags_active_transcode(self, client, db_session, app):
+        """Deleting an asset should flag active Jobs for cancellation via the DB."""
         from cms.auth import get_settings
+        from shared.models.job import Job, JobType, JobStatus
         settings = app.dependency_overrides[get_settings]()
 
         profile = DeviceProfile(name="da-cancel", video_codec="h264", video_profile="main")
@@ -201,17 +209,27 @@ class TestDeleteAssetCleansVariants:
             filename=f"{vid}.mp4", status=VariantStatus.PROCESSING,
         )
         db_session.add(variant)
+
+        job = Job(
+            type=JobType.VARIANT_TRANSCODE,
+            target_id=vid,
+            status=JobStatus.PROCESSING,
+        )
+        db_session.add(job)
         await db_session.commit()
 
-        with patch("cms.services.transcoder.cancel_asset_transcodes") as mock_cancel:
-            mock_cancel.return_value = True
-            resp = await client.delete(f"/api/assets/{asset.id}")
-            assert resp.status_code == 200
-            mock_cancel.assert_called_once_with(asset.id)
+        resp = await client.delete(f"/api/assets/{asset.id}")
+        assert resp.status_code == 200
+
+        await db_session.refresh(asset)
+        await db_session.refresh(job)
+        assert asset.deleted_at is not None, "Asset should be soft-deleted"
+        assert job.cancel_requested is True, "Active Job should be flagged for cancel"
 
     async def test_multiple_variants_all_cleaned(self, client, db_session, app):
-        """All variants across multiple profiles should be deleted."""
+        """After reaper runs, all variants across multiple profiles should be deleted."""
         from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
         settings = app.dependency_overrides[get_settings]()
 
         p1 = DeviceProfile(name="multi-p1", video_codec="h264", video_profile="main")
@@ -231,6 +249,8 @@ class TestDeleteAssetCleansVariants:
 
         resp = await client.delete(f"/api/assets/{asset.id}")
         assert resp.status_code == 200
+
+        await reap_deleted_assets_once(db_session)
 
         for vid in (v1_id, v2_id):
             result = await db_session.execute(
