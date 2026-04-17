@@ -235,3 +235,47 @@ def simulator(stack: StackHandle) -> Iterator[SimulatorClient]:
 @pytest.fixture
 def cms_base_url(stack: StackHandle) -> str:
     return stack.cms_url
+
+
+@pytest.fixture
+def admin_credentials() -> tuple[str, str]:
+    """Bootstrap admin credentials baked into the nightly compose overlay."""
+    return ("admin", "nightly-testpass")
+
+
+# ── Playwright fixtures ──
+#
+# Imported lazily so users running just the sanity tests without playwright
+# installed still get a useful skip rather than a collection error.
+
+@pytest.fixture(scope="session")
+def playwright_browser():
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed — `pip install playwright && playwright install chromium`")
+    headless = os.environ.get("NIGHTLY_HEADLESS", "1").lower() not in ("0", "false", "no")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=headless)
+        try:
+            yield browser
+        finally:
+            browser.close()
+
+
+@pytest.fixture
+def browser_context(playwright_browser, cms_base_url: str):
+    ctx = playwright_browser.new_context(base_url=cms_base_url, ignore_https_errors=True)
+    try:
+        yield ctx
+    finally:
+        ctx.close()
+
+
+@pytest.fixture
+def page(browser_context):
+    pg = browser_context.new_page()
+    try:
+        yield pg
+    finally:
+        pg.close()

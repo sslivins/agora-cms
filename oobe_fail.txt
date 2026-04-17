@@ -1,0 +1,332 @@
+============================= test session starts =============================
+collecting ... collected 1 item
+
+tests/nightly/test_oobe.py::test_oobe_full_walkthrough FAILED            [100%]
+
+================================== FAILURES ===================================
+_________________________ test_oobe_full_walkthrough __________________________
+
+page = <Page url='http://127.0.0.1:8080/setup'>
+mailpit = <tests.nightly.helpers.mailpit.MailpitClient object at 0x000001A094E15E50>
+admin_credentials = ('admin', 'nightly-testpass')
+
+    def test_oobe_full_walkthrough(
+        page: Page,
+        mailpit: MailpitClient,
+        admin_credentials: tuple[str, str],
+    ) -> None:
+        """Walk the full setup wizard end-to-end with a real SMTP round-trip."""
+        js_errors: list[str] = []
+        page.on("pageerror", lambda err: js_errors.append(str(err)))
+    
+        _login_and_open_wizard(page, admin_credentials)
+    
+        # \u2500\u2500 Step 1 \u2014 Personalize account \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        step1 = page.locator("#step-1")
+        page.fill("#admin-name", NEW_ADMIN_NAME)
+        page.fill("#admin-email", NEW_ADMIN_EMAIL)
+        page.fill("#admin-password", NEW_ADMIN_PASSWORD)
+        page.fill("#admin-confirm", NEW_ADMIN_PASSWORD)
+        step1.locator("button", has_text="Next").click()
+    
+        # \u2500\u2500 Step 2 \u2014 SMTP, with a real round-trip through Mailpit \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        step2 = page.locator("#step-2")
+        expect(step2).to_be_visible(timeout=10_000)
+    
+        page.fill("#smtp-host", "mailpit")
+        page.fill("#smtp-port", "1025")
+        page.fill("#smtp-from", "cms@agora.test")
+        # Mailpit is configured with MP_SMTP_AUTH_ACCEPT_ANY=1, so any
+        # username/password is accepted. Leave them populated to exercise the
+        # full code path that includes auth.
+        page.fill("#smtp-username", "cms")
+        page.fill("#smtp-password", "ignored-by-mailpit")
+    
+        page.fill("#smtp-test-email", SMTP_TEST_RECIPIENT)
+        page.locator("button", has_text="Send Test").click()
+    
+>       msg = mailpit.wait_for_email(
+            to=SMTP_TEST_RECIPIENT,
+            subject_contains="SMTP Test",
+            timeout=15.0,
+        )
+
+tests\nightly\test_oobe.py:85: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <tests.nightly.helpers.mailpit.MailpitClient object at 0x000001A094E15E50>
+
+    def wait_for_email(
+        self,
+        *,
+        to: Optional[str] = None,
+        subject_contains: Optional[str] = None,
+        timeout: float = 10.0,
+        poll_interval: float = 0.25,
+    ) -> MailpitMessage:
+        """Block until a matching email arrives or timeout expires."""
+        deadline = time.monotonic() + timeout
+        last_seen = 0
+        while time.monotonic() < deadline:
+            messages = self.list_messages()
+            for m in messages:
+                if to and not any(
+                    (t.get("Address") or "").lower() == to.lower()
+                    for t in (m.get("To") or [])
+                ):
+                    continue
+                if subject_contains and subject_contains.lower() not in (
+                    m.get("Subject", "").lower()
+                ):
+                    continue
+                return self.get_message(m["ID"])
+            last_seen = len(messages)
+            time.sleep(poll_interval)
+>       raise TimeoutError(
+            f"No matching email in Mailpit after {timeout}s "
+            f"(to={to}, subject_contains={subject_contains}, total_messages={last_seen})"
+        )
+E       TimeoutError: No matching email in Mailpit after 15.0s (to=smtp-probe@agora.test, subject_contains=SMTP Test, total_messages=0)
+
+tests\nightly\helpers\mailpit.py:103: TimeoutError
+---------------------------- Captured stdout setup ----------------------------
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.97kB done
+#1 DONE 0.0s
+
+#2 [worker internal] load build definition from Dockerfile.worker
+#2 transferring dockerfile: 973B 0.0s done
+#2 DONE 0.0s
+
+#3 [cms internal] load build definition from Dockerfile
+#3 transferring dockerfile: 1.15kB done
+#3 DONE 0.1s
+
+#4 [mcp internal] load build definition from Dockerfile
+#4 transferring dockerfile: 238B done
+#4 DONE 0.1s
+
+#5 [simulator internal] load build definition from Dockerfile
+#5 transferring dockerfile: 1.58kB done
+#5 DONE 0.1s
+
+#6 [simulator internal] load metadata for docker.io/library/python:3.11-slim
+#6 DONE 0.5s
+
+#7 [worker internal] load .dockerignore
+#7 transferring context: 2B 0.0s done
+#7 DONE 0.0s
+
+#8 [mcp internal] load .dockerignore
+#8 transferring context: 2B 0.0s done
+#8 DONE 0.0s
+
+#9 [simulator internal] load .dockerignore
+#9 transferring context: 140B 0.0s done
+#9 DONE 0.1s
+
+#10 [simulator internal] load build context
+#10 DONE 0.0s
+
+#11 [worker internal] load build context
+#11 transferring context: 2.01kB 0.0s done
+#11 DONE 0.0s
+
+#12 [cms 1/8] FROM docker.io/library/python:3.11-slim@sha256:233de06753d30d120b1a3ce359d8d3be8bda78524cd8f520c99883bfe33964cf
+#12 resolve docker.io/library/python:3.11-slim@sha256:233de06753d30d120b1a3ce359d8d3be8bda78524cd8f520c99883bfe33964cf 0.0s done
+#12 DONE 0.1s
+
+#13 [mcp internal] load build context
+#13 transferring context: 101B done
+#13 DONE 0.0s
+
+#14 [cms internal] load build context
+#14 transferring context: 18.72kB 0.0s done
+#14 DONE 0.0s
+
+#15 [mcp 3/5] COPY requirements.txt .
+#15 CACHED
+
+#16 [mcp 4/5] RUN pip install --no-cache-dir -r requirements.txt
+#16 CACHED
+
+#17 [worker 7/8] COPY shared/ shared/
+#17 CACHED
+
+#18 [worker 4/8] COPY requirements-shared.txt ./
+#18 CACHED
+
+#19 [worker 6/8] RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 pip install --no-cache-dir --progress-bar off     -r requirements-shared.txt
+#19 CACHED
+
+#20 [worker 5/8] COPY worker/requirements.txt worker/requirements.txt
+#20 CACHED
+
+#21 [worker 8/8] COPY worker/ worker/
+#21 CACHED
+
+#22 [mcp 5/5] COPY cms_client.py server.py ./
+#22 CACHED
+
+#10 [simulator internal] load build context
+#10 transferring context: 9.33kB 0.0s done
+#10 DONE 0.0s
+
+#23 [cms 3/8] RUN apt-get update && apt-get install -y --no-install-recommends     libheif-examples     curl     xz-utils     && ARCH=$(case "arm64" in arm64) echo linuxarm64;; *) echo linux64;; esac)     && curl -fsSL "https://github.com/sslivins/agora-cms/releases/download/ffmpeg-8.1/ffmpeg-${ARCH}.tar.xz"        | tar -xJ --strip-components=1 -C /usr/local     && apt-get purge -y curl xz-utils && apt-get autoremove -y     && rm -rf /var/lib/apt/lists/*
+#23 CACHED
+
+#24 [cms  4/10] COPY requirements-shared.txt requirements.txt requirements-test.txt ./
+#24 CACHED
+
+#25 [cms  5/10] RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 pip install --no-cache-dir --progress-bar off     -r requirements.txt -r requirements-test.txt
+#25 CACHED
+
+#26 [cms  9/10] COPY tests/ tests/
+#26 CACHED
+
+#27 [cms  7/10] COPY worker/ worker/
+#27 CACHED
+
+#28 [cms  8/10] COPY cms/ cms/
+#28 CACHED
+
+#29 [cms  6/10] COPY shared/ shared/
+#29 CACHED
+
+#30 [cms 10/10] COPY pytest.ini .
+#30 CACHED
+
+#31 [simulator 4/7] COPY sim/ sim/
+#31 CACHED
+
+#32 [simulator 3/7] COPY pyproject.toml README.md LICENSE ./
+#32 CACHED
+
+#33 [simulator 6/7] RUN test -d agora/cms_client || (         echo "ERROR: agora/cms_client/ missing ù did you run 'git submodule update --init'?" >&2;         exit 1     )
+#33 CACHED
+
+#34 [simulator 2/8] WORKDIR /app
+#34 CACHED
+
+#35 [simulator 5/7] COPY agora/ agora/
+#35 CACHED
+
+#36 [simulator 7/7] RUN pip install --no-cache-dir .
+#36 CACHED
+
+#37 [cms] exporting to image
+#37 exporting layers done
+#37 exporting manifest sha256:810f394b280726ddc929e2a135a021a80bbb5bd09a57ae24e55500dcea58d46b done
+#37 exporting config sha256:d26e0545b33b66f9b5e7108ca5be16d7e592e90c0f10c511c733404294d1a16c done
+#37 exporting attestation manifest sha256:c9a094fb72b85166dc75a7915fc7578a3a4ea43644532ddae040d5cd4a4618c4
+#37 ...
+
+#38 [worker] exporting to image
+#38 exporting layers done
+#38 exporting manifest sha256:f9a6552762fe229b585935c25054c92f43cc2aba1b5973e2af50a98465457d18 done
+#38 exporting config sha256:7ccf6db59001a5307705e669f319f8cf1efc20fea66cd993c794cbad688a0202 done
+#38 exporting attestation manifest sha256:8881a418d966ba063d343d6c34ad51fa125f9b24b7c76dc89ac773c7edfac37d 0.1s done
+#38 exporting manifest list sha256:5124dc14765301d952dd295b9feeec638af1b2ea6f679521c5d181e28223f84f 0.1s done
+#38 naming to docker.io/library/agora-nightly-worker:latest 0.0s done
+#38 unpacking to docker.io/library/agora-nightly-worker:latest 0.0s done
+#38 DONE 0.3s
+
+#37 [cms] exporting to image
+#37 exporting attestation manifest sha256:c9a094fb72b85166dc75a7915fc7578a3a4ea43644532ddae040d5cd4a4618c4 0.1s done
+#37 exporting manifest list sha256:f4b59ae1f8d71cbd6ade793057a7edb84bcfb818b4155601a56b630ea9fd2daf 0.1s done
+#37 naming to docker.io/library/agora-nightly-cms:latest 0.0s done
+#37 unpacking to docker.io/library/agora-nightly-cms:latest 0.0s done
+#37 DONE 0.4s
+
+#39 [mcp] exporting to image
+#39 exporting layers done
+#39 exporting manifest sha256:6ad5431152259beb789704bda50aa1a44a8e98000fb4abb546e179691dfed33f done
+#39 exporting config sha256:c1418f3d532709dab52a0736141e336a1d9614ad34e11756a04de25b11a5ade5 done
+#39 exporting attestation manifest sha256:443d2b0ed426220f2980e3e6c1617c54c92edc035f38a2f2517dc41ff23ea642 0.1s done
+#39 exporting manifest list sha256:c72532ffcde1812705a62578f82ac8d8ec4c9fdf2c5b37f3889801dd3b679e16 0.1s done
+#39 naming to docker.io/library/agora-nightly-mcp:latest 0.0s done
+#39 unpacking to docker.io/library/agora-nightly-mcp:latest 0.0s done
+#39 DONE 0.3s
+
+#40 [simulator] exporting to image
+#40 exporting layers done
+#40 exporting manifest sha256:9addd0cdf6b7ce834d475fd8ea3bd9e0215eec7e0725c6be8566681d4644f1be done
+#40 exporting config sha256:ebe0b3066f0ac1983b50456189e027fe1144713167130d24fffe203a51d97d84 0.0s done
+#40 exporting attestation manifest sha256:a1f7778a9bc2a216ef3b24309a24a7174c2b8981f793c1b68ae31fc47f8d41bf 0.1s done
+#40 exporting manifest list sha256:6e65a63f16a5cd8a805fe23104cb3c08eff2234676fab4eba6debb85947c29dd 0.1s done
+#40 naming to docker.io/library/agora-nightly-simulator:latest 0.0s done
+#40 unpacking to docker.io/library/agora-nightly-simulator:latest 0.0s done
+#40 DONE 0.3s
+
+#41 [worker] resolving provenance for metadata file
+#41 ...
+
+#42 [mcp] resolving provenance for metadata file
+#42 DONE 0.1s
+
+#43 [simulator] resolving provenance for metadata file
+#43 DONE 0.1s
+
+#41 [worker] resolving provenance for metadata file
+#41 DONE 0.1s
+
+#44 [cms] resolving provenance for metadata file
+#44 DONE 0.0s
+---------------------------- Captured stderr setup ----------------------------
+ Image agora-nightly-worker Building 
+ Image agora-nightly-mcp Building 
+ Image agora-nightly-simulator Building 
+ Image agora-nightly-cms Building 
+ Image agora-nightly-cms Built 
+ Image agora-nightly-simulator Built 
+ Image agora-nightly-worker Built 
+ Image agora-nightly-mcp Built 
+ Network agora-nightly_default Creating 
+ Network agora-nightly_default Created 
+ Volume agora-nightly_cms-assets Creating 
+ Volume agora-nightly_cms-assets Created 
+ Volume agora-nightly_mcp-shared Creating 
+ Volume agora-nightly_mcp-shared Created 
+ Volume agora-nightly_pgdata Creating 
+ Volume agora-nightly_pgdata Created 
+ Container agora-nightly-db-1 Creating 
+ Container agora-nightly-mailpit-1 Creating 
+ Container agora-nightly-mailpit-1 Created 
+ Container agora-nightly-db-1 Created 
+ Container agora-nightly-worker-1 Creating 
+ Container agora-nightly-cms-1 Creating 
+ Container agora-nightly-worker-1 Created 
+ Container agora-nightly-cms-1 Created 
+ Container agora-nightly-simulator-1 Creating 
+ Container agora-nightly-mcp-1 Creating 
+ Container agora-nightly-simulator-1 Created 
+ Container agora-nightly-mcp-1 Created 
+ Container agora-nightly-mailpit-1 Starting 
+ Container agora-nightly-db-1 Starting 
+ Container agora-nightly-mailpit-1 Started 
+ Container agora-nightly-db-1 Started 
+ Container agora-nightly-db-1 Waiting 
+ Container agora-nightly-db-1 Waiting 
+ Container agora-nightly-db-1 Healthy 
+ Container agora-nightly-db-1 Healthy 
+ Container agora-nightly-worker-1 Starting 
+ Container agora-nightly-cms-1 Starting 
+ Container agora-nightly-cms-1 Started 
+ Container agora-nightly-cms-1 Waiting 
+ Container agora-nightly-mcp-1 Starting 
+ Container agora-nightly-worker-1 Started 
+ Container agora-nightly-mcp-1 Started 
+ Container agora-nightly-cms-1 Healthy 
+ Container agora-nightly-simulator-1 Starting 
+ Container agora-nightly-simulator-1 Started 
+-------------------------- Captured stderr teardown ---------------------------
+[nightly] NIGHTLY_KEEP_STACK set ù leaving stack running
+============================== warnings summary ===============================
+tests/nightly/test_oobe.py::test_oobe_full_walkthrough
+  C:\Users\stesli\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pytest_asyncio\plugin.py:1216: DeprecationWarning: 'asyncio.get_event_loop_policy' is deprecated and slated for removal in Python 3.16
+    return asyncio.get_event_loop_policy()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/nightly/test_oobe.py::test_oobe_full_walkthrough - TimeoutError:...
+======================== 1 failed, 1 warning in 37.39s ========================
