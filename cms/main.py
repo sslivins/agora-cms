@@ -70,18 +70,20 @@ async def _seed_profiles(db):
             logger.info("Seeded device profile: %s", name)
 
             # Queue transcoding for any existing video assets
-            from cms.services.transcoder import enqueue_for_new_profile
-            count = await enqueue_for_new_profile(profile.id, db)
-            if count:
-                logger.info("Enqueued %d variants for new profile %s", count, name)
+            from cms.services.transcoder import enqueue_for_new_profile, enqueue_variants
+            variant_ids = await enqueue_for_new_profile(profile.id, db)
+            if variant_ids:
+                await enqueue_variants(db, variant_ids)
+                logger.info("Enqueued %d variants for new profile %s", len(variant_ids), name)
 
     # Ensure all video assets have variants for all profiles (handles gaps)
-    from cms.services.transcoder import enqueue_for_new_profile
+    from cms.services.transcoder import enqueue_for_new_profile, enqueue_variants
     all_profiles = await db.execute(select(DeviceProfile))
     for profile in all_profiles.scalars().all():
-        count = await enqueue_for_new_profile(profile.id, db)
-        if count:
-            logger.info("Enqueued %d missing variants for profile %s", count, profile.name)
+        variant_ids = await enqueue_for_new_profile(profile.id, db)
+        if variant_ids:
+            await enqueue_variants(db, variant_ids)
+            logger.info("Enqueued %d missing variants for profile %s", len(variant_ids), profile.name)
 
 
 async def _backfill_media_metadata(settings):

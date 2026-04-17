@@ -137,7 +137,7 @@ class TestEnqueueForNewProfileExtension:
         await db_session.commit()
 
         from cms.services.transcoder import enqueue_for_new_profile
-        count = await enqueue_for_new_profile(profile.id, db_session)
+        count = len(await enqueue_for_new_profile(profile.id, db_session))
         assert count == 1
 
         variants = (await db_session.execute(
@@ -161,7 +161,7 @@ class TestEnqueueForNewProfileExtension:
         await db_session.commit()
 
         from cms.services.transcoder import enqueue_for_new_profile
-        count = await enqueue_for_new_profile(profile.id, db_session)
+        count = len(await enqueue_for_new_profile(profile.id, db_session))
         assert count == 1
 
         variants = (await db_session.execute(

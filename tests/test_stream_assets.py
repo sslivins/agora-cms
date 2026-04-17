@@ -222,7 +222,7 @@ class TestStreamScheduleValidation:
 class TestSavedStreamRetry:
 
     async def _make_variant(self, db_session, *, asset_type=AssetType.SAVED_STREAM,
-                             retry_count=0, error_message=""):
+                             error_message=""):
         profile = DeviceProfile(name=f"profile-{uuid.uuid4().hex[:6]}")
         db_session.add(profile)
         await db_session.flush()
@@ -244,7 +244,6 @@ class TestSavedStreamRetry:
             size_bytes=0,
             status=VariantStatus.PROCESSING,
             progress=50.0,
-            retry_count=retry_count,
             error_message=error_message or None,
         )
         db_session.add(variant)
@@ -252,15 +251,15 @@ class TestSavedStreamRetry:
         return variant, asset
 
     async def test_should_retry_saved_stream(self, db_session):
-        """SAVED_STREAM variants with retries remaining should be retried."""
+        """SAVED_STREAM variants with a retryable error are eligible for retry."""
         from worker.transcoder import _should_retry
 
-        variant, asset = await self._make_variant(db_session, retry_count=0)
+        variant, asset = await self._make_variant(db_session)
         variant.error_message = "Connection timed out"
         assert _should_retry(variant, asset) is True
 
     async def test_should_not_retry_regular_video(self, db_session):
-        """Non-SAVED_STREAM variants are never retried."""
+        """Non-SAVED_STREAM variants are never retried at the variant level."""
         from worker.transcoder import _should_retry
 
         variant, asset = await self._make_variant(
@@ -269,21 +268,11 @@ class TestSavedStreamRetry:
         variant.error_message = "Something went wrong"
         assert _should_retry(variant, asset) is False
 
-    async def test_should_not_retry_max_retries_exceeded(self, db_session):
-        """Variants at max retry count are not retried."""
-        from worker.transcoder import _should_retry, STREAM_MAX_RETRIES
-
-        variant, asset = await self._make_variant(
-            db_session, retry_count=STREAM_MAX_RETRIES,
-        )
-        variant.error_message = "Connection timed out"
-        assert _should_retry(variant, asset) is False
-
     async def test_should_not_retry_non_retryable_error(self, db_session):
         """Non-retryable errors (bad input) are not retried."""
         from worker.transcoder import _should_retry
 
-        variant, asset = await self._make_variant(db_session, retry_count=0)
+        variant, asset = await self._make_variant(db_session)
         variant.error_message = "Image conversion failed"
         assert _should_retry(variant, asset) is False
 
@@ -291,27 +280,14 @@ class TestSavedStreamRetry:
         assert _should_retry(variant, asset) is False
 
     async def test_mark_failed_retries_saved_stream(self, db_session):
-        """_mark_failed resets a retryable SAVED_STREAM variant to PENDING."""
+        """_mark_failed leaves a retryable SAVED_STREAM variant PENDING (job retry handles count)."""
         from worker.transcoder import _mark_failed
 
-        variant, asset = await self._make_variant(db_session, retry_count=0)
+        variant, asset = await self._make_variant(db_session)
         await _mark_failed(variant, asset, "Connection reset", db_session)
 
         assert variant.status == VariantStatus.PENDING
-        assert variant.retry_count == 1
         assert variant.progress == 0.0
-
-    async def test_mark_failed_permanently_after_max_retries(self, db_session):
-        """_mark_failed sets FAILED when retry limit is reached."""
-        from worker.transcoder import _mark_failed, STREAM_MAX_RETRIES
-
-        variant, asset = await self._make_variant(
-            db_session, retry_count=STREAM_MAX_RETRIES,
-        )
-        await _mark_failed(variant, asset, "Still failing", db_session)
-
-        assert variant.status == VariantStatus.FAILED
-        assert variant.retry_count == STREAM_MAX_RETRIES  # not incremented
 
     async def test_mark_failed_permanently_for_video(self, db_session):
         """_mark_failed always sets FAILED for non-SAVED_STREAM assets."""
@@ -323,7 +299,6 @@ class TestSavedStreamRetry:
         await _mark_failed(variant, asset, "Transcode error", db_session)
 
         assert variant.status == VariantStatus.FAILED
-        assert variant.retry_count == 0
 
 
 # ── SAVED_STREAM as file asset (scheduler) ───────────────────────
@@ -403,7 +378,6 @@ class TestCaptureFormalization:
         await db_session.refresh(variant)
         assert variant.status == VariantStatus.PENDING
         assert variant.progress == 0.0
-        assert variant.retry_count == 0
 
         # Asset should be reset for re-capture
         await db_session.refresh(asset)

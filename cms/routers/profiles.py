@@ -15,7 +15,11 @@ from cms.models.device import Device
 from cms.models.device_profile import DeviceProfile
 from cms.profile_defaults import BUILTIN_PROFILES
 from cms.schemas.profile import ProfileCreate, ProfileOut, ProfileUpdate
-from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_profile, notify_worker
+from cms.services.transcoder import (
+    cancel_profile_transcodes,
+    enqueue_for_new_profile,
+    enqueue_variants,
+)
 from cms.services.audit_service import audit_log
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
@@ -154,9 +158,9 @@ async def create_profile(data: ProfileCreate, request: Request, db: AsyncSession
     await db.refresh(profile)
 
     # Enqueue transcoding for all existing video assets
-    count = await enqueue_for_new_profile(profile.id, db)
-    if count:
-        await notify_worker(db, count=count)
+    variant_ids = await enqueue_for_new_profile(profile.id, db)
+    if variant_ids:
+        await enqueue_variants(db, variant_ids)
 
     return ProfileOut(
         id=profile.id,
@@ -175,7 +179,7 @@ async def create_profile(data: ProfileCreate, request: Request, db: AsyncSession
         audio_bitrate=profile.audio_bitrate,
         builtin=profile.builtin,
         device_count=0,
-        total_variants=count,
+        total_variants=len(variant_ids),
         ready_variants=0,
         created_at=profile.created_at,
     )
@@ -223,7 +227,7 @@ async def update_profile(
         setattr(profile, field, value)
 
     # Reset existing variants so they get re-transcoded
-    reset_count = 0
+    reset_ids: list[uuid.UUID] = []
     if transcode_changed:
         # Kill any in-progress ffmpeg for this profile
         cancel_profile_transcodes(profile_id)
@@ -242,7 +246,9 @@ async def update_profile(
             variant.status = VariantStatus.PENDING
             variant.progress = 0.0
             variant.error_message = ""
-            reset_count += 1
+            reset_ids.append(variant.id)
+
+    reset_count = len(reset_ids)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -258,9 +264,9 @@ async def update_profile(
     )
     await db.commit()
 
-    # Notify worker if variants were reset to PENDING
-    if transcode_changed and reset_count:
-        await notify_worker(db, count=reset_count)
+    # Enqueue jobs for variants reset to PENDING
+    if transcode_changed and reset_ids:
+        await enqueue_variants(db, reset_ids)
 
     await db.refresh(profile)
 
@@ -409,9 +415,9 @@ async def copy_profile(
     await db.refresh(profile)
 
     # Enqueue transcoding for all existing video assets
-    count = await enqueue_for_new_profile(profile.id, db)
-    if count:
-        await notify_worker(db, count=count)
+    variant_ids = await enqueue_for_new_profile(profile.id, db)
+    if variant_ids:
+        await enqueue_variants(db, variant_ids)
 
     return ProfileOut(
         id=profile.id,
@@ -430,7 +436,7 @@ async def copy_profile(
         audio_bitrate=profile.audio_bitrate,
         builtin=profile.builtin,
         device_count=0,
-        total_variants=count,
+        total_variants=len(variant_ids),
         ready_variants=0,
         created_at=profile.created_at,
     )
@@ -467,7 +473,7 @@ async def reset_profile(
         setattr(profile, field, value)
 
     # Reset variants if transcoding fields changed
-    reset_count = 0
+    reset_ids: list[uuid.UUID] = []
     if transcode_changed:
         cancel_profile_transcodes(profile_id)
         var_result = await db.execute(
@@ -484,7 +490,9 @@ async def reset_profile(
             variant.status = VariantStatus.PENDING
             variant.progress = 0.0
             variant.error_message = ""
-            reset_count += 1
+            reset_ids.append(variant.id)
+
+    reset_count = len(reset_ids)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -496,8 +504,8 @@ async def reset_profile(
     )
     await db.commit()
 
-    if transcode_changed and reset_count:
-        await notify_worker(db, count=reset_count)
+    if transcode_changed and reset_ids:
+        await enqueue_variants(db, reset_ids)
 
     await db.refresh(profile)
 

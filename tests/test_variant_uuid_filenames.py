@@ -61,7 +61,7 @@ class TestVariantUUIDFilenames:
         db_session.add(profile)
         await db_session.flush()
 
-        count = await enqueue_for_new_profile(profile.id, db_session)
+        count = len(await enqueue_for_new_profile(profile.id, db_session))
         assert count == 1
 
         from sqlalchemy import select
@@ -141,7 +141,7 @@ class TestVariantUUIDFilenames:
         db_session.add(profile)
         await db_session.flush()
 
-        count = await enqueue_for_new_profile(profile.id, db_session)
+        count = len(await enqueue_for_new_profile(profile.id, db_session))
         assert count == 2
 
         from sqlalchemy import select
@@ -177,7 +177,7 @@ class TestVariantUUIDFilenames:
         db_session.add(profile)
         await db_session.flush()
 
-        count = await enqueue_for_new_profile(profile.id, db_session)
+        count = len(await enqueue_for_new_profile(profile.id, db_session))
         assert count == 2
 
         from sqlalchemy import select
