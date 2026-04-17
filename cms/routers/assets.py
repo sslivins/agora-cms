@@ -621,15 +621,18 @@ async def create_stream_asset(
     for gid in resolved_groups:
         db.add(GroupAsset(asset_id=asset.id, group_id=gid))
 
-    # If save_locally is enabled, enqueue transcoding so the worker
-    # will capture the stream and create variants for each device profile
-    if target_type == AssetType.SAVED_STREAM:
-        await _enqueue_transcoding(asset, db)
-        from cms.services.transcoder import notify_worker
-        await notify_worker(db)
+    # SAVED_STREAM: only notify the worker to capture the stream.
+    # Variant creation happens later — the CMS monitor loop detects the
+    # completed capture and enqueues transcoding, identical to the upload flow.
 
     await db.commit()
     await db.refresh(asset)
+
+    if target_type == AssetType.SAVED_STREAM:
+        from cms.services.transcoder import notify_worker
+        await notify_worker(db)
+        await db.refresh(asset)
+
     return asset
 
 

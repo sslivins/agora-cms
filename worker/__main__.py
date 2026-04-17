@@ -18,7 +18,8 @@ import signal
 import sys
 
 from worker.config import WorkerSettings
-from worker.transcoder import process_pending, recover_interrupted
+from worker.transcoder import process_captures, process_pending, recover_interrupted
+from shared.models import AssetVariant, VariantStatus
 
 from shared.config import SharedSettings
 from shared.database import init_db, get_session_factory, dispose_db
@@ -52,6 +53,9 @@ async def _listen_mode(settings: WorkerSettings) -> None:
     await recover_interrupted(session_factory)
 
     # Process any already-pending work before entering the listen loop
+    captures = await process_captures(session_factory, asset_dir)
+    if captures:
+        logger.info("Captured %d stream(s) on startup", captures)
     count = await process_pending(session_factory, asset_dir)
     if count:
         logger.info("Processed %d pending variant(s) on startup", count)
@@ -91,6 +95,9 @@ async def _listen_mode(settings: WorkerSettings) -> None:
             except asyncio.TimeoutError:
                 pass  # poll timeout — check for work
 
+            captures = await process_captures(session_factory, asset_dir)
+            if captures:
+                logger.info("Captured %d stream(s)", captures)
             count = await process_pending(session_factory, asset_dir)
             if count:
                 logger.info("Processed %d variant(s)", count)
@@ -150,6 +157,9 @@ async def _listen_mode_robust(settings: WorkerSettings) -> None:
             if shutdown.is_set():
                 break
 
+            captures = await process_captures(session_factory, asset_dir)
+            if captures:
+                logger.info("Captured %d stream(s)", captures)
             count = await process_pending(session_factory, asset_dir)
             if count:
                 logger.info("Processed %d variant(s)", count)
@@ -158,16 +168,56 @@ async def _listen_mode_robust(settings: WorkerSettings) -> None:
         await conn.close()
 
 
+async def _drain_queue(settings: WorkerSettings) -> int:
+    """Dequeue and delete all messages from the Azure Storage Queue.
+
+    Returns the number of messages drained.  This prevents KEDA from
+    re-triggering the job for messages that have already been acted on.
+    """
+    conn_str = settings.azure_storage_connection_string
+    if not conn_str:
+        return 0
+
+    try:
+        from azure.storage.queue import QueueClient
+        queue = QueueClient.from_connection_string(conn_str, "transcode-jobs")
+        drained = 0
+        while True:
+            msgs = queue.receive_messages(messages_per_page=32, visibility_timeout=30)
+            batch = list(msgs)
+            if not batch:
+                break
+            for msg in batch:
+                queue.delete_message(msg)
+                drained += 1
+        if drained:
+            logger.info("Drained %d message(s) from transcode-jobs queue", drained)
+        return drained
+    except Exception:
+        logger.warning("Failed to drain transcode-jobs queue", exc_info=True)
+        return 0
+
+
 async def _queue_mode(settings: WorkerSettings) -> None:
-    """Queue mode — process all pending variants, then exit."""
+    """Queue mode — capture streams then process variants, then exit."""
     session_factory = get_session_factory()
     asset_dir = settings.asset_storage_path
 
     # Crash recovery
     await recover_interrupted(session_factory)
 
+    # Phase 1: capture any uncaptured streams
+    captures = await process_captures(session_factory, asset_dir)
+    if captures:
+        logger.info("Queue mode: captured %d stream(s)", captures)
+
+    # Phase 2: transcode pending variants (including any freshly enqueued
+    # by the CMS monitor after a capture completes)
     count = await process_pending(session_factory, asset_dir)
     logger.info("Queue mode: processed %d variant(s), exiting", count)
+
+    # Drain the queue so KEDA doesn't re-trigger for already-handled messages
+    await _drain_queue(settings)
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:

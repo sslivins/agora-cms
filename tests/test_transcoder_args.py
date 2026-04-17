@@ -234,10 +234,10 @@ class TestGeneralStructure:
         assert args[args.index("-i") + 1] == str(SRC)
         assert args[-1] == str(OUT)
 
-    def test_movflags_faststart(self):
+    def test_movflags_faststart_removed(self):
+        """faststart is NOT used — Azure Files SMB mounts corrupt on rewrite."""
         args = _build_ffmpeg_args_safe(SRC, OUT, _make_profile())
-        assert "-movflags" in args
-        assert args[args.index("-movflags") + 1] == "+faststart"
+        assert "-movflags" not in args
 
     def test_movflags_omitted_for_mkv(self):
         mkv_out = Path("/output/video.mkv")

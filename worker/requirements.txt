@@ -3,3 +3,6 @@
 
 # Worker needs raw asyncpg for LISTEN/NOTIFY (not just via SQLAlchemy)
 # asyncpg is already in requirements-shared.txt
+
+# Azure Storage Queue — used by _drain_queue() to consume KEDA trigger messages
+azure-storage-queue>=12.9,<13.0
