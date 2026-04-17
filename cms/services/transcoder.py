@@ -77,7 +77,113 @@ async def flag_profile_jobs_cancelled(
         )
         .values(cancel_requested=True)
     )
-    return result.rowcount or 0
+    flagged = result.rowcount or 0
+    if flagged:
+        logger.info(
+            "Flagged %d active VARIANT_TRANSCODE job(s) cancel_requested=True "
+            "for profile %s", flagged, profile_id,
+        )
+    return flagged
+
+
+async def supersede_profile_variants(
+    db: AsyncSession, profile_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Create fresh PENDING variant rows for every source asset that currently
+    has a non-deleted variant under ``profile_id``.
+
+    Part of the "latest-READY-wins" profile-change flow: old variant rows
+    are LEFT IN PLACE (still READY/PROCESSING/whatever) so devices keep
+    playing the last good blob while the new transcode runs.  When the new
+    variant reaches READY, the reaper supersession sweep will soft-delete
+    the older sibling(s); once their jobs are terminal it hard-deletes
+    them (blob + row).
+
+    Returns the list of newly-created variant ids (caller passes these to
+    :func:`enqueue_variants`).  Caller is responsible for committing the
+    surrounding transaction.
+    """
+    profile_result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if profile is None:
+        logger.warning(
+            "supersede_profile_variants: profile %s not found", profile_id
+        )
+        return []
+
+    # Find distinct source assets that currently have a non-deleted variant
+    # for this profile — those are the ones we need to re-transcode.
+    asset_rows = (
+        await db.execute(
+            select(AssetVariant.source_asset_id)
+            .where(
+                AssetVariant.profile_id == profile_id,
+                AssetVariant.deleted_at.is_(None),
+            )
+            .distinct()
+        )
+    ).all()
+    source_asset_ids = [row[0] for row in asset_rows]
+
+    if not source_asset_ids:
+        logger.info(
+            "supersede_profile_variants: profile %s has no live variants to "
+            "supersede", profile_id,
+        )
+        return []
+
+    # Load the assets so we can pick the correct filename extension.
+    assets_result = await db.execute(
+        select(Asset).where(Asset.id.in_(source_asset_ids))
+    )
+    assets = {a.id: a for a in assets_result.scalars().all()}
+
+    new_variant_ids: list[uuid.UUID] = []
+    for asset_id in source_asset_ids:
+        asset = assets.get(asset_id)
+        if asset is None:
+            logger.warning(
+                "supersede_profile_variants: source asset %s missing; "
+                "skipping supersession for profile %s",
+                asset_id, profile_id,
+            )
+            continue
+        # Skip soft-deleted assets — the asset reaper will clean up their
+        # variants shortly anyway.
+        if getattr(asset, "deleted_at", None) is not None:
+            logger.info(
+                "supersede_profile_variants: skipping soft-deleted asset %s "
+                "for profile %s", asset_id, profile_id,
+            )
+            continue
+
+        variant_id = uuid.uuid4()
+        if asset.asset_type == AssetType.IMAGE:
+            ext = image_variant_ext(asset.filename)
+        elif profile.audio_codec == "libopus":
+            ext = ".mkv"
+        else:
+            ext = ".mp4"
+        db.add(
+            AssetVariant(
+                id=variant_id,
+                source_asset_id=asset.id,
+                profile_id=profile_id,
+                filename=f"{variant_id}{ext}",
+                status=VariantStatus.PENDING,
+            )
+        )
+        new_variant_ids.append(variant_id)
+
+    logger.info(
+        "supersede_profile_variants: created %d fresh PENDING variant(s) for "
+        "profile %s (new variant ids=%s)",
+        len(new_variant_ids), profile_id,
+        [str(v) for v in new_variant_ids[:10]],
+    )
+    return new_variant_ids
 
 
 # ── Job enqueue helpers (CMS-facing API) ────────────────────────
@@ -146,6 +252,7 @@ async def enqueue_for_new_profile(
             select(AssetVariant).where(
                 AssetVariant.source_asset_id == asset.id,
                 AssetVariant.profile_id == profile_id,
+                AssetVariant.deleted_at.is_(None),
             )
         )
         if existing.scalar_one_or_none():
@@ -227,6 +334,7 @@ async def _enqueue_transcoding_for_asset(
             select(AssetVariant.id).where(
                 AssetVariant.source_asset_id == asset.id,
                 AssetVariant.profile_id == profile.id,
+                AssetVariant.deleted_at.is_(None),
             ).limit(1)
         )
         if existing.scalar_one_or_none() is not None:
@@ -500,22 +608,208 @@ async def reap_deleted_assets_once(db, settings=None) -> int:
     return reaped
 
 
+async def supersede_ready_variants_once(db) -> int:
+    """Soft-delete older READY variants once a newer READY sibling exists.
+
+    Part of the variant-swap flow: after a profile edit we insert a fresh
+    PENDING variant row for each affected asset.  The OLD variant row is
+    left intact so devices keep streaming the last good blob.  Once the
+    NEW variant transitions to READY (worker sets status → complete), we
+    must mark the older sibling(s) soft-deleted so the scheduler/resolver
+    stop handing out stale checksums.
+
+    A variant V is considered "superseded" when there exists another
+    non-deleted AssetVariant V' with the same (source_asset_id,
+    profile_id) where V'.status = READY and V'.created_at > V.created_at.
+    Only V's that are themselves READY (or FAILED, which can never be
+    promoted above a newer READY) are soft-deleted here — still-PENDING
+    or PROCESSING sibling jobs are left to run their course.
+
+    Returns the number of variants soft-deleted this pass.
+    """
+    from cms.models.asset import AssetVariant as _AssetVariant, VariantStatus as _VariantStatus
+    from datetime import datetime, timezone
+    from sqlalchemy import and_
+    from sqlalchemy.orm import aliased
+
+    V = _AssetVariant
+    V_newer = aliased(_AssetVariant)
+
+    newer_exists = (
+        select(V_newer.id).where(
+            V_newer.source_asset_id == V.source_asset_id,
+            V_newer.profile_id == V.profile_id,
+            V_newer.status == _VariantStatus.READY,
+            V_newer.deleted_at.is_(None),
+            V_newer.created_at > V.created_at,
+        )
+    ).exists()
+
+    result = await db.execute(
+        select(V).where(
+            V.deleted_at.is_(None),
+            V.status.in_([_VariantStatus.READY, _VariantStatus.FAILED]),
+            newer_exists,
+        )
+    )
+    to_mark = result.scalars().all()
+
+    if not to_mark:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    for v in to_mark:
+        v.deleted_at = now
+        logger.info(
+            "Reaper: soft-deleted superseded variant %s (asset=%s profile=%s "
+            "status=%s filename=%s)",
+            v.id, v.source_asset_id, v.profile_id, v.status.value, v.filename,
+        )
+
+    await db.commit()
+    return len(to_mark)
+
+
+async def reap_superseded_variants_once(db, settings=None) -> int:
+    """Hard-delete soft-deleted variant rows whose jobs are terminal.
+
+    Mirror of :func:`reap_deleted_assets_once` but scoped to individual
+    AssetVariant rows marked ``deleted_at IS NOT NULL`` by the supersession
+    sweep or other flows (e.g. a future "delete single variant" endpoint).
+
+    A variant is eligible for hard-delete when no PENDING/PROCESSING
+    ``VARIANT_TRANSCODE`` Job targets it.  We delete the blob then the
+    row (plus any terminal Job rows that referenced it, to keep the jobs
+    table tidy).
+
+    Returns the number of variants hard-deleted this pass.
+    """
+    from cms.auth import get_settings as _get_settings
+    from cms.models.asset import AssetVariant as _AssetVariant
+    from shared.models.job import Job, JobType, JobStatus
+    from cms.services.storage import get_storage
+    from sqlalchemy import delete
+
+    if settings is None:
+        settings = _get_settings()
+    storage = get_storage()
+    active_statuses = [JobStatus.PENDING, JobStatus.PROCESSING]
+
+    result = await db.execute(
+        select(_AssetVariant).where(_AssetVariant.deleted_at.is_not(None))
+    )
+    pending = result.scalars().all()
+
+    reaped = 0
+    for variant in pending:
+        active = await db.scalar(
+            select(func.count()).select_from(Job).where(
+                Job.status.in_(active_statuses),
+                Job.type == JobType.VARIANT_TRANSCODE,
+                Job.target_id == variant.id,
+            )
+        )
+        if active:
+            logger.info(
+                "Reaper: variant %s (%s) has %d active job(s), "
+                "skipping hard-delete",
+                variant.id, variant.filename, active,
+            )
+            continue
+
+        try:
+            vpath = settings.asset_storage_path / "variants" / variant.filename
+            try:
+                if vpath.is_file():
+                    vpath.unlink()
+            except Exception:
+                logger.warning(
+                    "Reaper: failed to unlink variant blob %s",
+                    vpath, exc_info=True,
+                )
+            try:
+                await storage.on_file_deleted(f"variants/{variant.filename}")
+            except Exception:
+                logger.debug(
+                    "Reaper: storage delete variants/%s failed (likely gone)",
+                    variant.filename,
+                )
+
+            # Remove terminal Job rows referencing this variant so the jobs
+            # table doesn't grow unbounded over many profile edits.
+            await db.execute(
+                delete(Job).where(
+                    Job.type == JobType.VARIANT_TRANSCODE,
+                    Job.target_id == variant.id,
+                )
+            )
+            await db.delete(variant)
+            await db.commit()
+            reaped += 1
+
+            logger.info(
+                "Reaper: hard-deleted superseded variant %s (%s)",
+                variant.id, variant.filename,
+            )
+        except Exception:
+            logger.exception(
+                "Reaper: failed to hard-delete variant %s", variant.id
+            )
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+    return reaped
+
+
 async def deleted_asset_reaper_loop() -> None:
     """Background loop: hard-delete soft-deleted assets whose jobs are terminal.
 
     Runs every ``AGORA_REAPER_INTERVAL`` seconds in the CMS process.  The
     per-tick body is in :func:`reap_deleted_assets_once` so tests can drive
     it deterministically.
+
+    Also runs per-variant supersession sweeps (see
+    :func:`supersede_ready_variants_once` and
+    :func:`reap_superseded_variants_once`) so profile-change variant swaps
+    converge on a single READY variant per (asset, profile) pair.
     """
     from cms.database import get_db
 
-    logger.info("Deleted asset reaper started (interval=%ds)", _REAPER_INTERVAL)
+    logger.info(
+        "Deleted asset reaper started (interval=%ds, variant-supersession=ON)",
+        _REAPER_INTERVAL,
+    )
 
     while True:
         try:
             await asyncio.sleep(_REAPER_INTERVAL)
             async for db in get_db():
-                await reap_deleted_assets_once(db)
+                try:
+                    await reap_deleted_assets_once(db)
+                except Exception:
+                    logger.exception("Reaper: asset sweep failed")
+            async for db in get_db():
+                try:
+                    marked = await supersede_ready_variants_once(db)
+                    if marked:
+                        logger.info(
+                            "Reaper: supersession sweep soft-deleted %d "
+                            "stale variant(s)", marked,
+                        )
+                except Exception:
+                    logger.exception("Reaper: variant supersession sweep failed")
+            async for db in get_db():
+                try:
+                    reaped = await reap_superseded_variants_once(db)
+                    if reaped:
+                        logger.info(
+                            "Reaper: hard-deleted %d superseded variant(s)",
+                            reaped,
+                        )
+                except Exception:
+                    logger.exception("Reaper: variant hard-delete sweep failed")
         except asyncio.CancelledError:
             logger.info("Deleted asset reaper shutting down")
             raise

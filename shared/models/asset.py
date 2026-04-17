@@ -117,6 +117,16 @@ class AssetVariant(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Soft-delete marker.  Set to now() when this variant is superseded by a
+    # newer variant for the same (source_asset, profile) pair — e.g. when a
+    # device profile is edited, a fresh variant row is created with a new
+    # UUID (and therefore a new blob path), and the prior variant is tagged
+    # for eventual hard-delete once its jobs reach a terminal state.  The
+    # scheduler + resolver filter on ``deleted_at IS NULL``.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     source_asset: Mapped[Asset] = relationship(back_populates="variants")
     profile: Mapped["DeviceProfile"] = relationship(back_populates="variants")
 

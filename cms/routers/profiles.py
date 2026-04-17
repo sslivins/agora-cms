@@ -1,5 +1,6 @@
 """Device profile management API routes."""
 
+import logging
 import uuid
 from typing import List
 
@@ -20,8 +21,11 @@ from cms.services.transcoder import (
     enqueue_for_new_profile,
     enqueue_variants,
     flag_profile_jobs_cancelled,
+    supersede_profile_variants,
 )
 from cms.services.audit_service import audit_log
+
+logger = logging.getLogger("agora.cms.profiles")
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
 
@@ -228,30 +232,28 @@ async def update_profile(
         setattr(profile, field, value)
 
     # Reset existing variants so they get re-transcoded
-    reset_ids: list[uuid.UUID] = []
+    new_variant_ids: list[uuid.UUID] = []
+    cancelled_jobs = 0
     if transcode_changed:
+        logger.info(
+            "update_profile: profile %s (%s) transcoding fields changed (%s); "
+            "superseding variants",
+            profile_id, profile.name,
+            sorted(f for f in updates if f in _TRANSCODE_FIELDS),
+        )
         # Flag any in-flight worker jobs for cooperative cancellation.
         # Workers will SIGTERM ffmpeg on the next heartbeat tick.
-        await flag_profile_jobs_cancelled(db, profile_id)
+        cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
 
-        var_result = await db.execute(
-            select(AssetVariant).where(
-                AssetVariant.profile_id == profile_id,
-                AssetVariant.status.in_([
-                    VariantStatus.READY,
-                    VariantStatus.FAILED,
-                    VariantStatus.PROCESSING,
-                ]),
-            )
-        )
-        for variant in var_result.scalars().all():
-            variant.status = VariantStatus.PENDING
-            variant.progress = 0.0
-            variant.error_message = ""
-            reset_ids.append(variant.id)
+        # Create brand-new variant rows (fresh UUIDs → fresh blob paths) for
+        # every asset that currently has a live variant under this profile.
+        # The OLD variant rows are left in place so devices keep playing the
+        # last known good blob; the reaper will soft-delete them once a new
+        # READY sibling exists, then hard-delete once jobs are terminal.
+        new_variant_ids = await supersede_profile_variants(db, profile_id)
 
-    reset_count = len(reset_ids)
+    reset_count = len(new_variant_ids)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -261,15 +263,21 @@ async def update_profile(
         details={
             **{k: v for k, v in updates.items() if not isinstance(v, uuid.UUID)},
             "transcode_changed": transcode_changed,
-            "variants_reset": reset_count,
+            "variants_superseded": reset_count,
+            "jobs_cancelled": cancelled_jobs,
         },
         request=request,
     )
     await db.commit()
 
-    # Enqueue jobs for variants reset to PENDING
-    if transcode_changed and reset_ids:
-        await enqueue_variants(db, reset_ids)
+    # Enqueue jobs for the newly-created PENDING variants
+    if transcode_changed and new_variant_ids:
+        await enqueue_variants(db, new_variant_ids)
+        logger.info(
+            "update_profile: profile %s — enqueued %d VARIANT_TRANSCODE job(s) "
+            "after superseding (cancelled %d in-flight)",
+            profile_id, len(new_variant_ids), cancelled_jobs,
+        )
 
     await db.refresh(profile)
 
@@ -478,40 +486,40 @@ async def reset_profile(
         setattr(profile, field, value)
 
     # Reset variants if transcoding fields changed
-    reset_ids: list[uuid.UUID] = []
+    new_variant_ids: list[uuid.UUID] = []
+    cancelled_jobs = 0
     if transcode_changed:
-        await flag_profile_jobs_cancelled(db, profile_id)
-        cancel_profile_transcodes(profile_id)
-        var_result = await db.execute(
-            select(AssetVariant).where(
-                AssetVariant.profile_id == profile_id,
-                AssetVariant.status.in_([
-                    VariantStatus.READY,
-                    VariantStatus.FAILED,
-                    VariantStatus.PROCESSING,
-                ]),
-            )
+        logger.info(
+            "reset_profile: built-in profile %s (%s) reset to defaults — "
+            "superseding variants", profile_id, profile.name,
         )
-        for variant in var_result.scalars().all():
-            variant.status = VariantStatus.PENDING
-            variant.progress = 0.0
-            variant.error_message = ""
-            reset_ids.append(variant.id)
+        cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
+        cancel_profile_transcodes(profile_id)
+        new_variant_ids = await supersede_profile_variants(db, profile_id)
 
-    reset_count = len(reset_ids)
+    reset_count = len(new_variant_ids)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="profile.reset", resource_type="profile",
         resource_id=str(profile_id),
         description=f"Reset built-in transcode profile '{profile.name}' to defaults",
-        details={"name": profile.name, "variants_reset": reset_count},
+        details={
+            "name": profile.name,
+            "variants_superseded": reset_count,
+            "jobs_cancelled": cancelled_jobs,
+        },
         request=request,
     )
     await db.commit()
 
-    if transcode_changed and reset_ids:
-        await enqueue_variants(db, reset_ids)
+    if transcode_changed and new_variant_ids:
+        await enqueue_variants(db, new_variant_ids)
+        logger.info(
+            "reset_profile: profile %s — enqueued %d VARIANT_TRANSCODE job(s) "
+            "after superseding (cancelled %d in-flight)",
+            profile_id, len(new_variant_ids), cancelled_jobs,
+        )
 
     await db.refresh(profile)
 

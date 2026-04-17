@@ -678,6 +678,11 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
 
     # Build variant checksum map for this device's profile
     # (maps source asset filename → variant checksum)
+    # With the variant-swap model, multiple READY variants can transiently
+    # exist for the same (asset, profile) while a newer one is being
+    # promoted.  Order by created_at DESC so the FIRST write per asset
+    # filename is the latest READY variant — subsequent (older) rows are
+    # skipped by the `not in` guard below.
     variant_checksums: dict[str, str] = {}
     if dev.profile_id:
         var_result = await db.execute(
@@ -686,10 +691,15 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
             .where(
                 AssetVariant.profile_id == dev.profile_id,
                 AssetVariant.status == VariantStatus.READY,
+                AssetVariant.deleted_at.is_(None),
             )
+            .order_by(AssetVariant.created_at.desc())
         )
         for v in var_result.scalars().all():
-            variant_checksums[v.source_asset.filename] = v.checksum
+            fname = v.source_asset.filename
+            if fname in variant_checksums:
+                continue  # already have the latest READY for this asset
+            variant_checksums[fname] = v.checksum
         # Also override default_asset_checksum if there's a variant
         if default_asset_name and default_asset_name in variant_checksums:
             default_asset_checksum = variant_checksums[default_asset_name]
