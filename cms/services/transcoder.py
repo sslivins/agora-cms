@@ -1,42 +1,43 @@
 """Transcoder service — CMS-side shim.
 
-Transcoding has moved to the dedicated worker container (worker/).
+Transcoding runs in the dedicated worker container (``worker/``).
 This module retains:
-  - DB-only helpers (enqueue, fix extensions) called from CMS routers
-  - stream_capture_monitor_loop — orchestrates stream capture → variant workflow
-  - probe_media re-export from shared
-  - convert_image re-export from shared (HEIC→JPEG on upload)
-  - No-op cancel stubs (worker handles its own cancellation)
+  - DB helpers that create pending ``AssetVariant`` rows (called from
+    CMS routers + the startup defaults hook).
+  - ``enqueue_variants`` / ``enqueue_stream_capture`` — the CMS-facing
+    API for queueing work; both create Job rows and send queue messages
+    via :mod:`shared.services.jobs`.
+  - ``stream_capture_monitor_loop`` — reconciles completed captures →
+    variant rows + sweeps orphan jobs.
+  - No-op cancel stubs (the worker handles its own cancellation).
 """
 
 import asyncio
 import logging
+import os
 import uuid
+from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from shared.models.device_profile import DeviceProfile
+from shared.models.job import JobType
 from shared.services.image import convert_image, convert_image_to_jpeg, image_variant_ext  # noqa: F401
+from shared.services.jobs import enqueue_job, enqueue_jobs, sweep_orphans
 from shared.services.probe import probe_media  # noqa: F401
 
 logger = logging.getLogger("agora.cms.transcoder")
 
-# ── Stream capture monitor ──────────────────────────────────────
-# How often to check for completed captures / stale processing (seconds)
-_MONITOR_INTERVAL = int(__import__("os").environ.get("AGORA_MONITOR_INTERVAL", "30"))
-
-# A PROCESSING variant with no progress update for this long is stale (seconds)
-_STALE_PROCESSING_TIMEOUT = int(__import__("os").environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
+# ── Monitor loop intervals ──────────────────────────────────────
+_MONITOR_INTERVAL = int(os.environ.get("AGORA_MONITOR_INTERVAL", "30"))
+_STALE_PROCESSING_TIMEOUT = int(os.environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
+_ORPHAN_JOB_AGE_SECONDS = int(os.environ.get("AGORA_ORPHAN_JOB_AGE", "120"))    # 2 min
 
 
 def _image_variant_ext(asset) -> str:
-    """Return the correct file extension for an image variant.
-
-    Wrapper around shared image_variant_ext for backward compatibility
-    (existing callers pass an Asset object).
-    """
+    """Return the correct file extension for an image variant."""
     return image_variant_ext(asset.filename)
 
 
@@ -50,10 +51,50 @@ def cancel_asset_transcodes(asset_id: uuid.UUID) -> bool:
     return False
 
 
-async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
-    """Create pending variants for all video and image assets for a new profile.
+# ── Job enqueue helpers (CMS-facing API) ────────────────────────
 
-    Returns the number of variants enqueued.
+async def enqueue_variants(
+    db: AsyncSession, variant_ids: Iterable[uuid.UUID]
+) -> list[uuid.UUID]:
+    """Enqueue one VARIANT_TRANSCODE job per variant id.
+
+    Returns the list of job ids created.  Safe to call with an empty
+    iterable (no-op).
+    """
+    specs = [(JobType.VARIANT_TRANSCODE, vid) for vid in variant_ids]
+    if not specs:
+        return []
+    return await enqueue_jobs(db, specs)
+
+
+async def enqueue_stream_capture(
+    db: AsyncSession, asset_id: uuid.UUID
+) -> uuid.UUID:
+    """Enqueue a STREAM_CAPTURE job for the given SAVED_STREAM asset."""
+    return await enqueue_job(db, JobType.STREAM_CAPTURE, asset_id)
+
+
+async def notify_worker(db, count: int = 1) -> None:
+    """Compatibility shim — wake the worker via PostgreSQL NOTIFY.
+
+    New code should call :func:`enqueue_variants` or
+    :func:`enqueue_stream_capture` instead (they send proper queue
+    messages).  This shim only issues ``NOTIFY transcode_jobs`` so
+    listen-mode workers running in docker-compose wake up on demand.
+    """
+    from shared.services.jobs import _notify_pg
+    await _notify_pg(db)
+
+
+# ── Variant creation helpers ────────────────────────────────────
+
+async def enqueue_for_new_profile(
+    profile_id, db: AsyncSession
+) -> list[uuid.UUID]:
+    """Create pending variants for all video + image assets for a new profile.
+
+    Returns the list of newly-created variant ids (caller may pass these to
+    :func:`enqueue_variants`).
     """
     result = await db.execute(
         select(Asset).where(
@@ -67,11 +108,10 @@ async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
     )
     profile = profile_result.scalar_one_or_none()
     if not profile:
-        return 0
+        return []
 
-    count = 0
+    new_variant_ids: list[uuid.UUID] = []
     for asset in assets:
-        # Check if variant already exists
         existing = await db.execute(
             select(AssetVariant).where(
                 AssetVariant.source_asset_id == asset.id,
@@ -95,14 +135,14 @@ async def enqueue_for_new_profile(profile_id, db: AsyncSession) -> int:
             filename=f"{variant_id}{ext}",
         )
         db.add(variant)
-        count += 1
+        new_variant_ids.append(variant_id)
 
     await db.commit()
-    return count
+    return new_variant_ids
 
 
 async def fix_image_variant_extensions(db: AsyncSession) -> int:
-    """Fix image variants that have incorrect .mp4 extensions.
+    """Fix image variants with incorrect .mp4 extensions.
 
     Resets them to PENDING with the correct extension so the worker
     re-processes them.  Returns the number of variants fixed.
@@ -115,6 +155,7 @@ async def fix_image_variant_extensions(db: AsyncSession) -> int:
     )
     broken = result.scalars().all()
 
+    fixed_ids: list[uuid.UUID] = []
     for variant in broken:
         await db.refresh(variant, ["source_asset"])
         correct_ext = image_variant_ext(variant.source_asset.filename)
@@ -125,9 +166,11 @@ async def fix_image_variant_extensions(db: AsyncSession) -> int:
         variant.checksum = ""
         variant.progress = 0.0
         variant.error_message = ""
+        fixed_ids.append(variant.id)
 
     if broken:
         await db.commit()
+        await enqueue_variants(db, fixed_ids)
         logger.info("Fixed %d image variant(s) with incorrect .mp4 extension", len(broken))
 
     return len(broken)
@@ -138,59 +181,18 @@ def get_transcode_status() -> dict:
     return {}
 
 
-async def notify_worker(db, count: int = 1) -> None:
-    """Wake the transcode worker.
-
-    Docker Compose: sends a PostgreSQL NOTIFY on the transcode_jobs channel.
-    Azure:          enqueues ``count`` messages on the Azure Storage Queue so
-                    KEDA scales the Container Apps Job up to ``count`` parallel
-                    worker executions (capped by the job's ``maxExecutions``).
-                    Pass the number of variants that became PENDING to fan out
-                    the transcoding work in parallel.
-    """
-    from sqlalchemy import text
-    # Only attempt NOTIFY on PostgreSQL — it is a PostgreSQL-specific command.
-    # On SQLite (tests) this would fail and the rollback would expire all ORM
-    # objects in the session, causing MissingGreenlet in callers.
-    dialect = db.bind.dialect.name if db.bind else ""
-    if dialect == "postgresql":
-        try:
-            await db.execute(text("NOTIFY transcode_jobs"))
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            logger.debug("NOTIFY transcode_jobs failed (non-critical)", exc_info=True)
-
-    # Azure Storage Queue trigger (Container Apps Job).  One message per pending
-    # unit of work so KEDA fans out to parallel worker replicas.  Workers use
-    # ``FOR UPDATE SKIP LOCKED`` to claim distinct variants, and ``_drain_queue``
-    # clears any leftover messages once all PENDING work is done.
-    if count < 1:
-        return
-    try:
-        import os
-        conn_str = os.environ.get("AGORA_CMS_AZURE_STORAGE_CONNECTION_STRING")
-        if conn_str:
-            from azure.storage.queue import QueueClient
-            queue = QueueClient.from_connection_string(conn_str, "transcode-jobs")
-            for _ in range(count):
-                queue.send_message("transcode")
-            logger.debug("Enqueued %d transcode-jobs queue message(s)", count)
-    except Exception:
-        logger.warning("Azure queue enqueue failed", exc_info=True)
-
-
-async def _enqueue_transcoding_for_asset(asset: Asset, db: AsyncSession) -> int:
+async def _enqueue_transcoding_for_asset(
+    asset: Asset, db: AsyncSession
+) -> list[uuid.UUID]:
     """Create pending AssetVariant rows for all device profiles.
 
-    This is the shared logic used by both the upload path (via the router)
-    and the stream capture monitor.  Returns the number of variants created.
+    Returns the list of newly-created variant ids so the caller can
+    pass them to :func:`enqueue_variants`.
     """
     result = await db.execute(select(DeviceProfile))
     profiles = result.scalars().all()
-    count = 0
+    new_variant_ids: list[uuid.UUID] = []
     for profile in profiles:
-        # Skip if variant already exists (idempotent)
         existing = await db.execute(
             select(AssetVariant.id).where(
                 AssetVariant.source_asset_id == asset.id,
@@ -214,30 +216,40 @@ async def _enqueue_transcoding_for_asset(asset: Asset, db: AsyncSession) -> int:
             filename=f"{variant_id}{ext}",
         )
         db.add(variant)
-        count += 1
+        new_variant_ids.append(variant_id)
 
-    if count:
+    if new_variant_ids:
         await db.commit()
-    return count
+    return new_variant_ids
 
 
 async def stream_capture_monitor_loop() -> None:
-    """Background loop that orchestrates the stream capture → variant workflow.
+    """Background loop: reconcile captures, sweep orphans, reset stale work.
 
-    Periodically checks for:
-    1. Completed stream captures (SAVED_STREAM with source file, no variants)
-       → creates variant rows and notifies workers (identical to upload flow)
-    2. Stale PROCESSING variants (no progress update beyond timeout)
-       → resets to PENDING and re-notifies workers
+    Runs in the CMS process as an asyncio task (same pattern as
+    ``scheduler_loop``).
 
-    Runs in the CMS process as an asyncio task (same pattern as scheduler_loop).
+    Three reconciliation phases per tick:
+
+    1. **Completed captures → variants**.  A SAVED_STREAM with size_bytes>0
+       and no variants means the worker just finished capturing.  Create
+       the variant rows and enqueue VARIANT_TRANSCODE jobs.
+
+    2. **Orphan jobs**.  Any PENDING job older than ``_ORPHAN_JOB_AGE_SECONDS``
+       likely lost its queue message (CMS crashed between commit and send,
+       or transient queue error).  Re-send the queue message.
+
+    3. **Stale PROCESSING variants**.  A PROCESSING variant with no progress
+       after the stale timeout had its worker crash.  Reset to PENDING and
+       enqueue a fresh job.
     """
     from datetime import datetime, timezone, timedelta
     from cms.database import get_db
 
     logger.info(
-        "Stream capture monitor started (interval=%ds, stale_timeout=%ds)",
-        _MONITOR_INTERVAL, _STALE_PROCESSING_TIMEOUT,
+        "Stream capture monitor started "
+        "(interval=%ds, stale_timeout=%ds, orphan_age=%ds)",
+        _MONITOR_INTERVAL, _STALE_PROCESSING_TIMEOUT, _ORPHAN_JOB_AGE_SECONDS,
     )
 
     while True:
@@ -246,12 +258,10 @@ async def stream_capture_monitor_loop() -> None:
 
             # ── 1. Completed captures → enqueue variants ──
             async for db in get_db():
-                # Find SAVED_STREAM assets that have been captured (size_bytes > 0)
-                # but don't yet have any variants — the CMS needs to create them.
                 result = await db.execute(
                     select(Asset).where(
                         Asset.asset_type == AssetType.SAVED_STREAM,
-                        Asset.size_bytes > 0,  # capture completed
+                        Asset.size_bytes > 0,
                         ~Asset.id.in_(
                             select(AssetVariant.source_asset_id).distinct()
                         ),
@@ -260,47 +270,48 @@ async def stream_capture_monitor_loop() -> None:
                 ready_assets = result.scalars().all()
 
                 for asset in ready_assets:
-                    count = await _enqueue_transcoding_for_asset(asset, db)
-                    if count:
-                        await notify_worker(db, count=count)
+                    variant_ids = await _enqueue_transcoding_for_asset(asset, db)
+                    if variant_ids:
+                        await enqueue_variants(db, variant_ids)
                         logger.info(
                             "Stream capture complete for %s — enqueued %d variant(s)",
-                            asset.id, count,
+                            asset.id, len(variant_ids),
                         )
 
-            # ── 2. Stale PROCESSING variants → reset to PENDING ──
+            # ── 2. Orphan job sweep ──
+            async for db in get_db():
+                try:
+                    await sweep_orphans(db, stale_seconds=_ORPHAN_JOB_AGE_SECONDS)
+                except Exception:
+                    logger.exception("Orphan job sweep failed")
+
+            # ── 3. Stale PROCESSING variants → reset to PENDING ──
             async for db in get_db():
                 cutoff = datetime.now(timezone.utc) - timedelta(seconds=_STALE_PROCESSING_TIMEOUT)
                 result = await db.execute(
                     select(AssetVariant).where(
                         AssetVariant.status == VariantStatus.PROCESSING,
-                        # Use created_at as a conservative bound — if progress was
-                        # updating, the row's updated_at would be recent.  We check
-                        # progress == 0 as a stronger signal (never started).
                     )
                 )
                 processing = result.scalars().all()
 
-                reset_count = 0
+                reset_ids: list[uuid.UUID] = []
                 for v in processing:
-                    # Consider stale if created long ago AND still at 0% progress,
-                    # OR if it's been processing for 2x the stale timeout (stuck at
-                    # any progress level).
                     age = (datetime.now(timezone.utc) - v.created_at).total_seconds()
                     if v.progress == 0.0 and age > _STALE_PROCESSING_TIMEOUT:
                         v.status = VariantStatus.PENDING
                         v.progress = 0.0
-                        reset_count += 1
+                        reset_ids.append(v.id)
                     elif age > _STALE_PROCESSING_TIMEOUT * 2:
                         v.status = VariantStatus.PENDING
                         v.progress = 0.0
-                        reset_count += 1
+                        reset_ids.append(v.id)
 
-                if reset_count:
+                if reset_ids:
                     await db.commit()
-                    await notify_worker(db, count=reset_count)
+                    await enqueue_variants(db, reset_ids)
                     logger.warning(
-                        "Reset %d stale PROCESSING variant(s) to PENDING", reset_count,
+                        "Reset %d stale PROCESSING variant(s) to PENDING", len(reset_ids),
                     )
 
         except asyncio.CancelledError:

@@ -199,25 +199,187 @@ async def _drain_queue(settings: WorkerSettings) -> int:
 
 
 async def _queue_mode(settings: WorkerSettings) -> None:
-    """Queue mode — capture streams then process variants, then exit."""
+    """Queue mode — process one job per worker invocation, then exit.
+
+    Receives a single message from the ``transcode-jobs`` Azure Storage
+    Queue with a 30-second visibility timeout.  A background heartbeat
+    task extends the lease every 15 seconds while work is in progress.
+    The queue is the source of authority: owning the message means
+    owning the job, irrespective of DB state.
+
+    Flow:
+      1. Receive one message (visibility_timeout=30).
+      2. Parse job UUID from body, load Job row.
+      3. Claim (bump retry_count; if > MAX_RETRIES mark FAILED & delete).
+      4. Start 15s heartbeat (update_message) to hold the lease.
+      5. Dispatch on job.type to variant transcode or stream capture.
+      6. On success: mark job DONE, stop heartbeat, delete message.
+      7. On failure / crash: stop heartbeat, do NOT delete message — it
+         becomes visible again after the visibility timeout and another
+         worker invocation retries.
+    """
+    import uuid as _uuid
+
+    from shared.models.job import Job, JobStatus, JobType
+    from shared.services.jobs import claim_job, mark_done, mark_failed, QUEUE_NAME
+    from worker.transcoder import (
+        capture_stream_by_id,
+        recover_interrupted,
+        transcode_variant_by_id,
+    )
+    from sqlalchemy import select
+
     session_factory = get_session_factory()
     asset_dir = settings.asset_storage_path
 
-    # Crash recovery
+    # Crash recovery (cheap idempotent PROCESSING→PENDING reset for interrupted work)
     await recover_interrupted(session_factory)
 
-    # Phase 1: capture any uncaptured streams
-    captures = await process_captures(session_factory, asset_dir)
-    if captures:
-        logger.info("Queue mode: captured %d stream(s)", captures)
+    conn_str = settings.azure_storage_connection_string
+    if not conn_str:
+        logger.warning("Queue mode requested but no Azure connection string — exiting")
+        return
 
-    # Phase 2: transcode pending variants (including any freshly enqueued
-    # by the CMS monitor after a capture completes)
-    count = await process_pending(session_factory, asset_dir)
-    logger.info("Queue mode: processed %d variant(s), exiting", count)
+    from azure.storage.queue import QueueClient
+    queue = QueueClient.from_connection_string(conn_str, QUEUE_NAME)
 
-    # Drain the queue so KEDA doesn't re-trigger for already-handled messages
-    await _drain_queue(settings)
+    VISIBILITY_TIMEOUT = 30
+    HEARTBEAT_INTERVAL = 15
+
+    msgs = list(queue.receive_messages(messages_per_page=1, visibility_timeout=VISIBILITY_TIMEOUT))
+    if not msgs:
+        logger.info("Queue mode: no messages, exiting")
+        return
+
+    msg = msgs[0]
+    body = msg.content.strip() if isinstance(msg.content, str) else str(msg.content).strip()
+
+    # Parse UUID.  Legacy messages (body = "transcode") have no job id — drop them.
+    try:
+        job_id = _uuid.UUID(body)
+    except (ValueError, AttributeError):
+        logger.warning("Received non-UUID queue message %r — deleting", body)
+        try:
+            queue.delete_message(msg)
+        except Exception:
+            logger.exception("Failed to delete malformed message")
+        return
+
+    # Claim the job (bumps retry_count, flips to PROCESSING or FAILED-if-poison).
+    async with session_factory() as db:
+        job = await claim_job(db, job_id)
+
+    if job is None:
+        logger.warning("Job %s not found in DB — deleting stale message", job_id)
+        try:
+            queue.delete_message(msg)
+        except Exception:
+            logger.exception("Failed to delete stale message")
+        return
+
+    if job.status == JobStatus.DONE:
+        logger.info("Job %s already DONE — deleting duplicate message", job_id)
+        try:
+            queue.delete_message(msg)
+        except Exception:
+            logger.exception("Failed to delete duplicate message")
+        return
+
+    if job.status == JobStatus.FAILED:
+        # claim_job flipped us to FAILED because retry_count exceeded MAX.
+        logger.error("Job %s exhausted retries — deleting poison message", job_id)
+        try:
+            queue.delete_message(msg)
+        except Exception:
+            logger.exception("Failed to delete poison message")
+        return
+
+    # ── Heartbeat: refresh the queue lease while work is in progress ──
+    lease_lost = asyncio.Event()
+    current_popreceipt = msg.pop_receipt
+
+    async def _heartbeat():
+        nonlocal current_popreceipt
+        while not lease_lost.is_set():
+            try:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                if lease_lost.is_set():
+                    return
+                updated = queue.update_message(
+                    msg,
+                    pop_receipt=current_popreceipt,
+                    visibility_timeout=VISIBILITY_TIMEOUT,
+                )
+                # update_message returns an object with a fresh pop_receipt
+                new_pr = getattr(updated, "pop_receipt", None)
+                if new_pr:
+                    current_popreceipt = new_pr
+                logger.debug("Heartbeat refreshed lease for job %s", job_id)
+            except Exception:
+                logger.warning("Heartbeat failed for job %s — aborting", job_id, exc_info=True)
+                lease_lost.set()
+                return
+
+    hb_task = asyncio.create_task(_heartbeat())
+
+    success = False
+    error_message: str | None = None
+    try:
+        logger.info(
+            "Processing job %s type=%s target=%s (attempt %d)",
+            job.id, job.type.value, job.target_id, job.retry_count,
+        )
+        if job.type == JobType.VARIANT_TRANSCODE:
+            success = await transcode_variant_by_id(session_factory, asset_dir, job.target_id)
+        elif job.type == JobType.STREAM_CAPTURE:
+            success = await capture_stream_by_id(session_factory, asset_dir, job.target_id)
+        else:
+            error_message = f"Unknown job type: {job.type}"
+            logger.error(error_message)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        error_message = f"{type(e).__name__}: {e}"
+        logger.exception("Job %s raised an exception", job_id)
+        success = False
+
+    # Stop the heartbeat before doing any final DB/queue work.
+    lease_lost.set()
+    hb_task.cancel()
+    try:
+        await hb_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+    # ── Finalize ──
+    if success:
+        async with session_factory() as db:
+            await mark_done(db, job_id)
+        try:
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
+            logger.info("Job %s complete", job_id)
+        except Exception:
+            # If the delete fails because the lease expired, the message will
+            # come back; mark_done above ensures the retry is a no-op.
+            logger.warning("Job %s done but delete failed", job_id, exc_info=True)
+    else:
+        # Record the failure in the Job row, but do NOT delete the queue
+        # message — let it re-deliver after visibility timeout for retry.
+        # (claim_job has already bumped retry_count; if the next attempt
+        # also hits MAX it will be marked FAILED on claim.)
+        async with session_factory() as db:
+            # Flip back to PENDING so the next attempt can flip to PROCESSING
+            from sqlalchemy import update
+            await db.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(
+                    status=JobStatus.PENDING,
+                    error_message=(error_message or "unknown failure")[:2000],
+                )
+            )
+            await db.commit()
+        logger.info("Job %s failed — will retry after visibility timeout", job_id)
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
@@ -227,13 +389,13 @@ async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
     for attempt in range(1, max_retries + 1):
         try:
             async with session_factory() as db:
-                # Check both base table and latest migration columns/enums
+                # Check base tables + enums + the jobs table (added in queue-rework)
                 await db.execute(text("SELECT 1 FROM asset_variants LIMIT 0"))
                 await db.execute(text(
                     "SELECT 1 FROM pg_enum WHERE enumlabel = 'SAVED_STREAM' "
                     "AND enumtypid = 'assettype'::regtype"
                 ))
-                await db.execute(text("SELECT retry_count FROM asset_variants LIMIT 0"))
+                await db.execute(text("SELECT 1 FROM jobs LIMIT 0"))
                 return
         except Exception:
             if attempt == max_retries:

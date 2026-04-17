@@ -37,10 +37,14 @@ _NO_RETRY_ERRORS = {"Image conversion failed", "Invalid data found"}
 
 
 def _should_retry(variant: AssetVariant, source: Asset) -> bool:
-    """Return True if this variant failure is retryable."""
+    """Return True if this variant failure is retryable.
+
+    Job-level retry is handled by the queue (see ``shared.services.jobs``).
+    This hook only controls whether the variant row is flipped back to
+    PENDING so a retry is actually meaningful.  Non-stream assets are
+    never retried — transcode is deterministic.
+    """
     if source.asset_type != AssetType.SAVED_STREAM:
-        return False
-    if variant.retry_count >= STREAM_MAX_RETRIES:
         return False
     msg = variant.error_message or ""
     return not any(pat in msg for pat in _NO_RETRY_ERRORS)
@@ -338,16 +342,17 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
 # ── Single variant transcoding ──────────────────────────────────
 
 async def _mark_failed(variant: AssetVariant, source: Asset, message: str, db: AsyncSession) -> None:
-    """Mark a variant as FAILED or schedule a retry for SAVED_STREAM assets."""
+    """Mark a variant as FAILED or re-queue for retry (SAVED_STREAM only).
+
+    Job-level retry is handled by the queue/jobs system.  For SAVED_STREAM
+    transients we leave the variant PENDING so the next VARIANT_TRANSCODE
+    job (from the monitor loop or a fresh queue delivery) will pick it up.
+    """
     variant.error_message = message[:500]
     if _should_retry(variant, source):
         variant.status = VariantStatus.PENDING
-        variant.retry_count += 1
         variant.progress = 0.0
-        logger.warning(
-            "Variant %s retry %d/%d: %s",
-            variant.id, variant.retry_count, STREAM_MAX_RETRIES, message,
-        )
+        logger.warning("Variant %s retry pending: %s", variant.id, message)
     else:
         variant.status = VariantStatus.FAILED
         variant.progress = 0.0
@@ -667,3 +672,65 @@ async def process_pending(session_factory, asset_dir: Path) -> int:
             count += 1
 
     return count
+
+
+# ── Direct-dispatch helpers (used by queue-mode workers) ────────
+
+async def transcode_variant_by_id(
+    session_factory, asset_dir: Path, variant_id: uuid.UUID
+) -> bool:
+    """Transcode one specific variant identified by its UUID.
+
+    Returns True on success, False if the variant row no longer exists.
+    Raises on transcode failure so the caller can leave the queue message
+    undeleted (triggering a retry after the visibility timeout).
+
+    Queue is authority: we do NOT use SKIP LOCKED here — the caller already
+    owns the lease via the queue message.
+    """
+    async with session_factory() as db:
+        result = await db.execute(
+            select(AssetVariant).where(AssetVariant.id == variant_id)
+        )
+        variant = result.scalar_one_or_none()
+        if variant is None:
+            logger.info("Variant %s no longer exists — skipping", variant_id)
+            return False
+        if variant.status == VariantStatus.READY:
+            logger.info("Variant %s already READY — skipping", variant_id)
+            return True
+        await _transcode_one(variant, db, asset_dir)
+        # _transcode_one sets the variant to READY or FAILED internally.
+        # Refresh and report success iff the final status is READY.
+        await db.refresh(variant)
+        return variant.status == VariantStatus.READY
+
+
+async def capture_stream_by_id(
+    session_factory, asset_dir: Path, asset_id: uuid.UUID
+) -> bool:
+    """Capture one specific SAVED_STREAM asset identified by its UUID.
+
+    Returns True on success, False if the asset row no longer exists or is
+    not a SAVED_STREAM.  Raises on capture failure so the caller can leave
+    the queue message undeleted.
+    """
+    async with session_factory() as db:
+        result = await db.execute(select(Asset).where(Asset.id == asset_id))
+        asset = result.scalar_one_or_none()
+        if asset is None:
+            logger.info("Asset %s no longer exists — skipping capture", asset_id)
+            return False
+        if asset.asset_type != AssetType.SAVED_STREAM:
+            logger.info("Asset %s is not a SAVED_STREAM — skipping capture", asset_id)
+            return False
+        if asset.size_bytes > 0:
+            logger.info("Asset %s already captured — skipping", asset_id)
+            return True
+
+        capture_path = await _capture_stream(asset, asset_dir, db)
+        if capture_path is None:
+            logger.error("Stream capture failed for asset %s", asset_id)
+            return False
+        logger.info("Stream capture complete for asset %s", asset_id)
+        return True

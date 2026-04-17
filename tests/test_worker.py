@@ -646,48 +646,25 @@ class TestTranscodeOneVideoSuccess:
 
 
 class TestQueueMode:
-    """Queue mode should process all pending, then exit."""
+    """Queue mode processes one job per invocation and exits."""
 
     @pytest.mark.asyncio
-    async def test_queue_mode_processes_and_exits(self, db_engine, db_session, tmp_path):
+    async def test_queue_mode_exits_when_no_connection_string(self, db_engine, tmp_path):
+        """Queue mode bails out when no Azure connection string is configured."""
         from worker.__main__ import _queue_mode
-
-        profile = _make_profile(db_session)
-        db_session.add(profile)
-        await db_session.flush()
-
-        asset = _make_asset()
-        db_session.add(asset)
-        await db_session.flush()
-
-        v1 = _make_variant(asset.id, profile.id, status=VariantStatus.PENDING)
-        db_session.add(v1)
-        await db_session.commit()
 
         asset_dir = tmp_path / "assets"
         asset_dir.mkdir()
-        (asset_dir / "test-video.mp4").write_bytes(b"fake")
 
         factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
-        async def fake_transcode(variant, db, adir):
-            variant.status = VariantStatus.READY
-            variant.progress = 100.0
-            await db.commit()
-
         settings = MagicMock()
         settings.asset_storage_path = asset_dir
+        settings.azure_storage_connection_string = None
 
         with patch("worker.__main__.get_session_factory", return_value=factory), \
-             patch("worker.__main__.recover_interrupted", return_value=0) as mock_recover, \
-             patch("worker.__main__.process_captures", return_value=0) as mock_captures, \
-             patch("worker.__main__.process_pending", return_value=1) as mock_process, \
-             patch("worker.__main__._drain_queue", return_value=0):
+             patch("worker.transcoder.recover_interrupted", new=AsyncMock(return_value=0)):
             await _queue_mode(settings)
-
-        mock_recover.assert_called_once_with(factory)
-        mock_captures.assert_called_once_with(factory, asset_dir)
-        mock_process.assert_called_once_with(factory, asset_dir)
 
 
 # ── CMS notify_worker tests ──

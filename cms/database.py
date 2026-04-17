@@ -348,6 +348,12 @@ async def run_migrations():
                 "ALTER TABLE device_events ALTER COLUMN device_id DROP NOT NULL"
             ))
 
+    # -- asset_variants.retry_count: drop (moved to jobs table as of queue-rework) --
+    async with _shared_db._engine.begin() as conn:
+        has_retry = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "retry_count"))
+        if has_retry:
+            await conn.execute(text("ALTER TABLE asset_variants DROP COLUMN retry_count"))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
