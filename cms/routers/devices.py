@@ -31,6 +31,7 @@ from cms.schemas.device import (
 from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage, WipeAssetsMessage
 from cms.services.device_manager import device_manager
 from cms.services.scheduler import push_sync_to_device
+from cms.services.audit_service import audit_log
 from cms.services.version_checker import check_now
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
@@ -243,6 +244,13 @@ async def update_device(
 
     for field, value in updates.items():
         setattr(device, field, value)
+    await audit_log(
+        db, user=user, action="device.update", resource_type="device",
+        resource_id=str(device.id),
+        description=f"Updated device '{device.name or device.id}' ({', '.join(sorted(updates.keys()))})",
+        details={k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in updates.items()},
+        request=request,
+    )
     await db.commit()
     await db.refresh(device, ["group", "default_asset"])
 
@@ -297,6 +305,14 @@ async def set_device_password(
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.set_password", resource_type="device",
+        resource_id=str(device_id),
+        description=f"Reset web password on device '{device.name or device_id}'",
+        request=request,
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -316,6 +332,14 @@ async def reboot_device(
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.reboot", resource_type="device",
+        resource_id=str(device_id),
+        description=f"Rebooted device '{device.name or device_id}'",
+        request=request,
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -341,6 +365,14 @@ async def upgrade_device(
         _upgrading.discard(device_id)
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.upgrade", resource_type="device",
+        resource_id=str(device_id),
+        description=f"Triggered firmware upgrade on device '{device.name or device_id}'",
+        request=request,
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -367,6 +399,15 @@ async def toggle_device_ssh(
     if conn:
         conn.ssh_enabled = enabled
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.ssh_toggle", resource_type="device",
+        resource_id=str(device_id),
+        description=f"{'Enabled' if enabled else 'Disabled'} SSH on device '{device.name or device_id}'",
+        details={"enabled": enabled},
+        request=request,
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -386,6 +427,14 @@ async def factory_reset_device(
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.factory_reset", resource_type="device",
+        resource_id=str(device_id),
+        description=f"Triggered factory reset on device '{device.name or device_id}'",
+        request=request,
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -411,6 +460,15 @@ async def toggle_device_local_api(
     if conn:
         conn.local_api_enabled = enabled
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.local_api_toggle", resource_type="device",
+        resource_id=str(device_id),
+        description=f"{'Enabled' if enabled else 'Disabled'} local API on device '{device.name or device_id}'",
+        details={"enabled": enabled},
+        request=request,
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -470,12 +528,37 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
     # (e.g. the OOBE screen advances from "waiting for adoption" to "adopted").
     await push_sync_to_device(device_id, db)
 
+    # Resolve group name for the audit description
+    group_name = None
+    if device.group_id:
+        grp_q = await db.execute(select(DeviceGroup.name).where(DeviceGroup.id == device.group_id))
+        group_name = grp_q.scalar_one_or_none()
+
+    desc = f"Adopted device '{device.name or device_id}'"
+    if group_name:
+        desc += f" into group '{group_name}'"
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.adopt", resource_type="device",
+        resource_id=str(device_id),
+        description=desc,
+        details={
+            "name": device.name,
+            "location": device.location,
+            "group_id": str(device.group_id) if device.group_id else None,
+            "profile_id": str(device.profile_id) if device.profile_id else None,
+        },
+        request=request,
+    )
+    await db.commit()
+
     return {"ok": True}
 
 
 @router.delete("/{device_id}", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
 async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     device = await _get_device_with_access(device_id, request, db)
+    device_name = device.name
 
     # Tell the device to wipe cached assets before we remove it from the DB
     wipe_msg = WipeAssetsMessage(reason="deleted")
@@ -488,6 +571,14 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
         DeviceAsset.__table__.delete().where(DeviceAsset.device_id == device_id)
     )
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="device.delete", resource_type="device",
+        resource_id=str(device_id),
+        description=f"Deleted device '{device_name or device_id}'",
+        details={"name": device_name},
+        request=request,
+    )
     await db.delete(device)
     await db.commit()
     return {"deleted": device_id}
@@ -558,9 +649,22 @@ async def list_groups(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/groups/", response_model=DeviceGroupOut, status_code=201, dependencies=[Depends(require_permission(GROUPS_WRITE))])
-async def create_group(data: DeviceGroupCreate, db: AsyncSession = Depends(get_db)):
+async def create_group(data: DeviceGroupCreate, request: Request, db: AsyncSession = Depends(get_db)):
     group = DeviceGroup(name=data.name, description=data.description, default_asset_id=data.default_asset_id)
     db.add(group)
+    await db.flush()
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="group.create", resource_type="group",
+        resource_id=str(group.id),
+        description=f"Created device group '{group.name}'",
+        details={
+            "name": group.name,
+            "description": group.description,
+            "default_asset_id": str(group.default_asset_id) if group.default_asset_id else None,
+        },
+        request=request,
+    )
     await db.commit()
     await db.refresh(group)
     return DeviceGroupOut(
@@ -592,6 +696,14 @@ async def update_group(
     updates = data.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(group, field, value)
+    await audit_log(
+        db, user=user,
+        action="group.update", resource_type="group",
+        resource_id=str(group_id),
+        description=f"Updated device group '{group.name}' ({', '.join(sorted(updates.keys()))})",
+        details={k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in updates.items()},
+        request=request,
+    )
     await db.commit()
     await db.refresh(group, ["default_asset"])
 
@@ -652,6 +764,14 @@ async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession =
             detail=f"Cannot delete — group is used by {sched_count} schedule(s). Remove it from all schedules first.",
         )
 
+    await audit_log(
+        db, user=user,
+        action="group.delete", resource_type="group",
+        resource_id=str(group_id),
+        description=f"Deleted device group '{group.name}'",
+        details={"name": group.name},
+        request=request,
+    )
     await db.delete(group)
     await db.commit()
     return {"deleted": str(group_id)}

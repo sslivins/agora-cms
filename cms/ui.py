@@ -48,6 +48,7 @@ from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.group_asset import GroupAsset
 from cms.models.user import User, UserGroup
 from cms.services.device_manager import device_manager
+from cms.services.audit_service import audit_log
 from cms.services.version_checker import get_latest_device_version, is_update_available
 from cms.routers.devices import _upgrading as _devices_upgrading
 
@@ -336,6 +337,12 @@ async def setup_account_update(
     user.password_hash = hash_password(password)
     user.must_change_password = False
 
+    await audit_log(
+        db, user=user, action="settings.setup.account", resource_type="settings",
+        description=f"Setup wizard: updated admin account ({email})",
+        details={"display_name": display_name, "email": email},
+        request=request,
+    )
     await db.commit()
 
     return JSONResponse({"status": "ok"})
@@ -362,6 +369,19 @@ async def setup_smtp(
     if data.get("password"):
         await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
     await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    await audit_log(
+        db, user=user, action="settings.smtp.update", resource_type="settings",
+        description=f"Setup wizard: updated SMTP settings (host={data.get('host', '')})",
+        details={
+            "host": data.get("host", ""),
+            "port": data.get("port"),
+            "username": data.get("username", ""),
+            "from_email": data.get("from_email", ""),
+            "password_changed": bool(data.get("password")),
+        },
+        request=request,
+    )
+    await db.commit()
     return {"status": "ok"}
 
 
@@ -410,6 +430,13 @@ async def setup_timezone(
         return JSONResponse({"error": "Invalid timezone"}, status_code=400)
 
     await set_setting(db, SETTING_TIMEZONE, tz)
+    await audit_log(
+        db, user=user, action="settings.timezone.update", resource_type="settings",
+        description=f"Setup wizard: set CMS timezone to '{tz}'",
+        details={"timezone": tz},
+        request=request,
+    )
+    await db.commit()
     return {"status": "ok"}
 
 
@@ -430,6 +457,13 @@ async def setup_mcp(
     data = await request.json()
     enabled = data.get("enabled", False)
     await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
+    await audit_log(
+        db, user=user, action="settings.mcp.update", resource_type="settings",
+        description=f"Setup wizard: {'enabled' if enabled else 'disabled'} MCP server",
+        details={"enabled": bool(enabled)},
+        request=request,
+    )
+    await db.commit()
     return {"status": "ok"}
 
 
@@ -452,6 +486,13 @@ async def setup_complete(
     # Clear the in-memory cache so middleware stops redirecting
     import cms.main as _main_module
     _main_module._setup_completed_cache = True
+
+    await audit_log(
+        db, user=user, action="settings.setup.complete", resource_type="settings",
+        description="Setup wizard completed",
+        request=request,
+    )
+    await db.commit()
 
     return {"status": "ok"}
 
@@ -1528,6 +1569,14 @@ async def mcp_toggle(
     enabled = body.get("enabled", False)
     await set_setting(db, SETTING_MCP_ENABLED, "true" if enabled else "false")
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="settings.mcp.toggle", resource_type="settings",
+        description=f"{'Enabled' if enabled else 'Disabled'} MCP server",
+        details={"enabled": bool(enabled)},
+        request=request,
+    )
+
     if enabled:
         # Auto-provision service key if not already present
         existing = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
@@ -1536,6 +1585,7 @@ async def mcp_toggle(
                 db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
             )
             await _notify_mcp_reload(settings)
+            await db.commit()
             return {"enabled": enabled, "service_key": raw_key}
     else:
         # Revoke service key when MCP is disabled
@@ -1544,6 +1594,7 @@ async def mcp_toggle(
         )
         await _notify_mcp_reload(settings)
 
+    await db.commit()
     return {"enabled": enabled}
 
 
@@ -1564,6 +1615,19 @@ async def save_smtp_settings(
     if "password" in data and data["password"]:
         await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
     await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    await audit_log(
+        db, user=_user, action="settings.smtp.update", resource_type="settings",
+        description=f"Updated SMTP settings (host={data.get('host', '')})",
+        details={
+            "host": data.get("host", ""),
+            "port": data.get("port"),
+            "username": data.get("username", ""),
+            "from_email": data.get("from_email", ""),
+            "password_changed": bool(data.get("password")),
+        },
+        request=request,
+    )
+    await db.commit()
     return {"status": "ok"}
 
 
@@ -1581,6 +1645,18 @@ async def save_alert_settings(
     await set_setting(db, "alert_temp_cooldown_seconds", str(int(body.get("temp_cooldown_seconds", 300))))
     await set_setting(db, "email_notifications_enabled", "true" if body.get("email_notifications_enabled") else "false")
 
+    await audit_log(
+        db, user=_user, action="settings.alerts.update", resource_type="settings",
+        description="Updated alert settings",
+        details={
+            "offline_grace_seconds": body.get("offline_grace_seconds"),
+            "temp_warning_c": body.get("temp_warning_c"),
+            "temp_critical_c": body.get("temp_critical_c"),
+            "temp_cooldown_seconds": body.get("temp_cooldown_seconds"),
+            "email_notifications_enabled": bool(body.get("email_notifications_enabled")),
+        },
+        request=request,
+    )
     await db.commit()
     return {"ok": True}
 
@@ -1719,6 +1795,14 @@ async def change_timezone(
         }, status_code=400)
 
     await set_setting(db, SETTING_TIMEZONE, tz_name)
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="settings.timezone.update", resource_type="settings",
+        description=f"Set CMS timezone to '{tz_name}'",
+        details={"timezone": tz_name},
+        request=request,
+    )
+    await db.commit()
 
     return templates.TemplateResponse(request, "settings.html", {
         **base_ctx,
