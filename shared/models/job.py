@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, Integer, Text
+from sqlalchemy import Boolean, DateTime, Enum, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,6 +34,7 @@ class JobStatus(str, PyEnum):
     PROCESSING = "processing"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 # Max retries before a job is considered poison and marked FAILED.
@@ -63,3 +64,11 @@ class Job(Base):
         default=lambda: datetime.now(timezone.utc), index=True,
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Cooperative cancellation flag.  Set by CMS when the target asset is
+    # soft-deleted; the worker heartbeat loop reads this and aborts ffmpeg
+    # within one heartbeat cycle.  Jobs that have not yet started see it in
+    # the pre-transcode guard and no-op.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )

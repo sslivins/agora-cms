@@ -300,12 +300,59 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             logger.exception("Failed to delete poison message")
         return
 
+    # ── Pre-transcode cancellation check ──
+    # If the user soft-deleted the asset between enqueue and now, or the job
+    # was explicitly cancelled, no-op out before spawning ffmpeg.  The CMS
+    # reaper loop will finish the cleanup once we mark the job CANCELLED.
+    async with session_factory() as db:
+        cancel_now = False
+        cancel_reason = ""
+        if job.cancel_requested:
+            cancel_now = True
+            cancel_reason = "cancel_requested on job"
+        else:
+            from shared.models.asset import Asset as _Asset, AssetVariant as _AssetVariant
+            if job.type == JobType.VARIANT_TRANSCODE:
+                row = await db.execute(
+                    select(_Asset.deleted_at)
+                    .join(_AssetVariant, _AssetVariant.source_asset_id == _Asset.id)
+                    .where(_AssetVariant.id == job.target_id)
+                )
+                deleted_at = row.scalar_one_or_none()
+                if deleted_at is not None:
+                    cancel_now = True
+                    cancel_reason = f"source asset soft-deleted at {deleted_at}"
+            elif job.type == JobType.STREAM_CAPTURE:
+                row = await db.execute(
+                    select(_Asset.deleted_at).where(_Asset.id == job.target_id)
+                )
+                deleted_at = row.scalar_one_or_none()
+                if deleted_at is not None:
+                    cancel_now = True
+                    cancel_reason = f"asset soft-deleted at {deleted_at}"
+
+        if cancel_now:
+            from sqlalchemy import update as _sa_update
+            await db.execute(
+                _sa_update(Job)
+                .where(Job.id == job_id)
+                .values(status=JobStatus.CANCELLED, error_message=cancel_reason[:2000])
+            )
+            await db.commit()
+            logger.info("Job %s cancelled pre-transcode: %s", job_id, cancel_reason)
+            try:
+                queue.delete_message(msg)
+            except Exception:
+                logger.exception("Failed to delete cancelled message")
+            return
+
     # ── Heartbeat: refresh the queue lease while work is in progress ──
     lease_lost = asyncio.Event()
     current_popreceipt = msg.pop_receipt
+    cancel_observed = False  # set from heartbeat → checked after work completes
 
     async def _heartbeat():
-        nonlocal current_popreceipt
+        nonlocal current_popreceipt, cancel_observed
         while not lease_lost.is_set():
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -321,6 +368,31 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 if new_pr:
                     current_popreceipt = new_pr
                 logger.debug("Heartbeat refreshed lease for job %s", job_id)
+
+                # ── Cooperative cancellation probe ──
+                # Check if CMS (via DELETE endpoint) has flagged this job.
+                # If so, SIGTERM the active ffmpeg so _transcode_one exits.
+                try:
+                    async with session_factory() as _db:
+                        row = await _db.execute(
+                            select(Job.cancel_requested).where(Job.id == job_id)
+                        )
+                        flag = row.scalar_one_or_none()
+                        if flag:
+                            cancel_observed = True
+                            logger.info(
+                                "Job %s: cancel_requested detected — killing ffmpeg", job_id
+                            )
+                            try:
+                                from worker.transcoder import cancel_active_ffmpeg
+                                cancel_active_ffmpeg()
+                            except Exception:
+                                logger.exception("Failed to cancel active ffmpeg")
+                            # Stop refreshing the lease — let the main path finalize.
+                            lease_lost.set()
+                            return
+                except Exception:
+                    logger.debug("Cancel probe failed (ignoring)", exc_info=True)
             except Exception:
                 logger.warning("Heartbeat failed for job %s — aborting", job_id, exc_info=True)
                 lease_lost.set()
@@ -358,7 +430,27 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         pass
 
     # ── Finalize ──
-    if success:
+    if cancel_observed:
+        # User soft-deleted the asset mid-transcode and the heartbeat killed
+        # ffmpeg.  Mark the job CANCELLED and drop the queue message so it
+        # doesn't redeliver.  The reaper will clean up blobs + rows shortly.
+        async with session_factory() as db:
+            from sqlalchemy import update as _sa_update
+            await db.execute(
+                _sa_update(Job)
+                .where(Job.id == job_id)
+                .values(
+                    status=JobStatus.CANCELLED,
+                    error_message="cancelled mid-transcode (asset deleted)",
+                )
+            )
+            await db.commit()
+        try:
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
+        except Exception:
+            logger.warning("Job %s cancelled but queue delete failed", job_id, exc_info=True)
+        logger.info("Job %s cancelled mid-transcode", job_id)
+    elif success:
         async with session_factory() as db:
             await mark_done(db, job_id)
         try:

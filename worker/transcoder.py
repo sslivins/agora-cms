@@ -95,6 +95,63 @@ def cancel_asset_transcodes(asset_id: uuid.UUID) -> bool:
     return False
 
 
+def cancel_active_ffmpeg() -> bool:
+    """Unconditionally SIGTERM the active ffmpeg subprocess, if any.
+
+    Used by the queue worker's heartbeat when it observes
+    ``Job.cancel_requested``.  Adds the active variant id to
+    ``_cancelled_variant_ids`` so ``_transcode_one`` treats the non-zero
+    exit as a clean cancellation instead of a failure.
+    """
+    global _active_process, _active_variant_id
+    if (
+        _active_process is not None
+        and _active_process.returncode is None
+    ):
+        logger.info("Cancelling active ffmpeg (variant %s)", _active_variant_id)
+        if _active_variant_id is not None:
+            _cancelled_variant_ids.add(_active_variant_id)
+        try:
+            _active_process.terminate()
+        except Exception:
+            logger.warning("Failed to terminate ffmpeg process", exc_info=True)
+        return True
+    return False
+
+
+async def _source_asset_is_deleted(db: AsyncSession, asset_id: uuid.UUID) -> bool:
+    """Re-read ``assets.deleted_at`` fresh from DB (no session cache).
+
+    Called as a final-status guard before marking variants READY: if the
+    user soft-deleted the asset while ffmpeg was running, we skip the
+    READY write so the reaper can clean up cleanly without having to
+    chase a race-condition zombie.
+    """
+    result = await db.execute(
+        select(Asset.deleted_at).where(Asset.id == asset_id)
+    )
+    deleted_at = result.scalar_one_or_none()
+    return deleted_at is not None
+
+
+async def _abort_on_deleted(variant, output_path, db: AsyncSession) -> None:
+    """Cleanup partial output + leave variant un-READY when asset is gone.
+
+    Idempotent.  The CMS reaper will hard-delete the variant row shortly.
+    """
+    try:
+        if output_path.is_file():
+            output_path.unlink()
+    except Exception:
+        logger.warning("Failed to unlink %s on deleted-asset abort", output_path, exc_info=True)
+    # Leave variant status alone — reaper will drop the row once all jobs
+    # are terminal.  No commit needed.
+    logger.info(
+        "Variant %s: source asset soft-deleted — skipping READY write",
+        variant.id,
+    )
+
+
 # ── FFmpeg codec / color space maps ─────────────────────────────
 
 CODEC_ENCODER_MAP: dict[str, str] = {
@@ -426,6 +483,13 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             with open(output_path, "rb") as f:
                 while chunk := f.read(1024 * 1024):
                     sha.update(chunk)
+
+            # Final-status guard: if the user soft-deleted the asset mid-
+            # conversion, skip the READY write and let the reaper clean up.
+            if await _source_asset_is_deleted(db, variant.source_asset_id):
+                await _abort_on_deleted(variant, output_path, db)
+                return
+
             variant.checksum = sha.hexdigest()
             variant.size_bytes = file_size
             variant.status = VariantStatus.READY
@@ -521,6 +585,13 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         with open(output_path, "rb") as f:
             while chunk := f.read(1024 * 1024):
                 sha.update(chunk)
+
+        # Final-status guard: if the user soft-deleted the asset mid-
+        # transcode, skip the READY write and let the reaper clean up.
+        if await _source_asset_is_deleted(db, variant.source_asset_id):
+            await _abort_on_deleted(variant, output_path, db)
+            return
+
         variant.checksum = sha.hexdigest()
         variant.size_bytes = file_size
         variant.status = VariantStatus.READY

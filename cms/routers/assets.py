@@ -186,7 +186,7 @@ async def assets_status_json(
     user_group_ids = await get_user_group_ids(user, db)
 
     # Base query for assets this user can see
-    asset_q = select(Asset)
+    asset_q = select(Asset).where(Asset.deleted_at.is_(None))
     if visible is not None:
         asset_q = asset_q.where(Asset.id.in_(visible))
 
@@ -290,7 +290,7 @@ async def list_assets(
 ):
     """List assets visible to the current user (filtered by group membership)."""
     visible = await _visible_asset_ids(user, db)
-    q = select(Asset).order_by(Asset.uploaded_at.desc())
+    q = select(Asset).where(Asset.deleted_at.is_(None)).order_by(Asset.uploaded_at.desc())
     if visible is not None:
         q = q.where(Asset.id.in_(visible))
     result = await db.execute(q)
@@ -310,8 +310,10 @@ async def upload_asset(
     if not file.filename or not ALLOWED_PATTERN.match(file.filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Check for duplicate
-    existing = await db.execute(select(Asset).where(Asset.filename == file.filename))
+    # Check for duplicate (among non-deleted assets only)
+    existing = await db.execute(
+        select(Asset).where(Asset.filename == file.filename, Asset.deleted_at.is_(None))
+    )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Asset already exists")
 
@@ -338,7 +340,9 @@ async def upload_asset(
         from cms.services.transcoder import convert_image_to_jpeg
         jpeg_filename = Path(file.filename).stem + ".jpg"
         # Check the JPEG name doesn't conflict
-        dup = await db.execute(select(Asset).where(Asset.filename == jpeg_filename))
+        dup = await db.execute(
+            select(Asset).where(Asset.filename == jpeg_filename, Asset.deleted_at.is_(None))
+        )
         if dup.scalar_one_or_none():
             raise HTTPException(
                 status_code=409,
@@ -477,8 +481,10 @@ async def create_webpage_asset(
         if len(name) > 200:
             name = name[:200]
 
-    # Check for duplicate filename
-    existing = await db.execute(select(Asset).where(Asset.filename == name))
+    # Check for duplicate filename (excluding soft-deleted)
+    existing = await db.execute(
+        select(Asset).where(Asset.filename == name, Asset.deleted_at.is_(None))
+    )
     if existing.scalar_one_or_none():
         # Append a short hash to make unique
         import hashlib as _hl
@@ -587,6 +593,7 @@ async def create_stream_asset(
         select(Asset).where(
             Asset.url == url,
             Asset.asset_type == target_type,
+            Asset.deleted_at.is_(None),
         ).limit(1)
     )
     if dup_q.scalar_one_or_none():
@@ -603,8 +610,10 @@ async def create_stream_asset(
         if len(name) > 200:
             name = name[:200]
 
-    # Check for duplicate filename
-    existing = await db.execute(select(Asset).where(Asset.filename == name))
+    # Check for duplicate filename (excluding soft-deleted)
+    existing = await db.execute(
+        select(Asset).where(Asset.filename == name, Asset.deleted_at.is_(None))
+    )
     if existing.scalar_one_or_none():
         import hashlib as _hl
         suffix = _hl.md5(url.encode()).hexdigest()[:6]
@@ -685,7 +694,7 @@ async def update_asset(
     db: AsyncSession = Depends(get_db),
 ):
     """Update asset properties (currently: display_name)."""
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -724,7 +733,7 @@ async def recapture_stream(
 ):
     """Re-capture a SAVED_STREAM asset: re-downloads the stream, overwrites
     the capture file, and resets all variants to PENDING for retranscoding."""
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -820,7 +829,7 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> list[uuid.UUID
 
 @router.get("/{asset_id}", response_model=AssetOut, dependencies=[Depends(require_permission(ASSETS_READ))])
 async def get_asset(asset_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -834,7 +843,7 @@ async def download_asset(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -873,7 +882,7 @@ async def preview_asset(
     settings: Settings = Depends(get_settings),
 ):
     await _verify_asset_access(asset_id, request, db)
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -918,7 +927,20 @@ async def delete_asset(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    """Soft-delete an asset.
+
+    Sets ``assets.deleted_at`` and flags any in-flight Jobs targeting this
+    asset (or its variants) with ``cancel_requested = true``.  The worker
+    heartbeat will pick up the flag and abort ffmpeg within ~15s; the
+    CMS reaper loop (``deleted_asset_reaper_loop``) later hard-deletes
+    blobs + rows once all Jobs are terminal.  Returns 200 immediately.
+    """
+    from datetime import datetime, timezone
+    from shared.models.job import Job, JobType, JobStatus
+
+    result = await db.execute(
+        select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None))
+    )
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -929,7 +951,6 @@ async def delete_asset(
     if not is_admin and asset.uploaded_by_user_id != user.id:
         raise HTTPException(status_code=403, detail="Only the asset owner can delete this asset")
 
-    # Full deletion — no more references (or admin)
     # Block deletion if any schedule references this asset
     sched_count = await db.scalar(
         select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset_id)
@@ -940,69 +961,41 @@ async def delete_asset(
             detail=f"Cannot delete — asset is used by {sched_count} schedule(s). Remove it from all schedules first.",
         )
 
-    # Remove source file
-    file_path = settings.asset_storage_path / asset.filename
-    storage = get_storage()
-    if file_path.is_file():
-        file_path.unlink()
-    await storage.on_file_deleted(asset.filename)
-
-    # Remove original file (if converted from HEIC/AVIF/etc)
-    if asset.original_filename:
-        orig_path = settings.asset_storage_path / "originals" / asset.original_filename
-        if orig_path.is_file():
-            orig_path.unlink()
-        await storage.on_file_deleted(f"originals/{asset.original_filename}")
-
-    # Remove device-asset tracking records
-    da_result = await db.execute(
-        select(DeviceAsset).where(DeviceAsset.asset_id == asset_id)
-    )
-    for da in da_result.scalars().all():
-        await db.delete(da)
-
-    # Clear default_asset_id on devices/groups referencing this asset
-    await db.execute(
-        update(Device).where(Device.default_asset_id == asset_id).values(default_asset_id=None)
-    )
-    await db.execute(
-        update(DeviceGroup).where(DeviceGroup.default_asset_id == asset_id).values(default_asset_id=None)
-    )
-
-    # Cancel any active transcode for this asset
-    from cms.services.transcoder import cancel_asset_transcodes
-    cancel_asset_transcodes(asset_id)
-
-    # Remove variant files
-    variants_dir = settings.asset_storage_path / "variants"
-    var_result = await db.execute(
-        select(AssetVariant).where(AssetVariant.source_asset_id == asset_id)
-    )
-    for variant in var_result.scalars().all():
-        vpath = variants_dir / variant.filename
-        if vpath.is_file():
-            vpath.unlink()
-        await storage.on_file_deleted(f"variants/{variant.filename}")
-        await db.delete(variant)
-
-    # Remove all GroupAsset references
-    ga_result = await db.execute(
-        select(GroupAsset).where(GroupAsset.asset_id == asset_id)
-    )
-    for ga in ga_result.scalars().all():
-        await db.delete(ga)
-
     asset_filename = asset.filename
+
+    # Mark as soft-deleted
+    asset.deleted_at = datetime.now(timezone.utc)
+
+    # Flag all active jobs for cancellation.  Jobs are polymorphic:
+    #   - VARIANT_TRANSCODE.target_id → asset_variants.id (join through variants)
+    #   - STREAM_CAPTURE.target_id    → assets.id (direct)
+    variant_ids_subq = (
+        select(AssetVariant.id).where(AssetVariant.source_asset_id == asset_id)
+    ).scalar_subquery()
+
+    active_statuses = [JobStatus.PENDING, JobStatus.PROCESSING]
+    await db.execute(
+        update(Job)
+        .where(
+            Job.status.in_(active_statuses),
+            (
+                (Job.type == JobType.VARIANT_TRANSCODE) & (Job.target_id.in_(variant_ids_subq))
+            ) | (
+                (Job.type == JobType.STREAM_CAPTURE) & (Job.target_id == asset_id)
+            ),
+        )
+        .values(cancel_requested=True)
+    )
+
     await audit_log(
         db, user=user, action="asset.delete", resource_type="asset",
         resource_id=str(asset_id),
-        description=f"Deleted asset '{asset_filename}'",
+        description=f"Soft-deleted asset '{asset_filename}'",
         details={"filename": asset_filename, "asset_type": asset.asset_type.value},
         request=request,
     )
-    await db.delete(asset)
     await db.commit()
-    return {"deleted": asset_filename}
+    return {"deleted": asset_filename, "soft_delete": True}
 
 
 # ── Asset sharing & global toggle ──
@@ -1017,7 +1010,7 @@ async def share_asset(
     db: AsyncSession = Depends(get_db),
 ):
     """Share an asset with an additional group."""
-    asset = (await db.execute(select(Asset).where(Asset.id == asset_id))).scalar_one_or_none()
+    asset = (await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))).scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     await _verify_asset_access(asset_id, request, db)
@@ -1098,7 +1091,7 @@ async def toggle_asset_global(
 ):
     """Toggle an asset's global visibility."""
     await _verify_asset_access(asset_id, request, db)
-    asset = (await db.execute(select(Asset).where(Asset.id == asset_id))).scalar_one_or_none()
+    asset = (await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))).scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     asset.is_global = not asset.is_global

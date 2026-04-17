@@ -906,7 +906,9 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Build URL→display name map for resolving playback_asset on URL-based assets
-    assets_early_q = await db.execute(select(Asset).order_by(Asset.filename))
+    assets_early_q = await db.execute(
+        select(Asset).where(Asset.deleted_at.is_(None)).order_by(Asset.filename)
+    )
     assets_early = assets_early_q.scalars().all()
     _url_display = {}
     for a in assets_early:
@@ -1127,6 +1129,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     # group_ids is None for admins (see all), list of UUIDs for others
     asset_q = (
         select(Asset)
+        .where(Asset.deleted_at.is_(None))
         .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
         .order_by(Asset.uploaded_at.desc())
     )
@@ -1266,7 +1269,7 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     schedules_q = await db.execute(sched_query)
     all_schedules = schedules_q.scalars().all()
-    asset_q = select(Asset).order_by(Asset.filename)
+    asset_q = select(Asset).where(Asset.deleted_at.is_(None)).order_by(Asset.filename)
     if not is_admin:
         from cms.models.asset import Asset as AssetModel
         global_ids = set(

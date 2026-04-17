@@ -413,7 +413,10 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 asset_name = msg.get("asset", "")
                 if asset_name:
                     asset_result = await db.execute(
-                        select(Asset).where(Asset.filename == asset_name)
+                        select(Asset).where(
+                            Asset.filename == asset_name,
+                            Asset.deleted_at.is_(None),
+                        )
                     )
                     asset = asset_result.scalar_one_or_none()
                     if asset:

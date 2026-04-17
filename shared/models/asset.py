@@ -65,6 +65,14 @@ class Asset(Base):
     # Max capture duration in seconds (for SAVED_STREAM of live sources)
     capture_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Soft-delete marker.  Set to now() when the user hits DELETE.  The API
+    # treats rows with deleted_at IS NOT NULL as gone; a background reaper
+    # loop in the CMS (deleted_asset_reaper_loop) cleans up blobs + hard-
+    # deletes the row once all associated Jobs reach a terminal state.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     # NOTE: Asset.schedules relationship is added by cms/models/__init__.py
     # (Schedule is a CMS-only model, not available in the worker package)
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="asset")
