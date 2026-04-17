@@ -109,12 +109,18 @@ class AlertService:
     ):
         """Called from ws.py when a device's WebSocket closes.
 
-        Only starts a grace timer for adopted devices in a group.
+        Always logs an OFFLINE event immediately (for the event log).
+        Only starts a grace-period notification timer for adopted devices in a group.
         """
         if status != "adopted" or not group_id:
             return
 
-        # Cancel any existing timer for this device
+        # Log the disconnect event immediately (no grace period for events)
+        asyncio.create_task(
+            self._create_offline_event(device_id, device_name, group_id, group_name)
+        )
+
+        # Cancel any existing notification timer for this device
         existing = self._offline_timers.pop(device_id, None)
         if existing and not existing.task.done():
             existing.task.cancel()
@@ -141,22 +147,55 @@ class AlertService:
     ):
         """Called from ws.py after a successful register.
 
-        Cancels any pending grace timer.  If an OFFLINE event was previously
-        fired, creates an ONLINE event + notification.
+        Always logs an ONLINE event immediately (for the event log).
+        Cancels any pending grace timer.  If an OFFLINE notification was
+        previously fired, creates a "back online" notification too.
         """
-        # Cancel pending grace timer
+        # Log the reconnect event immediately
+        if status == "adopted" and group_id:
+            asyncio.create_task(
+                self._create_online_event(device_id, device_name, group_id, group_name)
+            )
+
+        # Cancel pending notification timer
         timer = self._offline_timers.pop(device_id, None)
         if timer and not timer.task.done():
             timer.task.cancel()
             logger.debug("Offline grace timer cancelled for %s (reconnected)", device_id)
 
-        # Fire "back online" only if we previously sent an offline notification
+        # Fire "back online" notification only if we previously sent an offline notification
         if device_id in self._was_offline:
             self._was_offline.discard(device_id)
             if status == "adopted" and group_id:
                 asyncio.create_task(
-                    self._create_online_event(device_id, device_name, group_id, group_name)
+                    self._create_online_notification(device_id, device_name, group_id, group_name)
                 )
+
+    async def _create_offline_event(
+        self,
+        device_id: str,
+        device_name: str,
+        group_id: str,
+        group_name: str,
+    ):
+        """Immediately log an OFFLINE event (no grace period)."""
+        try:
+            from cms.database import get_db
+            async for db in get_db():
+                gid = _to_uuid(group_id)
+                event = DeviceEvent(
+                    device_id=device_id,
+                    device_name=device_name,
+                    group_id=gid,
+                    group_name=group_name,
+                    event_type=DeviceEventType.OFFLINE,
+                )
+                db.add(event)
+                await db.commit()
+                logger.debug("Offline event logged for device %s", device_id)
+                break
+        except Exception:
+            logger.exception("Failed to create offline event for device %s", device_id)
 
     async def _offline_grace_expired(
         self,
@@ -165,7 +204,7 @@ class AlertService:
         group_id: str,
         group_name: str,
     ):
-        """Fires after the grace period if the device hasn't reconnected."""
+        """Fires after the grace period — creates a notification (event was already logged)."""
         try:
             await asyncio.sleep(self._offline_grace_seconds)
         except asyncio.CancelledError:
@@ -180,22 +219,12 @@ class AlertService:
             return
 
         self._was_offline.add(device_id)
-        logger.info("Device %s (%s) offline — grace period expired", device_id, device_name)
+        logger.info("Device %s (%s) offline — grace period expired, sending notification", device_id, device_name)
 
         try:
             from cms.database import get_db
             async for db in get_db():
                 gid = _to_uuid(group_id)
-                event = DeviceEvent(
-                    device_id=device_id,
-                    device_name=device_name,
-                    group_id=gid,
-                    group_name=group_name,
-                    event_type=DeviceEventType.OFFLINE,
-                    details={"grace_seconds": self._offline_grace_seconds},
-                )
-                db.add(event)
-
                 notification = Notification(
                     scope="group",
                     level="warning",
@@ -215,7 +244,7 @@ class AlertService:
                 logger.info("Offline notification created for device %s", device_id)
                 break
         except Exception:
-            logger.exception("Failed to create offline event for device %s", device_id)
+            logger.exception("Failed to create offline notification for device %s", device_id)
 
     async def _create_online_event(
         self,
@@ -224,7 +253,7 @@ class AlertService:
         group_id: str,
         group_name: str,
     ):
-        """Create a "back online" event after a previous offline alert."""
+        """Immediately log a "back online" event."""
         try:
             from cms.database import get_db
             gid = _to_uuid(group_id)
@@ -237,7 +266,24 @@ class AlertService:
                     event_type=DeviceEventType.ONLINE,
                 )
                 db.add(event)
+                await db.commit()
+                logger.debug("Online event logged for device %s", device_id)
+                break
+        except Exception:
+            logger.exception("Failed to create online event for device %s", device_id)
 
+    async def _create_online_notification(
+        self,
+        device_id: str,
+        device_name: str,
+        group_id: str,
+        group_name: str,
+    ):
+        """Create a "back online" notification after a previous offline alert."""
+        try:
+            from cms.database import get_db
+            gid = _to_uuid(group_id)
+            async for db in get_db():
                 notification = Notification(
                     scope="group",
                     level="info",
@@ -256,7 +302,7 @@ class AlertService:
                 logger.info("Online notification created for device %s", device_id)
                 break
         except Exception:
-            logger.exception("Failed to create online event for device %s", device_id)
+            logger.exception("Failed to create online notification for device %s", device_id)
 
     # ── Temperature monitoring ──
 
