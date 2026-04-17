@@ -24,6 +24,7 @@ class VariantStatus(str, PyEnum):
     PROCESSING = "processing"
     READY = "ready"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class Asset(Base):

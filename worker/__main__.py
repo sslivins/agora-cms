@@ -433,9 +433,10 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     if cancel_observed:
         # Cancel was requested (asset soft-delete or profile-change variant
         # swap) and the heartbeat killed ffmpeg.  Mark the job CANCELLED and
-        # also transition the variant row out of PROCESSING so the
-        # supersede/reap sweeps can clean it up.  Until VariantStatus.CANCELLED
-        # exists we use FAILED; the reaper tolerates a missing output blob.
+        # also transition the variant row to CANCELLED so it's clearly
+        # distinguishable from a real FAILED transcode in the UI and so the
+        # supersede/reap sweeps can clean it up.  The reaper tolerates a
+        # missing output blob.
         async with session_factory() as db:
             from sqlalchemy import update as _sa_update
             await db.execute(
@@ -451,7 +452,7 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                     _sa_update(AssetVariant)
                     .where(AssetVariant.id == job.target_id)
                     .values(
-                        status=VariantStatus.FAILED,
+                        status=VariantStatus.CANCELLED,
                         progress=0.0,
                         error_message="cancelled mid-transcode",
                     )

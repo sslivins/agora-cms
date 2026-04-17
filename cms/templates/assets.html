@@ -415,6 +415,8 @@
                                         <span class="badge badge-processing">{{ "%.0f"|format(v.progress) }}%</span>
                                         {% elif v.status.value == 'failed' %}
                                         <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ v.error_message[:120] if v.error_message else 'Unknown error' }}</span></span>
+                                        {% elif v.status.value == 'cancelled' %}
+                                        <span class="has-tooltip"><span class="badge badge-cancelled">Cancelled</span><span class="tooltip">{{ v.error_message[:120] if v.error_message else 'Cancelled mid-transcode' }}</span></span>
                                         {% else %}
                                         <span class="badge badge-pending">Queued</span>
                                         {% endif %}
@@ -673,6 +675,10 @@
     function buildVariantStatusCell(v) {
         if (v.status === 'ready') return '<span class="badge badge-ready">Ready</span>';
         if (v.status === 'processing') return '<span class="badge badge-processing">' + Math.round(v.progress) + '%</span>';
+        if (v.status === 'cancelled') {
+            const msg = (v.error_message || 'Cancelled mid-transcode').slice(0, 120);
+            return '<span class="has-tooltip"><span class="badge badge-cancelled">Cancelled</span><span class="tooltip">' + msg + '</span></span>';
+        }
         if (v.status === 'failed') {
             const msg = (v.error_message || 'Unknown error').substring(0, 120).replace(/</g, '&lt;');
             return '<span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">' + msg + '</span></span>';
