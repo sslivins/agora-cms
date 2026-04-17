@@ -51,6 +51,35 @@ def cancel_asset_transcodes(asset_id: uuid.UUID) -> bool:
     return False
 
 
+async def flag_profile_jobs_cancelled(
+    db: AsyncSession, profile_id: uuid.UUID
+) -> int:
+    """Set ``cancel_requested = True`` on all active VARIANT_TRANSCODE jobs
+    whose target variant belongs to ``profile_id``.
+
+    Caller is responsible for committing the surrounding transaction.
+    Returns the number of jobs flagged.  The worker heartbeat picks up the
+    flag within ~15s and SIGTERMs the child ffmpeg.
+    """
+    from sqlalchemy import update
+    from shared.models.job import Job, JobStatus
+
+    variant_ids_subq = (
+        select(AssetVariant.id).where(AssetVariant.profile_id == profile_id)
+    ).scalar_subquery()
+
+    result = await db.execute(
+        update(Job)
+        .where(
+            Job.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
+            Job.type == JobType.VARIANT_TRANSCODE,
+            Job.target_id.in_(variant_ids_subq),
+        )
+        .values(cancel_requested=True)
+    )
+    return result.rowcount or 0
+
+
 # ── Job enqueue helpers (CMS-facing API) ────────────────────────
 
 async def enqueue_variants(

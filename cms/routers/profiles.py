@@ -19,6 +19,7 @@ from cms.services.transcoder import (
     cancel_profile_transcodes,
     enqueue_for_new_profile,
     enqueue_variants,
+    flag_profile_jobs_cancelled,
 )
 from cms.services.audit_service import audit_log
 
@@ -229,7 +230,9 @@ async def update_profile(
     # Reset existing variants so they get re-transcoded
     reset_ids: list[uuid.UUID] = []
     if transcode_changed:
-        # Kill any in-progress ffmpeg for this profile
+        # Flag any in-flight worker jobs for cooperative cancellation.
+        # Workers will SIGTERM ffmpeg on the next heartbeat tick.
+        await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
 
         var_result = await db.execute(
@@ -327,6 +330,8 @@ async def delete_profile(profile_id: uuid.UUID, request: Request, db: AsyncSessi
             detail="Cannot delete profile with assigned devices",
         )
 
+    # Flag any in-flight worker jobs for cooperative cancellation.
+    await flag_profile_jobs_cancelled(db, profile_id)
     # Cancel any active transcode for this profile
     from cms.services.transcoder import cancel_profile_transcodes
     cancel_profile_transcodes(profile_id)
@@ -475,6 +480,7 @@ async def reset_profile(
     # Reset variants if transcoding fields changed
     reset_ids: list[uuid.UUID] = []
     if transcode_changed:
+        await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
         var_result = await db.execute(
             select(AssetVariant).where(
