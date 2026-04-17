@@ -232,8 +232,11 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     session_factory = get_session_factory()
     asset_dir = settings.asset_storage_path
 
-    # Crash recovery (cheap idempotent PROCESSING→PENDING reset for interrupted work)
-    await recover_interrupted(session_factory)
+    # Note: no startup recover_interrupted() here — the queue is the authority.
+    # If a worker crashes mid-transcode, the queue message becomes visible
+    # again after VISIBILITY_TIMEOUT and another worker picks it up.  Resetting
+    # PROCESSING→PENDING on startup would stomp on variants another pod is
+    # actively transcoding (KEDA fan-out).
 
     conn_str = settings.azure_storage_connection_string
     if not conn_str:
@@ -246,12 +249,15 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     VISIBILITY_TIMEOUT = 30
     HEARTBEAT_INTERVAL = 15
 
-    msgs = list(queue.receive_messages(messages_per_page=1, visibility_timeout=VISIBILITY_TIMEOUT))
-    if not msgs:
+    # NOTE: use receive_message() (singular) — NOT list(receive_messages(...)).
+    # receive_messages() returns an iterator; list() drains the entire queue and
+    # hides every visible message for VISIBILITY_TIMEOUT, even though we only
+    # process one.  That stalls fan-out: parallel workers see an empty queue for
+    # 30s between each variant.  receive_message() pulls exactly one message.
+    msg = queue.receive_message(visibility_timeout=VISIBILITY_TIMEOUT)
+    if msg is None:
         logger.info("Queue mode: no messages, exiting")
         return
-
-    msg = msgs[0]
     body = msg.content.strip() if isinstance(msg.content, str) else str(msg.content).strip()
 
     # Parse UUID.  Legacy messages (body = "transcode") have no job id — drop them.
