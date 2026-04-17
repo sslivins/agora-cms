@@ -17,6 +17,7 @@ from cms.database import get_db
 from cms.permissions import LOGS_READ
 from cms.models.device import Device
 from cms.services.device_manager import device_manager
+from cms.services.audit_service import audit_log
 
 logger = logging.getLogger("agora.cms.logs")
 
@@ -101,6 +102,19 @@ async def download_logs(req: LogDownloadRequest, request: Request, db: AsyncSess
 
     buf.seek(0)
     filename = f"agora-logs-{timestamp}.zip"
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="logs.download", resource_type="logs",
+        description=f"Downloaded logs ({len(req.device_ids)} device(s), cms={req.include_cms})",
+        details={
+            "device_ids": list(req.device_ids),
+            "include_cms": req.include_cms,
+            "services": req.services,
+            "since": req.since,
+        },
+        request=request,
+    )
+    await db.commit()
     return StreamingResponse(
         buf,
         media_type="application/zip",

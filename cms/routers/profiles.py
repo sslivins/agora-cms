@@ -3,7 +3,7 @@
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from cms.models.device_profile import DeviceProfile
 from cms.profile_defaults import BUILTIN_PROFILES
 from cms.schemas.profile import ProfileCreate, ProfileOut, ProfileUpdate
 from cms.services.transcoder import cancel_profile_transcodes, enqueue_for_new_profile, notify_worker
+from cms.services.audit_service import audit_log
 
 router = APIRouter(prefix="/api/profiles", dependencies=[Depends(require_auth)])
 
@@ -124,7 +125,7 @@ async def list_profiles(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=ProfileOut, status_code=201, dependencies=[Depends(require_permission(PROFILES_WRITE))])
-async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)):
+async def create_profile(data: ProfileCreate, request: Request, db: AsyncSession = Depends(get_db)):
     # Validate codec/profile compatibility
     _validate_profile_compat(
         data.video_codec, data.video_profile,
@@ -140,6 +141,15 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
 
     profile = DeviceProfile(**data.model_dump())
     db.add(profile)
+    await db.flush()
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="profile.create", resource_type="profile",
+        resource_id=str(profile.id),
+        description=f"Created transcode profile '{profile.name}'",
+        details={"name": profile.name, "video_codec": profile.video_codec},
+        request=request,
+    )
     await db.commit()
     await db.refresh(profile)
 
@@ -183,6 +193,7 @@ _TRANSCODE_FIELDS = {
 async def update_profile(
     profile_id: uuid.UUID,
     data: ProfileUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -233,6 +244,18 @@ async def update_profile(
             variant.error_message = ""
             reset_count += 1
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="profile.update", resource_type="profile",
+        resource_id=str(profile_id),
+        description=f"Updated transcode profile '{profile.name}' ({', '.join(sorted(updates.keys()))})",
+        details={
+            **{k: v for k, v in updates.items() if not isinstance(v, uuid.UUID)},
+            "transcode_changed": transcode_changed,
+            "variants_reset": reset_count,
+        },
+        request=request,
+    )
     await db.commit()
 
     # Notify worker if variants were reset to PENDING
@@ -278,7 +301,7 @@ async def update_profile(
 
 
 @router.delete("/{profile_id}", dependencies=[Depends(require_permission(PROFILES_WRITE))])
-async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_profile(profile_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(DeviceProfile).where(DeviceProfile.id == profile_id)
     )
@@ -316,14 +339,24 @@ async def delete_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_d
             vpath.unlink()
         await db.delete(variant)
 
+    profile_name = profile.name
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="profile.delete", resource_type="profile",
+        resource_id=str(profile_id),
+        description=f"Deleted transcode profile '{profile_name}'",
+        details={"name": profile_name},
+        request=request,
+    )
     await db.delete(profile)
     await db.commit()
-    return {"deleted": profile.name}
+    return {"deleted": profile_name}
 
 
 @router.post("/{profile_id}/copy", response_model=ProfileOut, status_code=201, dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def copy_profile(
     profile_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -363,6 +396,15 @@ async def copy_profile(
         builtin=False,
     )
     db.add(profile)
+    await db.flush()
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="profile.copy", resource_type="profile",
+        resource_id=str(profile.id),
+        description=f"Copied transcode profile '{source.name}' → '{profile.name}'",
+        details={"source_id": str(source.id), "source_name": source.name, "name": profile.name},
+        request=request,
+    )
     await db.commit()
     await db.refresh(profile)
 
@@ -397,6 +439,7 @@ async def copy_profile(
 @router.post("/{profile_id}/reset", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def reset_profile(
     profile_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Reset a built-in profile to its canonical default values."""
@@ -443,6 +486,14 @@ async def reset_profile(
             variant.error_message = ""
             reset_count += 1
 
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="profile.reset", resource_type="profile",
+        resource_id=str(profile_id),
+        description=f"Reset built-in transcode profile '{profile.name}' to defaults",
+        details={"name": profile.name, "variants_reset": reset_count},
+        request=request,
+    )
     await db.commit()
 
     if transcode_changed and reset_count:
