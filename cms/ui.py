@@ -1411,6 +1411,13 @@ async def settings_page(
         for d in devices
     ]
 
+    # Alert settings
+    alert_offline_grace = await get_setting(db, "alert_offline_grace_seconds") or "120"
+    alert_temp_warning = await get_setting(db, "alert_temp_warning_c") or "70"
+    alert_temp_critical = await get_setting(db, "alert_temp_critical_c") or "80"
+    alert_temp_cooldown = await get_setting(db, "alert_temp_cooldown_seconds") or "300"
+    alert_email_enabled = (await get_setting(db, "email_notifications_enabled")) == "true"
+
     return templates.TemplateResponse(request, "settings.html", {
         "active_tab": "settings",
         "mcp_enabled": mcp_enabled,
@@ -1423,6 +1430,11 @@ async def settings_page(
         "timezone_saved": timezone_saved,
         "timezones": tz_options,
         "devices": device_list,
+        "alert_offline_grace": alert_offline_grace,
+        "alert_temp_warning": alert_temp_warning,
+        "alert_temp_critical": alert_temp_critical,
+        "alert_temp_cooldown": alert_temp_cooldown,
+        "alert_email_enabled": alert_email_enabled,
         "success": None,
         "error": None,
     })
@@ -1553,6 +1565,24 @@ async def save_smtp_settings(
         await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
     await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
     return {"status": "ok"}
+
+
+@router.post("/api/settings/alerts")
+async def save_alert_settings(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_permission("settings:write")),
+):
+    body = await request.json()
+
+    await set_setting(db, "alert_offline_grace_seconds", str(int(body.get("offline_grace_seconds", 120))))
+    await set_setting(db, "alert_temp_warning_c", str(float(body.get("temp_warning_c", 70))))
+    await set_setting(db, "alert_temp_critical_c", str(float(body.get("temp_critical_c", 80))))
+    await set_setting(db, "alert_temp_cooldown_seconds", str(int(body.get("temp_cooldown_seconds", 300))))
+    await set_setting(db, "email_notifications_enabled", "true" if body.get("email_notifications_enabled") else "false")
+
+    await db.commit()
+    return {"ok": True}
 
 
 @router.post("/api/settings/smtp/test")
@@ -1735,6 +1765,132 @@ async def history_page(
         "page": page,
         "total_pages": total_pages,
         "total": total,
+    })
+
+
+# ── Event Log ──
+
+
+@router.get("/event-log", response_class=HTMLResponse)
+async def event_log_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=100),
+    event_type: str = Query(""),
+    device_id: str = Query(""),
+    group_id: str = Query(""),
+    since: str = Query(""),
+    until: str = Query(""),
+    user: User = Depends(require_permission("devices:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from cms.models.device_event import DeviceEvent
+    from cms.permissions import GROUPS_VIEW_ALL
+
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    tz = ZoneInfo(tz_name)
+
+    user_perms = user.role.permissions if user.role else []
+
+    # RBAC: restrict to user's groups unless they have view_all
+    rbac_conditions = []
+    if GROUPS_VIEW_ALL not in user_perms:
+        gid_result = await db.execute(
+            select(UserGroup.group_id).where(UserGroup.user_id == user.id)
+        )
+        user_gids = [r[0] for r in gid_result.all()]
+        if user_gids:
+            rbac_conditions.append(DeviceEvent.group_id.in_(user_gids))
+        else:
+            rbac_conditions.append(sqlalchemy.false())
+
+    # Build filter conditions
+    conditions = list(rbac_conditions)
+    if event_type.strip():
+        conditions.append(DeviceEvent.event_type == event_type.strip())
+    if device_id.strip():
+        conditions.append(DeviceEvent.device_id == device_id.strip())
+    if group_id.strip():
+        import uuid as _uuid
+        try:
+            gid_val = _uuid.UUID(group_id.strip())
+            conditions.append(DeviceEvent.group_id == gid_val)
+        except ValueError:
+            pass
+    if since.strip():
+        from datetime import datetime as _dt
+        try:
+            since_dt = _dt.fromisoformat(since.strip())
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=tz)
+            conditions.append(DeviceEvent.created_at >= since_dt)
+        except ValueError:
+            pass
+    if until.strip():
+        from datetime import datetime as _dt
+        try:
+            until_dt = _dt.fromisoformat(until.strip())
+            if until_dt.tzinfo is None:
+                until_dt = until_dt.replace(tzinfo=tz)
+            conditions.append(DeviceEvent.created_at <= until_dt)
+        except ValueError:
+            pass
+
+    # Count
+    count_q = select(func.count()).select_from(DeviceEvent)
+    for cond in conditions:
+        count_q = count_q.where(cond)
+    count_result = await db.execute(count_q)
+    total = count_result.scalar()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+
+    # Main query
+    offset = (page - 1) * per_page
+    query = (
+        select(DeviceEvent)
+        .order_by(DeviceEvent.created_at.desc())
+        .limit(per_page)
+        .offset(offset)
+    )
+    for cond in conditions:
+        query = query.where(cond)
+    result = await db.execute(query)
+    events = result.scalars().all()
+
+    # Distinct devices for filter dropdown (RBAC-filtered)
+    dev_q = select(DeviceEvent.device_id, DeviceEvent.device_name).distinct()
+    for cond in rbac_conditions:
+        dev_q = dev_q.where(cond)
+    dev_result = await db.execute(dev_q.order_by(DeviceEvent.device_name))
+    available_devices = [(r[0], r[1]) for r in dev_result.all()]
+
+    # Distinct groups for filter dropdown (RBAC-filtered)
+    grp_q = (
+        select(DeviceEvent.group_id, DeviceEvent.group_name)
+        .distinct()
+        .where(DeviceEvent.group_id.isnot(None))
+    )
+    for cond in rbac_conditions:
+        grp_q = grp_q.where(cond)
+    grp_result = await db.execute(grp_q.order_by(DeviceEvent.group_name))
+    available_groups = [(str(r[0]), r[1]) for r in grp_result.all()]
+
+    return templates.TemplateResponse(request, "event_log.html", {
+        "active_tab": "event_log",
+        "tz": tz,
+        "events": events,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "total": total,
+        "filter_event_type": event_type.strip(),
+        "filter_device_id": device_id.strip(),
+        "filter_group_id": group_id.strip(),
+        "filter_since": since.strip(),
+        "filter_until": until.strip(),
+        "available_devices": available_devices,
+        "available_groups": available_groups,
     })
 
 

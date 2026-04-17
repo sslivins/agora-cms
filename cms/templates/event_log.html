@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Event Log — Agora CMS{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>Event Log</h2>
+    <span class="text-muted">{{ total }} event{{ 's' if total != 1 else '' }}</span>
+</div>
+
+{# ── Filter bar ── #}
+{% set has_filters = filter_event_type or filter_device_id or filter_group_id or filter_since or filter_until %}
+<div class="card" style="margin-bottom:1rem; padding:0.75rem 1rem;">
+    <form id="eventFilterForm" method="get" action="/event-log" style="margin:0;">
+        <input type="hidden" name="per_page" value="{{ per_page }}">
+        <div class="form-row" style="gap:0.75rem; align-items:flex-end; flex-wrap:wrap;">
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Event Type</label>
+                <select name="event_type" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All Events</option>
+                    <option value="online" {% if filter_event_type == 'online' %}selected{% endif %}>Online</option>
+                    <option value="offline" {% if filter_event_type == 'offline' %}selected{% endif %}>Offline</option>
+                    <option value="temp_high" {% if filter_event_type == 'temp_high' %}selected{% endif %}>Temperature High</option>
+                    <option value="temp_cleared" {% if filter_event_type == 'temp_cleared' %}selected{% endif %}>Temperature Cleared</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Device</label>
+                <select name="device_id" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All Devices</option>
+                    {% for did, dname in available_devices %}
+                    <option value="{{ did }}" {% if filter_device_id == did %}selected{% endif %}>{{ dname }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Group</label>
+                <select name="group_id" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All Groups</option>
+                    {% for gid, gname in available_groups %}
+                    <option value="{{ gid }}" {% if filter_group_id == gid %}selected{% endif %}>{{ gname }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Since</label>
+                <input type="date" name="since" value="{{ filter_since }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Until</label>
+                <input type="date" name="until" value="{{ filter_until }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            {% if has_filters %}
+            <div style="margin-bottom:0; align-items:flex-end; padding-bottom:0.1rem;">
+                <a href="/event-log?per_page={{ per_page }}" class="btn btn-secondary btn-sm">Clear</a>
+            </div>
+            {% endif %}
+        </div>
+    </form>
+</div>
+
+{# ── Macro to build pagination URLs preserving filters ── #}
+{% macro page_url(p) -%}
+/event-log?page={{ p }}&per_page={{ per_page }}{% if filter_event_type %}&event_type={{ filter_event_type | urlencode }}{% endif %}{% if filter_device_id %}&device_id={{ filter_device_id | urlencode }}{% endif %}{% if filter_group_id %}&group_id={{ filter_group_id | urlencode }}{% endif %}{% if filter_since %}&since={{ filter_since }}{% endif %}{% if filter_until %}&until={{ filter_until }}{% endif %}
+{%- endmacro %}
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Event</th>
+                <th>Device</th>
+                <th>Group</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for event in events %}
+            <tr>
+                <td style="white-space:nowrap;">{{ event.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>
+                    {% if event.event_type == 'online' %}
+                    <span class="badge badge-online">Online</span>
+                    {% elif event.event_type == 'offline' %}
+                    <span class="badge badge-offline">Offline</span>
+                    {% elif event.event_type == 'temp_high' %}
+                    <span class="badge badge-warning">Temp High</span>
+                    {% elif event.event_type == 'temp_cleared' %}
+                    <span class="badge badge-success">Temp Cleared</span>
+                    {% else %}
+                    <span class="badge badge-muted">{{ event.event_type }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ event.device_name }}</td>
+                <td>{{ event.group_name or '—' }}</td>
+                <td>
+                    {% if event.event_type == 'temp_high' and event.details %}
+                    {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
+                    {% elif event.event_type == 'temp_cleared' and event.details %}
+                    {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
+                    {% elif event.event_type == 'offline' and event.details and event.details.grace_period is defined %}
+                    Grace period: {{ event.details.grace_period }}s
+                    {% elif event.event_type == 'online' %}
+                    Back online
+                    {% else %}
+                    {{ event.details | tojson if event.details else '—' }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No events match the current filters.{% else %}No device events yet. Events will appear here as devices connect, disconnect, or report temperature issues.{% endif %}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# ── Pagination ── #}
+<div class="pagination" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; margin-top:0.75rem;">
+    <div style="display:flex; align-items:center; gap:0.5rem;">
+        <span class="text-muted" style="font-size:0.85rem;">
+            {% if total > 0 %}
+            Showing {{ (page - 1) * per_page + 1 }}–{{ [page * per_page, total] | min }} of {{ total }}
+            {% else %}
+            No entries
+            {% endif %}
+        </span>
+        <span class="text-muted" style="font-size:0.85rem;">·</span>
+        <label class="text-muted" style="font-size:0.85rem;">
+            Per page:
+            <select onchange="window.location.href=this.value" style="padding:0.2rem 0.4rem; font-size:0.8rem; background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px;">
+                {% for size in [25, 50, 100] %}
+                <option value="{{ page_url(1) | replace('per_page=' ~ per_page, 'per_page=' ~ size) }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </div>
+    {% if total_pages > 1 %}
+    <div style="display:flex; align-items:center; gap:0.3rem;">
+        {% if page > 1 %}
+        <a href="{{ page_url(1) }}" class="btn btn-secondary btn-sm" title="First page">«</a>
+        <a href="{{ page_url(page - 1) }}" class="btn btn-secondary btn-sm">‹ Prev</a>
+        {% endif %}
+        {% set start_page = [1, page - 2] | max %}
+        {% set end_page = [total_pages, page + 2] | min %}
+        {% for p in range(start_page, end_page + 1) %}
+        {% if p == page %}
+        <span class="btn btn-primary btn-sm" style="pointer-events:none;">{{ p }}</span>
+        {% else %}
+        <a href="{{ page_url(p) }}" class="btn btn-secondary btn-sm">{{ p }}</a>
+        {% endif %}
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="{{ page_url(page + 1) }}" class="btn btn-secondary btn-sm">Next ›</a>
+        <a href="{{ page_url(total_pages) }}" class="btn btn-secondary btn-sm" title="Last page">»</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -384,6 +384,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-missed { background: var(--danger); color: #fff; }
 .badge-preempted { background: #e67e22; color: #fff; }
 .badge-success { background: var(--success); color: #000; }
+.badge-warning { background: #e67e22; color: #fff; }
 .badge-danger { background: var(--danger); color: #fff; }
 .badge-info { background: #3498db; color: #fff; }
 .badge-muted { background: #555; color: #ccc; }
