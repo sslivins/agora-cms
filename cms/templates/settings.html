@@ -223,6 +223,80 @@ async function testSmtp() {
 {% endif %}
 
 {% if 'settings:write' in user_perms %}
+<div class="card" id="alerts-card">
+    <h2>Device Alerts</h2>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Configure when the system generates alerts for device health issues.
+        Alerts appear in the notification bell for users with access to the device's group.
+    </p>
+    <form id="alerts-form" onsubmit="event.preventDefault(); saveAlertSettings()">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="alert-offline-grace">Offline Grace Period (seconds)</label>
+                <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
+                    How long to wait after a device disconnects before creating an alert.
+                </p>
+                <input type="number" id="alert-offline-grace" min="10" max="3600" value="{{ alert_offline_grace }}" style="max-width: 150px;">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="alert-temp-warning">Temperature Warning (°C)</label>
+                <input type="number" id="alert-temp-warning" min="40" max="100" step="0.5" value="{{ alert_temp_warning }}" style="max-width: 150px;">
+            </div>
+            <div class="form-group">
+                <label for="alert-temp-critical">Temperature Critical (°C)</label>
+                <input type="number" id="alert-temp-critical" min="50" max="120" step="0.5" value="{{ alert_temp_critical }}" style="max-width: 150px;">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="alert-temp-cooldown">Temperature Cooldown (seconds)</label>
+                <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
+                    After a temperature alert clears, wait this long before re-alerting on the same device.
+                </p>
+                <input type="number" id="alert-temp-cooldown" min="60" max="3600" value="{{ alert_temp_cooldown }}" style="max-width: 150px;">
+            </div>
+        </div>
+
+        <label style="display: flex; align-items: center; gap: 0.5rem; margin: 1rem 0; cursor: pointer;">
+            <input type="checkbox" id="alert-email-enabled" {% if alert_email_enabled %}checked{% endif %} style="width: auto; margin: 0;">
+            <span>Enable email notifications</span>
+        </label>
+        <p class="text-muted" style="font-size: 0.8rem; margin-top: -0.5rem; margin-bottom: 1rem;">
+            When enabled, users can opt-in to receive email alerts in their profile settings.
+            Requires SMTP to be configured above.
+        </p>
+
+        <button type="submit" class="btn btn-primary">Save Alert Settings</button>
+    </form>
+</div>
+
+<script>
+async function saveAlertSettings() {
+    const body = {
+        offline_grace_seconds: parseInt(document.getElementById("alert-offline-grace").value) || 120,
+        temp_warning_c: parseFloat(document.getElementById("alert-temp-warning").value) || 70,
+        temp_critical_c: parseFloat(document.getElementById("alert-temp-critical").value) || 80,
+        temp_cooldown_seconds: parseInt(document.getElementById("alert-temp-cooldown").value) || 300,
+        email_notifications_enabled: document.getElementById("alert-email-enabled").checked,
+    };
+    try {
+        const resp = await fetch("/api/settings/alerts", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail || "Save failed");
+        showToast("Alert settings saved");
+    } catch (err) {
+        showToast(err.message || "Failed to save alert settings", true);
+    }
+}
+</script>
+{% endif %}
+
+{% if 'settings:write' in user_perms %}
 <div class="card" id="logs-card">
     <h2>Download Logs</h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">

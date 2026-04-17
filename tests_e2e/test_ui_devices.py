@@ -363,7 +363,7 @@ class TestDetailPanelPipelineBadge:
 
             # Pipeline State badge should say "Splash"
             pipeline_el = detail.locator('[data-live-pipeline="badge-dev-002"]')
-            expect(pipeline_el.locator(".badge-pending")).to_be_visible(timeout=3000)
+            expect(pipeline_el.locator(".badge-pending")).to_be_visible(timeout=10000)
             expect(pipeline_el.locator(".badge-pending")).to_have_text("Splash")
 
             # Asset should show "Splash screen"

@@ -249,6 +249,23 @@ async def service_key_rotation_loop() -> None:
             return
 
 
+async def _alert_settings_refresh_loop() -> None:
+    """Periodically refresh alert thresholds from the database."""
+    from cms.services.alert_service import alert_service
+
+    while True:
+        try:
+            await alert_service.refresh_settings()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("Alert settings refresh failed")
+        try:
+            await asyncio.sleep(300)  # Refresh every 5 minutes
+        except asyncio.CancelledError:
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -324,16 +341,51 @@ async def lifespan(app: FastAPI):
     version_check_task = asyncio.create_task(version_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
     key_rotation_task = asyncio.create_task(service_key_rotation_loop())
+    alert_refresh_task = asyncio.create_task(_alert_settings_refresh_loop())
     capture_monitor_task = asyncio.create_task(stream_capture_monitor_loop())
+
+    # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
+    try:
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+        async for db in get_db():
+            db.add(DeviceEvent(
+                device_id=None,
+                device_name="CMS",
+                group_id=None,
+                group_name="",
+                event_type=DeviceEventType.CMS_STARTED,
+                details={"version": __version__},
+            ))
+            await db.commit()
+            break
+    except Exception:
+        logger.exception("Failed to log CMS_STARTED event")
 
     logger.info("Agora CMS %s started", __version__)
     yield
-    # Shutdown
+    # Shutdown — log CMS shutdown first so the event is persisted before tasks stop
+    try:
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+        async for db in get_db():
+            db.add(DeviceEvent(
+                device_id=None,
+                device_name="CMS",
+                group_id=None,
+                group_name="",
+                event_type=DeviceEventType.CMS_STOPPED,
+                details={"version": __version__},
+            ))
+            await db.commit()
+            break
+    except Exception:
+        logger.exception("Failed to log CMS_STOPPED event")
+
     scheduler_task.cancel()
     backfill_task.cancel()
     version_check_task.cancel()
     device_purge_task.cancel()
     key_rotation_task.cancel()
+    alert_refresh_task.cancel()
     capture_monitor_task.cancel()
     try:
         await scheduler_task
@@ -353,6 +405,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await key_rotation_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await alert_refresh_task
     except asyncio.CancelledError:
         pass
     try:
@@ -445,6 +501,8 @@ from cms.routers.ws import router as ws_router  # noqa: E402
 from cms.routers.api_keys import router as api_keys_router  # noqa: E402
 from cms.routers.audit import router as audit_router  # noqa: E402
 from cms.routers.notifications import router as notifications_router  # noqa: E402
+from cms.routers.notification_prefs import router as notification_prefs_router  # noqa: E402
+from cms.routers.device_events import router as device_events_router  # noqa: E402
 from cms.routers.roles import router as roles_router  # noqa: E402
 from cms.routers.stream_probe import router as stream_probe_router  # noqa: E402
 from cms.routers.users import router as users_router  # noqa: E402
@@ -460,6 +518,8 @@ app.include_router(mcp_router)
 app.include_router(api_keys_router)
 app.include_router(audit_router)
 app.include_router(notifications_router)
+app.include_router(notification_prefs_router)
+app.include_router(device_events_router)
 app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(stream_probe_router)

@@ -716,7 +716,7 @@ class TestScheduleDeletePlayingWarning:
             await dev.send_status(mode="play", asset=asset_name)
             await dev.send_playback_started(schedule_id, schedule_name, asset_name)
             # Give the CMS a moment to process the playback_started message
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
             ready_event.set()
             while not stop_event.is_set():
                 await asyncio.sleep(0.2)

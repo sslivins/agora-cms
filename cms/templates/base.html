@@ -69,6 +69,9 @@
         <a href="/assets" class="nav-tab {% if active_tab == 'assets' %}active{% endif %}">Assets</a>
         <a href="/schedules" class="nav-tab {% if active_tab == 'schedules' %}active{% endif %}">Schedules</a>
         <a href="/history" class="nav-tab {% if active_tab == 'history' %}active{% endif %}">History</a>
+        {% if 'devices:read' in user_perms %}
+        <a href="/event-log" class="nav-tab {% if active_tab == 'event_log' %}active{% endif %}">Event Log</a>
+        {% endif %}
         {% if 'audit:read' in user_perms %}
         <a href="/audit" class="nav-tab {% if active_tab == 'audit' %}active{% endif %}">Audit Log</a>
         {% endif %}

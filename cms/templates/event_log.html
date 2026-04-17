@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}Event Log — Agora CMS{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>Event Log</h2>
+    <span class="text-muted">{{ total }} event{{ 's' if total != 1 else '' }}</span>
+</div>
+
+{# ── Filter bar ── #}
+{% set has_filters = filter_event_type or filter_device_id or filter_group_id or filter_since or filter_until %}
+<div class="card" style="margin-bottom:1rem; padding:0.75rem 1rem;">
+    <form id="eventFilterForm" method="get" action="/event-log" style="margin:0;">
+        <input type="hidden" name="per_page" value="{{ per_page }}">
+        <div class="form-row" style="gap:0.75rem; align-items:flex-end; flex-wrap:wrap;">
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Event Type</label>
+                <select name="event_type" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All Events</option>
+                    <option value="online" {% if filter_event_type == 'online' %}selected{% endif %}>Online</option>
+                    <option value="offline" {% if filter_event_type == 'offline' %}selected{% endif %}>Offline</option>
+                    <option value="temp_high" {% if filter_event_type == 'temp_high' %}selected{% endif %}>Temperature High</option>
+                    <option value="temp_cleared" {% if filter_event_type == 'temp_cleared' %}selected{% endif %}>Temperature Cleared</option>
+                    <option value="cms_started" {% if filter_event_type == 'cms_started' %}selected{% endif %}>CMS Started</option>
+                    <option value="cms_stopped" {% if filter_event_type == 'cms_stopped' %}selected{% endif %}>CMS Stopped</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Device</label>
+                <select name="device_id" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All Devices</option>
+                    {% for did, dname in available_devices %}
+                    <option value="{{ did }}" {% if filter_device_id == did %}selected{% endif %}>{{ dname }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Group</label>
+                <select name="group_id" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+                    <option value="">All Groups</option>
+                    {% for gid, gname in available_groups %}
+                    <option value="{{ gid }}" {% if filter_group_id == gid %}selected{% endif %}>{{ gname }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Since</label>
+                <input type="date" name="since" value="{{ filter_since }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group" style="flex:1; min-width:130px; margin-bottom:0;">
+                <label style="font-size:0.75rem;">Until</label>
+                <input type="date" name="until" value="{{ filter_until }}" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
+            </div>
+            {% if has_filters %}
+            <div style="margin-bottom:0; align-items:flex-end; padding-bottom:0.1rem;">
+                <a href="/event-log?per_page={{ per_page }}" class="btn btn-secondary btn-sm">Clear</a>
+            </div>
+            {% endif %}
+        </div>
+    </form>
+</div>
+
+{# ── Macro to build pagination URLs preserving filters ── #}
+{% macro page_url(p) -%}
+/event-log?page={{ p }}&per_page={{ per_page }}{% if filter_event_type %}&event_type={{ filter_event_type | urlencode }}{% endif %}{% if filter_device_id %}&device_id={{ filter_device_id | urlencode }}{% endif %}{% if filter_group_id %}&group_id={{ filter_group_id | urlencode }}{% endif %}{% if filter_since %}&since={{ filter_since }}{% endif %}{% if filter_until %}&until={{ filter_until }}{% endif %}
+{%- endmacro %}
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Event</th>
+                <th>Device</th>
+                <th>Group</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody id="event-log-tbody">
+            {% for event in events %}
+            <tr data-event-id="{{ event.id }}">
+                <td style="white-space:nowrap;" data-utc="{{ event.created_at.isoformat() }}">{{ event.created_at.astimezone(tz).strftime('%b %d, %Y %I:%M:%S %p') }}</td>
+                <td>
+                    {% if event.event_type == 'online' %}
+                    <span class="badge badge-online">Online</span>
+                    {% elif event.event_type == 'offline' %}
+                    <span class="badge badge-offline">Offline</span>
+                    {% elif event.event_type == 'temp_high' %}
+                    <span class="badge badge-warning">Temp High</span>
+                    {% elif event.event_type == 'temp_cleared' %}
+                    <span class="badge badge-success">Temp Cleared</span>
+                    {% elif event.event_type == 'cms_started' %}
+                    <span class="badge badge-online">CMS Started</span>
+                    {% elif event.event_type == 'cms_stopped' %}
+                    <span class="badge badge-offline">CMS Stopped</span>
+                    {% else %}
+                    <span class="badge badge-muted">{{ event.event_type }}</span>
+                    {% endif %}
+                </td>
+                <td>{% if event.device_id %}{{ event.device_name }}{% else %}<span class="text-muted">— System —</span>{% endif %}</td>
+                <td>{{ event.group_name or '—' }}</td>
+                <td>
+                    {% if event.event_type == 'temp_high' and event.details %}
+                    {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
+                    {% elif event.event_type == 'temp_cleared' and event.details %}
+                    {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
+                    {% elif event.event_type == 'offline' and event.details and event.details.grace_period is defined %}
+                    Grace period: {{ event.details.grace_period }}s
+                    {% elif event.event_type == 'online' %}
+                    Back online
+                    {% elif event.event_type in ['cms_started', 'cms_stopped'] and event.details and event.details.version %}
+                    Version {{ event.details.version }}
+                    {% else %}
+                    {{ event.details | tojson if event.details else '—' }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No events match the current filters.{% else %}No device events yet. Events will appear here as devices connect, disconnect, or report temperature issues.{% endif %}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# ── Pagination ── #}
+<div class="pagination" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; margin-top:0.75rem;">
+    <div style="display:flex; align-items:center; gap:0.5rem;">
+        <span class="text-muted" style="font-size:0.85rem;">
+            {% if total > 0 %}
+            Showing {{ (page - 1) * per_page + 1 }}–{{ [page * per_page, total] | min }} of {{ total }}
+            {% else %}
+            No entries
+            {% endif %}
+        </span>
+        <span class="text-muted" style="font-size:0.85rem;">·</span>
+        <label class="text-muted" style="font-size:0.85rem;">
+            Per page:
+            <select onchange="window.location.href=this.value" style="padding:0.2rem 0.4rem; font-size:0.8rem; background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px;">
+                {% for size in [25, 50, 100] %}
+                <option value="{{ page_url(1) | replace('per_page=' ~ per_page, 'per_page=' ~ size) }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </div>
+    {% if total_pages > 1 %}
+    <div style="display:flex; align-items:center; gap:0.3rem;">
+        {% if page > 1 %}
+        <a href="{{ page_url(1) }}" class="btn btn-secondary btn-sm" title="First page">«</a>
+        <a href="{{ page_url(page - 1) }}" class="btn btn-secondary btn-sm">‹ Prev</a>
+        {% endif %}
+        {% set start_page = [1, page - 2] | max %}
+        {% set end_page = [total_pages, page + 2] | min %}
+        {% for p in range(start_page, end_page + 1) %}
+        {% if p == page %}
+        <span class="btn btn-primary btn-sm" style="pointer-events:none;">{{ p }}</span>
+        {% else %}
+        <a href="{{ page_url(p) }}" class="btn btn-secondary btn-sm">{{ p }}</a>
+        {% endif %}
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="{{ page_url(page + 1) }}" class="btn btn-secondary btn-sm">Next ›</a>
+        <a href="{{ page_url(total_pages) }}" class="btn btn-secondary btn-sm" title="Last page">»</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+{# ── Live auto-refresh (page 1 only, respects active filters) ── #}
+{% if page == 1 %}
+<script>
+(function() {
+    const tbody = document.getElementById("event-log-tbody");
+    if (!tbody) return;
+
+    const FILTER_EVENT_TYPE = {{ filter_event_type | tojson }};
+    const FILTER_DEVICE_ID = {{ filter_device_id | tojson }};
+    const FILTER_GROUP_ID = {{ filter_group_id | tojson }};
+    const PER_PAGE = {{ per_page }};
+    const POLL_INTERVAL_MS = 15000;
+
+    const EMPTY_ROW_SELECTOR = "tr td[colspan]";
+
+    // Format ISO timestamp to local tz — matches the global [data-utc] formatter in app.js
+    function formatTime(iso) {
+        try {
+            const d = new Date(iso);
+            if (isNaN(d)) return iso;
+            return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+                + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
+        } catch {
+            return iso;
+        }
+    }
+
+    function badge(eventType) {
+        const map = {
+            online: ["badge-online", "Online"],
+            offline: ["badge-offline", "Offline"],
+            temp_high: ["badge-warning", "Temp High"],
+            temp_cleared: ["badge-success", "Temp Cleared"],
+            cms_started: ["badge-online", "CMS Started"],
+            cms_stopped: ["badge-offline", "CMS Stopped"],
+        };
+        const [cls, label] = map[eventType] || ["badge-muted", eventType];
+        return `<span class="badge ${cls}">${label}</span>`;
+    }
+
+    function renderDetails(ev) {
+        const d = ev.details || {};
+        if (ev.event_type === "temp_high" || ev.event_type === "temp_cleared") {
+            return `${d.temperature ?? "?"}°C (threshold: ${d.threshold ?? "?"}°C)`;
+        }
+        if (ev.event_type === "offline" && d.grace_period !== undefined) {
+            return `Grace period: ${d.grace_period}s`;
+        }
+        if (ev.event_type === "online") return "Back online";
+        if ((ev.event_type === "cms_started" || ev.event_type === "cms_stopped") && d.version) {
+            return `Version ${d.version}`;
+        }
+        return ev.details ? JSON.stringify(ev.details) : "—";
+    }
+
+    function escapeHtml(s) {
+        return String(s ?? "").replace(/[&<>"']/g, c => (
+            {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
+        ));
+    }
+
+    function rowHtml(ev) {
+        const deviceCell = ev.device_id
+            ? escapeHtml(ev.device_name)
+            : '<span class="text-muted">— System —</span>';
+        return `
+            <td style="white-space:nowrap;" data-utc="${escapeHtml(ev.created_at)}">${formatTime(ev.created_at)}</td>
+            <td>${badge(ev.event_type)}</td>
+            <td>${deviceCell}</td>
+            <td>${escapeHtml(ev.group_name) || "—"}</td>
+            <td>${escapeHtml(renderDetails(ev))}</td>
+        `;
+    }
+
+    async function poll() {
+        // Skip polling when tab is hidden to avoid wasted traffic
+        if (document.hidden) return;
+
+        const params = new URLSearchParams();
+        if (FILTER_EVENT_TYPE) params.set("event_type", FILTER_EVENT_TYPE);
+        if (FILTER_DEVICE_ID) params.set("device_id", FILTER_DEVICE_ID);
+        if (FILTER_GROUP_ID) params.set("group_id", FILTER_GROUP_ID);
+        params.set("limit", PER_PAGE);
+
+        try {
+            const resp = await fetch("/api/device-events?" + params.toString());
+            if (!resp.ok) return;
+            const events = await resp.json();
+
+            // Collect existing IDs to detect new ones
+            const existingIds = new Set(
+                Array.from(tbody.querySelectorAll("tr[data-event-id]"))
+                    .map(tr => tr.dataset.eventId)
+            );
+
+            // API returns newest first — iterate in reverse so oldest new event
+            // is inserted first and newest ends up at the very top
+            const newEvents = events.filter(e => !existingIds.has(e.id));
+            if (newEvents.length === 0) return;
+
+            // Remove the empty-state row if present
+            const emptyRow = tbody.querySelector(EMPTY_ROW_SELECTOR);
+            if (emptyRow) emptyRow.parentElement.remove();
+
+            for (let i = newEvents.length - 1; i >= 0; i--) {
+                const ev = newEvents[i];
+                const tr = document.createElement("tr");
+                tr.dataset.eventId = ev.id;
+                tr.innerHTML = rowHtml(ev);
+                tr.style.background = "rgba(46, 204, 113, 0.08)"; // subtle highlight
+                tbody.insertBefore(tr, tbody.firstChild);
+                // Fade the highlight out after a moment
+                setTimeout(() => { tr.style.transition = "background 2s"; tr.style.background = ""; }, 50);
+            }
+
+            // Trim to PER_PAGE rows (don't let the page grow unbounded)
+            const rows = tbody.querySelectorAll("tr[data-event-id]");
+            for (let i = PER_PAGE; i < rows.length; i++) rows[i].remove();
+        } catch {
+            // Silent — don't spam toasts on transient network errors
+        }
+    }
+
+    setInterval(poll, POLL_INTERVAL_MS);
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -6,6 +6,7 @@
     <button class="sub-tab active" onclick="showUserTab('profile-tab', this)">Profile</button>
     <button class="sub-tab" onclick="showUserTab('my-keys-tab', this)">My Keys</button>
     <button class="sub-tab" onclick="showUserTab('security-tab', this)">Security</button>
+    <button class="sub-tab" onclick="showUserTab('notifications-tab', this)">Notifications</button>
 </div>
 
 <!-- ═══════════════════════════════════════════ PROFILE TAB ═══════════════════════════════════════════ -->
@@ -95,6 +96,33 @@
         </div>
         <button type="submit" class="btn btn-primary">Update Password</button>
     </form>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════ NOTIFICATIONS TAB ═══════════════════════════════════════════ -->
+<div id="notifications-tab" class="tab-content">
+<div class="card">
+    <h3>Email Notification Preferences</h3>
+    <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+        Choose which device health events you want to receive email notifications for.
+        You will always receive in-app notifications (bell icon) for events in your groups.
+    </p>
+    <div id="notif-prefs-status" style="margin-bottom: 1rem;"></div>
+    <table id="notif-prefs-table">
+        <thead>
+            <tr>
+                <th>Event Type</th>
+                <th>Description</th>
+                <th style="text-align: center;">Email</th>
+            </tr>
+        </thead>
+        <tbody id="notif-prefs-body">
+            <tr><td colspan="3" class="text-muted">Loading…</td></tr>
+        </tbody>
+    </table>
+    <div style="margin-top: 1rem;">
+        <button type="button" class="btn btn-primary" id="save-notif-prefs-btn">Save Preferences</button>
+    </div>
 </div>
 </div>
 
@@ -223,6 +251,92 @@
     };
 
     loadKeys();
+})();
+</script>
+<script>
+(function() {
+    const tbody = document.getElementById("notif-prefs-body");
+    const saveBtn = document.getElementById("save-notif-prefs-btn");
+    const statusDiv = document.getElementById("notif-prefs-status");
+    if (!tbody || !saveBtn) return;
+
+    const EVENT_LABELS = {
+        "offline": { label: "Device Offline", desc: "When a device goes offline after the grace period" },
+        "online": { label: "Device Online", desc: "When a previously-offline device comes back online" },
+        "temp_high": { label: "Temperature High", desc: "When a device exceeds temperature warning or critical thresholds" },
+        "temp_cleared": { label: "Temperature Cleared", desc: "When a device temperature returns to normal" },
+    };
+
+    let prefs = [];
+    let emailEnabled = false;
+
+    async function loadPrefs() {
+        try {
+            const statusResp = await fetch("/api/notification-preferences/email-status");
+            const statusData = await statusResp.json();
+            emailEnabled = statusData.enabled;
+
+            if (!emailEnabled) {
+                statusDiv.innerHTML = '<div style="background: rgba(243, 156, 18, 0.1); border: 1px solid var(--warning); border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.85rem; color: var(--warning);">📧 Email notifications are disabled by your administrator. These preferences will take effect when enabled.</div>';
+            } else {
+                statusDiv.innerHTML = '';
+            }
+
+            const resp = await fetch("/api/notification-preferences");
+            prefs = await resp.json();
+
+            tbody.innerHTML = prefs.map(p => {
+                const info = EVENT_LABELS[p.event_type] || { label: p.event_type, desc: "" };
+                return `
+                    <tr>
+                        <td><strong>${info.label}</strong></td>
+                        <td class="text-muted" style="font-size: 0.85rem;">${info.desc}</td>
+                        <td style="text-align: center;">
+                            <input type="checkbox" data-event-type="${p.event_type}"
+                                   ${p.email_enabled ? 'checked' : ''}
+                                   ${!emailEnabled ? 'disabled' : ''}
+                                   style="width: auto; margin: 0; cursor: ${emailEnabled ? 'pointer' : 'not-allowed'};">
+                        </td>
+                    </tr>
+                `;
+            }).join("");
+        } catch {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted">Failed to load preferences.</td></tr>';
+        }
+    }
+
+    saveBtn.addEventListener("click", async function() {
+        const updates = [];
+        tbody.querySelectorAll('input[data-event-type]').forEach(cb => {
+            updates.push({
+                event_type: cb.dataset.eventType,
+                email_enabled: cb.checked,
+            });
+        });
+
+        try {
+            const resp = await fetch("/api/notification-preferences", {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(updates),
+            });
+            if (!resp.ok) throw new Error("Save failed");
+            showToast("Notification preferences saved");
+        } catch {
+            showToast("Failed to save preferences", true);
+        }
+    });
+
+    let loaded = false;
+    const tabBtn = document.querySelector('button[onclick*="notifications-tab"]');
+    if (tabBtn) {
+        tabBtn.addEventListener('click', function() {
+            if (!loaded) {
+                loaded = true;
+                loadPrefs();
+            }
+        });
+    }
 })();
 </script>
 {% endblock %}
