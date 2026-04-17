@@ -680,10 +680,13 @@ class TestQueueMode:
 
         with patch("worker.__main__.get_session_factory", return_value=factory), \
              patch("worker.__main__.recover_interrupted", return_value=0) as mock_recover, \
-             patch("worker.__main__.process_pending", return_value=1) as mock_process:
+             patch("worker.__main__.process_captures", return_value=0) as mock_captures, \
+             patch("worker.__main__.process_pending", return_value=1) as mock_process, \
+             patch("worker.__main__._drain_queue", return_value=0):
             await _queue_mode(settings)
 
         mock_recover.assert_called_once_with(factory)
+        mock_captures.assert_called_once_with(factory, asset_dir)
         mock_process.assert_called_once_with(factory, asset_dir)
 
 
