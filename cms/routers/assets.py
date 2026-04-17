@@ -247,6 +247,7 @@ async def assets_status_json(
                 a_failed += 1
         assets_detail.append({
             "id": str(a.id),
+            "asset_type": a.asset_type.value,
             "variant_total": len(a.variants),
             "variant_ready": a_ready,
             "variant_processing": a_processing,
@@ -414,9 +415,9 @@ async def upload_asset(
 
     # Queue transcoding for all profiles (video and image assets)
     if asset_type in (AssetType.VIDEO, AssetType.IMAGE):
-        await _enqueue_transcoding(asset, db)
+        variant_count = await _enqueue_transcoding(asset, db)
         from cms.services.transcoder import notify_worker
-        await notify_worker(db)
+        await notify_worker(db, count=variant_count)
 
     return asset
 
@@ -703,6 +704,7 @@ async def recapture_stream(
     var_result = await db.execute(
         select(AssetVariant).where(AssetVariant.source_asset_id == asset_id)
     )
+    reset_count = 0
     for variant in var_result.scalars().all():
         vpath = variants_dir / variant.filename
         if vpath.is_file():
@@ -713,20 +715,27 @@ async def recapture_stream(
         variant.retry_count = 0
         variant.checksum = ""
         variant.size_bytes = 0
+        reset_count += 1
 
     await db.commit()
 
-    # Notify worker to pick up the pending variants
+    # Notify worker to pick up the pending variants.  +1 for the capture job
+    # itself (worker must re-capture the stream before variants can transcode).
     from cms.services.transcoder import notify_worker
-    await notify_worker(db)
+    await notify_worker(db, count=max(reset_count, 1))
 
     return {"recaptured": True, "asset_id": str(asset_id)}
 
 
-async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
-    """Create pending AssetVariant rows for all device profiles."""
+async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> int:
+    """Create pending AssetVariant rows for all device profiles.
+
+    Returns the number of variants created so the caller can pass it to
+    ``notify_worker`` for proper parallel fan-out.
+    """
     result = await db.execute(select(DeviceProfile))
     profiles = result.scalars().all()
+    count = 0
     for profile in profiles:
         variant_id = uuid.uuid4()
         if asset.asset_type == AssetType.IMAGE:
@@ -743,7 +752,9 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> None:
             filename=f"{variant_id}{ext}",
         )
         db.add(variant)
+        count += 1
     await db.commit()
+    return count
 
 
 @router.get("/{asset_id}", response_model=AssetOut, dependencies=[Depends(require_permission(ASSETS_READ))])

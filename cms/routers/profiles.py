@@ -146,7 +146,7 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
     # Enqueue transcoding for all existing video assets
     count = await enqueue_for_new_profile(profile.id, db)
     if count:
-        await notify_worker(db)
+        await notify_worker(db, count=count)
 
     return ProfileOut(
         id=profile.id,
@@ -212,6 +212,7 @@ async def update_profile(
         setattr(profile, field, value)
 
     # Reset existing variants so they get re-transcoded
+    reset_count = 0
     if transcode_changed:
         # Kill any in-progress ffmpeg for this profile
         cancel_profile_transcodes(profile_id)
@@ -230,12 +231,13 @@ async def update_profile(
             variant.status = VariantStatus.PENDING
             variant.progress = 0.0
             variant.error_message = ""
+            reset_count += 1
 
     await db.commit()
 
     # Notify worker if variants were reset to PENDING
-    if transcode_changed:
-        await notify_worker(db)
+    if transcode_changed and reset_count:
+        await notify_worker(db, count=reset_count)
 
     await db.refresh(profile)
 
@@ -367,7 +369,7 @@ async def copy_profile(
     # Enqueue transcoding for all existing video assets
     count = await enqueue_for_new_profile(profile.id, db)
     if count:
-        await notify_worker(db)
+        await notify_worker(db, count=count)
 
     return ProfileOut(
         id=profile.id,
@@ -422,6 +424,7 @@ async def reset_profile(
         setattr(profile, field, value)
 
     # Reset variants if transcoding fields changed
+    reset_count = 0
     if transcode_changed:
         cancel_profile_transcodes(profile_id)
         var_result = await db.execute(
@@ -438,11 +441,12 @@ async def reset_profile(
             variant.status = VariantStatus.PENDING
             variant.progress = 0.0
             variant.error_message = ""
+            reset_count += 1
 
     await db.commit()
 
-    if transcode_changed:
-        await notify_worker(db)
+    if transcode_changed and reset_count:
+        await notify_worker(db, count=reset_count)
 
     await db.refresh(profile)
 
