@@ -3,6 +3,14 @@ name: Tests
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'tests/nightly/**'
+      - 'docs/**'
+      - 'README*'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/workflows/nightly.yml'
+      - '.github/workflows/ci-gate.yml'
   push:
     branches: [main]
   workflow_call:
