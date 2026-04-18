@@ -411,6 +411,19 @@ async def run_migrations():
                 "ON asset_variants (deleted_at)"
             ))
 
+    # -- assets.capture_progress / assets.capture_error (live SAVED_STREAM progress + failure UI) --
+    async with _shared_db._engine.begin() as conn:
+        has_cap_progress = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_progress"))
+        if not has_cap_progress:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN capture_progress DOUBLE PRECISION"
+            ))
+        has_cap_error = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_error"))
+        if not has_cap_error:
+            await conn.execute(text(
+                "ALTER TABLE assets ADD COLUMN capture_error TEXT"
+            ))
+
     # Run create_all again in case migrations added models with new relationships
     async with _shared_db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
