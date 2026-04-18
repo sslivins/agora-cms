@@ -24,7 +24,7 @@ from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
 from cms.models.user import User
 from cms.schemas.asset import AssetOut
-from cms.services.audit_service import audit_log
+from cms.services.audit_service import audit_log, compute_diff
 from cms.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -701,21 +701,25 @@ async def update_asset(
 
     body = await request.json()
 
-    changes: dict = {}
+    # Build incoming updates dict from validated body fields, then diff
+    incoming: dict = {}
     if "display_name" in body:
         name = (body["display_name"] or "").strip()
         if name and len(name) > 255:
             raise HTTPException(status_code=400, detail="Name too long (max 255 characters)")
-        old = asset.display_name
-        asset.display_name = name if name else None
-        changes["display_name"] = {"old": old, "new": asset.display_name}
+        incoming["display_name"] = name if name else None
+
+    changes = compute_diff(asset, incoming)
+
+    for field, value in incoming.items():
+        setattr(asset, field, value)
 
     if changes:
         await audit_log(
             db, user=user, action="asset.update", resource_type="asset",
             resource_id=str(asset_id),
-            description=f"Updated asset '{asset.filename}' ({', '.join(sorted(changes.keys()))})",
-            details=changes,
+            description=f"Updated asset '{asset.filename}'",
+            details={"changes": changes},
             request=request,
         )
     await db.commit()

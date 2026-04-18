@@ -23,7 +23,7 @@ from cms.services.transcoder import (
     flag_profile_jobs_cancelled,
     supersede_profile_variants,
 )
-from cms.services.audit_service import audit_log
+from cms.services.audit_service import audit_log, compute_diff
 
 logger = logging.getLogger("agora.cms.profiles")
 
@@ -240,11 +240,11 @@ async def update_profile(
         color_space=updates.get("color_space", profile.color_space),
     )
 
+    # Snapshot before mutation so we can build a true diff for the audit log
+    changes = compute_diff(profile, updates)
+
     # Detect whether any transcoding-relevant field actually changed
-    transcode_changed = any(
-        field in _TRANSCODE_FIELDS and getattr(profile, field) != value
-        for field, value in updates.items()
-    )
+    transcode_changed = any(field in _TRANSCODE_FIELDS for field in changes)
 
     for field, value in updates.items():
         setattr(profile, field, value)
@@ -257,7 +257,7 @@ async def update_profile(
             "update_profile: profile %s (%s) transcoding fields changed (%s); "
             "superseding variants",
             profile_id, profile.name,
-            sorted(f for f in updates if f in _TRANSCODE_FIELDS),
+            sorted(f for f in changes if f in _TRANSCODE_FIELDS),
         )
         # Flag any in-flight worker jobs for cooperative cancellation.
         # Workers will SIGTERM ffmpeg on the next heartbeat tick.
@@ -277,9 +277,9 @@ async def update_profile(
         db, user=getattr(request.state, "user", None),
         action="profile.update", resource_type="profile",
         resource_id=str(profile_id),
-        description=f"Updated transcode profile '{profile.name}' ({', '.join(sorted(updates.keys()))})",
+        description=f"Updated transcode profile '{profile.name}'",
         details={
-            **{k: v for k, v in updates.items() if not isinstance(v, uuid.UUID)},
+            "changes": changes,
             "transcode_changed": transcode_changed,
             "variants_superseded": reset_count,
             "jobs_cancelled": cancelled_jobs,
