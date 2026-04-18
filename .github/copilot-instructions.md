@@ -98,7 +98,7 @@ For full-suite regression checking, CI is often more reliable than local Docker 
 - All changes must be made on a feature branch and merged via pull request.
 - Branch naming: `feat/<short-description>`, `fix/<short-description>`, `chore/<short-description>`, `perf/<short-description>`, `refactor/<short-description>`, `docs/<short-description>`, `test/<short-description>`, `ci/<short-description>`.
 - **Never merge a PR** unless the user explicitly asks you to. Creating PRs is fine; merging requires explicit approval.
-- Bump the version in `cms/__init__.py` when shipping user-facing changes.
+- **Do NOT manually bump the version in `cms/__init__.py`.** The version is auto-bumped (patch) by `publish-image.yml` after each successful deploy to main.
 - **After creating a PR, always check CI status** using `gh pr checks <number>` or `gh run list`. Monitor until all checks pass. If any fail, inspect the logs with `gh run view <run-id> --log-failed`, fix issues, push fixes, and re-check until green.
 
 ## Commit Messages — Conventional Commits
