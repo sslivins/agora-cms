@@ -270,15 +270,23 @@ jobs:
 
           fail=0
 
-          # System health endpoint — exercises the CMS↔MCP service-key trust chain.
-          echo "── GET /api/system/health ──"
-          CODE=$(curl -s -o /tmp/sys.json -w '%{http_code}' "https://${FQDN}/api/system/health" --max-time 10 || echo "000")
+          # Unauthenticated aggregated health endpoint — exercises the
+          # CMS↔MCP service-key trust chain without needing a session.
+          echo "── GET /healthz/system ──"
+          CODE=$(curl -s -o /tmp/sys.json -w '%{http_code}' "https://${FQDN}/healthz/system" --max-time 10 || echo "000")
           echo "  HTTP $CODE"
           cat /tmp/sys.json 2>/dev/null || true
           echo ""
           if [ "$CODE" != "200" ]; then
-            echo "::error::/api/system/health returned HTTP $CODE"
+            echo "::error::/healthz/system returned HTTP $CODE"
             fail=1
+          else
+            # Parse the JSON and fail on any degraded subsystem.
+            STATUS=$(python3 -c "import json; d=json.load(open('/tmp/sys.json')); print(d.get('status','?'))")
+            if [ "$STATUS" != "ok" ]; then
+              echo "::error::/healthz/system reported status=$STATUS"
+              fail=1
+            fi
           fi
 
           if [ "$fail" -ne 0 ]; then
