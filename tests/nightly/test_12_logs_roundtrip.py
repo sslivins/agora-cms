@@ -123,10 +123,11 @@ def test_request_logs_delivers_request_logs_command_to_device(
 
     # The simulator must have recorded the command irrespective of the
     # eventual response — this is the real proof-of-delivery.
-    received = simulator.wait_for_command(
+    matches = simulator.wait_for_command(
         device_id, "request_logs", timeout=LOGS_RESPONSE_TIMEOUT_S,
     )
-    payload = received.get("payload") or {}
+    assert matches, "wait_for_command returned no matches"
+    payload = matches[-1].get("payload") or {}
     assert payload.get("type") == "request_logs"
     assert payload.get("services") == services
     assert payload.get("since") == since
