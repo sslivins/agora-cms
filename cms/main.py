@@ -501,3 +501,60 @@ async def healthz(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     await db.execute(text("SELECT 1"))
     return {"status": "ok", "version": __version__}
+
+
+@app.get("/healthz/system", tags=["system"])
+async def healthz_system(db: AsyncSession = Depends(get_db)):
+    """Unauthenticated aggregated health probe for post-deploy smoke tests.
+
+    Returns boolean status for each subsystem (db, mcp, smtp) plus the
+    deployed version, without exposing any sensitive configuration.  Intended
+    for CI/monitoring callers that cannot authenticate.  The authenticated
+    UI equivalent ``/api/system/health`` returns richer detail for humans.
+    """
+    from sqlalchemy import text
+    import httpx
+    from cms.auth import (
+        SETTING_MCP_ENABLED,
+        SETTING_SMTP_HOST,
+        get_setting,
+    )
+
+    db_ok = False
+    try:
+        await db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        pass
+
+    smtp_host = ""
+    try:
+        smtp_host = (await get_setting(db, SETTING_SMTP_HOST)) or ""
+    except Exception:
+        pass
+    smtp_configured = bool(smtp_host.strip())
+
+    mcp_enabled = False
+    mcp_online = False
+    try:
+        mcp_enabled = (await get_setting(db, SETTING_MCP_ENABLED)) == "true"
+    except Exception:
+        pass
+    if mcp_enabled:
+        try:
+            settings = get_settings()
+            mcp_url = settings.mcp_server_url.rstrip("/")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{mcp_url}/health")
+                mcp_online = resp.status_code == 200
+        except Exception:
+            mcp_online = False
+
+    overall_ok = db_ok and (not mcp_enabled or mcp_online)
+    return {
+        "status": "ok" if overall_ok else "degraded",
+        "version": __version__,
+        "db": {"ok": db_ok},
+        "mcp": {"enabled": mcp_enabled, "ok": mcp_online},
+        "smtp": {"configured": smtp_configured},
+    }
