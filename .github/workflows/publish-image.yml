@@ -25,6 +25,9 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     outputs:
       version: ${{ steps.version.outputs.version }}
+      cms_digest: ${{ steps.acr_cms.outputs.digest }}
+      mcp_digest: ${{ steps.acr_mcp.outputs.digest }}
+      worker_digest: ${{ steps.acr_worker.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +85,9 @@ jobs:
             ghcr.io/sslivins/agora-worker:${{ steps.version.outputs.version }}
 
       # ── ACR (Azure deployment) ──
+      # We push human-friendly :version and :latest tags for rollback and
+      # observability, but the deploy job pins by immutable digest so a
+      # stale/mutated tag can never result in an unexpected image running.
       - name: Log in to Azure
         uses: azure/login@v2
         with:
@@ -93,6 +99,7 @@ jobs:
         run: az acr login --name agoracmsacr
 
       - name: Push CMS image to ACR
+        id: acr_cms
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -102,6 +109,7 @@ jobs:
             ${{ env.ACR_REGISTRY }}/agora-cms:${{ steps.version.outputs.version }}
 
       - name: Push MCP image to ACR
+        id: acr_mcp
         uses: docker/build-push-action@v6
         with:
           context: ./mcp
@@ -111,6 +119,7 @@ jobs:
             ${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ steps.version.outputs.version }}
 
       - name: Push Worker image to ACR
+        id: acr_worker
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -119,6 +128,12 @@ jobs:
           tags: |
             ${{ env.ACR_REGISTRY }}/agora-worker:latest
             ${{ env.ACR_REGISTRY }}/agora-worker:${{ steps.version.outputs.version }}
+
+      - name: Record image digests
+        run: |
+          echo "CMS digest:    ${{ steps.acr_cms.outputs.digest }}"
+          echo "MCP digest:    ${{ steps.acr_mcp.outputs.digest }}"
+          echo "Worker digest: ${{ steps.acr_worker.outputs.digest }}"
 
   deploy:
     needs: publish
@@ -137,8 +152,22 @@ jobs:
       # Idempotent infrastructure deploy — creates new resources (queues,
       # worker jobs, etc.) and updates existing ones to match Bicep definitions.
       # Safe to run on every deploy; Bicep only changes what's different.
+      #
+      # Images are pinned by immutable content digest (registry@sha256:...)
+      # rather than by tag.  This guarantees that:
+      #   * ACA always sees a new image reference and rolls a fresh revision
+      #     (no more "same tag, stale revision" failures).
+      #   * A mutated/overwritten tag can never cause an unexpected image
+      #     to be deployed.
       - name: Deploy infrastructure
         run: |
+          CMS_REF='${{ env.ACR_REGISTRY }}/agora-cms@${{ needs.publish.outputs.cms_digest }}'
+          MCP_REF='${{ env.ACR_REGISTRY }}/agora-cms-mcp@${{ needs.publish.outputs.mcp_digest }}'
+          WORKER_REF='${{ env.ACR_REGISTRY }}/agora-worker@${{ needs.publish.outputs.worker_digest }}'
+          echo "Deploying:"
+          echo "  cms:    $CMS_REF"
+          echo "  mcp:    $MCP_REF"
+          echo "  worker: $WORKER_REF"
           az deployment group create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
@@ -149,9 +178,9 @@ jobs:
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=false \
-              cmsImage='${{ env.ACR_REGISTRY }}/agora-cms:${{ needs.publish.outputs.version }}' \
-              mcpImage='${{ env.ACR_REGISTRY }}/agora-cms-mcp:${{ needs.publish.outputs.version }}' \
-              workerImage='${{ env.ACR_REGISTRY }}/agora-worker:${{ needs.publish.outputs.version }}'
+              cmsImage="$CMS_REF" \
+              mcpImage="$MCP_REF" \
+              workerImage="$WORKER_REF"
 
       - name: Bind custom domains (if configured)
         if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
