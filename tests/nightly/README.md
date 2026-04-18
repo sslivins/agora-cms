@@ -75,11 +75,42 @@ so regular dev workflows aren't slowed down by docker builds.
 ## Phases
 
 See [#250](https://github.com/sslivins/agora-cms/issues/250) for the full
-roadmap. v1 phases:
+roadmap.
 
-1. **Phase 1 (this PR)** — harness + sanity test that the stack comes up
-2. Phase 2 — OOBE wizard via Playwright with Mailpit SMTP verification
-3. Phase 3 — asset upload + transcode variant validation
-4. Phase 4 — adopt 3 simulated devices via UI
-5. Phase 5 — groups
-6. Phase 6 — schedule → play → verify device messages + activity log
+### Ordering philosophy
+
+Phase numbers map to **layers in a dependency pyramid**, not to feature
+priority. Each layer assumes the layers below work; a failure at layer N
+will often produce noisy failures at layer N+1 unless layer N runs first
+and fails loudly.
+
+```
+00          infra          docker compose stack comes up healthy
+01          bootstrap      OOBE wizard seeds the first admin
+01a         auth boundary  sub-second smoke: 401s enforced, built-in roles seeded, /me works
+02-05       feature CRUD   assets, devices, groups, schedules — exercise each router as admin
+06          governance     RBAC: operators/viewers scoped to groups, cross-group isolation
+07          integrations   MCP: keys + /api/mcp/auth + tool round-trip
+08          telemetry      thermal thresholds → dashboard banner → scoped notifications
+```
+
+The `01a_auth_smoke` phase is deliberately thin — it fires before any
+feature phase so that a regression like "all `/api/*` leaked to anonymous
+callers" or "built-in roles failed to seed" is caught in <1s with a clear
+error message, rather than surfacing later as a confusing feature-CRUD
+failure in Phase 02-05 or a permission-matrix failure in Phase 06.
+
+### v1 phase list
+
+| Phase | File | Purpose |
+|---|---|---|
+| 00 | `test_00_stack.py` | Stack health — CMS/mailpit/simulator ready |
+| 01 | `test_01_oobe.py` | OOBE wizard via Playwright + Mailpit SMTP verification |
+| 01a | `test_01a_auth_smoke.py` | Auth-boundary smoke: 401 walls, `/api/users/me`, built-in roles |
+| 02 | `test_02_assets.py` | Asset upload + transcode variant validation |
+| 03 | `test_03_devices.py` | Adopt simulated devices via UI |
+| 04 | `test_04_groups.py` | Group CRUD + device assignment |
+| 05 | `test_05_schedules.py` | Schedule → play → activity-log assertions |
+| 06 | `test_06_rbac.py` | User profiles, welcome-email setup, permission matrix, cross-group isolation |
+| 07 | `test_07_mcp.py` | MCP server: enable, key creation, `/api/mcp/auth`, tool round-trip |
+| 08 | `test_08_thermal_notifications.py` | Thermal fault injection → dashboard banner → scoped notifications |
