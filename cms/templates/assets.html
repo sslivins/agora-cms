@@ -384,7 +384,7 @@
                         </div>
                         {% endif %}
                     </div>
-                    {% if a.variants | length > 0 %}
+                    {% if a.visible_variants | length > 0 %}
                     <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
                         <span class="detail-label">Variants</span>
                         <table class="variants-table" style="margin-top: 0.35rem; font-size: 0.85rem;">
@@ -405,7 +405,7 @@
                                 </tr>
                             </thead>
                             <tbody data-live-variant-table="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">
-                                {% for v in a.variants %}
+                                {% for v in a.visible_variants %}
                                 <tr>
                                     <td>{{ v.profile.name if v.profile else '—' }}</td>
                                     <td>

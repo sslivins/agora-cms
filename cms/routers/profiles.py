@@ -128,6 +128,7 @@ async def list_profiles(db: AsyncSession = Depends(get_db)):
             device_count=dev_count.scalar() or 0,
             total_variants=total_var.scalar() or 0,
             ready_variants=ready_var.scalar() or 0,
+            matches_defaults=_matches_defaults(p),
             created_at=p.created_at,
         ))
     return out
@@ -186,16 +187,33 @@ async def create_profile(data: ProfileCreate, request: Request, db: AsyncSession
         device_count=0,
         total_variants=len(variant_ids),
         ready_variants=0,
+        matches_defaults=_matches_defaults(profile),
         created_at=profile.created_at,
     )
 
 
-# Fields that affect transcoding output — changes require re-encoding variants
+# Fields that affect transcoding output— changes require re-encoding variants
 _TRANSCODE_FIELDS = {
     "video_codec", "video_profile", "max_width", "max_height", "max_fps",
     "crf", "video_bitrate", "pixel_format", "color_space",
     "audio_codec", "audio_bitrate",
 }
+
+
+def _matches_defaults(profile: DeviceProfile) -> bool:
+    """True iff profile is a built-in whose transcoding-relevant fields
+    all still match the canonical factory defaults.  Description is
+    intentionally excluded — editing only the description should not
+    enable the Reset button.
+    """
+    if not profile.builtin or profile.name not in BUILTIN_PROFILES:
+        return False
+    defaults = BUILTIN_PROFILES[profile.name]
+    return all(
+        getattr(profile, field) == value
+        for field, value in defaults.items()
+        if field in _TRANSCODE_FIELDS
+    )
 
 
 @router.put("/{profile_id}", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
@@ -313,6 +331,7 @@ async def update_profile(
         device_count=dev_count.scalar() or 0,
         total_variants=total_var.scalar() or 0,
         ready_variants=ready_var.scalar() or 0,
+        matches_defaults=_matches_defaults(profile),
         created_at=profile.created_at,
     )
 
@@ -451,6 +470,7 @@ async def copy_profile(
         device_count=0,
         total_variants=len(variant_ids),
         ready_variants=0,
+        matches_defaults=_matches_defaults(profile),
         created_at=profile.created_at,
     )
 
@@ -555,6 +575,7 @@ async def reset_profile(
         device_count=dev_count.scalar() or 0,
         total_variants=total_var.scalar() or 0,
         ready_variants=ready_var.scalar() or 0,
+        matches_defaults=_matches_defaults(profile),
         created_at=profile.created_at,
     )
 
@@ -582,6 +603,7 @@ async def profiles_status_json(db: AsyncSession = Depends(get_db)):
             "id": str(p.id),
             "total_variants": total_var,
             "ready_variants": ready_var,
+            "matches_defaults": _matches_defaults(p),
         })
 
     # Transcode queue (pending / processing / failed)

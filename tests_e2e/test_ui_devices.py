@@ -11,6 +11,31 @@ from tests_e2e.conftest import run_async
 from tests_e2e.fake_device import FakeDevice
 
 
+def _wait_for_device_state(page: Page, device_id: str, *, timeout: float = 10.0, **expected):
+    """Poll /api/devices until the given device reflects the expected fields.
+
+    Ensures the server has processed WS status messages before the browser
+    renders the page. Without this, the template can render with stale
+    ``pipeline_state`` (None) leading to "element not found" flakes when
+    the test asserts on a ``.badge-*`` that the server never emitted.
+    """
+    deadline = time.monotonic() + timeout
+    last_snapshot = None
+    while time.monotonic() < deadline:
+        resp = page.request.get("/api/devices")
+        if resp.ok:
+            devices = resp.json()
+            match = next((d for d in devices if d.get("id") == device_id), None)
+            last_snapshot = match
+            if match is not None and all(match.get(k) == v for k, v in expected.items()):
+                return match
+        time.sleep(0.1)
+    raise AssertionError(
+        f"Timed out waiting for device {device_id} to reach {expected}; "
+        f"last snapshot: {last_snapshot}"
+    )
+
+
 class TestDevicesPage:
     """Device list and management UI."""
 
@@ -307,6 +332,11 @@ class TestDetailPanelPipelineBadge:
         thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
         thread.start()
         ready_event.wait(timeout=15)
+        # Wait for server to ingest the WS status so the template renders
+        # with pipeline_state set (template render happens on goto; without
+        # this the server may still have pipeline_state=None and emit a
+        # placeholder "—", so .badge-online is never in the DOM).
+        _wait_for_device_state(page, "badge-dev-001", pipeline_state="PLAYING")
 
         try:
             page.goto("/devices")
@@ -349,6 +379,9 @@ class TestDetailPanelPipelineBadge:
         thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
         thread.start()
         ready_event.wait(timeout=15)
+        _wait_for_device_state(
+            page, "badge-dev-002", playback_mode="splash", pipeline_state="NULL"
+        )
 
         try:
             page.goto("/devices")
@@ -405,6 +438,9 @@ class TestDetailPanelLiveRefresh:
         thread = threading.Thread(target=lambda: asyncio.run(run_device()), daemon=True)
         thread.start()
         ready_event.wait(timeout=15)
+        _wait_for_device_state(
+            page, "live-dev-001", playback_mode="splash", pipeline_state="NULL"
+        )
 
         try:
             page.goto("/devices")

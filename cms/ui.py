@@ -1175,13 +1175,27 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         for ga in ga_rows:
             all_group_assets.setdefault(ga.asset_id, []).append(ga)
 
+    from cms.services.variant_view import collapse_to_latest
     for a in assets:
-        # Sort variants by profile name for consistent display order
-        a.variants.sort(key=lambda v: (v.profile.name if v.profile else ""))
-        total = len(a.variants)
-        ready = sum(1 for v in a.variants if v.status == VariantStatus.READY)
-        processing = sum(1 for v in a.variants if v.status == VariantStatus.PROCESSING)
-        failed = sum(1 for v in a.variants if v.status == VariantStatus.FAILED)
+        # Collapse to newest live row per profile so the Library shows
+        # exactly what each profile is producing right now (not a stale
+        # READY row that is about to be superseded by an in-flight
+        # transcode).  See cms.services.variant_view.
+        #
+        # IMPORTANT: attach to a NEW attribute rather than reassigning
+        # ``a.variants`` — assigning to the ORM relationship collection
+        # marks the dropped rows as orphans and autoflush will then issue
+        # ``UPDATE asset_variants SET source_asset_id=NULL ...`` which
+        # fails the NOT NULL constraint.
+        visible_variants = sorted(
+            collapse_to_latest(a.variants),
+            key=lambda v: (v.profile.name if v.profile else ""),
+        )
+        a.visible_variants = visible_variants
+        total = len(visible_variants)
+        ready = sum(1 for v in visible_variants if v.status == VariantStatus.READY)
+        processing = sum(1 for v in visible_variants if v.status == VariantStatus.PROCESSING)
+        failed = sum(1 for v in visible_variants if v.status == VariantStatus.FAILED)
         a.variant_total = total
         a.variant_ready = ready
         a.variant_processing = processing

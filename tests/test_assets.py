@@ -26,8 +26,9 @@ class TestAssetStatus:
         from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
         from cms.models.device_profile import DeviceProfile
 
-        profile = DeviceProfile(name="Pi Zero Test")
-        db_session.add(profile)
+        profile_a = DeviceProfile(name="Pi Zero Test")
+        profile_b = DeviceProfile(name="Pi 5 Test")
+        db_session.add_all([profile_a, profile_b])
         await db_session.flush()
 
         asset = Asset(
@@ -37,17 +38,18 @@ class TestAssetStatus:
         db_session.add(asset)
         await db_session.flush()
 
-        # Add variants in different states
+        # One variant per profile — each is its own (asset, profile) slot
+        # so both survive the Library collapse.
         v_ready = AssetVariant(
-            source_asset_id=asset.id, profile_id=profile.id,
+            source_asset_id=asset.id, profile_id=profile_a.id,
             filename="status_test_pizero.mp4", size_bytes=3000,
             status=VariantStatus.READY, progress=100.0, checksum="def",
             width=1280, height=720, video_codec="h264", bitrate=5000000,
             frame_rate="30",
         )
         v_processing = AssetVariant(
-            source_asset_id=asset.id, profile_id=profile.id,
-            filename="status_test_pizero2.mp4", size_bytes=0,
+            source_asset_id=asset.id, profile_id=profile_b.id,
+            filename="status_test_pi5.mp4", size_bytes=0,
             status=VariantStatus.PROCESSING, progress=45.0, checksum="",
         )
         db_session.add_all([v_ready, v_processing])
@@ -72,7 +74,7 @@ class TestAssetStatus:
         # Find the processing variant and verify fields
         proc_variant = [v for v in asset_data["variants"] if v["status"] == "processing"][0]
         assert proc_variant["progress"] == 45.0
-        assert proc_variant["profile_name"] == "Pi Zero Test"
+        assert proc_variant["profile_name"] == "Pi 5 Test"
 
         # Find the ready variant and verify metadata
         ready_variant = [v for v in asset_data["variants"] if v["status"] == "ready"][0]
@@ -80,6 +82,162 @@ class TestAssetStatus:
         assert ready_variant["height"] == 720
         assert ready_variant["video_codec"] == "h264"
         assert ready_variant["size_bytes"] == 3000
+
+
+@pytest.mark.asyncio
+class TestAssetStatusCollapse:
+    """``/api/assets/status`` collapses variants to newest live row per profile."""
+
+    async def _mk_asset(self, db_session):
+        from cms.models.asset import Asset, AssetType
+        a = Asset(
+            filename="collapse.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=1000, checksum="x",
+        )
+        db_session.add(a)
+        await db_session.flush()
+        return a
+
+    async def test_collapses_superseded_ready_to_new_pending(self, client, db_session):
+        """Edit profile → old READY + new PENDING → only newest shown."""
+        from datetime import datetime, timedelta, timezone
+        from cms.models.asset import AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        profile = DeviceProfile(name="collapse-profile")
+        db_session.add(profile)
+        await db_session.flush()
+        asset = await self._mk_asset(db_session)
+
+        now = datetime.now(timezone.utc)
+        old_ready = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="old.mp4", size_bytes=2000,
+            status=VariantStatus.READY, progress=100.0, checksum="a",
+            created_at=now - timedelta(minutes=5),
+        )
+        new_pending = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="new.mp4", size_bytes=0,
+            status=VariantStatus.PENDING, progress=0.0, checksum="",
+            created_at=now,
+        )
+        db_session.add_all([old_ready, new_pending])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        asset_data = data["assets"][0]
+        assert asset_data["variant_total"] == 1
+        assert len(asset_data["variants"]) == 1
+        assert asset_data["variants"][0]["id"] == str(new_pending.id)
+        # Page-level totals must agree with the visible rows
+        assert data["variant_ready"] == 0
+        assert data["variant_processing"] == 0
+
+    async def test_soft_deleted_variants_hidden(self, client, db_session):
+        """Soft-deleted rows never appear, even if they are the newest."""
+        from datetime import datetime, timedelta, timezone
+        from cms.models.asset import AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        profile = DeviceProfile(name="del-profile")
+        db_session.add(profile)
+        await db_session.flush()
+        asset = await self._mk_asset(db_session)
+
+        now = datetime.now(timezone.utc)
+        alive = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="alive.mp4", size_bytes=1000,
+            status=VariantStatus.READY, progress=100.0, checksum="a",
+            created_at=now - timedelta(minutes=10),
+        )
+        dead_newer = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="dead.mp4", size_bytes=1000,
+            status=VariantStatus.READY, progress=100.0, checksum="b",
+            created_at=now,
+            deleted_at=now,
+        )
+        db_session.add_all([alive, dead_newer])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        asset_data = resp.json()["assets"][0]
+        assert asset_data["variant_total"] == 1
+        assert asset_data["variants"][0]["id"] == str(alive.id)
+
+    async def test_cancelled_newest_is_visible(self, client, db_session):
+        """A newest-but-CANCELLED row is still shown (grey badge case)."""
+        from datetime import datetime, timedelta, timezone
+        from cms.models.asset import AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        profile = DeviceProfile(name="cx-profile")
+        db_session.add(profile)
+        await db_session.flush()
+        asset = await self._mk_asset(db_session)
+
+        now = datetime.now(timezone.utc)
+        old_ready = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="ready.mp4", size_bytes=2000,
+            status=VariantStatus.READY, progress=100.0, checksum="r",
+            created_at=now - timedelta(minutes=5),
+        )
+        new_cancelled = AssetVariant(
+            source_asset_id=asset.id, profile_id=profile.id,
+            filename="cx.mp4", size_bytes=0,
+            status=VariantStatus.CANCELLED, progress=0.0, checksum="",
+            created_at=now,
+        )
+        db_session.add_all([old_ready, new_cancelled])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        asset_data = resp.json()["assets"][0]
+        assert asset_data["variant_total"] == 1
+        assert asset_data["variants"][0]["id"] == str(new_cancelled.id)
+        assert asset_data["variants"][0]["status"] == "cancelled"
+        # Cancelled rows don't count toward ready / processing / failed totals
+        assert asset_data["variant_ready"] == 0
+        assert asset_data["variant_processing"] == 0
+        assert asset_data["variant_failed"] == 0
+
+    async def test_different_profiles_both_kept(self, client, db_session):
+        """Collapse is per-profile; distinct profiles are independent."""
+        from datetime import datetime, timezone
+        from cms.models.asset import AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        p1 = DeviceProfile(name="p1")
+        p2 = DeviceProfile(name="p2")
+        db_session.add_all([p1, p2])
+        await db_session.flush()
+        asset = await self._mk_asset(db_session)
+
+        now = datetime.now(timezone.utc)
+        v1 = AssetVariant(
+            source_asset_id=asset.id, profile_id=p1.id,
+            filename="v1.mp4", size_bytes=1000,
+            status=VariantStatus.READY, progress=100.0, checksum="a",
+            created_at=now,
+        )
+        v2 = AssetVariant(
+            source_asset_id=asset.id, profile_id=p2.id,
+            filename="v2.mp4", size_bytes=0,
+            status=VariantStatus.PROCESSING, progress=50.0, checksum="",
+            created_at=now,
+        )
+        db_session.add_all([v1, v2])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        asset_data = resp.json()["assets"][0]
+        assert asset_data["variant_total"] == 2
 
 
 @pytest.mark.asyncio
