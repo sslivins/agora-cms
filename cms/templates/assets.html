@@ -461,7 +461,8 @@
     </table>
 </div>
 
-{# ── Transcoding Queue (collapsible, live-updating) ── #}
+{# ── Transcoding Queue (collapsible, live-updating) — admin-only ── #}
+{% if 'profiles:read' in user_perms %}
 <div class="card" id="queue-card" style="display:none;">
     <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;"
          onclick="toggleQueueCard()">
@@ -488,6 +489,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -836,8 +838,11 @@ function fallbackCopy(text, onSuccess) {
     finally { document.body.removeChild(ta); }
 }
 
-// ── Transcoding queue (collapsible + live-updating) ──
+// ── Transcoding queue (collapsible + live-updating; admin-only) ──
 (function() {
+    // Bail if the card wasn't rendered (non-admin user).
+    if (!document.getElementById('queue-card')) return;
+
     // Restore prior expand/collapse preference; default collapsed.
     let expanded = localStorage.getItem('queueCardExpanded') === '1';
 

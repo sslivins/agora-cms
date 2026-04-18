@@ -37,3 +37,4 @@ test_results.txt
 # Docker overrides
 docker-compose.override.yml
 cookies.txt
+.pr_body.md
