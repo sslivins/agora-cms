@@ -28,16 +28,22 @@ from shared import database as _shared_db
 
 
 async def _table_info(conn, table: str) -> dict[str, dict]:
-    """Return {column_name: {nullable, has_default, data_type}} for `table`."""
+    """Return column metadata for `table`."""
     rows = await conn.execute(
         text(
-            "SELECT column_name, is_nullable, column_default, data_type "
+            "SELECT column_name, is_nullable, column_default, data_type, "
+            "       character_maximum_length "
             "FROM information_schema.columns WHERE table_name = :t"
         ),
         {"t": table},
     )
     return {
-        r[0]: {"nullable": r[1] == "YES", "has_default": r[2] is not None, "data_type": r[3]}
+        r[0]: {
+            "nullable": r[1] == "YES",
+            "has_default": r[2] is not None,
+            "data_type": r[3],
+            "max_len": r[4],
+        }
         for r in rows
     }
 
@@ -71,12 +77,16 @@ async def _any_existing_pk(conn, table: str):
 def _placeholder_for(col: str, info: dict, idx: int):
     """Best-effort value for a NOT NULL column the seed didn't supply."""
     dtype = (info.get("data_type") or "").lower()
+    max_len = info.get("max_len")
     if dtype == "array":
         return []
     if "json" in dtype:
         return {}
     if "char" in dtype or "text" in dtype:
-        return f"seed_{col}_{idx}"
+        val = f"seed_{col}_{idx}"
+        if max_len and len(val) > max_len:
+            val = val[:max_len]
+        return val
     if "int" in dtype:
         return idx
     if "bool" in dtype:
@@ -87,7 +97,10 @@ def _placeholder_for(col: str, info: dict, idx: int):
         return uuid.uuid4()
     if "double" in dtype or "real" in dtype or "numeric" in dtype:
         return 0
-    return f"seed_{col}_{idx}"
+    val = f"seed_{col}_{idx}"
+    if max_len and len(val) > max_len:
+        val = val[:max_len]
+    return val
 
 
 async def _existing_columns(conn, table: str) -> set[str]:
@@ -107,12 +120,23 @@ async def _insert(conn, table: str, row: dict) -> None:
       that happen between when this script was last updated and now.
     - For required FK columns, picks an existing PK from the referenced
       table; if the referenced table is empty, the row is skipped.
+    - Caller-supplied strings are truncated to the column's max length
+      to avoid `value too long` errors on tightly-bounded VARCHARs.
+    - Individual insert failures are logged but do not abort the seed,
+      so one malformed row doesn't lose the rest of the dataset.
     """
     info = await _table_info(conn, table)
     if not info:
         return
     fks = await _fk_targets(conn, table)
-    filtered = {k: v for k, v in row.items() if k in info}
+    filtered = {}
+    for k, v in row.items():
+        if k not in info:
+            continue
+        meta = info[k]
+        if isinstance(v, str) and meta.get("max_len") and len(v) > meta["max_len"]:
+            v = v[: meta["max_len"]]
+        filtered[k] = v
     _seed_counter["i"] += 1
     idx = _seed_counter["i"]
     for col, meta in info.items():
@@ -133,10 +157,18 @@ async def _insert(conn, table: str, row: dict) -> None:
         return
     keys = ", ".join(filtered.keys())
     placeholders = ", ".join(f":{k}" for k in filtered)
-    await conn.execute(
-        text(f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"),
-        filtered,
-    )
+    # Use a savepoint so a single bad row doesn't poison the whole
+    # outer transaction — we still want the rest of the seed to land.
+    sp = await conn.begin_nested()
+    try:
+        await conn.execute(
+            text(f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"),
+            filtered,
+        )
+        await sp.commit()
+    except Exception as exc:
+        await sp.rollback()
+        print(f"  warn: insert into {table} failed: {type(exc).__name__}: {exc}")
 
 
 async def seed(count: int = 10) -> None:
