@@ -1,4 +1,4 @@
-name: Nightly E2E
+name: Smoke Test
 
 on:
   schedule:
@@ -16,7 +16,7 @@ on:
       - 'tests/nightly/**'
       - '.github/workflows/nightly.yml'
   # Runs on every main push so it can serve as the pre-deploy gate
-  # (Publish & Deploy is triggered off a successful Nightly E2E run).
+  # (Publish & Deploy is triggered off a successful Smoke Test run).
   push:
     branches: [main]
 
