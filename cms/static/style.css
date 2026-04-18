@@ -370,6 +370,20 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-saved_stream { background: #d35400; color: var(--text); }
 .badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
 .badge-processing { background: #3498db; color: #fff; margin-left: 0.4rem; }
+/* Progress-fill badge: darker "filled" region on the left grows to the
+ * right as --pct advances, while the right side stays the base blue.
+ * Text stays readable over both shades.  Used for the Status column
+ * (Transcoding / Capturing) to give at-a-glance progress motion. */
+.badge-progress {
+    background: linear-gradient(
+        90deg,
+        #1d6fa5 0 var(--pct, 0%),
+        #3498db var(--pct, 0%) 100%
+    );
+    color: #fff;
+    margin-left: 0.4rem;
+    transition: background 0.3s;
+}
 .badge-overflow { background: #3498db; color: #fff; margin-left: 0.15rem; font-size: 0.75rem; cursor: default; }
 .badge-ready { background: var(--success); color: #000; margin-left: 0.4rem; }
 .badge-failed { background: var(--danger); color: #fff; margin-left: 0.4rem; }

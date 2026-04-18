@@ -225,11 +225,61 @@ class TestDeleteAssetCleansVariants:
         await db_session.refresh(job)
         assert asset.deleted_at is not None, "Asset should be soft-deleted"
         assert job.cancel_requested is True, "Active Job should be flagged for cancel"
+        # Listen-mode parity: delete_asset now also drives the job to a terminal
+        # status so the reaper doesn't get stuck waiting for a worker that may
+        # never transition it (the worker only transitions in queue mode).
+        assert job.status == JobStatus.CANCELLED, "Active Job should be marked CANCELLED"
+        assert job.error_message == "Asset deleted by user"
+
+    async def test_delete_asset_lets_reaper_finalize_immediately(self, client, db_session, app):
+        """In listen mode, no worker is running to transition Jobs to terminal —
+        delete_asset must flip them to CANCELLED itself so the reaper's
+        active-job gate falls through and the asset is hard-deleted on the
+        very next tick.
+        """
+        from cms.auth import get_settings
+        from cms.services.transcoder import reap_deleted_assets_once
+        from shared.models.job import Job, JobType, JobStatus
+        settings = app.dependency_overrides[get_settings]()
+
+        profile = DeviceProfile(name="da-listen-finalize", video_codec="h264", video_profile="main")
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = await self._create_asset(db_session, "da-listen-finalize.mp4", settings.asset_storage_path)
+        vid = uuid.uuid4()
+        variant = AssetVariant(
+            id=vid, source_asset_id=asset.id, profile_id=profile.id,
+            filename=f"{vid}.mp4", status=VariantStatus.PROCESSING,
+        )
+        db_session.add(variant)
+        job = Job(type=JobType.VARIANT_TRANSCODE, target_id=vid, status=JobStatus.PENDING)
+        db_session.add(job)
+        await db_session.commit()
+
+        resp = await client.delete(f"/api/assets/{asset.id}")
+        assert resp.status_code == 200
+
+        # One reaper tick should be enough — no active jobs survive delete_asset.
+        await reap_deleted_assets_once(db_session, settings=settings)
+
+        # Asset row gone, variant row gone.
+        gone = await db_session.execute(select(Asset).where(Asset.id == asset.id))
+        assert gone.scalar_one_or_none() is None, "Asset should be hard-deleted on first tick"
+        still = await db_session.execute(select(AssetVariant).where(AssetVariant.id == vid))
+        assert still.scalar_one_or_none() is None, "Variant should be cascade-deleted"
 
     async def test_reaper_skips_asset_with_active_job(self, client, db_session, app):
         """Reaper must NOT hard-delete a soft-deleted asset while a Job is still
         active (QUEUED/CLAIMED/PROCESSING). This prevents races with in-flight
-        ffmpeg processes writing variant blobs."""
+        ffmpeg processes writing variant blobs.
+
+        Note: delete_asset now flips active jobs to CANCELLED itself (listen-
+        mode fix), so we simulate the queue-mode race directly: soft-delete
+        the asset row, leave the Job in PROCESSING (as if the worker is still
+        grinding and hasn't observed cancel_requested yet), then run reaper.
+        """
+        from datetime import datetime, timezone
         from cms.auth import get_settings
         from cms.services.transcoder import reap_deleted_assets_once
         from shared.models.job import Job, JobType, JobStatus
@@ -246,12 +296,11 @@ class TestDeleteAssetCleansVariants:
             filename=f"{vid}.mp4", status=VariantStatus.PROCESSING,
         )
         db_session.add(variant)
-        job = Job(type=JobType.VARIANT_TRANSCODE, target_id=vid, status=JobStatus.PROCESSING)
+        job = Job(type=JobType.VARIANT_TRANSCODE, target_id=vid,
+                  status=JobStatus.PROCESSING, cancel_requested=True)
         db_session.add(job)
+        asset.deleted_at = datetime.now(timezone.utc)
         await db_session.commit()
-
-        resp = await client.delete(f"/api/assets/{asset.id}")
-        assert resp.status_code == 200
 
         await reap_deleted_assets_once(db_session, settings=settings)
 
@@ -262,7 +311,10 @@ class TestDeleteAssetCleansVariants:
 
     async def test_reaper_finalizes_after_job_terminates(self, client, db_session, app):
         """Reaper should hard-delete on a later tick once the active Job reaches
-        a terminal state (CANCELLED/FAILED/COMPLETED)."""
+        a terminal state (CANCELLED/FAILED/COMPLETED). Same setup as above:
+        bypass the HTTP delete handler so the Job stays PROCESSING for the
+        first reaper tick."""
+        from datetime import datetime, timezone
         from cms.auth import get_settings
         from cms.services.transcoder import reap_deleted_assets_once
         from shared.models.job import Job, JobType, JobStatus
@@ -279,12 +331,11 @@ class TestDeleteAssetCleansVariants:
             filename=f"{vid}.mp4", status=VariantStatus.PROCESSING,
         )
         db_session.add(variant)
-        job = Job(type=JobType.VARIANT_TRANSCODE, target_id=vid, status=JobStatus.PROCESSING)
+        job = Job(type=JobType.VARIANT_TRANSCODE, target_id=vid,
+                  status=JobStatus.PROCESSING, cancel_requested=True)
         db_session.add(job)
+        asset.deleted_at = datetime.now(timezone.utc)
         await db_session.commit()
-
-        resp = await client.delete(f"/api/assets/{asset.id}")
-        assert resp.status_code == 200
 
         # First tick: job still active, reaper skips.
         await reap_deleted_assets_once(db_session, settings=settings)

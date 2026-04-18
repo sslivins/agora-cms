@@ -246,6 +246,9 @@ async def assets_status_json(
         variant_ready += a_ready
         variant_processing += a_processing
         variant_failed += a_failed
+        # Build group name map for scope data
+        variant_progress_sum = sum((v.progress or 0.0) for v in visible_variants)
+        aggregate_pct = round(variant_progress_sum / len(visible_variants), 1) if visible_variants else 0.0
         assets_detail.append({
             "id": str(a.id),
             "asset_type": a.asset_type.value,
@@ -253,6 +256,9 @@ async def assets_status_json(
             "variant_ready": a_ready,
             "variant_processing": a_processing,
             "variant_failed": a_failed,
+            "variant_aggregate_progress": aggregate_pct,
+            "capture_progress": a.capture_progress,
+            "capture_error": a.capture_error,
             "variants": variants,
             "is_global": a.is_global,
             "has_uploader": a.uploaded_by_user_id is not None,
@@ -760,6 +766,10 @@ async def recapture_stream(
     asset.original_filename = None
     asset.checksum = ""
     asset.size_bytes = 0
+    # Reset capture progress/error so the UI clears any stale
+    # "Capture failed" state and shows the new capture from 0%.
+    asset.capture_progress = None
+    asset.capture_error = None
 
     # Delete variant files and reset to PENDING
     from cms.services.transcoder import cancel_asset_transcodes
@@ -970,9 +980,18 @@ async def delete_asset(
     # Mark as soft-deleted
     asset.deleted_at = datetime.now(timezone.utc)
 
-    # Flag all active jobs for cancellation.  Jobs are polymorphic:
+    # Flag all active jobs for cancellation AND mark them terminal.  Jobs
+    # are polymorphic:
     #   - VARIANT_TRANSCODE.target_id → asset_variants.id (join through variants)
     #   - STREAM_CAPTURE.target_id    → assets.id (direct)
+    #
+    # Setting status=CANCELLED here (rather than just cancel_requested=True)
+    # ensures the reaper can hard-delete promptly even in LISTEN/NOTIFY mode,
+    # where the worker doesn't otherwise transition Job rows out of
+    # PENDING/PROCESSING after the variant finishes.  The worker's
+    # cancel-probe (in _transcode_one / _capture_stream) still aborts any
+    # in-flight ffmpeg mid-run; if it races us and marks DONE/FAILED first,
+    # those are also terminal — harmless overwrite.
     variant_ids_subq = (
         select(AssetVariant.id).where(AssetVariant.source_asset_id == asset_id)
     ).scalar_subquery()
@@ -988,7 +1007,11 @@ async def delete_asset(
                 (Job.type == JobType.STREAM_CAPTURE) & (Job.target_id == asset_id)
             ),
         )
-        .values(cancel_requested=True)
+        .values(
+            cancel_requested=True,
+            status=JobStatus.CANCELLED,
+            error_message="Asset deleted by user",
+        )
     )
 
     await audit_log(

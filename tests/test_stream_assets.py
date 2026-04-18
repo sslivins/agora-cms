@@ -353,6 +353,8 @@ class TestCaptureFormalization:
         asset.filename = f"{asset.id}_capture.mp4"
         asset.checksum = "abc123"
         asset.size_bytes = 1000
+        asset.capture_progress = 100.0
+        asset.capture_error = "stale error from a prior run"
 
         profile = DeviceProfile(name="Test Prof", video_codec="libx264", audio_codec="aac")
         db_session.add(profile)
@@ -383,6 +385,10 @@ class TestCaptureFormalization:
         await db_session.refresh(asset)
         assert asset.checksum == ""
         assert asset.size_bytes == 0
+        # Capture state cleared so the UI shows a fresh "Queued" state rather
+        # than carrying over stale progress / error from the previous attempt.
+        assert asset.capture_progress is None
+        assert asset.capture_error is None
 
     async def test_recapture_404_for_missing_asset(self, client, db_session):
         """Recapture returns 404 for nonexistent asset."""
@@ -564,3 +570,224 @@ class TestCaptureDuration:
         })
         assert resp.status_code == 201
         assert resp.json()["capture_duration"] is None
+
+
+# ── Capture Progress / Error (worker) ────────────────────────────
+
+
+class _FakeStderr:
+    """Minimal async stream that yields pre-canned stderr chunks."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read(self, _n):
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+
+class _FakeProc:
+    def __init__(self, chunks, returncode=0):
+        self.stderr = _FakeStderr(chunks)
+        self.returncode = returncode
+
+    async def wait(self):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+
+    async def communicate(self):
+        return b"", b""
+
+
+@pytest.mark.asyncio
+class TestCaptureProgressAndError:
+    """Covers the new capture_progress / capture_error columns and the
+    ffmpeg-progress parsing loop in worker._capture_stream.
+    """
+
+    async def test_capture_progress_updates_monotonically(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        from worker import transcoder
+
+        asset = await _create_stream_asset(
+            db_session, asset_type=AssetType.SAVED_STREAM,
+            url="https://example.com/progress.m3u8",
+        )
+        asset.capture_duration = 100  # nice round number → 1s == 1%
+        await db_session.commit()
+
+        # Emit two time= markers: 30% and 70%.  Then EOF.
+        chunks = [
+            b"frame=  10 time=00:00:30.00 bitrate=1000\n",
+            b"frame=  20 time=00:01:10.00 bitrate=1000\n",
+            b"",
+        ]
+        capture_path = tmp_path / f"{asset.id}_capture.mp4"
+        capture_path.write_bytes(b"\x00" * 1024)  # non-empty so success path runs
+
+        async def _fake_subprocess_exec(*args, **kwargs):
+            return _FakeProc(chunks, returncode=0)
+
+        async def _fake_probe(_path):
+            return {"duration_seconds": 100.0}
+
+        monkeypatch.setattr(transcoder.asyncio, "create_subprocess_exec",
+                            _fake_subprocess_exec)
+        monkeypatch.setattr(transcoder, "probe_media", _fake_probe)
+
+        result = await transcoder._capture_stream(asset, tmp_path, db_session)
+
+        assert result == capture_path
+        await db_session.refresh(asset)
+        # Success path sets progress to 100 and clears any prior error.
+        assert asset.capture_progress == 100.0
+        assert asset.capture_error is None
+
+    async def test_capture_error_persisted_on_ffmpeg_failure(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        from worker import transcoder
+
+        asset = await _create_stream_asset(
+            db_session, asset_type=AssetType.SAVED_STREAM,
+            url="https://example.com/fail.m3u8",
+        )
+        asset.capture_duration = 60
+        await db_session.commit()
+
+        chunks = [b"[hls @ 0x0] Invalid data found when processing input\n", b""]
+
+        async def _fake_subprocess_exec(*args, **kwargs):
+            return _FakeProc(chunks, returncode=1)
+
+        monkeypatch.setattr(transcoder.asyncio, "create_subprocess_exec",
+                            _fake_subprocess_exec)
+
+        result = await transcoder._capture_stream(asset, tmp_path, db_session)
+
+        assert result is None
+        await db_session.refresh(asset)
+        assert asset.capture_error is not None
+        assert "exit code 1" in asset.capture_error
+        assert "Invalid data" in asset.capture_error
+
+    async def test_capture_error_on_empty_output_file(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        from worker import transcoder
+
+        asset = await _create_stream_asset(
+            db_session, asset_type=AssetType.SAVED_STREAM,
+            url="https://example.com/empty.m3u8",
+        )
+        asset.capture_duration = 30
+        await db_session.commit()
+
+        async def _fake_subprocess_exec(*args, **kwargs):
+            # Successful exit but no output file written → empty-file branch.
+            return _FakeProc([b""], returncode=0)
+
+        monkeypatch.setattr(transcoder.asyncio, "create_subprocess_exec",
+                            _fake_subprocess_exec)
+
+        result = await transcoder._capture_stream(asset, tmp_path, db_session)
+
+        assert result is None
+        await db_session.refresh(asset)
+        assert asset.capture_error is not None
+        assert "empty" in asset.capture_error.lower()
+
+    async def test_capture_progress_uses_probed_duration_for_vod(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        """When _get_duration returns a finite value (VOD), progress should be
+        scaled against the probed duration, NOT max_duration. Without this,
+        the bar would crawl to ~probed/max % then jump to 100 at completion.
+        """
+        from worker import transcoder
+
+        asset = await _create_stream_asset(
+            db_session, asset_type=AssetType.SAVED_STREAM,
+            url="https://example.com/vod.m3u8",
+        )
+        asset.capture_duration = 14400  # 4h cap, probed VOD is 100s
+        await db_session.commit()
+
+        # ffmpeg emits time=00:00:50 (= 50% of probed 100s, would only be
+        # 0.35% if we used the 14400s cap as denom).
+        chunks = [b"frame=10 time=00:00:50.00 bitrate=1000\n", b""]
+        capture_path = tmp_path / f"{asset.id}_capture.mp4"
+        capture_path.write_bytes(b"\x00" * 1024)
+
+        async def _fake_get_duration(_url):
+            return 100.0  # finite VOD duration
+
+        async def _fake_subprocess_exec(*args, **kwargs):
+            return _FakeProc(chunks, returncode=0)
+
+        async def _fake_probe(_path):
+            return {"duration_seconds": 100.0}
+
+        monkeypatch.setattr(transcoder, "_get_duration", _fake_get_duration)
+        monkeypatch.setattr(transcoder.asyncio, "create_subprocess_exec",
+                            _fake_subprocess_exec)
+        monkeypatch.setattr(transcoder, "probe_media", _fake_probe)
+
+        # Capture mid-progress samples by snapshotting after each commit.
+        observed = []
+        orig_commit = db_session.commit
+
+        async def _spy_commit():
+            await orig_commit()
+            if asset.capture_progress is not None:
+                observed.append(asset.capture_progress)
+
+        monkeypatch.setattr(db_session, "commit", _spy_commit)
+
+        await transcoder._capture_stream(asset, tmp_path, db_session)
+
+        # Should observe ~50% (probed-based) before the 100% completion commit.
+        # Allow a small tolerance for the 99% cap in the loop.
+        mid = [p for p in observed if 0 < p < 99]
+        assert any(40 <= p <= 60 for p in mid), (
+            f"Expected mid-capture progress around 50%% (probed-based), got {observed}"
+        )
+
+    async def test_capture_uses_max_duration_for_live(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        """When _get_duration returns None (livestream), -t max_duration must
+        be passed to ffmpeg as a safety cap and progress denominator.
+        """
+        from worker import transcoder
+
+        asset = await _create_stream_asset(
+            db_session, asset_type=AssetType.SAVED_STREAM,
+            url="rtmp://example.com/live",
+        )
+        asset.capture_duration = 600  # 10 min cap
+        await db_session.commit()
+
+        captured_args = []
+
+        async def _fake_get_duration(_url):
+            return None  # livestream — no advertised duration
+
+        async def _fake_subprocess_exec(*args, **kwargs):
+            captured_args.append(args)
+            return _FakeProc([b""], returncode=0)
+
+        monkeypatch.setattr(transcoder, "_get_duration", _fake_get_duration)
+        monkeypatch.setattr(transcoder.asyncio, "create_subprocess_exec",
+                            _fake_subprocess_exec)
+
+        await transcoder._capture_stream(asset, tmp_path, db_session)
+
+        assert captured_args, "ffmpeg should have been invoked"
+        args = list(captured_args[0])
+        assert "-t" in args, f"-t safety cap missing for live stream: {args}"
+        assert "600" in args, f"-t value should equal capture_duration (600): {args}"

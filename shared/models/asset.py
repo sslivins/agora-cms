@@ -66,6 +66,17 @@ class Asset(Base):
     # Max capture duration in seconds (for SAVED_STREAM of live sources)
     capture_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Capture progress (SAVED_STREAM): 0.0-100.0 while ffmpeg runs, NULL when
+    # not yet started.  Populated by worker during _capture_stream; cleared
+    # on recapture.  Mirrors AssetVariant.progress so the UI can show a
+    # unified progress indicator during the capture phase.
+    capture_progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Capture error (SAVED_STREAM): populated when ffmpeg capture fails so
+    # the UI can surface a "Capture failed" state with tooltip.  Cleared on
+    # recapture / successful capture completion.
+    capture_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Soft-delete marker.  Set to now() when the user hits DELETE.  The API
     # treats rows with deleted_at IS NOT NULL as gone; a background reaper
     # loop in the CMS (deleted_asset_reaper_loop) cleans up blobs + hard-

@@ -1200,6 +1200,17 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.variant_ready = ready
         a.variant_processing = processing
         a.variant_failed = failed
+        # Aggregate transcoding progress across all visible variants: each
+        # variant contributes 0-100, so `sum / total` gives a weighted %.
+        # READY counts as 100 (set on completion), PROCESSING contributes
+        # its live progress, QUEUED/FAILED contribute 0.  Used by the
+        # Status column's fill-badge in assets.html.
+        if total > 0:
+            a.variant_aggregate_progress = round(
+                sum((v.progress or 0.0) for v in visible_variants) / total, 1
+            )
+        else:
+            a.variant_aggregate_progress = 0.0
         a.schedule_count = sched_counts.get(a.id, 0)
         entries = all_group_assets.get(a.id, [])
         # Non-admin users should only see group entries for their own groups

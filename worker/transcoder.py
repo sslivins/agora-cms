@@ -283,14 +283,18 @@ def _build_ffmpeg_args_safe(
 
 # ── Duration helper ─────────────────────────────────────────────
 
-async def _get_duration(source_path: Path) -> float | None:
-    """Get duration of a media file in seconds using ffprobe."""
+async def _get_duration(source: Path | str) -> float | None:
+    """Get duration of a media file in seconds using ffprobe.
+
+    Accepts a local ``Path`` or a remote URL string.  Returns ``None`` for
+    livestreams (ffprobe reports ``N/A``) or any probe failure.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
-            str(source_path),
+            str(source),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -318,8 +322,32 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
     capture_filename = f"{asset.id}_capture.mp4"
     capture_path = asset_dir / capture_filename
 
-    logger.info("Capturing stream %s → %s (max %ds)", url, capture_filename,
-                asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS)
+    max_duration = asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS
+
+    # Probe the source upfront with the same helper used for uploaded files.
+    # ffprobe returns a finite duration for VOD (HLS with ENDLIST, MP4, etc.)
+    # and None for true livestreams — we use that to pick a progress denom.
+    probed = await _get_duration(url)
+    if probed and probed > 0:
+        progress_denom = min(float(max_duration), probed)
+        logger.info(
+            "Capturing VOD stream %s → %s (duration %.1fs, max %ds)",
+            url, capture_filename, probed, max_duration,
+        )
+    else:
+        progress_denom = float(max_duration)
+        logger.info(
+            "Capturing live stream %s → %s (max %ds)",
+            url, capture_filename, max_duration,
+        )
+
+    # Reset progress/error state before starting so retries don't show stale data
+    asset.capture_progress = 0.0
+    asset.capture_error = None
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        logger.warning("Failed to reset capture_progress for asset %s", asset.id)
 
     args = [
         "ffmpeg", "-y",
@@ -327,7 +355,10 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-t", str(asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS),
+        # ``-t`` is a safety ceiling.  For VOD, ffmpeg exits naturally at
+        # end-of-stream (usually much sooner); for livestreams it caps the
+        # capture at the configured duration.
+        "-t", str(max_duration),
         "-i", url,
         # Copy codecs (no re-encode during capture — transcoding happens later).
         # Do NOT use +faststart here: this is an intermediate file read only by
@@ -344,17 +375,81 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
             stderr=asyncio.subprocess.PIPE,
         )
         _active_process = proc
-        _, stderr_data = await proc.communicate()
+
+        # Stream stderr so we can parse ffmpeg's periodic `time=HH:MM:SS.ss`
+        # markers and surface live capture progress in the UI.  Same pattern
+        # used by _transcode_one for variant progress.
+        stderr_data = b""
+        last_progress_update = 0.0
+        while True:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
+                break
+            stderr_data += chunk
+            if progress_denom:
+                decoded = chunk.decode("utf-8", errors="replace")
+                matches = list(re.finditer(r"time=(\d+):(\d+):(\d+\.\d+)", decoded))
+                if matches:
+                    match = matches[-1]
+                    h, m, s = int(match.group(1)), int(match.group(2)), float(match.group(3))
+                    elapsed = h * 3600 + m * 60 + s
+                    pct = min(99.0, (elapsed / progress_denom) * 100)
+                    if pct > last_progress_update and pct - last_progress_update >= 1.0:
+                        # Cooperative cancel probe: if the user soft-deleted
+                        # the asset mid-capture, terminate ffmpeg so the
+                        # reaper can hard-delete the row promptly.
+                        if await _source_asset_is_deleted(db, asset.id):
+                            logger.info(
+                                "Asset %s: soft-deleted mid-capture — cancelling ffmpeg",
+                                asset.id,
+                            )
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                logger.warning("Failed to terminate ffmpeg", exc_info=True)
+                            try:
+                                await proc.wait()
+                            except Exception:
+                                pass
+                            _active_process = None
+                            try:
+                                if capture_path.is_file():
+                                    capture_path.unlink()
+                            except Exception:
+                                pass
+                            return None
+                        asset.capture_progress = round(pct, 1)
+                        try:
+                            await db.commit()
+                        except SQLAlchemyError:
+                            logger.warning(
+                                "Capture progress commit failed for asset %s — "
+                                "asset may have been deleted; continuing capture",
+                                asset.id,
+                            )
+                        last_progress_update = pct
+
+        await proc.wait()
         _active_process = None
 
         if proc.returncode != 0:
             full_text = stderr_data.decode("utf-8", errors="replace")
             error_text = full_text[:500] if len(full_text) <= 500 else full_text[:250] + "\n…\n" + full_text[-250:]
             logger.error("Stream capture failed for %s: exit %d\n%s", url, proc.returncode, error_text)
+            asset.capture_error = f"ffmpeg exit code {proc.returncode}: {error_text}"
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                logger.warning("Failed to persist capture_error for asset %s", asset.id)
             return None
 
         if not capture_path.is_file() or capture_path.stat().st_size == 0:
             logger.error("Stream capture produced empty file for %s", url)
+            asset.capture_error = "Stream capture produced empty file"
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                pass
             return None
 
         # Probe the captured file for metadata
@@ -374,6 +469,8 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         # Update the source asset with captured file metadata
         asset.size_bytes = file_size
         asset.checksum = sha.hexdigest()
+        asset.capture_progress = 100.0
+        asset.capture_error = None
         for key, val in meta.items():
             if val is not None and hasattr(asset, key):
                 setattr(asset, key, val)
@@ -393,6 +490,11 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
     except Exception as e:
         _active_process = None
         logger.exception("Stream capture error for %s: %s", url, e)
+        try:
+            asset.capture_error = f"Capture exception: {e}"
+            await db.commit()
+        except SQLAlchemyError:
+            pass
         return None
 
 
@@ -555,6 +657,28 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
                     pct = min(99.0, (elapsed / duration) * 100)
                     # Only update if progress moved forward (monotonic)
                     if pct > last_progress_update and pct - last_progress_update >= 1.0:
+                        # Cooperative cancel probe: if the user soft-deleted
+                        # the source asset mid-transcode, terminate ffmpeg so
+                        # the reaper can hard-delete promptly.  In Azure
+                        # queue-mode the 15s heartbeat handles this; LISTEN/
+                        # NOTIFY mode has no heartbeat, so we do it here.
+                        if await _source_asset_is_deleted(db, variant.source_asset_id):
+                            logger.info(
+                                "Variant %s: source asset soft-deleted mid-transcode — cancelling ffmpeg",
+                                variant.id,
+                            )
+                            _cancelled_variant_ids.add(variant.id)
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                logger.warning("Failed to terminate ffmpeg", exc_info=True)
+                            try:
+                                await proc.wait()
+                            except Exception:
+                                pass
+                            _active_process = None
+                            await _abort_on_deleted(variant, output_path, db)
+                            return
                         variant.progress = round(pct, 1)
                         try:
                             await db.commit()
@@ -718,10 +842,14 @@ async def process_pending(session_factory, asset_dir: Path) -> int:
         async with session_factory() as db:
             result = await db.execute(
                 select(AssetVariant)
-                .where(AssetVariant.status == VariantStatus.PENDING)
+                .join(Asset, AssetVariant.source_asset_id == Asset.id)
+                .where(
+                    AssetVariant.status == VariantStatus.PENDING,
+                    Asset.deleted_at.is_(None),
+                )
                 .order_by(AssetVariant.created_at)
                 .limit(1)
-                .with_for_update(skip_locked=True)
+                .with_for_update(skip_locked=True, of=AssetVariant)
             )
             variant = result.scalar_one_or_none()
             if variant is None:
