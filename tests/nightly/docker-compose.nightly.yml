@@ -1,0 +1,119 @@
+# Nightly E2E overlay for docker-compose.yml.
+#
+# Adds:
+#   - mailpit:   SMTP (1025) + HTTP API/UI (8025) for email verification tests
+#   - simulator: agora-device-simulator running N simulated devices with the
+#                fault-injection control plane exposed on 9090
+#
+# Also:
+#   - Exposes postgres on 5433 so pytest can query the DB directly if needed
+#   - Adds CMS healthcheck so `depends_on.condition: service_healthy` works
+#
+# Usage (from the agora-cms repo root, with agora-device-simulator checked
+# out as a sibling directory):
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f tests/nightly/docker-compose.nightly.yml \
+#     up -d --build
+#
+# The simulator build expects ../agora-device-simulator to exist with its
+# `agora` submodule initialized.
+
+services:
+  cms:
+    environment:
+      # Pin admin creds so tests don't depend on the developer's local .env.
+      - AGORA_CMS_ADMIN_USERNAME=admin
+      - AGORA_CMS_ADMIN_PASSWORD=nightly-testpass
+      # Future email integrations may read these; current codebase stores
+      # SMTP config in cms_settings (set via /setup/smtp wizard step).
+      - AGORA_CMS_DEFAULT_SMTP_HOST=mailpit
+      - AGORA_CMS_DEFAULT_SMTP_PORT=1025
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).status==200 else 1)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  worker:
+    environment:
+      - AGORA_CMS_ADMIN_USERNAME=admin
+      - AGORA_CMS_ADMIN_PASSWORD=nightly-testpass
+
+  db:
+    ports:
+      - "5433:5432"
+
+  mailpit-tls-init:
+    # One-shot helper that generates a self-signed cert into a shared
+    # volume so mailpit can offer STARTTLS. The CMS hardcodes
+    # `server.starttls()`, so SMTP attempts to a non-TLS server fail with
+    # "STARTTLS extension not supported by server".
+    image: alpine/openssl:latest
+    command:
+      - req
+      - -x509
+      - -newkey
+      - rsa:2048
+      - -nodes
+      - -keyout
+      - /tls/key.pem
+      - -out
+      - /tls/cert.pem
+      - -days
+      - "365"
+      - -subj
+      - /CN=mailpit
+    volumes:
+      - mailpit-tls:/tls
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    restart: unless-stopped
+    depends_on:
+      mailpit-tls-init:
+        condition: service_completed_successfully
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # HTTP API + web UI
+    environment:
+      - MP_MAX_MESSAGES=500
+      - MP_SMTP_AUTH_ACCEPT_ANY=1
+      - MP_SMTP_AUTH_ALLOW_INSECURE=1
+      - MP_SMTP_TLS_CERT=/tls/cert.pem
+      - MP_SMTP_TLS_KEY=/tls/key.pem
+    volumes:
+      - mailpit-tls:/tls:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8025/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  simulator:
+    build:
+      context: ../agora-device-simulator
+      dockerfile: Dockerfile
+    depends_on:
+      cms:
+        condition: service_healthy
+    environment:
+      - AGORA_SIM_CMS_URL=ws://cms:8080/ws/device
+      - AGORA_SIM_COUNT=3
+      - AGORA_SIM_BOARD=pi_5
+      - AGORA_SIM_SERIAL_PREFIX=sim
+      - AGORA_SIM_CONTROL_HOST=0.0.0.0
+      - AGORA_SIM_CONTROL_PORT=9090
+    ports:
+      - "9090:9090"   # control plane
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9090/devices',timeout=2).status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  mailpit-tls:

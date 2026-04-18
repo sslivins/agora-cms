@@ -1,6 +1,7 @@
 """Shared test fixtures for Agora CMS tests."""
 
 import os
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -9,6 +10,41 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from cms.database import Base
+
+
+# ── nightly opt-in (registered here so `pytest tests/` doesn't try to
+# collect tests/nightly/ — whose modules import playwright at module
+# scope — unless the user explicitly opts in). ──
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-nightly",
+        action="store_true",
+        default=False,
+        help="Run nightly E2E tests (requires docker + agora-device-simulator sibling repo).",
+    )
+
+
+def _nightly_opted_in(config: pytest.Config) -> bool:
+    return bool(
+        config.getoption("--run-nightly")
+        or os.environ.get("NIGHTLY", "").lower() in ("1", "true", "yes")
+    )
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Skip collection of tests/nightly/ entirely unless opted in.
+
+    The nightly modules import playwright, httpx, and sqlalchemy at
+    module scope; without this guard, unit-test CI (which doesn't
+    install playwright) fails with ImportError during collection, and
+    the `--run-nightly` skip marker never gets a chance to apply
+    because the error happens before modifyitems runs.
+    """
+    parts = str(collection_path).replace("\\", "/").split("/")
+    if "nightly" in parts and "tests" in parts:
+        return not _nightly_opted_in(config)
+    return None
 
 
 def _get_test_database_url():
