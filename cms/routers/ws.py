@@ -387,6 +387,20 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 device.storage_used_mb = msg.get("storage_used_mb", device.storage_used_mb)
                 await db.commit()
 
+                # Refresh device group/name/status so group reassignments or
+                # status changes made through the API (since this WS was
+                # established) are reflected in alerting. Without this, a
+                # device reassigned to a group mid-connection keeps firing
+                # with the stale (usually None) group_id cached at handshake
+                # and alert_service silently drops the sample.
+                await db.refresh(device, ["group_id", "group", "name", "status"])
+                _group_id = str(device.group_id) if device.group_id else None
+                _device_name = device.name or device_id
+                _device_status = device.status.value
+                _group_name = ""
+                if device.group_id and device.group is not None:
+                    _group_name = device.group.name or ""
+
                 # Track playback state (including error)
                 device_manager.update_status(
                     device_id,
