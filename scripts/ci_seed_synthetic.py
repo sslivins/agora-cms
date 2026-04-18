@@ -42,6 +42,32 @@ async def _table_info(conn, table: str) -> dict[str, dict]:
     }
 
 
+async def _fk_targets(conn, table: str) -> dict[str, str]:
+    """Return {column_name: referenced_table} for FKs on `table`."""
+    rows = await conn.execute(text(
+        "SELECT kcu.column_name, ccu.table_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "  ON tc.constraint_name = kcu.constraint_name "
+        " AND tc.table_schema = kcu.table_schema "
+        "JOIN information_schema.constraint_column_usage ccu "
+        "  ON ccu.constraint_name = tc.constraint_name "
+        " AND ccu.table_schema = tc.table_schema "
+        "WHERE tc.constraint_type = 'FOREIGN KEY' "
+        "  AND tc.table_name = :t"
+    ), {"t": table})
+    return {r[0]: r[1] for r in rows}
+
+
+async def _any_existing_pk(conn, table: str):
+    """Return one PK value from `table`, or None if empty."""
+    try:
+        res = await conn.execute(text(f"SELECT id FROM {table} ORDER BY 1 LIMIT 1"))
+        return res.scalar()
+    except Exception:
+        return None
+
+
 def _placeholder_for(col: str, info: dict, idx: int):
     """Best-effort value for a NOT NULL column the seed didn't supply."""
     dtype = (info.get("data_type") or "").lower()
@@ -77,10 +103,13 @@ async def _insert(conn, table: str, row: dict) -> None:
     - Auto-fills any NOT NULL column without a default that the caller
       didn't supply, so the seed survives schema additions in `main`
       that happen between when this script was last updated and now.
+    - For required FK columns, picks an existing PK from the referenced
+      table; if the referenced table is empty, the row is skipped.
     """
     info = await _table_info(conn, table)
     if not info:
         return
+    fks = await _fk_targets(conn, table)
     filtered = {k: v for k, v in row.items() if k in info}
     _seed_counter["i"] += 1
     idx = _seed_counter["i"]
@@ -89,7 +118,15 @@ async def _insert(conn, table: str, row: dict) -> None:
             continue
         if meta["nullable"] or meta["has_default"]:
             continue
-        filtered[col] = _placeholder_for(col, meta, idx)
+        if col in fks:
+            ref = await _any_existing_pk(conn, fks[col])
+            if ref is None:
+                # Required FK target is empty — skip this row entirely
+                # rather than crash the whole seed.
+                return
+            filtered[col] = ref
+        else:
+            filtered[col] = _placeholder_for(col, meta, idx)
     if not filtered:
         return
     keys = ", ".join(filtered.keys())
@@ -107,6 +144,15 @@ async def seed(count: int = 10) -> None:
 
     async with _shared_db._engine.begin() as conn:
         now = datetime.now(timezone.utc)
+
+        # roles (must exist before users — users.role_id FK)
+        for name in ("admin", "editor", "viewer"):
+            await _insert(conn, "roles", {
+                "id": uuid.uuid4(),
+                "name": name,
+                "description": f"seed {name} role",
+                "created_at": now,
+            })
 
         # users
         user_ids = []
