@@ -195,18 +195,9 @@ async def assets_status_json(
         else select(sa_func.count(Asset.id))
     )).scalar() or 0
 
-    variant_base = select(sa_func.count()).select_from(AssetVariant)
-    if visible is not None:
-        variant_base = variant_base.where(AssetVariant.source_asset_id.in_(visible))
-    variant_ready = (await db.execute(
-        variant_base.where(AssetVariant.status == VariantStatus.READY)
-    )).scalar() or 0
-    variant_processing = (await db.execute(
-        variant_base.where(AssetVariant.status == VariantStatus.PROCESSING)
-    )).scalar() or 0
-    variant_failed = (await db.execute(
-        variant_base.where(AssetVariant.status == VariantStatus.FAILED)
-    )).scalar() or 0
+    variant_ready = 0
+    variant_processing = 0
+    variant_failed = 0
 
     # Build group name map for scope data
     groups_result = await db.execute(select(DeviceGroup.id, DeviceGroup.name))
@@ -222,9 +213,13 @@ async def assets_status_json(
     )
     assets_detail = []
     for a in result.scalars().all():
+        # Collapse to newest live row per profile for consistency with
+        # the Library template render (cms/ui.py assets_page).
+        from cms.services.variant_view import collapse_to_latest
+        visible_variants = collapse_to_latest(a.variants)
         variants = []
         a_ready = a_processing = a_failed = 0
-        for v in sorted(a.variants, key=lambda v: (v.profile.name if v.profile else "")):
+        for v in sorted(visible_variants, key=lambda v: (v.profile.name if v.profile else "")):
             vd = {
                 "id": str(v.id),
                 "profile_name": v.profile.name if v.profile else "",
@@ -246,10 +241,15 @@ async def assets_status_json(
                 a_processing += 1
             elif v.status == VariantStatus.FAILED:
                 a_failed += 1
+        # Sum into top-level totals so the page-level badges count only
+        # what the user actually sees (one row per (asset, profile) slot).
+        variant_ready += a_ready
+        variant_processing += a_processing
+        variant_failed += a_failed
         assets_detail.append({
             "id": str(a.id),
             "asset_type": a.asset_type.value,
-            "variant_total": len(a.variants),
+            "variant_total": len(visible_variants),
             "variant_ready": a_ready,
             "variant_processing": a_processing,
             "variant_failed": a_failed,
