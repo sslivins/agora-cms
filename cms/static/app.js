@@ -643,7 +643,7 @@ function previewAsset(assetId, filename, assetType) {
     box.appendChild(header);
 
     const url = `/api/assets/${assetId}/preview`;
-    if (assetType === "video") {
+    if (assetType === "video" || assetType === "saved_stream") {
         const video = document.createElement("video");
         video.src = url;
         video.controls = true;
@@ -681,7 +681,7 @@ function previewVariant(variantId, filename, assetType, profileName) {
     box.appendChild(header);
 
     const url = `/api/assets/variants/${variantId}/preview`;
-    if (assetType === "video") {
+    if (assetType === "video" || assetType === "saved_stream") {
         const video = document.createElement("video");
         video.src = url;
         video.controls = true;
