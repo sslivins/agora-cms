@@ -231,7 +231,7 @@ async def seed(count: int = 10) -> None:
         # devices
         device_ids = []
         for i in range(count):
-            did = uuid.uuid4()
+            did = str(uuid.uuid4())
             device_ids.append(did)
             await _insert(conn, "devices", {
                 "id": did,
@@ -256,7 +256,7 @@ async def seed(count: int = 10) -> None:
                 "content_type": "video/mp4",
                 "size_bytes": 1_000_000 + i,
                 "status": "READY",
-                "type": "VIDEO",
+                "asset_type": "VIDEO",
                 "is_global": True,
                 "created_at": now,
             })
@@ -266,7 +266,7 @@ async def seed(count: int = 10) -> None:
             for j in range(2):
                 await _insert(conn, "asset_variants", {
                     "id": uuid.uuid4(),
-                    "asset_id": aid,
+                    "source_asset_id": aid,
                     "filename": f"seed_variant_{i}_{j}.mp4",
                     "profile_id": profile_ids[j % len(profile_ids)] if profile_ids else None,
                     "status": "READY",
@@ -292,7 +292,7 @@ async def seed(count: int = 10) -> None:
         for i in range(count):
             await _insert(conn, "api_keys", {
                 "id": uuid.uuid4(),
-                "key_hash": f"seed_apikey_hash_{i:064d}",
+                "key_hash": f"{i:04d}_seed_apikey_hash_{uuid.uuid4().hex}"[:64],
                 "name": f"seed_apikey_{i}",
                 "user_id": user_ids[i % len(user_ids)] if user_ids else None,
                 "created_at": now,
