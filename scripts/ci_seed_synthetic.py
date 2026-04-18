@@ -27,21 +27,69 @@ from cms.database import dispose_db, init_db, run_migrations, wait_for_db
 from shared import database as _shared_db
 
 
-async def _existing_columns(conn, table: str) -> set[str]:
+async def _table_info(conn, table: str) -> dict[str, dict]:
+    """Return {column_name: {nullable, has_default, data_type}} for `table`."""
     rows = await conn.execute(
         text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = :t"
+            "SELECT column_name, is_nullable, column_default, data_type "
+            "FROM information_schema.columns WHERE table_name = :t"
         ),
         {"t": table},
     )
-    return {r[0] for r in rows}
+    return {
+        r[0]: {"nullable": r[1] == "YES", "has_default": r[2] is not None, "data_type": r[3]}
+        for r in rows
+    }
+
+
+def _placeholder_for(col: str, info: dict, idx: int):
+    """Best-effort value for a NOT NULL column the seed didn't supply."""
+    dtype = (info.get("data_type") or "").lower()
+    if "char" in dtype or "text" in dtype:
+        return f"seed_{col}_{idx}"
+    if "int" in dtype:
+        return idx
+    if "bool" in dtype:
+        return False
+    if "json" in dtype:
+        return "{}"
+    if "timestamp" in dtype or "date" in dtype:
+        return datetime.now(timezone.utc)
+    if "uuid" in dtype:
+        return uuid.uuid4()
+    if "double" in dtype or "real" in dtype or "numeric" in dtype:
+        return 0
+    return f"seed_{col}_{idx}"
+
+
+async def _existing_columns(conn, table: str) -> set[str]:
+    info = await _table_info(conn, table)
+    return set(info.keys())
+
+
+_seed_counter = {"i": 0}
 
 
 async def _insert(conn, table: str, row: dict) -> None:
-    """Insert `row` into `table`, filtering keys to columns that exist."""
-    cols = await _existing_columns(conn, table)
-    filtered = {k: v for k, v in row.items() if k in cols}
+    """Insert `row` into `table`.
+
+    - Filters out keys for columns the table doesn't have (schema drift).
+    - Auto-fills any NOT NULL column without a default that the caller
+      didn't supply, so the seed survives schema additions in `main`
+      that happen between when this script was last updated and now.
+    """
+    info = await _table_info(conn, table)
+    if not info:
+        return
+    filtered = {k: v for k, v in row.items() if k in info}
+    _seed_counter["i"] += 1
+    idx = _seed_counter["i"]
+    for col, meta in info.items():
+        if col in filtered:
+            continue
+        if meta["nullable"] or meta["has_default"]:
+            continue
+        filtered[col] = _placeholder_for(col, meta, idx)
     if not filtered:
         return
     keys = ", ".join(filtered.keys())
