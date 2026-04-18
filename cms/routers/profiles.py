@@ -23,7 +23,7 @@ from cms.services.transcoder import (
     flag_profile_jobs_cancelled,
     supersede_profile_variants,
 )
-from cms.services.audit_service import audit_log
+from cms.services.audit_service import audit_log, compute_diff
 
 logger = logging.getLogger("agora.cms.profiles")
 
@@ -240,11 +240,11 @@ async def update_profile(
         color_space=updates.get("color_space", profile.color_space),
     )
 
+    # Snapshot before mutation so we can build a true diff for the audit log
+    changes = compute_diff(profile, updates)
+
     # Detect whether any transcoding-relevant field actually changed
-    transcode_changed = any(
-        field in _TRANSCODE_FIELDS and getattr(profile, field) != value
-        for field, value in updates.items()
-    )
+    transcode_changed = any(field in _TRANSCODE_FIELDS for field in changes)
 
     for field, value in updates.items():
         setattr(profile, field, value)
@@ -257,10 +257,12 @@ async def update_profile(
             "update_profile: profile %s (%s) transcoding fields changed (%s); "
             "superseding variants",
             profile_id, profile.name,
-            sorted(f for f in updates if f in _TRANSCODE_FIELDS),
+            sorted(f for f in changes if f in _TRANSCODE_FIELDS),
         )
         # Flag any in-flight worker jobs for cooperative cancellation.
-        # Workers will SIGTERM ffmpeg on the next heartbeat tick.
+        # Workers will SIGTERM ffmpeg on the next heartbeat tick.  The count
+        # is logged for observability but not surfaced in the audit log —
+        # it's an implementation detail, not a user-meaningful action.
         cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
 
@@ -277,12 +279,11 @@ async def update_profile(
         db, user=getattr(request.state, "user", None),
         action="profile.update", resource_type="profile",
         resource_id=str(profile_id),
-        description=f"Updated transcode profile '{profile.name}' ({', '.join(sorted(updates.keys()))})",
+        description=f"Modified transcode profile '{profile.name}'",
         details={
-            **{k: v for k, v in updates.items() if not isinstance(v, uuid.UUID)},
+            "changes": changes,
             "transcode_changed": transcode_changed,
             "variants_superseded": reset_count,
-            "jobs_cancelled": cancelled_jobs,
         },
         request=request,
     )
@@ -527,7 +528,6 @@ async def reset_profile(
         details={
             "name": profile.name,
             "variants_superseded": reset_count,
-            "jobs_cancelled": cancelled_jobs,
         },
         request=request,
     )
@@ -580,9 +580,17 @@ async def reset_profile(
     )
 
 
-@router.get("/status", dependencies=[Depends(require_permission(PROFILES_READ))])
-async def profiles_status_json(db: AsyncSession = Depends(get_db)):
-    """Lightweight JSON for profiles page polling — queue status + profile variant counts."""
+@router.get("/status")
+async def profiles_status_json(
+    user=Depends(require_permission(PROFILES_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight JSON for profiles page polling — queue status + profile variant counts.
+
+    Queue entries are filtered to assets the caller is permitted to see (to avoid
+    leaking filenames of group-scoped assets to non-admin users).
+    """
+    from cms.routers.assets import _visible_asset_ids
 
     # Profile variant summaries
     result = await db.execute(
@@ -606,14 +614,22 @@ async def profiles_status_json(db: AsyncSession = Depends(get_db)):
             "matches_defaults": _matches_defaults(p),
         })
 
-    # Transcode queue (pending / processing / failed)
-    queue_result = await db.execute(
+    # Transcode queue (pending / processing / failed) — scoped to visible assets
+    visible = await _visible_asset_ids(user, db)
+    queue_q = (
         select(AssetVariant)
         .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
         .order_by(AssetVariant.created_at)
         .limit(50)
     )
-    queue_variants = queue_result.scalars().all()
+    if visible is not None:
+        if not visible:
+            queue_variants = []
+        else:
+            queue_q = queue_q.where(AssetVariant.source_asset_id.in_(visible))
+            queue_variants = (await db.execute(queue_q)).scalars().all()
+    else:
+        queue_variants = (await db.execute(queue_q)).scalars().all()
 
     queue_out = []
     for v in queue_variants:

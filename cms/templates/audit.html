@@ -67,14 +67,14 @@
 {%- endmacro %}
 
 <div class="card">
-    <table>
+    <table style="table-layout: fixed; width: 100%;">
         <thead>
             <tr>
                 <th style="width:2rem;"></th>
-                <th>Time</th>
-                <th>User</th>
-                <th>Description</th>
-                <th>Resource</th>
+                <th style="width:15%;">Time</th>
+                <th style="width:15%;">User</th>
+                <th style="width:60%;">Description</th>
+                <th style="width:10%;">Resource</th>
             </tr>
         </thead>
         <tbody>
@@ -83,7 +83,7 @@
                 <td class="expand-toggle">▶</td>
                 <td style="white-space:nowrap;">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
                 <td>{{ entry.user.display_name or entry.user.username if entry.user else (entry.details.actor_username if entry.details and entry.details.actor_username is defined else '—') }}</td>
-                <td>{{ entry.description or entry.action }}</td>
+                <td class="audit-description"><div title="{{ entry.description or entry.action }}">{{ entry.description or entry.action }}</div></td>
                 <td>
                     {% if entry.resource_type %}
                     <span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.resource_type }}</span>
@@ -94,6 +94,10 @@
                 <td></td>
                 <td colspan="4">
                     <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Description</span>
+                            <span class="detail-value" style="white-space:normal; word-break:break-word;">{{ entry.description or entry.action }}</span>
+                        </div>
                         <div class="detail-item">
                             <span class="detail-label">Action</span>
                             <span class="detail-value"><span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.action }}</span></span>
@@ -120,6 +124,26 @@
                         </div>
                     </div>
                     {% if entry.details %}
+                    {# ── True diff renderer (changes: {field: {old, new}}) ── #}
+                    {% set changes = entry.details.changes if entry.details.changes is mapping else None %}
+                    {% if changes %}
+                    <div style="margin-top:0.75rem;">
+                        <span class="detail-label" style="display:block; margin-bottom:0.25rem;">Changes</span>
+                        <table class="audit-changes">
+                            <thead><tr><th>Field</th><th>From</th><th></th><th>To</th></tr></thead>
+                            <tbody>
+                            {% for field, change in changes.items() %}
+                                <tr>
+                                    <td>{{ field | replace('_', ' ') | title }}</td>
+                                    <td><span class="diff-old">{{ '∅' if change.old is none or change.old == '' else change.old }}</span></td>
+                                    <td class="diff-arrow">→</td>
+                                    <td><span class="diff-new">{{ '∅' if change.new is none or change.new == '' else change.new }}</span></td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
                     {# ── Friendly key-value details ── #}
                     {% set label_map = {
                         'actor_username': 'Performed By',
@@ -130,7 +154,6 @@
                         'email': 'Email',
                         'key_type': 'Key Type',
                         'permissions_count': 'Permissions',
-                        'changes': 'Changed Fields',
                         'on_behalf_of': 'On Behalf Of',
                         'auth_method': 'Auth Method',
                         'device_name': 'Device',
@@ -141,9 +164,11 @@
                     } %}
                     {% set detail_items = [] %}
                     {% for key, val in entry.details.items() %}
-                        {% if val is not none and val != '' %}
-                            {% if val is iterable and val is not string %}
+                        {% if key != 'changes' and val is not none and val != '' %}
+                            {% if val is iterable and val is not string and val is not mapping %}
                                 {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val | join(', '))) %}
+                            {% elif val is mapping %}
+                                {# Skip nested dicts other than `changes` to avoid dumping {} #}
                             {% else %}
                                 {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val)) %}
                             {% endif %}

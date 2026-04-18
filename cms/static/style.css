@@ -840,8 +840,33 @@ tr.highlight-new td {
 .audit-row { cursor: pointer; }
 .audit-row:hover td { background: rgba(255,255,255,0.04); }
 .audit-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
+/* Description cell: ellipsise long text; full text shown via title= and
+   in the expanded row's Description detail-item. */
+.audit-description { overflow: hidden; }
+.audit-description > div {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .audit-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
 .audit-detail td:first-child { padding: 0; }
+/* Diff table inside the expand panel — field | from → to */
+.audit-changes {
+    width: 100%;
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    border-collapse: collapse;
+}
+.audit-changes th, .audit-changes td {
+    text-align: left;
+    padding: 0.3rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+.audit-changes th { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.audit-changes .diff-arrow { color: var(--text-muted); padding: 0 0.3rem; }
+.audit-changes .diff-old { color: var(--text-muted); text-decoration: line-through; }
+.audit-changes .diff-new { color: var(--text); font-weight: 500; }
 .audit-json {
     background: var(--bg-dark, #1a1a2e);
     border: 1px solid var(--border);

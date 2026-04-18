@@ -9,7 +9,8 @@ Usage in a router:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import uuid
+from typing import TYPE_CHECKING, Any
 
 from cms.models.audit_log import AuditLog
 
@@ -87,6 +88,44 @@ def build_description(action: str, details: dict | None = None) -> str:
 
     # Fallback: titlecase the action
     return action.replace(".", " ").replace("_", " ").title()
+
+
+def _serialize_value(v: Any) -> Any:
+    """JSON-safe representation for diff payloads."""
+    if isinstance(v, uuid.UUID):
+        return str(v)
+    # date / time / datetime all expose isoformat()
+    if hasattr(v, "isoformat") and callable(getattr(v, "isoformat")):
+        return v.isoformat()
+    return v
+
+
+def compute_diff(
+    obj: Any,
+    updates: dict,
+    *,
+    exclude: set[str] | None = None,
+) -> dict[str, dict]:
+    """Compute a true diff between an ORM/model instance and incoming updates.
+
+    Returns ``{field: {"old": <current>, "new": <incoming>}}`` only for fields
+    whose value actually changed.  Call this BEFORE applying the updates.
+
+    Use to render audit-log diffs in the UI.  Pair with a short description
+    (a title) and put this in ``details["changes"]``.
+    """
+    exclude = exclude or set()
+    diff: dict[str, dict] = {}
+    for field, new_val in updates.items():
+        if field in exclude or not hasattr(obj, field):
+            continue
+        old_val = getattr(obj, field)
+        if old_val != new_val:
+            diff[field] = {
+                "old": _serialize_value(old_val),
+                "new": _serialize_value(new_val),
+            }
+    return diff
 
 
 async def audit_log(

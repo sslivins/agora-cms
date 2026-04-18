@@ -31,7 +31,7 @@ from cms.schemas.device import (
 from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage, WipeAssetsMessage
 from cms.services.device_manager import device_manager
 from cms.services.scheduler import push_sync_to_device
-from cms.services.audit_service import audit_log
+from cms.services.audit_service import audit_log, compute_diff
 from cms.services.version_checker import check_now
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
@@ -242,13 +242,16 @@ async def update_device(
                 detail=f"Missing permission: {DEVICES_MANAGE}",
             )
 
+    # Snapshot before mutation so we can build a true diff for the audit log
+    changes = compute_diff(device, updates)
+
     for field, value in updates.items():
         setattr(device, field, value)
     await audit_log(
         db, user=user, action="device.update", resource_type="device",
         resource_id=str(device.id),
-        description=f"Updated device '{device.name or device.id}' ({', '.join(sorted(updates.keys()))})",
-        details={k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in updates.items()},
+        description=f"Modified device '{device.name or device.id}'",
+        details={"changes": changes},
         request=request,
     )
     await db.commit()
@@ -699,14 +702,15 @@ async def update_group(
         await verify_resource_group_access(user, db, group_id)
 
     updates = data.model_dump(exclude_unset=True)
+    changes = compute_diff(group, updates)
     for field, value in updates.items():
         setattr(group, field, value)
     await audit_log(
         db, user=user,
         action="group.update", resource_type="group",
         resource_id=str(group_id),
-        description=f"Updated device group '{group.name}' ({', '.join(sorted(updates.keys()))})",
-        details={k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in updates.items()},
+        description=f"Modified device group '{group.name}'",
+        details={"changes": changes},
         request=request,
     )
     await db.commit()

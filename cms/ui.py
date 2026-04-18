@@ -1410,29 +1410,17 @@ async def profiles_page(request: Request, db: AsyncSession = Depends(get_db)):
         p.device_count = dev_count
         p.total_variants = total_var
         p.ready_variants = ready_var
+        # Compute matches_defaults so the server-rendered Reset button starts
+        # in the correct disabled state (otherwise the JS poller flips it
+        # from enabled→disabled a few seconds after page load, which the user
+        # sees as a flicker / jank).
+        from cms.routers.profiles import _matches_defaults
+        p.matches_defaults = _matches_defaults(p)
         annotated.append(p)
-
-    # Active transcoding queue
-    queue_result = await db.execute(
-        select(AssetVariant)
-        .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
-        .order_by(AssetVariant.created_at)
-        .limit(50)
-    )
-    queue_variants = queue_result.scalars().all()
-
-    # Load relationships for display
-    transcode_queue = []
-    for v in queue_variants:
-        await db.refresh(v, ["source_asset", "profile"])
-        v.source_filename = v.source_asset.filename if v.source_asset else "?"
-        v.profile_name = v.profile.name if v.profile else "?"
-        transcode_queue.append(v)
 
     return templates.TemplateResponse(request, "profiles.html", {
         "active_tab": "assets",
         "profiles": annotated,
-        "transcode_queue": transcode_queue,
     })
 
 

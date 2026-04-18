@@ -19,7 +19,7 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict, evaluate_schedules
-from cms.services.audit_service import audit_log
+from cms.services.audit_service import audit_log, compute_diff
 
 logger = logging.getLogger("agora.cms.schedules")
 
@@ -281,6 +281,9 @@ async def update_schedule(
 
     updates = data.model_dump(exclude_unset=True)
 
+    # Snapshot diff before any mutation or auto-computation
+    changes = compute_diff(schedule, updates)
+
     # Check if the resulting asset is a webpage/stream type (current or updated)
     target_asset_id = updates.get("asset_id", schedule.asset_id)
     target_asset = await db.get(Asset, target_asset_id)
@@ -318,13 +321,15 @@ async def update_schedule(
     # Clear any active "End Now" skip so the schedule is re-evaluated
     schedule.skipped_until = None
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
+    # NB: compute diff against the CURRENT (post-mutation) schedule by
+    # comparing against the old snapshot is messier here because end_time
+    # may be auto-computed.  Instead we snapshot keys ahead of mutation.
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="schedule.update", resource_type="schedule",
         resource_id=str(schedule_id),
-        description=f"Updated schedule '{schedule.name}' ({', '.join(sorted(updates.keys()))})",
-        details={k: (str(v) if isinstance(v, uuid.UUID) else (v.isoformat() if hasattr(v, 'isoformat') else v))
-                 for k, v in updates.items()},
+        description=f"Modified schedule '{schedule.name}'",
+        details={"changes": changes},
         request=request,
     )
     await db.commit()
