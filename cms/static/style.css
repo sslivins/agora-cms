@@ -840,12 +840,10 @@ tr.highlight-new td {
 .audit-row { cursor: pointer; }
 .audit-row:hover td { background: rgba(255,255,255,0.04); }
 .audit-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
-/* Treat the description as a one-line title — long text gets ellipsised
-   here and is shown in full on hover (title=) and inside the expanded
-   row's "Description" detail item.  max-width:0 forces the column to
-   shrink against its peers so flex layout in the table works. */
-.audit-description {
-    max-width: 0;
+/* Description cell: ellipsise long text; full text shown via title= and
+   in the expanded row's Description detail-item. */
+.audit-description { overflow: hidden; }
+.audit-description > div {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

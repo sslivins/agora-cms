@@ -718,7 +718,7 @@ async def update_asset(
         await audit_log(
             db, user=user, action="asset.update", resource_type="asset",
             resource_id=str(asset_id),
-            description=f"Updated asset '{asset.filename}'",
+            description=f"Modified asset '{asset.filename}'",
             details={"changes": changes},
             request=request,
         )

@@ -328,7 +328,7 @@ async def update_schedule(
         db, user=getattr(request.state, "user", None),
         action="schedule.update", resource_type="schedule",
         resource_id=str(schedule_id),
-        description=f"Updated schedule '{schedule.name}'",
+        description=f"Modified schedule '{schedule.name}'",
         details={"changes": changes},
         request=request,
     )

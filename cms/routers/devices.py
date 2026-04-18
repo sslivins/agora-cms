@@ -250,7 +250,7 @@ async def update_device(
     await audit_log(
         db, user=user, action="device.update", resource_type="device",
         resource_id=str(device.id),
-        description=f"Updated device '{device.name or device.id}'",
+        description=f"Modified device '{device.name or device.id}'",
         details={"changes": changes},
         request=request,
     )
@@ -709,7 +709,7 @@ async def update_group(
         db, user=user,
         action="group.update", resource_type="group",
         resource_id=str(group_id),
-        description=f"Updated device group '{group.name}'",
+        description=f"Modified device group '{group.name}'",
         details={"changes": changes},
         request=request,
     )

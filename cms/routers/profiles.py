@@ -260,8 +260,10 @@ async def update_profile(
             sorted(f for f in changes if f in _TRANSCODE_FIELDS),
         )
         # Flag any in-flight worker jobs for cooperative cancellation.
-        # Workers will SIGTERM ffmpeg on the next heartbeat tick.
-        cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
+        # Workers will SIGTERM ffmpeg on the next heartbeat tick.  We don't
+        # surface the count in the audit log — it's an implementation detail
+        # of how the supersession is carried out, not a user-meaningful action.
+        await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
 
         # Create brand-new variant rows (fresh UUIDs → fresh blob paths) for
@@ -277,12 +279,11 @@ async def update_profile(
         db, user=getattr(request.state, "user", None),
         action="profile.update", resource_type="profile",
         resource_id=str(profile_id),
-        description=f"Updated transcode profile '{profile.name}'",
+        description=f"Modified transcode profile '{profile.name}'",
         details={
             "changes": changes,
             "transcode_changed": transcode_changed,
             "variants_superseded": reset_count,
-            "jobs_cancelled": cancelled_jobs,
         },
         request=request,
     )
@@ -507,13 +508,12 @@ async def reset_profile(
 
     # Reset variants if transcoding fields changed
     new_variant_ids: list[uuid.UUID] = []
-    cancelled_jobs = 0
     if transcode_changed:
         logger.info(
             "reset_profile: built-in profile %s (%s) reset to defaults — "
             "superseding variants", profile_id, profile.name,
         )
-        cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
+        await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
         new_variant_ids = await supersede_profile_variants(db, profile_id)
 
@@ -527,7 +527,6 @@ async def reset_profile(
         details={
             "name": profile.name,
             "variants_superseded": reset_count,
-            "jobs_cancelled": cancelled_jobs,
         },
         request=request,
     )

@@ -460,6 +460,34 @@
         </tbody>
     </table>
 </div>
+
+{# ── Transcoding Queue (collapsible, live-updating) ── #}
+<div class="card" id="queue-card" style="display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;"
+         onclick="toggleQueueCard()">
+        <h2 style="margin:0;">
+            <span id="queue-toggle" class="expand-toggle" style="display:inline-block; transition:transform .15s;">▶</span>
+            Transcoding Queue
+            <span class="badge badge-muted" id="queue-count-badge" style="margin-left:0.5rem;">0</span>
+        </h2>
+    </div>
+    <div id="queue-body-wrap" style="display:none; margin-top:0.75rem;">
+        <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Asset</th>
+                    <th>Profile</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody id="queue-body"></tbody>
+        </table>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -807,5 +835,71 @@ function fallbackCopy(text, onSuccess) {
     catch (e) { showToast('Copy failed', true); }
     finally { document.body.removeChild(ta); }
 }
+
+// ── Transcoding queue (collapsible + live-updating) ──
+(function() {
+    // Restore prior expand/collapse preference; default collapsed.
+    let expanded = localStorage.getItem('queueCardExpanded') === '1';
+
+    window.toggleQueueCard = function() {
+        expanded = !expanded;
+        localStorage.setItem('queueCardExpanded', expanded ? '1' : '0');
+        applyExpand();
+    };
+
+    function applyExpand() {
+        const wrap = document.getElementById('queue-body-wrap');
+        const tog = document.getElementById('queue-toggle');
+        if (!wrap || !tog) return;
+        wrap.style.display = expanded ? '' : 'none';
+        tog.style.transform = expanded ? 'rotate(90deg)' : '';
+    }
+
+    function buildQueueRow(v) {
+        const statusBadge = '<span class="badge badge-' + v.status + '">' + v.status + '</span>';
+        let progress = '\u2014';
+        if (v.status === 'processing') {
+            progress = '<div class="progress-bar"><div class="progress-fill" style="width:' + v.progress + '%"></div></div>' +
+                '<span class="text-muted">' + v.progress.toFixed(1) + '%</span>';
+        } else if (v.status === 'ready') {
+            progress = '100%';
+        }
+        const err = v.error_message || '\u2014';
+        const esc = (s) => String(s).replace(/</g, '&lt;');
+        return '<tr>' +
+            '<td class="wrap">' + esc(v.source_filename) + '</td>' +
+            '<td>' + esc(v.profile_name) + '</td>' +
+            '<td>' + statusBadge + '</td>' +
+            '<td>' + progress + '</td>' +
+            '<td class="wrap text-muted">' + esc(err) + '</td>' +
+            '</tr>';
+    }
+
+    async function refreshQueue() {
+        try {
+            const res = await fetch('/api/profiles/status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const card = document.getElementById('queue-card');
+            const body = document.getElementById('queue-body');
+            const badge = document.getElementById('queue-count-badge');
+            if (!card || !body || !badge) return;
+
+            const count = data.queue_count || 0;
+            badge.textContent = count;
+            if (count > 0) {
+                card.style.display = '';
+                body.innerHTML = data.queue.map(buildQueueRow).join('');
+            } else {
+                card.style.display = 'none';
+                body.innerHTML = '';
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    applyExpand();
+    refreshQueue();
+    setInterval(refreshQueue, 5000);
+})();
 </script>
 {% endblock %}

@@ -67,14 +67,14 @@
 {%- endmacro %}
 
 <div class="card">
-    <table>
+    <table style="table-layout: fixed; width: 100%;">
         <thead>
             <tr>
                 <th style="width:2rem;"></th>
-                <th>Time</th>
-                <th>User</th>
-                <th>Description</th>
-                <th>Resource</th>
+                <th style="width:15%;">Time</th>
+                <th style="width:15%;">User</th>
+                <th style="width:60%;">Description</th>
+                <th style="width:10%;">Resource</th>
             </tr>
         </thead>
         <tbody>
@@ -83,7 +83,7 @@
                 <td class="expand-toggle">▶</td>
                 <td style="white-space:nowrap;">{{ entry.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') }}</td>
                 <td>{{ entry.user.display_name or entry.user.username if entry.user else (entry.details.actor_username if entry.details and entry.details.actor_username is defined else '—') }}</td>
-                <td class="audit-description" title="{{ entry.description or entry.action }}">{{ entry.description or entry.action }}</td>
+                <td class="audit-description"><div title="{{ entry.description or entry.action }}">{{ entry.description or entry.action }}</div></td>
                 <td>
                     {% if entry.resource_type %}
                     <span class="badge {% if 'create' in entry.action %}badge-success{% elif 'delete' in entry.action %}badge-danger{% elif 'update' in entry.action or 'regenerate' in entry.action %}badge-info{% else %}badge-muted{% endif %}">{{ entry.resource_type }}</span>
