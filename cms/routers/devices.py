@@ -606,6 +606,11 @@ async def request_device_logs(
         raise HTTPException(status_code=504, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except RuntimeError as e:
+        # The device reported an error while collecting logs (e.g. journalctl
+        # not installed). Surface it as an upstream/bad-gateway response with
+        # the device's own error string so the operator can diagnose.
+        raise HTTPException(status_code=502, detail=str(e))
 
     return {"device_id": device_id, "logs": logs}
 
