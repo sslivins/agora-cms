@@ -1,36 +1,42 @@
-"""Phase 9: thermal threshold -> scoped notification (#250, #263).
+"""Phase 9: thermal threshold -> scoped notification round-trip (#250, #263).
 
-Pins the spec from issue #263: when a device's ``cpu_temp_c`` crosses the
-``>=80 C`` critical threshold the CMS should emit a persistent
-``Notification`` whose visibility tracks the device's group_id so that
+End-to-end coverage of the alert_service thermal-monitoring path:
 
-- admin (has ``groups:view_all``)        -> sees it
-- operator in the same group              -> sees it
-- viewer in the same group                -> sees it (read-only)
-- operator in a DIFFERENT group           -> does NOT see it
+    sim fault -> cms_client WS heartbeat -> alert_service state machine
+        -> Notification (scope=group) + DeviceEvent (temp_high|temp_cleared)
+        -> dashboard banner / notification bell / event log
 
-Today the product has the Notification model + scope-based visibility
-filter in place, but nothing in ``cms/`` emits a group-scoped notification
-for a telemetry event. The telemetry -> notification path is tracked in
-#263.
+Three-user RBAC matrix (admin, operator-in-group, operator-in-other-group):
 
-Strategy:
+- admin (``groups:view_all``)                  -> sees everything everywhere
+- operator in the device's group               -> sees dashboard + notif + event
+- viewer in the device's group                 -> sees notif (read-only)
+- operator in a DIFFERENT group (negative)     -> sees NONE of it
 
-- Active assertions (should pass today):
-    1. Simulator ``apply_fault(cpu_temp=85)`` makes it through to the CMS.
-    2. ``GET /api/devices/{id}`` reflects ``cpu_temp_c >= 80``.
-    3. The dashboard HTML renders the critical row for that device.
+Round-trip phases exercised in order:
 
-- ``xfail`` assertions (pinned spec for #263 -- flip to active when feature
-  lands):
-    4. A new ``Notification`` row exists with scope=group, group_id=<device group>.
-    5. Admin sees the notification in their list.
-    6. Operator in the device's group sees it.
-    7. Viewer in the device's group sees it.
-    8. Operator in a different group does NOT see it.
+  01 - admin pins an adopted device to Group A
+  02 - simulator forces cpu_temp to 82 C (critical, >= DEFAULT_TEMP_CRITICAL_C)
+  03 - admin dashboard shows badge-temp-critical for the device
+  04 - admin sees thermal Notification + /api/notifications/count >= 1 +
+       TEMP_HIGH row on the event log
+  05 - Operator A (Group A) sees the notification + event log row
+  06 - Viewer (Group A, read-only) sees the notification
+  07 - NEGATIVE: Operator B (Group B) sees no thermal notif for this device,
+       no TEMP_HIGH row in their event log, and no dashboard banner either
+  08 - clear phase: simulator drops cpu_temp to 50 C (sub-warning).
+       alert_service emits a TEMP_CLEARED Notification (level=info) +
+       DeviceEvent(temp_cleared). Admin + Operator A see the cleared state.
+       Dashboard no longer renders badge-temp-critical for the device.
+  99 - belt-and-braces cleanup: clear all simulator faults
 
 Depends on Phases 0-7 having set up OOBE, adopted devices, and created the
 RBAC fixtures (Operator A / Viewer in Group A, Operator B in Group B).
+
+Default alert thresholds (``cms.services.alert_service``):
+  WARNING  = 70.0 C   ->  Notification level="warning"
+  CRITICAL = 80.0 C   ->  Notification level="error"
+  CLEAR    =  <WARNING ->  Notification level="info", event TEMP_CLEARED
 """
 
 from __future__ import annotations
@@ -38,7 +44,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import httpx
 import pytest
 from playwright.sync_api import BrowserContext, Page
 
@@ -51,8 +56,15 @@ from tests.nightly.test_06_rbac import (
 )
 
 
-CRITICAL_TEMP_C = 85.0
-TEMP_PROPAGATION_TIMEOUT_S = 30.0
+CRITICAL_TEMP_C = 82.0
+SUB_WARNING_TEMP_C = 50.0
+# Simulator heartbeat is 30 s (STATUS_INTERVAL in agora.cms_client.service);
+# state changes kick in a rapid 3 s cadence. Give up to 60 s to see a value
+# land in the CMS.
+TEMP_PROPAGATION_TIMEOUT_S = 60.0
+# Once the CMS observes the threshold crossing, the notification + event
+# are created in a fire-and-forget asyncio task. Poll briefly for them.
+ALERT_EMISSION_TIMEOUT_S = 15.0
 
 
 # Shared state populated by earlier tests in this module.
@@ -89,6 +101,43 @@ def _list_notifications(page: Page) -> list[dict]:
     return resp.json()
 
 
+def _notification_count(page: Page) -> int:
+    resp = page.request.get("/api/notifications/count")
+    assert resp.status == 200, f"notif count -> {resp.status}: {resp.text()[:200]}"
+    return int(resp.json().get("unread", 0))
+
+
+def _list_device_events(
+    page: Page, *, device_id: str | None = None, event_type: str | None = None
+) -> list[dict]:
+    qs = []
+    if device_id:
+        qs.append(f"device_id={device_id}")
+    if event_type:
+        qs.append(f"event_type={event_type}")
+    qs.append("limit=200")
+    url = "/api/device-events?" + "&".join(qs)
+    resp = page.request.get(url)
+    assert resp.status == 200, f"list device-events -> {resp.status}: {resp.text()[:400]}"
+    return resp.json()
+
+
+def _thermal_notifs_for(notifs: list[dict], device_id: str, event_type: str) -> list[dict]:
+    """Filter `notifs` to ones emitted by alert_service for this device + event.
+
+    alert_service stores ``details={"device_id": ..., "event_type": ..., ...}``.
+    """
+    out: list[dict] = []
+    for n in notifs:
+        det = n.get("details") or {}
+        if str(det.get("device_id", "")) != str(device_id):
+            continue
+        if str(det.get("event_type", "")) != event_type:
+            continue
+        out.append(n)
+    return out
+
+
 def _has_thermal_notif_for(notifs: list[dict], device_id: str) -> bool:
     """True if any notif in the list refers to our device hitting the thermal threshold."""
     for n in notifs:
@@ -100,6 +149,54 @@ def _has_thermal_notif_for(notifs: list[dict], device_id: str) -> bool:
         if str(device_id).lower() in blob:
             return True
     return False
+
+
+def _wait_for_thermal_notif(
+    page: Page, device_id: str, event_type: str, *, timeout: float = ALERT_EMISSION_TIMEOUT_S
+) -> dict:
+    """Poll admin's notification feed until a notif for (device, event_type) appears."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        matches = _thermal_notifs_for(_list_notifications(page), device_id, event_type)
+        if matches:
+            return matches[0]
+        time.sleep(0.5)
+    pytest.fail(
+        f"no {event_type!r} notification for device {device_id} after {timeout}s"
+    )
+
+
+def _wait_for_thermal_event(
+    page: Page, device_id: str, event_type: str, *, timeout: float = ALERT_EMISSION_TIMEOUT_S
+) -> dict:
+    """Poll the device-events endpoint until a matching row appears."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events = _list_device_events(page, device_id=device_id, event_type=event_type)
+        if events:
+            return events[0]
+        time.sleep(0.5)
+    pytest.fail(
+        f"no {event_type!r} device event for device {device_id} after {timeout}s"
+    )
+
+
+def _wait_for_temp_below(page: Page, device_id: str, *, below: float) -> float:
+    """Poll GET /api/devices/{id} until cpu_temp_c < below or timeout."""
+    deadline = time.monotonic() + TEMP_PROPAGATION_TIMEOUT_S
+    last_val: float | None = None
+    while time.monotonic() < deadline:
+        resp = page.request.get(f"/api/devices/{device_id}")
+        if resp.status == 200:
+            body = resp.json()
+            last_val = body.get("cpu_temp_c")
+            if last_val is not None and last_val < below:
+                return last_val
+        time.sleep(0.5)
+    pytest.fail(
+        f"cpu_temp_c never dropped below {below} for device {device_id} "
+        f"after {TEMP_PROPAGATION_TIMEOUT_S}s; last value = {last_val!r}"
+    )
 
 
 # ── tests ─────────────────────────────────────────────────────────────────
@@ -136,7 +233,7 @@ def test_01_assign_device_to_group_a(authenticated_page: Page) -> None:
 def test_02_simulator_forces_critical_temperature(
     simulator, authenticated_page: Page
 ) -> None:
-    """Force the device to 85 C via the sim fault API and confirm CMS sees it."""
+    """Force the device to 82 C via the sim fault API and confirm CMS sees it."""
     device_id = THERMAL_STATE["device_id"]
     serial = THERMAL_STATE["device_serial"]
     assert device_id and serial
@@ -148,8 +245,8 @@ def test_02_simulator_forces_critical_temperature(
     except Exception:
         simulator.clear_faults(serial)
         raise
-    # Leave the fault applied for the later tests in this module; final
-    # cleanup test clears it.
+    # Leave the fault applied for the later tests in this module; the clear
+    # phase (test_08) + final cleanup (test_99) restore normal state.
 
 
 def test_03_dashboard_shows_critical_row_for_device(authenticated_page: Page) -> None:
@@ -169,73 +266,171 @@ def test_03_dashboard_shows_critical_row_for_device(authenticated_page: Page) ->
     assert ("Critical" in html) or ("critical" in html.lower()), html[:2000]
 
 
-# ── #263 spec (xfail until the feature lands) ─────────────────────────────
+# ── #263 round-trip: admin + Operator A + Viewer see raise; Operator B doesn't ───
 
 
-@pytest.mark.xfail(
-    reason="#263: no code path in CMS emits a group-scoped notification "
-    "for cpu_temp_c>=80 yet. Flip xfail -> active when feature lands.",
-    strict=True,
-)
-def test_04_admin_receives_thermal_notification(authenticated_page: Page) -> None:
-    """Admin's notification feed should contain the critical thermal event."""
+def test_04_admin_sees_thermal_notification_and_event(authenticated_page: Page) -> None:
+    """Admin sees the raised Notification (scope=group, level=error) +
+    /api/notifications/count >= 1 + a TEMP_HIGH row in the device event log.
+    """
     device_id = THERMAL_STATE["device_id"]
     assert device_id
 
-    # Give the (future) emitter a moment to land the notification.
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        notifs = _list_notifications(authenticated_page)
-        if _has_thermal_notif_for(notifs, device_id):
-            # Also assert the scope + group_id shape per #263 AC-1.
-            match = next(
-                n for n in notifs
-                if str((n.get("details") or {}).get("device_id", "")) == str(device_id)
-                or str(device_id).lower() in f"{n.get('title','')} {n.get('message','')}".lower()
-            )
-            assert match.get("scope") == "group"
-            assert str(match.get("group_id")) == str(RBAC_STATE["group_a_id"])
-            assert match.get("level") == "error"
-            return
-        time.sleep(0.5)
-    pytest.fail(f"admin never saw a thermal notification for device {device_id}")
+    # Notification content shape (per #263 AC-1: scope=group, tracks group_id)
+    notif = _wait_for_thermal_notif(authenticated_page, device_id, "temp_high")
+    assert notif["scope"] == "group", notif
+    assert str(notif["group_id"]) == str(RBAC_STATE["group_a_id"]), notif
+    assert notif["level"] == "error", f"82C must emit critical/error, got {notif['level']}"
+    det = notif.get("details") or {}
+    assert det.get("cpu_temp_c") is not None and det["cpu_temp_c"] >= 80.0, det
+
+    # Notification bell unread count must reflect >= 1
+    assert _notification_count(authenticated_page) >= 1, (
+        "admin's unread notification count should include the thermal alert"
+    )
+
+    # Event log has a TEMP_HIGH row for this device with the temp in details.
+    event = _wait_for_thermal_event(authenticated_page, device_id, "temp_high")
+    assert event["event_type"] == "temp_high", event
+    assert str(event["device_id"]) == str(device_id), event
+    det = event.get("details") or {}
+    assert det.get("cpu_temp_c") is not None and det["cpu_temp_c"] >= 80.0, det
+    assert det.get("level") == "critical", det
 
 
-@pytest.mark.xfail(reason="#263: depends on group-scoped thermal notification path.", strict=True)
-def test_05_operator_in_same_group_sees_notification(browser_context: BrowserContext) -> None:
+def test_05_operator_in_same_group_sees_notification(
+    browser_context: BrowserContext,
+) -> None:
+    """Operator A (member of Group A) sees the notif + event log row + dashboard critical."""
     device_id = THERMAL_STATE["device_id"]
+    assert device_id
+
     op_page = _login_page(browser_context, OPERATOR_A["email"], OPERATOR_A["password"])
-    assert _has_thermal_notif_for(_list_notifications(op_page), device_id), (
-        "Operator A (Group A) should see the thermal notification"
+
+    # Notification via bell feed
+    notifs = _thermal_notifs_for(
+        _list_notifications(op_page), device_id, "temp_high"
+    )
+    assert notifs, "Operator A (Group A) should see the thermal notification"
+    assert notifs[0]["level"] == "error"
+
+    # Event log (RBAC: operator sees events for groups they belong to)
+    events = _list_device_events(op_page, device_id=device_id, event_type="temp_high")
+    assert events, "Operator A should see the TEMP_HIGH event for their group's device"
+
+    # Dashboard renders the critical banner for them too
+    resp = op_page.request.get("/")
+    assert resp.status == 200
+    html = resp.text()
+    assert "badge-temp-critical" in html, (
+        "Operator A dashboard should render badge-temp-critical for >=80C device"
     )
 
 
-@pytest.mark.xfail(reason="#263: depends on group-scoped thermal notification path.", strict=True)
-def test_06_viewer_in_same_group_sees_notification(browser_context: BrowserContext) -> None:
+def test_06_viewer_in_same_group_sees_notification(
+    browser_context: BrowserContext,
+) -> None:
+    """Viewer in Group A sees the notification (read-only)."""
     device_id = THERMAL_STATE["device_id"]
+    assert device_id
+
     v_page = _login_page(browser_context, VIEWER["email"], VIEWER["password"])
-    assert _has_thermal_notif_for(_list_notifications(v_page), device_id), (
-        "Viewer (Group A) should see the thermal notification (read-only)"
+    notifs = _thermal_notifs_for(
+        _list_notifications(v_page), device_id, "temp_high"
     )
+    assert notifs, "Viewer (Group A) should see the thermal notification (read-only)"
 
 
-@pytest.mark.xfail(reason="#263: depends on group-scoped thermal notification path.", strict=True)
 def test_07_operator_in_other_group_does_not_see_notification(
     browser_context: BrowserContext,
 ) -> None:
-    """Cross-group isolation: Operator B (Group B) must NOT see Group A's thermal event.
+    """NEGATIVE: Operator B (Group B) must NOT see Group A's thermal event.
 
-    xfail is strict + inverted: this will report as xfail as long as the
-    notification doesn't exist at all. Once #263 lands and the feature is
-    correct, Operator B's list will still not contain the notification, so
-    this test must be rewritten when xfail is flipped:
-        ``assert not _has_thermal_notif_for(...)``
+    Cross-group isolation check: notification feed, event log, and dashboard
+    critical banner are all gated by group membership. Operator B belongs
+    only to Group B; Group A's device being hot is none of their business.
     """
     device_id = THERMAL_STATE["device_id"]
+    assert device_id
+
     op_b_page = _login_page(browser_context, OPERATOR_B["email"], OPERATOR_B["password"])
-    # Intentionally asserts PRESENCE so it currently xfails. When #263 is
-    # implemented, swap to ``assert not _has_thermal_notif_for(...)``.
-    assert _has_thermal_notif_for(_list_notifications(op_b_page), device_id)
+
+    # No thermal notification at all — not for this device, not for any device.
+    assert not _has_thermal_notif_for(
+        _list_notifications(op_b_page), device_id
+    ), "Operator B (Group B) must not see Group A's thermal notification"
+
+    # Event log for this device must be empty when queried by op_b.
+    events = _list_device_events(op_b_page, device_id=device_id, event_type="temp_high")
+    assert events == [], (
+        f"Operator B must not see TEMP_HIGH events for a Group A device; got {events!r}"
+    )
+
+    # Dashboard: op_b has no devices >= 80C (their one device is the default
+    # 45C). No critical badge should render for them.
+    resp = op_b_page.request.get("/")
+    assert resp.status == 200
+    html = resp.text()
+    assert "badge-temp-critical" not in html, (
+        "Operator B dashboard must not show badge-temp-critical — they don't own "
+        "the hot device and Group A is not in their visibility"
+    )
+
+
+# ── clear phase: drop below warning -> TEMP_CLEARED notification + event ───
+
+
+def test_08_clear_fault_emits_cleared_notification(
+    simulator, authenticated_page: Page, browser_context: BrowserContext
+) -> None:
+    """Drop cpu_temp below warning, assert TEMP_CLEARED emits + dashboard clears."""
+    device_id = THERMAL_STATE["device_id"]
+    serial = THERMAL_STATE["device_serial"]
+    assert device_id and serial
+
+    # Drive temp back into normal range (< WARNING=70C). Use an explicit value
+    # rather than clear_faults() so we know exactly what the heartbeat reports.
+    simulator.apply_fault(serial, cpu_temp=SUB_WARNING_TEMP_C)
+
+    # Wait for the heartbeat carrying the new low temp to land.
+    observed = _wait_for_temp_below(authenticated_page, device_id, below=70.0)
+    assert observed < 70.0
+
+    # alert_service emits the TEMP_CLEARED Notification (level=info) + event.
+    cleared = _wait_for_thermal_notif(authenticated_page, device_id, "temp_cleared")
+    assert cleared["level"] == "info", cleared
+    assert cleared["scope"] == "group"
+    assert str(cleared["group_id"]) == str(RBAC_STATE["group_a_id"])
+    det = cleared.get("details") or {}
+    assert det.get("cpu_temp_c") is not None and det["cpu_temp_c"] < 70.0
+
+    # Event log has the TEMP_CLEARED row.
+    event = _wait_for_thermal_event(authenticated_page, device_id, "temp_cleared")
+    assert event["event_type"] == "temp_cleared"
+    assert str(event["device_id"]) == str(device_id)
+
+    # Operator A also sees the clearance (same group).
+    op_page = _login_page(browser_context, OPERATOR_A["email"], OPERATOR_A["password"])
+    op_cleared = _thermal_notifs_for(
+        _list_notifications(op_page), device_id, "temp_cleared"
+    )
+    assert op_cleared, "Operator A should see the TEMP_CLEARED notification"
+    op_events = _list_device_events(
+        op_page, device_id=device_id, event_type="temp_cleared"
+    )
+    assert op_events, "Operator A should see the TEMP_CLEARED event log row"
+
+    # Dashboard no longer renders badge-temp-critical (no devices >= 80C).
+    # NB: dashboard gates the "issues" banner on ANY device being hot; since
+    # all three test devices are now at or below profile default, the
+    # critical/warning badges should be gone. The inner dashboard still
+    # exists — we only assert the critical badge is absent.
+    resp = authenticated_page.request.get("/")
+    assert resp.status == 200
+    html = resp.text()
+    assert "badge-temp-critical" not in html, (
+        "dashboard still rendering badge-temp-critical after temperature cleared"
+    )
 
 
 # ── cleanup ───────────────────────────────────────────────────────────────
