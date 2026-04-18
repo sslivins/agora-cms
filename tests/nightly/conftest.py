@@ -37,14 +37,13 @@ PROJECT_NAME = os.environ.get("NIGHTLY_PROJECT", "agora-nightly")
 
 
 # ── opt-in flag ──
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--run-nightly",
-        action="store_true",
-        default=False,
-        help="Run nightly E2E tests (requires docker + agora-device-simulator sibling repo).",
-    )
+#
+# `--run-nightly` is registered in `tests/conftest.py` (one level up)
+# so that `pytest tests/` skips the entire nightly dir at collection
+# time — otherwise these modules' module-scope `from playwright.sync_api
+# import ...` statements crash the unit-test CI where playwright isn't
+# installed. We reuse the same flag here for the skip-vs-timeout
+# marker logic below.
 
 
 def _nightly_enabled(config: pytest.Config) -> bool:
