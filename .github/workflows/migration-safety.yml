@@ -1,0 +1,107 @@
+name: Migration Safety
+
+# Catches migrations that break against a populated database — the kind
+# of issue that a fresh-DB test suite cannot surface.
+#
+# Strategy:
+#   1. Check out main into a sibling dir.
+#   2. Using main's code, initialise the schema and seed a synthetic
+#      dataset (~10 rows per major table).
+#   3. Switch to the PR's code and run run_migrations() against the
+#      populated database.
+#   4. Run the post-migration verification script (row counts survive,
+#      relational queries still execute).
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'README*'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'tests/nightly/**'
+      - '.github/workflows/nightly.yml'
+      - '.github/workflows/ci-gate.yml'
+
+jobs:
+  migration-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agora_test
+          POSTGRES_PASSWORD: agora_test
+          POSTGRES_DB: agora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agora_test -d agora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+        with:
+          path: pr
+
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install base (main) dependencies
+        working-directory: base
+        run: |
+          pip install -r requirements.txt
+
+      # Copy the seed script from the PR into main's tree so it's
+      # guaranteed to exist even when running against the baseline.
+      - name: Stage seed script into base
+        run: |
+          mkdir -p base/scripts
+          cp pr/scripts/ci_seed_synthetic.py base/scripts/ci_seed_synthetic.py
+
+      - name: Initialise schema + seed synthetic data (using main's code)
+        working-directory: base
+        env:
+          PYTHONPATH: ${{ github.workspace }}/base
+        run: python scripts/ci_seed_synthetic.py
+
+      - name: Install PR branch dependencies
+        working-directory: pr
+        run: |
+          pip install -r requirements.txt --upgrade
+
+      - name: Run PR branch migrations against populated database
+        working-directory: pr
+        env:
+          PYTHONPATH: ${{ github.workspace }}/pr
+        run: |
+          python - <<'PY'
+          import asyncio
+          from cms.database import dispose_db, init_db, run_migrations
+
+          async def main():
+              await init_db()
+              await run_migrations()
+              await dispose_db()
+
+          asyncio.run(main())
+          PY
+
+      - name: Verify populated DB survived branch migrations
+        working-directory: pr
+        env:
+          PYTHONPATH: ${{ github.workspace }}/pr
+        run: python scripts/ci_verify_post_migration.py
