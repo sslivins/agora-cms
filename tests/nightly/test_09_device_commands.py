@@ -17,6 +17,7 @@ Depends on phases 1-3 (stack + OOBE) and phase 4 (all 3 devices adopted).
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 import pytest
@@ -41,18 +42,41 @@ def _adopted_device_ids(page: Page) -> list[str]:
     return sorted(d["id"] for d in _api_get(page, "/api/devices") if d["status"] == "adopted")
 
 
+def _wait_for_online(page: Page, device_id: str, timeout: float = 30.0) -> None:
+    """Poll the CMS API until the device is reported online."""
+    deadline = time.time() + timeout
+    last: dict[str, Any] = {}
+    while time.time() < deadline:
+        last = _api_get(page, f"/api/devices/{device_id}")
+        if last.get("is_online"):
+            return
+        time.sleep(0.5)
+    raise AssertionError(
+        f"device {device_id} not online after {timeout}s: {last!r}"
+    )
+
+
 def _expand_device_row(page: Page, device_id: str) -> None:
-    """Click the row to expose the detail toolbar with action buttons."""
+    """Click the row to expose the detail toolbar with action buttons.
+
+    The toolbar is rendered with inline ``style="display:none"`` when the
+    device isn't online at template-render time. We must wait for the CMS
+    to observe the live WS state before navigating, otherwise the action
+    buttons stay hidden even after expanding the row.
+    """
+    _wait_for_online(page, device_id)
     page.goto("/devices")
     page.wait_for_load_state("domcontentloaded")
-    row = page.locator(f'tr.device-row[data-device-id="{device_id}"]').first
+    # Prefer the full expandable row in the main Devices table (not the
+    # compact row that appears in the groups panel for the same device).
+    row = page.locator(
+        f'tr.device-row[data-device-id="{device_id}"][onclick*="toggleDevice"]'
+    ).first
     expect(row).to_be_visible(timeout=10_000)
-    # Idempotent: only click if not already expanded.
     if "expanded" not in (row.get_attribute("class") or ""):
         row.click()
-    # The toolbar with action buttons must now be visible.
     toolbar = page.locator(f'[data-live-toolbar="{device_id}"]').first
-    expect(toolbar).to_be_visible(timeout=5_000)
+    expect(toolbar).to_be_visible(timeout=10_000)
 
 
 def _click_action(page: Page, device_id: str, button_text: str) -> None:
