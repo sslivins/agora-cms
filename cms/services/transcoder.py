@@ -25,7 +25,11 @@ from shared.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from shared.models.device_profile import DeviceProfile
 from shared.models.job import JobType
 from shared.services.image import convert_image, convert_image_to_jpeg, image_variant_ext  # noqa: F401
-from shared.services.jobs import enqueue_job, enqueue_jobs, sweep_orphans
+from shared.services.jobs import (
+    drain_outbox,
+    enqueue_job,
+    enqueue_jobs,
+)
 from shared.services.probe import probe_media  # noqa: F401
 
 logger = logging.getLogger("agora.cms.transcoder")
@@ -33,7 +37,12 @@ logger = logging.getLogger("agora.cms.transcoder")
 # ── Monitor loop intervals ──────────────────────────────────────
 _MONITOR_INTERVAL = int(os.environ.get("AGORA_MONITOR_INTERVAL", "30"))
 _STALE_PROCESSING_TIMEOUT = int(os.environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
-_ORPHAN_JOB_AGE_SECONDS = int(os.environ.get("AGORA_ORPHAN_JOB_AGE", "120"))    # 2 min
+# Outbox drainer interval — kept short so producer-to-queue latency stays
+# sub-second-ish.  In Postgres mode we additionally LISTEN on the
+# ``transcode_outbox`` channel for instant wake-up; this poll is the
+# safety net that catches missed NOTIFYs (e.g. CMS crashed after commit
+# but before NOTIFY, or LISTEN connection dropped silently).
+_OUTBOX_DRAIN_INTERVAL = int(os.environ.get("AGORA_OUTBOX_DRAIN_INTERVAL", "5"))
 
 
 def _image_variant_ext(asset) -> str:
@@ -362,32 +371,32 @@ async def _enqueue_transcoding_for_asset(
 
 
 async def stream_capture_monitor_loop() -> None:
-    """Background loop: reconcile captures, sweep orphans, reset stale work.
+    """Background loop: reconcile captures and reset stale work.
 
     Runs in the CMS process as an asyncio task (same pattern as
     ``scheduler_loop``).
 
-    Three reconciliation phases per tick:
+    Two reconciliation phases per tick:
 
     1. **Completed captures → variants**.  A SAVED_STREAM with size_bytes>0
        and no variants means the worker just finished capturing.  Create
        the variant rows and enqueue VARIANT_TRANSCODE jobs.
 
-    2. **Orphan jobs**.  Any PENDING job older than ``_ORPHAN_JOB_AGE_SECONDS``
-       likely lost its queue message (CMS crashed between commit and send,
-       or transient queue error).  Re-send the queue message.
-
-    3. **Stale PROCESSING variants**.  A PROCESSING variant with no progress
+    2. **Stale PROCESSING variants**.  A PROCESSING variant with no progress
        after the stale timeout had its worker crash.  Reset to PENDING and
        enqueue a fresh job.
+
+    (Orphan-job sweeping used to live here; the transactional outbox
+    — see ``shared.services.jobs.drain_outbox`` — now guarantees every
+    committed Job has a queue message, so the sweep is no longer needed.)
     """
     from datetime import datetime, timezone, timedelta
     from cms.database import get_db
 
     logger.info(
         "Stream capture monitor started "
-        "(interval=%ds, stale_timeout=%ds, orphan_age=%ds)",
-        _MONITOR_INTERVAL, _STALE_PROCESSING_TIMEOUT, _ORPHAN_JOB_AGE_SECONDS,
+        "(interval=%ds, stale_timeout=%ds)",
+        _MONITOR_INTERVAL, _STALE_PROCESSING_TIMEOUT,
     )
 
     while True:
@@ -417,14 +426,7 @@ async def stream_capture_monitor_loop() -> None:
                             asset.id, len(variant_ids),
                         )
 
-            # ── 2. Orphan job sweep ──
-            async for db in get_db():
-                try:
-                    await sweep_orphans(db, stale_seconds=_ORPHAN_JOB_AGE_SECONDS)
-                except Exception:
-                    logger.exception("Orphan job sweep failed")
-
-            # ── 3. Stale PROCESSING variants → reset to PENDING ──
+            # ── 2. Stale PROCESSING variants → reset to PENDING ──
             async for db in get_db():
                 cutoff = datetime.now(timezone.utc) - timedelta(seconds=_STALE_PROCESSING_TIMEOUT)
                 result = await db.execute(
@@ -458,6 +460,40 @@ async def stream_capture_monitor_loop() -> None:
             raise
         except Exception:
             logger.exception("Error in stream capture monitor loop")
+
+
+# ── Outbox drainer loop ─────────────────────────────────────────
+
+
+async def outbox_drain_loop() -> None:
+    """Background loop: drain the JobOutbox to the queue.
+
+    Runs every ``_OUTBOX_DRAIN_INTERVAL`` seconds and calls
+    :func:`shared.services.jobs.drain_outbox`, which sends pending queue
+    messages and deletes the outbox rows on success.  In Postgres mode the
+    poll is supplemented by ``LISTEN transcode_outbox`` (TODO: future
+    enhancement; the 5s poll is the initial implementation).
+
+    The drainer is idempotent and safe under concurrent CMS replicas:
+    overlapping sends produce duplicate queue messages which the worker
+    dedupes via ``claim_job``'s DONE-detection path.
+    """
+    from cms.database import get_db
+
+    logger.info("Outbox drainer started (interval=%ds)", _OUTBOX_DRAIN_INTERVAL)
+    while True:
+        try:
+            await asyncio.sleep(_OUTBOX_DRAIN_INTERVAL)
+            async for db in get_db():
+                try:
+                    await drain_outbox(db)
+                except Exception:
+                    logger.exception("drain_outbox failed")
+        except asyncio.CancelledError:
+            logger.info("Outbox drainer shutting down")
+            raise
+        except Exception:
+            logger.exception("Error in outbox drain loop")
 
 
 # ── Soft-delete reaper ──────────────────────────────────────────
