@@ -71,14 +71,16 @@ async def _any_existing_pk(conn, table: str):
 def _placeholder_for(col: str, info: dict, idx: int):
     """Best-effort value for a NOT NULL column the seed didn't supply."""
     dtype = (info.get("data_type") or "").lower()
+    if dtype == "array":
+        return []
+    if "json" in dtype:
+        return {}
     if "char" in dtype or "text" in dtype:
         return f"seed_{col}_{idx}"
     if "int" in dtype:
         return idx
     if "bool" in dtype:
         return False
-    if "json" in dtype:
-        return "{}"
     if "timestamp" in dtype or "date" in dtype:
         return datetime.now(timezone.utc)
     if "uuid" in dtype:
