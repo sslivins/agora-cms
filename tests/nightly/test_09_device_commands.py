@@ -66,17 +66,63 @@ def _expand_device_row(page: Page, device_id: str) -> None:
     """
     _wait_for_online(page, device_id)
     page.goto("/devices")
-    page.wait_for_load_state("domcontentloaded")
-    # Prefer the full expandable row in the main Devices table (not the
-    # compact row that appears in the groups panel for the same device).
-    row = page.locator(
-        f'tr.device-row[data-device-id="{device_id}"][onclick*="toggleDevice"]'
+    page.wait_for_load_state("networkidle")
+    # Expand the full row in the main Devices table via JS toggleDevice()
+    # (bypassing any click-bubbling edge cases) and verify the detail TR
+    # is visible before asserting on the toolbar inside it.
+    expanded = page.evaluate(
+        """(deviceId) => {
+            const row = document.querySelector(
+                `tr.device-row[data-device-id="${deviceId}"][onclick*="toggleDevice"]`
+            );
+            if (!row) return { ok: false, reason: "row-not-found" };
+            if (!row.classList.contains("expanded")) { row.click(); }
+            const detail = document.querySelector(
+                `tr.device-detail[data-detail-for="${deviceId}"]`
+            );
+            const toolbar = document.querySelector(
+                `[data-live-toolbar="${deviceId}"]`
+            );
+            return {
+                ok: true,
+                expanded: row.classList.contains("expanded"),
+                detailDisplay: detail ? detail.style.display : null,
+                toolbarExists: !!toolbar,
+                toolbarInlineDisplay: toolbar ? toolbar.style.display : null,
+            };
+        }""",
+        device_id,
+    )
+    assert expanded.get("ok"), f"could not expand row for {device_id}: {expanded!r}"
+    # Detail TR should now be visible (display != "none").
+    detail_tr = page.locator(
+        f'tr.device-detail[data-detail-for="{device_id}"]'
     ).first
-    expect(row).to_be_visible(timeout=10_000)
-    if "expanded" not in (row.get_attribute("class") or ""):
-        row.click()
+    expect(detail_tr).to_be_visible(timeout=10_000)
     toolbar = page.locator(f'[data-live-toolbar="{device_id}"]').first
-    expect(toolbar).to_be_visible(timeout=10_000)
+    # Some races: the template rendered is_online=False before our API poll
+    # caught up. The devices-page live updater polls every ~5s and will flip
+    # toolbar.style.display to '' once /api/devices reports online. Wait up
+    # to 15s for that. Use a longer timeout than the 10s live-update cadence.
+    try:
+        expect(toolbar).to_be_visible(timeout=15_000)
+    except AssertionError:
+        diag = page.evaluate(
+            """(deviceId) => {
+                const t = document.querySelector(`[data-live-toolbar="${deviceId}"]`);
+                const d = document.querySelector(`tr.device-detail[data-detail-for="${deviceId}"]`);
+                return {
+                    toolbarInlineDisplay: t ? t.style.display : null,
+                    toolbarComputedDisplay: t ? getComputedStyle(t).display : null,
+                    detailInlineDisplay: d ? d.style.display : null,
+                    detailComputedDisplay: d ? getComputedStyle(d).display : null,
+                };
+            }""",
+            device_id,
+        )
+        raise AssertionError(
+            f"toolbar for {device_id} stayed hidden; expand={expanded!r} diag={diag!r}"
+        )
 
 
 def _click_action(page: Page, device_id: str, button_text: str) -> None:
