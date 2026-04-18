@@ -580,9 +580,17 @@ async def reset_profile(
     )
 
 
-@router.get("/status", dependencies=[Depends(require_permission(PROFILES_READ))])
-async def profiles_status_json(db: AsyncSession = Depends(get_db)):
-    """Lightweight JSON for profiles page polling — queue status + profile variant counts."""
+@router.get("/status")
+async def profiles_status_json(
+    user=Depends(require_permission(PROFILES_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight JSON for profiles page polling — queue status + profile variant counts.
+
+    Queue entries are filtered to assets the caller is permitted to see (to avoid
+    leaking filenames of group-scoped assets to non-admin users).
+    """
+    from cms.routers.assets import _visible_asset_ids
 
     # Profile variant summaries
     result = await db.execute(
@@ -606,14 +614,22 @@ async def profiles_status_json(db: AsyncSession = Depends(get_db)):
             "matches_defaults": _matches_defaults(p),
         })
 
-    # Transcode queue (pending / processing / failed)
-    queue_result = await db.execute(
+    # Transcode queue (pending / processing / failed) — scoped to visible assets
+    visible = await _visible_asset_ids(user, db)
+    queue_q = (
         select(AssetVariant)
         .where(AssetVariant.status.in_([VariantStatus.PENDING, VariantStatus.PROCESSING, VariantStatus.FAILED]))
         .order_by(AssetVariant.created_at)
         .limit(50)
     )
-    queue_variants = queue_result.scalars().all()
+    if visible is not None:
+        if not visible:
+            queue_variants = []
+        else:
+            queue_q = queue_q.where(AssetVariant.source_asset_id.in_(visible))
+            queue_variants = (await db.execute(queue_q)).scalars().all()
+    else:
+        queue_variants = (await db.execute(queue_q)).scalars().all()
 
     queue_out = []
     for v in queue_variants:
