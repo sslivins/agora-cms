@@ -15,7 +15,8 @@ import sys
 
 from sqlalchemy import text
 
-from cms.database import dispose_db, init_db, run_migrations
+from cms.auth import get_settings
+from cms.database import dispose_db, init_db, run_migrations, wait_for_db
 from shared import database as _shared_db
 
 
@@ -32,7 +33,8 @@ EXPECTED_TABLES = [
 
 
 async def verify() -> int:
-    await init_db()
+    init_db(get_settings())
+    await wait_for_db()
     await run_migrations()
 
     failures: list[str] = []

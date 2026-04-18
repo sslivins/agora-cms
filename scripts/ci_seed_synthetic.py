@@ -22,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
-from cms.database import dispose_db, init_db, run_migrations
+from cms.auth import get_settings
+from cms.database import dispose_db, init_db, run_migrations, wait_for_db
 from shared import database as _shared_db
 
 
@@ -52,7 +53,8 @@ async def _insert(conn, table: str, row: dict) -> None:
 
 
 async def seed(count: int = 10) -> None:
-    await init_db()
+    init_db(get_settings())
+    await wait_for_db()
     await run_migrations()
 
     async with _shared_db._engine.begin() as conn:
