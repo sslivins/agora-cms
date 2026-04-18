@@ -15,6 +15,10 @@ on:
     paths:
       - 'tests/nightly/**'
       - '.github/workflows/nightly.yml'
+  # Runs on every main push so it can serve as the pre-deploy gate
+  # (Publish & Deploy is triggered off a successful Nightly E2E run).
+  push:
+    branches: [main]
 
 concurrency:
   group: nightly-e2e

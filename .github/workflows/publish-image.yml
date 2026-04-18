@@ -2,7 +2,7 @@ name: Publish & Deploy
 
 on:
   workflow_run:
-    workflows: [Tests]
+    workflows: [Nightly E2E]
     types: [completed]
     branches: [main]
 
@@ -260,6 +260,31 @@ jobs:
         run: |
           echo "::error::Deployment verification failed — expected version ${{ needs.publish.outputs.version }} but got ${{ steps.health.outputs.last_version }}"
           exit 1
+
+      - name: Post-deploy smoke probes
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ vars.INFRA_PREFIX }}-cms \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+
+          fail=0
+
+          # System health endpoint — exercises the CMS↔MCP service-key trust chain.
+          echo "── GET /api/system/health ──"
+          CODE=$(curl -s -o /tmp/sys.json -w '%{http_code}' "https://${FQDN}/api/system/health" --max-time 10 || echo "000")
+          echo "  HTTP $CODE"
+          cat /tmp/sys.json 2>/dev/null || true
+          echo ""
+          if [ "$CODE" != "200" ]; then
+            echo "::error::/api/system/health returned HTTP $CODE"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "✅ All post-deploy smoke probes passed"
 
   # Commit the auto-incremented version back to main so the next deploy
   # starts from the newly-released version.  Runs only after verify passes,
