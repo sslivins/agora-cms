@@ -2,7 +2,7 @@ name: Publish & Deploy
 
 on:
   workflow_run:
-    workflows: [Nightly E2E]
+    workflows: [Smoke Test]
     types: [completed]
     branches: [main]
 
