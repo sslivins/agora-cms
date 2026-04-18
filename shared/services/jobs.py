@@ -233,36 +233,6 @@ async def mark_failed(db: AsyncSession, job_id: uuid.UUID, error: str) -> None:
         job.completed_at = datetime.now(timezone.utc)
 
 
-async def sweep_orphans(db: AsyncSession, stale_seconds: int = 120) -> int:
-    """Re-enqueue jobs that appear to be orphaned.
-
-    An orphan is a PENDING job older than ``stale_seconds`` — either the CMS
-    crashed between INSERT and queue.send_message, or the queue message was
-    lost.  We just re-send the queue message; the Job row is left as-is.
-
-    Returns the number of orphan jobs re-enqueued.
-    """
-    from datetime import timedelta
-    from sqlalchemy import select
-
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)
-    result = await db.execute(
-        select(Job.id).where(
-            Job.status == JobStatus.PENDING,
-            Job.created_at < cutoff,
-        )
-    )
-    ids = [row[0] for row in result.all()]
-    for jid in ids:
-        try:
-            await _send_queue_message(jid)
-        except Exception:
-            logger.warning("sweep_orphans send failed for %s", jid, exc_info=True)
-    if ids:
-        logger.info("Orphan sweep re-enqueued %d job(s)", len(ids))
-    return len(ids)
-
-
 async def drain_outbox(db: AsyncSession) -> int:
     """Drain pending JobOutbox rows by sending their queue messages.
 
