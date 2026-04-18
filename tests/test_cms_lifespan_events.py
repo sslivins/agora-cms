@@ -66,7 +66,6 @@ async def test_real_lifespan_logs_cms_started_event(app, db_session, monkeypatch
 
     monkeypatch.setattr(main_mod, "_seed_roles", _noop)
     monkeypatch.setattr(main_mod, "_seed_profiles", _noop)
-    monkeypatch.setattr(main_mod, "_migrate_variant_filenames", _noop)
     monkeypatch.setattr(main_mod, "_backfill_media_metadata", _noop)
     monkeypatch.setattr(main_mod, "ensure_admin_credentials", _noop)
     monkeypatch.setattr(main_mod, "init_db", lambda *_a, **_kw: None)
