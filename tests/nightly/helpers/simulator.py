@@ -76,6 +76,48 @@ class SimulatorClient:
         r.raise_for_status()
         return r.json()
 
+    # --- recording / now-playing inspection (PR #2 on agora-device-simulator) --
+
+    def get_recording(self, serial: str) -> dict:
+        """Fetch the device's inbound-command ring buffer + counters."""
+        r = self._client.get(f"/devices/{serial}/recording")
+        r.raise_for_status()
+        return r.json()
+
+    def reset_recording(self, serial: str) -> dict:
+        """Clear recorded commands + counters for per-test isolation."""
+        r = self._client.delete(f"/devices/{serial}/recording")
+        r.raise_for_status()
+        return r.json()
+
+    def get_now_playing(self, serial: str) -> dict:
+        r = self._client.get(f"/devices/{serial}/now-playing")
+        r.raise_for_status()
+        return r.json().get("now_playing")
+
+    def wait_for_command(
+        self, serial: str, command_type: str,
+        *, count: int = 1, timeout: float = 10.0,
+        poll_interval: float = 0.2,
+    ) -> list[dict]:
+        """Poll the recording until we see `count` commands of `command_type`.
+
+        Returns the matching commands (most-recent last). Raises AssertionError
+        on timeout with the last snapshot for diagnosability.
+        """
+        deadline = time.monotonic() + timeout
+        last: dict = {}
+        while time.monotonic() < deadline:
+            last = self.get_recording(serial)
+            matches = [c for c in last.get("commands", []) if c.get("type") == command_type]
+            if len(matches) >= count:
+                return matches
+            time.sleep(poll_interval)
+        raise AssertionError(
+            f"device {serial} did not receive {count}x '{command_type}' "
+            f"within {timeout}s. Recording: {last!r}"
+        )
+
     def is_ready(self) -> bool:
         try:
             return self._client.get("/devices").status_code == 200
