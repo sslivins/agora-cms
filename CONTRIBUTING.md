@@ -1,0 +1,63 @@
+# Contributing to agora-cms
+
+## Development quickstart
+
+See the top-level `README.md` for local setup, running tests, and the compose
+stack used for end-to-end testing.
+
+## Pull request flow
+
+1. Branch from `main`.
+2. Push your branch and open a PR — do **not** bump `cms/__init__.py`'s
+   `__version__`; that is auto-bumped post-deploy.
+3. Wait for CI:
+   - `CI Gate` — always-pass sentinel (required).
+   - `Tests/test` and `Tests/e2e` — the test suite.
+   - `Migration Safety` — **required**; seeds main's schema with synthetic
+     data, runs your PR's migrations against it, and verifies the DB is
+     still queryable.  See [docs/CI.md](docs/CI.md) for details.
+   - `Smoke Test` — full-stack compose E2E; also runs nightly and on every
+     main push as the pre-deploy gate.
+4. Use `gh pr merge --auto --squash` (or the "Enable auto-merge" UI button).
+   `Migration Safety` being required means auto-merge waits for real
+   validation, so it's safe to enable on any PR.
+
+## Changing the CI pipeline
+
+**Read [docs/CI.md](docs/CI.md) first** — it documents the pipeline shape,
+required checks, branch-protection config, the seed-script quirks, common
+failure modes, and future cleanup items.
+
+Key files if you need to touch CI:
+
+- `.github/workflows/ci-gate.yml` — the required always-pass sentinel.
+- `.github/workflows/tests.yml` — unit + e2e PR tests.
+- `.github/workflows/migration-safety.yml` — PR migration guard-rail.
+- `.github/workflows/nightly.yml` — **display name `Smoke Test`**; runs
+  nightly, on main push (pre-deploy gate), and on PRs.
+- `.github/workflows/publish-image.yml` — build/push/deploy, triggered by a
+  successful Smoke Test on main.  Also auto-bumps `__version__`.
+- `scripts/ci_seed_synthetic.py` — synthetic data seeder.  **Has a quirks
+  list at the top — read it before editing.**
+- `scripts/ci_verify_post_migration.py` — post-migration verifier.
+
+### If you rename a workflow
+
+`publish-image.yml`'s `workflow_run` trigger keys off the workflow
+**display name** (not the filename).  If you change `name:` on
+`nightly.yml`, update `workflows: [...]` in `publish-image.yml` in the
+same PR.
+
+### If you add a new required check
+
+Update branch protection on `main` to include the new check context:
+
+```powershell
+'{"strict":false,"contexts":["ci-gate","migration-safety","<new-check>"]}' |
+  gh api -X PATCH repos/sslivins/agora-cms/branches/main/protection/required_status_checks --input -
+```
+
+## Coding conventions
+
+Match the style of surrounding code.  Run the existing linters/tests before
+pushing; do not add new tooling without discussion.
