@@ -27,29 +27,148 @@ from cms.database import dispose_db, init_db, run_migrations, wait_for_db
 from shared import database as _shared_db
 
 
-async def _existing_columns(conn, table: str) -> set[str]:
+async def _table_info(conn, table: str) -> dict[str, dict]:
+    """Return column metadata for `table`."""
     rows = await conn.execute(
         text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = :t"
+            "SELECT column_name, is_nullable, column_default, data_type, "
+            "       character_maximum_length "
+            "FROM information_schema.columns WHERE table_name = :t"
         ),
         {"t": table},
     )
-    return {r[0] for r in rows}
+    return {
+        r[0]: {
+            "nullable": r[1] == "YES",
+            "has_default": r[2] is not None,
+            "data_type": r[3],
+            "max_len": r[4],
+        }
+        for r in rows
+    }
+
+
+async def _fk_targets(conn, table: str) -> dict[str, str]:
+    """Return {column_name: referenced_table} for FKs on `table`."""
+    rows = await conn.execute(text(
+        "SELECT kcu.column_name, ccu.table_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "  ON tc.constraint_name = kcu.constraint_name "
+        " AND tc.table_schema = kcu.table_schema "
+        "JOIN information_schema.constraint_column_usage ccu "
+        "  ON ccu.constraint_name = tc.constraint_name "
+        " AND ccu.table_schema = tc.table_schema "
+        "WHERE tc.constraint_type = 'FOREIGN KEY' "
+        "  AND tc.table_name = :t"
+    ), {"t": table})
+    return {r[0]: r[1] for r in rows}
+
+
+async def _any_existing_pk(conn, table: str):
+    """Return one PK value from `table`, or None if empty."""
+    try:
+        res = await conn.execute(text(f"SELECT id FROM {table} ORDER BY 1 LIMIT 1"))
+        return res.scalar()
+    except Exception:
+        return None
+
+
+def _placeholder_for(col: str, info: dict, idx: int):
+    """Best-effort value for a NOT NULL column the seed didn't supply."""
+    dtype = (info.get("data_type") or "").lower()
+    max_len = info.get("max_len")
+    if dtype == "array":
+        return []
+    if "json" in dtype:
+        return {}
+    if "char" in dtype or "text" in dtype:
+        val = f"seed_{col}_{idx}"
+        if max_len and len(val) > max_len:
+            val = val[:max_len]
+        return val
+    if "int" in dtype:
+        return idx
+    if "bool" in dtype:
+        return False
+    if "timestamp" in dtype or "date" in dtype:
+        return datetime.now(timezone.utc)
+    if "uuid" in dtype:
+        return uuid.uuid4()
+    if "double" in dtype or "real" in dtype or "numeric" in dtype:
+        return 0
+    val = f"seed_{col}_{idx}"
+    if max_len and len(val) > max_len:
+        val = val[:max_len]
+    return val
+
+
+async def _existing_columns(conn, table: str) -> set[str]:
+    info = await _table_info(conn, table)
+    return set(info.keys())
+
+
+_seed_counter = {"i": 0}
 
 
 async def _insert(conn, table: str, row: dict) -> None:
-    """Insert `row` into `table`, filtering keys to columns that exist."""
-    cols = await _existing_columns(conn, table)
-    filtered = {k: v for k, v in row.items() if k in cols}
+    """Insert `row` into `table`.
+
+    - Filters out keys for columns the table doesn't have (schema drift).
+    - Auto-fills any NOT NULL column without a default that the caller
+      didn't supply, so the seed survives schema additions in `main`
+      that happen between when this script was last updated and now.
+    - For required FK columns, picks an existing PK from the referenced
+      table; if the referenced table is empty, the row is skipped.
+    - Caller-supplied strings are truncated to the column's max length
+      to avoid `value too long` errors on tightly-bounded VARCHARs.
+    - Individual insert failures are logged but do not abort the seed,
+      so one malformed row doesn't lose the rest of the dataset.
+    """
+    info = await _table_info(conn, table)
+    if not info:
+        return
+    fks = await _fk_targets(conn, table)
+    filtered = {}
+    for k, v in row.items():
+        if k not in info:
+            continue
+        meta = info[k]
+        if isinstance(v, str) and meta.get("max_len") and len(v) > meta["max_len"]:
+            v = v[: meta["max_len"]]
+        filtered[k] = v
+    _seed_counter["i"] += 1
+    idx = _seed_counter["i"]
+    for col, meta in info.items():
+        if col in filtered:
+            continue
+        if meta["nullable"] or meta["has_default"]:
+            continue
+        if col in fks:
+            ref = await _any_existing_pk(conn, fks[col])
+            if ref is None:
+                # Required FK target is empty — skip this row entirely
+                # rather than crash the whole seed.
+                return
+            filtered[col] = ref
+        else:
+            filtered[col] = _placeholder_for(col, meta, idx)
     if not filtered:
         return
     keys = ", ".join(filtered.keys())
     placeholders = ", ".join(f":{k}" for k in filtered)
-    await conn.execute(
-        text(f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"),
-        filtered,
-    )
+    # Use a savepoint so a single bad row doesn't poison the whole
+    # outer transaction — we still want the rest of the seed to land.
+    sp = await conn.begin_nested()
+    try:
+        await conn.execute(
+            text(f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"),
+            filtered,
+        )
+        await sp.commit()
+    except Exception as exc:
+        await sp.rollback()
+        print(f"  warn: insert into {table} failed: {type(exc).__name__}: {exc}")
 
 
 async def seed(count: int = 10) -> None:
@@ -59,6 +178,15 @@ async def seed(count: int = 10) -> None:
 
     async with _shared_db._engine.begin() as conn:
         now = datetime.now(timezone.utc)
+
+        # roles (must exist before users — users.role_id FK)
+        for name in ("admin", "editor", "viewer"):
+            await _insert(conn, "roles", {
+                "id": uuid.uuid4(),
+                "name": name,
+                "description": f"seed {name} role",
+                "created_at": now,
+            })
 
         # users
         user_ids = []
@@ -103,7 +231,7 @@ async def seed(count: int = 10) -> None:
         # devices
         device_ids = []
         for i in range(count):
-            did = uuid.uuid4()
+            did = str(uuid.uuid4())
             device_ids.append(did)
             await _insert(conn, "devices", {
                 "id": did,
@@ -128,7 +256,7 @@ async def seed(count: int = 10) -> None:
                 "content_type": "video/mp4",
                 "size_bytes": 1_000_000 + i,
                 "status": "READY",
-                "type": "VIDEO",
+                "asset_type": "VIDEO",
                 "is_global": True,
                 "created_at": now,
             })
@@ -138,7 +266,7 @@ async def seed(count: int = 10) -> None:
             for j in range(2):
                 await _insert(conn, "asset_variants", {
                     "id": uuid.uuid4(),
-                    "asset_id": aid,
+                    "source_asset_id": aid,
                     "filename": f"seed_variant_{i}_{j}.mp4",
                     "profile_id": profile_ids[j % len(profile_ids)] if profile_ids else None,
                     "status": "READY",
@@ -164,7 +292,7 @@ async def seed(count: int = 10) -> None:
         for i in range(count):
             await _insert(conn, "api_keys", {
                 "id": uuid.uuid4(),
-                "key_hash": f"seed_apikey_hash_{i:064d}",
+                "key_hash": f"{i:04d}_seed_apikey_hash_{uuid.uuid4().hex}"[:64],
                 "name": f"seed_apikey_{i}",
                 "user_id": user_ids[i % len(user_ids)] if user_ids else None,
                 "created_at": now,

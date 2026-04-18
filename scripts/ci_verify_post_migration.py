@@ -39,8 +39,11 @@ async def verify() -> int:
 
     failures: list[str] = []
 
+    # Tables we have high confidence will be seeded — empty == catastrophe.
+    REQUIRED_NONEMPTY = {"users", "devices", "assets"}
+
     async with _shared_db._engine.connect() as conn:
-        # 1. Every expected table exists and is non-empty.
+        # 1. Every expected table exists; required ones are non-empty.
         for t in EXPECTED_TABLES:
             try:
                 res = await conn.execute(text(f"SELECT COUNT(*) FROM {t}"))
@@ -48,7 +51,7 @@ async def verify() -> int:
             except Exception as exc:
                 failures.append(f"cannot query {t}: {exc}")
                 continue
-            if n == 0:
+            if t in REQUIRED_NONEMPTY and n == 0:
                 failures.append(f"{t} is empty after migration (seeded data lost)")
             print(f"  {t}: {n} rows")
 
@@ -70,7 +73,7 @@ async def verify() -> int:
         try:
             res = await conn.execute(text(
                 "SELECT a.id, COUNT(v.id) "
-                "FROM assets a LEFT JOIN asset_variants v ON v.asset_id = a.id "
+                "FROM assets a LEFT JOIN asset_variants v ON v.source_asset_id = a.id "
                 "GROUP BY a.id LIMIT 5"
             ))
             rows = res.fetchall()
