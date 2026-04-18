@@ -284,13 +284,15 @@
                             <span class="detail-value">
                                 <a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a>
                                 {% if a.asset_type.value == 'saved_stream' and a.size_bytes == 0 %}
+                                <span data-live-capture="{{ a.id }}" style="margin-left: 0.5rem;">
                                     {% if a.capture_error %}
-                                    <span class="has-tooltip" style="margin-left: 0.5rem;"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
+                                    <span class="has-tooltip"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
                                     {% elif a.capture_progress is not none %}
-                                    <span class="badge badge-progress" style="margin-left: 0.5rem; --pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing</span>
+                                    <span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing {{ "%.0f"|format(a.capture_progress) }}%</span>
                                     {% else %}
-                                    <span class="badge badge-pending" style="margin-left: 0.5rem;">Queued</span>
+                                    <span class="badge badge-pending">Queued</span>
                                     {% endif %}
+                                </span>
                                 {% endif %}
                             </span>
                         </div>
@@ -459,22 +461,6 @@
                                 {% endfor %}
                             </tbody>
                         </table>
-                    </div>
-                    {% elif a.asset_type.value == 'saved_stream' %}
-                    <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
-                        <span class="detail-label">Variants</span>
-                        <div style="margin-top: 0.35rem; font-size: 0.85rem;">
-                            {% if a.capture_error %}
-                            <span class="has-tooltip"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
-                            <span class="text-muted" style="margin-left: 0.5rem;">Use Re-capture to try again</span>
-                            {% elif a.capture_progress is not none %}
-                            <span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing</span>
-                            <span class="text-muted" style="margin-left: 0.5rem;">Variants will appear once capture completes</span>
-                            {% else %}
-                            <span class="badge badge-pending">Pending</span>
-                            <span class="text-muted" style="margin-left: 0.5rem;">Waiting for stream capture to start</span>
-                            {% endif %}
-                        </div>
                     </div>
                     {% endif %}
                 </td>
@@ -799,11 +785,29 @@
         });
     }
 
+    function buildExpandedCaptureBadge(a) {
+        if (a.capture_error) {
+            const msg = (a.capture_error || '').slice(0, 200).replace(/</g, '&lt;');
+            return '<span class="has-tooltip"><span class="badge badge-failed">Capture failed</span>' +
+                '<span class="tooltip">' + msg + '</span></span>';
+        }
+        if (a.capture_progress !== null && a.capture_progress !== undefined) {
+            const pct = Math.min(100, Math.max(0, a.capture_progress));
+            return '<span class="badge badge-progress" style="--pct: ' + pct.toFixed(1) + '%">Capturing ' + Math.round(pct) + '%</span>';
+        }
+        return '<span class="badge badge-pending">Queued</span>';
+    }
+
     function updateLiveAssets(assets) {
         for (const a of assets) {
             // Update main table variant badge
             const variantCell = document.querySelector('[data-live-variants="' + a.id + '"]');
             if (variantCell) variantCell.innerHTML = buildVariantBadge(a);
+            // Update expanded-view capture badge (saved_stream, capture in progress)
+            if (a.asset_type === 'saved_stream') {
+                const captureBadge = document.querySelector('[data-live-capture="' + a.id + '"]');
+                if (captureBadge) captureBadge.innerHTML = buildExpandedCaptureBadge(a);
+            }
             // Update expanded detail panel variant table
             updateVariantTable(a.id, a.variants);
         }

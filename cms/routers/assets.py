@@ -980,9 +980,18 @@ async def delete_asset(
     # Mark as soft-deleted
     asset.deleted_at = datetime.now(timezone.utc)
 
-    # Flag all active jobs for cancellation.  Jobs are polymorphic:
+    # Flag all active jobs for cancellation AND mark them terminal.  Jobs
+    # are polymorphic:
     #   - VARIANT_TRANSCODE.target_id → asset_variants.id (join through variants)
     #   - STREAM_CAPTURE.target_id    → assets.id (direct)
+    #
+    # Setting status=CANCELLED here (rather than just cancel_requested=True)
+    # ensures the reaper can hard-delete promptly even in LISTEN/NOTIFY mode,
+    # where the worker doesn't otherwise transition Job rows out of
+    # PENDING/PROCESSING after the variant finishes.  The worker's
+    # cancel-probe (in _transcode_one / _capture_stream) still aborts any
+    # in-flight ffmpeg mid-run; if it races us and marks DONE/FAILED first,
+    # those are also terminal — harmless overwrite.
     variant_ids_subq = (
         select(AssetVariant.id).where(AssetVariant.source_asset_id == asset_id)
     ).scalar_subquery()
@@ -998,7 +1007,11 @@ async def delete_asset(
                 (Job.type == JobType.STREAM_CAPTURE) & (Job.target_id == asset_id)
             ),
         )
-        .values(cancel_requested=True)
+        .values(
+            cancel_requested=True,
+            status=JobStatus.CANCELLED,
+            error_message="Asset deleted by user",
+        )
     )
 
     await audit_log(
