@@ -121,13 +121,16 @@ def e2e_server(e2e_port, tmp_path_factory):
     get_settings.cache_clear()
 
     if using_sqlite:
-        # Monkey-patch run_migrations to skip PostgreSQL-specific ALTER TYPE commands
+        # Bypass Alembic for SQLite e2e runs.  Alembic migrations use
+        # PostgreSQL-specific types (pg_enum, JSONB, etc.) that SQLite
+        # can't execute.  Base.metadata.create_all uses the model types
+        # with whatever dialect-specific overrides this conftest applied
+        # above, which is exactly what these tests want.
         import cms.database as db_mod
         from shared import database as _shared_db
         _orig_run_migrations = db_mod.run_migrations
 
         async def _sqlite_safe_migrations():
-            """Only run create_all (skip ALTER TYPE for pg_enum)."""
             async with _shared_db._engine.begin() as conn:
                 await conn.run_sync(db_mod.Base.metadata.create_all)
 
