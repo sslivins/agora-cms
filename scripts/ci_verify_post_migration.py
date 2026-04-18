@@ -73,7 +73,7 @@ async def verify() -> int:
         try:
             res = await conn.execute(text(
                 "SELECT a.id, COUNT(v.id) "
-                "FROM assets a LEFT JOIN asset_variants v ON v.asset_id = a.id "
+                "FROM assets a LEFT JOIN asset_variants v ON v.source_asset_id = a.id "
                 "GROUP BY a.id LIMIT 5"
             ))
             rows = res.fetchall()
