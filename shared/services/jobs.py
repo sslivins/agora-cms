@@ -278,15 +278,25 @@ async def drain_outbox(db: AsyncSession) -> int:
     is the wake-up signal for LISTEN-mode workers.
 
     Returns the number of rows successfully drained (sent + deleted).
-    Safe to call concurrently — overlapping rows just re-attempt sends and
-    the worker dedupes via ``claim_job``.
+    Safe to call concurrently across replicas — on Postgres we use
+    ``SELECT … FOR UPDATE SKIP LOCKED`` so two drainers grab disjoint
+    batches.  As a backstop, the worker dedupes via ``claim_job``.
     """
     now = datetime.now(timezone.utc)
-    result = await db.execute(
+    stmt = (
         select(JobOutbox)
         .order_by(JobOutbox.created_at.asc())
         .limit(OUTBOX_BATCH_SIZE)
     )
+    # On Postgres, lock the rows we're about to drain so a second CMS
+    # replica's drainer skips them and grabs the next batch instead of
+    # racing on the same rows. SQLite (used in tests) doesn't support
+    # SELECT … FOR UPDATE, so we fall back to a plain select there.
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect_name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    result = await db.execute(stmt)
     rows = result.scalars().all()
     if not rows:
         return 0
