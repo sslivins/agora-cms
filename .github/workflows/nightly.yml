@@ -10,6 +10,11 @@ on:
         description: "Leave the compose stack running after tests (for debugging)"
         type: boolean
         default: false
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tests/nightly/**'
+      - '.github/workflows/nightly.yml'
 
 concurrency:
   group: nightly-e2e
