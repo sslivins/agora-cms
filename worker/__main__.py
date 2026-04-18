@@ -35,6 +35,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("agora.worker")
 
+# Module-level flag flipped by the SIGTERM handler installed in _queue_mode.
+# When True, the finalize path marks the job FAILED with a user-facing
+# "exceeded 2 hour limit" message and deletes the queue message — so a
+# replica-timeout (Container App Jobs `replicaTimeout`) becomes a terminal
+# failure rather than burning retries on a doomed transcode.
+_sigterm_received: bool = False
+
 
 async def _listen_mode(settings: WorkerSettings) -> None:
     """LISTEN/NOTIFY mode — long-running loop for Docker Compose."""
@@ -246,7 +253,7 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     from azure.storage.queue import QueueClient
     queue = QueueClient.from_connection_string(conn_str, QUEUE_NAME)
 
-    VISIBILITY_TIMEOUT = 30
+    VISIBILITY_TIMEOUT = 60
     HEARTBEAT_INTERVAL = 15
 
     # NOTE: use receive_message() (singular) — NOT list(receive_messages(...)).
@@ -271,22 +278,139 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             logger.exception("Failed to delete malformed message")
         return
 
-    # Claim the job (bumps retry_count, flips to PROCESSING or FAILED-if-poison).
+    # ── Heartbeat + signal handlers: installed BEFORE claim_job so the lease
+    # is held throughout all DB pre-flight work.  If claim_job or the cancel
+    # check is slow (e.g. DB hiccup during a CMS restart), we mustn't let the
+    # queue message re-appear and trigger duplicate pickup by another pod.
+    lease_lost = asyncio.Event()
+    current_popreceipt = msg.pop_receipt
+    cancel_observed = False        # set by heartbeat when Job.cancel_requested is true
+    lease_actually_lost = False    # set by heartbeat when update_message fails
+
+    # SIGTERM handler — installed before any real work begins.  If the pod
+    # hits Container App Jobs `replicaTimeout` we get ~30s of grace before
+    # SIGKILL.  Flip the module-level flag, stop the heartbeat, and kill
+    # ffmpeg so the main flow unwinds into the finalize path and writes
+    # FAILED + deletes the queue message within the grace window.
+    def _on_sigterm():
+        global _sigterm_received
+        _sigterm_received = True
+        logger.warning(
+            "Worker SIGTERM received — marking job %s as failed (replica timeout)",
+            job_id,
+        )
+        lease_lost.set()
+        try:
+            from worker.transcoder import cancel_active_ffmpeg
+            cancel_active_ffmpeg()
+        except Exception:
+            logger.exception("Failed to cancel active ffmpeg on SIGTERM")
+
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
+    except (NotImplementedError, RuntimeError):
+        # Windows / non-main-thread fallback — best-effort only.
+        logger.debug("loop.add_signal_handler unsupported; SIGTERM handling degraded")
+
+    async def _heartbeat():
+        nonlocal current_popreceipt, cancel_observed, lease_actually_lost
+        # ── Renew immediately on start, then sleep.  The old sleep-first
+        # pattern left a 15s window at the start of the job with no renewal,
+        # so if pre-flight work took more than (VISIBILITY_TIMEOUT - 15s),
+        # the message would re-appear and another worker would pick it up.
+        while not lease_lost.is_set():
+            try:
+                updated = queue.update_message(
+                    msg,
+                    pop_receipt=current_popreceipt,
+                    visibility_timeout=VISIBILITY_TIMEOUT,
+                )
+                new_pr = getattr(updated, "pop_receipt", None)
+                if new_pr:
+                    current_popreceipt = new_pr
+                logger.debug("Heartbeat refreshed lease for job %s", job_id)
+
+                # ── Cooperative cancellation probe ──
+                # Check if CMS (via DELETE endpoint) has flagged this job.
+                # If so, SIGTERM the active ffmpeg so _transcode_one exits.
+                try:
+                    async with session_factory() as _db:
+                        row = await _db.execute(
+                            select(Job.cancel_requested).where(Job.id == job_id)
+                        )
+                        flag = row.scalar_one_or_none()
+                        if flag:
+                            cancel_observed = True
+                            logger.info(
+                                "Job %s: cancel_requested detected — killing ffmpeg", job_id
+                            )
+                            try:
+                                from worker.transcoder import cancel_active_ffmpeg
+                                cancel_active_ffmpeg()
+                            except Exception:
+                                logger.exception("Failed to cancel active ffmpeg")
+                            lease_lost.set()
+                            return
+                except Exception:
+                    logger.debug("Cancel probe failed (ignoring)", exc_info=True)
+
+                # Sleep AFTER renewing.  If lease_lost was signalled during
+                # sleep we return promptly.
+                try:
+                    await asyncio.wait_for(
+                        lease_lost.wait(), timeout=HEARTBEAT_INTERVAL
+                    )
+                    return  # lease_lost was set — exit cleanly
+                except asyncio.TimeoutError:
+                    pass  # normal cycle: renew again
+            except Exception:
+                # update_message failed — lease is gone.  Kill ffmpeg so the
+                # replacement worker (which will pick up the re-visible msg)
+                # isn't racing us, and exit silent.  The main flow's finalize
+                # branch will see lease_actually_lost and skip all DB/queue
+                # writes so we don't stomp on the new owner.
+                logger.warning(
+                    "Heartbeat failed for job %s — lease lost, aborting (silent)",
+                    job_id, exc_info=True,
+                )
+                lease_actually_lost = True
+                try:
+                    from worker.transcoder import cancel_active_ffmpeg
+                    cancel_active_ffmpeg()
+                except Exception:
+                    logger.exception("Failed to cancel ffmpeg after lease loss")
+                lease_lost.set()
+                return
+
+    hb_task = asyncio.create_task(_heartbeat())
+
+    async def _stop_heartbeat():
+        lease_lost.set()
+        hb_task.cancel()
+        try:
+            await hb_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # ── Pre-flight: claim the job (bumps retry_count; poison → FAILED). ──
     async with session_factory() as db:
         job = await claim_job(db, job_id)
 
     if job is None:
         logger.warning("Job %s not found in DB — deleting stale message", job_id)
+        await _stop_heartbeat()
         try:
-            queue.delete_message(msg)
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
         except Exception:
             logger.exception("Failed to delete stale message")
         return
 
     if job.status == JobStatus.DONE:
         logger.info("Job %s already DONE — deleting duplicate message", job_id)
+        await _stop_heartbeat()
         try:
-            queue.delete_message(msg)
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
         except Exception:
             logger.exception("Failed to delete duplicate message")
         return
@@ -294,8 +418,9 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     if job.status == JobStatus.FAILED:
         # claim_job flipped us to FAILED because retry_count exceeded MAX.
         logger.error("Job %s exhausted retries — deleting poison message", job_id)
+        await _stop_heartbeat()
         try:
-            queue.delete_message(msg)
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
         except Exception:
             logger.exception("Failed to delete poison message")
         return
@@ -340,65 +465,12 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             )
             await db.commit()
             logger.info("Job %s cancelled pre-transcode: %s", job_id, cancel_reason)
+            await _stop_heartbeat()
             try:
-                queue.delete_message(msg)
+                queue.delete_message(msg, pop_receipt=current_popreceipt)
             except Exception:
                 logger.exception("Failed to delete cancelled message")
             return
-
-    # ── Heartbeat: refresh the queue lease while work is in progress ──
-    lease_lost = asyncio.Event()
-    current_popreceipt = msg.pop_receipt
-    cancel_observed = False  # set from heartbeat → checked after work completes
-
-    async def _heartbeat():
-        nonlocal current_popreceipt, cancel_observed
-        while not lease_lost.is_set():
-            try:
-                await asyncio.sleep(HEARTBEAT_INTERVAL)
-                if lease_lost.is_set():
-                    return
-                updated = queue.update_message(
-                    msg,
-                    pop_receipt=current_popreceipt,
-                    visibility_timeout=VISIBILITY_TIMEOUT,
-                )
-                # update_message returns an object with a fresh pop_receipt
-                new_pr = getattr(updated, "pop_receipt", None)
-                if new_pr:
-                    current_popreceipt = new_pr
-                logger.debug("Heartbeat refreshed lease for job %s", job_id)
-
-                # ── Cooperative cancellation probe ──
-                # Check if CMS (via DELETE endpoint) has flagged this job.
-                # If so, SIGTERM the active ffmpeg so _transcode_one exits.
-                try:
-                    async with session_factory() as _db:
-                        row = await _db.execute(
-                            select(Job.cancel_requested).where(Job.id == job_id)
-                        )
-                        flag = row.scalar_one_or_none()
-                        if flag:
-                            cancel_observed = True
-                            logger.info(
-                                "Job %s: cancel_requested detected — killing ffmpeg", job_id
-                            )
-                            try:
-                                from worker.transcoder import cancel_active_ffmpeg
-                                cancel_active_ffmpeg()
-                            except Exception:
-                                logger.exception("Failed to cancel active ffmpeg")
-                            # Stop refreshing the lease — let the main path finalize.
-                            lease_lost.set()
-                            return
-                except Exception:
-                    logger.debug("Cancel probe failed (ignoring)", exc_info=True)
-            except Exception:
-                logger.warning("Heartbeat failed for job %s — aborting", job_id, exc_info=True)
-                lease_lost.set()
-                return
-
-    hb_task = asyncio.create_task(_heartbeat())
 
     success = False
     error_message: str | None = None
@@ -422,15 +494,54 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         success = False
 
     # Stop the heartbeat before doing any final DB/queue work.
-    lease_lost.set()
-    hb_task.cancel()
-    try:
-        await hb_task
-    except (asyncio.CancelledError, Exception):
-        pass
+    await _stop_heartbeat()
 
     # ── Finalize ──
-    if cancel_observed:
+    # Order matters: SIGTERM and lease-loss take precedence over the
+    # normal success/cancel/fail classification, because they indicate
+    # the worker's runtime contract is broken.
+    if _sigterm_received:
+        # Replica timeout — terminal.  Mark variant + job FAILED with a
+        # user-facing message and delete the queue msg so nothing retries.
+        # Retries of a transcode that already exceeded the time budget are
+        # guaranteed to hit the same wall; don't burn more CPU.
+        timeout_msg = "Transcode exceeded the 2 hour time limit."
+        try:
+            async with session_factory() as db:
+                from sqlalchemy import update as _sa_update
+                await db.execute(
+                    _sa_update(Job)
+                    .where(Job.id == job_id)
+                    .values(status=JobStatus.FAILED, error_message=timeout_msg)
+                )
+                if job.type == JobType.VARIANT_TRANSCODE:
+                    await db.execute(
+                        _sa_update(AssetVariant)
+                        .where(AssetVariant.id == job.target_id)
+                        .values(
+                            status=VariantStatus.FAILED,
+                            error_message=timeout_msg,
+                        )
+                    )
+                await db.commit()
+        except Exception:
+            logger.exception("Job %s: failed to persist SIGTERM FAILED marker", job_id)
+        try:
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
+        except Exception:
+            logger.warning(
+                "Job %s SIGTERM-failed but queue delete failed", job_id, exc_info=True
+            )
+        logger.error("Job %s failed: %s", job_id, timeout_msg)
+    elif lease_actually_lost:
+        # Another worker has (or will) pick up the re-visible message and
+        # owns the job now.  Do NOT touch DB or queue — we'd stomp on the
+        # replacement worker's state.
+        logger.warning(
+            "Job %s: lease lost — exiting silent, replacement worker owns job",
+            job_id,
+        )
+    elif cancel_observed:
         # Cancel was requested (asset soft-delete or profile-change variant
         # swap) and the heartbeat killed ffmpeg.  Mark the job CANCELLED and
         # also transition the variant row to CANCELLED so it's clearly

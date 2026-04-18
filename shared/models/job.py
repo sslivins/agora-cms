@@ -38,7 +38,11 @@ class JobStatus(str, PyEnum):
 
 
 # Max retries before a job is considered poison and marked FAILED.
-MAX_JOB_RETRIES = 5
+# Retries are reserved for transient failures (network blips, pod crashes
+# without SIGTERM).  Replica-timeout (SIGTERM) is handled as a one-shot
+# terminal failure by the worker's SIGTERM handler — retrying a transcode
+# that already exceeded the time budget is pointless and just burns CPU.
+MAX_JOB_RETRIES = 3
 
 
 class Job(Base):

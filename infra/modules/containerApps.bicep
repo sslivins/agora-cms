@@ -291,7 +291,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: containerAppsEnv.id
     configuration: {
       triggerType: 'Event'
-      replicaTimeout: 1800 // 30 min max per execution
+      replicaTimeout: 7200 // 2 hour max per execution — SIGTERM handler in worker marks FAILED within 30s grace
       replicaRetryLimit: 1
       eventTriggerConfig: {
         replicaCompletionCount: 1
