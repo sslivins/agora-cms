@@ -32,6 +32,7 @@ from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessa
 from cms.services.device_manager import device_manager
 from cms.services.scheduler import push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
+from cms.services.asset_readiness import require_asset_ready
 from cms.services.version_checker import check_now
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
@@ -241,6 +242,10 @@ async def update_device(
                 status_code=403,
                 detail=f"Missing permission: {DEVICES_MANAGE}",
             )
+
+    # Gate splash assignment on variant readiness (issue #201).
+    if updates.get("default_asset_id"):
+        await require_asset_ready(db, updates["default_asset_id"])
 
     # Snapshot before mutation so we can build a true diff for the audit log
     changes = compute_diff(device, updates)
@@ -658,6 +663,10 @@ async def list_groups(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.post("/groups/", response_model=DeviceGroupOut, status_code=201, dependencies=[Depends(require_permission(GROUPS_WRITE))])
 async def create_group(data: DeviceGroupCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    # Gate splash assignment on variant readiness (issue #201).
+    if data.default_asset_id:
+        await require_asset_ready(db, data.default_asset_id)
+
     group = DeviceGroup(name=data.name, description=data.description, default_asset_id=data.default_asset_id)
     db.add(group)
     await db.flush()
@@ -703,6 +712,11 @@ async def update_group(
 
     updates = data.model_dump(exclude_unset=True)
     changes = compute_diff(group, updates)
+
+    # Gate splash assignment on variant readiness (issue #201).
+    if updates.get("default_asset_id"):
+        await require_asset_ready(db, updates["default_asset_id"])
+
     for field, value in updates.items():
         setattr(group, field, value)
     await audit_log(

@@ -907,13 +907,23 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Build URL→display name map for resolving playback_asset on URL-based assets
     assets_early_q = await db.execute(
-        select(Asset).where(Asset.deleted_at.is_(None)).order_by(Asset.filename)
+        select(Asset)
+        .options(selectinload(Asset.variants))
+        .where(Asset.deleted_at.is_(None))
+        .order_by(Asset.filename)
     )
     assets_early = assets_early_q.scalars().all()
     _url_display = {}
     for a in assets_early:
         if a.url:
             _url_display.setdefault(a.url, a.filename)
+    # Annotate each asset with a readiness flag for the splash dropdowns
+    # (issue #201). Assets that aren't fully ready are shown but disabled.
+    from cms.services.variant_view import is_asset_ready as _is_asset_ready
+    for a in assets_early:
+        ready, reason = _is_asset_ready(a.variants)
+        a.ready_for_selection = ready
+        a.not_ready_reason = reason
     for d in devices:
         d.is_online = device_manager.is_connected(d.id)
         state = live_states.get(d.id)
@@ -1294,7 +1304,12 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     schedules_q = await db.execute(sched_query)
     all_schedules = schedules_q.scalars().all()
-    asset_q = select(Asset).where(Asset.deleted_at.is_(None)).order_by(Asset.filename)
+    asset_q = (
+        select(Asset)
+        .options(selectinload(Asset.variants))
+        .where(Asset.deleted_at.is_(None))
+        .order_by(Asset.filename)
+    )
     if not is_admin:
         from cms.models.asset import Asset as AssetModel
         global_ids = set(
@@ -1332,6 +1347,12 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
             asset_group_map.setdefault(str(aid), []).append(str(gid))
     for a in assets:
         a._group_ids_json = asset_group_map.get(str(a.id), [])
+    # Readiness flag for schedule asset picker (issue #201).
+    from cms.services.variant_view import is_asset_ready as _is_asset_ready
+    for a in assets:
+        ready, reason = _is_asset_ready(a.variants)
+        a.ready_for_selection = ready
+        a.not_ready_reason = reason
 
     groups_query_sched = select(DeviceGroup).order_by(DeviceGroup.name)
     if not is_admin:
