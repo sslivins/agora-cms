@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write          # needed to push the auto-bump commit back to main
   packages: write
   id-token: write  # OIDC token for Azure login
 
@@ -28,11 +28,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Compute next version
         id: version
         run: |
-          version=$(python3 -c "exec(open('cms/__init__.py').read()); print(__version__)")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Read current version from main…
+          current=$(python3 -c "exec(open('cms/__init__.py').read()); print(__version__)")
+          # …and bump the patch component.
+          IFS=. read -r major minor patch <<< "$current"
+          next="${major}.${minor}.$((patch + 1))"
+          echo "current=$current"
+          echo "next=$next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          # Write the bumped version into the working tree so the Docker
+          # images bake it in (/healthz will report $next).  The commit
+          # back to main happens in the bump-main job after verify succeeds.
+          sed -i "s/^__version__ = .*/__version__ = \"$next\"/" cms/__init__.py
+          grep __version__ cms/__init__.py
 
       # ── GHCR (public images) ──
       - name: Log in to GHCR
@@ -249,3 +260,40 @@ jobs:
         run: |
           echo "::error::Deployment verification failed — expected version ${{ needs.publish.outputs.version }} but got ${{ steps.health.outputs.last_version }}"
           exit 1
+
+  # Commit the auto-incremented version back to main so the next deploy
+  # starts from the newly-released version.  Runs only after verify passes,
+  # so a failed deploy does not advance the version on main.  The commit
+  # uses "[skip ci]" to avoid re-triggering Tests/publish on the bump itself.
+  bump-main:
+    needs: [publish, deploy, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # GITHUB_TOKEN works if main is unprotected, or if
+          # github-actions[bot] is on the branch-protection bypass list.
+          # If main is PR-protected and the bot can't bypass, create a
+          # repo secret VERSION_BUMP_TOKEN with a PAT (contents: write)
+          # and it will be used instead.
+          token: ${{ secrets.VERSION_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Bump version and push
+        env:
+          NEW_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          current=$(python3 -c "exec(open('cms/__init__.py').read()); print(__version__)")
+          if [ "$current" = "$NEW_VERSION" ]; then
+            echo "cms/__init__.py is already at $NEW_VERSION — nothing to commit."
+            exit 0
+          fi
+          sed -i "s/^__version__ = .*/__version__ = \"$NEW_VERSION\"/" cms/__init__.py
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cms/__init__.py
+          git commit -m "chore: bump version to $NEW_VERSION [skip ci]" \
+                     -m "Auto-bumped by publish-image.yml after successful deploy." \
+                     -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push origin HEAD:main
