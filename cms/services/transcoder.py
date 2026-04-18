@@ -25,7 +25,12 @@ from shared.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from shared.models.device_profile import DeviceProfile
 from shared.models.job import JobType
 from shared.services.image import convert_image, convert_image_to_jpeg, image_variant_ext  # noqa: F401
-from shared.services.jobs import enqueue_job, enqueue_jobs, sweep_orphans
+from shared.services.jobs import (
+    drain_outbox,
+    enqueue_job,
+    enqueue_jobs,
+    sweep_orphans,
+)
 from shared.services.probe import probe_media  # noqa: F401
 
 logger = logging.getLogger("agora.cms.transcoder")
@@ -34,6 +39,12 @@ logger = logging.getLogger("agora.cms.transcoder")
 _MONITOR_INTERVAL = int(os.environ.get("AGORA_MONITOR_INTERVAL", "30"))
 _STALE_PROCESSING_TIMEOUT = int(os.environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
 _ORPHAN_JOB_AGE_SECONDS = int(os.environ.get("AGORA_ORPHAN_JOB_AGE", "120"))    # 2 min
+# Outbox drainer interval — kept short so producer-to-queue latency stays
+# sub-second-ish.  In Postgres mode we additionally LISTEN on the
+# ``transcode_outbox`` channel for instant wake-up; this poll is the
+# safety net that catches missed NOTIFYs (e.g. CMS crashed after commit
+# but before NOTIFY, or LISTEN connection dropped silently).
+_OUTBOX_DRAIN_INTERVAL = int(os.environ.get("AGORA_OUTBOX_DRAIN_INTERVAL", "5"))
 
 
 def _image_variant_ext(asset) -> str:
@@ -458,6 +469,40 @@ async def stream_capture_monitor_loop() -> None:
             raise
         except Exception:
             logger.exception("Error in stream capture monitor loop")
+
+
+# ── Outbox drainer loop ─────────────────────────────────────────
+
+
+async def outbox_drain_loop() -> None:
+    """Background loop: drain the JobOutbox to the queue.
+
+    Runs every ``_OUTBOX_DRAIN_INTERVAL`` seconds and calls
+    :func:`shared.services.jobs.drain_outbox`, which sends pending queue
+    messages and deletes the outbox rows on success.  In Postgres mode the
+    poll is supplemented by ``LISTEN transcode_outbox`` (TODO: future
+    enhancement; the 5s poll is the initial implementation).
+
+    The drainer is idempotent and safe under concurrent CMS replicas:
+    overlapping sends produce duplicate queue messages which the worker
+    dedupes via ``claim_job``'s DONE-detection path.
+    """
+    from cms.database import get_db
+
+    logger.info("Outbox drainer started (interval=%ds)", _OUTBOX_DRAIN_INTERVAL)
+    while True:
+        try:
+            await asyncio.sleep(_OUTBOX_DRAIN_INTERVAL)
+            async for db in get_db():
+                try:
+                    await drain_outbox(db)
+                except Exception:
+                    logger.exception("drain_outbox failed")
+        except asyncio.CancelledError:
+            logger.info("Outbox drainer shutting down")
+            raise
+        except Exception:
+            logger.exception("Error in outbox drain loop")
 
 
 # ── Soft-delete reaper ──────────────────────────────────────────
