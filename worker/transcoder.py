@@ -318,8 +318,17 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
     capture_filename = f"{asset.id}_capture.mp4"
     capture_path = asset_dir / capture_filename
 
+    target_duration = asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS
     logger.info("Capturing stream %s → %s (max %ds)", url, capture_filename,
-                asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS)
+                target_duration)
+
+    # Reset progress/error state before starting so retries don't show stale data
+    asset.capture_progress = 0.0
+    asset.capture_error = None
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        logger.warning("Failed to reset capture_progress for asset %s", asset.id)
 
     args = [
         "ffmpeg", "-y",
@@ -327,7 +336,7 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-t", str(asset.capture_duration or STREAM_CAPTURE_MAX_SECONDS),
+        "-t", str(target_duration),
         "-i", url,
         # Copy codecs (no re-encode during capture — transcoding happens later).
         # Do NOT use +faststart here: this is an intermediate file read only by
@@ -344,17 +353,58 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
             stderr=asyncio.subprocess.PIPE,
         )
         _active_process = proc
-        _, stderr_data = await proc.communicate()
+
+        # Stream stderr so we can parse ffmpeg's periodic `time=HH:MM:SS.ss`
+        # markers and surface live capture progress in the UI.  Same pattern
+        # used by _transcode_one for variant progress.
+        stderr_data = b""
+        last_progress_update = 0.0
+        while True:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
+                break
+            stderr_data += chunk
+            if target_duration:
+                decoded = chunk.decode("utf-8", errors="replace")
+                matches = list(re.finditer(r"time=(\d+):(\d+):(\d+\.\d+)", decoded))
+                if matches:
+                    match = matches[-1]
+                    h, m, s = int(match.group(1)), int(match.group(2)), float(match.group(3))
+                    elapsed = h * 3600 + m * 60 + s
+                    pct = min(99.0, (elapsed / target_duration) * 100)
+                    if pct > last_progress_update and pct - last_progress_update >= 1.0:
+                        asset.capture_progress = round(pct, 1)
+                        try:
+                            await db.commit()
+                        except SQLAlchemyError:
+                            logger.warning(
+                                "Capture progress commit failed for asset %s — "
+                                "asset may have been deleted; continuing capture",
+                                asset.id,
+                            )
+                        last_progress_update = pct
+
+        await proc.wait()
         _active_process = None
 
         if proc.returncode != 0:
             full_text = stderr_data.decode("utf-8", errors="replace")
             error_text = full_text[:500] if len(full_text) <= 500 else full_text[:250] + "\n…\n" + full_text[-250:]
             logger.error("Stream capture failed for %s: exit %d\n%s", url, proc.returncode, error_text)
+            asset.capture_error = f"ffmpeg exit code {proc.returncode}: {error_text}"
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                logger.warning("Failed to persist capture_error for asset %s", asset.id)
             return None
 
         if not capture_path.is_file() or capture_path.stat().st_size == 0:
             logger.error("Stream capture produced empty file for %s", url)
+            asset.capture_error = "Stream capture produced empty file"
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                pass
             return None
 
         # Probe the captured file for metadata
@@ -374,6 +424,8 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
         # Update the source asset with captured file metadata
         asset.size_bytes = file_size
         asset.checksum = sha.hexdigest()
+        asset.capture_progress = 100.0
+        asset.capture_error = None
         for key, val in meta.items():
             if val is not None and hasattr(asset, key):
                 setattr(asset, key, val)
@@ -393,6 +445,11 @@ async def _capture_stream(asset: Asset, asset_dir: Path, db: AsyncSession) -> Pa
     except Exception as e:
         _active_process = None
         logger.exception("Stream capture error for %s: %s", url, e)
+        try:
+            asset.capture_error = f"Capture exception: {e}"
+            await db.commit()
+        except SQLAlchemyError:
+            pass
         return None
 
 

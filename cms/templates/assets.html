@@ -165,7 +165,7 @@
                 <th>Type</th>
                 <th>Scope</th>
                 <th>Size</th>
-                <th>Variants</th>
+                <th>Status</th>
                 <th>Duration</th>
                 <th>Actions</th>
             </tr>
@@ -214,14 +214,20 @@
                     {% elif a.variant_failed > 0 %}
                         <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ a.variant_failed }} of {{ a.variant_total }} failed</span></span>
                     {% elif a.variant_processing > 0 %}
-                        <span class="has-tooltip"><span class="badge badge-processing">Transcoding</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_processing }} processing</span></span>
+                        <span class="has-tooltip"><span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.variant_aggregate_progress) }}%">Transcoding</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_processing }} processing</span></span>
                     {% elif a.variant_ready == a.variant_total %}
                         <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">{{ a.variant_total }} variant{{ 's' if a.variant_total != 1 else '' }}</span></span>
                     {% else %}
                         <span class="badge badge-pending">Queued</span>
                     {% endif %}
                     {% elif a.asset_type.value == 'saved_stream' %}
-                        <span class="has-tooltip"><span class="badge badge-pending">Pending</span><span class="tooltip">Waiting for stream capture to complete</span></span>
+                        {% if a.capture_error %}
+                        <span class="has-tooltip"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
+                        {% elif a.capture_progress is not none %}
+                        <span class="has-tooltip"><span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing</span><span class="tooltip">Stream capture in progress</span></span>
+                        {% else %}
+                        <span class="has-tooltip"><span class="badge badge-pending">Pending</span><span class="tooltip">Waiting for stream capture to start</span></span>
+                        {% endif %}
                     {% elif a.asset_type.value == 'image' %}
                     —
                     {% else %}
@@ -275,7 +281,18 @@
                         {% if (a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' or a.asset_type.value == 'saved_stream') and a.url %}
                         <div class="detail-item detail-item-wide">
                             <span class="detail-label">URL</span>
-                            <span class="detail-value"><a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a></span>
+                            <span class="detail-value">
+                                <a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a>
+                                {% if a.asset_type.value == 'saved_stream' and a.size_bytes == 0 %}
+                                    {% if a.capture_error %}
+                                    <span class="has-tooltip" style="margin-left: 0.5rem;"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
+                                    {% elif a.capture_progress is not none %}
+                                    <span class="badge badge-progress" style="margin-left: 0.5rem; --pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing</span>
+                                    {% else %}
+                                    <span class="badge badge-pending" style="margin-left: 0.5rem;">Queued</span>
+                                    {% endif %}
+                                {% endif %}
+                            </span>
                         </div>
                         {% endif %}
                         <div class="detail-item">
@@ -412,7 +429,7 @@
                                         {% if v.status.value == 'ready' %}
                                         <span class="badge badge-ready">Ready</span>
                                         {% elif v.status.value == 'processing' %}
-                                        <span class="badge badge-processing">{{ "%.0f"|format(v.progress) }}%</span>
+                                        <span class="badge badge-progress" style="--pct: {{ "%.1f"|format(v.progress) }}%">{{ "%.0f"|format(v.progress) }}%</span>
                                         {% elif v.status.value == 'failed' %}
                                         <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ v.error_message[:120] if v.error_message else 'Unknown error' }}</span></span>
                                         {% elif v.status.value == 'cancelled' %}
@@ -447,8 +464,16 @@
                     <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
                         <span class="detail-label">Variants</span>
                         <div style="margin-top: 0.35rem; font-size: 0.85rem;">
+                            {% if a.capture_error %}
+                            <span class="has-tooltip"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
+                            <span class="text-muted" style="margin-left: 0.5rem;">Use Re-capture to try again</span>
+                            {% elif a.capture_progress is not none %}
+                            <span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing</span>
+                            <span class="text-muted" style="margin-left: 0.5rem;">Variants will appear once capture completes</span>
+                            {% else %}
                             <span class="badge badge-pending">Pending</span>
-                            <span class="text-muted" style="margin-left: 0.5rem;">Waiting for stream capture to complete</span>
+                            <span class="text-muted" style="margin-left: 0.5rem;">Waiting for stream capture to start</span>
+                            {% endif %}
                         </div>
                     </div>
                     {% endif %}
@@ -677,8 +702,18 @@
     function buildVariantBadge(a) {
         if (a.variant_total === 0) {
             if (a.asset_type === 'saved_stream') {
+                if (a.capture_error) {
+                    const msg = (a.capture_error || '').slice(0, 200).replace(/</g, '&lt;');
+                    return '<span class="has-tooltip"><span class="badge badge-failed">Capture failed</span>' +
+                        '<span class="tooltip">' + msg + '</span></span>';
+                }
+                if (a.capture_progress !== null && a.capture_progress !== undefined) {
+                    const pct = Math.min(100, Math.max(0, a.capture_progress)).toFixed(1);
+                    return '<span class="has-tooltip"><span class="badge badge-progress" style="--pct: ' + pct + '%">Capturing</span>' +
+                        '<span class="tooltip">Stream capture in progress</span></span>';
+                }
                 return '<span class="has-tooltip"><span class="badge badge-pending">Pending</span>' +
-                    '<span class="tooltip">Waiting for stream capture to complete</span></span>';
+                    '<span class="tooltip">Waiting for stream capture to start</span></span>';
             }
             return '<span class="text-muted">none</span>';
         }
@@ -691,7 +726,8 @@
                 '<span class="tooltip">' + a.variant_failed + ' of ' + a.variant_total + ' failed</span></span>';
         }
         if (a.variant_processing > 0) {
-            return '<span class="has-tooltip"><span class="badge badge-processing">Transcoding</span>' +
+            const pct = Math.min(100, Math.max(0, a.variant_aggregate_progress || 0)).toFixed(1);
+            return '<span class="has-tooltip"><span class="badge badge-progress" style="--pct: ' + pct + '%">Transcoding</span>' +
                 '<span class="tooltip">' + a.variant_ready + ' of ' + a.variant_total + ' ready, ' + a.variant_processing + ' processing</span></span>';
         }
         if (a.variant_ready === a.variant_total) {
@@ -704,7 +740,10 @@
 
     function buildVariantStatusCell(v) {
         if (v.status === 'ready') return '<span class="badge badge-ready">Ready</span>';
-        if (v.status === 'processing') return '<span class="badge badge-processing">' + Math.round(v.progress) + '%</span>';
+        if (v.status === 'processing') {
+            const pct = Math.min(100, Math.max(0, v.progress || 0)).toFixed(1);
+            return '<span class="badge badge-progress" style="--pct: ' + pct + '%">' + Math.round(v.progress) + '%</span>';
+        }
         if (v.status === 'cancelled') {
             const msg = (v.error_message || 'Cancelled mid-transcode').slice(0, 120);
             return '<span class="has-tooltip"><span class="badge badge-cancelled">Cancelled</span><span class="tooltip">' + msg + '</span></span>';
