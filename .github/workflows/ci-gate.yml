@@ -1,0 +1,19 @@
+name: CI Gate
+
+# Always-green sentinel that runs on every PR to main, regardless of
+# which paths changed. Exists so we can point branch protection's
+# required check here instead of at `test` / `nightly-e2e`, which are
+# gated by path filters and intentionally skipped on some PRs.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci-gate:
+    name: ci-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Pass
+        run: echo "PR reached the merge queue; path-filtered checks (if any) reported separately."
