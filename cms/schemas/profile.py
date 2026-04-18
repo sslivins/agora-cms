@@ -33,6 +33,7 @@ class ProfileOut(BaseModel):
     device_count: int = 0
     total_variants: int = 0
     ready_variants: int = 0
+    matches_defaults: bool = False
     created_at: datetime
 
 
