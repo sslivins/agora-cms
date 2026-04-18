@@ -11,6 +11,28 @@ still have to cope with the pre-existing rows once added).
 Run against a database that already has the schema initialised
 (via ``cms.database.run_migrations``).  Prints row counts on exit so
 the CI log clearly shows the seeded volume.
+
+--------------------------------------------------------------------
+QUIRKS — don't regress these.  See also docs/CI.md.
+--------------------------------------------------------------------
+
+* ``assets.asset_type`` is an enum at the DB level.  Caller must supply
+  ``asset_type="VIDEO"`` (a valid enum value), NOT ``type="VIDEO"``.
+  The auto-placeholder would generate ``seed_asset_type_NN`` which is
+  not a valid enum value.
+
+* ``asset_variants`` FK column is ``source_asset_id``, NOT ``asset_id``.
+
+* ``devices.id`` is ``VARCHAR(64)``, not ``UUID``.  Must pass
+  ``str(uuid.uuid4())`` — asyncpg won't coerce a ``UUID`` object.
+
+* ``api_keys.key_hash`` is UNIQUE and ``VARCHAR(64)``.  Put the
+  differentiator at the START of the seed string so truncation at 64
+  chars doesn't collapse rows to identical values.
+
+* ``init_db`` (from ``shared.database``) is SYNC and takes a settings
+  arg: ``init_db(get_settings())``, then ``await wait_for_db()`` before
+  ``await run_migrations()``.  Don't ``await init_db()``.
 """
 
 from __future__ import annotations
