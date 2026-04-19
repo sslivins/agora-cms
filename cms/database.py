@@ -1,429 +1,94 @@
-"""Database engine and session management.
+"""Database engine, session management, and migration entry point.
 
-Re-exports shared database primitives and adds CMS-only migrations.
+Re-exports shared database primitives and drives Alembic migrations on
+startup.  Schema evolution is managed by Alembic revisions under
+``alembic/versions/`` — there are no hand-written ALTER TABLE blocks in
+this file any more.  If you need a schema change, generate a new
+revision:
+
+    alembic revision --autogenerate -m "<short description>"
+
+and commit it alongside the model change.  The baseline revision
+(``0001_baseline.py``) represents the schema as it stood when Alembic
+was adopted.
 """
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
+from sqlalchemy import inspect as sa_inspect
 
 from shared.database import Base, init_db, get_db, dispose_db, create_tables  # noqa: F401
 from shared.database import get_engine, get_session_factory, wait_for_db  # noqa: F401
 from shared import database as _shared_db
 
+logger = logging.getLogger("agora.database.migrations")
 
-async def run_migrations():
-    """Apply incremental schema changes that create_all won't handle.
 
-    create_all only creates new tables; it won't add columns to existing ones.
-    This function adds missing columns/tables manually.
+# Repo root — resolved relative to this file so the code works regardless
+# of CWD (docker-compose, uvicorn, pytest, cloud runners).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
+
+
+def _alembic_config() -> AlembicConfig:
+    """Build an Alembic Config pointed at this repo's alembic.ini.
+
+    We don't override ``sqlalchemy.url`` here — ``alembic/env.py`` resolves
+    the URL from ``SharedSettings`` (the same source the running app uses),
+    which keeps the CLI and the startup path on exactly one code path.
     """
-    from sqlalchemy import text, inspect as sa_inspect
+    return AlembicConfig(str(_ALEMBIC_INI))
 
-    # Create any brand-new tables first so FK references in ALTER statements
-    # can resolve (e.g. api_keys.user_id → users.id on first RBAC deploy).
+
+async def run_migrations() -> None:
+    """Bring the database schema up to date with the latest Alembic revision.
+
+    Behaviour is decided by the state of the DB at call time:
+
+    * **Managed DB** (``alembic_version`` table present): run
+      ``alembic upgrade head``.  This is a no-op when already at head and
+      applies any pending revisions otherwise.
+    * **Legacy DB** (no ``alembic_version`` but an ``assets`` table from
+      the old hand-written-DDL era): ``alembic stamp head`` to mark the
+      existing schema as matching the baseline revision.  No DDL runs.
+      On the next boot the DB will take the managed path.
+    * **Fresh DB** (neither marker present): ``alembic upgrade head``.
+      The baseline revision creates every table from scratch.
+
+    This function is idempotent — calling it repeatedly on an up-to-date
+    DB is safe.
+    """
+
     async with _shared_db._engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async with _shared_db._engine.begin() as conn:
-        # Helper to check if a column exists in a table
-        def _has_column(connection, table_name, column_name):
-            insp = sa_inspect(connection)
-            if not insp.has_table(table_name):
-                return True  # table doesn't exist; create_all will handle it
-            columns = [c["name"] for c in insp.get_columns(table_name)]
-            return column_name in columns
-
-        # -- devices.profile_id --
-        has_profile_id = await conn.run_sync(lambda c: _has_column(c, "devices", "profile_id"))
-        if not has_profile_id:
-            await conn.execute(text(
-                "ALTER TABLE devices ADD COLUMN profile_id UUID "
-                "REFERENCES device_profiles(id) ON DELETE SET NULL"
-            ))
-
-        # -- assets.original_filename --
-        has_orig = await conn.run_sync(lambda c: _has_column(c, "assets", "original_filename"))
-        if not has_orig:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN original_filename VARCHAR(255)"
-            ))
-
-        # -- media metadata columns on assets --
-        for col, col_type in [
-            ("width", "INTEGER"),
-            ("height", "INTEGER"),
-            ("duration_seconds", "DOUBLE PRECISION"),
-            ("video_codec", "VARCHAR(64)"),
-            ("audio_codec", "VARCHAR(64)"),
-            ("bitrate", "INTEGER"),
-            ("frame_rate", "VARCHAR(16)"),
-            ("color_space", "VARCHAR(64)"),
-        ]:
-            has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "assets", _c))
-            if not has_col:
-                await conn.execute(text(f"ALTER TABLE assets ADD COLUMN {col} {col_type}"))
-
-        # -- media metadata columns on asset_variants --
-        for col, col_type in [
-            ("width", "INTEGER"),
-            ("height", "INTEGER"),
-            ("duration_seconds", "DOUBLE PRECISION"),
-            ("video_codec", "VARCHAR(64)"),
-            ("audio_codec", "VARCHAR(64)"),
-            ("bitrate", "INTEGER"),
-            ("frame_rate", "VARCHAR(16)"),
-            ("color_space", "VARCHAR(64)"),
-        ]:
-            has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "asset_variants", _c))
-            if not has_col:
-                await conn.execute(text(f"ALTER TABLE asset_variants ADD COLUMN {col} {col_type}"))
-
-        # -- schedules.loop_count --
-        has_loop_count = await conn.run_sync(lambda c: _has_column(c, "schedules", "loop_count"))
-        if not has_loop_count:
-            await conn.execute(text("ALTER TABLE schedules ADD COLUMN loop_count INTEGER"))
-
-        # -- Rename device status enum: approved → adopted, offline → orphaned --
-        # Guard: only run if the enum type exists (skip on fresh databases)
-        enum_exists = await conn.execute(
-            text("SELECT 1 FROM pg_type WHERE typname = 'devicestatus'")
+        has_alembic = await conn.run_sync(
+            lambda c: sa_inspect(c).has_table("alembic_version")
         )
-        if enum_exists.scalar():
-            has_approved = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'APPROVED' AND enumtypid = 'devicestatus'::regtype")
-            )
-            if has_approved.scalar():
-                await conn.execute(text("ALTER TYPE devicestatus RENAME VALUE 'APPROVED' TO 'ADOPTED'"))
-            has_offline = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'OFFLINE' AND enumtypid = 'devicestatus'::regtype")
-            )
-            if has_offline.scalar():
-                await conn.execute(text("ALTER TYPE devicestatus RENAME VALUE 'OFFLINE' TO 'ORPHANED'"))
-
-
-        # -- device_profiles.pixel_format and color_space --
-        for col, col_type, default in [
-            ("pixel_format", "VARCHAR(20)", "auto"),
-            ("color_space", "VARCHAR(20)", "auto"),
-        ]:
-            has_col = await conn.run_sync(lambda c, _c=col: _has_column(c, "device_profiles", _c))
-            if not has_col:
-                await conn.execute(text(
-                    f"ALTER TABLE device_profiles ADD COLUMN {col} {col_type} DEFAULT '{default}'"
-                ))
-
-        # -- devices.timezone --
-        has_tz = await conn.run_sync(lambda c: _has_column(c, "devices", "timezone"))
-        if not has_tz:
-            await conn.execute(text(
-                "ALTER TABLE devices ADD COLUMN timezone VARCHAR(64)"
-            ))
-
-        # -- devices.location --
-        has_location = await conn.run_sync(lambda c: _has_column(c, "devices", "location"))
-        if not has_location:
-            await conn.execute(text(
-                "ALTER TABLE devices ADD COLUMN location VARCHAR(255) DEFAULT ''"
-            ))
-
-        # -- api_keys.user_id (RBAC) --
-        has_user_id = await conn.run_sync(lambda c: _has_column(c, "api_keys", "user_id"))
-        if not has_user_id:
-            await conn.execute(text(
-                "ALTER TABLE api_keys ADD COLUMN user_id UUID "
-                "REFERENCES users(id) ON DELETE SET NULL"
-            ))
-
-        # -- assets.owner_group_id (RBAC) --
-        has_owner = await conn.run_sync(lambda c: _has_column(c, "assets", "owner_group_id"))
-        if not has_owner:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN owner_group_id UUID "
-                "REFERENCES device_groups(id) ON DELETE SET NULL"
-            ))
-
-        # -- assets.is_global (RBAC asset scoping) --
-        has_global = await conn.run_sync(lambda c: _has_column(c, "assets", "is_global"))
-        if not has_global:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN is_global BOOLEAN DEFAULT false"
-            ))
-            # Mark existing assets as global for backward compatibility
-            await conn.execute(text(
-                "UPDATE assets SET is_global = true WHERE owner_group_id IS NULL"
-            ))
-
-        # -- assets.uploaded_by_user_id (track uploader for personal assets) --
-        has_upby = await conn.run_sync(lambda c: _has_column(c, "assets", "uploaded_by_user_id"))
-        if not has_upby:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN uploaded_by_user_id UUID "
-                "REFERENCES users(id) ON DELETE SET NULL"
-            ))
-
-        # -- users.must_change_password (RBAC email login) --
-        has_mcp = await conn.run_sync(lambda c: _has_column(c, "users", "must_change_password"))
-        if not has_mcp:
-            await conn.execute(text(
-                "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT false"
-            ))
-
-        # -- users.setup_token (one-time account setup link) --
-        has_st = await conn.run_sync(lambda c: _has_column(c, "users", "setup_token"))
-        if not has_st:
-            await conn.execute(text(
-                "ALTER TABLE users ADD COLUMN setup_token VARCHAR(128) UNIQUE"
-            ))
-
-        # -- users.email: set NOT NULL and backfill from username for legacy rows --
-        # First backfill any NULL emails
-        has_users = await conn.run_sync(lambda c: sa_inspect(c).has_table("users"))
-        if has_users:
-            await conn.execute(text(
-                "UPDATE users SET email = username || '@localhost' WHERE email IS NULL"
-            ))
-
-        # -- Drop assets.owner_group_id (replaced by GroupAsset entries) --
-        # Use explicit table+column check (can't rely on _has_column for drops)
-        has_ogid = await conn.run_sync(
+        has_legacy_assets = await conn.run_sync(
             lambda c: sa_inspect(c).has_table("assets")
-            and "owner_group_id" in [col["name"] for col in sa_inspect(c).get_columns("assets")]
         )
-        if has_ogid:
-            await conn.execute(text(
-                "ALTER TABLE assets DROP COLUMN owner_group_id"
-            ))
 
-        # -- Drop group_assets.is_owner (all associations are now equal) --
-        has_isowner = await conn.run_sync(
-            lambda c: sa_inspect(c).has_table("group_assets")
-            and "is_owner" in [col["name"] for col in sa_inspect(c).get_columns("group_assets")]
+    # Alembic's env.py sets up its own async engine from SharedSettings,
+    # so all we pass through is the Config pointing at alembic.ini.
+    #
+    # alembic.command.upgrade/stamp are synchronous and — via our env.py —
+    # internally call ``asyncio.run()``.  We can't call asyncio.run from
+    # inside a running event loop, so we hand off to a worker thread,
+    # which gets its own loop.
+    cfg = _alembic_config()
+
+    if not has_alembic and has_legacy_assets:
+        logger.info(
+            "Legacy pre-Alembic schema detected; stamping as baseline "
+            "without running DDL."
         )
-        if has_isowner:
-            await conn.execute(text(
-                "ALTER TABLE group_assets DROP COLUMN is_owner"
-            ))
+        await asyncio.to_thread(alembic_command.stamp, cfg, "head")
+        return
 
-        # -- devices.supported_codecs --
-        has_codecs = await conn.run_sync(lambda c: _has_column(c, "devices", "supported_codecs"))
-        if not has_codecs:
-            await conn.execute(text(
-                "ALTER TABLE devices ADD COLUMN supported_codecs VARCHAR(100) DEFAULT ''"
-            ))
-
-        # -- api_keys.key_type --
-        has_key_type = await conn.run_sync(lambda c: _has_column(c, "api_keys", "key_type"))
-        if not has_key_type:
-            await conn.execute(text(
-                "ALTER TABLE api_keys ADD COLUMN key_type VARCHAR(10) DEFAULT 'api' NOT NULL"
-            ))
-
-        # -- devices.previous_api_key_hash (key rotation grace period) --
-        has_prev_key = await conn.run_sync(
-            lambda c: _has_column(c, "devices", "previous_api_key_hash")
-        )
-        if not has_prev_key:
-            await conn.execute(text(
-                "ALTER TABLE devices ADD COLUMN previous_api_key_hash VARCHAR(128)"
-            ))
-
-        # -- Add notifications:system permission to existing Admin roles --
-        has_roles = await conn.run_sync(lambda c: sa_inspect(c).has_table("roles"))
-        if has_roles:
-            from cms.permissions import NOTIFICATIONS_SYSTEM
-            result = await conn.execute(text(
-                "SELECT id, permissions FROM roles WHERE name = 'Admin'"
-            ))
-            row = result.first()
-            if row:
-                import json
-                perms = row[1] if isinstance(row[1], list) else json.loads(row[1] or "[]")
-                if NOTIFICATIONS_SYSTEM not in perms:
-                    perms.append(NOTIFICATIONS_SYSTEM)
-                    from cms.models.user import Role
-                    await conn.execute(
-                        Role.__table__.update()
-                        .where(Role.__table__.c.id == row[0])
-                        .values(permissions=perms)
-                    )
-
-        # -- audit_log.description --
-        has_desc = await conn.run_sync(lambda c: _has_column(c, "audit_log", "description"))
-        if not has_desc:
-            await conn.execute(text(
-                "ALTER TABLE audit_log ADD COLUMN description TEXT"
-            ))
-
-        # -- assets.url (webpage asset URL) --
-        has_url = await conn.run_sync(lambda c: _has_column(c, "assets", "url"))
-        if not has_url:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN url VARCHAR(2048)"
-            ))
-
-        # -- Add 'WEBPAGE' and 'STREAM' values to assettype enum --
-        asset_enum_exists = await conn.execute(
-            text("SELECT 1 FROM pg_type WHERE typname = 'assettype'")
-        )
-        if asset_enum_exists.scalar():
-            has_webpage = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'WEBPAGE' AND enumtypid = 'assettype'::regtype")
-            )
-            if not has_webpage.scalar():
-                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'WEBPAGE'"))
-
-            has_stream = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'STREAM' AND enumtypid = 'assettype'::regtype")
-            )
-            if not has_stream.scalar():
-                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'STREAM'"))
-
-            has_saved_stream = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'SAVED_STREAM' AND enumtypid = 'assettype'::regtype")
-            )
-            if not has_saved_stream.scalar():
-                await conn.execute(text("ALTER TYPE assettype ADD VALUE IF NOT EXISTS 'SAVED_STREAM'"))
-
-    # -- Migrate save_locally/is_live STREAM assets → SAVED_STREAM type --
-    # Must be a separate transaction: PG requires new enum values to be committed first
-    async with _shared_db._engine.begin() as conn:
-        has_save_locally = await conn.run_sync(lambda c: _has_column(c, "assets", "save_locally"))
-        has_is_live = await conn.run_sync(lambda c: _has_column(c, "assets", "is_live"))
-
-        if has_is_live and not has_save_locally:
-            await conn.execute(text(
-                "UPDATE assets SET asset_type = 'SAVED_STREAM' "
-                "WHERE asset_type = 'STREAM' AND is_live = false"
-            ))
-            await conn.execute(text("ALTER TABLE assets DROP COLUMN is_live"))
-        elif has_save_locally:
-            await conn.execute(text(
-                "UPDATE assets SET asset_type = 'SAVED_STREAM' "
-                "WHERE asset_type = 'STREAM' AND save_locally = true"
-            ))
-            await conn.execute(text("ALTER TABLE assets DROP COLUMN save_locally"))
-
-    # -- asset_variants.retry_count --
-    async with _shared_db._engine.begin() as conn:
-        has_retry = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "retry_count"))
-        if not has_retry:
-            await conn.execute(text(
-                "ALTER TABLE asset_variants ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
-            ))
-
-    # -- assets.capture_duration --
-    async with _shared_db._engine.begin() as conn:
-        has_cap_dur = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_duration"))
-        if not has_cap_dur:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN capture_duration INTEGER"
-            ))
-
-    # -- assets.display_name --
-    async with _shared_db._engine.begin() as conn:
-        has_display_name = await conn.run_sync(lambda c: _has_column(c, "assets", "display_name"))
-        if not has_display_name:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN display_name VARCHAR(255)"
-            ))
-
-    # -- schedules.skipped_until (persist "End Now" across restarts) --
-    async with _shared_db._engine.begin() as conn:
-        has_skipped = await conn.run_sync(lambda c: _has_column(c, "schedules", "skipped_until"))
-        if not has_skipped:
-            await conn.execute(text(
-                "ALTER TABLE schedules ADD COLUMN skipped_until TIMESTAMPTZ"
-            ))
-
-    # -- assets.deleted_at (soft-delete marker) --
-    async with _shared_db._engine.begin() as conn:
-        has_deleted_at = await conn.run_sync(lambda c: _has_column(c, "assets", "deleted_at"))
-        if not has_deleted_at:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN deleted_at TIMESTAMPTZ"
-            ))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_assets_deleted_at ON assets (deleted_at)"
-            ))
-
-    # -- jobs.cancel_requested (cooperative cancellation flag) --
-    async with _shared_db._engine.begin() as conn:
-        has_jobs = await conn.run_sync(lambda c: sa_inspect(c).has_table("jobs"))
-        if has_jobs:
-            has_cancel_req = await conn.run_sync(lambda c: _has_column(c, "jobs", "cancel_requested"))
-            if not has_cancel_req:
-                await conn.execute(text(
-                    "ALTER TABLE jobs ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT FALSE"
-                ))
-
-    # -- Add 'CANCELLED' value to jobstatus enum --
-    async with _shared_db._engine.begin() as conn:
-        job_enum_exists = await conn.execute(
-            text("SELECT 1 FROM pg_type WHERE typname = 'jobstatus'")
-        )
-        if job_enum_exists.scalar():
-            has_cancelled = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'CANCELLED' AND enumtypid = 'jobstatus'::regtype")
-            )
-            if not has_cancelled.scalar():
-                await conn.execute(text("ALTER TYPE jobstatus ADD VALUE IF NOT EXISTS 'CANCELLED'"))
-
-    # -- Add 'CANCELLED' value to variantstatus enum --
-    async with _shared_db._engine.begin() as conn:
-        var_enum_exists = await conn.execute(
-            text("SELECT 1 FROM pg_type WHERE typname = 'variantstatus'")
-        )
-        if var_enum_exists.scalar():
-            has_v_cancelled = await conn.execute(
-                text("SELECT 1 FROM pg_enum WHERE enumlabel = 'CANCELLED' AND enumtypid = 'variantstatus'::regtype")
-            )
-            if not has_v_cancelled.scalar():
-                await conn.execute(text("ALTER TYPE variantstatus ADD VALUE IF NOT EXISTS 'CANCELLED'"))
-
-    # -- device_events.device_id: drop NOT NULL so system events (CMS_STARTED/STOPPED) can omit it --
-    async with _shared_db._engine.begin() as conn:
-        def _is_nullable(connection, table_name, column_name):
-            insp = sa_inspect(connection)
-            if not insp.has_table(table_name):
-                return True
-            for col in insp.get_columns(table_name):
-                if col["name"] == column_name:
-                    return col.get("nullable", True)
-            return True
-        is_nullable = await conn.run_sync(lambda c: _is_nullable(c, "device_events", "device_id"))
-        if not is_nullable:
-            await conn.execute(text(
-                "ALTER TABLE device_events ALTER COLUMN device_id DROP NOT NULL"
-            ))
-
-    # -- asset_variants.retry_count: drop (moved to jobs table as of queue-rework) --
-    async with _shared_db._engine.begin() as conn:
-        has_retry = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "retry_count"))
-        if has_retry:
-            await conn.execute(text("ALTER TABLE asset_variants DROP COLUMN retry_count"))
-
-    # -- asset_variants.deleted_at (soft-delete marker for supersession) --
-    async with _shared_db._engine.begin() as conn:
-        has_v_deleted_at = await conn.run_sync(lambda c: _has_column(c, "asset_variants", "deleted_at"))
-        if not has_v_deleted_at:
-            await conn.execute(text(
-                "ALTER TABLE asset_variants ADD COLUMN deleted_at TIMESTAMPTZ"
-            ))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_asset_variants_deleted_at "
-                "ON asset_variants (deleted_at)"
-            ))
-
-    # -- assets.capture_progress / assets.capture_error (live SAVED_STREAM progress + failure UI) --
-    async with _shared_db._engine.begin() as conn:
-        has_cap_progress = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_progress"))
-        if not has_cap_progress:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN capture_progress DOUBLE PRECISION"
-            ))
-        has_cap_error = await conn.run_sync(lambda c: _has_column(c, "assets", "capture_error"))
-        if not has_cap_error:
-            await conn.execute(text(
-                "ALTER TABLE assets ADD COLUMN capture_error TEXT"
-            ))
-
-    # Run create_all again in case migrations added models with new relationships
-    async with _shared_db._engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Running alembic upgrade head")
+    await asyncio.to_thread(alembic_command.upgrade, cfg, "head")

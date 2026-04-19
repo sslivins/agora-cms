@@ -27,6 +27,8 @@ COPY worker/ worker/
 COPY cms/ cms/
 COPY tests/ tests/
 COPY pytest.ini .
+COPY alembic.ini .
+COPY alembic/ alembic/
 
 EXPOSE 8080
 
