@@ -9,7 +9,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -992,15 +992,38 @@ async def delete_asset(
     if not is_admin and asset.uploaded_by_user_id != user.id:
         raise HTTPException(status_code=403, detail="Only the asset owner can delete this asset")
 
-    # Block deletion if any schedule references this asset
-    sched_count = await db.scalar(
-        select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset_id)
+    # Block deletion only if ACTIVE schedules reference this asset.
+    # A schedule is "active" if it is enabled AND either has no end_date
+    # or its end_date is still in the future (hasn't expired yet).
+    # Expired or disabled schedules don't block deletion — their rows
+    # will be removed alongside the asset so the FK stays consistent.
+    now_utc = datetime.now(timezone.utc)
+    active_sched_count = await db.scalar(
+        select(func.count()).select_from(Schedule).where(
+            Schedule.asset_id == asset_id,
+            Schedule.enabled.is_(True),
+            (Schedule.end_date.is_(None)) | (Schedule.end_date >= now_utc),
+        )
     )
-    if sched_count:
+    if active_sched_count:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot delete — asset is used by {sched_count} schedule(s). Remove it from all schedules first.",
+            detail=(
+                f"Cannot delete — asset is used by {active_sched_count} active "
+                "schedule(s). Remove it from all active schedules (or wait for "
+                "them to expire) first."
+            ),
         )
+
+    # Remove any remaining (expired/disabled) schedule rows that reference
+    # this asset.  Schedule.asset_id is NOT NULL, so we can't null it —
+    # and since those schedules are all inactive, dropping them is safe
+    # and prevents an FK violation when the reaper hard-deletes the row.
+    stale_sched_count = await db.scalar(
+        select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset_id)
+    )
+    if stale_sched_count:
+        await db.execute(delete(Schedule).where(Schedule.asset_id == asset_id))
 
     asset_filename = asset.filename
 
