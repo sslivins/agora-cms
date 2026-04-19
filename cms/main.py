@@ -230,6 +230,11 @@ async def _alert_settings_refresh_loop() -> None:
 async def lifespan(app: FastAPI):
     # Startup
     settings = get_settings()
+    # Detect and warn on default secrets before anything else talks to the
+    # network — this lands the warning at the top of the log where
+    # operators will actually see it. See cms/security.py for the list.
+    from cms.security import warn_on_default_secrets
+    warn_on_default_secrets(settings, logger)
     init_db(settings)
     await wait_for_db()
     await run_migrations()

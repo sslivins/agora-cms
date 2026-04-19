@@ -1,0 +1,37 @@
+# gitleaks configuration for agora-cms.
+#
+# Extends the default gitleaks ruleset with repo-specific allowlists for
+# known non-secret patterns (placeholder strings in .env.example, CI
+# service-container passwords, etc).
+#
+# Run locally:   gitleaks detect --config .gitleaks.toml
+# Scan history:  gitleaks detect --config .gitleaks.toml --log-opts="--all"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secret placeholders and CI-internal credentials."
+
+# Files that exist specifically to document secret shapes.
+paths = [
+    '''\.env\.example''',
+    '''tests/nightly/\.env\.nightly''',
+    '''docs/security/.*''',
+    '''alembic/versions/.*''',  # schema migrations reference column names like api_key_hash
+]
+
+# Specific literal values that look secret-shaped but are either
+# placeholders (change-me-...) or CI-internal ephemeral credentials.
+regexes = [
+    '''change-me-(to-)?a?-?(random|secure|in-production)[a-z0-9-]*''',
+    '''agora_test''',                  # postgres service container in CI
+    '''local-dev-secret-key-12345''',  # local .env template (gitignored)
+    '''nightly-e2e-not-a-real-secret''',
+    '''nightly-testpass''',
+    '''agora_your_key_here''',         # docs placeholder
+]
+
+# Commit SHAs can be added here if history cleanup reveals a false
+# positive that rulesets can't target:
+# commits = ["abcdef0123..."]
