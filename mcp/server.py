@@ -71,6 +71,7 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "get_device_logs": "logs:read",
     "get_server_time": None,  # any authenticated user
     "get_dashboard": None,    # any authenticated user
+    "list_audit_events": "audit:read",
 }
 
 
@@ -626,6 +627,63 @@ async def get_dashboard() -> str:
     """Get the current dashboard state: what's playing now, upcoming schedules, device states, and alerts."""
     dashboard = await _call_api("get_dashboard")
     return _json_result(dashboard)
+
+
+# ── Audit log ──
+
+
+@mcp.tool()
+async def list_audit_events(
+    limit: int = 50,
+    offset: int = 0,
+    action: str | None = None,
+    resource_type: str | None = None,
+    user_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    q: str | None = None,
+) -> str:
+    """Query the CMS audit log. Returns the most recent events first.
+
+    Use this to answer forensic questions like 'who deleted asset X',
+    'what changed in the last hour', or 'what has user Y done today'.
+
+    Args:
+        limit: Max events to return (1-500, default 50).
+        offset: Pagination offset (default 0).
+        action: Filter by action string (e.g. 'asset.delete', 'schedule.create').
+        resource_type: Filter by resource type ('asset', 'schedule', 'device',
+            'user', 'group', 'profile').
+        resource_id: (not supported server-side yet) — use q instead.
+        user_id: Filter by acting user UUID.
+        since: ISO-8601 timestamp; only events at or after this time.
+        until: ISO-8601 timestamp; only events at or before this time.
+        q: Free-text search across description, action, and resource_type
+            (matches the audit page's search box).
+
+    Requires the 'audit:read' permission.
+    """
+    if err := _check_permission("list_audit_events"):
+        return err
+    # Clamp limit to the server's accepted range; the server also caps at 500.
+    if limit < 1:
+        limit = 1
+    elif limit > 500:
+        limit = 500
+    if offset < 0:
+        offset = 0
+    events = await _call_api(
+        "list_audit_events",
+        limit=limit,
+        offset=offset,
+        action=action,
+        resource_type=resource_type,
+        user_id=user_id,
+        since=since,
+        until=until,
+        q=q,
+    )
+    return _json_result(events)
 
 
 # ── Health check endpoints ──
