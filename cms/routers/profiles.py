@@ -234,7 +234,7 @@ async def update_profile(
 
     # Validate codec/profile compatibility with the merged state
     _validate_profile_compat(
-        video_codec=profile.video_codec,  # codec is immutable
+        video_codec=updates.get("video_codec", profile.video_codec),
         video_profile=updates.get("video_profile", profile.video_profile),
         pixel_format=updates.get("pixel_format", profile.pixel_format),
         color_space=updates.get("color_space", profile.color_space),
