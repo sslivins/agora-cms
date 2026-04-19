@@ -1,0 +1,31 @@
+name: thermal_round_trip_api
+description: >
+  API-level check that pushing cpu_temp over the critical threshold
+  emits a scoped temp_high notification and a TEMP_HIGH event row,
+  and that clearing the fault emits the matching temp_cleared signals.
+  Target serial is a placeholder — when the live runner lands, the
+  loader will resolve it against simulator.serials() at runtime.
+devices: [DEVICE_0]
+steps:
+  - fault:
+      target: DEVICE_0
+      cpu_temp: 82
+  - wait_for_notification:
+      device: DEVICE_0
+      type: temp_high
+      timeout: 30
+  - expect_event:
+      device: DEVICE_0
+      type: TEMP_HIGH
+      timeout: 30
+  - clear_fault:
+      target: DEVICE_0
+  - wait_for_notification:
+      device: DEVICE_0
+      type: temp_cleared
+      timeout: 30
+  - expect_event:
+      device: DEVICE_0
+      type: TEMP_CLEARED
+      timeout: 30
+
