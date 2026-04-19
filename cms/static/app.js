@@ -1105,7 +1105,12 @@ function onSaveLocallyChanged() {
         durSelect.required = false;
         durSelect.value = '';
         customInput.style.display = 'none';
+        customInput.required = false;
     }
+    // Toggling `required` programmatically doesn't emit input/change —
+    // re-run the form's gate updater so the submit button reflects the
+    // new required set. See issue #348.
+    document.getElementById('stream-form')?.__gateUpdate?.();
 }
 
 // Handle custom duration dropdown
@@ -1114,8 +1119,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const custom = document.getElementById('stream-capture-custom');
     if (sel) {
         sel.addEventListener('change', () => {
-            custom.style.display = sel.value === 'custom' ? 'inline-block' : 'none';
-            if (sel.value !== 'custom') custom.value = '';
+            const isCustom = sel.value === 'custom';
+            custom.style.display = isCustom ? 'inline-block' : 'none';
+            if (!isCustom) custom.value = '';
+            // When "Custom…" is picked, the inline number input becomes
+            // the required field instead of the select — keep the submit
+            // gate honest.
+            custom.required = isCustom;
+            document.getElementById('stream-form')?.__gateUpdate?.();
         });
     }
 });
@@ -1680,7 +1691,12 @@ async function deleteRole(roleId, roleName) {
 
 // ── Required-input gating ──────────────────────────────────────────────
 // Disables primary action buttons until required inputs have values.
-// See issue #315.
+// See issues #315, #348 (autofill).
+
+// Registry of all active update functions so we can re-run every gate when
+// browser autofill (Chromium) silently populates fields without firing
+// input/change events.
+const _gateUpdaters = new Set();
 
 /**
  * Check whether a form control has a non-empty value.
@@ -1694,6 +1710,10 @@ function _hasValue(el) {
     // end_time that's disabled when loop_count is set, but whose value
     // is explicitly submitted). Only empty values should block submit.
     return (el.value || "").trim() !== "";
+}
+
+function _rerunAllGates() {
+    _gateUpdaters.forEach(fn => { try { fn(); } catch {} });
 }
 
 /**
@@ -1719,14 +1739,30 @@ function gateButtonOnInputs(button, inputs) {
         el.__gateBound = true;
         el.addEventListener("input", update);
         el.addEventListener("change", update);
+        // Autofill detection (Chromium/Edge): the browser's :-webkit-autofill
+        // pseudo-class triggers our dummy CSS animation, which fires
+        // animationstart even when no input/change event is dispatched.
+        el.addEventListener("animationstart", (e) => {
+            if (e.animationName === "onAutoFillStart" ||
+                e.animationName === "onAutoFillCancel") {
+                update();
+            }
+        });
+        // Re-check whenever the user interacts with the field — catches
+        // autofill that lands on focus in some Chromium paths.
+        el.addEventListener("focus", update);
+        el.addEventListener("blur", update);
     });
+    _gateUpdaters.add(update);
     update();
     return update;
 }
 
 /**
  * Auto-bind: for every <form data-gate-required>, disable its submit button
- * until all [required] fields inside are non-empty.
+ * until all [required] fields inside are non-empty. Uses form-level event
+ * delegation so fields that become required dynamically (e.g. a capture
+ * duration select revealed by a toggle) are picked up automatically.
  */
 function bindFormsRequiredGating(root) {
     (root || document).querySelectorAll("form[data-gate-required]").forEach(form => {
@@ -1734,10 +1770,38 @@ function bindFormsRequiredGating(root) {
         form.__gateBound = true;
         const btn = form.querySelector('button[type="submit"], button.btn-primary');
         if (!btn) return;
-        const required = Array.from(form.querySelectorAll("[required]"));
-        if (!required.length) return;
-        gateButtonOnInputs(btn, required);
+
+        const update = () => {
+            const required = Array.from(form.querySelectorAll("[required]"));
+            btn.disabled = required.length > 0 && !required.every(_hasValue);
+        };
+        form.__gateUpdate = update;
+        _gateUpdaters.add(update);
+
+        // Event delegation at the form level catches current and future fields.
+        form.addEventListener("input", update);
+        form.addEventListener("change", update);
+        // animationstart doesn't bubble in some engines — use capture phase.
+        form.addEventListener("animationstart", (e) => {
+            if (e.animationName === "onAutoFillStart" ||
+                e.animationName === "onAutoFillCancel") {
+                update();
+            }
+        }, true);
+
+        update();
     });
 }
 
 document.addEventListener("DOMContentLoaded", () => bindFormsRequiredGating());
+
+// Autofill typically completes between DOMContentLoaded and window.load —
+// re-evaluate every gate once everything is settled.
+window.addEventListener("load", () => {
+    // Double rAF to ensure we run after the browser has applied autofill.
+    requestAnimationFrame(() => requestAnimationFrame(_rerunAllGates));
+});
+
+// pageshow fires on back/forward cache restores, where autofill state
+// may already be present without any events having fired.
+window.addEventListener("pageshow", _rerunAllGates);
