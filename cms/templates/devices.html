@@ -374,7 +374,7 @@
         <div class="form-group" style="margin: 0; flex: 2;">
             <input type="text" id="group-desc" placeholder="Description (optional)">
         </div>
-        <button class="btn btn-primary" onclick="createGroup()">Add Group</button>
+        <button class="btn btn-primary" id="add-group-btn" onclick="createGroup()" disabled>Add Group</button>
     </div>
     {% endif %}
 </div>
@@ -651,5 +651,10 @@ async function checkForUpdates() {
         btn.textContent = 'Check for Updates';
     }
 }
+
+// Gate "Add Group" button until group name has input (issue #315).
+document.addEventListener("DOMContentLoaded", () => {
+    gateButtonOnInputs("#add-group-btn", ["#group-name"]);
+});
 </script>
 {% endblock %}

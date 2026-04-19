@@ -17,7 +17,7 @@
         before you can create a schedule.
     </p>
     {% else %}
-    <form onsubmit="event.preventDefault(); createSchedule(this)" novalidate>
+    <form onsubmit="event.preventDefault(); createSchedule(this)" novalidate data-gate-required>
         <div class="form-row">
             <div class="form-group">
                 <label><span class="has-tooltip">Name<span class="tooltip">A friendly name for this schedule, e.g. &ldquo;Morning Promo&rdquo; or &ldquo;Weekend Loop&rdquo;</span></span></label>
@@ -96,7 +96,7 @@
             </div>
         </div>
         <div id="schedule-summary" class="schedule-summary" style="display:none;"></div>
-        <button type="submit" class="btn btn-primary">Create Schedule</button>
+        <button type="submit" class="btn btn-primary" disabled>Create Schedule</button>
     </form>
     {% endif %}
 </div>

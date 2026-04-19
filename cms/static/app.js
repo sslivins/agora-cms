@@ -1640,3 +1640,65 @@ async function deleteRole(roleId, roleName) {
         showToast(extractErrorMsg(err), true);
     }
 }
+
+
+// ── Required-input gating ──────────────────────────────────────────────
+// Disables primary action buttons until required inputs have values.
+// See issue #315.
+
+/**
+ * Check whether a form control has a non-empty value.
+ * Checkboxes/radios: must be checked. Everything else: trimmed value non-empty.
+ */
+function _hasValue(el) {
+    if (!el) return false;
+    if (el.type === "checkbox" || el.type === "radio") return el.checked;
+    if (el.disabled) return false;
+    return (el.value || "").trim() !== "";
+}
+
+/**
+ * Disable `button` until every element in `inputs` has a value.
+ * Re-evaluates on input/change events. Safe to call multiple times — idempotent.
+ *
+ * @param {HTMLElement|string} button - button element or CSS selector
+ * @param {Array<HTMLElement|string>} inputs - input elements or CSS selectors
+ */
+function gateButtonOnInputs(button, inputs) {
+    const btn = typeof button === "string" ? document.querySelector(button) : button;
+    if (!btn) return;
+    const els = (inputs || [])
+        .map(i => typeof i === "string" ? document.querySelector(i) : i)
+        .filter(Boolean);
+    if (!els.length) return;
+
+    const update = () => {
+        btn.disabled = !els.every(_hasValue);
+    };
+    els.forEach(el => {
+        if (el.__gateBound) return;
+        el.__gateBound = true;
+        el.addEventListener("input", update);
+        el.addEventListener("change", update);
+    });
+    update();
+    return update;
+}
+
+/**
+ * Auto-bind: for every <form data-gate-required>, disable its submit button
+ * until all [required] fields inside are non-empty.
+ */
+function bindFormsRequiredGating(root) {
+    (root || document).querySelectorAll("form[data-gate-required]").forEach(form => {
+        if (form.__gateBound) return;
+        form.__gateBound = true;
+        const btn = form.querySelector('button[type="submit"], button.btn-primary');
+        if (!btn) return;
+        const required = Array.from(form.querySelectorAll("[required]"));
+        if (!required.length) return;
+        gateButtonOnInputs(btn, required);
+    });
+}
+
+document.addEventListener("DOMContentLoaded", () => bindFormsRequiredGating());
