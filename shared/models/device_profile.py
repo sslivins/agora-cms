@@ -33,6 +33,15 @@ class DeviceProfile(Base):
     # Whether this is a built-in (non-deletable) profile
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Enable/disable toggle — disabled profiles don't generate new variants
+    # on upload / new-profile fan-out, and any in-flight/pending transcodes
+    # for them are cancelled. Existing READY variants are preserved so
+    # re-enabling is instant and a disabled profile still serves cached
+    # content if needed.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

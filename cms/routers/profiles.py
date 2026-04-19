@@ -125,6 +125,7 @@ async def list_profiles(db: AsyncSession = Depends(get_db)):
             audio_codec=p.audio_codec,
             audio_bitrate=p.audio_bitrate,
             builtin=p.builtin,
+            enabled=p.enabled,
             device_count=dev_count.scalar() or 0,
             total_variants=total_var.scalar() or 0,
             ready_variants=ready_var.scalar() or 0,
@@ -184,6 +185,7 @@ async def create_profile(data: ProfileCreate, request: Request, db: AsyncSession
         audio_codec=profile.audio_codec,
         audio_bitrate=profile.audio_bitrate,
         builtin=profile.builtin,
+        enabled=profile.enabled,
         device_count=0,
         total_variants=len(variant_ids),
         ready_variants=0,
@@ -331,6 +333,7 @@ async def update_profile(
         audio_codec=profile.audio_codec,
         audio_bitrate=profile.audio_bitrate,
         builtin=profile.builtin,
+        enabled=profile.enabled,
         device_count=dev_count.scalar() or 0,
         total_variants=total_var.scalar() or 0,
         ready_variants=ready_var.scalar() or 0,
@@ -470,6 +473,7 @@ async def copy_profile(
         audio_codec=profile.audio_codec,
         audio_bitrate=profile.audio_bitrate,
         builtin=profile.builtin,
+        enabled=profile.enabled,
         device_count=0,
         total_variants=len(variant_ids),
         ready_variants=0,
@@ -579,6 +583,186 @@ async def reset_profile(
         audio_codec=profile.audio_codec,
         audio_bitrate=profile.audio_bitrate,
         builtin=profile.builtin,
+        enabled=profile.enabled,
+        device_count=dev_count.scalar() or 0,
+        total_variants=total_var.scalar() or 0,
+        ready_variants=ready_var.scalar() or 0,
+        matches_defaults=_matches_defaults(profile),
+        created_at=profile.created_at,
+    )
+
+
+@router.post("/{profile_id}/disable", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
+async def disable_profile(
+    profile_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable a profile.
+
+    Stops new variants from being generated for this profile on asset
+    upload / new-profile fan-out. Any pending or in-flight transcode
+    jobs for this profile are cancelled. Existing READY variants are
+    preserved so re-enabling is instant.
+    """
+    result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    if not profile.enabled:
+        # Idempotent — return current state
+        dev_count = await db.execute(
+            select(func.count(Device.id)).where(Device.profile_id == profile.id)
+        )
+        total_var = await db.execute(
+            select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == profile.id)
+        )
+        ready_var = await db.execute(
+            select(func.count(AssetVariant.id)).where(
+                AssetVariant.profile_id == profile.id,
+                AssetVariant.status == VariantStatus.READY,
+            )
+        )
+        return ProfileOut(
+            id=profile.id, name=profile.name, description=profile.description,
+            video_codec=profile.video_codec, video_profile=profile.video_profile,
+            max_width=profile.max_width, max_height=profile.max_height,
+            max_fps=profile.max_fps, video_bitrate=profile.video_bitrate,
+            crf=profile.crf, pixel_format=profile.pixel_format,
+            color_space=profile.color_space, audio_codec=profile.audio_codec,
+            audio_bitrate=profile.audio_bitrate, builtin=profile.builtin,
+            enabled=profile.enabled,
+            device_count=dev_count.scalar() or 0,
+            total_variants=total_var.scalar() or 0,
+            ready_variants=ready_var.scalar() or 0,
+            matches_defaults=_matches_defaults(profile),
+            created_at=profile.created_at,
+        )
+
+    profile.enabled = False
+
+    # Cancel pending/in-flight transcode work for this profile.
+    cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
+    cancel_profile_transcodes(profile_id)
+
+    await audit_log(
+        db, user=getattr(request.state, "user", None),
+        action="profile.disable", resource_type="profile",
+        resource_id=str(profile_id),
+        description=f"Disabled transcode profile '{profile.name}'",
+        details={"name": profile.name, "cancelled_jobs": cancelled_jobs},
+        request=request,
+    )
+    await db.commit()
+    await db.refresh(profile)
+
+    logger.info(
+        "disable_profile: profile %s (%s) disabled — cancelled %d job(s)",
+        profile_id, profile.name, cancelled_jobs,
+    )
+
+    dev_count = await db.execute(
+        select(func.count(Device.id)).where(Device.profile_id == profile.id)
+    )
+    total_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == profile.id)
+    )
+    ready_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(
+            AssetVariant.profile_id == profile.id,
+            AssetVariant.status == VariantStatus.READY,
+        )
+    )
+    return ProfileOut(
+        id=profile.id, name=profile.name, description=profile.description,
+        video_codec=profile.video_codec, video_profile=profile.video_profile,
+        max_width=profile.max_width, max_height=profile.max_height,
+        max_fps=profile.max_fps, video_bitrate=profile.video_bitrate,
+        crf=profile.crf, pixel_format=profile.pixel_format,
+        color_space=profile.color_space, audio_codec=profile.audio_codec,
+        audio_bitrate=profile.audio_bitrate, builtin=profile.builtin,
+        enabled=profile.enabled,
+        device_count=dev_count.scalar() or 0,
+        total_variants=total_var.scalar() or 0,
+        ready_variants=ready_var.scalar() or 0,
+        matches_defaults=_matches_defaults(profile),
+        created_at=profile.created_at,
+    )
+
+
+@router.post("/{profile_id}/enable", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
+async def enable_profile(
+    profile_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-enable a profile.
+
+    Re-enqueues transcoding for any assets that don't yet have a variant
+    for this profile (covers assets uploaded while the profile was
+    disabled). Existing variants are preserved.
+    """
+    result = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    was_disabled = not profile.enabled
+    profile.enabled = True
+    await db.commit()
+    await db.refresh(profile)
+
+    new_variant_ids: list[uuid.UUID] = []
+    if was_disabled:
+        # Re-run fan-out: any assets uploaded while disabled will now
+        # get variants; assets that already have variants are no-ops.
+        new_variant_ids = await enqueue_for_new_profile(profile.id, db)
+        if new_variant_ids:
+            await enqueue_variants(db, new_variant_ids)
+
+        await audit_log(
+            db, user=getattr(request.state, "user", None),
+            action="profile.enable", resource_type="profile",
+            resource_id=str(profile_id),
+            description=f"Enabled transcode profile '{profile.name}'",
+            details={
+                "name": profile.name,
+                "variants_enqueued": len(new_variant_ids),
+            },
+            request=request,
+        )
+        await db.commit()
+        logger.info(
+            "enable_profile: profile %s (%s) enabled — enqueued %d variant(s)",
+            profile_id, profile.name, len(new_variant_ids),
+        )
+
+    dev_count = await db.execute(
+        select(func.count(Device.id)).where(Device.profile_id == profile.id)
+    )
+    total_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == profile.id)
+    )
+    ready_var = await db.execute(
+        select(func.count(AssetVariant.id)).where(
+            AssetVariant.profile_id == profile.id,
+            AssetVariant.status == VariantStatus.READY,
+        )
+    )
+    return ProfileOut(
+        id=profile.id, name=profile.name, description=profile.description,
+        video_codec=profile.video_codec, video_profile=profile.video_profile,
+        max_width=profile.max_width, max_height=profile.max_height,
+        max_fps=profile.max_fps, video_bitrate=profile.video_bitrate,
+        crf=profile.crf, pixel_format=profile.pixel_format,
+        color_space=profile.color_space, audio_codec=profile.audio_codec,
+        audio_bitrate=profile.audio_bitrate, builtin=profile.builtin,
+        enabled=profile.enabled,
         device_count=dev_count.scalar() or 0,
         total_variants=total_var.scalar() or 0,
         ready_variants=ready_var.scalar() or 0,
