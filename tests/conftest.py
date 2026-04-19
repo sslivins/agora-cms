@@ -97,6 +97,20 @@ async def db_engine(tmp_path):
 
     engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
 
+    # SQLite doesn't enforce foreign keys unless the per-connection
+    # PRAGMA is set. Without this, ON DELETE SET NULL / CASCADE rules
+    # silently no-op in tests, causing real FK regressions to slip past.
+    if "sqlite" in db_url:
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _enable_sqlite_fk(dbapi_conn, _conn_record):  # pragma: no cover
+            cursor = dbapi_conn.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+
     async with engine.begin() as conn:
         # For PostgreSQL: drop and recreate all tables for isolation
         if "postgresql" in db_url:
