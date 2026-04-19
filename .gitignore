@@ -40,3 +40,11 @@ cookies.txt
 .pr_body.md
 
 e2e_log.txt
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+tests/nightly/coverage-data/
+
