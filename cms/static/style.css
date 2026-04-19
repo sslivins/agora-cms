@@ -1400,3 +1400,24 @@ tr.highlight-new td {
     padding-top: 0.8rem;
     border-top: 1px solid var(--primary);
 }
+
+
+/* ── Autofill detection hook (issue #348) ─────────────────────────────
+ * Chromium (Edge/Chrome) populates :-webkit-autofill fields without firing
+ * input/change events. Attaching a dummy CSS animation lets us detect
+ * autofill via an animationstart event on the input. See
+ * gateButtonOnInputs() in app.js. */
+@keyframes onAutoFillStart { from {} to {} }
+@keyframes onAutoFillCancel { from {} to {} }
+input:-webkit-autofill,
+select:-webkit-autofill,
+textarea:-webkit-autofill {
+    animation-name: onAutoFillStart;
+    animation-duration: 1ms;
+}
+input:not(:-webkit-autofill),
+select:not(:-webkit-autofill),
+textarea:not(:-webkit-autofill) {
+    animation-name: onAutoFillCancel;
+    animation-duration: 1ms;
+}
