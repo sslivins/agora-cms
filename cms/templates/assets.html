@@ -425,7 +425,7 @@
                             </thead>
                             <tbody data-live-variant-table="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">
                                 {% for v in a.visible_variants %}
-                                <tr>
+                                <tr data-variant-id="{{ v.id }}">
                                     <td>{{ v.profile.name if v.profile else '—' }}</td>
                                     <td>
                                         {% if v.status.value == 'ready' %}
@@ -751,11 +751,13 @@
         const tbody = document.querySelector('[data-live-variant-table="' + assetId + '"]');
         if (!tbody) return;
         const isImage = tbody.getAttribute('data-asset-type') === 'image';
-        const rows = tbody.querySelectorAll('tr');
-        // Update each row's status cell (2nd column, index 1) and size (last col)
-        variants.forEach((v, i) => {
-            if (i >= rows.length) return;
-            const cells = rows[i].querySelectorAll('td');
+        // Match each variant to its row by variant ID (not array index) so polling
+        // doesn't swap progress between rows when the API returns variants in a
+        // different order (e.g. as statuses change).
+        variants.forEach((v) => {
+            const row = tbody.querySelector('tr[data-variant-id="' + v.id + '"]');
+            if (!row) return;
+            const cells = row.querySelectorAll('td');
             if (cells.length < 2) return;
             // Status cell
             cells[1].innerHTML = buildVariantStatusCell(v);
