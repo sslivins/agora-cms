@@ -653,8 +653,9 @@ async function checkForUpdates() {
 }
 
 // Gate the create-group submit button until a group name is entered
-// (issue #315). Wrapped in a permission check so the literal button
-// id/label only appears when the user can actually create groups.
+// (issue #315). Wrapped in a permission check so the JS only runs for
+// users with write access — the template also omits the button itself
+// for viewers, so the whole feature is absent for them.
 {% if 'groups:write' in user_perms %}
 document.addEventListener("DOMContentLoaded", () => {
     gateButtonOnInputs("#add-group-btn", ["#group-name"]);

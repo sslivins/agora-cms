@@ -36,4 +36,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table('schedule_device_skips')
+    raise NotImplementedError(
+        "Project policy: migrations are forward-only. "
+        "Roll forward with a new migration if a schema correction is needed."
+    )
