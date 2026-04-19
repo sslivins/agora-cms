@@ -526,9 +526,10 @@ class TestNotificationPrefsAPI:
         resp = await client.get("/api/notification-preferences")
         assert resp.status_code == 200
         prefs = resp.json()
-        assert len(prefs) == 4
+        assert len(prefs) == 6
         types = {p["event_type"] for p in prefs}
-        assert types == {"offline", "online", "temp_high", "temp_cleared"}
+        assert types == {"offline", "online", "temp_high", "temp_cleared",
+                         "display_disconnected", "display_connected"}
         assert all(p["email_enabled"] is False for p in prefs)
 
     @pytest.mark.asyncio
