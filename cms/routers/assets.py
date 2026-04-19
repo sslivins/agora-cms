@@ -129,6 +129,37 @@ def _asset_type(filename: str) -> AssetType:
     return AssetType.IMAGE
 
 
+async def _unique_filename(db: AsyncSession, desired: str, *, max_attempts: int = 1000) -> str:
+    """Return ``desired`` if no asset has that filename, otherwise append
+    ``_1``, ``_2``, ... to the stem until a free name is found.
+
+    Example: if ``promo.mp4`` exists, returns ``promo_1.mp4``. If that also
+    exists, returns ``promo_2.mp4``, etc. Extension is preserved; files
+    without an extension get a trailing ``_N``.
+
+    Considers ALL assets including soft-deleted ones, because the
+    ``filename`` column carries a DB-level unique constraint — a
+    soft-deleted row still reserves its name. Monotonic suffixes also give
+    predictable, human-friendly names (no reuse of gaps).
+    """
+    p = Path(desired)
+    stem = p.stem or desired
+    suffix = p.suffix  # includes the leading dot, or '' if no extension
+
+    candidate = desired
+    for n in range(0, max_attempts):
+        if n > 0:
+            candidate = f"{stem}_{n}{suffix}"
+        existing = await db.execute(
+            select(Asset.id).where(Asset.filename == candidate)
+        )
+        if existing.scalar_one_or_none() is None:
+            return candidate
+    # Extremely unlikely — 1000 identically-named assets. Fall through with
+    # a UUID suffix so we never raise from here.
+    return f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+
+
 async def _visible_asset_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | None:
     """Return asset IDs visible to the user, or None if admin (see all).
 
@@ -316,12 +347,12 @@ async def upload_asset(
     if not file.filename or not ALLOWED_PATTERN.match(file.filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Check for duplicate (among non-deleted assets only)
-    existing = await db.execute(
-        select(Asset).where(Asset.filename == file.filename, Asset.deleted_at.is_(None))
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Asset already exists")
+    # Pick a unique stored filename. If file.filename is already taken by
+    # a live asset, auto-rename (promo.mp4 -> promo_1.mp4) so different
+    # users can upload files with the same name without colliding. The
+    # original filename is preserved in ``original_filename`` for display.
+    stored_filename = await _unique_filename(db, file.filename)
+    was_renamed = stored_filename != file.filename
 
     # Read and hash
     content = await file.read()
@@ -332,28 +363,23 @@ async def upload_asset(
     # Store source file
     storage_dir = settings.asset_storage_path
     storage_dir.mkdir(parents=True, exist_ok=True)
-    dest = storage_dir / file.filename
+    dest = storage_dir / stored_filename
     dest.write_bytes(content)
 
-    asset_type = _asset_type(file.filename)
+    asset_type = _asset_type(stored_filename)
 
     # Convert unsupported image formats to JPEG for device compatibility
-    ext = "." + file.filename.rsplit(".", 1)[-1].lower()
-    final_filename = file.filename
-    original_filename = None
+    ext = "." + stored_filename.rsplit(".", 1)[-1].lower()
+    final_filename = stored_filename
+    original_filename = file.filename if was_renamed else None
     storage = get_storage()
     if asset_type == AssetType.IMAGE and ext in IMAGE_CONVERT_EXTS:
         from cms.services.transcoder import convert_image_to_jpeg
-        jpeg_filename = Path(file.filename).stem + ".jpg"
-        # Check the JPEG name doesn't conflict
-        dup = await db.execute(
-            select(Asset).where(Asset.filename == jpeg_filename, Asset.deleted_at.is_(None))
+        # Pick a unique JPEG name — auto-rename if the .jpg name collides
+        # with an existing live asset.
+        jpeg_filename = await _unique_filename(
+            db, Path(stored_filename).stem + ".jpg"
         )
-        if dup.scalar_one_or_none():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Converted name '{jpeg_filename}' already exists",
-            )
         jpeg_path = storage_dir / jpeg_filename
         ok = await convert_image_to_jpeg(dest, jpeg_path)
         if not ok:
@@ -362,17 +388,18 @@ async def upload_asset(
         # Keep original in originals/ for future re-transcoding
         originals_dir = storage_dir / "originals"
         originals_dir.mkdir(parents=True, exist_ok=True)
-        dest.rename(originals_dir / file.filename)
+        dest.rename(originals_dir / stored_filename)
+        # Preserve the user-supplied name (the HEIC filename) for display
         original_filename = file.filename
         content = jpeg_path.read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
         final_filename = jpeg_filename
         # Sync converted JPEG + original to cloud storage
         await storage.on_file_stored(final_filename)
-        await storage.on_file_stored(f"originals/{file.filename}")
+        await storage.on_file_stored(f"originals/{stored_filename}")
     else:
         # Sync source file to cloud storage
-        await storage.on_file_stored(file.filename)
+        await storage.on_file_stored(stored_filename)
 
     # Resolve group UUIDs (support both single group_id and multi group_ids)
     resolved_groups: list[uuid.UUID] = []
