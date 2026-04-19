@@ -3,16 +3,38 @@ name: Tests
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'README*'
-      - 'LICENSE'
-      - '.gitignore'
-      - '.github/workflows/ci-gate.yml'
   workflow_call:
 
 jobs:
+  # Detect whether the PR touches code/tests that warrant running the
+  # unit and e2e suites. Pure docs/nightly/workflow-only PRs skip the
+  # expensive jobs, but the ci-gate umbrella job at the bottom always
+  # runs so branch protection has a required context to key off of.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'cms/**'
+              - 'shared/**'
+              - 'alembic/**'
+              - 'tests/**'
+              - '!tests/nightly/**'
+              - 'tests_e2e/**'
+              - 'pyproject.toml'
+              - 'requirements*.txt'
+              - '.github/workflows/tests.yml'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -82,6 +104,8 @@ jobs:
           retention-days: 14
 
   e2e:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -150,3 +174,32 @@ jobs:
 
       - name: Run E2E tests
         run: python -m pytest tests_e2e/ --tb=short -q --timeout=60 --reruns=2 --reruns-delay=3 --only-rerun="RemoteProtocolError|ConnectError"
+
+  # Umbrella check that branch protection requires. Runs on every PR so
+  # it always reports a status. Passes iff every upstream job is either
+  # success or skipped (path-filtered out); fails on failure/cancelled.
+  # Keeps tests-only PRs unblocked while still catching real breakage.
+  ci-gate:
+    name: ci-gate
+    needs: [changes, test, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify upstream results
+        run: |
+          echo "changes=${{ needs.changes.result }}"
+          echo "test=${{ needs.test.result }}"
+          echo "e2e=${{ needs.e2e.result }}"
+          fail=0
+          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}"; do
+            case "$r" in
+              success|skipped) ;;
+              *) fail=1 ;;
+            esac
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Upstream job failed or was cancelled."
+            exit 1
+          fi
+          echo "All upstream jobs succeeded or were skipped."
