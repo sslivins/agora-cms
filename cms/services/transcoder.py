@@ -287,6 +287,13 @@ async def enqueue_for_new_profile(
     profile = profile_result.scalar_one_or_none()
     if not profile:
         return []
+    # Skip disabled profiles — they don't generate new variants.
+    if not getattr(profile, "enabled", True):
+        logger.info(
+            "enqueue_for_new_profile: profile %s (%s) is disabled — skipping",
+            profile_id, profile.name,
+        )
+        return []
 
     new_variant_ids: list[uuid.UUID] = []
     for asset in assets:
@@ -372,6 +379,9 @@ async def _enqueue_transcoding_for_asset(
     profiles = result.scalars().all()
     new_variant_ids: list[uuid.UUID] = []
     for profile in profiles:
+        # Skip disabled profiles — no new variants until re-enabled.
+        if not getattr(profile, "enabled", True):
+            continue
         existing = await db.execute(
             select(AssetVariant.id).where(
                 AssetVariant.source_asset_id == asset.id,

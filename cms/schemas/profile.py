@@ -30,6 +30,7 @@ class ProfileOut(BaseModel):
     audio_codec: str
     audio_bitrate: str
     builtin: bool
+    enabled: bool = True
     device_count: int = 0
     total_variants: int = 0
     ready_variants: int = 0
