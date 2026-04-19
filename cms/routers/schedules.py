@@ -390,15 +390,35 @@ async def delete_schedule(schedule_id: uuid.UUID, request: Request, db: AsyncSes
 
 
 @router.post("/{schedule_id}/end-now", dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
-async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+async def end_schedule_now(
+    schedule_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """End the current occurrence of a schedule immediately.
 
-    The schedule is skipped until its end_time today (or tomorrow for
+    Body (optional): ``{"device_id": "<id>"}`` — when provided, skips the
+    schedule only for that device; other devices keep playing.  When omitted,
+    the schedule is skipped for every target (legacy behavior).
+
+    The skip runs until the schedule's ``end_time`` today (or tomorrow for
     overnight spans), then resumes on its next regular occurrence.
     """
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
     from cms.models.setting import CMSSetting
+    from cms.models.schedule_device_skip import ScheduleDeviceSkip
+
+    # Optional JSON body with device_id scoping
+    device_id: str | None = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            raw = body.get("device_id")
+            if isinstance(raw, str) and raw.strip():
+                device_id = raw.strip()
+    except Exception:
+        device_id = None
 
     result = await db.execute(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
@@ -422,30 +442,63 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
     if schedule.end_time <= schedule.start_time:
         end_today += timedelta(days=1)
 
-    skip_schedule_until(str(schedule.id), end_today)
+    # Resolve targets so we can log + push, and (for per-device) verify scope
+    from cms.models.device import Device
+    target_ids = await _get_target_device_ids(schedule, db)
+    if device_id is not None and device_id not in target_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Device is not a target of this schedule",
+        )
+
+    affected_ids = [device_id] if device_id else target_ids
+
+    skip_schedule_until(str(schedule.id), end_today, device_id=device_id)
 
     # Persist to DB so it survives restarts
-    schedule.skipped_until = end_today
-    db.add(schedule)
+    if device_id is None:
+        schedule.skipped_until = end_today
+        db.add(schedule)
+    else:
+        # Upsert a per-device skip row
+        existing = await db.execute(
+            select(ScheduleDeviceSkip).where(
+                (ScheduleDeviceSkip.schedule_id == schedule.id)
+                & (ScheduleDeviceSkip.device_id == device_id)
+            )
+        )
+        row = existing.scalar_one_or_none()
+        if row is None:
+            db.add(ScheduleDeviceSkip(
+                schedule_id=schedule.id,
+                device_id=device_id,
+                skip_until=end_today,
+            ))
+        else:
+            row.skip_until = end_today
+            db.add(row)
+
+    scope = "all devices" if device_id is None else f"device {device_id}"
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="schedule.end_now", resource_type="schedule",
         resource_id=str(schedule_id),
-        description=f"Ended schedule '{schedule.name}' early (resumes at {end_today.isoformat()})",
-        details={"resumes_after": end_today.isoformat()},
+        description=f"Ended schedule '{schedule.name}' early for {scope} (resumes at {end_today.isoformat()})",
+        details={
+            "resumes_after": end_today.isoformat(),
+            "device_id": device_id,
+        },
         request=request,
     )
     await db.commit()
 
-    # Log SKIPPED event for each target device
-    from cms.models.device import Device
-    target_ids = await _get_target_device_ids(schedule, db)
-    if target_ids:
+    # Log SKIPPED event for each affected device
+    if affected_ids:
         name_q = await db.execute(
-            select(Device.id, Device.name).where(Device.id.in_(target_ids))
+            select(Device.id, Device.name).where(Device.id.in_(affected_ids))
         )
         dev_names = {r[0]: (r[1] or r[0]) for r in name_q.all()}
-        for did in target_ids:
+        for did in affected_ids:
             db.add(ScheduleLog(
                 schedule_id=schedule.id,
                 schedule_name=schedule.name,
@@ -457,9 +510,13 @@ async def end_schedule_now(schedule_id: uuid.UUID, request: Request, db: AsyncSe
             ))
         await db.commit()
 
-    # Clear sync hash and re-push so devices drop this schedule immediately
-    for did in target_ids:
+    # Clear sync hash and re-push so affected devices drop this schedule immediately
+    for did in affected_ids:
         clear_sync_hash(did)
         await push_sync_to_device(did, db)
 
-    return {"ended": str(schedule_id), "resumes_after": end_today.isoformat()}
+    return {
+        "ended": str(schedule_id),
+        "resumes_after": end_today.isoformat(),
+        "device_id": device_id,
+    }

@@ -36,13 +36,17 @@ _last_sync_hash: dict[str, str] = {}
 _confirmed_playing: dict[str, dict] = {}
 _now_playing = _confirmed_playing  # backwards-compat alias for tests
 
-# Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}
+# Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}.
+# Schedule-wide skips (applies to every device targeted by the schedule).
 _skipped: dict[str, datetime] = {}
+# Per-device skips: {(schedule_id, device_id): skip_until_local_datetime}.
+# Used when an operator ends a schedule for a single device via the dashboard.
+_device_skipped: dict[tuple[str, str], datetime] = {}
 _skipped_loaded: bool = False
 
 
 async def _ensure_skips_loaded(db) -> None:
-    """Load persisted skips from DB on first call after restart."""
+    """Load persisted skips (schedule-wide + per-device) from DB on first call."""
     global _skipped_loaded
     if _skipped_loaded:
         return
@@ -52,9 +56,37 @@ async def _ensure_skips_loaded(db) -> None:
     )
     for sid, until in skip_result.all():
         _skipped[str(sid)] = until.replace(tzinfo=None) if until.tzinfo else until
+
+    from cms.models.schedule_device_skip import ScheduleDeviceSkip
+    dev_skip_result = await db.execute(
+        select(
+            ScheduleDeviceSkip.schedule_id,
+            ScheduleDeviceSkip.device_id,
+            ScheduleDeviceSkip.skip_until,
+        )
+    )
+    for sid, did, until in dev_skip_result.all():
+        key = (str(sid), did)
+        _device_skipped[key] = until.replace(tzinfo=None) if until.tzinfo else until
+
     _skipped_loaded = True
-    if _skipped:
-        logger.info("Loaded %d persisted schedule skips from DB", len(_skipped))
+    if _skipped or _device_skipped:
+        logger.info(
+            "Loaded %d schedule skips and %d per-device skips from DB",
+            len(_skipped), len(_device_skipped),
+        )
+
+
+def is_schedule_skipped_for_device(schedule_id: str, device_id: str) -> bool:
+    """Return True if this schedule is currently skipped for the given device.
+
+    Covers both schedule-wide (``_skipped``) and per-device (``_device_skipped``)
+    skips.  The scheduler should treat a skipped schedule/device combo as if the
+    schedule were not active.
+    """
+    if schedule_id in _skipped:
+        return True
+    return (schedule_id, device_id) in _device_skipped
 
 # Track which schedule+device combos we've already logged as MISSED this eval cycle
 # Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
@@ -134,18 +166,47 @@ def clear_now_playing(device_id: str) -> dict | None:
     return _confirmed_playing.pop(device_id, None)
 
 
-def skip_schedule_until(schedule_id: str, until: datetime) -> None:
-    """Skip a schedule's current occurrence until the given local datetime."""
-    _skipped[schedule_id] = until
-    # Remove from confirmed_playing immediately
-    to_remove = [did for did, info in _confirmed_playing.items() if info.get("schedule_id") == schedule_id]
-    for did in to_remove:
-        _confirmed_playing.pop(did, None)
+def skip_schedule_until(
+    schedule_id: str,
+    until: datetime,
+    device_id: str | None = None,
+) -> None:
+    """Skip a schedule until ``until``.
+
+    If ``device_id`` is omitted, the skip applies to every device targeted by
+    the schedule (legacy behavior).  If provided, only that device is skipped —
+    other devices on the same schedule continue to play.
+
+    The function also removes matching entries from ``_confirmed_playing`` so
+    the dashboard reflects the change immediately.
+    """
+    if device_id is None:
+        _skipped[schedule_id] = until
+        to_remove = [did for did, info in _confirmed_playing.items() if info.get("schedule_id") == schedule_id]
+        for did in to_remove:
+            _confirmed_playing.pop(did, None)
+        return
+
+    _device_skipped[(schedule_id, device_id)] = until
+    info = _confirmed_playing.get(device_id)
+    if info and info.get("schedule_id") == schedule_id:
+        _confirmed_playing.pop(device_id, None)
 
 
-def clear_schedule_skip(schedule_id: str) -> None:
-    """Remove any active skip for a schedule so it can be re-evaluated."""
-    _skipped.pop(schedule_id, None)
+def clear_schedule_skip(schedule_id: str, device_id: str | None = None) -> None:
+    """Remove an active skip so the schedule can be re-evaluated.
+
+    With ``device_id=None`` the schedule-wide skip AND all per-device skips
+    for this schedule are cleared.  With a specific ``device_id`` only that
+    one per-device skip is cleared.
+    """
+    if device_id is None:
+        _skipped.pop(schedule_id, None)
+        keys = [k for k in _device_skipped if k[0] == schedule_id]
+        for k in keys:
+            _device_skipped.pop(k, None)
+        return
+    _device_skipped.pop((schedule_id, device_id), None)
 
 
 def clear_sync_hash(device_id: str) -> None:
@@ -187,7 +248,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
     if not active:
         return []
 
-    # Resolve target devices for each active schedule
+    # Resolve target devices for each active schedule (filter per-device skips)
     now_playing = []
     live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
 
@@ -198,6 +259,13 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
         if not s.asset:
             continue
         target_ids = await _get_target_device_ids(s, db)
+        # Drop any device with an active per-device skip on this schedule
+        target_ids = [
+            did for did in target_ids
+            if (str(s.id), did) not in _device_skipped
+        ]
+        if not target_ids:
+            continue
         schedule_targets.append((s, target_ids))
         all_device_ids.update(target_ids)
 
@@ -736,7 +804,8 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
         target_ids = await _get_target_device_ids(s, db)
         if device_id in target_ids:
             # Skip if this schedule's current occurrence is being skipped
-            if str(s.id) in _skipped:
+            # (either schedule-wide, or just for this device).
+            if is_schedule_skipped_for_device(str(s.id), device_id):
                 continue
             entries.append(_schedule_to_entry(s, variant_checksums))
 
@@ -824,7 +893,7 @@ async def evaluate_schedules() -> None:
         )
         schedules = result.scalars().all()
 
-        # Purge expired skips (memory + DB)
+        # Purge expired skips (memory + DB) — schedule-wide
         expired = [sid for sid, until in _skipped.items() if local_now >= until]
         for sid in expired:
             _skipped.pop(sid, None)
@@ -838,6 +907,22 @@ async def evaluate_schedules() -> None:
             for did in connected:
                 _last_sync_hash.pop(did, None)
         if expired:
+            await db.commit()
+
+        # Purge expired per-device skips
+        from cms.models.schedule_device_skip import ScheduleDeviceSkip
+        dev_expired = [k for k, until in _device_skipped.items() if local_now >= until]
+        for key in dev_expired:
+            _device_skipped.pop(key, None)
+            sid, did = key
+            await db.execute(
+                ScheduleDeviceSkip.__table__.delete().where(
+                    (ScheduleDeviceSkip.schedule_id == sid)
+                    & (ScheduleDeviceSkip.device_id == did)
+                )
+            )
+            _last_sync_hash.pop(did, None)
+        if dev_expired:
             await db.commit()
 
         active = [
@@ -860,6 +945,10 @@ async def evaluate_schedules() -> None:
             target_ids = await _get_target_device_ids(s, db)
             for did in target_ids:
                 key = (str(s.id), did)
+                # Don't flag MISSED for a device whose skip is active.
+                if key in _device_skipped:
+                    _offline_since.pop(key, None)
+                    continue
                 if did in connected or did not in all_adopted:
                     # Device is online or not adopted — clear offline tracking
                     _offline_since.pop(key, None)

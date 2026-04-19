@@ -154,7 +154,7 @@
                 </td>
                 <td>{{ np.end_time }}</td>
                 <td data-remaining="{{ np.remaining_seconds }}">{{ np.remaining }}</td>
-                <td>{% if 'schedules:write' in user_perms %}<button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}')">End Now</button>{% endif %}</td>
+                <td>{% if 'schedules:write' in user_perms %}<button class="btn btn-sm btn-danger" onclick="endNow('{{ np.schedule_id }}', '{{ np.device_id }}')">End Now</button>{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -289,10 +289,14 @@ window._adoptionProfiles = [
     {% endfor %}
 ];
 
-async function endNow(scheduleId) {
-    if (!await showConfirm('End this schedule now? It will resume at its next scheduled time.')) return;
+async function endNow(scheduleId, deviceId) {
+    if (!await showConfirm('End this schedule on this device now? It will resume at its next scheduled time.')) return;
     try {
-        const res = await fetch(`/api/schedules/${scheduleId}/end-now`, { method: 'POST' });
+        const res = await fetch(`/api/schedules/${scheduleId}/end-now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(deviceId ? { device_id: deviceId } : {}),
+        });
         if (res.ok) location.reload();
         else showToast('Failed to end schedule', true);
     } catch (e) { showToast('Failed to end schedule', true); }
