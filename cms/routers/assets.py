@@ -1087,11 +1087,28 @@ async def share_asset(
         return {"status": "already_shared"}
 
     db.add(GroupAsset(asset_id=asset_id, group_id=group_id))
+
+    # Enrich audit log with uploader context so admins can trace content
+    # propagation (issue #176): original uploader, filename, target group.
+    uploader_email: str | None = None
+    if asset.uploaded_by_user_id is not None:
+        uploader_email = await db.scalar(
+            select(User.email).where(User.id == asset.uploaded_by_user_id)
+        )
     await audit_log(
         db, user=user, action="asset.share", resource_type="asset",
         resource_id=str(asset_id),
         description=f"Shared asset '{asset.filename}' with group '{group.name}'",
-        details={"group_id": str(group_id), "group_name": group.name},
+        details={
+            "asset_filename": asset.filename,
+            "group_id": str(group_id),
+            "group_name": group.name,
+            "uploaded_by_user_id": (
+                str(asset.uploaded_by_user_id)
+                if asset.uploaded_by_user_id is not None else None
+            ),
+            "uploaded_by_email": uploader_email,
+        },
         request=request,
     )
     await db.commit()
@@ -1120,11 +1137,41 @@ async def unshare_asset(
     if not ga:
         raise HTTPException(status_code=404, detail="Asset is not shared with this group")
     await db.delete(ga)
+
+    # Load asset + group + uploader context for a richer audit log entry
+    # (issue #176). Best-effort — audit details shouldn't block the unshare.
+    asset_row = (await db.execute(
+        select(Asset).where(Asset.id == asset_id)
+    )).scalar_one_or_none()
+    group_row = (await db.execute(
+        select(DeviceGroup).where(DeviceGroup.id == group_id)
+    )).scalar_one_or_none()
+    asset_filename = asset_row.filename if asset_row is not None else None
+    group_name = group_row.name if group_row is not None else None
+    uploader_email: str | None = None
+    uploader_id = asset_row.uploaded_by_user_id if asset_row is not None else None
+    if uploader_id is not None:
+        uploader_email = await db.scalar(
+            select(User.email).where(User.id == uploader_id)
+        )
+    description = (
+        f"Unshared asset '{asset_filename}' from group '{group_name}'"
+        if asset_filename and group_name
+        else f"Unshared asset {asset_id} from group {group_id}"
+    )
     await audit_log(
         db, user=user, action="asset.unshare", resource_type="asset",
         resource_id=str(asset_id),
-        description=f"Unshared asset {asset_id} from group {group_id}",
-        details={"group_id": str(group_id)},
+        description=description,
+        details={
+            "asset_filename": asset_filename,
+            "group_id": str(group_id),
+            "group_name": group_name,
+            "uploaded_by_user_id": (
+                str(uploader_id) if uploader_id is not None else None
+            ),
+            "uploaded_by_email": uploader_email,
+        },
         request=request,
     )
     await db.commit()
