@@ -268,10 +268,48 @@ class TestAssetUpload:
         resp = await client.post("/api/assets/upload", files=_make_upload("../etc/passwd.mp4"))
         assert resp.status_code == 400
 
-    async def test_upload_duplicate(self, client):
-        await client.post("/api/assets/upload", files=_make_upload("dup.mp4"))
-        resp = await client.post("/api/assets/upload", files=_make_upload("dup.mp4"))
-        assert resp.status_code == 409
+    async def test_upload_duplicate_auto_renames(self, client):
+        """Uploading a file with a name already taken auto-renames the
+        stored file (promo.mp4 -> promo_1.mp4) and preserves the
+        user-supplied name as ``original_filename`` for display."""
+        r1 = await client.post("/api/assets/upload", files=_make_upload("dup.mp4"))
+        assert r1.status_code in (200, 201)
+        assert r1.json()["filename"] == "dup.mp4"
+        assert r1.json().get("original_filename") in (None, "")
+
+        r2 = await client.post("/api/assets/upload", files=_make_upload("dup.mp4"))
+        assert r2.status_code in (200, 201)
+        assert r2.json()["filename"] == "dup_1.mp4"
+        assert r2.json()["original_filename"] == "dup.mp4"
+
+        r3 = await client.post("/api/assets/upload", files=_make_upload("dup.mp4"))
+        assert r3.status_code in (200, 201)
+        assert r3.json()["filename"] == "dup_2.mp4"
+        assert r3.json()["original_filename"] == "dup.mp4"
+
+    async def test_upload_duplicate_soft_deleted_name_still_reserved(self, client):
+        """Soft-deleted assets still reserve their filename (DB-level unique
+        constraint), so a re-upload never reuses a gap — suffixes are
+        monotonic."""
+        r1 = await client.post("/api/assets/upload", files=_make_upload("hole.mp4"))
+        r2 = await client.post("/api/assets/upload", files=_make_upload("hole.mp4"))
+        r3 = await client.post("/api/assets/upload", files=_make_upload("hole.mp4"))
+        assert [r.json()["filename"] for r in (r1, r2, r3)] == [
+            "hole.mp4",
+            "hole_1.mp4",
+            "hole_2.mp4",
+        ]
+        # Soft-delete the middle one
+        mid_id = r2.json()["id"]
+        del_resp = await client.delete(f"/api/assets/{mid_id}")
+        assert del_resp.status_code in (200, 204)
+
+        r4 = await client.post("/api/assets/upload", files=_make_upload("hole.mp4"))
+        assert r4.status_code in (200, 201)
+        # Soft-deleted "hole_1.mp4" still reserves that name, so we skip past
+        # all existing suffixes.
+        assert r4.json()["filename"] == "hole_3.mp4"
+        assert r4.json()["original_filename"] == "hole.mp4"
 
     async def test_upload_requires_auth(self, unauthed_client):
         resp = await unauthed_client.post("/api/assets/upload", files=_make_upload("x.mp4"))
