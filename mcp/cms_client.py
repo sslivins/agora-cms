@@ -150,5 +150,36 @@ class CMSClient:
     async def get_server_time(self) -> dict:
         return await self._get("/api/server-time")
 
+    # ── Audit log ──
+
+    async def list_audit_events(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        action: str | None = None,
+        resource_type: str | None = None,
+        user_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        q: str | None = None,
+    ) -> list:
+        params: dict = {"limit": limit, "offset": offset}
+        if action:
+            params["action"] = action
+        if resource_type:
+            params["resource_type"] = resource_type
+        if user_id:
+            params["user_id"] = user_id
+        if since:
+            params["since"] = since
+        if until:
+            params["until"] = until
+        if q:
+            params["q"] = q
+        resp = await self._client.get("/api/audit-log", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
     async def close(self) -> None:
         await self._client.aclose()
