@@ -94,12 +94,48 @@ function showPrompt(message, defaultValue = "", isPassword = false) {
 }
 
 // ── Toast notification (replaces native alert()) ──
-function showToast(message, isError = false) {
+// Second arg accepts:
+//   - boolean: true = error, false/undefined = success (legacy)
+//   - string:  'error' | 'success' | 'warning' | 'info'
+// Error toasts stay on-screen longer and use a shake-in animation so users
+// are less likely to miss them after a failed action (#248).
+function showToast(message, variant) {
+    let kind = "success";
+    if (variant === true) kind = "error";
+    else if (typeof variant === "string") {
+        const v = variant.toLowerCase();
+        if (v === "error" || v === "success" || v === "warning" || v === "info") {
+            kind = v;
+        }
+    }
+    const isError = kind === "error";
+    const isWarning = kind === "warning";
     const el = document.createElement("div");
-    el.className = "toast" + (isError ? " toast-error" : "");
-    el.textContent = message;
+    el.className = "toast toast-" + kind;
+    el.setAttribute("role", isError ? "alert" : "status");
+    el.setAttribute("aria-live", isError ? "assertive" : "polite");
+
+    const icon = document.createElement("span");
+    icon.className = "toast-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = isError ? "✕" : isWarning ? "⚠" : kind === "info" ? "ℹ" : "✓";
+    const body = document.createElement("span");
+    body.className = "toast-body";
+    body.textContent = message;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-close";
+    close.setAttribute("aria-label", "Dismiss");
+    close.textContent = "×";
+    close.onclick = () => el.remove();
+    el.appendChild(icon);
+    el.appendChild(body);
+    el.appendChild(close);
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3000);
+
+    // Error toasts linger longer so they're harder to miss.
+    const lifetimeMs = isError ? 7000 : isWarning ? 5000 : 3000;
+    setTimeout(() => el.remove(), lifetimeMs);
 }
 
 function extractErrorMsg(err, fallback) {
