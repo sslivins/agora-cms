@@ -1,0 +1,67 @@
+name: Alembic Check
+
+# Catches ORM/migration drift — fails the PR if a model change landed
+# without a matching Alembic migration.  This is the guard-rail that
+# would have caught the PR #280 outage (column added to the Asset model
+# with no accompanying ALTER TABLE).
+#
+# Flow:
+#   1. Spin up a fresh Postgres.
+#   2. `alembic upgrade head` — build the DB schema from migrations.
+#   3. `alembic check`       — compare ORM metadata to the DB schema.
+#                              Exits non-zero if autogenerate would
+#                              produce any new operations.
+#
+# This fires on every PR regardless of path; it's fast (seconds) and
+# the false-positive rate is effectively zero.  If you legitimately
+# need to change models, add a migration file in alembic/versions/.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  alembic-check:
+    name: alembic-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agora_test
+          POSTGRES_PASSWORD: agora_test
+          POSTGRES_DB: agora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agora_test -d agora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Upgrade DB to head
+        run: alembic upgrade head
+
+      - name: Check for model/migration drift
+        run: |
+          if ! alembic check; then
+            echo ""
+            echo "::error::ORM models have drifted from the Alembic head revision."
+            echo "::error::A model was changed without a matching migration."
+            echo "::error::Fix: run 'alembic revision --autogenerate -m \"<describe>\"' locally,"
+            echo "::error::     review the generated file under alembic/versions/, and commit it."
+            exit 1
+          fi
