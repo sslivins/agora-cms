@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeTimedSerializer
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
 import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -49,6 +49,7 @@ from cms.models.group_asset import GroupAsset
 from cms.models.user import User, UserGroup
 from cms.services.device_manager import device_manager
 from cms.services.audit_service import audit_log
+from cms.services.json_compat import json_as_text
 from cms.services.version_checker import get_latest_device_version, is_update_available
 from cms.routers.devices import _upgrading as _devices_upgrading
 
@@ -2093,7 +2094,7 @@ async def audit_page(
             conditions.append(AuditLog.user_id == uid)
         except ValueError:
             conditions.append(
-                AuditLog.details["actor_username"].astext == uval
+                json_as_text(AuditLog.details, "actor_username") == uval
             )
     if since.strip():
         from datetime import datetime as _dt
@@ -2160,11 +2161,12 @@ async def audit_page(
             user_map[str(u.id)] = u.display_name or u.username
 
     # Also pull distinct actor_username from details JSON
+    _actor_text = json_as_text(AuditLog.details, "actor_username")
     actor_result = await db.execute(
-        select(AuditLog.details["actor_username"].astext)
+        select(_actor_text)
         .distinct()
-        .where(AuditLog.details["actor_username"].astext.isnot(None))
-        .where(AuditLog.details["actor_username"].astext != "")
+        .where(_actor_text.isnot(None))
+        .where(_actor_text != "")
     )
     for r in actor_result.all():
         name = r[0]
