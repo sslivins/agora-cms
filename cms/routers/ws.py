@@ -578,6 +578,24 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
     finally:
         if device_id:
             device_manager.disconnect(device_id)
+            # Refresh group/name/status so a group reassignment made mid-connection
+            # is reflected in the disconnect notification. The STATUS path already
+            # refreshes these (see above), but a device may disconnect before any
+            # STATUS heartbeat arrives — in which case the cached values from the
+            # handshake are stale and the offline alert routes to the wrong group
+            # (or silently drops when the device was originally ungrouped).
+            try:
+                if device is not None:
+                    await db.refresh(device, ["group_id", "group", "name", "status"])
+                    _group_id = str(device.group_id) if device.group_id else None
+                    _device_name = device.name or device_id
+                    _device_status = device.status.value
+                    _group_name = (device.group.name if device.group else "") or ""
+            except Exception as refresh_err:
+                logger.warning(
+                    "Failed to refresh device %s before disconnect notification: %s",
+                    device_id, refresh_err,
+                )
             # Notify alert service of disconnection
             alert_service.device_disconnected(
                 device_id,
