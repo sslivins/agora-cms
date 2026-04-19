@@ -3,6 +3,12 @@ name: Migration Safety
 # Catches migrations that break against a populated database — the kind
 # of issue that a fresh-DB test suite cannot surface.
 #
+# Always runs on every PR to main (no path filter). This check is a
+# required-status in branch protection, and GitHub only considers a
+# required check "satisfied" when it actually reports a conclusion; a
+# path-filtered workflow that never runs blocks auto-merge on PRs that
+# happen to only touch ignored paths (e.g. nightly-only PRs).
+#
 # Strategy:
 #   1. Check out main into a sibling dir.
 #   2. Using main's code, initialise the schema and seed a synthetic
@@ -15,14 +21,6 @@ name: Migration Safety
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'README*'
-      - 'LICENSE'
-      - '.gitignore'
-      - 'tests/nightly/**'
-      - '.github/workflows/nightly.yml'
-      - '.github/workflows/ci-gate.yml'
 
 jobs:
   migration-safety:
