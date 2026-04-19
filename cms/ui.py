@@ -979,11 +979,12 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
+        d.display_connected = state["display_connected"] if state else None
         d.update_available = is_update_available(d.firmware_version)
         d.is_upgrading = d.id in _devices_upgrading
         d.has_active_schedule = d.id in scheduled_device_ids
 
-    groups_query = (
+    groups_query= (
         select(DeviceGroup)
         .options(selectinload(DeviceGroup.devices))
         .order_by(DeviceGroup.name)
@@ -1026,6 +1027,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.ssh_enabled = state["ssh_enabled"] if state else None
             d.local_api_enabled = state["local_api_enabled"] if state else None
+            d.display_connected = state["display_connected"] if state else None
             d.update_available = is_update_available(d.firmware_version)
             d.is_upgrading = d.id in _devices_upgrading
             d.has_active_schedule = d.id in scheduled_device_ids
