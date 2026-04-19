@@ -48,7 +48,7 @@
         <select class="inline-edit" onclick="event.stopPropagation()" onfocus="this.dataset.prev = this.value" onchange="setDefaultAsset('{{ d.id }}', this.value, this)">
             <option value="">None (use group)</option>
             {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
-            <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}>{{ a.display_name or a.original_filename or a.filename }}</option>
+            <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}{% if not a.ready_for_selection %} disabled{% endif %}>{{ a.display_name or a.original_filename or a.filename }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
             {% endfor %}
         </select>
         {% else %}
@@ -335,7 +335,7 @@
                 <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
                     <option value="">No default asset</option>
                     {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
-                    <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}>{{ a.display_name or a.original_filename or a.filename }}</option>
+                    <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}{% if not a.ready_for_selection %} disabled{% endif %}>{{ a.display_name or a.original_filename or a.filename }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
                     {% endfor %}
                 </select>
                 {% if g.schedule_count %}

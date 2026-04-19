@@ -28,7 +28,7 @@
                 <select name="asset_id" required onchange="onAssetTypeChange(this)">
                     <option value="">Select asset...</option>
                     {% for a in assets %}
-                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">{{ a.display_name or a.original_filename or a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% elif a.asset_type.value == 'webpage' %} 🌐{% elif a.asset_type.value == 'stream' %} 📡{% endif %}</option>
+                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}"{% if not a.ready_for_selection %} disabled{% endif %}>{{ a.display_name or a.original_filename or a.filename }}{% if a.asset_type.value == 'video' and a.duration_seconds %} ({{ '%d:%02d'|format((a.duration_seconds|int) // 60, (a.duration_seconds|int) % 60) }}){% elif a.asset_type.value == 'webpage' %} 🌐{% elif a.asset_type.value == 'stream' %} 📡{% endif %}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -212,7 +212,7 @@
 <input type="hidden" id="_tzOptions" value='{{ tz_options | tojson }}'>
 <script>
 const _scheduleData = {
-    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.display_name or a.original_filename or a.filename }}","type":"{{ a.asset_type.value }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.display_name or a.original_filename or a.filename }}","type":"{{ a.asset_type.value }}","duration":{{ a.duration_seconds|default('null', true) if a.asset_type.value == 'video' else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }},"ready":{{ 'true' if a.ready_for_selection else 'false' }},"notReadyReason":{{ (a.not_ready_reason or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
     isAdmin: {{ 'true' if is_admin else 'false' }}
 };
@@ -784,7 +784,9 @@ function editSchedule(s) {
             const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
             label += ` (${m}:${String(s).padStart(2,'0')})`;
         }
-        return `<option value="${a.id}" data-asset-type="${a.type || ''}" ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
+        if (!a.ready && a.notReadyReason) label += ` (${a.notReadyReason})`;
+        const disabledAttr = a.ready ? '' : ' disabled';
+        return `<option value="${a.id}" data-asset-type="${a.type || ''}"${disabledAttr} ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
     }).join("");
 
     const groupOpts = groups.map(g =>

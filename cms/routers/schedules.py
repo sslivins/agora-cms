@@ -20,6 +20,7 @@ from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict, evaluate_schedules
 from cms.services.audit_service import audit_log, compute_diff
+from cms.services.asset_readiness import require_asset_ready
 
 logger = logging.getLogger("agora.cms.schedules")
 
@@ -186,6 +187,10 @@ async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSessi
     fields = data.model_dump()
     fields["name"] = await _unique_name(fields["name"], db)
 
+    # Gate on variant readiness for new schedules (issue #201).
+    # Webpage/stream assets have no variants and are implicitly ready.
+    await require_asset_ready(db, data.asset_id)
+
     # Check if asset is a webpage type
     asset = await db.get(Asset, data.asset_id)
     if not asset:
@@ -280,6 +285,10 @@ async def update_schedule(
     await _verify_schedule_access(schedule, request, db)
 
     updates = data.model_dump(exclude_unset=True)
+
+    # Gate swaps to a new asset on variant readiness (issue #201).
+    if "asset_id" in updates and updates["asset_id"] != schedule.asset_id:
+        await require_asset_ready(db, updates["asset_id"])
 
     # Snapshot diff before any mutation or auto-computation
     changes = compute_diff(schedule, updates)
