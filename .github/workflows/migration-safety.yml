@@ -65,18 +65,29 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # Copy the seed script from the PR into main's tree so it's
-      # guaranteed to exist even when running against the baseline.
-      - name: Stage seed script into base
+      # Copy scripts that live only on the PR branch into main's tree so
+      # they're available when running against the baseline.
+      - name: Stage PR-only scripts into base
         run: |
           mkdir -p base/scripts
           cp pr/scripts/ci_seed_synthetic.py base/scripts/ci_seed_synthetic.py
+          cp pr/scripts/ci_capture_row_counts.py base/scripts/ci_capture_row_counts.py
 
       - name: Initialise schema + seed synthetic data (using main's code)
         working-directory: base
         env:
           PYTHONPATH: ${{ github.workspace }}/base
         run: python scripts/ci_seed_synthetic.py
+
+      # Snapshot row counts on the seeded baseline BEFORE running the PR
+      # branch's migrations.  After the migrations run, the verify step
+      # compares current counts against this file and fails if any table
+      # shrank — catching destructive forward migrations.
+      - name: Capture baseline row counts (pre-migration)
+        working-directory: base
+        env:
+          PYTHONPATH: ${{ github.workspace }}/base
+        run: python scripts/ci_capture_row_counts.py ${{ github.workspace }}/baseline-counts.json
 
       - name: Install PR branch dependencies
         working-directory: pr
@@ -106,4 +117,4 @@ jobs:
         working-directory: pr
         env:
           PYTHONPATH: ${{ github.workspace }}/pr
-        run: python scripts/ci_verify_post_migration.py
+        run: python scripts/ci_verify_post_migration.py ${{ github.workspace }}/baseline-counts.json
