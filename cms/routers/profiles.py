@@ -271,7 +271,9 @@ async def update_profile(
         # The OLD variant rows are left in place so devices keep playing the
         # last known good blob; the reaper will soft-delete them once a new
         # READY sibling exists, then hard-delete once jobs are terminal.
-        new_variant_ids = await supersede_profile_variants(db, profile_id)
+        new_variant_ids = await supersede_profile_variants(
+            db, profile_id, changed_fields=set(changes),
+        )
 
     reset_count = len(new_variant_ids)
 
@@ -496,11 +498,14 @@ async def reset_profile(
 
     defaults = BUILTIN_PROFILES[profile.name]
 
-    # Detect whether any transcoding-relevant field will change
-    transcode_changed = any(
-        field in _TRANSCODE_FIELDS and getattr(profile, field) != value
-        for field, value in defaults.items()
-    )
+    # Detect which transcoding-relevant fields will change.  We keep the
+    # set so we can tell supersede_profile_variants whether IMAGE assets
+    # need to be re-rendered (only max_width/max_height affect them).
+    reset_changed_fields: set[str] = {
+        field for field, value in defaults.items()
+        if field in _TRANSCODE_FIELDS and getattr(profile, field) != value
+    }
+    transcode_changed = bool(reset_changed_fields)
 
     # Apply defaults
     for field, value in defaults.items():
@@ -516,7 +521,9 @@ async def reset_profile(
         )
         cancelled_jobs = await flag_profile_jobs_cancelled(db, profile_id)
         cancel_profile_transcodes(profile_id)
-        new_variant_ids = await supersede_profile_variants(db, profile_id)
+        new_variant_ids = await supersede_profile_variants(
+            db, profile_id, changed_fields=reset_changed_fields,
+        )
 
     reset_count = len(new_variant_ids)
 

@@ -34,6 +34,14 @@ from shared.services.probe import probe_media  # noqa: F401
 
 logger = logging.getLogger("agora.cms.transcoder")
 
+
+# Profile fields that actually affect image-variant output. ``convert_image``
+# only honours ``max_width``/``max_height``; codec/bitrate/crf/fps/audio/
+# pixel-format/color-space are all video-only knobs.  A profile edit that
+# touches only those video-only fields must NOT re-encode images — see
+# issue #302-ish (image-supersede-over-eager).
+IMAGE_RELEVANT_FIELDS: frozenset[str] = frozenset({"max_width", "max_height"})
+
 # ── Monitor loop intervals ──────────────────────────────────────
 _MONITOR_INTERVAL = int(os.environ.get("AGORA_MONITOR_INTERVAL", "30"))
 _STALE_PROCESSING_TIMEOUT = int(os.environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
@@ -96,7 +104,9 @@ async def flag_profile_jobs_cancelled(
 
 
 async def supersede_profile_variants(
-    db: AsyncSession, profile_id: uuid.UUID
+    db: AsyncSession,
+    profile_id: uuid.UUID,
+    changed_fields: Iterable[str] | None = None,
 ) -> list[uuid.UUID]:
     """Create fresh PENDING variant rows for every source asset that currently
     has a non-deleted variant under ``profile_id``.
@@ -108,10 +118,23 @@ async def supersede_profile_variants(
     the older sibling(s); once their jobs are terminal it hard-deletes
     them (blob + row).
 
+    ``changed_fields`` is the set of profile fields that triggered this
+    supersession.  When supplied and it intersects none of
+    :data:`IMAGE_RELEVANT_FIELDS`, IMAGE assets are left alone — there is
+    nothing about the changed fields (e.g. video codec/bitrate/crf) that
+    would affect their rendered output, so re-encoding them is pure
+    wasted work.  When omitted (or when a dimension field changes),
+    images are superseded alongside videos, matching the legacy behaviour.
+
     Returns the list of newly-created variant ids (caller passes these to
     :func:`enqueue_variants`).  Caller is responsible for committing the
     surrounding transaction.
     """
+    changed_set = set(changed_fields) if changed_fields is not None else None
+    skip_images = (
+        changed_set is not None
+        and not (changed_set & IMAGE_RELEVANT_FIELDS)
+    )
     profile_result = await db.execute(
         select(DeviceProfile).where(DeviceProfile.id == profile_id)
     )
@@ -165,6 +188,16 @@ async def supersede_profile_variants(
             logger.info(
                 "supersede_profile_variants: skipping soft-deleted asset %s "
                 "for profile %s", asset_id, profile_id,
+            )
+            continue
+
+        # Image variants only depend on max_width/max_height; skip them
+        # when the profile edit doesn't touch either of those fields.
+        if skip_images and asset.asset_type == AssetType.IMAGE:
+            logger.info(
+                "supersede_profile_variants: skipping IMAGE asset %s for "
+                "profile %s — changed fields %s do not affect image output",
+                asset_id, profile_id, sorted(changed_set),
             )
             continue
 
