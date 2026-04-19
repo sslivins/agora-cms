@@ -37,4 +37,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column('device_profiles', 'enabled')
+    raise NotImplementedError(
+        "Project policy: migrations are forward-only. "
+        "Roll forward with a new migration if a schema correction is needed."
+    )
