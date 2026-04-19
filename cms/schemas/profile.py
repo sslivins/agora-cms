@@ -66,6 +66,7 @@ class ProfileCreate(BaseModel):
 
 class ProfileUpdate(BaseModel):
     description: Optional[str] = None
+    video_codec: Optional[str] = None
     video_profile: Optional[str] = None
     max_width: Optional[int] = None
     max_height: Optional[int] = None

@@ -273,6 +273,67 @@ class TestProfileUpdateRetranscode:
         assert variants[2].id in jobs_by_target, "V_new2 should have a job"
         assert jobs_by_target[variants[2].id].cancel_requested is False
 
+    async def test_changing_codec_persists_and_creates_new_variant(self, client, db_session):
+        """Changing video_codec must persist to the DB and create a new
+        PENDING variant — regression guard for issue #261 where codec was
+        silently dropped by the ``ProfileUpdate`` schema."""
+        from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        profile = DeviceProfile(name="retrans-codec", video_codec="h264", crf=23)
+        db_session.add(profile)
+        await db_session.flush()
+
+        asset = Asset(
+            filename="vid-codec.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=1000, checksum="abc",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+
+        orig = AssetVariant(
+            source_asset_id=asset.id,
+            profile_id=profile.id,
+            filename=f"{uuid.uuid4()}.mp4",
+            status=VariantStatus.READY,
+            size_bytes=500,
+        )
+        db_session.add(orig)
+        await db_session.commit()
+        orig_id = orig.id
+        profile_id = profile.id
+
+        resp = await client.put(
+            f"/api/profiles/{profile_id}",
+            json={"video_codec": "hevc"},
+        )
+        assert resp.status_code == 200, resp.text
+        # Response body must reflect the new codec
+        assert resp.json()["video_codec"] == "hevc"
+
+        # DB row must reflect the new codec
+        db_session.expunge_all()
+        refreshed = await db_session.get(DeviceProfile, profile_id)
+        assert refreshed.video_codec == "hevc", (
+            "video_codec change must persist — it was being dropped by "
+            "ProfileUpdate in issue #261"
+        )
+
+        # A new PENDING variant must have been created (codec is in
+        # _TRANSCODE_FIELDS so supersede fires)
+        result = await db_session.execute(
+            select(AssetVariant).where(AssetVariant.profile_id == profile_id)
+        )
+        variants = result.scalars().all()
+        assert len(variants) == 2, (
+            f"codec change must supersede — expected 2 variants, got {len(variants)}"
+        )
+        old = next(v for v in variants if v.id == orig_id)
+        new = next(v for v in variants if v.id != orig_id)
+        assert old.status == VariantStatus.READY
+        assert old.deleted_at is None
+        assert new.status == VariantStatus.PENDING
+
 
 @pytest.mark.asyncio
 class TestProfileChangeFlagsActiveJobs:
