@@ -1,0 +1,29 @@
+# Coverage config used only by the nightly compose overlay.
+#
+# Container-side: coverage runs as PID 1 under `coverage run --parallel-mode`.
+# --parallel-mode writes one data file per process (e.g. .coverage.{host}.{pid}.{rand}),
+# which the post-test workflow step combines on the host via a bind mount.
+#
+# Distinct from pyproject.toml's [tool.coverage] so host and container configs
+# don't fight each other.
+
+[run]
+branch = false
+parallel = true
+data_file = /coverage/.coverage
+source =
+    cms
+    shared
+omit =
+    */tests/*
+    */tests_e2e/*
+    */alembic/*
+    */__main__.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+    \.\.\.

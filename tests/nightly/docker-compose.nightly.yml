@@ -30,6 +30,29 @@ services:
       # SMTP config in cms_settings (set via /setup/smtp wizard step).
       - AGORA_CMS_DEFAULT_SMTP_HOST=mailpit
       - AGORA_CMS_DEFAULT_SMTP_PORT=1025
+      # Tell coverage where to write + which rcfile to use. --parallel-mode
+      # is set on the command below so each process produces its own data
+      # file under /coverage for post-run combining on the host.
+      - COVERAGE_RCFILE=/app/.coveragerc.nightly
+    # Run uvicorn under `coverage` so we get line coverage of whatever the
+    # E2E suite exercises. Exec-form so coverage is PID 1 and can forward
+    # SIGTERM into uvicorn's graceful shutdown (which triggers coverage's
+    # atexit flush).
+    command:
+      - coverage
+      - run
+      - --rcfile=/app/.coveragerc.nightly
+      - --parallel-mode
+      - -m
+      - uvicorn
+      - cms.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    volumes:
+      - ./.coveragerc.nightly:/app/.coveragerc.nightly:ro
+      - ./coverage-data:/coverage
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).status==200 else 1)\""]
       interval: 5s

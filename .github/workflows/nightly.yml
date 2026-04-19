@@ -73,7 +73,42 @@ jobs:
           NIGHTLY_KEEP_STACK: ${{ inputs.keep_stack == true && '1' || '' }}
           NIGHTLY_STARTUP_TIMEOUT: "360"
         run: |
+          mkdir -p tests/nightly/coverage-data
           pytest tests/nightly -v --tb=short -o log_cli=true -o log_cli_level=INFO
+
+      - name: Combine nightly coverage
+        if: always()
+        working-directory: agora-cms
+        run: |
+          set -e
+          python -m pip install --quiet 'coverage<8'
+          if compgen -G "tests/nightly/coverage-data/.coverage*" > /dev/null; then
+            cat > .coveragerc.combine <<'EOF'
+          [paths]
+          source =
+              .
+              /app
+          [run]
+          branch = false
+          source = cms,shared
+          EOF
+            COVERAGE_RCFILE=.coveragerc.combine coverage combine tests/nightly/coverage-data/ || true
+            COVERAGE_RCFILE=.coveragerc.combine coverage xml -o nightly-coverage.xml || true
+            COVERAGE_RCFILE=.coveragerc.combine coverage report --skip-covered | tail -40 >> "$GITHUB_STEP_SUMMARY" || true
+          else
+            echo "::warning::no nightly coverage data produced (did CMS shut down cleanly?)"
+          fi
+
+      - name: Upload nightly coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-coverage
+          path: |
+            agora-cms/nightly-coverage.xml
+            agora-cms/tests/nightly/coverage-data/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Capture compose logs on failure
         if: failure()
