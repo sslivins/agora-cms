@@ -1689,7 +1689,10 @@ async function deleteRole(roleId, roleName) {
 function _hasValue(el) {
     if (!el) return false;
     if (el.type === "checkbox" || el.type === "radio") return el.checked;
-    if (el.disabled) return false;
+    // A disabled field with a filled value still counts as "has value" —
+    // forms may read disabled inputs via JS (e.g. an auto-computed
+    // end_time that's disabled when loop_count is set, but whose value
+    // is explicitly submitted). Only empty values should block submit.
     return (el.value || "").trim() !== "";
 }
 

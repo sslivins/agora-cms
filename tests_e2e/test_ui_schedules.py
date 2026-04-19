@@ -36,13 +36,19 @@ def _ensure_device_and_asset(api, ws_url, device_id):
         if not assets.json():
             pytest.skip("Could not create test asset (ffprobe not available)")
 
-    return assets.json()[0]["filename"], group_id
+    asset = assets.json()[0]
+    return asset["id"], asset["filename"], group_id
 
 
-def _fill_create_form(page, name, asset_name, group_id, start, end):
-    """Fill the schedule create form, explicitly targeting a specific group."""
+def _fill_create_form(page, name, asset_id, group_id, start, end):
+    """Fill the schedule create form, explicitly targeting a specific group.
+
+    Selects the asset by value (its UUID) rather than by label, because
+    the option label includes a duration suffix (#316) that the bare
+    filename doesn't match.
+    """
     page.fill('input[name="name"]', name)
-    page.select_option('select[name="asset_id"]', label=asset_name)
+    page.select_option('select[name="asset_id"]', value=asset_id)
     page.select_option('select[name="group_id"]', value=group_id)
     page.fill('input[name="start_time"]', start)
     page.fill('input[name="end_time"]', end)
@@ -53,12 +59,12 @@ class TestScheduleCreate:
 
     def test_create_schedule_appears_in_active_table(self, page: Page, api, ws_url):
         """Create a schedule and verify it appears in the Active Schedules table."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-test-001")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-test-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "E2E Active Check", asset_name, group_id, "09:00", "17:00")
+        _fill_create_form(page, "E2E Active Check", asset_id, group_id, "09:00", "17:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
@@ -69,12 +75,12 @@ class TestScheduleCreate:
 
     def test_create_schedule_exists_in_api(self, page: Page, api, ws_url):
         """After form submit, the schedule must exist in the REST API."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-api-001")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-api-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "E2E API Verify", asset_name, group_id, "10:00", "11:00")
+        _fill_create_form(page, "E2E API Verify", asset_id, group_id, "10:00", "11:00")
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
@@ -92,7 +98,7 @@ class TestScheduleCreate:
         Regression coverage: if the form silently fails (e.g. GET instead of
         POST), the schedule won't exist and won't appear on the dashboard.
         """
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-dash-001")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "sched-dash-001")
 
         # Pick a start time 2 hours from now (UTC) so it's "upcoming today"
         now_utc = datetime.now(timezone.utc)
@@ -102,7 +108,7 @@ class TestScheduleCreate:
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "E2E Dashboard Check", asset_name, group_id, start, end)
+        _fill_create_form(page, "E2E Dashboard Check", asset_id, group_id, start, end)
 
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
@@ -129,7 +135,7 @@ class TestScheduleCreate:
         browser fell through to the default GET submission.  The JS POST
         could race the navigation and sometimes succeed, hiding the bug.
         """
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "create-post-001")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "create-post-001")
 
         # Track all requests to /schedules
         requests_log = []
@@ -139,7 +145,7 @@ class TestScheduleCreate:
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "POST Not GET Test", asset_name, group_id, "08:00", "18:00")
+        _fill_create_form(page, "POST Not GET Test", asset_id, group_id, "08:00", "18:00")
 
         # Clear log to only capture the submit request
         requests_log.clear()
@@ -586,12 +592,12 @@ class TestScheduleDescriptionColumn:
 
     def test_every_day_schedule_shows_every_day(self, page: Page, api, ws_url):
         """A schedule with all days and no date range should say 'Every day'."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-001")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Desc Every Day", asset_name, group_id, "09:00", "17:00")
+        _fill_create_form(page, "Desc Every Day", asset_id, group_id, "09:00", "17:00")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
@@ -604,12 +610,12 @@ class TestScheduleDescriptionColumn:
 
     def test_one_shot_schedule_shows_once(self, page: Page, api, ws_url):
         """A schedule with same start/end date should say 'Once on ...'."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-002")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-002")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Desc One Shot", asset_name, group_id, "14:00", "16:00")
+        _fill_create_form(page, "Desc One Shot", asset_id, group_id, "14:00", "16:00")
         # Set both dates to the same future date
         page.fill('input[name="start_date"]', "2027-06-15")
         page.fill('input[name="end_date"]', "2027-06-15")
@@ -623,7 +629,7 @@ class TestScheduleDescriptionColumn:
 
     def test_weekday_schedule_shows_weekdays(self, page: Page, api, ws_url):
         """A schedule with Mon-Fri should say 'Weekdays'."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-003")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "desc-col-003")
 
         # Create via API with specific days
         assets = api.get("/api/assets").json()
@@ -652,12 +658,12 @@ class TestScheduleEditSummaryBanner:
 
     def test_edit_modal_shows_summary(self, page: Page, api, ws_url):
         """Opening the edit modal must display the schedule summary banner."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "edit-sum-001")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "edit-sum-001")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Edit Summary Test", asset_name, group_id, "10:00", "12:00")
+        _fill_create_form(page, "Edit Summary Test", asset_id, group_id, "10:00", "12:00")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
@@ -673,12 +679,12 @@ class TestScheduleEditSummaryBanner:
 
     def test_edit_modal_summary_updates_on_time_change(self, page: Page, api, ws_url):
         """Changing times in the edit modal must update the summary banner."""
-        asset_name, group_id = _ensure_device_and_asset(api, ws_url, "edit-sum-002")
+        asset_id, asset_name, group_id = _ensure_device_and_asset(api, ws_url, "edit-sum-002")
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")
 
-        _fill_create_form(page, "Edit Summary Update", asset_name, group_id, "10:00", "12:00")
+        _fill_create_form(page, "Edit Summary Update", asset_id, group_id, "10:00", "12:00")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
 
