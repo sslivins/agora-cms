@@ -16,6 +16,10 @@ class DeviceEventType(str, PyEnum):
     OFFLINE = "offline"
     TEMP_HIGH = "temp_high"
     TEMP_CLEARED = "temp_cleared"
+    DISPLAY_CONNECTED = "display_connected"
+    DISPLAY_DISCONNECTED = "display_disconnected"
+    ERROR = "error"
+    ERROR_CLEARED = "error_cleared"
     CMS_STARTED = "cms_started"
     CMS_STOPPED = "cms_stopped"
 

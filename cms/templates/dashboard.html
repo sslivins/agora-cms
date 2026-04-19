@@ -247,9 +247,11 @@
             </tr>
         </thead>
         <tbody>
-            {% for log in recent_activity %}
+            {% for entry in recent_activity %}
+            {% set log = entry.log %}
             <tr>
-                <td data-utc="{{ log.timestamp.isoformat() }}">{{ log.timestamp.astimezone(tz).strftime('%I:%M:%S %p').lstrip('0') }}</td>
+                <td data-utc="{{ entry.timestamp.isoformat() }}">{{ entry.timestamp.astimezone(tz).strftime('%I:%M:%S %p').lstrip('0') }}</td>
+                {% if entry.kind == 'schedule' %}
                 <td>
                     {% if log.event.value == 'STARTED' %}
                     <span class="badge badge-started">Started</span>
@@ -265,6 +267,38 @@
                 <td>{{ log.device_name }}</td>
                 <td>{{ log.asset_filename }}</td>
                 <td class="text-muted">{{ log.details or '' }}</td>
+                {% else %}
+                <td>
+                    {% set et = log.event_type %}
+                    {% if et == 'online' %}
+                    <span class="badge badge-started">Online</span>
+                    {% elif et == 'offline' %}
+                    <span class="badge badge-missed">Offline</span>
+                    {% elif et == 'display_connected' %}
+                    <span class="badge badge-started">Display On</span>
+                    {% elif et == 'display_disconnected' %}
+                    <span class="badge badge-missed">Display Off</span>
+                    {% elif et == 'temp_high' %}
+                    <span class="badge badge-missed">Temp High</span>
+                    {% elif et == 'temp_cleared' %}
+                    <span class="badge badge-started">Temp Cleared</span>
+                    {% elif et == 'error' %}
+                    <span class="badge badge-missed">Error</span>
+                    {% elif et == 'error_cleared' %}
+                    <span class="badge badge-started">Error Cleared</span>
+                    {% elif et == 'cms_started' %}
+                    <span class="badge badge-started">CMS Started</span>
+                    {% elif et == 'cms_stopped' %}
+                    <span class="badge badge-skipped">CMS Stopped</span>
+                    {% else %}
+                    <span class="badge">{{ et }}</span>
+                    {% endif %}
+                </td>
+                <td class="text-muted">—</td>
+                <td>{{ log.device_name or '—' }}</td>
+                <td class="text-muted">—</td>
+                <td class="text-muted">{{ log.details or '' }}</td>
+                {% endif %}
             </tr>
             {% endfor %}
         </tbody>

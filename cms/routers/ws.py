@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -402,6 +403,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     _group_name = device.group.name or ""
 
                 # Track playback state (including error)
+                # Capture previous values for transition detection *before* update_status overwrites them.
+                _prev_conn = device_manager.get(device_id)
+                _prev_display = _prev_conn.display_connected if _prev_conn else None
+                _prev_error = _prev_conn.error if _prev_conn else None
+                _new_display = msg.get("display_connected")
+                _new_error = msg.get("error")
+
                 device_manager.update_status(
                     device_id,
                     mode=msg.get("mode", "unknown"),
@@ -416,6 +424,80 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     local_api_enabled=msg.get("local_api_enabled"),
                     display_connected=msg.get("display_connected"),
                 )
+
+                # Emit DISPLAY_CONNECTED / DISPLAY_DISCONNECTED transitions.
+                # Only fire on explicit True<->False flips. A None->bool
+                # transition is treated as an initial observation and is
+                # ignored to avoid noise on every reconnect.
+                try:
+                    if (
+                        _new_display is not None
+                        and _prev_display is not None
+                        and bool(_new_display) != bool(_prev_display)
+                    ):
+                        from cms.models.device_event import DeviceEvent, DeviceEventType
+                        _ev_type = (
+                            DeviceEventType.DISPLAY_CONNECTED
+                            if _new_display
+                            else DeviceEventType.DISPLAY_DISCONNECTED
+                        )
+                        _gid_uuid = None
+                        if _group_id:
+                            try:
+                                _gid_uuid = uuid.UUID(_group_id)
+                            except (TypeError, ValueError):
+                                _gid_uuid = None
+                        db.add(DeviceEvent(
+                            device_id=device_id,
+                            device_name=_device_name,
+                            group_id=_gid_uuid,
+                            group_name=_group_name,
+                            event_type=_ev_type.value,
+                        ))
+                        await db.commit()
+                except Exception:
+                    logger.exception("Failed to log display transition for %s", device_id)
+
+                # Emit ERROR / ERROR_CLEARED transitions. ERROR fires on a
+                # None->str transition *or* when the error string changes.
+                # ERROR_CLEARED fires on str->None.
+                try:
+                    _had_err = bool(_prev_error)
+                    _has_err = bool(_new_error)
+                    _emit_error = False
+                    _emit_cleared = False
+                    if _has_err and not _had_err:
+                        _emit_error = True
+                    elif _has_err and _had_err and _new_error != _prev_error:
+                        _emit_error = True
+                    elif _had_err and not _has_err:
+                        _emit_cleared = True
+
+                    if _emit_error or _emit_cleared:
+                        from cms.models.device_event import DeviceEvent, DeviceEventType
+                        _ev_type = (
+                            DeviceEventType.ERROR
+                            if _emit_error
+                            else DeviceEventType.ERROR_CLEARED
+                        )
+                        _gid_uuid = None
+                        if _group_id:
+                            try:
+                                _gid_uuid = uuid.UUID(_group_id)
+                            except (TypeError, ValueError):
+                                _gid_uuid = None
+                        _details = {"error": _new_error} if _emit_error else {"previous_error": _prev_error}
+                        db.add(DeviceEvent(
+                            device_id=device_id,
+                            device_name=_device_name,
+                            group_id=_gid_uuid,
+                            group_name=_group_name,
+                            event_type=_ev_type.value,
+                            details=_details,
+                        ))
+                        await db.commit()
+                except Exception:
+                    logger.exception("Failed to log error transition for %s", device_id)
 
                 # Check temperature thresholds
                 alert_service.check_temperature(
