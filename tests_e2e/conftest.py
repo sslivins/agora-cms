@@ -291,13 +291,59 @@ def api(context: BrowserContext, base_url: str):
         def delete(self, path, **kwargs):
             return self._client.delete(path, **kwargs)
 
-        def create_asset(self, filename="test-video.mp4", content=b"fake-mp4-content"):
-            """Upload a fake asset file."""
+        def create_asset(self, filename="test-video.mp4", content=b"fake-mp4-content", ready=True):
+            """Upload a fake asset file.
+
+            By default the uploaded asset has all its variants marked as READY
+            so it can immediately be scheduled or assigned as a splash.  The
+            E2E server runs without a transcoder worker, so variants would
+            otherwise stay in PENDING forever and the PR #312 readiness gate
+            (``cms.services.asset_readiness``) would reject any subsequent
+            ``POST /api/schedules`` or splash-assignment call with a 422.
+
+            Pass ``ready=False`` if you are specifically testing the gate.
+            """
             import io
-            return self._client.post(
+            resp = self._client.post(
                 "/api/assets/upload",
                 files={"file": (filename, io.BytesIO(content), "video/mp4")},
             )
+            if ready and resp.status_code == 201:
+                try:
+                    asset_id = resp.json()["id"]
+                except (ValueError, KeyError):
+                    return resp
+                self.mark_asset_ready(asset_id)
+            return resp
+
+        def mark_asset_ready(self, asset_id):
+            """Mark every variant of ``asset_id`` as VariantStatus.READY.
+
+            Used by :meth:`create_asset` to bypass the transcode-readiness
+            gate for tests that aren't specifically exercising it.  Performs
+            a short-lived async DB update on a fresh engine so the caller
+            doesn't have to contend with the server's event loop.
+            """
+            from sqlalchemy import text as sa_text
+            from sqlalchemy.ext.asyncio import create_async_engine
+
+            db_url = os.environ["AGORA_CMS_DATABASE_URL"]
+
+            async def _exec():
+                engine = create_async_engine(db_url)
+                try:
+                    async with engine.begin() as conn:
+                        await conn.execute(
+                            sa_text(
+                                "UPDATE asset_variants SET status = 'READY' "
+                                "WHERE source_asset_id = :aid"
+                            ),
+                            {"aid": str(asset_id)},
+                        )
+                finally:
+                    await engine.dispose()
+
+            run_async(_exec())
 
     helper = ApiHelper()
     yield helper
