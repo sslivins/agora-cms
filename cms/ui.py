@@ -81,6 +81,29 @@ def select_days(day_names, day_numbers):
 templates.env.filters["select_days"] = select_days
 
 
+def asset_label_suffix(asset):
+    """Return a human-readable suffix for asset labels in dropdowns.
+
+    Shows duration `(mm:ss)` for any asset with a duration (video or
+    saved stream), a 🌐 globe for webpages, and a 📡 antenna for live
+    streams. Returns an empty string for assets with no meaningful
+    suffix (e.g. images). See issue #316.
+    """
+    duration = getattr(asset, "duration_seconds", None)
+    if duration:
+        total = int(duration)
+        return f" ({total // 60}:{total % 60:02d})"
+    asset_type = getattr(asset, "asset_type", None)
+    type_val = getattr(asset_type, "value", asset_type)
+    if type_val == "webpage":
+        return " 🌐"
+    if type_val == "stream":
+        return " 📡"
+    return ""
+
+templates.env.filters["asset_label_suffix"] = asset_label_suffix
+
+
 def schedule_json(s):
     """Serialize a schedule ORM object to a JSON string for the edit modal."""
     data = {
