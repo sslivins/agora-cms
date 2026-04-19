@@ -588,3 +588,106 @@ class TestEndNowClearedOnEdit:
         # Toggle enabled off then on
         await client.patch(f"/api/schedules/{sched_id}", json={"enabled": False})
         assert sched_id not in _skipped
+
+
+@pytest.mark.asyncio
+class TestEndNowPerDevice:
+    """Issue #240: End Now on one device must not stop the schedule on others."""
+
+    async def _seed_two_devices(self, db_session):
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+
+        group = DeviceGroup(name="Two Device Group")
+        d1 = Device(id="pi-240-a", name="A", status=DeviceStatus.ADOPTED)
+        d2 = Device(id="pi-240-b", name="B", status=DeviceStatus.ADOPTED)
+        asset = Asset(filename="p.mp4", asset_type=AssetType.VIDEO, size_bytes=1, checksum="c")
+        db_session.add_all([group, d1, d2, asset])
+        await db_session.flush()
+        d1.group_id = group.id
+        d2.group_id = group.id
+        await db_session.commit()
+        return str(group.id), str(asset.id), d1.id, d2.id
+
+    async def test_end_now_with_device_id_scopes_skip(self, client, db_session):
+        from cms.services import scheduler as sched_mod
+        from cms.models.schedule_device_skip import ScheduleDeviceSkip
+        from sqlalchemy import select
+
+        group_id, asset_id, dev_a, dev_b = await self._seed_two_devices(db_session)
+
+        created = await client.post("/api/schedules", json={
+            "name": "Per-Device End Now",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        assert created.status_code == 201
+        sched_id = created.json()["id"]
+
+        sched_mod._skipped.clear()
+        sched_mod._device_skipped.clear()
+
+        resp = await client.post(
+            f"/api/schedules/{sched_id}/end-now",
+            json={"device_id": dev_a},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["device_id"] == dev_a
+
+        # Schedule-wide skip must NOT be set; per-device skip must be set.
+        assert sched_id not in sched_mod._skipped
+        assert (sched_id, dev_a) in sched_mod._device_skipped
+        assert (sched_id, dev_b) not in sched_mod._device_skipped
+
+        # And persisted to DB
+        import uuid
+        rows = (await db_session.execute(
+            select(ScheduleDeviceSkip.device_id).where(
+                ScheduleDeviceSkip.schedule_id == uuid.UUID(sched_id)
+            )
+        )).scalars().all()
+        assert rows == [dev_a]
+
+    async def test_end_now_without_body_still_schedule_wide(self, client, db_session):
+        """Back-compat: POST with no body skips all devices on the schedule."""
+        from cms.services import scheduler as sched_mod
+
+        group_id, asset_id, dev_a, dev_b = await self._seed_two_devices(db_session)
+
+        created = await client.post("/api/schedules", json={
+            "name": "No Body End Now",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        sched_id = created.json()["id"]
+
+        sched_mod._skipped.clear()
+        sched_mod._device_skipped.clear()
+
+        resp = await client.post(f"/api/schedules/{sched_id}/end-now")
+        assert resp.status_code == 200
+        assert sched_id in sched_mod._skipped
+        assert not any(k[0] == sched_id for k in sched_mod._device_skipped)
+
+    async def test_end_now_rejects_unknown_device(self, client, db_session):
+        group_id, asset_id, dev_a, dev_b = await self._seed_two_devices(db_session)
+
+        created = await client.post("/api/schedules", json={
+            "name": "Bad Device End Now",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        sched_id = created.json()["id"]
+
+        resp = await client.post(
+            f"/api/schedules/{sched_id}/end-now",
+            json={"device_id": "not-a-target"},
+        )
+        assert resp.status_code == 400
