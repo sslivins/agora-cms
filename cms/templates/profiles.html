@@ -10,7 +10,7 @@
 {% if 'profiles:write' in user_perms %}
 <div class="card">
     <h2>Create Profile</h2>
-    <form onsubmit="event.preventDefault(); createProfile(this)">
+    <form onsubmit="event.preventDefault(); createProfile(this)" data-gate-required>
         <div class="form-row">
             <div class="form-group">
                 <label>Name</label>
@@ -102,7 +102,7 @@
             </div>
         </div>
         <div id="profile-create-status" class="form-status"></div>
-        <button type="submit" class="btn btn-primary">Create Profile</button>
+        <button type="submit" class="btn btn-primary" disabled>Create Profile</button>
     </form>
 </div>
 {% endif %}

@@ -54,7 +54,7 @@
     </div>
 
     <div id="add-tab-webpage" class="tab-content" style="padding:1.25rem;">
-    <form id="webpage-form" onsubmit="event.preventDefault(); addWebpageAsset(this)">
+    <form id="webpage-form" onsubmit="event.preventDefault(); addWebpageAsset(this)" data-gate-required>
         <div class="form-group">
             <label for="webpage-url">URL</label>
             <input type="url" id="webpage-url" name="url" placeholder="https://example.com" required class="form-control">
@@ -80,12 +80,12 @@
         </div>
         {% endif %}
         <div id="webpage-status" class="form-status"></div>
-        <button type="submit" class="btn btn-primary" id="webpage-submit" style="margin-top:0.75rem">Add URL</button>
+        <button type="submit" class="btn btn-primary" id="webpage-submit" style="margin-top:0.75rem" disabled>Add URL</button>
     </form>
     </div>
 
     <div id="add-tab-stream" class="tab-content" style="padding:1.25rem;">
-    <form id="stream-form" onsubmit="event.preventDefault(); addStreamAsset(this)">
+    <form id="stream-form" onsubmit="event.preventDefault(); addStreamAsset(this)" data-gate-required>
         <div class="form-group">
             <label for="stream-url">Stream URL</label>
             <input type="url" id="stream-url" name="url" placeholder="https://example.com/live/stream.m3u8" required class="form-control"
@@ -149,7 +149,7 @@
         </div>
         {% endif %}
         <div id="stream-status" class="form-status"></div>
-        <button type="submit" class="btn btn-primary" id="stream-submit" style="margin-top:0.75rem">Add Stream</button>
+        <button type="submit" class="btn btn-primary" id="stream-submit" style="margin-top:0.75rem" disabled>Add Stream</button>
     </form>
     </div>
 </div>

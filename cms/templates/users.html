@@ -16,7 +16,7 @@
 {% if can_write %}
 <div class="card">
     <h3>Create User</h3>
-    <form onsubmit="event.preventDefault(); createUser(this)">
+    <form onsubmit="event.preventDefault(); createUser(this)" data-gate-required>
         <div class="form-row">
             <div class="form-group">
                 <label for="new-email">Email</label>
@@ -50,7 +50,7 @@
             </div>
         </div>
         <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.5rem;">A temporary password will be generated and emailed to the user. They will be required to set a new password on first sign-in.</p>
-        <button type="submit" class="btn btn-primary">Create User</button>
+        <button type="submit" class="btn btn-primary" disabled>Create User</button>
     </form>
 </div>
 {% endif %}
@@ -127,7 +127,7 @@
 {% if can_write_roles %}
 <div class="card">
     <h3>Create Role</h3>
-    <form onsubmit="event.preventDefault(); createRole(this)">
+    <form onsubmit="event.preventDefault(); createRole(this)" data-gate-required>
         <div class="form-row">
             <div class="form-group">
                 <label for="new-role-name">Role Name</label>
@@ -166,7 +166,7 @@
             </details>
             {% endfor %}
         </div>
-        <button type="submit" class="btn btn-primary">Create Role</button>
+        <button type="submit" class="btn btn-primary" disabled>Create Role</button>
     </form>
 </div>
 {% endif %}
