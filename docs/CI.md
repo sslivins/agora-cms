@@ -11,6 +11,7 @@ PR opened / updated
   ├─ CI Gate          (always-pass sentinel — REQUIRED)
   ├─ Tests/test       (pytest suite)
   ├─ Tests/e2e        (compose-based e2e)
+  ├─ Alembic Check    (REQUIRED — model/migration drift)
   ├─ Migration Safety (REQUIRED — see below)
   └─ Smoke Test       (full-stack compose E2E)
 
@@ -30,6 +31,7 @@ Smoke Test also runs on a nightly cron.
 - `ci-gate` — always-pass sentinel (`.github/workflows/ci-gate.yml`). It
   exists so branch protection has *something* mandatory to key off when the
   real checks are path-filtered / conditional.
+- `alembic-check` — ORM/migration drift guard (see below).
 - `migration-safety` — the real PR gate (see below).
 
 Branch protection is classic (not rulesets) with `enforce_admins: false` and
@@ -38,6 +40,33 @@ rebase every time main moves).
 
 Smoke Test is intentionally **not** a required check — it's too slow for a
 per-PR block, and nightly + post-merge coverage is sufficient.
+
+## Alembic Check (`.github/workflows/alembic-check.yml`)
+
+Catches the class of bug that took out production in PR #280 (column added
+to an ORM model with no matching DDL).
+
+Flow:
+
+1. Spin up a fresh Postgres service.
+2. `alembic upgrade head` — build the schema from migrations.
+3. `alembic check` — compare ORM metadata (`target_metadata` in
+   `alembic/env.py`) to the live schema.  If autogenerate would produce
+   any new operations, the check exits non-zero.
+
+The check is fast (seconds) and runs on every PR regardless of path.  To
+fix a failure, add a migration:
+
+```bash
+AGORA_CMS_DATABASE_URL=postgresql+asyncpg://agora:agora@localhost:5432/agora_cms \
+  alembic revision --autogenerate -m "describe your change"
+```
+
+then commit the generated file in `alembic/versions/`.
+
+Forward-only by policy: `alembic/script.py.mako`'s `downgrade()` raises
+`NotImplementedError`, so don't bother filling it in.  Never edit a
+merged migration — add a new one instead.
 
 ## Migration Safety (`.github/workflows/migration-safety.yml`)
 
@@ -49,15 +78,23 @@ Flow:
 1. Check out the PR (`pr/`) and `main` (`base/`) in parallel directories.
 2. Copy `pr/scripts/ci_seed_synthetic.py` → `base/scripts/` so seeding always
    uses the latest seed logic even when testing against main's code.
-3. Install `base/` deps. Initialise schema from main. Run
+3. Install `base/` deps. Initialise schema from main (by calling
+   `run_migrations()`, which now runs `alembic upgrade head` for fresh DBs
+   or `alembic stamp head` for legacy pre-Alembic schemas). Run
    `scripts/ci_seed_synthetic.py` with `PYTHONPATH=base/` — this seeds
    synthetic data into a DB with main's schema.
-4. Install `pr/` deps. Run the PR's migrations against that populated DB.
+4. Install `pr/` deps. Run `run_migrations()` on the PR branch against the
+   populated DB.  Alembic picks up from main's head revision and applies
+   any migrations the PR added.
 5. Run `scripts/ci_verify_post_migration.py` with `PYTHONPATH=pr/` — asserts
    that the populated DB is still queryable and the required tables are
    non-empty.
 
 If step 4 or 5 fails, the PR cannot merge.
+
+`alembic-check` catches *missing* migrations; `migration-safety` catches
+*broken* migrations (destructive, non-idempotent, or incompatible with
+existing data).  They complement each other.
 
 ### Quirks / don't-regress list
 

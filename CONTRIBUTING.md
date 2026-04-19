@@ -5,6 +5,47 @@
 See the top-level `README.md` for local setup, running tests, and the compose
 stack used for end-to-end testing.
 
+## Changing the database schema
+
+All schema changes go through Alembic.  `cms/database.py`'s `run_migrations`
+just calls `alembic upgrade head`; there is no hand-written DDL to update.
+
+**Workflow when you add or change an ORM model:**
+
+1. Edit the model under `shared/models/` or `cms/models/`.
+2. Start a Postgres you can point at (the compose stack works:
+   `docker compose up -d db`).
+3. Generate a migration:
+   ```bash
+   AGORA_CMS_DATABASE_URL=postgresql+asyncpg://agora:agora@localhost:5432/agora_cms \
+     alembic revision --autogenerate -m "describe your change"
+   ```
+4. Review the file that lands in `alembic/versions/`.  Autogenerate is
+   usually right but never blindly trust it — check that `upgrade()` does
+   what you expect, and hand-edit if needed (for example, autogenerate
+   cannot detect column renames; it sees a drop + add).
+5. Apply locally to sanity-check: `alembic upgrade head`.
+6. Commit the model change *and* the new migration file in the same PR.
+
+**Policy:**
+
+- Forward-only.  The generated `downgrade()` raises `NotImplementedError` —
+  don't bother filling it in.  If you need to undo something in prod, write
+  a new forward migration.
+- Never edit an existing migration file after it has merged to `main`.
+  Even a trivial edit breaks stamped deployments.  Add a new migration instead.
+- Revisions use numeric IDs (`0001`, `0002`, ...).  Pass `--rev-id 000N`
+  to `alembic revision` or rename the file after generation.
+
+**What CI enforces:**
+
+- `Alembic Check` runs `alembic upgrade head && alembic check` on a fresh
+  Postgres.  It fails if your ORM models would produce any new autogenerate
+  operations — i.e. the migration you added doesn't match the model change,
+  or you forgot the migration entirely.
+- `Migration Safety` runs your migrations against a populated DB seeded
+  from main, catching destructive or non-idempotent migrations.
+
 ## Pull request flow
 
 1. Branch from `main`.
@@ -13,6 +54,9 @@ stack used for end-to-end testing.
 3. Wait for CI:
    - `CI Gate` — always-pass sentinel (required).
    - `Tests/test` and `Tests/e2e` — the test suite.
+   - `Alembic Check` — **required**; fails if you changed an ORM model
+     without adding a matching migration.  See
+     [Changing the database schema](#changing-the-database-schema) below.
    - `Migration Safety` — **required**; seeds main's schema with synthetic
      data, runs your PR's migrations against it, and verifies the DB is
      still queryable.  See [docs/CI.md](docs/CI.md) for details.
@@ -32,6 +76,7 @@ Key files if you need to touch CI:
 
 - `.github/workflows/ci-gate.yml` — the required always-pass sentinel.
 - `.github/workflows/tests.yml` — unit + e2e PR tests.
+- `.github/workflows/alembic-check.yml` — ORM/migration drift gate.
 - `.github/workflows/migration-safety.yml` — PR migration guard-rail.
 - `.github/workflows/nightly.yml` — **display name `Smoke Test`**; runs
   nightly, on main push (pre-deploy gate), and on PRs.
