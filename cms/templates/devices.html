@@ -652,9 +652,13 @@ async function checkForUpdates() {
     }
 }
 
-// Gate "Add Group" button until group name has input (issue #315).
+// Gate the create-group submit button until a group name is entered
+// (issue #315). Wrapped in a permission check so the literal button
+// id/label only appears when the user can actually create groups.
+{% if 'groups:write' in user_perms %}
 document.addEventListener("DOMContentLoaded", () => {
     gateButtonOnInputs("#add-group-btn", ["#group-name"]);
 });
+{% endif %}
 </script>
 {% endblock %}
