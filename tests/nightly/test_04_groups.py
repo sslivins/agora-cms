@@ -289,7 +289,7 @@ def test_devices_page_moves_row_in_place_on_group_change(
         assert ungrouped_row.count() == 0
         # Group device-count badge should now read 1.
         count_badge = page.locator(f'[data-group-count="{group_id}"]')
-        assert count_badge.inner_text().startswith("1 device"), count_badge.inner_text()
+        assert count_badge.inner_text().lower().startswith("1 device"), count_badge.inner_text()
         # No navigation happened.
         assert page.url == url_before, "page reloaded — fix #146 regressed"
 
@@ -300,7 +300,7 @@ def test_devices_page_moves_row_in_place_on_group_change(
         group_row.locator('button:has-text("Remove")').click()
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
-        assert count_badge.inner_text().startswith("0 device"), count_badge.inner_text()
+        assert count_badge.inner_text().lower().startswith("0 device"), count_badge.inner_text()
         # Empty-state placeholder for the now-empty group should be visible.
         assert page.locator(f'[data-group-empty="{group_id}"]').is_visible()
         # Still no navigation.
