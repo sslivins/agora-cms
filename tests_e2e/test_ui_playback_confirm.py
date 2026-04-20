@@ -39,10 +39,15 @@ def _adopt_device(page: Page, device_id: str):
     page.goto("/devices")
     page.wait_for_load_state("domcontentloaded")
     row = page.locator(f'[data-device-id="{device_id}"]').first
-    adopt_btn = row.locator("button", has_text="Adopt")
-    if adopt_btn.count() > 0:
-        adopt_btn.click()
-        page.wait_for_load_state("networkidle")
+    # Open the row's kebab menu to find the Adopt action (if any).
+    adopt_kebab = row.locator(".btn-kebab")
+    if adopt_kebab.count() > 0:
+        adopt_kebab.click()
+        menu = page.locator(".kebab-menu:popover-open")
+        adopt_item = menu.get_by_role("menuitem", name="Adopt")
+        if adopt_item.count() > 0:
+            adopt_item.click()
+            page.wait_for_load_state("networkidle")
 
 
 class TestPlaybackInterruptConfirm:

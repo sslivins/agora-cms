@@ -50,6 +50,39 @@ def run_async(coro):
     return result[0]
 
 
+def open_row_kebab(row):
+    """Open the ⋮ kebab menu within a table row (or any container).
+
+    Returns the currently-open popover menu locator so callers can chain
+    `.get_by_role(...)`. No-op if no kebab exists (legacy flat actions).
+    See #249 for the kebab consolidation (native popover API).
+    """
+    kebab = row.locator(".btn-kebab").first
+    try:
+        if kebab.count() > 0:
+            kebab.click()
+            # Popover kebabs live in the top-layer — look up by page, not row.
+            return row.page.locator(".kebab-menu:popover-open")
+    except Exception:
+        pass
+    return row
+
+
+def click_row_action(row, action_text, exact=False):
+    """Click an action in a row, whether it's in a kebab menu or inline.
+
+    Works for both the post-#249 kebab menus and any legacy inline buttons.
+    Pass exact=True for exact text matching (e.g. "Delete" vs "Disable").
+    """
+    kebab = row.locator(".btn-kebab").first
+    if kebab.count() > 0:
+        kebab.click()
+        menu = row.page.locator(".kebab-menu:popover-open")
+        menu.get_by_role("menuitem", name=action_text, exact=exact).click()
+    else:
+        row.locator("button,a", has_text=action_text).first.click()
+
+
 # ── Fixtures ──
 
 

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Playback Profiles — Agora CMS{% endblock %}
 {% block content %}
 <h1>Assets</h1>
@@ -154,17 +155,19 @@
                 </td>
                 <td>
                     {% if 'profiles:write' in user_perms %}
-                    <button class="btn btn-secondary btn-sm" onclick="editProfile('{{ p.id }}')">Edit</button>
-                    <button class="btn btn-secondary btn-sm" onclick="copyProfile('{{ p.id }}', '{{ p.name }}')">Copy</button>
-                    {% if p.builtin %}
-                    {% if p.matches_defaults %}
-                    <button class="btn btn-secondary btn-sm" disabled title="Profile is already at factory defaults" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
-                    {% else %}
-                    <button class="btn btn-secondary btn-sm" onclick="resetProfile('{{ p.id }}', '{{ p.name }}')" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
-                    {% endif %}
-                    {% else %}
-                    <button class="btn btn-danger btn-sm" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
-                    {% endif %}
+                    {% call macros.kebab_menu() %}
+                        <button type="button" role="menuitem" onclick="editProfile('{{ p.id }}')">Edit</button>
+                        <button type="button" role="menuitem" onclick="copyProfile('{{ p.id }}', '{{ p.name }}')">Copy</button>
+                        {% if p.builtin %}
+                            {% if p.matches_defaults %}
+                            <button type="button" role="menuitem" disabled title="Profile is already at factory defaults" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
+                            {% else %}
+                            <button type="button" role="menuitem" onclick="resetProfile('{{ p.id }}', '{{ p.name }}')" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
+                            {% endif %}
+                        {% else %}
+                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
+                        {% endif %}
+                    {% endcall %}
                     {% endif %}
                 </td>
             </tr>

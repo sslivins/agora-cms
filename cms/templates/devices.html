@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Devices — Agora CMS{% endblock %}
 {% block content %}
 
@@ -71,15 +72,32 @@
         {% else %}—{% endif %}
     </td>
     {% if 'devices:manage' in user_perms %}
-    <td class="actions" data-live-actions="{{ d.id }}" onclick="event.stopPropagation()">
+    <td class="actions" data-live-actions="{{ d.id }}" data-actions-sig="{{ d.status.value }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.ssh_enabled else 0 }}|{{ 0 if d.local_api_enabled is false else 1 }}" onclick="event.stopPropagation()">
+        {% call macros.kebab_menu() %}
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
-        <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>
+        <button type="button" role="menuitem" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Register this device so it can receive content">Adopt</button>
         {% elif d.is_upgrading %}
-        <span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
+        <button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>
         {% elif d.is_online and d.update_available %}
-        <span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')">Update</button><span class="tooltip">Update firmware from {{ d.firmware_version }} to {{ latest_version }}</span></span>
+        <button type="button" role="menuitem" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Update firmware from {{ d.firmware_version }} to {{ latest_version }}">Update</button>
         {% endif %}
-        <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>
+        {% if d.status.value not in ('pending', 'orphaned') and d.is_online %}
+        <button type="button" role="menuitem" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')" title="Set the password for this device's local web UI">Change Web Password</button>
+        {% if d.ssh_enabled %}
+        <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', false)" title="SSH is currently enabled — click to disable">Disable SSH</button>
+        {% else %}
+        <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', true)" title="SSH is currently disabled — click to enable">Enable SSH</button>
+        {% endif %}
+        {% if d.local_api_enabled is not none and not d.local_api_enabled %}
+        <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', true)" title="Device REST API is disabled — click to re-enable">Enable Local API</button>
+        {% else %}
+        <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', false)" title="Disable the device's local REST API">Disable Local API</button>
+        {% endif %}
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Restart this device immediately">Reboot</button>
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Wipe all data and return device to setup mode">Factory Reset</button>
+        {% endif %}
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')" title="Remove this device from the CMS">Delete</button>
+        {% endcall %}
     </td>
     {% endif %}
 </tr>
@@ -262,7 +280,9 @@
     </td>
     <td class="actions" onclick="event.stopPropagation()">
         {% if d.group_id and 'devices:write' in user_perms %}
-        <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="assignGroup('{{ d.id }}', '')">Remove</button><span class="tooltip">Remove this device from the group</span></span>
+        {% call macros.kebab_menu() %}
+            <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from the group">Remove from group</button>
+        {% endcall %}
         {% endif %}
     </td>
 </tr>
@@ -339,9 +359,13 @@
                     {% endfor %}
                 </select>
                 {% if g.schedule_count %}
-                <button class="btn btn-danger btn-sm" disabled><span class="has-tooltip">Delete<span class="tooltip">Cannot delete — used by {{ g.schedule_count }} schedule{{ 's' if g.schedule_count != 1 }}. Remove from all schedules first.</span></span></button>
+                {% call macros.kebab_menu() %}
+                    <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Cannot delete — used by {{ g.schedule_count }} schedule{{ 's' if g.schedule_count != 1 }}. Remove from all schedules first.">Delete</button>
+                {% endcall %}
                 {% else %}
-                <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ g.id }}')"><span class="has-tooltip">Delete<span class="tooltip">Delete this group — devices will be ungrouped</span></span></button>
+                {% call macros.kebab_menu() %}
+                    <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteGroup('{{ g.id }}')" title="Delete this group — devices will be ungrouped">Delete</button>
+                {% endcall %}
                 {% endif %}
                 {% else %}
                 <span class="text-muted">{% if g.default_asset_id %}{% set da = (assets | selectattr('id', 'equalto', g.default_asset_id) | first) %}{{ da.display_name or da.original_filename or da.filename }}{% else %}No default asset{% endif %}</span>
@@ -506,16 +530,36 @@ window._adoptionProfiles = [
     }
 
     function buildActionButtons(d) {
-        let html = '';
-        if (d.status === "pending" || d.status === "orphaned") {
-            if (__canManage) html += '<span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="adoptDevice(\'' + d.id + '\', \'' + (d.name || d.id).replace(/'/g, "\\'") + '\')">Adopt</button><span class="tooltip">Register this device so it can receive content</span></span>';
+        if (!__canManage) return '';
+        const nameEsc = (d.name || d.id).replace(/'/g, "\\'");
+        const adoptable = (d.status === "pending" || d.status === "orphaned");
+        let items = '';
+        if (adoptable) {
+            items += '<button type="button" role="menuitem" onclick="adoptDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Register this device so it can receive content">Adopt</button>';
         } else if (d.is_upgrading) {
-            html += '<span class="has-tooltip"><button class="btn btn-primary btn-sm" disabled>Upgrading…</button><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>';
-        } else if (d.is_online && d.update_available && __canManage) {
-            html += '<span class="has-tooltip"><button class="btn btn-primary btn-sm" onclick="upgradeDevice(\'' + d.id + '\', \'' + (d.name || d.id).replace(/'/g, "\\'") + '\')">Update</button><span class="tooltip">Update firmware</span></span>';
+            items += '<button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>';
+        } else if (d.is_online && d.update_available) {
+            items += '<button type="button" role="menuitem" onclick="upgradeDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Update firmware">Update</button>';
         }
-        if (__canManage) html += '<span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="deleteDevice(\'' + d.id + '\')">Delete</button><span class="tooltip">Remove this device from the CMS</span></span>';
-        return html;
+        if (!adoptable && d.is_online) {
+            items += '<button type="button" role="menuitem" onclick="changeDevicePassword(\'' + d.id + '\', \'' + nameEsc + '\')" title="Set the password for this device\'s local web UI">Change Web Password</button>';
+            if (d.ssh_enabled) {
+                items += '<button type="button" role="menuitem" onclick="toggleSsh(\'' + d.id + '\', false)" title="SSH is currently enabled — click to disable">Disable SSH</button>';
+            } else {
+                items += '<button type="button" role="menuitem" onclick="toggleSsh(\'' + d.id + '\', true)" title="SSH is currently disabled — click to enable">Enable SSH</button>';
+            }
+            if (d.local_api_enabled != null && !d.local_api_enabled) {
+                items += '<button type="button" role="menuitem" onclick="toggleLocalApi(\'' + d.id + '\', true)" title="Device REST API is disabled — click to re-enable">Enable Local API</button>';
+            } else {
+                items += '<button type="button" role="menuitem" onclick="toggleLocalApi(\'' + d.id + '\', false)" title="Disable the device\'s local REST API">Disable Local API</button>';
+            }
+            items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Restart this device immediately">Reboot</button>';
+            items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Wipe all data and return device to setup mode">Factory Reset</button>';
+        }
+        items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice(\'' + d.id + '\')" title="Remove this device from the CMS">Delete</button>';
+        const mid = 'kebab-dev-' + d.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+        return '<button type="button" class="btn-kebab" popovertarget="' + mid + '" aria-haspopup="menu" aria-label="Actions">⋮</button>'
+             + '<div id="' + mid + '" popover class="kebab-menu" role="menu">' + items + '</div>';
     }
 
     function buildSshButton(d) {
@@ -553,8 +597,21 @@ window._adoptionProfiles = [
             }
 
             // ── Collapsed row: action buttons ──
+            // Rebuild only when the *signature* of relevant device state changes —
+            // unconditional innerHTML replace would race the user's kebab click
+            // and detach the popover before the browser opens it.
             const actionsEl = document.querySelector(`[data-live-actions="${d.id}"]`);
-            if (actionsEl) actionsEl.innerHTML = buildActionButtons(d);
+            if (actionsEl) {
+                const sig = [
+                    d.status, d.is_upgrading ? 1 : 0, d.is_online ? 1 : 0,
+                    d.update_available ? 1 : 0, d.ssh_enabled ? 1 : 0,
+                    d.local_api_enabled === false ? 0 : 1,
+                ].join("|");
+                if (actionsEl.dataset.actionsSig !== sig) {
+                    actionsEl.innerHTML = buildActionButtons(d);
+                    actionsEl.dataset.actionsSig = sig;
+                }
+            }
 
             // ── Detail panel: display, pipeline, asset ──
             const displayEl = document.querySelector(`[data-live-display="${d.id}"]`);
@@ -608,6 +665,13 @@ window._adoptionProfiles = [
 
     setInterval(async () => {
         if (isModalOpen()) return;
+        // Don't refresh while the user has a kebab menu open — it would
+        // re-render the actions cell and close the menu under them.
+        if (document.querySelector('.kebab-menu:popover-open')) return;
+        // Also skip if a kebab was clicked very recently — covers the
+        // window between mousedown and the browser actually opening the
+        // popover (where :popover-open is not yet true).
+        if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
         const el = document.activeElement;
         if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
         try {

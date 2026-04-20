@@ -1,0 +1,27 @@
+{# Shared template macros. Import with: {% import '_macros.html' as macros %} #}
+
+{#
+  Kebab (⋮) action menu. Uses the native HTML popover API so the menu
+  renders in the browser's top-layer and cannot be clipped by any parent's
+  overflow/transform/stacking context. Light-dismiss (outside click +
+  Escape) and single-open exclusivity (popover="auto") are free.
+
+  Usage:
+
+      {% call macros.kebab_menu() %}
+          <button type="button" role="menuitem" onclick="edit({{ x.id }})">Edit</button>
+          <button type="button" role="menuitem" class="kebab-item-danger"
+                  onclick="del({{ x.id }})">Delete</button>
+      {% endcall %}
+
+  Items can be <button> or <a>. Disabled items → <button disabled title="why">.
+  Destructive items → class="kebab-item-danger".
+  See style.css + positionKebab() in app.js.
+#}
+{% macro kebab_menu(label='Actions') -%}
+{% set mid = 'kebab-' ~ (range(10**12) | random) %}
+<button type="button" class="btn-kebab" popovertarget="{{ mid }}" aria-haspopup="menu" aria-label="{{ label }}">⋮</button>
+<div id="{{ mid }}" popover class="kebab-menu" role="menu">
+    {{ caller() }}
+</div>
+{%- endmacro %}

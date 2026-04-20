@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Assets — Agora CMS{% endblock %}
 {% block content %}
 <h1>Assets</h1>
@@ -247,31 +248,30 @@
                     {% endif %}
                 </td>
                 <td class="actions" onclick="event.stopPropagation()">
-                    {% if a.asset_type.value == 'webpage' %}
-                    <a href="{{ a.url }}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open URL</a>
-                    {% elif a.asset_type.value == 'stream' %}
-                    <a href="{{ a.url }}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open Stream</a>
-                    {% else %}
-                    <button class="btn btn-secondary btn-sm" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
-                    {% endif %}
-                    {% if 'assets:write' in user_perms %}
                     {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
-                    {% if a.asset_type.value == 'saved_stream' and is_owner %}
-                    <button class="btn btn-warning btn-sm" onclick="recaptureStream('{{ a.id }}', '{{ a.display_name or a.original_filename or a.filename }}')">Re-capture</button>
+                    {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
+                    {% if shared_badge %}
+                    <span class="has-tooltip" style="display:inline-block;margin-right:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
                     {% endif %}
-                    {% if is_owner %}
-                    {% if a.schedule_count > 0 %}
-                    <span class="has-tooltip" style="pointer-events:auto; display:inline-block">
-                        <button class="btn btn-danger btn-sm" disabled>Delete</button>
-                        <span class="tooltip">Used by {{ a.schedule_count }} schedule{{ 's' if a.schedule_count != 1 }}. Remove from all schedules before deleting.</span>
-                    </span>
+                    {% call macros.kebab_menu() %}
+                    {% if a.asset_type.value == 'webpage' %}
+                        <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open URL</a>
+                    {% elif a.asset_type.value == 'stream' %}
+                        <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open Stream</a>
                     {% else %}
-                    <button class="btn btn-danger btn-sm" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                        <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
                     {% endif %}
-                    {% else %}
-                    <span class="has-tooltip" style="display:inline-block"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
+                    {% if 'assets:write' in user_perms and a.asset_type.value == 'saved_stream' and is_owner %}
+                        <button type="button" role="menuitem" onclick="recaptureStream('{{ a.id }}', '{{ a.display_name or a.original_filename or a.filename }}')" title="Re-run the stream capture">Re-capture</button>
                     {% endif %}
+                    {% if 'assets:write' in user_perms and is_owner %}
+                        {% if a.schedule_count > 0 %}
+                        <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Used by {{ a.schedule_count }} schedule{{ 's' if a.schedule_count != 1 }}. Remove from all schedules before deleting.">Delete</button>
+                        {% else %}
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                        {% endif %}
                     {% endif %}
+                    {% endcall %}
                 </td>
             </tr>
             <tr class="asset-detail" data-detail-for="{{ a.id }}" style="display: none;">
@@ -593,6 +593,25 @@
         }
         el.innerHTML = h;
     }
+
+    // Toggle an asset's global flag and re-render the scope cell in place.
+    // Moved here from app.js so it has access to __userGroups / __isAdmin
+    // and can reuse _rebuildDetailScope (which correctly renders the
+    // group-picker + Make Global button when flipping global→personal).
+    window.toggleGlobal = async function(assetId) {
+        const resp = await window.apiCall("POST", `/api/assets/${assetId}/global`);
+        if (!resp || !resp.ok) return;
+        const data = await resp.json();
+        const scopeEl = document.getElementById("scope-" + assetId);
+        if (!scopeEl) { location.reload(); return; }
+        // The /global endpoint returns only {is_global}; scope_groups is always
+        // empty right after a global toggle (flipping either direction clears
+        // per-group assignments), so we can safely synthesize it here.
+        if (!Array.isArray(data.scope_groups)) data.scope_groups = [];
+        _rebuildDetailScope(assetId, data);
+        if (window._syncCollapsedScope) window._syncCollapsedScope(assetId);
+    };
+    window._toggleGlobalImpl = window.toggleGlobal;
 
     // Apply scope changes from API data without reloading the page
     function applyScopeChanges(assets) {

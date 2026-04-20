@@ -1390,26 +1390,11 @@ async function unshareAsset(assetId, groupId) {
 }
 
 async function toggleGlobal(assetId) {
-    const resp = await apiCall("POST", `/api/assets/${assetId}/global`);
-    if (resp && resp.ok) {
-        const data = await resp.json();
-        const scopeEl = document.getElementById("scope-" + assetId);
-        if (!scopeEl) { location.reload(); return; }
-
-        scopeEl.innerHTML = "";
-        if (data.is_global) {
-            let h = '<span class="badge badge-ready">Global';
-            if (__isAdmin) h += ' <button class="btn-x" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" title="Remove global visibility">\u00d7</button>';
-            h += '</span>';
-            scopeEl.innerHTML = h;
-        } else {
-            scopeEl.innerHTML = '<span class="badge badge-pending">Personal</span>';
-            if (__isAdmin) {
-                scopeEl.innerHTML += ' <button class="btn btn-sm btn-secondary" style="margin-left:0.25rem;" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" type="button" title="Make visible to all groups">Make Global</button>';
-            }
-        }
-        _syncCollapsedScope(assetId);
-    }
+    // Implemented per-page in assets.html (IIFE scope has __userGroups/__isAdmin
+    // and _rebuildDetailScope). This stub keeps older inline onclick handlers
+    // working if app.js loads first; assets.html overwrites window.toggleGlobal.
+    if (window._toggleGlobalImpl) return window._toggleGlobalImpl(assetId);
+    location.reload();
 }
 
 // ── Schedule actions ──
@@ -1805,3 +1790,69 @@ window.addEventListener("load", () => {
 // pageshow fires on back/forward cache restores, where autofill state
 // may already be present without any events having fired.
 window.addEventListener("pageshow", _rerunAllGates);
+
+
+// ── Kebab (⋮) action menu — #249 ──────────────────────────────────────
+// Uses the native HTML popover API — open/close/light-dismiss/Escape are
+// all handled by the browser. We only need to position the popover below
+// (or above, if it would overflow) its invoker button, since we use
+// popover="auto" with position:fixed but without CSS anchor-positioning
+// (still uneven cross-browser support as of early 2026).
+
+function positionKebab(menu) {
+    const btn = document.querySelector(`[popovertarget="${menu.id}"]`);
+    if (!btn) return;
+    const b = btn.getBoundingClientRect();
+    // Clear inline coords so the menu's natural size is measured.
+    menu.style.top = "";
+    menu.style.left = "";
+    const m = menu.getBoundingClientRect();
+    const gap = 4;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Vertical: prefer below the button; flip above if it would overflow.
+    let top = b.bottom + gap;
+    if (top + m.height > vh - 8 && b.top - gap - m.height >= 8) {
+        top = b.top - gap - m.height;
+    }
+
+    // Horizontal: right-align to the button by default, clamped to viewport.
+    let left = b.right - m.width;
+    if (left < 8) left = 8;
+    if (left + m.width > vw - 8) left = vw - 8 - m.width;
+
+    menu.style.top = `${top}px`;
+    menu.style.left = `${left}px`;
+}
+
+document.addEventListener("toggle", (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement)) return;
+    if (!el.classList.contains("kebab-menu")) return;
+    const btn = document.querySelector(`[popovertarget="${el.id}"]`);
+    if (e.newState === "open") {
+        if (btn) btn.setAttribute("aria-expanded", "true");
+        positionKebab(el);
+    } else if (btn) {
+        btn.setAttribute("aria-expanded", "false");
+    }
+}, true);
+
+// Stamp recent kebab clicks so live-refresh pollers can avoid re-rendering
+// the actions cell during the click → popover-open window (which would
+// detach the click target before the browser opens the popover).
+document.addEventListener("mousedown", (e) => {
+    const t = e.target;
+    if (t instanceof Element && t.closest(".btn-kebab")) {
+        window._kebabClickAt = Date.now();
+    }
+}, true);
+
+// Re-position any open kebab on viewport changes so it doesn't drift.
+window.addEventListener("scroll", () => {
+    document.querySelectorAll(".kebab-menu:popover-open").forEach(positionKebab);
+}, true);
+window.addEventListener("resize", () => {
+    document.querySelectorAll(".kebab-menu:popover-open").forEach(positionKebab);
+});

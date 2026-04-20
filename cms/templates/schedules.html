@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Schedules — Agora CMS{% endblock %}
 {% block content %}
 <h1>Schedules</h1>
@@ -147,8 +148,10 @@
                 </td>
                 <td class="actions">
                     {% if 'schedules:write' in user_perms %}
-                    <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                    {% call macros.kebab_menu() %}
+                        <button type="button" role="menuitem" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                    {% endcall %}
                     {% endif %}
                 </td>
             </tr>
@@ -194,8 +197,10 @@
                 <td>{{ s.priority }}</td>
                 <td class="actions">
                     {% if 'schedules:write' in user_perms %}
-                    <button class="btn btn-secondary btn-sm" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                    {% call macros.kebab_menu() %}
+                        <button type="button" role="menuitem" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
+                    {% endcall %}
                     {% endif %}
                 </td>
             </tr>

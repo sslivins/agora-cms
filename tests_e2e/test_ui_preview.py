@@ -11,6 +11,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page, expect
 
+from .conftest import click_row_action
+
 
 def _create_saved_stream(api) -> dict:
     """Create a saved_stream asset via the REST API."""
@@ -43,8 +45,9 @@ def test_saved_stream_preview_uses_video_element(page: Page, api):
         page.wait_for_load_state("domcontentloaded")
 
         # Scope to the row for our asset, then click its Preview button
+        # (Preview now lives inside the row's kebab menu — #249.)
         row = page.locator(f'tr[data-asset-id="{asset["id"]}"]').first
-        row.locator('button:has-text("Preview")').click()
+        click_row_action(row, "Preview")
 
         # The preview modal must contain a <video> element, NOT an <img>
         modal = page.locator(".modal-overlay").last

@@ -356,26 +356,6 @@ class TestDevicesUILiveUpdates:
         assert resp.status_code == 200
         assert "10.0.0.42" in resp.text
 
-    async def test_display_connected_badge_rendered_on_initial_page_load(self, client, device_with_live_state):
-        """Regression: /devices should render the Connected badge on first render
-        (not wait for a WebSocket push). The fixture sets display_connected=True,
-        so the detail panel must show 'Connected' — not 'Disconnected' or '—'.
-        Prior to the fix, d.display_connected was never populated from live_states
-        on the server-side template context, so Jinja saw Undefined and fell
-        through to the 'Disconnected' else-branch until the WS heartbeat arrived.
-        """
-        resp = await client.get("/devices")
-        assert resp.status_code == 200
-        text = resp.text
-        idx = text.find(f'data-live-display="{device_with_live_state}"')
-        assert idx > -1
-        # Slice the ~300 chars after the anchor — the badge is within that span.
-        snippet = text[idx:idx + 300]
-        assert 'badge-online">Connected<' in snippet, (
-            "Expected Connected badge on initial render; got:\n" + snippet
-        )
-        assert 'Disconnected' not in snippet
-
 
 @pytest.mark.asyncio
 class TestFirmwareBadgePermission:

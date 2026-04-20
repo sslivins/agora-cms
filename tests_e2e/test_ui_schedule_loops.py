@@ -9,7 +9,7 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async
+from tests_e2e.conftest import run_async, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 # A 10-minute (600s) video makes the math easy:
@@ -344,7 +344,7 @@ def _open_edit_modal(page, schedule_name):
     page.wait_for_load_state("domcontentloaded")
     # Find the row with this schedule and click its Edit button
     row = page.locator("tr", has_text=schedule_name)
-    row.locator("button", has_text="Edit").click()
+    click_row_action(row, "Edit")
     # Wait for modal to appear
     page.wait_for_selector(".modal-overlay")
 

@@ -258,16 +258,6 @@ async function testSmtp() {
                 <input type="number" id="alert-temp-cooldown" min="60" max="3600" value="{{ alert_temp_cooldown }}" style="max-width: 150px;">
             </div>
         </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label for="alert-display-grace">Display Disconnect Grace Period (seconds)</label>
-                <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
-                    How long the HDMI display must stay disconnected before creating a notification.
-                    The event log records the moment of disconnect regardless of this setting.
-                </p>
-                <input type="number" id="alert-display-grace" min="10" max="3600" value="{{ alert_display_grace }}" style="max-width: 150px;">
-            </div>
-        </div>
 
         <label style="display: flex; align-items: center; gap: 0.5rem; margin: 1rem 0; cursor: pointer;">
             <input type="checkbox" id="alert-email-enabled" {% if alert_email_enabled %}checked{% endif %} style="width: auto; margin: 0;">
@@ -289,7 +279,6 @@ async function saveAlertSettings() {
         temp_warning_c: parseFloat(document.getElementById("alert-temp-warning").value) || 70,
         temp_critical_c: parseFloat(document.getElementById("alert-temp-critical").value) || 80,
         temp_cooldown_seconds: parseInt(document.getElementById("alert-temp-cooldown").value) || 300,
-        display_grace_seconds: parseInt(document.getElementById("alert-display-grace").value) || 120,
         email_notifications_enabled: document.getElementById("alert-email-enabled").checked,
     };
     try {

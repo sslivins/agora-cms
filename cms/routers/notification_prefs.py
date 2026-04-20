@@ -13,8 +13,7 @@ from cms.schemas.notification_pref import NotificationPrefOut, NotificationPrefU
 router = APIRouter(prefix="/api/notification-preferences")
 
 # Event types that support email notifications
-SUPPORTED_EVENT_TYPES = ["offline", "online", "temp_high", "temp_cleared",
-                          "display_disconnected", "display_connected"]
+SUPPORTED_EVENT_TYPES = ["offline", "online", "temp_high", "temp_cleared"]
 
 
 @router.get("", response_model=list[NotificationPrefOut])

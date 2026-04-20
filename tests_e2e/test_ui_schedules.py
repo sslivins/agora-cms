@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async
+from tests_e2e.conftest import run_async, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -227,9 +227,10 @@ class TestScheduleEditModal:
 
         # Click the Edit button on the specific row
         row = page.locator("tr", has_text="Editable Schedule")
-        edit_btn = row.locator("button", has_text="Edit")
-        expect(edit_btn).to_be_visible()
-        edit_btn.click()
+        # Edit is in the row's kebab menu; expect it to be present and click.
+        edit_item = row.locator('[role="menuitem"]', has_text="Edit")
+        expect(edit_item).to_have_count(1)
+        click_row_action(row, "Edit")
 
         # The modal overlay must appear
         modal = page.locator(".modal-overlay")
@@ -277,7 +278,7 @@ class TestScheduleEditModal:
 
         # Find and click the Edit button for "Will Rename"
         row = page.locator("tr", has_text="Will Rename")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)
@@ -326,7 +327,7 @@ class TestScheduleEditModal:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="Dont Change Me")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)
@@ -416,7 +417,7 @@ class TestScheduleDelete:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="Delete Me Please")
-        row.locator("button", has_text="Delete").click()
+        click_row_action(row, "Delete")
 
         # Confirm modal should appear
         confirm_modal = page.locator(".modal-overlay")
@@ -476,7 +477,7 @@ class TestScheduleEditWithDates:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="Add Dates")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)
@@ -513,7 +514,7 @@ class TestScheduleEditWithDates:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="Edit All Fields")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)
@@ -560,7 +561,7 @@ class TestScheduleEditWithDates:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="Date Today Test")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)
@@ -669,7 +670,7 @@ class TestScheduleEditSummaryBanner:
 
         # Click edit on the schedule
         row = page.locator("tr", has_text="Edit Summary Test")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         # The edit modal summary should be visible
         summary = page.locator("#edit-schedule-summary")
@@ -689,7 +690,7 @@ class TestScheduleEditSummaryBanner:
         page.wait_for_load_state("networkidle")
 
         row = page.locator("tr", has_text="Edit Summary Update")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         summary = page.locator("#edit-schedule-summary")
         expect(summary).to_be_visible()
@@ -773,7 +774,7 @@ class TestScheduleDeletePlayingWarning:
             page.wait_for_load_state("domcontentloaded")
 
             row = page.locator("tr", has_text="Playing Now")
-            row.locator("button", has_text="Delete").click()
+            click_row_action(row, "Delete")
 
             modal = page.locator(".modal-overlay")
             expect(modal).to_be_visible(timeout=3000)
@@ -818,7 +819,7 @@ class TestScheduleDeletePlayingWarning:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="Not Playing Schedule")
-        row.locator("button", has_text="Delete").click()
+        click_row_action(row, "Delete")
 
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)

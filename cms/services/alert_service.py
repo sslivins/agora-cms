@@ -31,7 +31,6 @@ DEFAULT_OFFLINE_GRACE_SECONDS = 120
 DEFAULT_TEMP_WARNING_C = 70.0
 DEFAULT_TEMP_CRITICAL_C = 80.0
 DEFAULT_TEMP_COOLDOWN_SECONDS = 300
-DEFAULT_DISPLAY_GRACE_SECONDS = 120
 
 
 class _TempState:
@@ -57,37 +56,19 @@ class _OfflineTimer:
         self.group_name = group_name
 
 
-class _DisplayTimer:
-    """Per-device display-disconnected grace-period tracker."""
-
-    __slots__ = ("task", "device_name", "group_id", "group_name")
-
-    def __init__(self, task: asyncio.Task, device_name: str,
-                 group_id: Optional[str], group_name: str):
-        self.task = task
-        self.device_name = device_name
-        self.group_id = group_id
-        self.group_name = group_name
-
-
 class AlertService:
     """Singleton service wired into the WebSocket handler."""
 
     def __init__(self):
         self._offline_timers: dict[str, _OfflineTimer] = {}
         self._temp_states: dict[str, _TempState] = {}
-        self._display_timers: dict[str, _DisplayTimer] = {}
         # Tracks devices that had an OFFLINE event fired (for "back online" logic)
         self._was_offline: set[str] = set()
-        # Tracks devices that had a DISPLAY_DISCONNECTED notification fired
-        # (so we know to send a "display reconnected" notification on recovery)
-        self._was_display_off: set[str] = set()
         # Cached settings (refreshed periodically)
         self._offline_grace_seconds: int = DEFAULT_OFFLINE_GRACE_SECONDS
         self._temp_warning_c: float = DEFAULT_TEMP_WARNING_C
         self._temp_critical_c: float = DEFAULT_TEMP_CRITICAL_C
         self._temp_cooldown_seconds: int = DEFAULT_TEMP_COOLDOWN_SECONDS
-        self._display_grace_seconds: int = DEFAULT_DISPLAY_GRACE_SECONDS
         self._email_enabled: bool = False
 
     # ── Settings ──
@@ -110,9 +91,6 @@ class AlertService:
                 val = await get_setting(db, "alert_temp_cooldown_seconds")
                 if val is not None:
                     self._temp_cooldown_seconds = int(val)
-                val = await get_setting(db, "alert_display_grace_seconds")
-                if val is not None:
-                    self._display_grace_seconds = int(val)
                 val = await get_setting(db, "email_notifications_enabled")
                 self._email_enabled = val == "true"
                 break
@@ -146,16 +124,6 @@ class AlertService:
         existing = self._offline_timers.pop(device_id, None)
         if existing and not existing.task.done():
             existing.task.cancel()
-
-        # Cancel any pending display-disconnected timer too — the device
-        # being entirely offline supersedes a display-only alert.
-        d_timer = self._display_timers.pop(device_id, None)
-        if d_timer and not d_timer.task.done():
-            d_timer.task.cancel()
-        # Clear "was display off" so we don't fire a stale "display reconnected"
-        # notification if the device's first heartbeat after reconnect reports
-        # the display is connected again.
-        self._was_display_off.discard(device_id)
 
         task = asyncio.create_task(
             self._offline_grace_expired(device_id, device_name, group_id, group_name)
@@ -468,164 +436,6 @@ class AlertService:
         except Exception:
             logger.exception("Failed to create temp event for device %s", device_id)
 
-    # ── Display monitoring ──
-
-    def display_state_changed(
-        self,
-        device_id: str,
-        device_name: str,
-        group_id: Optional[str],
-        group_name: str,
-        status: str,
-        connected: bool,
-    ):
-        """Called from ws.py when a device reports a display connect/disconnect transition.
-
-        The DeviceEvent for the transition is written immediately by ws.py
-        (so the event log always shows the moment it happened). This method
-        only manages the bell-notification grace period — momentary HDMI
-        glitches shouldn't spam users, but a display that stays unplugged for
-        the grace period should produce a warning.
-        """
-        if status != "adopted" or not group_id:
-            return
-
-        if connected:
-            # Display came back. Cancel any pending grace timer.
-            timer = self._display_timers.pop(device_id, None)
-            if timer and not timer.task.done():
-                timer.task.cancel()
-                logger.debug(
-                    "Display grace timer cancelled for %s (display reconnected)",
-                    device_id,
-                )
-
-            # If we previously fired a "display off" notification, follow up
-            # with a "display reconnected" info-level notification.
-            if device_id in self._was_display_off:
-                self._was_display_off.discard(device_id)
-                asyncio.create_task(
-                    self._create_display_reconnected_notification(
-                        device_id, device_name, group_id, group_name,
-                    )
-                )
-            return
-
-        # Display went away — start (or restart) the grace timer.
-        existing = self._display_timers.pop(device_id, None)
-        if existing and not existing.task.done():
-            existing.task.cancel()
-
-        task = asyncio.create_task(
-            self._display_grace_expired(device_id, device_name, group_id, group_name)
-        )
-        self._display_timers[device_id] = _DisplayTimer(
-            task=task, device_name=device_name,
-            group_id=group_id, group_name=group_name,
-        )
-        logger.debug(
-            "Display grace timer started for %s (%ds)",
-            device_id, self._display_grace_seconds,
-        )
-
-    async def _display_grace_expired(
-        self,
-        device_id: str,
-        device_name: str,
-        group_id: str,
-        group_name: str,
-    ):
-        """Fires after the display grace period — creates a notification."""
-        try:
-            await asyncio.sleep(self._display_grace_seconds)
-        except asyncio.CancelledError:
-            return
-
-        # Clean up timer reference
-        self._display_timers.pop(device_id, None)
-
-        # Double-check the display hasn't reconnected during the sleep,
-        # and that the device itself is still online (if the device went
-        # fully offline during grace, the offline-alert handler covers it
-        # — no need to also fire a display-disconnected notification).
-        from cms.services.device_manager import device_manager
-        conn = device_manager.get(device_id)
-        if conn is None:
-            return
-        if conn.display_connected:
-            return
-
-        self._was_display_off.add(device_id)
-        logger.info(
-            "Device %s (%s) display disconnected — grace period expired, sending notification",
-            device_id, device_name,
-        )
-
-        try:
-            from cms.database import get_db
-            async for db in get_db():
-                gid = _to_uuid(group_id)
-                notification = Notification(
-                    scope="group",
-                    level="warning",
-                    title=f"Display disconnected: {device_name}",
-                    message=(
-                        f"Device '{device_name}' in group '{group_name}' has had "
-                        f"its HDMI display disconnected for over "
-                        f"{self._display_grace_seconds} seconds."
-                    ),
-                    group_id=gid,
-                    details={
-                        "device_id": device_id,
-                        "event_type": DeviceEventType.DISPLAY_DISCONNECTED.value,
-                    },
-                )
-                db.add(notification)
-                await db.commit()
-                logger.info("Display-disconnected notification created for device %s", device_id)
-                break
-        except Exception:
-            logger.exception(
-                "Failed to create display-disconnected notification for device %s",
-                device_id,
-            )
-
-    async def _create_display_reconnected_notification(
-        self,
-        device_id: str,
-        device_name: str,
-        group_id: str,
-        group_name: str,
-    ):
-        """Create a "display reconnected" follow-up notification."""
-        try:
-            from cms.database import get_db
-            gid = _to_uuid(group_id)
-            async for db in get_db():
-                notification = Notification(
-                    scope="group",
-                    level="info",
-                    title=f"Display reconnected: {device_name}",
-                    message=(
-                        f"Device '{device_name}' in group '{group_name}' "
-                        f"HDMI display is connected again."
-                    ),
-                    group_id=gid,
-                    details={
-                        "device_id": device_id,
-                        "event_type": DeviceEventType.DISPLAY_CONNECTED.value,
-                    },
-                )
-                db.add(notification)
-                await db.commit()
-                logger.info("Display-reconnected notification created for device %s", device_id)
-                break
-        except Exception:
-            logger.exception(
-                "Failed to create display-reconnected notification for device %s",
-                device_id,
-            )
-
     # ── Cleanup ──
 
     def cleanup_device(self, device_id: str):
@@ -633,12 +443,8 @@ class AlertService:
         timer = self._offline_timers.pop(device_id, None)
         if timer and not timer.task.done():
             timer.task.cancel()
-        d_timer = self._display_timers.pop(device_id, None)
-        if d_timer and not d_timer.task.done():
-            d_timer.task.cancel()
         self._temp_states.pop(device_id, None)
         self._was_offline.discard(device_id)
-        self._was_display_off.discard(device_id)
 
 
 # Singleton
