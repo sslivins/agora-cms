@@ -419,17 +419,19 @@ function moveDeviceRowInDom(deviceId, newGroupId) {
     if (before) destTbody.insertBefore(row, before);
     else destTbody.appendChild(row);
 
-    // The "Remove" button (compact row, last cell) is only shown when the
-    // device belongs to a group. Toggle it based on the new destination.
+    // The "Remove from group" action (compact row, last cell) is only shown when the
+    // device belongs to a group. Rendered as a kebab menu matching the server-side macro.
     const actionsCell = row.querySelector('td.actions');
     if (actionsCell) {
         if (toKey === 'ungrouped') {
             actionsCell.innerHTML = '';
-        } else if (!actionsCell.querySelector('button')) {
+        } else if (!actionsCell.querySelector('.btn-kebab')) {
+            const mid = 'kebab-' + Math.floor(Math.random() * 1e12);
             actionsCell.innerHTML =
-                '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" ' +
-                `onclick="assignGroup('${deviceId}', '')">Remove</button>` +
-                '<span class="tooltip">Remove this device from the group</span></span>';
+                `<button type="button" class="btn-kebab" popovertarget="${mid}" aria-haspopup="menu" aria-label="Actions">⋮</button>` +
+                `<div id="${mid}" popover class="kebab-menu" role="menu">` +
+                `<button type="button" role="menuitem" onclick="assignGroup('${deviceId}', '')" title="Remove this device from the group">Remove from group</button>` +
+                `</div>`;
         }
     }
 
