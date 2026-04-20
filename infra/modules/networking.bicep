@@ -67,5 +67,6 @@ resource privateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
 
 output vnetId string = vnet.id
 output containerAppsSubnetId string = vnet.properties.subnets[0].id
+output containerAppsSubnetCidr string = vnet.properties.subnets[0].properties.addressPrefix
 output postgresSubnetId string = vnet.properties.subnets[1].id
 output privateDnsZoneId string = privateDnsZone.id

@@ -86,6 +86,15 @@ def build_description(action: str, details: dict | None = None) -> str:
         key_name = d.get("key_name", "unknown")
         return f"Revoked API key '{key_name}'"
 
+    if action == "auth.login_failed":
+        login_id = d.get("login_id") or "unknown"
+        reason = d.get("reason")
+        if reason == "user_not_found":
+            return f"Failed login — no such user '{login_id}'"
+        if reason == "inactive":
+            return f"Failed login — account inactive '{login_id}'"
+        return f"Failed login for '{login_id}' — invalid password"
+
     # Fallback: titlecase the action
     return action.replace(".", " ").replace("_", " ").title()
 
@@ -148,8 +157,19 @@ async def audit_log(
     is auto-generated from ``action`` + ``details`` via :func:`build_description`.
     """
     ip = None
-    if request and request.client:
-        ip = request.client.host
+    if request:
+        # Prefer the client-facing IP from X-Forwarded-For (first hop), falling
+        # back to request.client.host. Uvicorn is started with --proxy-headers
+        # --forwarded-allow-ips=* so request.client.host is already rewritten
+        # from the Forwarded / X-Forwarded-For header when a trusted upstream
+        # proxy sets it; this fallback also covers deployments that put an
+        # extra untrusted hop between the proxy and the app (e.g. a service
+        # mesh) where the original XFF entry is still intact.
+        xff = request.headers.get("x-forwarded-for") if hasattr(request, "headers") else None
+        if xff:
+            ip = xff.split(",")[0].strip() or None
+        if not ip and request.client:
+            ip = request.client.host
 
     if details is None:
         details = {}

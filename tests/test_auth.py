@@ -31,6 +31,84 @@ class TestAuth:
         )
         assert "agora_cms_session" not in resp.cookies
 
+    async def test_login_wrong_password_writes_audit_log(self, unauthed_client, db_session):
+        from sqlalchemy import select
+        from cms.models.audit_log import AuditLog
+
+        resp = await unauthed_client.post(
+            "/login",
+            data={"username": "admin", "password": "wrong"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 401
+
+        rows = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "auth.login_failed")
+        )).scalars().all()
+        assert len(rows) == 1, f"expected one auth.login_failed entry, got {len(rows)}"
+        entry = rows[0]
+        assert entry.details["login_id"] == "admin"
+        assert entry.details["reason"] == "invalid_password"
+        assert entry.user_id is not None, "wrong-password attempt should link to the real user"
+        assert "admin" in (entry.description or "").lower()
+
+    async def test_login_unknown_user_writes_audit_log(self, unauthed_client, db_session):
+        from sqlalchemy import select
+        from cms.models.audit_log import AuditLog
+
+        resp = await unauthed_client.post(
+            "/login",
+            data={"username": "hacker", "password": "whatever"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 401
+
+        rows = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "auth.login_failed")
+        )).scalars().all()
+        assert len(rows) == 1
+        entry = rows[0]
+        assert entry.details["login_id"] == "hacker"
+        assert entry.details["reason"] == "user_not_found"
+        assert entry.user_id is None
+
+    async def test_login_success_writes_no_failure_audit(self, unauthed_client, db_session):
+        from sqlalchemy import select
+        from cms.models.audit_log import AuditLog
+
+        resp = await unauthed_client.post(
+            "/login",
+            data={"username": "admin", "password": "testpass"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        rows = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "auth.login_failed")
+        )).scalars().all()
+        assert rows == []
+
+    async def test_login_failure_captures_x_forwarded_for(self, unauthed_client, db_session):
+        """Behind a proxy (App Gateway / Front Door / nginx) the real client IP
+        arrives in X-Forwarded-For. Audit entry must record that, not the
+        proxy hop."""
+        from sqlalchemy import select
+        from cms.models.audit_log import AuditLog
+
+        real_client_ip = "203.0.113.42"
+        proxy_hop_ip = "10.0.0.1"
+        await unauthed_client.post(
+            "/login",
+            data={"username": "admin", "password": "wrong"},
+            headers={"X-Forwarded-For": f"{real_client_ip}, {proxy_hop_ip}"},
+            follow_redirects=False,
+        )
+
+        row = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "auth.login_failed")
+        )).scalar_one()
+        assert row.ip_address == real_client_ip
+
     async def test_protected_route_without_auth(self, unauthed_client):
         resp = await unauthed_client.get("/api/devices")
         assert resp.status_code in (401, 303)
