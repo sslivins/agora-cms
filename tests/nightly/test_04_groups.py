@@ -13,6 +13,9 @@ API:
   the group record reflects it
 - Detach the devices (`group_id=None`) and DELETE the group; verify 404
   afterwards
+- UI smoke (#146): toggle a device's group via the inline dropdown and the
+  Remove button on /devices and assert the row moves between sections
+  without a page reload
 
 All operations use the session cookie established by `authenticated_page`.
 """
@@ -229,3 +232,87 @@ def test_delete_group_after_detaching_devices(
 
     # GET the group directly — no per-group read endpoint exists on /groups/,
     # so we just assert it's not in the listing (already done above).
+
+
+# ── #146 regression: row moves in-place without a page refresh ──────────────
+
+
+GROUP_NAME_INPLACE = "Nightly Inplace Group"
+
+
+def test_devices_page_moves_row_in_place_on_group_change(
+    authenticated_page: Page,
+    simulator: SimulatorClient,
+) -> None:
+    """Smoke regression for #146.
+
+    Open /devices, assign a sim device to a group via the inline dropdown, and
+    then click Remove — both transitions must update the DOM in place (the
+    target row must appear in the destination tbody and the page URL must not
+    change). Counts and empty-state placeholders must update too.
+    """
+    page = authenticated_page
+
+    # Pick any adopted simulator device that's not in a group; create a fresh
+    # group so we don't collide with state left behind by earlier phases.
+    serials = sorted(simulator.serials())
+    assert serials, "no simulator devices adopted"
+    serial = serials[0]
+    # Make sure we start ungrouped (idempotent — no-op if already null).
+    _api_patch(page, f"/api/devices/{serial}", {"group_id": None})
+
+    # Create a fresh group via API so the panel is on the page.
+    grp = _api_post(
+        page,
+        "/api/devices/groups/",
+        {"name": GROUP_NAME_INPLACE, "description": "regression for #146"},
+    )
+    group_id = grp["id"]
+
+    try:
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        url_before = page.url
+
+        ungrouped_tbody = page.locator('tbody[data-group-tbody="ungrouped"]')
+        group_tbody = page.locator(f'tbody[data-group-tbody="{group_id}"]')
+        ungrouped_row = ungrouped_tbody.locator(f'tr[data-device-id="{serial}"]')
+        group_row = group_tbody.locator(f'tr[data-device-id="{serial}"]')
+
+        # Pre-conditions: device sits in Ungrouped, not in the new group.
+        ungrouped_row.wait_for(state="attached", timeout=5000)
+        assert group_row.count() == 0
+
+        # Step 1: assign to group via the inline dropdown in the ungrouped row.
+        ungrouped_row.locator("select[data-device-group-select]").select_option(group_id)
+        group_row.wait_for(state="attached", timeout=5000)
+        assert ungrouped_row.count() == 0
+        # Group device-count badge should now read 1.
+        count_badge = page.locator(f'[data-group-count="{group_id}"]')
+        assert count_badge.inner_text().lower().startswith("1 device"), count_badge.inner_text()
+        # No navigation happened.
+        assert page.url == url_before, "page reloaded — fix #146 regressed"
+
+        # Moved row should now expose a Remove button.
+        assert group_row.locator('button:has-text("Remove")').count() == 1
+
+        # Expand the group panel so the Remove button is visible/clickable.
+        # Group panels start collapsed; the compact table lives inside the
+        # panel body which is hidden until the header is clicked.
+        group_panel = page.locator(f'.group-panel[data-group-id="{group_id}"]')
+        if not group_panel.evaluate("el => el.classList.contains('expanded')"):
+            group_panel.locator(".group-header").click()
+
+        # Step 2: click Remove — row should move back to Ungrouped in place.
+        group_row.locator('button:has-text("Remove")').click()
+        ungrouped_row.wait_for(state="attached", timeout=5000)
+        assert group_row.count() == 0
+        assert count_badge.inner_text().lower().startswith("0 device"), count_badge.inner_text()
+        # Empty-state placeholder for the now-empty group should be visible.
+        assert page.locator(f'[data-group-empty="{group_id}"]').is_visible()
+        # Still no navigation.
+        assert page.url == url_before, "page reloaded after Remove — fix #146 regressed"
+    finally:
+        # Cleanup: detach (already ungrouped after Remove) and drop the group.
+        _api_patch(page, f"/api/devices/{serial}", {"group_id": None})
+        _api_delete(page, f"/api/devices/groups/{group_id}")
