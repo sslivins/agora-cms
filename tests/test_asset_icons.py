@@ -28,7 +28,7 @@ from cms.ui import _ASSET_ICONS, asset_icon, templates
 
 EXPECTED_ICONS = {
     "video": "🎬",
-    "image": "🖼️",
+    "image": "📷",
     "webpage": "🌐",
     "stream": "📡",
     "saved_stream": "📼",
@@ -152,3 +152,98 @@ def test_schedules_js_asset_icons_map_is_defined():
             f"{type_value!r}. Keep the JS ASSET_ICONS map in sync with "
             "cms.ui._ASSET_ICONS."
         )
+
+
+# ---------------------------------------------------------------------------
+# Dropdown icon placement (must be a PREFIX, not suffix)
+# ---------------------------------------------------------------------------
+
+
+def _render(source: str, **ctx) -> str:
+    return templates.env.from_string(source).render(**ctx)
+
+
+def test_asset_label_suffix_returns_only_duration():
+    """After the prefix fix, asset_label_suffix is duration-only. No emoji.
+
+    The icon is rendered separately as a prefix via ``asset_icon`` so it
+    appears *in front of* the asset name in dropdown options.
+    """
+    for t in AssetType:
+        suffix = templates.env.filters["asset_label_suffix"](
+            SimpleNamespace(asset_type=t, duration_seconds=None)
+        )
+        for emoji in EXPECTED_ICONS.values():
+            assert emoji not in suffix, (
+                f"asset_label_suffix({t.value}) unexpectedly contains icon "
+                f"{emoji!r} — icons must be rendered as a prefix via "
+                "asset_icon, not appended in the suffix."
+            )
+
+
+def test_dropdown_option_renders_icon_before_name():
+    """End-to-end: `{{ a | asset_icon }} {{ name }}{{ a | asset_label_suffix }}`
+    must produce `🎬 name (5:32)` — icon first, duration last."""
+    asset = SimpleNamespace(asset_type=AssetType.VIDEO, duration_seconds=332)
+    tpl = "{{ a | asset_icon }} {{ name }}{{ a | asset_label_suffix }}"
+    out = _render(tpl, a=asset, name="birthday.mp4")
+    assert out == "🎬 birthday.mp4 (5:32)"
+    # And specifically: icon must come before the name.
+    assert out.index("🎬") < out.index("birthday.mp4")
+
+
+def test_dropdown_option_webpage_renders_icon_only_as_prefix():
+    asset = SimpleNamespace(asset_type=AssetType.WEBPAGE, duration_seconds=None)
+    tpl = "{{ a | asset_icon }} {{ name }}{{ a | asset_label_suffix }}"
+    out = _render(tpl, a=asset, name="status-page")
+    assert out == "🌐 status-page"
+
+
+@pytest.mark.parametrize(
+    "template_file,must_contain_before_name",
+    [
+        # devices.html has 2 option blocks (per-device + per-group defaults);
+        # both must prefix the icon.
+        ("devices.html", 2),
+        # schedules.html server-rendered asset dropdown.
+        ("schedules.html", 1),
+    ],
+)
+def test_option_templates_prefix_icon_before_name(
+    template_file, must_contain_before_name
+):
+    """Guard the placement: ``{{ a | asset_icon }} {{ a.display_name ...`` must
+    appear for every asset dropdown. If someone reverts the prefix back to
+    a suffix, this catches it.
+    """
+    body = _read(template_file)
+    pattern = "{{ a | asset_icon }} {{ a.display_name"
+    count = body.count(pattern)
+    assert count >= must_contain_before_name, (
+        f"{template_file}: expected at least {must_contain_before_name} "
+        f"dropdown option(s) to prefix the asset name with the icon "
+        f"(pattern: '{{{{ a | asset_icon }}}} {{{{ a.display_name ...'), "
+        f"found {count}."
+    )
+
+
+def test_schedules_js_prefixes_icon_before_name():
+    """Both inline-JS dropdown builders must prepend the icon to ``a.name``
+    (the label string), not append it.
+    """
+    body = _read("schedules.html")
+    # The icon must be composed in front of a.name in both builders.
+    assert body.count("icon + ' ' + a.name") >= 2, (
+        "schedules.html inline JS must prefix ASSET_ICONS[a.type] before "
+        "a.name (expected two dropdown builders to use "
+        "`icon + ' ' + a.name`)."
+    )
+    # Regression guard: no builder should be appending the icon after the name.
+    assert "a.name + ' ' + icon" not in body, (
+        "schedules.html inline JS is appending the icon after the name — "
+        "icons must be a prefix."
+    )
+    assert "label += ' ' + icon" not in body, (
+        "schedules.html inline JS still has a 'label += icon' suffix style; "
+        "icons must be prepended to the label instead."
+    )

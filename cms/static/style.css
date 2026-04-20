@@ -989,6 +989,10 @@ tr.highlight-new td {
     position: fixed;
     margin: 0;
     inset: auto;
+    /* Park off-screen by default so the first paint after :popover-open
+       doesn't flash at (0,0) before JS positions the popover. */
+    top: -9999px;
+    left: -9999px;
     /* Visual styling — matches old .group-popup. */
     background: var(--surface-alt);
     border: 1px solid var(--primary);
@@ -1470,6 +1474,10 @@ textarea:not(:-webkit-autofill) {
     margin: 0;
     inset: auto;
     position: fixed;
+    /* Park off-screen so the first paint after :popover-open doesn't flash
+       at (0,0) before positionKebab() sets the real top/left. */
+    top: -9999px;
+    left: -9999px;
     min-width: 12rem;
     max-width: 18rem;
     background: var(--surface);

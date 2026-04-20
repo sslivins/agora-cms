@@ -29,7 +29,7 @@
                 <select name="asset_id" required onchange="onAssetTypeChange(this)">
                     <option value="">Select asset...</option>
                     {% for a in assets %}
-                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}"{% if not a.ready_for_selection %} disabled{% endif %}>{{ a.display_name or a.original_filename or a.filename }}{{ a | asset_label_suffix }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
+                    <option value="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}"{% if not a.ready_for_selection %} disabled{% endif %}>{{ a | asset_icon }} {{ a.display_name or a.original_filename or a.filename }}{{ a | asset_label_suffix }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -216,7 +216,7 @@
 <input type="hidden" id="_tz" value="{{ current_timezone }}">
 <input type="hidden" id="_tzOptions" value='{{ tz_options | tojson }}'>
 <script>
-const ASSET_ICONS = {"video": "🎬", "image": "🖼️", "webpage": "🌐", "stream": "📡", "saved_stream": "📼"};
+const ASSET_ICONS = {"video": "🎬", "image": "📷", "webpage": "🌐", "stream": "📡", "saved_stream": "📼"};
 const _scheduleData = {
     assets: [{% for a in assets %}{"id":"{{ a.id }}","name":"{{ a.display_name or a.original_filename or a.filename }}","type":"{{ a.asset_type.value }}","duration":{{ a.duration_seconds|default('null', true) if a.duration_seconds else 'null' }},"global":{{ 'true' if a.is_global else 'false' }},"groups":{{ a._group_ids_json | tojson }},"ready":{{ 'true' if a.ready_for_selection else 'false' }},"notReadyReason":{{ (a.not_ready_reason or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     groups: [{% for g in groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}],
@@ -274,9 +274,8 @@ function filterAssetsByTarget() {
             const opt = document.createElement('option');
             opt.value = a.id;
             opt.dataset.assetType = a.type || '';
-            let label = a.name;
             const icon = ASSET_ICONS[a.type];
-            if (icon) label += ' ' + icon;
+            let label = icon ? icon + ' ' + a.name : a.name;
             if (a.duration) label += ` (${Math.floor(a.duration/60)}:${String(Math.round(a.duration%60)).padStart(2,'0')})`;
             opt.textContent = label;
             if (a.id === currentVal) opt.selected = true;
@@ -783,9 +782,8 @@ function editSchedule(s) {
     }).join(" ");
 
     const assetOpts = _scheduleData.assets.map(a => {
-        let label = a.name;
         const icon = ASSET_ICONS[a.type];
-        if (icon) label += ' ' + icon;
+        let label = icon ? icon + ' ' + a.name : a.name;
         if (a.duration) {
             const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
             label += ` (${m}:${String(s).padStart(2,'0')})`;

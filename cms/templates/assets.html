@@ -173,6 +173,8 @@
         </thead>
         <tbody>
             {% for a in assets %}
+            {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
+            {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
             <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
                 <td class="expand-toggle">▶</td>
                 <td class="wrap asset-filename-cell">
@@ -180,6 +182,9 @@
                         <span class="asset-filename-truncate editable-name" data-asset-id="{{ a.id }}" onclick="event.stopPropagation(); editAssetName(this)" title="Click to rename">{{ a.display_name or a.original_filename or a.filename }}</span>
                         <span class="tooltip">{{ a.display_name or a.original_filename or a.filename }}</span>
                     </span>
+                    {% if shared_badge %}
+                    <span class="has-tooltip" style="margin-left:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
+                    {% endif %}
                 </td>
                 <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
                 <td>
@@ -248,11 +253,6 @@
                     {% endif %}
                 </td>
                 <td class="actions" onclick="event.stopPropagation()">
-                    {% set is_owner = (request.state.user is defined and request.state.user and a.uploaded_by_user_id == request.state.user.id) or is_admin %}
-                    {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
-                    {% if shared_badge %}
-                    <span class="has-tooltip" style="display:inline-block;margin-right:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
-                    {% endif %}
                     {% call macros.kebab_menu() %}
                     {% if a.asset_type.value == 'webpage' %}
                         <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open URL</a>

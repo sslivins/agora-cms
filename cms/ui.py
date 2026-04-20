@@ -84,7 +84,7 @@ templates.env.filters["select_days"] = select_days
 
 _ASSET_ICONS = {
     "video": "🎬",
-    "image": "🖼️",
+    "image": "📷",
     "webpage": "🌐",
     "stream": "📡",
     "saved_stream": "📼",
@@ -115,19 +115,18 @@ templates.env.filters["asset_icon"] = asset_icon
 
 
 def asset_label_suffix(asset):
-    """Return a human-readable suffix for asset labels in dropdowns.
+    """Return a trailing ``(mm:ss)`` duration for asset labels in dropdowns.
 
-    Always includes the type icon, plus a `(mm:ss)` duration when the
-    asset has one (video or saved stream). Returns an empty string for
-    untyped assets. See issue #316.
+    Returns `` (m:ss)`` when the asset has a duration (video or saved
+    stream) and an empty string otherwise. Type icons are rendered as a
+    *prefix* via the ``asset_icon`` filter instead of being appended here
+    (see issue #316 / asset-icon placement fix).
     """
-    icon = asset_icon(asset)
     duration = getattr(asset, "duration_seconds", None)
     if duration:
         total = int(duration)
-        dur = f"({total // 60}:{total % 60:02d})"
-        return f" {icon} {dur}" if icon else f" {dur}"
-    return f" {icon}" if icon else ""
+        return f" ({total // 60}:{total % 60:02d})"
+    return ""
 
 templates.env.filters["asset_label_suffix"] = asset_label_suffix
 
