@@ -993,9 +993,13 @@ tr.highlight-new td {
        doesn't flash at (0,0) before JS positions the popover. */
     top: -9999px;
     left: -9999px;
-    /* Visual styling — matches old .group-popup. */
-    background: var(--surface-alt);
-    border: 1px solid var(--primary);
+    /* Lift the popover visually above surrounding cards: --surface base with
+       a translucent white overlay. Matches the standard light-border
+       contrast pattern (see .card-highlight). */
+    background:
+        linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)),
+        var(--surface);
+    border: 1px solid rgba(255, 255, 255, 0.25);
     border-radius: 0.5rem;
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     display: none;
@@ -1480,8 +1484,14 @@ textarea:not(:-webkit-autofill) {
     left: -9999px;
     min-width: 12rem;
     max-width: 18rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
+    /* Lift the popover visually above surrounding cards: --surface base with
+       a translucent white overlay. --border is aliased to the dark-blue
+       --primary so would disappear against the page; use the standard
+       light-contrast border token instead (matches .card-highlight). */
+    background:
+        linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)),
+        var(--surface);
+    border: 1px solid rgba(255, 255, 255, 0.25);
     border-radius: var(--radius);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
     padding: 0.25rem;
