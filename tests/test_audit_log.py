@@ -307,6 +307,23 @@ class TestAuditAPI:
         assert len(data) >= 1
 
     @pytest.mark.asyncio
+    async def test_search_q_resource_id(self, client, db_session):
+        """q should match resource_id so UI searches by UUID find hits."""
+        user = await _create_test_user(db_session, "ridsearch")
+        rid = "a1b2c3d4-dead-beef-cafe-f00dbaadf00d"
+        await audit_log(
+            db_session, user=user, action="asset.update",
+            resource_type="asset", resource_id=rid,
+            description="Modified asset 'x.mp4'",
+            details={"changes": {"url": {"old": "a", "new": "b"}}},
+        )
+        await db_session.commit()
+        resp = await client.get(f"/api/audit-log?q={rid}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert any(e.get("resource_id") == rid for e in data)
+
+    @pytest.mark.asyncio
     async def test_pagination_limit_offset(self, client, seeded_audit):
         resp = await client.get("/api/audit-log?limit=2&offset=0")
         assert resp.status_code == 200
