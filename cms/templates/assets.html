@@ -181,7 +181,7 @@
                         <span class="tooltip">{{ a.display_name or a.original_filename or a.filename }}</span>
                     </span>
                 </td>
-                <td><span class="badge badge-{{ a.asset_type.value }}">{% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
+                <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
                 <td>
                     {% if a.is_global %}
                     <span class="badge badge-ready">Global</span>
