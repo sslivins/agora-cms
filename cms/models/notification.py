@@ -22,7 +22,7 @@ class Notification(Base):
     )
     level: Mapped[str] = mapped_column(
         String(20), nullable=False, default="info",
-        doc="Severity: 'info', 'warning', or 'error'",
+        doc="Severity: 'info', 'success', 'warning', or 'error'",
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     message: Mapped[str] = mapped_column(Text, default="")

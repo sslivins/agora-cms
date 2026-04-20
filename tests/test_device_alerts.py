@@ -134,7 +134,7 @@ class TestOfflineDetection:
             notifs = (await db.execute(
                 select(Notification).where(
                     Notification.group_id == uuid.UUID(info["group_id"]),
-                    Notification.level == "warning",
+                    Notification.level == "error",
                 )
             )).scalars().all()
             assert len(notifs) >= 1
@@ -220,7 +220,7 @@ class TestOfflineDetection:
             notifs = (await db.execute(
                 select(Notification).where(
                     Notification.group_id == uuid.UUID(info["group_id"]),
-                    Notification.level == "info",
+                    Notification.level == "success",
                 )
             )).scalars().all()
             assert any("back online" in n.title.lower() for n in notifs)
@@ -362,7 +362,7 @@ class TestTemperatureAlerts:
             notifs = (await db.execute(
                 select(Notification).where(
                     Notification.group_id == uuid.UUID(info["group_id"]),
-                    Notification.level == "info",
+                    Notification.level == "success",
                 )
             )).scalars().all()
             assert any("normal" in n.title.lower() for n in notifs)

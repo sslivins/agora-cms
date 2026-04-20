@@ -200,6 +200,7 @@ header {
 .notification-item.unread { border-left: 3px solid var(--accent); }
 .notification-item.notif-error .notif-title { color: var(--danger); }
 .notification-item.notif-warning .notif-title { color: var(--warning); }
+.notification-item.notif-success .notif-title { color: var(--success); }
 .notification-item.notif-info .notif-title { color: var(--accent); }
 .notif-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; padding-right: 1.2rem; }
 .notif-message { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }

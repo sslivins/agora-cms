@@ -36,7 +36,7 @@ RBAC fixtures (Operator A / Viewer in Group A, Operator B in Group B).
 Default alert thresholds (``cms.services.alert_service``):
   WARNING  = 70.0 C   ->  Notification level="warning"
   CRITICAL = 80.0 C   ->  Notification level="error"
-  CLEAR    =  <WARNING ->  Notification level="info", event TEMP_CLEARED
+  CLEAR    =  <WARNING ->  Notification level="success", event TEMP_CLEARED
 """
 
 from __future__ import annotations
@@ -396,9 +396,9 @@ def test_08_clear_fault_emits_cleared_notification(
     observed = _wait_for_temp_below(authenticated_page, device_id, below=70.0)
     assert observed < 70.0
 
-    # alert_service emits the TEMP_CLEARED Notification (level=info) + event.
+    # alert_service emits the TEMP_CLEARED Notification (level=success) + event.
     cleared = _wait_for_thermal_notif(authenticated_page, device_id, "temp_cleared")
-    assert cleared["level"] == "info", cleared
+    assert cleared["level"] == "success", cleared
     assert cleared["scope"] == "group"
     assert str(cleared["group_id"]) == str(RBAC_STATE["group_a_id"])
     det = cleared.get("details") or {}
