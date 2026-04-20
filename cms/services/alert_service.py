@@ -227,7 +227,7 @@ class AlertService:
                 gid = _to_uuid(group_id)
                 notification = Notification(
                     scope="group",
-                    level="warning",
+                    level="error",
                     title=f"Device offline: {device_name}",
                     message=(
                         f"Device '{device_name}' in group '{group_name}' has been "
@@ -286,7 +286,7 @@ class AlertService:
             async for db in get_db():
                 notification = Notification(
                     scope="group",
-                    level="info",
+                    level="success",
                     title=f"Device back online: {device_name}",
                     message=(
                         f"Device '{device_name}' in group '{group_name}' is back online."
@@ -407,7 +407,7 @@ class AlertService:
                         f"is at {cpu_temp_c:.1f}°C ({level})."
                     )
                 else:
-                    notif_level = "info"
+                    notif_level = "success"
                     title = f"Temperature normal: {device_name}"
                     message = (
                         f"Device '{device_name}' in group '{group_name}' "

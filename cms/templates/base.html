@@ -139,7 +139,7 @@
             }
             list.innerHTML = items.map(n => {
                 const isUnread = !n.read_at;
-                const levelClass = n.level === 'error' ? 'notif-error' : n.level === 'warning' ? 'notif-warning' : 'notif-info';
+                const levelClass = n.level === 'error' ? 'notif-error' : n.level === 'warning' ? 'notif-warning' : n.level === 'success' ? 'notif-success' : 'notif-info';
                 const age = _timeAgo(n.created_at);
                 return `<div class="notification-item ${isUnread ? 'unread' : ''} ${levelClass}" data-id="${n.id}" onclick="markNotifRead('${n.id}', this)">
                     <button class="notif-dismiss" onclick="event.stopPropagation(); dismissNotification('${n.id}', this)" aria-label="Dismiss">&times;</button>
