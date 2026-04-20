@@ -665,17 +665,32 @@ window._adoptionProfiles = [
         requestAnimationFrame(applyAssetTooltips);
     }
 
-    setInterval(async () => {
-        if (isModalOpen()) return;
-        // Don't refresh while the user has a kebab menu open — it would
-        // re-render the actions cell and close the menu under them.
-        if (document.querySelector('.kebab-menu:popover-open')) return;
-        // Also skip if a kebab was clicked very recently — covers the
-        // window between mousedown and the browser actually opening the
-        // popover (where :popover-open is not yet true).
-        if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
-        const el = document.activeElement;
-        if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
+    setInterval(pollDevicesOnce, 5000);
+
+    // Expose a lightweight re-poll hook so action handlers in app.js can
+    // request an immediate refresh after mutating device state (SSH/Local
+    // API toggles, adoption, etc.) instead of waiting up to 5s for the
+    // next scheduled cycle. The force flag skips the "user is interacting"
+    // guards since the user explicitly initiated this refresh.
+    window.refreshDevices = () => pollDevicesOnce(true);
+    // Let callers inform the poller that a device was just removed
+    // client-side so the next poll doesn't see the set shrink and trigger
+    // an unnecessary structural reload.
+    window._forgetDevice = (id) => { knownDeviceIds.delete(id); };
+
+    async function pollDevicesOnce(force) {
+        if (!force) {
+            if (isModalOpen()) return;
+            // Don't refresh while the user has a kebab menu open — it would
+            // re-render the actions cell and close the menu under them.
+            if (document.querySelector('.kebab-menu:popover-open')) return;
+            // Also skip if a kebab was clicked very recently — covers the
+            // window between mousedown and the browser actually opening the
+            // popover (where :popover-open is not yet true).
+            if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
+            const el = document.activeElement;
+            if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
+        }
         try {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;
@@ -694,7 +709,7 @@ window._adoptionProfiles = [
                 }
             }
         } catch (e) { /* ignore */ }
-    }, 5000);
+    }
 })();
 
 async function checkForUpdates() {
@@ -706,7 +721,9 @@ async function checkForUpdates() {
         if (resp.ok) {
             const data = await resp.json();
             showToast('Latest version: ' + (data.latest_version || 'unknown'));
-            location.reload();
+            // Refresh in place — the poller rebuilds any action cells whose
+            // signature changed (update_available flips per device).
+            if (typeof window.refreshDevices === 'function') window.refreshDevices();
         } else {
             showToast('Failed to check for updates', true);
         }

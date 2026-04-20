@@ -535,6 +535,119 @@ function editGroupField(el) {
     input.addEventListener('click', e => e.stopPropagation());
 }
 
+// Remove every DOM trace of a device (main "All Devices" row + any compact
+// rows in group/ungrouped tables). Returns true if at least one row was
+// removed so the caller can fall back to a reload when it wasn't.
+function _removeDeviceFromDom(deviceId) {
+    let removed = 0;
+    const affectedGroupKeys = new Set();
+    document.querySelectorAll(`tr.device-row[data-device-id="${deviceId}"]`)
+        .forEach(row => {
+            const key = _compactRowGroupKey(row);
+            if (key) affectedGroupKeys.add(key);
+            row.remove();
+            removed += 1;
+        });
+    if (!removed) return false;
+    affectedGroupKeys.forEach(key => {
+        if (key && key !== 'ungrouped') _bumpGroupCount(key, -1);
+        _refreshGroupEmptyState(key);
+    });
+    _refreshUngroupedSection();
+    // Keep the devices.html poller's knownDeviceIds set in sync so the next
+    // poll doesn't see the set shrink and trigger an unnecessary reload.
+    if (typeof window._forgetDevice === 'function') window._forgetDevice(deviceId);
+    return true;
+}
+
+// Remove a group-panel's DOM and relocate its devices to the ungrouped
+// section. Also strips the group from every main-row group <select>.
+// Returns true when the DOM was updated inline; false means the caller
+// should reload to recover.
+function _deleteGroupFromDom(groupId) {
+    const panel = document.querySelector(`.group-panel[data-group-id="${groupId}"]`);
+    if (!panel) return false;
+    const groupTbody = panel.querySelector(`tbody[data-group-tbody="${groupId}"]`);
+    const ungroupedTbody = document.querySelector('tbody[data-group-tbody="ungrouped"]');
+    if (groupTbody && ungroupedTbody) {
+        // Relocate rows so the user doesn't lose track of their devices.
+        Array.from(groupTbody.children).forEach(row => {
+            const deviceId = row.getAttribute('data-device-id');
+            row.classList.add('draggable-device');
+            row.setAttribute('draggable', 'true');
+            if (deviceId) row.setAttribute('ondragstart', `dragDevice(event, '${deviceId}')`);
+            // Compact rows in groups carry a "Remove from group" kebab; drop
+            // it once the row is ungrouped, matching the jinja-rendered markup.
+            const actionsCell = row.querySelector('td.actions');
+            if (actionsCell) actionsCell.innerHTML = '';
+            ungroupedTbody.appendChild(row);
+            if (deviceId) _syncDeviceGroupSelects(deviceId, null);
+        });
+    }
+    panel.remove();
+    _refreshUngroupedSection();
+    // Strip the group's <option> from every device's inline group-select on
+    // the main "All Devices" table.
+    document.querySelectorAll(
+        `select[data-device-group-select] option[value="${groupId}"]`
+    ).forEach(opt => opt.remove());
+    return true;
+}
+
+// Build (and insert) the DOM for a newly-created empty group-panel so the
+// user sees their group immediately. Matches the jinja-rendered structure
+// closely enough that subsequent moveDeviceRowInDom() calls Just Work.
+function _renderNewGroupPanel(group) {
+    // Anchor the insert so the new panel slots in right before the
+    // "Add Group" form. If we can't find the form, we can't reliably place
+    // the panel and must fall back to a reload.
+    const addBtn = document.getElementById('add-group-btn');
+    const formRow = addBtn ? addBtn.closest('div') : null;
+    const container = formRow ? formRow.parentElement : null;
+    if (!container || !formRow) return false;
+    // First-group bookkeeping: hide the "No groups created yet" placeholder.
+    container.querySelectorAll('p.empty-state').forEach(p => {
+        if (/No groups created/i.test(p.textContent)) p.remove();
+    });
+    const panel = document.createElement('div');
+    panel.className = 'group-panel';
+    panel.setAttribute('data-group-id', group.id);
+    panel.setAttribute('ondragover', "event.preventDefault(); this.classList.add('drag-over')");
+    panel.setAttribute('ondragleave', "this.classList.remove('drag-over')");
+    panel.setAttribute('ondrop', `dropDevice(event, '${group.id}'); this.classList.remove('drag-over')`);
+    const escName = _escHtmlLocal(group.name || '');
+    const escDesc = _escHtmlLocal(group.description || '');
+    panel.innerHTML =
+        `<div class="group-header" onclick="toggleGroup(this)">` +
+            `<span class="expand-toggle">▶</span>` +
+            `<strong><span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="${group.id}" data-field="name">${escName}</span></strong> ` +
+            `<span class="text-muted">— <span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="${group.id}" data-field="description" data-placeholder="No description">${escDesc || 'No description'}</span></span> ` +
+            `<span class="badge badge-count" data-group-count="${group.id}">0 devices</span>` +
+        `</div>` +
+        `<div class="group-body" style="display: none;">` +
+            `<table data-group-table="${group.id}" style="display: none;"><tbody data-group-tbody="${group.id}"></tbody></table>` +
+            `<p class="text-muted empty-state" data-group-empty="${group.id}">No devices in this group. Drag a device here to add it.</p>` +
+        `</div>`;
+    container.insertBefore(panel, formRow);
+    // Append a new <option> to every inline group-select on the main table
+    // so the user can immediately assign a device to the freshly-made group.
+    const opt = document.createElement('option');
+    opt.value = group.id;
+    opt.textContent = group.name;
+    document.querySelectorAll('select[data-device-group-select]').forEach(sel => {
+        sel.appendChild(opt.cloneNode(true));
+    });
+    return true;
+}
+
+// Minimal HTML escaper used by the group-panel synth. Scoped local so we
+// don't collide with any page-specific _escHtml in the templates.
+function _escHtmlLocal(s) {
+    return String(s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+}
+
 async function adoptDevice(deviceId, deviceName) {
     // Show adoption modal with name + optional location + optional group + required profile
     const groups = window._adoptionGroups || [];
@@ -545,7 +658,12 @@ async function adoptDevice(deviceId, deviceName) {
     if (result.location) body.location = result.location;
     if (result.group_id) body.group_id = result.group_id;
     const resp = await apiCall("POST", `/api/devices/${deviceId}/adopt`, body);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        showToast("Device adopted");
+        // Trigger an immediate poll so the status badge flips pending → online
+        // and the actions cell is rebuilt without waiting for the 5s cycle.
+        if (typeof window.refreshDevices === 'function') window.refreshDevices();
+    }
     else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to adopt device", true);
@@ -679,7 +797,10 @@ async function deleteDevice(deviceId) {
     if (isDevicePlaying(deviceId)) msg = "This device is currently playing.\n\n" + msg;
     if (!await showConfirm(msg)) return;
     const resp = await apiCall("DELETE", `/api/devices/${deviceId}`);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        showToast("Device deleted");
+        if (!_removeDeviceFromDom(deviceId)) location.reload();
+    }
 }
 
 async function changeDevicePassword(deviceId, deviceName) {
@@ -716,7 +837,9 @@ async function toggleSsh(deviceId, enabled) {
     const resp = await apiCall("POST", `/api/devices/${deviceId}/ssh`, { enabled });
     if (resp && resp.ok) {
         showToast("SSH " + action + "d");
-        location.reload();
+        // The 5s poller rebuilds the actions cell (signature includes
+        // ssh_enabled); trigger it now for snappy feedback.
+        if (typeof window.refreshDevices === 'function') window.refreshDevices();
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to " + action + " SSH", true);
@@ -764,7 +887,9 @@ async function toggleLocalApi(deviceId, enabled) {
     const resp = await apiCall("POST", `/api/devices/${deviceId}/local-api`, { enabled });
     if (resp && resp.ok) {
         showToast("Local API " + action + "d");
-        location.reload();
+        // The 5s poller rebuilds the actions cell (signature includes
+        // local_api_enabled); trigger it now for snappy feedback.
+        if (typeof window.refreshDevices === 'function') window.refreshDevices();
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to " + action + " local API", true);
@@ -773,17 +898,46 @@ async function toggleLocalApi(deviceId, enabled) {
 
 // ── Group actions ──
 async function createGroup() {
-    const name = document.getElementById("group-name").value.trim();
+    const nameInput = document.getElementById("group-name");
+    const descInput = document.getElementById("group-desc");
+    const name = nameInput.value.trim();
     if (!name) return;
-    const desc = document.getElementById("group-desc").value.trim();
+    const desc = descInput.value.trim();
     const resp = await apiCall("POST", "/api/devices/groups/", { name, description: desc });
-    if (resp && resp.ok) location.reload();
+    if (!resp || !resp.ok) {
+        if (resp) {
+            const err = await resp.json().catch(() => null);
+            showToast(err?.detail || "Failed to create group", true);
+        }
+        return;
+    }
+    const group = await resp.json().catch(() => null);
+    if (!group || !_renderNewGroupPanel(group)) {
+        // We couldn't synth the panel (unknown page layout); fall back so the
+        // user still sees the new group.
+        location.reload();
+        return;
+    }
+    showToast("Group created");
+    nameInput.value = "";
+    descInput.value = "";
+    // Re-disable the Add button since the name field is now empty.
+    const addBtn = document.getElementById("add-group-btn");
+    if (addBtn) addBtn.disabled = true;
 }
 
 async function deleteGroup(groupId) {
     if (!await showConfirm("Delete this group?")) return;
     const resp = await apiCall("DELETE", `/api/devices/groups/${groupId}`);
-    if (resp && resp.ok) location.reload();
+    if (!resp || !resp.ok) {
+        if (resp) {
+            const err = await resp.json().catch(() => null);
+            showToast(err?.detail || "Failed to delete group", true);
+        }
+        return;
+    }
+    showToast("Group deleted");
+    if (!_deleteGroupFromDom(groupId)) location.reload();
 }
 
 // ── Asset actions ──
