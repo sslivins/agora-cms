@@ -142,3 +142,81 @@ def test_users_listing_contains_admin(authenticated_page: Page) -> None:
     assert isinstance(users, list) and users, "expected at least the admin user"
     admins = [u for u in users if (u.get("role") or {}).get("name") == "Admin"]
     assert admins, f"no Admin-role user in {[u.get('email') for u in users]}"
+
+
+# ── failed-login audit trail ──────────────────────────────────────────────
+
+
+def test_failed_login_writes_audit_entry(
+    cms_base_url: str, authenticated_page: Page
+) -> None:
+    """A failed login must produce a ``auth.login_failed`` audit row.
+
+    This is a security-critical contract: forensics relies on these rows
+    to spot brute-force attempts. If ``login_submit`` regresses and stops
+    calling ``audit_log`` (or commits get rolled back with the 401), the
+    audit trail goes silent without any other test noticing.
+
+    HTTP-only on purpose — the audit *page* is a thin renderer over this
+    API, and the backend contract is what matters for security review.
+    Uses a unique bogus username so we can distinguish our entry from
+    any other failed-login rows that earlier phases may have produced.
+    """
+    import secrets
+
+    # Unique-enough bogus login_id so we can pick our entry out of the
+    # audit log regardless of what other tests have written.
+    bogus_user = f"smoke-nobody-{secrets.token_hex(4)}"
+
+    # Unauthenticated POST — this is the real login endpoint.
+    r = httpx.post(
+        f"{cms_base_url}/login",
+        data={"username": bogus_user, "password": "definitely-not-right"},
+        timeout=5.0,
+        follow_redirects=False,
+    )
+    assert r.status_code == 401, (
+        f"failed login should return 401, got {r.status_code}. body={r.text[:200]!r}"
+    )
+    assert "agora_cms_session" not in r.cookies, (
+        "failed login must not set a session cookie"
+    )
+
+    # Admin pulls the audit log and looks for our row. Filter by action
+    # to keep the result set small; we still match on details.login_id
+    # to avoid coupling to ordering.
+    resp = authenticated_page.request.get(
+        "/api/audit-log", params={"action": "auth.login_failed", "limit": 50}
+    )
+    assert resp.status == 200, (
+        f"/api/audit-log -> {resp.status}: {resp.text()[:200]}"
+    )
+    rows = resp.json()
+
+    match = next(
+        (
+            row
+            for row in rows
+            if (row.get("details") or {}).get("login_id") == bogus_user
+        ),
+        None,
+    )
+    assert match is not None, (
+        f"no auth.login_failed audit row for {bogus_user!r} in last "
+        f"{len(rows)} entries. Most recent: "
+        f"{[(r.get('action'), (r.get('details') or {}).get('login_id')) for r in rows[:5]]}"
+    )
+
+    assert match["action"] == "auth.login_failed"
+    assert match["resource_type"] == "user"
+    # Unknown user means the row isn't attributed to any account.
+    assert match.get("user_id") is None, (
+        f"login_failed for unknown user should have user_id=None, got {match['user_id']!r}"
+    )
+    assert (match.get("details") or {}).get("reason") == "user_not_found", (
+        f"expected reason=user_not_found, got {(match.get('details') or {}).get('reason')!r}"
+    )
+    assert match.get("ip_address"), (
+        "audit row should capture the caller's IP — missing/empty ip_address "
+        "suggests the X-Forwarded-For / request.client plumbing regressed"
+    )
