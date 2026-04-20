@@ -128,51 +128,9 @@
         </thead>
         <tbody id="profiles-body">
             {% for p in profiles %}
-            <tr>
-                <td>
-                    {{ p.name }}
-                    {% if p.builtin %}<span class="badge badge-builtin">built-in</span>{% endif %}
-                </td>
-                <td>{% if p.video_codec == 'h264' %}H.264{% elif p.video_codec == 'h265' %}HEVC{% elif p.video_codec == 'av1' %}AV1{% else %}{{ p.video_codec }}{% endif %} / {{ p.video_profile | capitalize }}</td>
-                <td>{{ p.max_width }}×{{ p.max_height }}</td>
-                <td>{{ p.max_fps }}</td>
-                <td>{% if p.video_bitrate %}{{ p.video_bitrate }} Mbps{% else %}CRF {{ p.crf }}{% endif %}</td>
-                <td>{% if p.pixel_format == 'auto' %}Auto{% else %}{{ p.pixel_format }}{% endif %}</td>
-                <td>{% if p.color_space == 'auto' %}Auto{% else %}{{ p.color_space }}{% if p.color_space == 'bt709' %} (SDR){% elif p.color_space == 'bt2020-pq' %} (HDR10){% elif p.color_space == 'bt2020-hlg' %} (HLG){% elif p.color_space == 'smpte170m' %} (SD){% endif %}{% endif %}</td>
-                <td>{{ p.device_count }}</td>
-                <td data-profile-variants="{{ p.id }}">
-                    {% if p.total_variants > 0 %}
-                    {% if p.ready_variants == p.total_variants %}
-                        <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">{{ p.total_variants }} variant{{ 's' if p.total_variants != 1 else '' }}</span></span>
-                    {% elif p.ready_variants > 0 %}
-                        <span class="has-tooltip"><span class="badge badge-processing">In Progress</span><span class="tooltip">{{ p.ready_variants }} of {{ p.total_variants }} ready</span></span>
-                    {% else %}
-                        <span class="has-tooltip"><span class="badge badge-pending">Queued</span><span class="tooltip">{{ p.total_variants }} variant{{ 's' if p.total_variants != 1 else '' }} queued</span></span>
-                    {% endif %}
-                    {% else %}
-                    —
-                    {% endif %}
-                </td>
-                <td>
-                    {% if 'profiles:write' in user_perms %}
-                    {% call macros.kebab_menu() %}
-                        <button type="button" role="menuitem" onclick="editProfile('{{ p.id }}')">Edit</button>
-                        <button type="button" role="menuitem" onclick="copyProfile('{{ p.id }}', '{{ p.name }}')">Copy</button>
-                        {% if p.builtin %}
-                            {% if p.matches_defaults %}
-                            <button type="button" role="menuitem" disabled title="Profile is already at factory defaults" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
-                            {% else %}
-                            <button type="button" role="menuitem" onclick="resetProfile('{{ p.id }}', '{{ p.name }}')" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
-                            {% endif %}
-                        {% else %}
-                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteProfile('{{ p.id }}', '{{ p.name }}')">Delete</button>
-                        {% endif %}
-                    {% endcall %}
-                    {% endif %}
-                </td>
-            </tr>
+            {{ macros.profile_row(p, user_perms) }}
             {% else %}
-            <tr><td colspan="10" class="empty">No profiles configured</td></tr>
+            <tr data-profiles-empty><td colspan="10" class="empty">No profiles configured</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -297,8 +255,16 @@ async function createProfile(form) {
     };
     const resp = await apiCall("POST", "/api/profiles", body);
     if (resp && resp.ok) {
+        const created = await resp.json().catch(() => null);
         showToast("Profile created");
-        location.reload();
+        form.reset();
+        toggleBitrateCreate(form);
+        if (created && created.id) {
+            window._rememberProfile && window._rememberProfile(created.id, created);
+            await _insertProfileRow(created.id);
+        } else {
+            location.reload();
+        }
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Failed to create profile", true);
@@ -411,9 +377,13 @@ async function editProfile(profileId) {
 
         const r = await apiCall("PUT", `/api/profiles/${profileId}`, body);
         if (r && r.ok) {
+            const updated = await r.json().catch(() => null);
             showToast("Profile updated");
             overlay.remove();
-            location.reload();
+            if (updated && updated.id) {
+                window._rememberProfile && window._rememberProfile(updated.id, updated);
+            }
+            await _replaceProfileRow(profileId);
         } else if (r) {
             const err = await r.json().catch(() => null);
             showToast(err?.detail || "Update failed", true);
@@ -426,7 +396,8 @@ async function deleteProfile(profileId, name) {
     const resp = await apiCall("DELETE", `/api/profiles/${profileId}`);
     if (resp && resp.ok) {
         showToast("Profile deleted");
-        location.reload();
+        window._forgetProfile && window._forgetProfile(profileId);
+        _removeProfileRow(profileId);
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Delete failed", true);
@@ -436,8 +407,14 @@ async function deleteProfile(profileId, name) {
 async function copyProfile(profileId, name) {
     const resp = await apiCall("POST", `/api/profiles/${profileId}/copy`);
     if (resp && resp.ok) {
+        const created = await resp.json().catch(() => null);
         showToast(`Copied profile "${name}"`);
-        location.reload();
+        if (created && created.id) {
+            window._rememberProfile && window._rememberProfile(created.id, created);
+            await _insertProfileRow(created.id);
+        } else {
+            location.reload();
+        }
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Copy failed", true);
@@ -460,16 +437,122 @@ async function resetProfile(profileId, name) {
 
     const resp = await apiCall("POST", `/api/profiles/${profileId}/reset`);
     if (resp && resp.ok) {
+        const updated = await resp.json().catch(() => null);
         showToast(`Profile "${name}" reset to defaults`);
-        location.reload();
+        if (updated && updated.id) {
+            window._rememberProfile && window._rememberProfile(updated.id, updated);
+        }
+        await _replaceProfileRow(profileId);
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Reset failed", true);
     }
 }
 
-// ── Live polling for profile variants ──
+// ── Row fragment helpers + cross-session poller ──
 (function() {
+    const tbody = document.getElementById('profiles-body');
+
+    function _parseRow(html) {
+        const tmp = document.createElement('tbody');
+        tmp.innerHTML = html.trim();
+        return tmp.querySelector('tr');
+    }
+
+    function _removeEmptyRow() {
+        const e = tbody && tbody.querySelector('tr[data-profiles-empty]');
+        if (e) e.remove();
+    }
+
+    async function _replaceProfileRow(id) {
+        try {
+            const resp = await fetch(`/api/profiles/${id}/row`);
+            if (!resp.ok) return;
+            const html = await resp.text();
+            const newRow = _parseRow(html);
+            if (!newRow) return;
+            const cur = tbody.querySelector(`tr[data-profile-id="${id}"]`);
+            if (cur) cur.replaceWith(newRow);
+            else {
+                _removeEmptyRow();
+                tbody.appendChild(newRow);
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    async function _insertProfileRow(id) {
+        try {
+            const resp = await fetch(`/api/profiles/${id}/row`);
+            if (!resp.ok) return;
+            const html = await resp.text();
+            const newRow = _parseRow(html);
+            if (!newRow) return;
+            _removeEmptyRow();
+            // Insert alphabetically by visible name so the list stays
+            // in the same order the server would render after reload.
+            const name = newRow.querySelector('td')?.textContent.trim().toLowerCase() || '';
+            const rows = Array.from(tbody.querySelectorAll('tr[data-profile-id]'));
+            const before = rows.find(r => (r.querySelector('td')?.textContent.trim().toLowerCase() || '') > name);
+            if (before) tbody.insertBefore(newRow, before);
+            else tbody.appendChild(newRow);
+        } catch (e) { /* ignore */ }
+    }
+
+    function _removeProfileRow(id) {
+        const cur = tbody && tbody.querySelector(`tr[data-profile-id="${id}"]`);
+        if (cur) cur.remove();
+        if (tbody && !tbody.querySelector('tr[data-profile-id]')) {
+            const r = document.createElement('tr');
+            r.setAttribute('data-profiles-empty', '');
+            const td = document.createElement('td');
+            td.colSpan = 10;
+            td.className = 'empty';
+            td.textContent = 'No profiles configured';
+            r.appendChild(td);
+            tbody.appendChild(r);
+        }
+    }
+
+    window._replaceProfileRow = _replaceProfileRow;
+    window._insertProfileRow = _insertProfileRow;
+    window._removeProfileRow = _removeProfileRow;
+
+    // Signature covers every field the row macro renders so any remote
+    // field edit triggers a fragment swap on the next poll cycle.
+    function profileSig(p) {
+        return JSON.stringify([
+            p.name, p.description || '',
+            p.video_codec, p.video_profile,
+            p.max_width, p.max_height, p.max_fps,
+            p.video_bitrate || '', p.crf,
+            p.pixel_format, p.color_space,
+            p.audio_codec, p.audio_bitrate,
+            p.builtin, p.enabled,
+            p.device_count || 0,
+            p.total_variants || 0, p.ready_variants || 0,
+            p.matches_defaults,
+        ]);
+    }
+
+    const sigs = new Map();  // id -> signature
+    // Seed the cache from /api/profiles so the first poll doesn't
+    // flood the /row endpoint for unchanged rows.
+    (async () => {
+        try {
+            const resp = await fetch('/api/profiles');
+            if (!resp.ok) return;
+            const rows = await resp.json();
+            for (const p of rows) sigs.set(p.id, profileSig(p));
+        } catch (e) { /* ignore */ }
+    })();
+
+    window._forgetProfile = (id) => { sigs.delete(id); };
+    window._rememberProfile = (id, data) => {
+        if (data) sigs.set(id, profileSig(data));
+        else sigs.set(id, '');
+    };
+    window.refreshProfiles = () => pollProfilesOnce(true);
+
     function buildProfileVariantBadge(p) {
         if (p.total_variants === 0) return '\u2014';
         if (p.ready_variants === p.total_variants) {
@@ -486,19 +569,46 @@ async function resetProfile(profileId, name) {
             '<span class="tooltip">' + p.total_variants + ' variant' + s + ' queued</span></span>';
     }
 
-    setInterval(async () => {
-        if (isModalOpen()) return;
+    async function pollProfilesOnce(force) {
+        if (!force) {
+            if (typeof isModalOpen === 'function' && isModalOpen()) return;
+            if (document.querySelector('.kebab-menu:popover-open')) return;
+            if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
+            const el = document.activeElement;
+            if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return;
+        }
         try {
-            const res = await fetch("/api/profiles/status");
-            if (!res.ok) return;
-            const data = await res.json();
+            const resp = await fetch('/api/profiles');
+            if (!resp.ok) return;
+            const profiles = await resp.json();
+            const nowIds = new Set(profiles.map(p => p.id));
 
-            // Update profile variant cells
-            for (const p of data.profiles) {
+            // 1. Structural change (add/remove) → sync the row set in-place
+            //    instead of reloading. Other fields will be caught by the
+            //    per-row signature pass below.
+            if (nowIds.size !== sigs.size || ![...nowIds].every(id => sigs.has(id))) {
+                for (const id of [...sigs.keys()]) {
+                    if (!nowIds.has(id)) {
+                        sigs.delete(id);
+                        _removeProfileRow(id);
+                    }
+                }
+                for (const p of profiles) {
+                    if (!sigs.has(p.id)) {
+                        sigs.set(p.id, profileSig(p));
+                        await _insertProfileRow(p.id);
+                    }
+                }
+            }
+
+            // 2. Per-row field change → fragment-swap just that row.
+            //    Always update variant/reset cells in place too — these
+            //    tick independently of the row-level signature and we
+            //    never want to flash the whole row for a badge change.
+            for (const p of profiles) {
                 const cell = document.querySelector('[data-profile-variants="' + p.id + '"]');
                 if (cell) cell.innerHTML = buildProfileVariantBadge(p);
 
-                // Reset button enable/disable (built-in profiles only)
                 const resetBtn = document.querySelector('[data-profile-reset="' + p.id + '"]');
                 if (resetBtn) {
                     if (p.matches_defaults) {
@@ -512,9 +622,19 @@ async function resetProfile(profileId, name) {
                         resetBtn.onclick = () => resetProfile(p.id, name);
                     }
                 }
+
+                const sig = profileSig(p);
+                if (sigs.get(p.id) !== sig) {
+                    sigs.set(p.id, sig);
+                    if (tbody.querySelector(`tr[data-profile-id="${p.id}"]`)) {
+                        await _replaceProfileRow(p.id);
+                    }
+                }
             }
         } catch (e) { /* ignore */ }
-    }, 5000);
+    }
+
+    setInterval(pollProfilesOnce, 5000);
 })();
 </script>
 {% endblock %}

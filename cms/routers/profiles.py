@@ -218,6 +218,70 @@ def _matches_defaults(profile: DeviceProfile) -> bool:
     )
 
 
+async def _annotate_profile(p: DeviceProfile, db: AsyncSession) -> dict:
+    """Wrap a DeviceProfile with the computed counts the profile_row
+    macro needs (device_count, total_variants, ready_variants,
+    matches_defaults).  Used by the fragment-row endpoint so the
+    template rendered for polling stays byte-identical to the one
+    rendered for the full page.
+    """
+    dev_count = (await db.execute(
+        select(func.count(Device.id)).where(Device.profile_id == p.id)
+    )).scalar() or 0
+    total_var = (await db.execute(
+        select(func.count(AssetVariant.id)).where(AssetVariant.profile_id == p.id)
+    )).scalar() or 0
+    ready_var = (await db.execute(
+        select(func.count(AssetVariant.id)).where(
+            AssetVariant.profile_id == p.id,
+            AssetVariant.status == VariantStatus.READY,
+        )
+    )).scalar() or 0
+
+    class _Annotated:
+        pass
+
+    a = _Annotated()
+    for col in (
+        "id", "name", "description", "video_codec", "video_profile",
+        "max_width", "max_height", "max_fps", "video_bitrate", "crf",
+        "pixel_format", "color_space", "audio_codec", "audio_bitrate",
+        "builtin", "enabled",
+    ):
+        setattr(a, col, getattr(p, col))
+    a.device_count = dev_count
+    a.total_variants = total_var
+    a.ready_variants = ready_var
+    a.matches_defaults = _matches_defaults(p)
+    return a
+
+
+@router.get("/{profile_id}/row", dependencies=[Depends(require_permission(PROFILES_READ))])
+async def get_profile_row(profile_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    """Return just the rendered <tr> HTML for a single profile.
+
+    Used by the no-reload flows on the profiles page (create, edit,
+    copy, reset, and the cross-replica poller) so the client never has
+    to synthesize row markup in JS. See issue #87.
+    """
+    from fastapi.responses import HTMLResponse
+    from cms.ui import templates
+
+    profile = (await db.execute(
+        select(DeviceProfile).where(DeviceProfile.id == profile_id)
+    )).scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    user = getattr(request.state, "user", None)
+    user_perms = list(user.role.permissions) if user and user.role else []
+
+    annotated = await _annotate_profile(profile, db)
+    macros = templates.env.get_template("_macros.html").module
+    html = macros.profile_row(annotated, user_perms)
+    return HTMLResponse(str(html))
+
+
 @router.put("/{profile_id}", response_model=ProfileOut, dependencies=[Depends(require_permission(PROFILES_WRITE))])
 async def update_profile(
     profile_id: uuid.UUID,
