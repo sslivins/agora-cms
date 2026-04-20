@@ -20,6 +20,10 @@
                     <option value="offline" {% if filter_event_type == 'offline' %}selected{% endif %}>Offline</option>
                     <option value="temp_high" {% if filter_event_type == 'temp_high' %}selected{% endif %}>Temperature High</option>
                     <option value="temp_cleared" {% if filter_event_type == 'temp_cleared' %}selected{% endif %}>Temperature Cleared</option>
+                    <option value="display_disconnected" {% if filter_event_type == 'display_disconnected' %}selected{% endif %}>Display Disconnected</option>
+                    <option value="display_connected" {% if filter_event_type == 'display_connected' %}selected{% endif %}>Display Connected</option>
+                    <option value="error" {% if filter_event_type == 'error' %}selected{% endif %}>Error</option>
+                    <option value="error_cleared" {% if filter_event_type == 'error_cleared' %}selected{% endif %}>Error Cleared</option>
                     <option value="cms_started" {% if filter_event_type == 'cms_started' %}selected{% endif %}>CMS Started</option>
                     <option value="cms_stopped" {% if filter_event_type == 'cms_stopped' %}selected{% endif %}>CMS Stopped</option>
                 </select>
@@ -88,6 +92,14 @@
                     <span class="badge badge-warning">Temp High</span>
                     {% elif event.event_type == 'temp_cleared' %}
                     <span class="badge badge-success">Temp Cleared</span>
+                    {% elif event.event_type == 'display_disconnected' %}
+                    <span class="badge badge-warning">Display Disconnected</span>
+                    {% elif event.event_type == 'display_connected' %}
+                    <span class="badge badge-success">Display Connected</span>
+                    {% elif event.event_type == 'error' %}
+                    <span class="badge badge-offline">Error</span>
+                    {% elif event.event_type == 'error_cleared' %}
+                    <span class="badge badge-success">Error Cleared</span>
                     {% elif event.event_type == 'cms_started' %}
                     <span class="badge badge-online">CMS Started</span>
                     {% elif event.event_type == 'cms_stopped' %}
@@ -107,6 +119,14 @@
                     Grace period: {{ event.details.grace_period }}s
                     {% elif event.event_type == 'online' %}
                     Back online
+                    {% elif event.event_type == 'display_disconnected' %}
+                    HDMI display disconnected
+                    {% elif event.event_type == 'display_connected' %}
+                    HDMI display connected
+                    {% elif event.event_type == 'error' and event.details and event.details.error %}
+                    {{ event.details.error }}
+                    {% elif event.event_type == 'error_cleared' %}
+                    Error cleared
                     {% elif event.event_type in ['cms_started', 'cms_stopped'] and event.details and event.details.version %}
                     Version {{ event.details.version }}
                     {% else %}
@@ -197,6 +217,10 @@
             offline: ["badge-offline", "Offline"],
             temp_high: ["badge-warning", "Temp High"],
             temp_cleared: ["badge-success", "Temp Cleared"],
+            display_disconnected: ["badge-warning", "Display Disconnected"],
+            display_connected: ["badge-success", "Display Connected"],
+            error: ["badge-offline", "Error"],
+            error_cleared: ["badge-success", "Error Cleared"],
             cms_started: ["badge-online", "CMS Started"],
             cms_stopped: ["badge-offline", "CMS Stopped"],
         };
@@ -213,6 +237,10 @@
             return `Grace period: ${d.grace_period}s`;
         }
         if (ev.event_type === "online") return "Back online";
+        if (ev.event_type === "display_disconnected") return "HDMI display disconnected";
+        if (ev.event_type === "display_connected") return "HDMI display connected";
+        if (ev.event_type === "error" && d.error) return d.error;
+        if (ev.event_type === "error_cleared") return "Error cleared";
         if ((ev.event_type === "cms_started" || ev.event_type === "cms_stopped") && d.version) {
             return `Version ${d.version}`;
         }

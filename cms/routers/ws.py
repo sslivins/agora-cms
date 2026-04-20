@@ -455,6 +455,17 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                             event_type=_ev_type.value,
                         ))
                         await db.commit()
+
+                        # Notify alert service so it can manage the bell-notification
+                        # grace period (event log entry written above is unconditional).
+                        alert_service.display_state_changed(
+                            device_id,
+                            device_name=_device_name,
+                            group_id=_group_id,
+                            group_name=_group_name,
+                            status=_device_status,
+                            connected=bool(_new_display),
+                        )
                 except Exception:
                     logger.exception("Failed to log display transition for %s", device_id)
 
