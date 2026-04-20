@@ -299,6 +299,58 @@ def test_03_operator_a_can_read_and_write_in_own_group(
     assert schedule["group_id"] == STATE["group_a_id"]
 
 
+def test_03a_operator_a_creates_own_group_and_sees_it(
+    browser_context: BrowserContext,
+    cms_base_url: str,
+) -> None:
+    """Regression test for the 'Add Group does nothing' bug.
+
+    When a non-admin user creates a group via the /devices UI, the creator
+    must be auto-added to the new group's membership — otherwise the
+    subsequent list_groups call (which scopes to the user's assigned groups
+    for non-admins) hides the group from its own creator, making it look
+    like the create button silently failed.
+
+    Exercises the full flow through Playwright: fill the form, click the
+    button, wait for the page reload, assert the group card is rendered,
+    and double-check via the API that GET /api/devices/groups/ includes it.
+    """
+    op_page = _login_page(browser_context, OPERATOR_A["email"], OPERATOR_A["password"])
+    op_page.goto(f"{cms_base_url.rstrip('/')}/devices")
+    op_page.wait_for_load_state("networkidle", timeout=10_000)
+
+    group_name = f"Op A self-created {uuid.uuid4().hex[:8]}"
+
+    # The Add Group form is only rendered for users with groups:write —
+    # this assertion doubles as a guard that the template gate is correct.
+    name_input = op_page.locator("#group-name")
+    add_btn = op_page.locator("#add-group-btn")
+    assert name_input.is_visible(), "Add Group form not rendered for Operator"
+
+    name_input.fill(group_name)
+    # gateButtonOnInputs enables the button only once the name field has content.
+    op_page.wait_for_function(
+        "() => !document.querySelector('#add-group-btn').disabled",
+        timeout=5_000,
+    )
+    add_btn.click()
+    # createGroup() POSTs then calls location.reload().
+    op_page.wait_for_load_state("networkidle", timeout=10_000)
+
+    # API-level assertion using the now-logged-in browser session: the
+    # filtered list for this operator must include the group they just
+    # created. If the creator was not auto-added to user_groups, the
+    # server-side scoping filter would hide it here and the regression
+    # would fire. This is the precise contract that broke in prod.
+    groups = _api_get(op_page, "/api/devices/groups/")
+    names = [g["name"] for g in groups]
+    assert group_name in names, (
+        f"Operator created group {group_name!r} but it's not in their "
+        f"GET /api/devices/groups/ response — the creator was not auto-added. "
+        f"Visible groups: {names}"
+    )
+
+
 def test_04_operator_a_cannot_touch_group_b(
     browser_context: BrowserContext,
 ) -> None:

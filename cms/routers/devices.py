@@ -670,6 +670,19 @@ async def create_group(data: DeviceGroupCreate, request: Request, db: AsyncSessi
     group = DeviceGroup(name=data.name, description=data.description, default_asset_id=data.default_asset_id)
     db.add(group)
     await db.flush()
+
+    # Auto-add non-admin creator to the new group. Without this, the list_groups
+    # endpoint (which filters by user_groups for non-admins) would hide the
+    # group from its own creator — it looks to the user as if creation failed.
+    # Admins are view_all and don't need an explicit membership row.
+    user = getattr(request.state, "user", None)
+    if user is not None:
+        user_group_ids = await get_user_group_ids(user, db)
+        if user_group_ids is not None:  # None => admin / view_all, skip
+            from cms.models.user import UserGroup
+            db.add(UserGroup(user_id=user.id, group_id=group.id))
+            await db.flush()
+
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="group.create", resource_type="group",
