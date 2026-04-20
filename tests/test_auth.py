@@ -88,6 +88,27 @@ class TestAuth:
         )).scalars().all()
         assert rows == []
 
+    async def test_login_failure_captures_x_forwarded_for(self, unauthed_client, db_session):
+        """Behind a proxy (App Gateway / Front Door / nginx) the real client IP
+        arrives in X-Forwarded-For. Audit entry must record that, not the
+        proxy hop."""
+        from sqlalchemy import select
+        from cms.models.audit_log import AuditLog
+
+        real_client_ip = "203.0.113.42"
+        proxy_hop_ip = "10.0.0.1"
+        await unauthed_client.post(
+            "/login",
+            data={"username": "admin", "password": "wrong"},
+            headers={"X-Forwarded-For": f"{real_client_ip}, {proxy_hop_ip}"},
+            follow_redirects=False,
+        )
+
+        row = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "auth.login_failed")
+        )).scalar_one()
+        assert row.ip_address == real_client_ip
+
     async def test_protected_route_without_auth(self, unauthed_client):
         resp = await unauthed_client.get("/api/devices")
         assert resp.status_code in (401, 303)

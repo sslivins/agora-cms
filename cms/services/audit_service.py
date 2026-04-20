@@ -157,8 +157,19 @@ async def audit_log(
     is auto-generated from ``action`` + ``details`` via :func:`build_description`.
     """
     ip = None
-    if request and request.client:
-        ip = request.client.host
+    if request:
+        # Prefer the client-facing IP from X-Forwarded-For (first hop), falling
+        # back to request.client.host. Uvicorn is started with --proxy-headers
+        # --forwarded-allow-ips=* so request.client.host is already rewritten
+        # from the Forwarded / X-Forwarded-For header when a trusted upstream
+        # proxy sets it; this fallback also covers deployments that put an
+        # extra untrusted hop between the proxy and the app (e.g. a service
+        # mesh) where the original XFF entry is still intact.
+        xff = request.headers.get("x-forwarded-for") if hasattr(request, "headers") else None
+        if xff:
+            ip = xff.split(",")[0].strip() or None
+        if not ip and request.client:
+            ip = request.client.host
 
     if details is None:
         details = {}
