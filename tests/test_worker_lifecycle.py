@@ -238,3 +238,108 @@ async def test_lease_lost_path_is_silent(db_engine, tmp_path):
     assert not queue_client.delete_message.called, (
         "lease-lost path must not delete the queue message; replacement worker owns it"
     )
+
+
+# ── Listen-mode resilience ──
+#
+# Regression coverage for the v1.37.19 incident: a transient DB error inside
+# ``process_captures`` killed the worker process.  With no compose ``restart``
+# policy, the container stayed dead and every queued capture/transcode sat
+# PENDING forever.  ``_listen_mode_robust`` now wraps each iteration in
+# try/except so a single bad iteration logs and backs off instead of exiting.
+
+
+@pytest.mark.asyncio
+async def test_listen_mode_survives_transient_db_error(monkeypatch, caplog):
+    """A DBAPIError from process_captures must NOT exit the listen loop."""
+    import logging
+
+    import worker.__main__ as wmain
+
+    # Build a minimal settings stub — _listen_mode_robust only reads three
+    # fields from it, and we monkeypatch everything else away.
+    settings = MagicMock()
+    settings.database_url = "postgresql+asyncpg://stub/stub"
+    settings.asset_storage_path = "/tmp/agora-test-assets"
+    settings.poll_interval = 0  # immediately fall through the wait
+
+    # Track how many times each work function is called so we can prove the
+    # loop kept iterating after the failure.
+    capture_calls = 0
+    pending_calls = 0
+
+    async def _failing_captures(_factory, _dir):
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 2:
+            # Iteration 1 = startup pass (must succeed for crash recovery).
+            # Iteration 2 = first loop iteration — inject the failure.
+            from sqlalchemy.exc import InterfaceError
+            raise InterfaceError("stub", {}, Exception("connection is closed"))
+        return 0
+
+    async def _ok_pending(_factory, _dir):
+        nonlocal pending_calls
+        pending_calls += 1
+        # After we've exercised the loop a few times, request shutdown so
+        # the test exits deterministically.
+        if pending_calls >= 3:
+            wmain_shutdown_event.set()
+        return 0
+
+    # Capture the shutdown Event the function creates so we can flip it from
+    # _ok_pending without reaching into _listen_mode_robust internals.
+    wmain_shutdown_event = asyncio.Event()
+    real_event_cls = asyncio.Event
+
+    def _patched_event():
+        # Return our controllable event the FIRST time (the shutdown event),
+        # then fall back to a normal Event for work_available.
+        if not _patched_event.taken:
+            _patched_event.taken = True
+            return wmain_shutdown_event
+        return real_event_cls()
+    _patched_event.taken = False
+
+    fake_listener_conn = AsyncMock()
+    fake_listener_conn.add_listener = AsyncMock()
+    fake_listener_conn.remove_listener = AsyncMock()
+    fake_listener_conn.close = AsyncMock()
+
+    async def _fake_asyncpg_connect(_url):
+        return fake_listener_conn
+
+    fake_asyncpg = MagicMock()
+    fake_asyncpg.connect = _fake_asyncpg_connect
+
+    # Windows test runners don't support loop.add_signal_handler — patch it
+    # to a no-op so the test isn't platform-gated (production worker only
+    # runs on Linux).
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda *_a, **_k: None)
+
+    with patch.dict("sys.modules", {"asyncpg": fake_asyncpg}), \
+         patch.object(wmain, "get_session_factory", return_value=lambda: None), \
+         patch.object(wmain, "recover_interrupted", new=AsyncMock()), \
+         patch.object(wmain, "process_captures", new=_failing_captures), \
+         patch.object(wmain, "process_pending", new=_ok_pending), \
+         patch.object(asyncio, "Event", _patched_event):
+        # Bound the test so a regression (loop dies) doesn't hang forever.
+        with caplog.at_level(logging.ERROR, logger="agora"):
+            await asyncio.wait_for(wmain._listen_mode_robust(settings), timeout=10.0)
+
+    # Loop body must have run at least three times after the startup pass —
+    # iteration 2 raised, but the wrapper kept us going into iteration 3+
+    # which finally tripped the shutdown Event.
+    assert capture_calls >= 3, (
+        f"expected ≥3 process_captures calls (startup + ≥2 loop iterations); "
+        f"got {capture_calls}.  The listen loop likely died on the injected "
+        f"InterfaceError — regression of the v1.37.19 incident."
+    )
+    assert pending_calls >= 3
+    # And we must have logged the failure (defence-in-depth: silent retries
+    # would mask real outages).
+    assert any(
+        "iteration failed" in rec.getMessage().lower()
+        for rec in caplog.records
+    ), "transient failure was not logged"
