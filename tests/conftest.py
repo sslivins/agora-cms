@@ -12,6 +12,75 @@ from sqlalchemy.pool import NullPool
 from cms.database import Base
 
 
+# ── pytest-xdist per-worker database isolation ────────────────────────
+#
+# When running under `pytest -n N`, each worker process runs tests in
+# parallel against the same Postgres service. The per-test db_engine
+# fixture drops and recreates all tables, so multiple workers sharing a
+# single database would clobber each other mid-transaction.
+#
+# To make workers independent, we give each worker its own Postgres
+# database named `<orig_db>_<worker_id>` (e.g. agora_test_gw0). The
+# database is created on worker startup and dropped on teardown. The
+# controller process (no PYTEST_XDIST_WORKER set, or "master") keeps
+# the original database so single-process runs are unchanged.
+
+
+def _ensure_worker_database(base_url: str, worker_id: str) -> str:
+    """Create a per-worker Postgres database and return its URL.
+
+    Uses psycopg2 (sync) for the one-off CREATE DATABASE because
+    asyncpg doesn't allow DDL outside of a transaction block.
+    """
+    import re
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(base_url.replace("+asyncpg", ""))
+    orig_db = parsed.path.lstrip("/")
+    worker_db = f"{orig_db}_{worker_id}"
+
+    # Connect to the default "postgres" maintenance DB to run CREATE DATABASE.
+    import psycopg2
+    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+    admin_dsn = urlunparse(parsed._replace(path="/postgres"))
+    conn = psycopg2.connect(admin_dsn)
+    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT 1 FROM pg_database WHERE datname = %s", (worker_db,)
+            )
+            if not cur.fetchone():
+                # Identifier is constructed from orig_db (which is trusted, it
+                # comes from our own env var) + worker_id (pytest-xdist format
+                # "gw<int>"). Still, sanity-check the shape.
+                if not re.match(r"^[A-Za-z0-9_]+$", worker_db):
+                    raise RuntimeError(f"refusing to create suspicious DB name: {worker_db!r}")
+                cur.execute(f'CREATE DATABASE "{worker_db}"')
+    finally:
+        conn.close()
+
+    worker_url = urlunparse(
+        urlparse(base_url)._replace(path=f"/{worker_db}")
+    )
+    return worker_url
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """On xdist worker startup, switch AGORA_CMS_DATABASE_URL to a per-worker DB."""
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+    # Controller process has no worker id; also skip if xdist isn't in use or
+    # we're not using Postgres (e.g. local SQLite dev run).
+    if not worker_id or worker_id == "master":
+        return
+    base_url = os.environ.get("AGORA_CMS_DATABASE_URL", "")
+    if not base_url or "postgresql" not in base_url:
+        return
+    worker_url = _ensure_worker_database(base_url, worker_id)
+    os.environ["AGORA_CMS_DATABASE_URL"] = worker_url
+
+
 # ── nightly opt-in (registered here so `pytest tests/` doesn't try to
 # collect tests/nightly/ — whose modules import playwright at module
 # scope — unless the user explicitly opts in). ──
