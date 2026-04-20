@@ -983,7 +983,24 @@ tr.highlight-new td {
 .btn-add-group { background: none; border: 2px dashed var(--text-muted); color: var(--text-muted); cursor: pointer; border-radius: 0.6rem; width: 1.6rem; height: 1.6rem; font-size: 1rem; line-height: 1; display: inline-flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
 .btn-add-group:hover { border-color: var(--accent); color: var(--accent); }
 .group-picker-wrap { position: relative; display: inline-flex; }
-.group-popup { display: none; position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 20; background: var(--surface-alt); border: 1px solid var(--primary); border-radius: 0.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.4); flex-direction: column; min-width: 10rem; max-height: 12rem; overflow-y: auto; padding: 0.25rem 0; }
+.group-popup[popover] {
+    /* Reset UA popover defaults (margin:auto + inset:0 center the element). */
+    position: fixed;
+    margin: 0;
+    inset: auto;
+    /* Visual styling — matches old .group-popup. */
+    background: var(--surface-alt);
+    border: 1px solid var(--primary);
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    display: none;
+    flex-direction: column;
+    min-width: 10rem;
+    max-height: 12rem;
+    overflow-y: auto;
+    padding: 0.25rem 0;
+}
+.group-popup[popover]:popover-open { display: flex; }
 .group-popup-item { background: none; border: none; color: var(--text); cursor: pointer; padding: 0.4rem 0.75rem; text-align: left; font-size: 0.85rem; white-space: nowrap; }
 .group-popup-item:hover { background: var(--primary); color: #fff; }
 .detail-toolbar { padding: 0.75rem 0 0; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.75rem; }

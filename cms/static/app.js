@@ -1230,28 +1230,20 @@ function removeStreamGroup(badge) {
 }
 
 // ── Group popup (shared for upload + detail row) ──
+// Native popover API — browser handles open/close/light-dismiss/Escape.
+// popover="auto" auto-closes any sibling popover when a new one opens.
 function openGroupPopup(popupId) {
-    closeAllGroupPopups();
     const popup = document.getElementById(popupId);
     if (!popup) return;
-    popup.style.display = "flex";
-    // Close when clicking outside (deferred to next frame to avoid catching the opening click)
-    requestAnimationFrame(() => {
-        function onClickOutside(e) {
-            const wrap = popup.closest(".group-picker-wrap");
-            if (wrap && wrap.contains(e.target)) return;
-            if (popup.contains(e.target)) return;
-            popup.style.display = "none";
-            document.removeEventListener("click", onClickOutside, true);
-            document.removeEventListener("mousedown", onClickOutside, true);
-        }
-        document.addEventListener("click", onClickOutside, true);
-        document.addEventListener("mousedown", onClickOutside, true);
-    });
+    if (popup.matches(":popover-open")) {
+        popup.hidePopover();
+    } else {
+        popup.showPopover();
+    }
 }
 
 function closeAllGroupPopups() {
-    document.querySelectorAll(".group-popup").forEach(p => p.style.display = "none");
+    document.querySelectorAll(".group-popup:popover-open").forEach(p => p.hidePopover());
 }
 
 // Disable the + button when no visible popup items remain; re-enable otherwise
@@ -1792,48 +1784,71 @@ window.addEventListener("load", () => {
 window.addEventListener("pageshow", _rerunAllGates);
 
 
-// ── Kebab (⋮) action menu — #249 ──────────────────────────────────────
-// Uses the native HTML popover API — open/close/light-dismiss/Escape are
-// all handled by the browser. We only need to position the popover below
-// (or above, if it would overflow) its invoker button, since we use
-// popover="auto" with position:fixed but without CSS anchor-positioning
-// (still uneven cross-browser support as of early 2026).
-
-function positionKebab(menu) {
-    const btn = document.querySelector(`[popovertarget="${menu.id}"]`);
+// ── Generic top-layer popover positioning ───────────────────────────────
+// Native [popover] elements render in the top-layer with UA defaults
+// (margin:auto, inset:0) that center them on the viewport. We override
+// to position:fixed; inset:auto and set top/left here, since CSS
+// anchor-positioning still has uneven cross-browser support (early 2026).
+//
+// opts.placement: "below" (default) or "above"
+// opts.align:     "right" (default — right-edge to right-edge of anchor)
+//                 or "left" (left-edge to left-edge of anchor)
+function positionPopover(popover, opts = {}) {
+    const btn = document.querySelector(`[popovertarget="${popover.id}"]`);
     if (!btn) return;
+    const placement = opts.placement || "below";
+    const align = opts.align || "right";
     const b = btn.getBoundingClientRect();
-    // Clear inline coords so the menu's natural size is measured.
-    menu.style.top = "";
-    menu.style.left = "";
-    const m = menu.getBoundingClientRect();
+    // Clear inline coords so the popover's natural size is measured.
+    popover.style.top = "";
+    popover.style.left = "";
+    const m = popover.getBoundingClientRect();
     const gap = 4;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
-    // Vertical: prefer below the button; flip above if it would overflow.
-    let top = b.bottom + gap;
-    if (top + m.height > vh - 8 && b.top - gap - m.height >= 8) {
+    // Vertical: honor placement, but flip if it would overflow the viewport.
+    let top;
+    if (placement === "above") {
         top = b.top - gap - m.height;
+        if (top < 8 && b.bottom + gap + m.height <= vh - 8) {
+            top = b.bottom + gap;
+        }
+    } else {
+        top = b.bottom + gap;
+        if (top + m.height > vh - 8 && b.top - gap - m.height >= 8) {
+            top = b.top - gap - m.height;
+        }
     }
 
-    // Horizontal: right-align to the button by default, clamped to viewport.
-    let left = b.right - m.width;
+    // Horizontal alignment, clamped to viewport.
+    let left = align === "left" ? b.left : b.right - m.width;
     if (left < 8) left = 8;
     if (left + m.width > vw - 8) left = vw - 8 - m.width;
 
-    menu.style.top = `${top}px`;
-    menu.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.left = `${left}px`;
 }
+
+// ── Kebab (⋮) action menu — #249 ──────────────────────────────────────
+// Uses the native HTML popover API — open/close/light-dismiss/Escape are
+// all handled by the browser. We only need to position the popover below
+// (or above, if it would overflow) its invoker button.
+
+function positionKebab(menu) { positionPopover(menu, { placement: "below", align: "right" }); }
+function positionGroupPopup(p) { positionPopover(p, { placement: "above", align: "left" }); }
 
 document.addEventListener("toggle", (e) => {
     const el = e.target;
     if (!(el instanceof HTMLElement)) return;
-    if (!el.classList.contains("kebab-menu")) return;
+    const isKebab = el.classList.contains("kebab-menu");
+    const isGroupPopup = el.classList.contains("group-popup");
+    if (!isKebab && !isGroupPopup) return;
     const btn = document.querySelector(`[popovertarget="${el.id}"]`);
     if (e.newState === "open") {
         if (btn) btn.setAttribute("aria-expanded", "true");
-        positionKebab(el);
+        if (isKebab) positionKebab(el);
+        else positionGroupPopup(el);
     } else if (btn) {
         btn.setAttribute("aria-expanded", "false");
     }
@@ -1849,10 +1864,10 @@ document.addEventListener("mousedown", (e) => {
     }
 }, true);
 
-// Re-position any open kebab on viewport changes so it doesn't drift.
-window.addEventListener("scroll", () => {
+// Re-position any open popover on viewport changes so it doesn't drift.
+function _repositionAllOpenPopovers() {
     document.querySelectorAll(".kebab-menu:popover-open").forEach(positionKebab);
-}, true);
-window.addEventListener("resize", () => {
-    document.querySelectorAll(".kebab-menu:popover-open").forEach(positionKebab);
-});
+    document.querySelectorAll(".group-popup:popover-open").forEach(positionGroupPopup);
+}
+window.addEventListener("scroll", _repositionAllOpenPopovers, true);
+window.addEventListener("resize", _repositionAllOpenPopovers);
