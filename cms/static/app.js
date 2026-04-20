@@ -2241,6 +2241,21 @@ document.addEventListener("mousedown", (e) => {
     }
 }, true);
 
+// Close the kebab popover as soon as a menuitem is activated. Without this
+// the popover lingers open after the click and its buttons can intercept
+// pointer events on any modal/overlay opened by the action handler.
+// Bubble phase — runs after the menuitem's own onclick handler.
+document.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!(t instanceof Element)) return;
+    const item = t.closest(".kebab-menu [role='menuitem']");
+    if (!item) return;
+    const menu = item.closest(".kebab-menu");
+    if (menu && menu.matches(":popover-open")) {
+        try { menu.hidePopover(); } catch (err) { /* ignore unsupported */ }
+    }
+});
+
 // Re-position any open popover on viewport changes so it doesn't drift.
 function _repositionAllOpenPopovers() {
     document.querySelectorAll(".kebab-menu:popover-open").forEach(positionKebab);
