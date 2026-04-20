@@ -327,10 +327,134 @@ function editDeviceName(el) {
     input.addEventListener('click', e => e.stopPropagation());
 }
 
+// Find the compact row for a device (the one that lives inside a group/ungrouped
+// table — NOT the main "All Devices" row). Returns null if not found.
+function _findCompactRow(deviceId) {
+    const rows = document.querySelectorAll(
+        `tr.device-row-compact[data-device-id="${deviceId}"]`
+    );
+    return rows[0] || null;
+}
+
+// Determine which group the compact row currently lives under.
+// Returns the group id string, or "ungrouped".
+function _compactRowGroupKey(row) {
+    const tbody = row.closest('tbody[data-group-tbody]');
+    return tbody ? tbody.getAttribute('data-group-tbody') : null;
+}
+
+// Update the device-count badge for a group (or ungrouped) by `delta`.
+function _bumpGroupCount(groupKey, delta) {
+    if (groupKey === 'ungrouped' || !groupKey) return;
+    const badge = document.querySelector(`[data-group-count="${groupKey}"]`);
+    if (!badge) return;
+    const m = badge.textContent.match(/(\d+)/);
+    const next = Math.max(0, (m ? parseInt(m[1], 10) : 0) + delta);
+    badge.textContent = `${next} device${next === 1 ? '' : 's'}`;
+}
+
+// Show the "no devices in this group" placeholder when its tbody is empty,
+// hide it otherwise. No-op for the ungrouped section.
+function _refreshGroupEmptyState(groupKey) {
+    if (!groupKey || groupKey === 'ungrouped') return;
+    const tbody = document.querySelector(`tbody[data-group-tbody="${groupKey}"]`);
+    const table = document.querySelector(`table[data-group-table="${groupKey}"]`);
+    const empty = document.querySelector(`[data-group-empty="${groupKey}"]`);
+    if (!tbody || !table || !empty) return;
+    const isEmpty = tbody.children.length === 0;
+    table.style.display = isEmpty ? 'none' : '';
+    empty.style.display = isEmpty ? '' : 'none';
+}
+
+// Show/hide the entire ungrouped section based on whether it has rows.
+function _refreshUngroupedSection() {
+    const section = document.getElementById('ungrouped-section');
+    const tbody = document.querySelector('tbody[data-group-tbody="ungrouped"]');
+    if (!section || !tbody) return;
+    section.style.display = tbody.children.length === 0 ? 'none' : '';
+}
+
+// Sync every inline group <select> for this device (both the main "All Devices"
+// row and the compact row) so their values match the new group after a change
+// originating from any of them or from drag-and-drop.
+function _syncDeviceGroupSelects(deviceId, groupId) {
+    document.querySelectorAll(
+        `tr.device-row[data-device-id="${deviceId}"] select[data-device-group-select]`
+    ).forEach(sel => { sel.value = groupId || ''; });
+}
+
+// Move a device's compact row to its new group's tbody (or ungrouped).
+// Returns true if the row was moved client-side; false if a full reload is
+// required (e.g., row not present in any compact table because it's a Pending
+// device that only appears in the main "All Devices" table).
+function moveDeviceRowInDom(deviceId, newGroupId) {
+    const row = _findCompactRow(deviceId);
+    if (!row) return false;
+
+    const fromKey = _compactRowGroupKey(row);
+    const toKey = newGroupId ? String(newGroupId) : 'ungrouped';
+    if (fromKey === toKey) return true;  // no-op move
+
+    const destTbody = document.querySelector(`tbody[data-group-tbody="${toKey}"]`);
+    if (!destTbody) return false;  // destination missing, fall back to reload
+
+    // Toggle draggable affordance — only ungrouped rows are draggable.
+    if (toKey === 'ungrouped') {
+        row.classList.add('draggable-device');
+        row.setAttribute('draggable', 'true');
+        row.setAttribute('ondragstart', `dragDevice(event, '${deviceId}')`);
+    } else {
+        row.classList.remove('draggable-device');
+        row.removeAttribute('draggable');
+        row.removeAttribute('ondragstart');
+    }
+
+    // Insert sorted by visible name to match server-side ordering.
+    const newName = (row.querySelector('td:nth-child(1)')?.textContent || '').trim().toLowerCase();
+    const siblings = Array.from(destTbody.children);
+    const before = siblings.find(sib => {
+        const n = (sib.querySelector('td:nth-child(1)')?.textContent || '').trim().toLowerCase();
+        return n > newName;
+    });
+    if (before) destTbody.insertBefore(row, before);
+    else destTbody.appendChild(row);
+
+    // The "Remove" button (compact row, last cell) is only shown when the
+    // device belongs to a group. Toggle it based on the new destination.
+    const actionsCell = row.querySelector('td.actions');
+    if (actionsCell) {
+        if (toKey === 'ungrouped') {
+            actionsCell.innerHTML = '';
+        } else if (!actionsCell.querySelector('button')) {
+            actionsCell.innerHTML =
+                '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" ' +
+                `onclick="assignGroup('${deviceId}', '')">Remove</button>` +
+                '<span class="tooltip">Remove this device from the group</span></span>';
+        }
+    }
+
+    _bumpGroupCount(fromKey, -1);
+    _bumpGroupCount(toKey, +1);
+    _refreshGroupEmptyState(fromKey);
+    _refreshGroupEmptyState(toKey);
+    _refreshUngroupedSection();
+    _syncDeviceGroupSelects(deviceId, newGroupId);
+    return true;
+}
+
 async function assignGroup(deviceId, groupId) {
     const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { group_id: groupId || null });
-    if (resp && resp.ok) showToast("Group updated");
-    else showToast("Group update failed", true);
+    if (!resp || !resp.ok) {
+        showToast("Group update failed", true);
+        return;
+    }
+    showToast("Group updated");
+    if (!moveDeviceRowInDom(deviceId, groupId)) {
+        // Could not update DOM in place (e.g., destination tbody missing for a
+        // freshly-created group); fall back to a refresh so the user still sees
+        // the correct state.
+        location.reload();
+    }
 }
 
 async function setDefaultAsset(deviceId, assetId, selectEl) {
