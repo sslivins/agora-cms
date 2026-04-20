@@ -1086,7 +1086,16 @@ async function editAssetName(el) {
 async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        // Remove both the main asset row and its (possibly present) expanded
+        // detail row. Falling back to a reload is unnecessary: the row's own
+        // identity is enough to clean up the DOM without dropping any other
+        // state the user may have (scroll position, other expanded rows).
+        const row = document.querySelector(`tr.asset-row[data-asset-id="${assetId}"]`);
+        const detail = document.querySelector(`tr.asset-detail[data-detail-for="${assetId}"]`);
+        if (row) row.remove();
+        if (detail) detail.remove();
+    }
     else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Delete failed", true);
@@ -1125,7 +1134,9 @@ async function recaptureStream(assetId, displayName) {
     const resp = await apiCall("POST", `/api/assets/${assetId}/recapture`);
     if (resp && resp.ok) {
         showToast("Re-capture started — variants will be re-transcoded.");
-        location.reload();
+        // No reload needed — the assets page polls /api/assets/status every
+        // ~5s and updateLiveAssets() will flip variant badges to "Transcoding"
+        // and tick the progress meter as the recapture runs.
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(extractErrorMsg(err), true);
