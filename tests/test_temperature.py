@@ -280,12 +280,16 @@ class TestWebSocketStatusTemperature:
                     "cpu_temp_c": 73.2,
                 })
 
-                # Give the server a moment to process
+                # Poll device_manager until the temperature lands (CI can be slow).
                 import time
-                time.sleep(0.2)
+                deadline = time.time() + 5.0
+                states: dict = {}
+                while time.time() < deadline:
+                    states = {s["device_id"]: s for s in device_manager.get_all_states()}
+                    if states.get("ws-temp-001", {}).get("cpu_temp_c") == 73.2:
+                        break
+                    time.sleep(0.05)
 
-                # Verify device_manager tracked the temperature
-                states = {s["device_id"]: s for s in device_manager.get_all_states()}
                 assert "ws-temp-001" in states
                 assert states["ws-temp-001"]["cpu_temp_c"] == 73.2
 
@@ -333,9 +337,17 @@ class TestWebSocketStatusTemperature:
                     "storage_used_mb": 50,
                 })
 
+                # Poll device_manager until the device status lands. Absence of
+                # cpu_temp_c means it should remain None, so wait for the mode
+                # update as proof the status was processed.
                 import time
-                time.sleep(0.2)
+                deadline = time.time() + 5.0
+                states: dict = {}
+                while time.time() < deadline:
+                    states = {s["device_id"]: s for s in device_manager.get_all_states()}
+                    if states.get("ws-temp-002", {}).get("mode") == "splash":
+                        break
+                    time.sleep(0.05)
 
-                states = {s["device_id"]: s for s in device_manager.get_all_states()}
                 assert "ws-temp-002" in states
                 assert states["ws-temp-002"]["cpu_temp_c"] is None
