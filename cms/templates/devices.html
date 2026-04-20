@@ -315,10 +315,14 @@
 
 {# ── All Devices ── #}
 <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h2>Devices</h2>
+    <div style="display: flex; gap: 0.25rem; align-items: center;">
+        <h2 style="margin: 0;">Devices</h2>
         {% if 'devices:manage' in user_perms %}
-        <span class="has-tooltip"><button class="btn btn-sm" onclick="checkForUpdates()" id="check-updates-btn">Check for Updates</button><span class="tooltip">Updates are also checked automatically every hour</span></span>
+        <span onclick="event.stopPropagation()">
+            {% call macros.kebab_menu() %}
+                <button type="button" role="menuitem" onclick="checkForUpdates(this)" id="check-updates-btn" title="Fetch the latest available device software version. Runs automatically every hour.">Check for updates</button>
+            {% endcall %}
+        </span>
         {% endif %}
     </div>
     <table>
@@ -712,10 +716,12 @@ window._adoptionProfiles = [
     }
 })();
 
-async function checkForUpdates() {
-    const btn = document.getElementById('check-updates-btn');
-    btn.disabled = true;
-    btn.textContent = 'Checking...';
+async function checkForUpdates(menuItem) {
+    // Invoked from a kebab menu item. Dismiss the popover explicitly since
+    // this action doesn't open a confirm (which would otherwise close it).
+    if (typeof _closeOpenPopovers === 'function') _closeOpenPopovers();
+    if (menuItem) menuItem.disabled = true;
+    showToast('Checking for updates…');
     try {
         const resp = await fetch('/api/devices/check-updates', { method: 'POST' });
         if (resp.ok) {
@@ -730,8 +736,7 @@ async function checkForUpdates() {
     } catch (e) {
         showToast('Failed to check for updates', true);
     } finally {
-        btn.disabled = false;
-        btn.textContent = 'Check for Updates';
+        if (menuItem) menuItem.disabled = false;
     }
 }
 

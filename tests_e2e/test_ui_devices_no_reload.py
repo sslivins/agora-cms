@@ -185,14 +185,19 @@ class TestDevicesNoReload:
         """checkForUpdates() should refresh inline via the poller hook."""
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
-        btn = page.locator("#check-updates-btn")
-        if btn.count() == 0:
-            pytest.skip("Check for Updates button not exposed to this user")
+        menu_item = page.locator("#check-updates-btn")
+        if menu_item.count() == 0:
+            pytest.skip("Check for updates menu item not exposed to this user")
 
         sentinel = _install_sentinel(page)
         original_url = page.url
 
-        btn.click()
-        # Wait for the button to re-enable after the request completes.
-        expect(btn).to_have_text("Check for Updates", timeout=10000)
+        # The action lives inside a kebab popover on the Devices card header.
+        # Open it first, then invoke the menu item.
+        page.locator(".card .btn-kebab").first.click()
+        page.locator(".kebab-menu:popover-open").get_by_role(
+            "menuitem", name="Check for updates"
+        ).click()
+        # Let the request settle — we toast on success and re-enable the item.
+        page.wait_for_timeout(500)
         _assert_no_reload(page, original_url, sentinel)
