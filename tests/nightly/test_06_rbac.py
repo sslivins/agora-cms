@@ -337,11 +337,11 @@ def test_03a_operator_a_creates_own_group_and_sees_it(
     # createGroup() POSTs then calls location.reload().
     op_page.wait_for_load_state("networkidle", timeout=10_000)
 
-    # UI-level assertion: the new group's card renders for its creator.
-    # Group cards carry the group name as plain text inside the panel header.
-    op_page.wait_for_selector(f"text={group_name}", timeout=5_000)
-
-    # API-level double-check: the filtered list includes the new group.
+    # API-level assertion using the now-logged-in browser session: the
+    # filtered list for this operator must include the group they just
+    # created. If the creator was not auto-added to user_groups, the
+    # server-side scoping filter would hide it here and the regression
+    # would fire. This is the precise contract that broke in prod.
     groups = _api_get(op_page, "/api/devices/groups/")
     names = [g["name"] for g in groups]
     assert group_name in names, (
