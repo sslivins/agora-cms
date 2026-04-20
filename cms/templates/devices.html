@@ -34,7 +34,7 @@
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
+        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for g in groups %}
             <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
@@ -242,8 +242,11 @@
 {% endmacro %}
 
 {# ── Compact device row for grouped/ungrouped tables ── #}
+{# Note: the row's draggable affordance is owned by JS (not the macro) so a
+   row can move between grouped (not draggable) and ungrouped (draggable)
+   sections without re-rendering. assignGroup() / dropDevice() handle this. #}
 {% macro device_row_compact(d, groups, draggable=false) %}
-<tr class="device-row{% if draggable %} draggable-device{% endif %}" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
+<tr class="device-row device-row-compact{% if draggable %} draggable-device{% endif %}" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td>
         {% if 'devices:write' in user_perms %}
         <span class="editable-name" onclick="event.stopPropagation(); editDeviceName(this)" data-device-id="{{ d.id }}" data-fallback="{{ d.id }}">{{ d.name or d.id }}</span>
@@ -268,7 +271,7 @@
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
+        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for g in groups %}
             <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
@@ -348,7 +351,7 @@
             <strong>{{ g.name }}</strong>
             <span class="text-muted">— {{ g.description or 'No description' }}</span>
             {% endif %}
-            <span class="badge badge-count">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
+            <span class="badge badge-count" data-group-count="{{ g.id }}">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
             <span class="group-actions" onclick="event.stopPropagation()">
                 <span class="has-tooltip inline-label">Group Splash Screen<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
                 {% if 'groups:write' in user_perms %}
@@ -373,18 +376,15 @@
             </span>
         </div>
         <div class="group-body" style="display: none;">
-            {% if g.devices %}
-            <table>
+            <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
                 <thead>{{ th_row_compact }}</thead>
-                <tbody>
+                <tbody data-group-tbody="{{ g.id }}">
                     {% for d in g.devices | sort(attribute='name') %}
                     {{ device_row_compact(d, groups) }}
                     {% endfor %}
                 </tbody>
             </table>
-            {% else %}
-            <p class="text-muted empty-state">No devices in this group. Drag a device here to add it.</p>
-            {% endif %}
+            <p class="text-muted empty-state" data-group-empty="{{ g.id }}"{% if g.devices %} style="display: none;"{% endif %}>No devices in this group. Drag a device here to add it.</p>
         </div>
     </div>
     {% else %}
@@ -404,20 +404,20 @@
 </div>
 
 {# ── Ungrouped Devices ── #}
-{% if ungrouped %}
-<div class="card">
+{# Always rendered (even when empty) so JS can drop rows here without a full
+   page refresh after a device is removed from its group. See issue #146. #}
+<div class="card" id="ungrouped-section"{% if not ungrouped %} style="display: none;"{% endif %}>
     <h2>Ungrouped Devices</h2>
     <p class="text-muted" style="margin-bottom: 0.75rem;">Drag a device onto a group above to assign it.</p>
     <table>
         <thead>{{ th_row_compact }}</thead>
-        <tbody>
+        <tbody data-group-tbody="ungrouped">
             {% for d in ungrouped %}
             {{ device_row_compact(d, groups, draggable=true) }}
             {% endfor %}
         </tbody>
     </table>
 </div>
-{% endif %}
 {% endif %}{# end groups:read #}
 {% endblock %}
 
@@ -441,11 +441,13 @@ async function dropDevice(e, groupId) {
     const deviceId = e.dataTransfer.getData('text/plain');
     if (!deviceId) return;
     const resp = await apiCall('PATCH', `/api/devices/${deviceId}`, { group_id: groupId });
-    if (resp && resp.ok) {
-        showToast('Device added to group');
-        location.reload();
-    } else {
+    if (!resp || !resp.ok) {
         showToast('Failed to assign device to group', true);
+        return;
+    }
+    showToast('Device added to group');
+    if (!moveDeviceRowInDom(deviceId, groupId)) {
+        location.reload();
     }
 }
 
