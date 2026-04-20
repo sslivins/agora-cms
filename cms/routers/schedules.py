@@ -271,6 +271,34 @@ async def get_schedule(schedule_id: uuid.UUID, request: Request, db: AsyncSessio
     return _schedule_to_out(schedule)
 
 
+@router.get("/{schedule_id}/row", dependencies=[Depends(require_permission(SCHEDULES_READ))])
+async def get_schedule_row(schedule_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    """Return just the rendered <tr> HTML for a single schedule.
+
+    Used by the no-reload flows on the schedules page (create, edit, and
+    the cross-replica poller) so the client never has to synthesize row
+    markup in JS. See issue #87 and the long-term plan captured on it —
+    we want a single Jinja source of truth for every row template.
+    """
+    from fastapi.responses import HTMLResponse
+    from cms.ui import templates
+
+    result = await db.execute(
+        select(Schedule).options(*_eager_options()).where(Schedule.id == schedule_id)
+    )
+    schedule = result.scalar_one_or_none()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await _verify_schedule_access(schedule, request, db)
+
+    user = getattr(request.state, "user", None)
+    user_perms = list(user.role.permissions) if user and user.role else []
+
+    macros = templates.env.get_template("_macros.html").module
+    html = macros.active_schedule_row(schedule, user_perms)
+    return HTMLResponse(str(html))
+
+
 @router.patch("/{schedule_id}", response_model=ScheduleOut, dependencies=[Depends(require_permission(SCHEDULES_WRITE))])
 async def update_schedule(
     schedule_id: uuid.UUID,

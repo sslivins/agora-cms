@@ -298,6 +298,40 @@ def page(context: BrowserContext) -> Page:
 
 
 @pytest.fixture
+def second_context(browser_instance: Browser, base_url: str, e2e_server) -> BrowserContext:
+    """Provide a second, independently logged-in BrowserContext.
+
+    Used by two-session tests that verify changes made in one session
+    propagate to another via the 5s poller (cross-replica visibility).
+    Behaviorally identical to a second browser instance for our purposes:
+    separate cookie jar, separate JS execution context, separate poller
+    timers — the page can't tell which process it's in.
+    """
+    ctx = browser_instance.new_context(
+        base_url=base_url,
+        ignore_https_errors=True,
+        viewport={"width": 1280, "height": 1024},
+    )
+    page = ctx.new_page()
+    page.goto("/login")
+    page.fill('input[name="email"]', "admin")
+    page.fill('input[name="password"]', "testpass")
+    page.click('button[type="submit"]')
+    page.wait_for_url("**/")
+    page.close()
+    yield ctx
+    ctx.close()
+
+
+@pytest.fixture
+def second_page(second_context: BrowserContext) -> Page:
+    """A logged-in page in a second, independent browser context."""
+    pg = second_context.new_page()
+    yield pg
+    pg.close()
+
+
+@pytest.fixture
 def api(context: BrowserContext, base_url: str):
     """Provide a helper for making authenticated API calls."""
     import httpx

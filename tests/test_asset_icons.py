@@ -127,11 +127,13 @@ def test_assets_table_badge_uses_asset_icon_filter():
 
 def test_schedules_list_uses_asset_icon_filter():
     """Both active + expired schedule lists must render the asset icon."""
-    body = _read("schedules.html")
+    # The active row was extracted to _macros.active_schedule_row as part
+    # of the #87 schedules-page no-reload refactor. Check both templates.
+    body = _read("schedules.html") + _read("_macros.html")
     # We expect the filter to be used at least twice (active + expired tables).
     assert body.count("s.asset | asset_icon") >= 2, (
-        "schedules.html must render the asset icon for each schedule row "
-        "(active and expired tables)."
+        "schedules.html / _macros.html must render the asset icon for each "
+        "schedule row (active and expired tables)."
     )
 
 
