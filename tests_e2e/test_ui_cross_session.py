@@ -1,0 +1,269 @@
+"""Cross-session (two-browser) smoke tests.
+
+Every page that's been through the #87 reload-hunt must satisfy the
+"cross-replica visibility" requirement: a change made by one user (or
+CMS replica) must become visible to another active session within ~5s,
+without the second session touching anything.
+
+These tests model that by opening two independent BrowserContexts
+(behaviorally equivalent to two separate browsers for this assertion —
+separate cookie jars, separate JS execution contexts, separate poller
+timers). Session A performs the action through the UI; session B waits
+for its poller to pick up the change.
+
+As new pages are migrated off location.reload(), add a matching test
+here so we don't silently regress the ~5s propagation bar.
+"""
+
+import pytest
+from playwright.sync_api import Page, expect
+
+from tests_e2e.conftest import run_async, click_row_action
+from tests_e2e.fake_device import FakeDevice
+
+
+# Poll cycle is 5s; allow ~2× headroom for CI jitter plus the API roundtrip.
+POLL_TIMEOUT_MS = 12000
+
+
+def _ensure_device_and_asset(api, ws_url, device_id):
+    async def register():
+        async with FakeDevice(device_id, ws_url) as dev:
+            await dev.send_status()
+
+    run_async(register())
+    api.post(f"/api/devices/{device_id}/adopt")
+
+    group_resp = api.post(
+        "/api/devices/groups/", json={"name": f"Group-{device_id}"}
+    )
+    group_id = group_resp.json()["id"]
+    api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
+
+    assets = api.get("/api/assets")
+    if not assets.json():
+        api.create_asset("xsession-shared.mp4")
+        assets = api.get("/api/assets")
+        if not assets.json():
+            pytest.skip("Could not create test asset (ffprobe not available)")
+
+    return assets.json()[0]["id"], group_id
+
+
+def _create_schedule_via_ui(page, *, name, asset_id, group_id, start="09:00", end="17:00"):
+    page.fill('input[name="name"]', name)
+    page.select_option('select[name="asset_id"]', value=asset_id)
+    page.select_option('select[name="group_id"]', value=group_id)
+    page.fill('input[name="start_time"]', start)
+    page.fill('input[name="end_time"]', end)
+    page.click('button[type="submit"]')
+
+
+# ─────────────────────────── Schedules ───────────────────────────────
+
+
+class TestSchedulesCrossSession:
+    """Session B's poller must reflect session A's schedule changes."""
+
+    def test_create_propagates(self, page: Page, second_page: Page, api, ws_url, e2e_server):
+        """Session A creates a schedule → session B sees it appear."""
+        asset_id, group_id = _ensure_device_and_asset(api, ws_url, "xs-sch-create")
+
+        # Both sessions are parked on /schedules.
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/schedules")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        _create_schedule_via_ui(
+            page, name="XSession Create", asset_id=asset_id, group_id=group_id
+        )
+        # Session A sees it immediately (inline insert).
+        expect(page.locator("td", has_text="XSession Create")).to_be_visible(
+            timeout=5000
+        )
+
+        # Session B picks it up via its 5s poller (fires a structural reload).
+        expect(
+            second_page.locator("td", has_text="XSession Create")
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, ws_url, e2e_server):
+        """Session A deletes a schedule → session B sees it disappear."""
+        asset_id, group_id = _ensure_device_and_asset(api, ws_url, "xs-sch-delete")
+
+        resp = api.post(
+            "/api/schedules",
+            json={
+                "name": "XSession Delete Me",
+                "asset_id": asset_id,
+                "group_id": group_id,
+                "start_time": "10:00:00",
+                "end_time": "18:00:00",
+                "enabled": True,
+            },
+        )
+        sched_id = resp.json()["id"]
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/schedules")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        expect(
+            second_page.locator(f'tr[data-schedule-id="{sched_id}"]')
+        ).to_be_visible(timeout=5000)
+
+        row = page.locator(f'tr[data-schedule-id="{sched_id}"]')
+        click_row_action(row, "Delete")
+        page.locator(".modal-overlay").locator(
+            "button", has_text="Confirm"
+        ).click()
+
+        # Session A removed inline; session B reloads on set-shrink.
+        expect(
+            second_page.locator(f'tr[data-schedule-id="{sched_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+
+    def test_toggle_propagates(self, page: Page, second_page: Page, api, ws_url, e2e_server):
+        """Session A toggles enabled=false → session B sees the button flip.
+
+        Toggle is a per-row field change (no id add/remove), so this
+        exercises the signature-based fragment swap on session B rather
+        than a structural reload.
+        """
+        asset_id, group_id = _ensure_device_and_asset(api, ws_url, "xs-sch-toggle")
+
+        resp = api.post(
+            "/api/schedules",
+            json={
+                "name": "XSession Toggle",
+                "asset_id": asset_id,
+                "group_id": group_id,
+                "start_time": "11:00:00",
+                "end_time": "19:00:00",
+                "enabled": True,
+            },
+        )
+        sched_id = resp.json()["id"]
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/schedules")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        row_a = page.locator(f'tr[data-schedule-id="{sched_id}"]')
+        expect(row_a.locator("button", has_text="On")).to_be_visible(timeout=5000)
+        row_a.locator("button", has_text="On").click()
+        expect(row_a.locator("button", has_text="Off")).to_be_visible(timeout=5000)
+
+        # Session B's per-row signature diff should fragment-swap the row.
+        expect(
+            second_page.locator(
+                f'tr[data-schedule-id="{sched_id}"] button', has_text="Off"
+            )
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_edit_propagates(self, page: Page, second_page: Page, api, ws_url, e2e_server):
+        """Session A renames a schedule → session B reflects the new name."""
+        asset_id, group_id = _ensure_device_and_asset(api, ws_url, "xs-sch-edit")
+
+        resp = api.post(
+            "/api/schedules",
+            json={
+                "name": "XSession Original",
+                "asset_id": asset_id,
+                "group_id": group_id,
+                "start_time": "12:00:00",
+                "end_time": "20:00:00",
+                "enabled": True,
+            },
+        )
+        sched_id = resp.json()["id"]
+
+        page.goto("/schedules")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/schedules")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        row_a = page.locator(f'tr[data-schedule-id="{sched_id}"]')
+        click_row_action(row_a, "Edit")
+        modal = page.locator(".modal-overlay")
+        modal.locator("#edit-name").fill("XSession Renamed")
+        modal.locator("button", has_text="Save").click()
+        expect(modal).to_have_count(0, timeout=5000)
+
+        # Session B sees the renamed row via per-row signature diff.
+        expect(
+            second_page.locator(
+                f'tr[data-schedule-id="{sched_id}"] td', has_text="XSession Renamed"
+            )
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+
+# ─────────────────────────── Devices ─────────────────────────────────
+
+
+class TestDevicesCrossSession:
+    """Session B's /devices poller must reflect session A's device changes."""
+
+    def test_adopt_propagates(self, page: Page, second_page: Page, api, ws_url, e2e_server):
+        """Session A adopts a pending device → session B sees it promoted.
+
+        The unadopted device announces itself on the WebSocket; both
+        sessions should see it in the pending list initially. Session A
+        adopts; session B's poller (5s structural diff) should reload
+        and show it in the adopted table.
+        """
+        device_id = "xs-dev-adopt"
+
+        async def announce():
+            async with FakeDevice(device_id, ws_url) as dev:
+                await dev.send_status()
+
+        run_async(announce())
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/devices")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        # Session A adopts.
+        api.post(f"/api/devices/{device_id}/adopt")
+
+        # Session B's poller picks up the id within ~5s.
+        expect(
+            second_page.locator(f'tr[data-device-id="{device_id}"]').first
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, ws_url, e2e_server):
+        """Session A deletes a device → session B sees the row disappear."""
+        device_id = "xs-dev-delete"
+
+        async def register():
+            async with FakeDevice(device_id, ws_url) as dev:
+                await dev.send_status()
+
+        run_async(register())
+        api.post(f"/api/devices/{device_id}/adopt")
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/devices")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        expect(
+            second_page.locator(f'tr[data-device-id="{device_id}"]').first
+        ).to_be_visible(timeout=5000)
+
+        # Session A deletes via the row kebab.
+        row = page.locator(f'tr.device-row[data-device-id="{device_id}"]').first
+        click_row_action(row, "Delete")
+        page.locator(".modal-overlay").locator(
+            "button", has_text="Confirm"
+        ).click()
+
+        # Session B sees the row vanish on next poll cycle.
+        expect(
+            second_page.locator(f'tr[data-device-id="{device_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)

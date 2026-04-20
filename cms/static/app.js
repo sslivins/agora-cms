@@ -1745,18 +1745,23 @@ async function _replaceScheduleRow(scheduleId) {
                 }
             }
             if (!placed) tbody.appendChild(fresh);
-            if (typeof window._rememberSchedule === 'function') window._rememberSchedule(scheduleId);
         }
-        // Re-render the desc cell text.
+        // Re-render the desc cell text and sync the poller's signature.
         const td = fresh.querySelector('td.schedule-desc');
-        if (td && typeof describeScheduleCompact === 'function') {
+        let scheduleData = null;
+        if (td) {
             try {
-                const data = JSON.parse(td.getAttribute('data-schedule'));
-                const span = document.createElement('span');
-                span.className = 'cell-text';
-                span.textContent = describeScheduleCompact(data);
-                td.appendChild(span);
+                scheduleData = JSON.parse(td.getAttribute('data-schedule'));
             } catch (e) {}
+        }
+        if (td && scheduleData && typeof describeScheduleCompact === 'function') {
+            const span = document.createElement('span');
+            span.className = 'cell-text';
+            span.textContent = describeScheduleCompact(scheduleData);
+            td.appendChild(span);
+        }
+        if (typeof window._rememberSchedule === 'function') {
+            window._rememberSchedule(scheduleId, scheduleData);
         }
     } catch (e) {
         location.reload();

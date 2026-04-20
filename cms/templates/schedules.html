@@ -1003,37 +1003,12 @@ function editSchedule(s) {
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
         if (resp && resp.ok) {
             overlay.remove();
-            // Fetch the updated row HTML and swap it in place of the
-            // existing <tr data-schedule-id=...>. Falls back to a full
-            // reload if the fragment fetch fails or the row isn't in
-            // the DOM (e.g. it was just reparented to the expired table).
-            try {
-                const rowResp = await fetch(`/api/schedules/${s.id}/row`);
-                if (rowResp.ok) {
-                    const html = await rowResp.text();
-                    const existing = document.querySelector(`tr[data-schedule-id="${s.id}"]`);
-                    if (existing) {
-                        const tmp = document.createElement('tbody');
-                        tmp.innerHTML = html;
-                        const fresh = tmp.firstElementChild;
-                        existing.replaceWith(fresh);
-                        // Re-run the desc renderer for the new row
-                        const td = fresh.querySelector('td.schedule-desc');
-                        if (td) {
-                            try {
-                                const data = JSON.parse(td.getAttribute('data-schedule'));
-                                const textSpan = document.createElement('span');
-                                textSpan.className = 'cell-text';
-                                textSpan.textContent = describeScheduleCompact(data);
-                                td.appendChild(textSpan);
-                            } catch(e) {}
-                        }
-                        showToast('Schedule updated');
-                        return;
-                    }
-                }
-            } catch (e) { /* fall through to reload */ }
-            location.reload();
+            if (typeof _replaceScheduleRow === 'function') {
+                await _replaceScheduleRow(s.id);
+                showToast('Schedule updated');
+            } else {
+                location.reload();
+            }
         }
         else {
             const err = await resp.json().catch(() => null);
@@ -1051,17 +1026,38 @@ function editSchedule(s) {
     const tbody = document.getElementById('active-schedules-tbody');
     if (!tbody) return;
 
-    function snapshotIds() {
-        const s = new Set();
-        tbody.querySelectorAll('tr[data-schedule-id]').forEach(tr => s.add(tr.dataset.scheduleId));
-        return s;
+    // Signature fields that matter for row rendering. If any of these
+    // change server-side, the row needs a fragment re-fetch. Everything
+    // else (created_at, asset_filename when asset_id hasn't changed, etc.)
+    // is derivable from the schedule id alone.
+    function scheduleSig(s) {
+        return JSON.stringify([
+            s.name, s.enabled, s.priority,
+            s.asset_id, s.group_id,
+            s.start_time, s.end_time,
+            s.start_date, s.end_date,
+            s.days_of_week, s.loop_count,
+        ]);
     }
-    let knownIds = snapshotIds();
 
-    // Let action handlers prime the poller after a local delete so the
-    // next cycle's set-shrink doesn't trigger a reload.
-    window._forgetSchedule = (id) => { knownIds.delete(id); };
-    window._rememberSchedule = (id) => { knownIds.add(id); };
+    const sigs = new Map();  // id -> signature
+    document.querySelectorAll('tr[data-schedule-id]').forEach(tr => {
+        // Seed from the data-schedule attribute on the desc cell.
+        const td = tr.querySelector('td.schedule-desc');
+        if (!td) return;
+        try {
+            const data = JSON.parse(td.getAttribute('data-schedule'));
+            sigs.set(tr.dataset.scheduleId, scheduleSig(data));
+        } catch (e) {}
+    });
+
+    // Let action handlers prime the poller after a local delete/create so
+    // the next cycle's set-shrink doesn't trigger a reload.
+    window._forgetSchedule = (id) => { sigs.delete(id); };
+    window._rememberSchedule = (id, data) => {
+        if (data) sigs.set(id, scheduleSig(data));
+        else sigs.set(id, '');  // signature unknown; first poll will resync
+    };
     window.refreshSchedules = () => pollSchedulesOnce(true);
 
     async function pollSchedulesOnce(force) {
@@ -1076,11 +1072,29 @@ function editSchedule(s) {
             const resp = await fetch('/api/schedules');
             if (!resp.ok) return;
             const schedules = await resp.json();
-            // Only track active (non-expired) ones — expired rows are
-            // frozen artifacts that don't update.
             const nowIds = new Set(schedules.map(s => s.id));
-            if (nowIds.size !== knownIds.size || ![...nowIds].every(id => knownIds.has(id))) {
+
+            // 1. Structural change (add/remove) → full reload. Simpler and
+            //    correct: the new row may belong in the active or expired
+            //    table depending on end_date, and a deleted row may have
+            //    been one of several visible today.
+            const structural =
+                nowIds.size !== sigs.size ||
+                ![...nowIds].every(id => sigs.has(id));
+            if (structural) {
                 location.reload();
+                return;
+            }
+
+            // 2. Per-row field change → fragment-swap just that row.
+            for (const s of schedules) {
+                const sig = scheduleSig(s);
+                if (sigs.get(s.id) !== sig) {
+                    sigs.set(s.id, sig);
+                    if (typeof _replaceScheduleRow === 'function') {
+                        await _replaceScheduleRow(s.id);
+                    }
+                }
             }
         } catch (e) { /* ignore */ }
     }
