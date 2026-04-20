@@ -315,10 +315,14 @@
 
 {# ── All Devices ── #}
 <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h2>Devices</h2>
+    <div style="display: flex; gap: 0.25rem; align-items: center;">
+        <h2 style="margin: 0;">Devices</h2>
         {% if 'devices:manage' in user_perms %}
-        <span class="has-tooltip"><button class="btn btn-sm" onclick="checkForUpdates()" id="check-updates-btn">Check for Updates</button><span class="tooltip">Updates are also checked automatically every hour</span></span>
+        <span onclick="event.stopPropagation()">
+            {% call macros.kebab_menu() %}
+                <button type="button" role="menuitem" onclick="checkForUpdates(this)" id="check-updates-btn" title="Fetch the latest available device software version. Runs automatically every hour.">Check for updates</button>
+            {% endcall %}
+        </span>
         {% endif %}
     </div>
     <table>
@@ -665,17 +669,32 @@ window._adoptionProfiles = [
         requestAnimationFrame(applyAssetTooltips);
     }
 
-    setInterval(async () => {
-        if (isModalOpen()) return;
-        // Don't refresh while the user has a kebab menu open — it would
-        // re-render the actions cell and close the menu under them.
-        if (document.querySelector('.kebab-menu:popover-open')) return;
-        // Also skip if a kebab was clicked very recently — covers the
-        // window between mousedown and the browser actually opening the
-        // popover (where :popover-open is not yet true).
-        if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
-        const el = document.activeElement;
-        if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
+    setInterval(pollDevicesOnce, 5000);
+
+    // Expose a lightweight re-poll hook so action handlers in app.js can
+    // request an immediate refresh after mutating device state (SSH/Local
+    // API toggles, adoption, etc.) instead of waiting up to 5s for the
+    // next scheduled cycle. The force flag skips the "user is interacting"
+    // guards since the user explicitly initiated this refresh.
+    window.refreshDevices = () => pollDevicesOnce(true);
+    // Let callers inform the poller that a device was just removed
+    // client-side so the next poll doesn't see the set shrink and trigger
+    // an unnecessary structural reload.
+    window._forgetDevice = (id) => { knownDeviceIds.delete(id); };
+
+    async function pollDevicesOnce(force) {
+        if (!force) {
+            if (isModalOpen()) return;
+            // Don't refresh while the user has a kebab menu open — it would
+            // re-render the actions cell and close the menu under them.
+            if (document.querySelector('.kebab-menu:popover-open')) return;
+            // Also skip if a kebab was clicked very recently — covers the
+            // window between mousedown and the browser actually opening the
+            // popover (where :popover-open is not yet true).
+            if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
+            const el = document.activeElement;
+            if (el && (el.tagName === "INPUT" || el.tagName === "SELECT")) return;
+        }
         try {
             const resp = await fetch("/api/devices");
             if (!resp.ok) return;
@@ -694,27 +713,30 @@ window._adoptionProfiles = [
                 }
             }
         } catch (e) { /* ignore */ }
-    }, 5000);
+    }
 })();
 
-async function checkForUpdates() {
-    const btn = document.getElementById('check-updates-btn');
-    btn.disabled = true;
-    btn.textContent = 'Checking...';
+async function checkForUpdates(menuItem) {
+    // Invoked from a kebab menu item. Dismiss the popover explicitly since
+    // this action doesn't open a confirm (which would otherwise close it).
+    if (typeof _closeOpenPopovers === 'function') _closeOpenPopovers();
+    if (menuItem) menuItem.disabled = true;
+    showToast('Checking for updates…');
     try {
         const resp = await fetch('/api/devices/check-updates', { method: 'POST' });
         if (resp.ok) {
             const data = await resp.json();
             showToast('Latest version: ' + (data.latest_version || 'unknown'));
-            location.reload();
+            // Refresh in place — the poller rebuilds any action cells whose
+            // signature changed (update_available flips per device).
+            if (typeof window.refreshDevices === 'function') window.refreshDevices();
         } else {
             showToast('Failed to check for updates', true);
         }
     } catch (e) {
         showToast('Failed to check for updates', true);
     } finally {
-        btn.disabled = false;
-        btn.textContent = 'Check for Updates';
+        if (menuItem) menuItem.disabled = false;
     }
 }
 
