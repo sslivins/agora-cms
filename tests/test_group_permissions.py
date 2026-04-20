@@ -143,6 +143,67 @@ class TestGroupAPIPermissions:
         finally:
             await client.aclose()
 
+    async def test_operator_sees_self_created_group(self, app):
+        """Regression test for the 'Add Group does nothing' bug.
+
+        A non-admin user creating a group must be auto-added to it, otherwise
+        the list_groups endpoint (which scopes to the user's assigned groups)
+        hides the newly created group from its own creator — making it look
+        to the user as if the create button did nothing.
+        """
+        client = await _create_user(app, username="op_self_visible", role_name="Operator")
+        try:
+            create_resp = await client.post(
+                "/api/devices/groups/", json={"name": "Self-Created Operator Group"}
+            )
+            assert create_resp.status_code == 201, create_resp.text
+            created_id = create_resp.json()["id"]
+
+            list_resp = await client.get("/api/devices/groups/")
+            assert list_resp.status_code == 200
+            visible_ids = [g["id"] for g in list_resp.json()]
+            assert created_id in visible_ids, (
+                "Operator must see the group they just created; "
+                f"got groups={list_resp.json()}"
+            )
+        finally:
+            await client.aclose()
+
+    async def test_admin_not_auto_added_to_created_group(self, app):
+        """Admins have groups:view_all — they see everything without needing a
+        UserGroup row. Creating a group as admin should not clutter the
+        user_groups table with an explicit membership."""
+        from sqlalchemy import select
+        from cms.database import get_db
+        from cms.models.user import User, UserGroup
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            await ac.post(
+                "/login", data={"username": "admin", "password": "testpass"}, follow_redirects=False
+            )
+            resp = await ac.post(
+                "/api/devices/groups/", json={"name": "Admin Created (no auto-add)"}
+            )
+            assert resp.status_code == 201
+            group_id = uuid.UUID(resp.json()["id"])
+
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            admin = (
+                await db.execute(select(User).where(User.username == "admin"))
+            ).scalar_one()
+            rows = (
+                await db.execute(
+                    select(UserGroup).where(
+                        UserGroup.user_id == admin.id,
+                        UserGroup.group_id == group_id,
+                    )
+                )
+            ).all()
+            assert rows == [], "Admin should not be auto-added to created groups"
+            break
+
 
 # ── UI visibility tests ──
 
