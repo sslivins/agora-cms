@@ -1,6 +1,7 @@
 services:
   cms:
     build: .
+    restart: unless-stopped
     ports:
       - "8080:8080"
     env_file: .env
@@ -15,6 +16,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    restart: unless-stopped
     env_file: .env
     environment:
       - AGORA_CMS_WORKER_MODE=listen
@@ -26,6 +28,7 @@ services:
 
   mcp:
     build: ./mcp
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
@@ -37,6 +40,7 @@ services:
 
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     env_file: .env
     volumes:
       - pgdata:/var/lib/postgresql/data

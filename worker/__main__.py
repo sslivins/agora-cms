@@ -126,7 +126,15 @@ async def _listen_mode_robust(settings: WorkerSettings) -> None:
     # Crash recovery
     await recover_interrupted(session_factory)
 
-    # Process any already-pending work
+    # Process any already-pending work.  We do BOTH captures and pending
+    # variants on startup: if a SAVED_STREAM asset was created while the
+    # worker was down (e.g., we just survived a crash + restart), there is
+    # no NOTIFY waiting for us — the only signal that capture is needed is
+    # the asset row itself.  Without this startup pass the asset would sit
+    # PENDING until the next poll_interval (default 60s) elapsed.
+    captures = await process_captures(session_factory, asset_dir)
+    if captures:
+        logger.info("Captured %d stream(s) on startup", captures)
     count = await process_pending(session_factory, asset_dir)
     if count:
         logger.info("Processed %d pending variant(s) on startup", count)
@@ -164,12 +172,37 @@ async def _listen_mode_robust(settings: WorkerSettings) -> None:
             if shutdown.is_set():
                 break
 
-            captures = await process_captures(session_factory, asset_dir)
-            if captures:
-                logger.info("Captured %d stream(s)", captures)
-            count = await process_pending(session_factory, asset_dir)
-            if count:
-                logger.info("Processed %d variant(s)", count)
+            # ── Resilience: a transient DB error (Postgres restart, network
+            # blip, Azure managed-DB failover) used to crash the worker because
+            # the exception walked out of this loop and exited the process.
+            # With no compose ``restart`` policy the container then stayed
+            # dead and every queued capture/transcode sat PENDING forever.
+            # ``shared.database.init_db`` now sets ``pool_pre_ping=True`` so
+            # we shouldn't *see* stale-connection errors any more, but we
+            # still defence-in-depth: log + short backoff + keep looping
+            # rather than die on any single iteration's failure.
+            try:
+                captures = await process_captures(session_factory, asset_dir)
+                if captures:
+                    logger.info("Captured %d stream(s)", captures)
+                count = await process_pending(session_factory, asset_dir)
+                if count:
+                    logger.info("Processed %d variant(s)", count)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Listen-mode iteration failed; backing off and retrying"
+                )
+                # Brief backoff so we don't hot-loop on a persistent error
+                # (e.g., DB still down).  The poll_interval wait above will
+                # naturally throttle subsequent retries once the backoff
+                # completes.
+                try:
+                    await asyncio.wait_for(shutdown.wait(), timeout=5.0)
+                    break  # shutdown requested during backoff
+                except asyncio.TimeoutError:
+                    pass
     finally:
         await conn.remove_listener("transcode_jobs", _on_notification)
         await conn.close()

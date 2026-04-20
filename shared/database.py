@@ -22,7 +22,21 @@ _session_factory = None
 
 def init_db(settings: SharedSettings):
     global _engine, _session_factory
-    _engine = create_async_engine(settings.database_url, echo=False)
+    # ``pool_pre_ping`` issues a cheap "SELECT 1" before handing out a pooled
+    # connection; this catches connections invalidated by a Postgres restart,
+    # idle-timeout disconnect, network blip, or Azure managed-DB failover.
+    # Without it, the next checkout after such an event raises
+    # ``InterfaceError: connection is closed`` and (in the worker's listen
+    # loop) crashed the entire process — see incident write-up in the
+    # accompanying PR. ``pool_recycle`` proactively retires connections older
+    # than 5 minutes so we don't accumulate ones the server has already
+    # closed silently.
+    _engine = create_async_engine(
+        settings.database_url,
+        echo=False,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
 
