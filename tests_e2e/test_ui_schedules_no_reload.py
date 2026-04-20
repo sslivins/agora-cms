@@ -53,25 +53,24 @@ def _ensure_device_and_asset(api, ws_url, device_id):
     api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
 
     assets = api.get("/api/assets")
-    if not assets.json():
-        api.create_asset("e2e-shared-test.mp4")
-        assets = api.get("/api/assets")
-        if not assets.json():
-            pytest.skip("Could not create test asset (ffprobe not available)")
+    # Create a fresh asset per test — reusing assets across tests risks
+    # picking up one with unready variants, which makes select_option
+    # time out on the asset dropdown.
+    resp = api.create_asset(f"{device_id}.mp4")
+    if resp.status_code != 201:
+        pytest.skip("Could not create test asset (ffprobe not available)")
+    return resp.json()["id"], group_id
 
-    asset = assets.json()[0]
-    return asset["id"], group_id
 
-
-def _create_schedule(api, *, name, asset_id, group_id, priority=0):
+def _create_schedule(api, *, name, asset_id, group_id, priority=0, start="08:00:00", end="17:00:00"):
     resp = api.post(
         "/api/schedules",
         json={
             "name": name,
             "asset_id": asset_id,
             "group_id": group_id,
-            "start_time": "08:00:00",
-            "end_time": "17:00:00",
+            "start_time": start,
+            "end_time": end,
             "priority": priority,
             "enabled": True,
         },
@@ -85,8 +84,14 @@ class TestSchedulesNoReload:
 
     def test_delete_schedule_no_reload(self, page: Page, api, ws_url, e2e_server):
         asset_id, group_id = _ensure_device_and_asset(api, ws_url, "nrl-sch-del")
-        keep_id = _create_schedule(api, name="Keeper", asset_id=asset_id, group_id=group_id)
-        gone_id = _create_schedule(api, name="ToDelete", asset_id=asset_id, group_id=group_id)
+        keep_id = _create_schedule(
+            api, name="Keeper", asset_id=asset_id, group_id=group_id,
+            start="08:00:00", end="12:00:00",
+        )
+        gone_id = _create_schedule(
+            api, name="ToDelete", asset_id=asset_id, group_id=group_id,
+            start="13:00:00", end="17:00:00",
+        )
 
         page.goto("/schedules")
         page.wait_for_load_state("domcontentloaded")

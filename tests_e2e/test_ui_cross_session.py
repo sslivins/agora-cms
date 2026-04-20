@@ -40,14 +40,15 @@ def _ensure_device_and_asset(api, ws_url, device_id):
     group_id = group_resp.json()["id"]
     api.patch(f"/api/devices/{device_id}", json={"group_id": group_id})
 
-    assets = api.get("/api/assets")
-    if not assets.json():
-        api.create_asset("xsession-shared.mp4")
-        assets = api.get("/api/assets")
-        if not assets.json():
-            pytest.skip("Could not create test asset (ffprobe not available)")
-
-    return assets.json()[0]["id"], group_id
+    # Create a fresh asset (and mark it ready) per test rather than
+    # reusing whatever is first in the global list. Prior tests may
+    # leave assets with unready variants behind, which would make
+    # select_option time out on the asset dropdown (unready options
+    # render disabled).
+    resp = api.create_asset(f"{device_id}.mp4")
+    if resp.status_code != 201:
+        pytest.skip("Could not create test asset (ffprobe not available)")
+    return resp.json()["id"], group_id
 
 
 def _create_schedule_via_ui(page, *, name, asset_id, group_id, start="09:00", end="17:00"):
