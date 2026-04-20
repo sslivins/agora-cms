@@ -1688,12 +1688,79 @@ async function deleteSchedule(scheduleId) {
         : "Delete this schedule?";
     if (!await showConfirm(msg)) return;
     const resp = await apiCall("DELETE", `/api/schedules/${scheduleId}`);
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        // Remove the row in place. Tell the poller we did so the next
+        // cycle's set-shrink doesn't trigger a structural reload.
+        if (typeof window._forgetSchedule === 'function') window._forgetSchedule(scheduleId);
+        const tr = document.querySelector(`tr[data-schedule-id="${scheduleId}"]`);
+        if (tr) {
+            tr.remove();
+        } else {
+            location.reload();
+            return;
+        }
+        showToast("Schedule deleted");
+    }
 }
 
 async function toggleSchedule(scheduleId, enabled) {
     const resp = await apiCall("PATCH", `/api/schedules/${scheduleId}`, { enabled });
-    if (resp && resp.ok) location.reload();
+    if (resp && resp.ok) {
+        // Swap the row fragment — the Enabled button text/class + the
+        // data-schedule JSON on the desc cell all change when a
+        // schedule is toggled, so a full row replace is simpler and
+        // avoids drift with the server-rendered markup.
+        await _replaceScheduleRow(scheduleId);
+    }
+}
+
+async function _replaceScheduleRow(scheduleId) {
+    try {
+        const rowResp = await fetch(`/api/schedules/${scheduleId}/row`);
+        if (!rowResp.ok) { location.reload(); return; }
+        const html = await rowResp.text();
+        const tmp = document.createElement('tbody');
+        tmp.innerHTML = html;
+        const fresh = tmp.firstElementChild;
+        const existing = document.querySelector(`tr[data-schedule-id="${scheduleId}"]`);
+        if (existing) {
+            existing.replaceWith(fresh);
+        } else {
+            const tbody = document.getElementById('active-schedules-tbody');
+            if (!tbody) { location.reload(); return; }
+            // Remove placeholder "No schedules yet" row if present.
+            const empty = tbody.querySelector('tr[data-empty-row]');
+            if (empty) empty.remove();
+            // Insert in priority-sorted position (priority DESC, then name).
+            const priority = parseInt(fresh.children[4]?.textContent || '0') || 0;
+            const name = (fresh.children[0]?.textContent || '').trim().toLowerCase();
+            let placed = false;
+            for (const row of tbody.querySelectorAll('tr[data-schedule-id]')) {
+                const rp = parseInt(row.children[4]?.textContent || '0') || 0;
+                const rn = (row.children[0]?.textContent || '').trim().toLowerCase();
+                if (priority > rp || (priority === rp && name < rn)) {
+                    tbody.insertBefore(fresh, row);
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) tbody.appendChild(fresh);
+            if (typeof window._rememberSchedule === 'function') window._rememberSchedule(scheduleId);
+        }
+        // Re-render the desc cell text.
+        const td = fresh.querySelector('td.schedule-desc');
+        if (td && typeof describeScheduleCompact === 'function') {
+            try {
+                const data = JSON.parse(td.getAttribute('data-schedule'));
+                const span = document.createElement('span');
+                span.className = 'cell-text';
+                span.textContent = describeScheduleCompact(data);
+                td.appendChild(span);
+            } catch (e) {}
+        }
+    } catch (e) {
+        location.reload();
+    }
 }
 
 async function createSchedule(form) {
@@ -1751,7 +1818,14 @@ async function createSchedule(form) {
 
     const resp = await apiCall("POST", "/api/schedules", body);
     if (resp && resp.ok) {
-        location.reload();
+        const created = await resp.json().catch(() => null);
+        if (created && created.id) {
+            await _replaceScheduleRow(created.id);
+            form.reset();
+            showToast("Schedule created");
+        } else {
+            location.reload();
+        }
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);

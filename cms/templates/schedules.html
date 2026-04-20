@@ -126,37 +126,11 @@
                 <th>Actions</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="active-schedules-tbody">
             {% for s in schedules %}
-            <tr>
-                <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
-                <td class="cell-truncate"><span class="cell-text">{% if s.asset %}<span aria-hidden="true">{{ s.asset | asset_icon }}</span> {% endif %}{{ (s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else '—' }}</span></td>
-                <td>
-                    {{ s.group.name if s.group else '—' }}
-                </td>
-                <td class="schedule-desc cell-truncate" data-schedule='{{ s | schedule_json }}'></td>
-                <td>{{ s.priority }}</td>
-                <td>
-                    {% if 'schedules:write' in user_perms %}
-                    <button class="btn btn-sm {% if s.enabled %}btn-success{% else %}btn-danger{% endif %}"
-                            onclick="toggleSchedule('{{ s.id }}', {{ 'false' if s.enabled else 'true' }})">
-                        {{ 'On' if s.enabled else 'Off' }}
-                    </button>
-                    {% else %}
-                    <span class="badge {% if s.enabled %}badge-online{% else %}badge-offline{% endif %}">{{ 'On' if s.enabled else 'Off' }}</span>
-                    {% endif %}
-                </td>
-                <td class="actions">
-                    {% if 'schedules:write' in user_perms %}
-                    {% call macros.kebab_menu() %}
-                        <button type="button" role="menuitem" onclick='editSchedule({{ s | schedule_json }})'>Edit</button>
-                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteSchedule('{{ s.id }}')">Delete</button>
-                    {% endcall %}
-                    {% endif %}
-                </td>
-            </tr>
+            {{ macros.active_schedule_row(s, user_perms) }}
             {% else %}
-            <tr><td colspan="7" class="empty">No schedules yet</td></tr>
+            <tr data-empty-row><td colspan="7" class="empty">No schedules yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -187,7 +161,7 @@
         </thead>
         <tbody>
             {% for s in expired_schedules %}
-            <tr>
+            <tr data-schedule-id="{{ s.id }}" data-expired="1">
                 <td class="cell-truncate"><span class="cell-text">{{ s.name }}</span></td>
                 <td class="cell-truncate"><span class="cell-text">{% if s.asset %}<span aria-hidden="true">{{ s.asset | asset_icon }}</span> {% endif %}{{ (s.asset.display_name or s.asset.original_filename or s.asset.filename) if s.asset else '—' }}</span></td>
                 <td>
@@ -1027,7 +1001,40 @@ function editSchedule(s) {
         // Explicit loop count
         body.loop_count = hasLoopCount ? parseInt(editLoopCount) : null;
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
-        if (resp && resp.ok) { overlay.remove(); location.reload(); }
+        if (resp && resp.ok) {
+            overlay.remove();
+            // Fetch the updated row HTML and swap it in place of the
+            // existing <tr data-schedule-id=...>. Falls back to a full
+            // reload if the fragment fetch fails or the row isn't in
+            // the DOM (e.g. it was just reparented to the expired table).
+            try {
+                const rowResp = await fetch(`/api/schedules/${s.id}/row`);
+                if (rowResp.ok) {
+                    const html = await rowResp.text();
+                    const existing = document.querySelector(`tr[data-schedule-id="${s.id}"]`);
+                    if (existing) {
+                        const tmp = document.createElement('tbody');
+                        tmp.innerHTML = html;
+                        const fresh = tmp.firstElementChild;
+                        existing.replaceWith(fresh);
+                        // Re-run the desc renderer for the new row
+                        const td = fresh.querySelector('td.schedule-desc');
+                        if (td) {
+                            try {
+                                const data = JSON.parse(td.getAttribute('data-schedule'));
+                                const textSpan = document.createElement('span');
+                                textSpan.className = 'cell-text';
+                                textSpan.textContent = describeScheduleCompact(data);
+                                td.appendChild(textSpan);
+                            } catch(e) {}
+                        }
+                        showToast('Schedule updated');
+                        return;
+                    }
+                }
+            } catch (e) { /* fall through to reload */ }
+            location.reload();
+        }
         else {
             const err = await resp.json().catch(() => null);
             showToast(extractErrorMsg(err, "Failed to update schedule"), true);
@@ -1035,5 +1042,50 @@ function editSchedule(s) {
     };
 }
 
+// ── Schedules poller ──
+// Picks up schedules created, edited, toggled, or deleted by other
+// users (or other CMS replicas) within ~5s, matching the devices page
+// pattern. All markup comes from GET /api/schedules/{id}/row so the
+// client never has to synthesize row HTML in JS.
+(function() {
+    const tbody = document.getElementById('active-schedules-tbody');
+    if (!tbody) return;
+
+    function snapshotIds() {
+        const s = new Set();
+        tbody.querySelectorAll('tr[data-schedule-id]').forEach(tr => s.add(tr.dataset.scheduleId));
+        return s;
+    }
+    let knownIds = snapshotIds();
+
+    // Let action handlers prime the poller after a local delete so the
+    // next cycle's set-shrink doesn't trigger a reload.
+    window._forgetSchedule = (id) => { knownIds.delete(id); };
+    window._rememberSchedule = (id) => { knownIds.add(id); };
+    window.refreshSchedules = () => pollSchedulesOnce(true);
+
+    async function pollSchedulesOnce(force) {
+        if (!force) {
+            if (typeof isModalOpen === 'function' && isModalOpen()) return;
+            if (document.querySelector('.kebab-menu:popover-open')) return;
+            if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
+            const el = document.activeElement;
+            if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return;
+        }
+        try {
+            const resp = await fetch('/api/schedules');
+            if (!resp.ok) return;
+            const schedules = await resp.json();
+            // Only track active (non-expired) ones — expired rows are
+            // frozen artifacts that don't update.
+            const nowIds = new Set(schedules.map(s => s.id));
+            if (nowIds.size !== knownIds.size || ![...nowIds].every(id => knownIds.has(id))) {
+                location.reload();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    setInterval(pollSchedulesOnce, 5000);
+})();
 </script>
 {% endblock %}
