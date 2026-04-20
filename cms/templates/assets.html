@@ -256,6 +256,9 @@
                     {% call macros.kebab_menu() %}
                     {% if a.asset_type.value == 'webpage' %}
                         <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open URL</a>
+                        {% if 'assets:write' in user_perms and is_owner %}
+                        <button type="button" role="menuitem" onclick="editWebpageUrl('{{ a.id }}', {{ (a.url or '') | tojson }})">Edit URL</button>
+                        {% endif %}
                     {% elif a.asset_type.value == 'stream' %}
                         <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open Stream</a>
                     {% else %}

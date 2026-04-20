@@ -476,6 +476,34 @@ async def upload_asset(
     return asset
 
 
+def _validate_webpage_url(raw: str) -> tuple[str, "urllib.parse.ParseResult"]:
+    """Validate + normalize a webpage URL. Raises HTTPException(400) on bad input.
+
+    Returns the stripped URL and the parsed result. Shared by create_webpage_asset
+    and update_asset (PATCH) so the two paths can't drift.
+    """
+    from urllib.parse import urlparse
+
+    url = (raw or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+    if len(url) > 2048:
+        raise HTTPException(status_code=400, detail="URL too long (max 2048 characters)")
+
+    parsed = urlparse(url)
+    if not parsed.netloc or "." not in parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL must contain a valid hostname (e.g. example.com)")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http and https URLs are allowed")
+    hostname = parsed.hostname or ""
+    _blocked = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    if hostname in _blocked or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
+    return url, parsed
+
+
 @router.post("/webpage", response_model=AssetOut, status_code=201)
 async def create_webpage_asset(
     request: Request,
@@ -484,28 +512,7 @@ async def create_webpage_asset(
 ):
     """Create a webpage asset from a URL (no file upload)."""
     body = await request.json()
-    url = body.get("url", "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
-    if len(url) > 2048:
-        raise HTTPException(status_code=400, detail="URL too long (max 2048 characters)")
-
-    # Validate URL structure
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    if not parsed.netloc or "." not in parsed.netloc:
-        raise HTTPException(status_code=400, detail="URL must contain a valid hostname (e.g. example.com)")
-    # Block dangerous schemes that could slip through URL encoding tricks
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="Only http and https URLs are allowed")
-    # Block loopback/internal addresses — these would resolve on the Pi
-    # device and could expose local services (SSRF risk)
-    hostname = parsed.hostname or ""
-    _blocked = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-    if hostname in _blocked or hostname.endswith(".local"):
-        raise HTTPException(status_code=400, detail="URLs pointing to localhost or loopback addresses are not allowed")
+    url, parsed = _validate_webpage_url(body.get("url", ""))
 
     # Use provided name or derive from URL
     name = body.get("name", "").strip()
@@ -741,6 +748,18 @@ async def update_asset(
         if name and len(name) > 255:
             raise HTTPException(status_code=400, detail="Name too long (max 255 characters)")
         incoming["display_name"] = name if name else None
+
+    if "url" in body:
+        # URL editing is only supported for webpage assets. Stream URLs drive
+        # the worker's capture pipeline and can't be mutated mid-flight;
+        # saved-stream URL changes would require re-capture (use /recapture).
+        if asset.asset_type != AssetType.WEBPAGE:
+            raise HTTPException(
+                status_code=400,
+                detail="URL can only be edited on webpage assets",
+            )
+        new_url, _parsed = _validate_webpage_url(body["url"])
+        incoming["url"] = new_url
 
     changes = compute_diff(asset, incoming)
 
