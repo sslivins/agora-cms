@@ -1093,6 +1093,29 @@ async function deleteAsset(assetId, filename) {
     }
 }
 
+async function editWebpageUrl(assetId, currentUrl) {
+    const newUrl = await showPrompt("New URL for this webpage:", currentUrl || "");
+    if (newUrl === null) return;  // cancelled
+    const trimmed = (newUrl || "").trim();
+    if (!trimmed || trimmed === (currentUrl || "")) return;
+    try {
+        const resp = await fetch(`/api/assets/${assetId}`, {
+            method: "PATCH",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({url: trimmed}),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            showToast(extractErrorMsg(err) || "URL update failed", true);
+            return;
+        }
+        showToast("URL updated");
+        location.reload();
+    } catch (e) {
+        showToast("URL update failed: " + e.message, true);
+    }
+}
+
 async function recaptureStream(assetId, displayName) {
     if (!await showConfirm(
         "Re-capture \"" + (displayName || "this stream") + "\"?\n\n" +

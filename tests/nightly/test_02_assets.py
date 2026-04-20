@@ -218,3 +218,83 @@ def test_assets_status_aggregate_counts_are_consistent(authenticated_page: Page)
         f"failed variants present after phase 3: {data.get('variant_failed')}"
     )
     assert data.get("asset_count", 0) >= 4, data
+
+
+def test_webpage_asset_create_then_edit_url_roundtrip(authenticated_page: Page) -> None:
+    """Webpage asset URL is editable after creation (regression for
+    "only delete+recreate" UX gap).
+
+    Covers the full round-trip operators care about:
+      01 - POST /api/assets/webpage with an initial URL -> 201
+      02 - PATCH /api/assets/{id} with a new URL        -> 200 + new URL in body
+      03 - GET /api/assets confirms the list reflects the new URL
+      04 - PATCH with a loopback URL is rejected (400)   -> SSRF guard parity
+      05 - PATCH URL on a non-webpage asset is rejected  -> feature-gate guard
+      06 - audit log records the url change              -> 'url' in changes
+      99 - cleanup: DELETE the test asset
+    """
+    page = authenticated_page
+
+    # 01 - create
+    create = page.request.post(
+        "/api/assets/webpage",
+        data={"url": "https://example.com/smoke-original", "name": "Smoke Webpage"},
+    )
+    assert create.status == 201, create.text()
+    asset = create.json()
+    asset_id = asset["id"]
+    assert asset["url"] == "https://example.com/smoke-original"
+
+    try:
+        # 02 - edit URL
+        patch = page.request.patch(
+            f"/api/assets/{asset_id}",
+            data={"url": "https://example.com/smoke-updated"},
+        )
+        assert patch.status == 200, patch.text()
+        assert patch.json()["url"] == "https://example.com/smoke-updated"
+
+        # 03 - listing reflects the new URL
+        listing = page.request.get("/api/assets")
+        assert listing.status == 200
+        rows = {a["id"]: a for a in listing.json()}
+        assert rows[asset_id]["url"] == "https://example.com/smoke-updated"
+
+        # 04 - SSRF guard still enforced on PATCH
+        bad = page.request.patch(
+            f"/api/assets/{asset_id}",
+            data={"url": "http://127.0.0.1/admin"},
+        )
+        assert bad.status == 400
+        assert "loopback" in bad.json()["detail"].lower()
+
+        # 05 - URL edits are webpage-only. Pick any non-webpage asset seeded by
+        # the earlier tests in this phase (test_upload_and_transcode_*).
+        others = [a for a in listing.json() if a.get("asset_type") != "webpage"]
+        assert others, "expected at least one non-webpage asset from prior phase-3 uploads"
+        other_id = others[0]["id"]
+        denied = page.request.patch(
+            f"/api/assets/{other_id}",
+            data={"url": "https://example.com/nope"},
+        )
+        assert denied.status == 400
+        assert "webpage" in denied.json()["detail"].lower()
+
+        # 06 - audit row present with a url change
+        audit = page.request.get(f"/api/audit-log?resource_type=asset&q={asset_id}")
+        assert audit.status == 200, audit.text()
+        rows = audit.json()
+        events = rows if isinstance(rows, list) else rows.get("items", rows.get("events", []))
+        url_events = [
+            e for e in events
+            if e.get("action") == "asset.update"
+            and e.get("resource_id") == asset_id
+            and "url" in (e.get("details", {}) or {}).get("changes", {})
+        ]
+        assert url_events, (
+            f"expected an asset.update audit row carrying a url change for {asset_id}, "
+            f"got: {events}"
+        )
+    finally:
+        # 99 - cleanup so this test is re-runnable against the same stack
+        page.request.delete(f"/api/assets/{asset_id}")
