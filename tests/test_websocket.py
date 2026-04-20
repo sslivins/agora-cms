@@ -164,7 +164,15 @@ class TestWebSocket:
                     "storage_used_mb": 200,
                 })
 
-                time.sleep(0.5)  # Allow server to process status before disconnect
+                # Poll device_manager until the status message is processed,
+                # so we don't close the WS mid-commit and hang pool teardown.
+                from cms.services.device_manager import device_manager
+                deadline = time.time() + 5.0
+                while time.time() < deadline:
+                    states = {s["device_id"]: s for s in device_manager.get_all_states()}
+                    if states.get("ws-test-status", {}).get("mode") == "splash":
+                        break
+                    time.sleep(0.05)
 
                 ws.close()
 
