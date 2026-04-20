@@ -1920,7 +1920,14 @@ window.addEventListener("pageshow", _rerunAllGates);
 // opts.align:     "right" (default — right-edge to right-edge of anchor)
 //                 or "left" (left-edge to left-edge of anchor)
 function positionPopover(popover, opts = {}) {
-    const btn = document.querySelector(`[popovertarget="${popover.id}"]`);
+    let btn = document.querySelector(`[popovertarget="${popover.id}"]`);
+    if (!btn) {
+        // Fallback for popovers opened via onclick (e.g. group-popup, whose
+        // `+` button lives as a sibling inside a .group-picker-wrap and does
+        // not use the native popovertarget attribute).
+        const wrap = popover.closest(".group-picker-wrap");
+        if (wrap) btn = wrap.querySelector(".btn-add-group");
+    }
     if (!btn) return;
     const placement = opts.placement || "below";
     const align = opts.align || "right";
