@@ -52,6 +52,7 @@ async def list_audit_logs(
                 AuditLog.description.ilike(like_q),
                 AuditLog.action.ilike(like_q),
                 AuditLog.resource_type.ilike(like_q),
+                AuditLog.resource_id.ilike(like_q),
             )
         )
 
