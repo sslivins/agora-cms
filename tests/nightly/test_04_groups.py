@@ -293,18 +293,21 @@ def test_devices_page_moves_row_in_place_on_group_change(
         # No navigation happened.
         assert page.url == url_before, "page reloaded — fix #146 regressed"
 
-        # Moved row should now expose a Remove button.
-        assert group_row.locator('button:has-text("Remove")').count() == 1
+        # Moved row should now expose a kebab menu containing "Remove from group".
+        # (Per PR #351 row actions were consolidated into a kebab popover.)
+        assert group_row.locator("button.btn-kebab").count() == 1
 
-        # Expand the group panel so the Remove button is visible/clickable.
+        # Expand the group panel so the kebab is visible/clickable.
         # Group panels start collapsed; the compact table lives inside the
         # panel body which is hidden until the header is clicked.
         group_panel = page.locator(f'.group-panel[data-group-id="{group_id}"]')
         if not group_panel.evaluate("el => el.classList.contains('expanded')"):
             group_panel.locator(".group-header").click()
 
-        # Step 2: click Remove — row should move back to Ungrouped in place.
-        group_row.locator('button:has-text("Remove")').click()
+        # Step 2: open the kebab and click "Remove from group" — the row should
+        # move back to Ungrouped in place.
+        group_row.locator("button.btn-kebab").click()
+        page.locator('.kebab-menu [role="menuitem"]:has-text("Remove from group")').click()
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
         assert count_badge.inner_text().lower().startswith("0 device"), count_badge.inner_text()
