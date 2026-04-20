@@ -296,6 +296,13 @@ def test_devices_page_moves_row_in_place_on_group_change(
         # Moved row should now expose a Remove button.
         assert group_row.locator('button:has-text("Remove")').count() == 1
 
+        # Expand the group panel so the Remove button is visible/clickable.
+        # Group panels start collapsed; the compact table lives inside the
+        # panel body which is hidden until the header is clicked.
+        group_panel = page.locator(f'.group-panel[data-group-id="{group_id}"]')
+        if not group_panel.evaluate("el => el.classList.contains('expanded')"):
+            group_panel.locator(".group-header").click()
+
         # Step 2: click Remove — row should move back to Ungrouped in place.
         group_row.locator('button:has-text("Remove")').click()
         ungrouped_row.wait_for(state="attached", timeout=5000)
