@@ -26,8 +26,17 @@ function isModalOpen() {
     return !!document.querySelector(".modal-overlay");
 }
 
+// Dismiss any open native popover (kebab menus, etc.) before opening a
+// modal on top — otherwise the menu lingers visibly behind the overlay.
+function _closeOpenPopovers() {
+    document.querySelectorAll('[popover]:popover-open').forEach(el => {
+        try { el.hidePopover(); } catch (e) { /* ignore unsupported */ }
+    });
+}
+
 // ── Modal confirm (replaces native confirm()) ──
 function showConfirm(message) {
+    _closeOpenPopovers();
     return new Promise((resolve) => {
         const overlay = document.createElement("div");
         overlay.className = "modal-overlay";
@@ -58,6 +67,7 @@ function showConfirm(message) {
 
 // ── Prompt modal (replaces native prompt()) ──
 function showPrompt(message, defaultValue = "", isPassword = false) {
+    _closeOpenPopovers();
     return new Promise((resolve) => {
         const overlay = document.createElement("div");
         overlay.className = "modal-overlay";
@@ -671,6 +681,7 @@ async function adoptDevice(deviceId, deviceName) {
 }
 
 function showAdoptModal(defaultName, groups, profiles) {
+    _closeOpenPopovers();
     return new Promise((resolve) => {
         const overlay = document.createElement("div");
         overlay.className = "modal-overlay";
