@@ -30,7 +30,7 @@
             <div id="upload-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; min-height:1.6rem; align-items:center;">
                 <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
                     <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('upload-group-popup')" title="Add group">+</button>
-                    <div id="upload-group-popup" class="group-popup" style="display:none;">
+                    <div id="upload-group-popup" popover class="group-popup">
                         {% for g in user_groups %}
                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
                                 onclick="event.stopPropagation(); pickUploadGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
@@ -70,7 +70,7 @@
             <div id="webpage-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; min-height:1.6rem; align-items:center;">
                 <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
                     <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('webpage-group-popup')" title="Add group">+</button>
-                    <div id="webpage-group-popup" class="group-popup" style="display:none;">
+                    <div id="webpage-group-popup" popover class="group-popup">
                         {% for g in user_groups %}
                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
                                 onclick="event.stopPropagation(); pickWebpageGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
@@ -139,7 +139,7 @@
             <div id="stream-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; min-height:1.6rem; align-items:center;">
                 <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
                     <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('stream-group-popup')" title="Add group">+</button>
-                    <div id="stream-group-popup" class="group-popup" style="display:none;">
+                    <div id="stream-group-popup" popover class="group-popup">
                         {% for g in user_groups %}
                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
                                 onclick="event.stopPropagation(); pickStreamGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
@@ -384,7 +384,7 @@
                                 <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
                                     {% set unassigned = [] %}{% for g in user_groups %}{% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}{% if not already %}{% if unassigned.append(g) %}{% endif %}{% endif %}{% endfor %}
                                     <button class="btn-add-group" onclick="event.stopPropagation(); openGroupPopup('group-popup-{{ a.id }}')" type="button" title="Add to group" {% if unassigned | length == 0 %}disabled{% endif %}>+</button>
-                                    <div id="group-popup-{{ a.id }}" class="group-popup" style="display:none;">
+                                    <div id="group-popup-{{ a.id }}" popover class="group-popup">
                                         {% for g in unassigned %}
                                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}"
                                                 onclick="event.stopPropagation(); pickAssetGroup('{{ a.id }}', '{{ g.id }}', '{{ g.name }}', this)">{{ g.name }}</button>
@@ -581,7 +581,7 @@
             const unassigned = __userGroups.filter(g => !assigned.has(g.id));
             h += '<span class="group-picker-wrap" style="position:relative; display:inline-flex;">';
             h += '<button class="btn-add-group" onclick="event.stopPropagation(); openGroupPopup(\'group-popup-' + assetId + '\')" type="button" title="Add to group"' + (unassigned.length === 0 ? ' disabled' : '') + '>+</button>';
-            h += '<div id="group-popup-' + assetId + '" class="group-popup" style="display:none;">';
+            h += '<div id="group-popup-' + assetId + '" popover class="group-popup">';
             for (const g of unassigned) {
                 h += '<button type="button" class="group-popup-item" data-group-id="' + g.id + '" onclick="event.stopPropagation(); pickAssetGroup(\'' + assetId + '\',\'' + g.id + '\',\'' + _escHtml(g.name) + '\',this)">' + _escHtml(g.name) + '</button>';
             }
