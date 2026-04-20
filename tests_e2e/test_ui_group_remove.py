@@ -193,3 +193,115 @@ class TestGroupRemoveButtons:
         remove_btn = group_panel.locator(".group-actions button", has_text="Delete")
         expect(remove_btn).to_be_visible(timeout=3000)
         expect(remove_btn).to_be_enabled()
+
+
+class TestGroupRemoveInPlaceMove:
+    """Regression tests for #146 — the row should move between sections without
+    a full page reload after a group assignment changes."""
+
+    def _register_and_adopt(self, api, ws_url, device_id, name=None):
+        async def register():
+            async with FakeDevice(device_id, ws_url, device_name=name) as dev:
+                await dev.send_status()
+
+        run_async(register())
+        # Properly adopt with a profile so the device leaves PENDING and is
+        # eligible to appear in the Ungrouped section (per cms/ui.py).
+        profiles = api.get("/api/profiles").json()
+        profile_id = profiles[0]["id"] if profiles else None
+        body = {"name": name or device_id}
+        if profile_id:
+            body["profile_id"] = profile_id
+        api.post(f"/api/devices/{device_id}/adopt", json=body)
+
+    def test_remove_moves_row_to_ungrouped_without_reload(self, page: Page, api, ws_url, e2e_server):
+        """Clicking Remove inside a group should move the row to the Ungrouped
+        section in place (no page navigation), update the group count, and reveal
+        the 'no devices' placeholder when the group becomes empty."""
+        self._register_and_adopt(api, ws_url, "inplace-001", "Solo Device")
+
+        resp = api.post("/api/devices/groups/", json={"name": "Inplace Move Group"})
+        assert resp.status_code == 201
+        group_id = resp.json()["id"]
+        api.patch("/api/devices/inplace-001", json={"group_id": group_id})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+
+        # Capture the URL so we can assert later that we never navigated.
+        nav_url_before = page.url
+
+        # Sanity: row starts in the group tbody, not in the ungrouped tbody.
+        group_tbody = page.locator(f'tbody[data-group-tbody="{group_id}"]')
+        ungrouped_tbody = page.locator('tbody[data-group-tbody="ungrouped"]')
+        expect(group_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(1)
+        expect(ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(0)
+
+        # Expand and click Remove.
+        group_panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
+        group_panel.locator(".group-header").click()
+        device_row = group_panel.locator('tr[data-device-id="inplace-001"]')
+        expect(device_row).to_be_visible(timeout=3000)
+        device_row.locator("button", has_text="Remove").click()
+
+        # Wait for the in-place move (no reload) — row should appear in the
+        # ungrouped tbody and disappear from the group tbody.
+        expect(ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(1, timeout=3000)
+        expect(group_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(0)
+
+        # The Ungrouped section should now be visible.
+        expect(page.locator('#ungrouped-section')).to_be_visible()
+
+        # The group's device count badge should decrement to 0.
+        count_badge = page.locator(f'[data-group-count="{group_id}"]')
+        expect(count_badge).to_have_text("0 devices")
+
+        # The empty-state placeholder for the group should be visible.
+        expect(page.locator(f'[data-group-empty="{group_id}"]')).to_be_visible()
+
+        # The page must not have navigated — confirms it was an in-place update.
+        assert page.url == nav_url_before, (
+            "Page should not reload when removing a device from a group"
+        )
+
+        # The Remove button should be gone from the moved row (now ungrouped).
+        moved_row = ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')
+        expect(moved_row.locator("button", has_text="Remove")).to_have_count(0)
+
+    def test_assign_to_group_moves_row_from_ungrouped_in_place(self, page: Page, api, ws_url, e2e_server):
+        """Assigning an ungrouped device to a group via the inline dropdown
+        should move its row out of the Ungrouped section without a reload."""
+        self._register_and_adopt(api, ws_url, "inplace-002", "Migrating Device")
+        # Adopt a second device into the group so the group panel starts non-empty.
+        self._register_and_adopt(api, ws_url, "inplace-003", "Anchor Device")
+
+        resp = api.post("/api/devices/groups/", json={"name": "Inplace Assign Group"})
+        assert resp.status_code == 201
+        group_id = resp.json()["id"]
+        api.patch("/api/devices/inplace-003", json={"group_id": group_id})
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        nav_url_before = page.url
+
+        ungrouped_tbody = page.locator('tbody[data-group-tbody="ungrouped"]')
+        group_tbody = page.locator(f'tbody[data-group-tbody="{group_id}"]')
+        expect(ungrouped_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(1)
+
+        # Use the inline group <select> in the ungrouped row to assign the group.
+        ungrouped_row = ungrouped_tbody.locator('tr[data-device-id="inplace-002"]')
+        ungrouped_row.locator('select[data-device-group-select]').select_option(group_id)
+
+        # Row should appear in the group tbody and vanish from ungrouped.
+        expect(group_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(1, timeout=3000)
+        expect(ungrouped_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(0)
+
+        # Group device-count badge should bump from 1 → 2.
+        expect(page.locator(f'[data-group-count="{group_id}"]')).to_have_text("2 devices")
+
+        # No reload happened.
+        assert page.url == nav_url_before
+
+        # The moved row should now have a Remove button.
+        moved_row = group_tbody.locator('tr[data-device-id="inplace-002"]')
+        expect(moved_row.locator("button", has_text="Remove")).to_have_count(1)
