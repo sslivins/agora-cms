@@ -160,6 +160,7 @@ module containerApps 'modules/containerApps.bicep' = {
     location: location
     environmentName: containerAppsEnvName
     containerAppsSubnetId: networking.outputs.containerAppsSubnetId
+    containerAppsSubnetCidr: networking.outputs.containerAppsSubnetCidr
     tags: tags
 
     // CMS

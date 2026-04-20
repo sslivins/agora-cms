@@ -5,6 +5,8 @@
 param location string
 param environmentName string
 param containerAppsSubnetId string
+@description('CIDR of the Container Apps infrastructure subnet. Passed to the CMS container as FORWARDED_ALLOW_IPS so uvicorn only trusts X-Forwarded-For from the envoy ingress hops inside this subnet.')
+param containerAppsSubnetCidr string
 param tags object = {}
 
 // ── CMS App config ──
@@ -197,6 +199,14 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AGORA_CMS_AZURE_KEYVAULT_URI'
               value: keyVaultUri
+            }
+            {
+              // Only trust X-Forwarded-For from the envoy ingress hops running
+              // inside the Container Apps infrastructure subnet. Prevents a
+              // caller who bypasses the managed ingress from spoofing their
+              // source IP in audit logs.
+              name: 'FORWARDED_ALLOW_IPS'
+              value: containerAppsSubnetCidr
             }
           ]
           volumeMounts: [

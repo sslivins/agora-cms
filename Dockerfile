@@ -32,4 +32,10 @@ COPY alembic/ alembic/
 
 EXPOSE 8080
 
-CMD ["uvicorn", "cms.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=*"]
+# Trust X-Forwarded-For / Forwarded headers from any upstream by default.
+# Safe for local docker-compose (not externally reachable). Production
+# deployments override this via the container env var FORWARDED_ALLOW_IPS
+# (e.g. the Container Apps bicep sets it to the infrastructure subnet CIDR).
+ENV FORWARDED_ALLOW_IPS=*
+
+CMD ["uvicorn", "cms.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
