@@ -216,19 +216,27 @@ async def login_submit(
     login_id = form.get("email", "") or form.get("username", "")
     password = form.get("password", "")
 
-    # Authenticate against the users table — try email first, then username for backward compat
+    # Authenticate against the users table — try email first, then username for backward compat.
+    # Query without the is_active filter so we can emit a distinct audit reason
+    # ("inactive" vs "user_not_found" vs invalid password) for forensics.
     from sqlalchemy import select as sa_select, or_
     result = await db.execute(
         sa_select(User).where(
             or_(User.email == login_id, User.username == login_id),
-            User.is_active.is_(True),
         )
     )
     user = result.scalar_one_or_none()
 
     valid = False
-    if user is not None:
+    fail_reason: str | None = None
+    if user is None:
+        fail_reason = "user_not_found"
+    elif not user.is_active:
+        fail_reason = "inactive"
+    else:
         valid = verify_password(password, user.password_hash)
+        if not valid:
+            fail_reason = "invalid_password"
 
     if valid:
         # Update last_login_at
@@ -249,6 +257,21 @@ async def login_submit(
             COOKIE_NAME, token, max_age=MAX_AGE, httponly=True, samesite="lax"
         )
         return response
+
+    # Failed login — write an audit entry and commit so forensics survive the
+    # 401 response. user may be None (unknown login_id) or set (wrong password
+    # / inactive account).
+    from cms.services.audit_service import audit_log
+    await audit_log(
+        db,
+        user=user,
+        action="auth.login_failed",
+        resource_type="user",
+        resource_id=str(user.id) if user else None,
+        details={"login_id": login_id, "reason": fail_reason},
+        request=request,
+    )
+    await db.commit()
 
     return templates.TemplateResponse(
         request, "login.html", {"error": "Invalid credentials"}, status_code=401
