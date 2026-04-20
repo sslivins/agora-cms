@@ -27,7 +27,7 @@ class UserNotificationPref(Base):
     )
     event_type: Mapped[str] = mapped_column(
         String(50), nullable=False,
-        doc="Event type: offline, online, temp_high, temp_cleared, display_disconnected, display_connected",
+        doc="Event type: offline, online, temp_high, temp_cleared",
     )
     email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(

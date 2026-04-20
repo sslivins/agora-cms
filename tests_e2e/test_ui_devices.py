@@ -7,7 +7,7 @@ import time
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async
+from tests_e2e.conftest import run_async, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -66,9 +66,13 @@ class TestDevicesPage:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        adopt_btn = page.locator("button", has_text="Adopt").first
-        expect(adopt_btn).to_be_visible(timeout=5000)
-        adopt_btn.click()
+        # Target our specific device's row — not `.first`, which can match
+        # other lingering pending devices created by sibling tests.
+        row = page.locator('tr.device-row[data-device-id="ui-adopt-001"]').first
+        expect(row).to_be_visible(timeout=5000)
+        actions = row.locator("td.actions").first
+        expect(actions.locator(".btn-kebab")).to_be_visible(timeout=5000)
+        click_row_action(actions, "Adopt")
         page.wait_for_load_state("networkidle")
 
         # Reload and verify the device is no longer pending
@@ -159,7 +163,7 @@ class TestDeleteDeviceWithSchedules:
         # may appear in both the main table and the ungrouped section)
         row = page.locator('[data-device-id="del-e2e-001"]').first
         expect(row).to_be_visible(timeout=5000)
-        row.locator("button", has_text="Delete").click()
+        click_row_action(row, "Delete")
 
         # Confirm the modal
         confirm_modal = page.locator(".modal-overlay")

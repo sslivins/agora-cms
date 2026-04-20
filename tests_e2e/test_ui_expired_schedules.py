@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async
+from tests_e2e.conftest import run_async, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -107,7 +107,7 @@ class TestExpiredSchedulesPanel:
 
         expired_card = page.locator(".card", has_text="Expired Schedules")
         row = expired_card.locator("tr", has_text="E2E Editable Expired")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         # The edit modal should appear
         modal = page.locator(".modal-overlay")
@@ -135,7 +135,7 @@ class TestExpiredSchedulesPanel:
         expired_card = page.locator(".card", has_text="Expired Schedules")
         row = expired_card.locator("tr", has_text="E2E Delete Expired")
 
-        row.locator("button", has_text="Delete").click()
+        click_row_action(row, "Delete")
 
         # Confirm the custom modal
         confirm_modal = page.locator(".modal-overlay")

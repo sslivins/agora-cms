@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Dashboard — Agora CMS{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -108,8 +109,12 @@
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
                 <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
                 <td class="actions">
-                    {% if 'devices:manage' in user_perms %}<button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>{% endif %}
-                    {% if 'devices:manage' in user_perms %}<button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.id }}')">Delete</button>{% endif %}
+                    {% if 'devices:manage' in user_perms %}
+                    {% call macros.kebab_menu() %}
+                        <button type="button" role="menuitem" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')">Delete</button>
+                    {% endcall %}
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
@@ -425,6 +430,9 @@ async function endNow(scheduleId, deviceId) {
     // 5-second poll for data changes
     setInterval(async () => {
         if (isModalOpen()) return;
+        // Don't reload while a kebab menu is open — it would close under the user.
+        if (document.querySelector('.kebab-menu:popover-open')) return;
+        if (window._kebabClickAt && (Date.now() - window._kebabClickAt) < 1000) return;
         try {
             const res = await fetch("/api/dashboard");
             if (!res.ok) return;

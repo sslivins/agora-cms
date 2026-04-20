@@ -979,12 +979,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.display_connected = state["display_connected"] if state else None
         d.update_available = is_update_available(d.firmware_version)
         d.is_upgrading = d.id in _devices_upgrading
         d.has_active_schedule = d.id in scheduled_device_ids
 
-    groups_query= (
+    groups_query = (
         select(DeviceGroup)
         .options(selectinload(DeviceGroup.devices))
         .order_by(DeviceGroup.name)
@@ -1027,7 +1026,6 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.ssh_enabled = state["ssh_enabled"] if state else None
             d.local_api_enabled = state["local_api_enabled"] if state else None
-            d.display_connected = state["display_connected"] if state else None
             d.update_available = is_update_available(d.firmware_version)
             d.is_upgrading = d.id in _devices_upgrading
             d.has_active_schedule = d.id in scheduled_device_ids
@@ -1537,7 +1535,6 @@ async def settings_page(
     alert_temp_warning = await get_setting(db, "alert_temp_warning_c") or "70"
     alert_temp_critical = await get_setting(db, "alert_temp_critical_c") or "80"
     alert_temp_cooldown = await get_setting(db, "alert_temp_cooldown_seconds") or "300"
-    alert_display_grace = await get_setting(db, "alert_display_grace_seconds") or "120"
     alert_email_enabled = (await get_setting(db, "email_notifications_enabled")) == "true"
 
     return templates.TemplateResponse(request, "settings.html", {
@@ -1556,7 +1553,6 @@ async def settings_page(
         "alert_temp_warning": alert_temp_warning,
         "alert_temp_critical": alert_temp_critical,
         "alert_temp_cooldown": alert_temp_cooldown,
-        "alert_display_grace": alert_display_grace,
         "alert_email_enabled": alert_email_enabled,
         "success": None,
         "error": None,
@@ -1725,7 +1721,6 @@ async def save_alert_settings(
     await set_setting(db, "alert_temp_warning_c", str(float(body.get("temp_warning_c", 70))))
     await set_setting(db, "alert_temp_critical_c", str(float(body.get("temp_critical_c", 80))))
     await set_setting(db, "alert_temp_cooldown_seconds", str(int(body.get("temp_cooldown_seconds", 300))))
-    await set_setting(db, "alert_display_grace_seconds", str(int(body.get("display_grace_seconds", 120))))
     await set_setting(db, "email_notifications_enabled", "true" if body.get("email_notifications_enabled") else "false")
 
     await audit_log(
@@ -1736,7 +1731,6 @@ async def save_alert_settings(
             "temp_warning_c": body.get("temp_warning_c"),
             "temp_critical_c": body.get("temp_critical_c"),
             "temp_cooldown_seconds": body.get("temp_cooldown_seconds"),
-            "display_grace_seconds": body.get("display_grace_seconds"),
             "email_notifications_enabled": bool(body.get("email_notifications_enabled")),
         },
         request=request,

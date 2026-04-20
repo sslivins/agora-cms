@@ -132,7 +132,8 @@ def test_pending_devices_listed_on_devices_page(
         status_cell = row.locator(f'[data-live-status="{serial}"]')
         expect(status_cell).to_have_attribute("data-device-status", "pending")
         # An Adopt button is present for pending devices.
-        expect(row.locator('button', has_text="Adopt")).to_be_visible()
+        # An Adopt action is present in the row's kebab menu for pending devices.
+        expect(row.locator('button[role="menuitem"]', has_text="Adopt")).to_have_count(1)
 
 
 def test_adopt_first_device_through_ui(
@@ -150,7 +151,9 @@ def test_adopt_first_device_through_ui(
 
     row = page.locator(f'tr.device-row[data-device-id="{target}"]').first
     expect(row).to_be_visible(timeout=10_000)
-    row.locator('button', has_text="Adopt").click()
+    # Open the row's kebab menu and click the Adopt action.
+    row.locator('.btn-kebab').click()
+    page.locator('.kebab-menu:popover-open').get_by_role('menuitem', name='Adopt').click()
 
     # ── Adoption modal ──────────────────────────────────────────────────
     # Modal is dynamically constructed by showAdoptModal() in app.js;

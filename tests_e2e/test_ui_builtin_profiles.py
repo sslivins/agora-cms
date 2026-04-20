@@ -10,6 +10,8 @@ Verifies that:
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests_e2e.conftest import click_row_action
+
 
 @pytest.mark.e2e
 class TestBuiltinProfileUI:
@@ -23,7 +25,7 @@ class TestBuiltinProfileUI:
         rows = page.locator("tr", has=page.locator(".badge-builtin"))
         expect(rows.first).to_be_visible()
         for i in range(rows.count()):
-            expect(rows.nth(i).locator("button", has_text="Edit")).to_be_visible()
+            expect(rows.nth(i).locator('[role="menuitem"]', has_text="Edit")).to_have_count(1)
 
     def test_builtin_has_reset_button(self, page: Page, e2e_server):
         """Built-in profile rows should have Reset buttons."""
@@ -32,7 +34,7 @@ class TestBuiltinProfileUI:
 
         rows = page.locator("tr", has=page.locator(".badge-builtin"))
         for i in range(rows.count()):
-            expect(rows.nth(i).locator("button", has_text="Reset")).to_be_visible()
+            expect(rows.nth(i).locator('[role="menuitem"]', has_text="Reset")).to_have_count(1)
 
     def test_builtin_has_no_delete_button(self, page: Page, e2e_server):
         """Built-in profile rows should not have Delete buttons."""
@@ -41,7 +43,7 @@ class TestBuiltinProfileUI:
 
         rows = page.locator("tr", has=page.locator(".badge-builtin"))
         for i in range(rows.count()):
-            expect(rows.nth(i).locator("button", has_text="Delete")).to_have_count(0)
+            expect(rows.nth(i).locator('[role="menuitem"]', has_text="Delete")).to_have_count(0)
 
     def test_builtin_has_copy_button(self, page: Page, e2e_server):
         """Built-in profile rows should have Copy buttons."""
@@ -50,7 +52,7 @@ class TestBuiltinProfileUI:
 
         rows = page.locator("tr", has=page.locator(".badge-builtin"))
         for i in range(rows.count()):
-            expect(rows.nth(i).locator("button", has_text="Copy")).to_be_visible()
+            expect(rows.nth(i).locator('[role="menuitem"]', has_text="Copy")).to_have_count(1)
 
     def test_custom_profile_has_all_buttons(self, page: Page, api, e2e_server):
         """Non-built-in profile should show Edit, Copy, and Delete buttons (no Reset)."""
@@ -64,10 +66,10 @@ class TestBuiltinProfileUI:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="e2e-custom-btns")
-        expect(row.locator("button", has_text="Edit")).to_be_visible()
-        expect(row.locator("button", has_text="Copy")).to_be_visible()
-        expect(row.locator("button", has_text="Delete")).to_be_visible()
-        expect(row.locator("button", has_text="Reset")).to_have_count(0)
+        expect(row.locator('[role="menuitem"]', has_text="Edit")).to_have_count(1)
+        expect(row.locator('[role="menuitem"]', has_text="Copy")).to_have_count(1)
+        expect(row.locator('[role="menuitem"]', has_text="Delete")).to_have_count(1)
+        expect(row.locator('[role="menuitem"]', has_text="Reset")).to_have_count(0)
 
 
 @pytest.mark.e2e
@@ -86,7 +88,7 @@ class TestCopyProfileUI:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="e2e-to-copy").first
-        row.locator("button", has_text="Copy").click()
+        click_row_action(row, "Copy")
 
         # Wait for page reload after copy
         page.wait_for_load_state("domcontentloaded")
@@ -96,8 +98,8 @@ class TestCopyProfileUI:
         expect(copy_row).to_be_visible()
 
         # The copy should NOT be built-in (should have Edit and Delete)
-        expect(copy_row.locator("button", has_text="Edit")).to_be_visible()
-        expect(copy_row.locator("button", has_text="Delete")).to_be_visible()
+        expect(copy_row.locator('[role="menuitem"]', has_text="Edit")).to_have_count(1)
+        expect(copy_row.locator('[role="menuitem"]', has_text="Delete")).to_have_count(1)
 
     def test_copy_builtin_creates_editable_profile(self, page: Page, e2e_server):
         """Copying a built-in profile should create an editable copy."""
@@ -105,7 +107,7 @@ class TestCopyProfileUI:
         page.wait_for_load_state("domcontentloaded")
 
         builtin_row = page.locator("tr", has=page.locator(".badge-builtin")).first
-        builtin_row.locator("button", has_text="Copy").click()
+        click_row_action(builtin_row, "Copy")
 
         page.wait_for_load_state("domcontentloaded")
 
@@ -113,6 +115,6 @@ class TestCopyProfileUI:
         copy_row = page.locator("tr", has_text="Copy of pi-4").first
         expect(copy_row).to_be_visible()
         # The copy should be editable (has Edit button)
-        expect(copy_row.locator("button", has_text="Edit")).to_be_visible()
+        expect(copy_row.locator('[role="menuitem"]', has_text="Edit")).to_have_count(1)
         # Should NOT have built-in badge
         expect(copy_row.locator(".badge-builtin")).to_have_count(0)

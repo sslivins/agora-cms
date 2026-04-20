@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Users — Agora CMS{% endblock %}
 
 {% block content %}
@@ -97,18 +98,20 @@
                 </td>
                 {% if can_write %}
                 <td class="actions-cell">
-                    <button class="btn btn-sm" onclick="openEditUser('{{ u.id }}')">Edit</button>
-                    {% if u.must_change_password %}
-                    <button class="btn btn-sm btn-secondary" onclick="resendInvite('{{ u.id }}', '{{ u.email }}')">Resend Invite</button>
-                    {% endif %}
-                    {% if u.id | string != current_user_id %}
-                    {% if u.is_active %}
-                    <button class="btn btn-sm btn-warning" onclick="toggleUserActive('{{ u.id }}', false)">Disable</button>
-                    {% else %}
-                    <button class="btn btn-sm btn-success" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
-                    {% endif %}
-                    <button class="btn btn-sm btn-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
-                    {% endif %}
+                    {% call macros.kebab_menu() %}
+                        <button type="button" role="menuitem" onclick="openEditUser('{{ u.id }}')">Edit</button>
+                        {% if u.must_change_password %}
+                        <button type="button" role="menuitem" onclick="resendInvite('{{ u.id }}', '{{ u.email }}')">Resend Invite</button>
+                        {% endif %}
+                        {% if u.id | string != current_user_id %}
+                            {% if u.is_active %}
+                            <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', false)">Disable</button>
+                            {% else %}
+                            <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
+                            {% endif %}
+                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
+                        {% endif %}
+                    {% endcall %}
                 </td>
                 {% endif %}
             </tr>
@@ -184,8 +187,10 @@
             </div>
             {% if can_write_roles and not role.is_builtin %}
             <div class="role-actions">
-                <button class="btn btn-sm" onclick="openEditRole('{{ role.id }}')">Edit</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteRole('{{ role.id }}', '{{ role.name }}')">Delete</button>
+                {% call macros.kebab_menu() %}
+                    <button type="button" role="menuitem" onclick="openEditRole('{{ role.id }}')">Edit</button>
+                    <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteRole('{{ role.id }}', '{{ role.name }}')">Delete</button>
+                {% endcall %}
             </div>
             {% endif %}
         </div>

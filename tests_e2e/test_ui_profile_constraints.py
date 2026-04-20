@@ -7,6 +7,8 @@ options based on the selected codec/profile (Fixes #83).
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests_e2e.conftest import click_row_action
+
 
 @pytest.mark.e2e
 class TestCreateFormPixelFormatConstraints:
@@ -83,7 +85,7 @@ class TestEditModalConstraints:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="edit-constraint-test")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
@@ -105,7 +107,7 @@ class TestEditModalConstraints:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="edit-cs-constraint")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)

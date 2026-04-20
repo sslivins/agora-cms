@@ -419,17 +419,19 @@ function moveDeviceRowInDom(deviceId, newGroupId) {
     if (before) destTbody.insertBefore(row, before);
     else destTbody.appendChild(row);
 
-    // The "Remove" button (compact row, last cell) is only shown when the
-    // device belongs to a group. Toggle it based on the new destination.
+    // The "Remove from group" action (compact row, last cell) is only shown when the
+    // device belongs to a group. Rendered as a kebab menu matching the server-side macro.
     const actionsCell = row.querySelector('td.actions');
     if (actionsCell) {
         if (toKey === 'ungrouped') {
             actionsCell.innerHTML = '';
-        } else if (!actionsCell.querySelector('button')) {
+        } else if (!actionsCell.querySelector('.btn-kebab')) {
+            const mid = 'kebab-' + Math.floor(Math.random() * 1e12);
             actionsCell.innerHTML =
-                '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" ' +
-                `onclick="assignGroup('${deviceId}', '')">Remove</button>` +
-                '<span class="tooltip">Remove this device from the group</span></span>';
+                `<button type="button" class="btn-kebab" popovertarget="${mid}" aria-haspopup="menu" aria-label="Actions">⋮</button>` +
+                `<div id="${mid}" popover class="kebab-menu" role="menu">` +
+                `<button type="button" role="menuitem" onclick="assignGroup('${deviceId}', '')" title="Remove this device from the group">Remove from group</button>` +
+                `</div>`;
         }
     }
 
@@ -1354,28 +1356,20 @@ function removeStreamGroup(badge) {
 }
 
 // ── Group popup (shared for upload + detail row) ──
+// Native popover API — browser handles open/close/light-dismiss/Escape.
+// popover="auto" auto-closes any sibling popover when a new one opens.
 function openGroupPopup(popupId) {
-    closeAllGroupPopups();
     const popup = document.getElementById(popupId);
     if (!popup) return;
-    popup.style.display = "flex";
-    // Close when clicking outside (deferred to next frame to avoid catching the opening click)
-    requestAnimationFrame(() => {
-        function onClickOutside(e) {
-            const wrap = popup.closest(".group-picker-wrap");
-            if (wrap && wrap.contains(e.target)) return;
-            if (popup.contains(e.target)) return;
-            popup.style.display = "none";
-            document.removeEventListener("click", onClickOutside, true);
-            document.removeEventListener("mousedown", onClickOutside, true);
-        }
-        document.addEventListener("click", onClickOutside, true);
-        document.addEventListener("mousedown", onClickOutside, true);
-    });
+    if (popup.matches(":popover-open")) {
+        popup.hidePopover();
+    } else {
+        popup.showPopover();
+    }
 }
 
 function closeAllGroupPopups() {
-    document.querySelectorAll(".group-popup").forEach(p => p.style.display = "none");
+    document.querySelectorAll(".group-popup:popover-open").forEach(p => p.hidePopover());
 }
 
 // Disable the + button when no visible popup items remain; re-enable otherwise
@@ -1514,26 +1508,11 @@ async function unshareAsset(assetId, groupId) {
 }
 
 async function toggleGlobal(assetId) {
-    const resp = await apiCall("POST", `/api/assets/${assetId}/global`);
-    if (resp && resp.ok) {
-        const data = await resp.json();
-        const scopeEl = document.getElementById("scope-" + assetId);
-        if (!scopeEl) { location.reload(); return; }
-
-        scopeEl.innerHTML = "";
-        if (data.is_global) {
-            let h = '<span class="badge badge-ready">Global';
-            if (__isAdmin) h += ' <button class="btn-x" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" title="Remove global visibility">\u00d7</button>';
-            h += '</span>';
-            scopeEl.innerHTML = h;
-        } else {
-            scopeEl.innerHTML = '<span class="badge badge-pending">Personal</span>';
-            if (__isAdmin) {
-                scopeEl.innerHTML += ' <button class="btn btn-sm btn-secondary" style="margin-left:0.25rem;" onclick="event.stopPropagation(); toggleGlobal(\'' + assetId + '\')" type="button" title="Make visible to all groups">Make Global</button>';
-            }
-        }
-        _syncCollapsedScope(assetId);
-    }
+    // Implemented per-page in assets.html (IIFE scope has __userGroups/__isAdmin
+    // and _rebuildDetailScope). This stub keeps older inline onclick handlers
+    // working if app.js loads first; assets.html overwrites window.toggleGlobal.
+    if (window._toggleGlobalImpl) return window._toggleGlobalImpl(assetId);
+    location.reload();
 }
 
 // ── Schedule actions ──
@@ -1929,3 +1908,92 @@ window.addEventListener("load", () => {
 // pageshow fires on back/forward cache restores, where autofill state
 // may already be present without any events having fired.
 window.addEventListener("pageshow", _rerunAllGates);
+
+
+// ── Generic top-layer popover positioning ───────────────────────────────
+// Native [popover] elements render in the top-layer with UA defaults
+// (margin:auto, inset:0) that center them on the viewport. We override
+// to position:fixed; inset:auto and set top/left here, since CSS
+// anchor-positioning still has uneven cross-browser support (early 2026).
+//
+// opts.placement: "below" (default) or "above"
+// opts.align:     "right" (default — right-edge to right-edge of anchor)
+//                 or "left" (left-edge to left-edge of anchor)
+function positionPopover(popover, opts = {}) {
+    const btn = document.querySelector(`[popovertarget="${popover.id}"]`);
+    if (!btn) return;
+    const placement = opts.placement || "below";
+    const align = opts.align || "right";
+    const b = btn.getBoundingClientRect();
+    // Clear inline coords so the popover's natural size is measured.
+    popover.style.top = "";
+    popover.style.left = "";
+    const m = popover.getBoundingClientRect();
+    const gap = 4;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Vertical: honor placement, but flip if it would overflow the viewport.
+    let top;
+    if (placement === "above") {
+        top = b.top - gap - m.height;
+        if (top < 8 && b.bottom + gap + m.height <= vh - 8) {
+            top = b.bottom + gap;
+        }
+    } else {
+        top = b.bottom + gap;
+        if (top + m.height > vh - 8 && b.top - gap - m.height >= 8) {
+            top = b.top - gap - m.height;
+        }
+    }
+
+    // Horizontal alignment, clamped to viewport.
+    let left = align === "left" ? b.left : b.right - m.width;
+    if (left < 8) left = 8;
+    if (left + m.width > vw - 8) left = vw - 8 - m.width;
+
+    popover.style.top = `${top}px`;
+    popover.style.left = `${left}px`;
+}
+
+// ── Kebab (⋮) action menu — #249 ──────────────────────────────────────
+// Uses the native HTML popover API — open/close/light-dismiss/Escape are
+// all handled by the browser. We only need to position the popover below
+// (or above, if it would overflow) its invoker button.
+
+function positionKebab(menu) { positionPopover(menu, { placement: "below", align: "right" }); }
+function positionGroupPopup(p) { positionPopover(p, { placement: "above", align: "left" }); }
+
+document.addEventListener("toggle", (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement)) return;
+    const isKebab = el.classList.contains("kebab-menu");
+    const isGroupPopup = el.classList.contains("group-popup");
+    if (!isKebab && !isGroupPopup) return;
+    const btn = document.querySelector(`[popovertarget="${el.id}"]`);
+    if (e.newState === "open") {
+        if (btn) btn.setAttribute("aria-expanded", "true");
+        if (isKebab) positionKebab(el);
+        else positionGroupPopup(el);
+    } else if (btn) {
+        btn.setAttribute("aria-expanded", "false");
+    }
+}, true);
+
+// Stamp recent kebab clicks so live-refresh pollers can avoid re-rendering
+// the actions cell during the click → popover-open window (which would
+// detach the click target before the browser opens the popover).
+document.addEventListener("mousedown", (e) => {
+    const t = e.target;
+    if (t instanceof Element && t.closest(".btn-kebab")) {
+        window._kebabClickAt = Date.now();
+    }
+}, true);
+
+// Re-position any open popover on viewport changes so it doesn't drift.
+function _repositionAllOpenPopovers() {
+    document.querySelectorAll(".kebab-menu:popover-open").forEach(positionKebab);
+    document.querySelectorAll(".group-popup:popover-open").forEach(positionGroupPopup);
+}
+window.addEventListener("scroll", _repositionAllOpenPopovers, true);
+window.addEventListener("resize", _repositionAllOpenPopovers);

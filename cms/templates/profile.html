@@ -164,8 +164,11 @@
                     <td>${formatDate(k.created_at)}</td>
                     <td>${formatDate(k.last_used_at)}</td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-sm btn-warning" onclick="regenerateMyKey('${k.id}', '${k.name}')">Regenerate</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteMyKey('${k.id}', '${k.name}')">Delete</button>
+                        <button type="button" class="btn-kebab" popovertarget="kebab-key-${k.id}" aria-haspopup="menu" aria-label="Actions">⋮</button>
+                        <div id="kebab-key-${k.id}" popover class="kebab-menu" role="menu">
+                            <button type="button" role="menuitem" onclick="regenerateMyKey('${k.id}', '${k.name}')">Regenerate</button>
+                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteMyKey('${k.id}', '${k.name}')">Delete</button>
+                        </div>
                     </td>
                 </tr>
             `).join("");
@@ -265,8 +268,6 @@
         "online": { label: "Device Online", desc: "When a previously-offline device comes back online" },
         "temp_high": { label: "Temperature High", desc: "When a device exceeds temperature warning or critical thresholds" },
         "temp_cleared": { label: "Temperature Cleared", desc: "When a device temperature returns to normal" },
-        "display_disconnected": { label: "Display Disconnected", desc: "When a device's HDMI display has been disconnected for the grace period" },
-        "display_connected": { label: "Display Connected", desc: "When a previously-disconnected HDMI display reconnects" },
     };
 
     let prefs = [];

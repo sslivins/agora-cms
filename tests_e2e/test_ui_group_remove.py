@@ -3,7 +3,7 @@
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async
+from tests_e2e.conftest import run_async, click_row_action
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -39,10 +39,11 @@ class TestGroupRemoveButtons:
         page.wait_for_load_state("domcontentloaded")
         expect(page.locator("strong", has_text="Remove Test Group")).to_be_visible(timeout=5000)
 
-        # Click the Delete button on the group header (not the per-device Remove buttons)
+        # Click the Delete action on the group header (not the per-device Remove buttons).
+        # Post-#249: the Delete button is inside a kebab menu within .group-actions.
         group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
-        remove_btn = group_panel.locator(".group-actions button", has_text="Delete")
-        remove_btn.click()
+        group_panel.locator(".group-actions .btn-kebab").click()
+        page.locator(".kebab-menu:popover-open").get_by_role("menuitem", name="Delete").click()
 
         # Confirm the modal
         confirm_modal = page.locator(".modal-overlay")
@@ -86,7 +87,7 @@ class TestGroupRemoveButtons:
         expect(group_body).to_be_visible(timeout=3000)
         device_row = group_body.locator('tr[data-device-id="grp-rm-003"]')
         expect(device_row).to_be_visible(timeout=3000)
-        device_row.locator("button", has_text="Remove").click()
+        click_row_action(device_row, "Remove from group")
 
         page.wait_for_load_state("networkidle")
 
@@ -144,14 +145,16 @@ class TestGroupRemoveButtons:
         group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         expect(group_panel).to_be_visible(timeout=5000)
 
-        # The Delete button should be disabled
-        remove_btn = group_panel.locator(".group-actions button:has-text('Delete')")
-        expect(remove_btn).to_be_visible(timeout=3000)
-        expect(remove_btn).to_be_disabled()
-
-        # Tooltip should mention schedule(s)
-        tooltip = remove_btn.locator(".tooltip")
-        expect(tooltip).to_contain_text("schedule")
+        # The Delete menuitem should be disabled and its title should mention schedule(s).
+        # Post-#249: action is inside a kebab menu.
+        group_panel.locator(".group-actions .btn-kebab").click()
+        menu = page.locator(".kebab-menu:popover-open")
+        delete_item = menu.get_by_role("menuitem", name="Delete")
+        expect(delete_item).to_be_visible(timeout=3000)
+        expect(delete_item).to_be_disabled()
+        # Tooltip copy lives on the `title` attribute of the disabled item.
+        title = delete_item.get_attribute("title") or ""
+        assert "schedule" in title.lower(), f"expected 'schedule' in title, got {title!r}"
 
     def test_group_remove_enabled_after_schedule_deleted(self, page: Page, api, ws_url, e2e_server):
         """Remove button should become enabled after the schedule referencing the group is deleted."""
@@ -189,10 +192,11 @@ class TestGroupRemoveButtons:
         group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         expect(group_panel).to_be_visible(timeout=5000)
 
-        # The Delete button should now be enabled
-        remove_btn = group_panel.locator(".group-actions button", has_text="Delete")
-        expect(remove_btn).to_be_visible(timeout=3000)
-        expect(remove_btn).to_be_enabled()
+        # The Delete action should now be enabled (inside the group-header kebab menu).
+        group_panel.locator(".group-actions .btn-kebab").click()
+        delete_item = page.locator(".kebab-menu:popover-open").get_by_role("menuitem", name="Delete")
+        expect(delete_item).to_be_visible(timeout=3000)
+        expect(delete_item).to_be_enabled()
 
 
 class TestGroupRemoveInPlaceMove:
@@ -237,12 +241,12 @@ class TestGroupRemoveInPlaceMove:
         expect(group_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(1)
         expect(ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(0)
 
-        # Expand and click Remove.
+        # Expand and click Remove (in the row kebab).
         group_panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
         group_panel.locator(".group-header").click()
         device_row = group_panel.locator('tr[data-device-id="inplace-001"]')
         expect(device_row).to_be_visible(timeout=3000)
-        device_row.locator("button", has_text="Remove").click()
+        click_row_action(device_row, "Remove from group")
 
         # Wait for the in-place move (no reload) — row should appear in the
         # ungrouped tbody and disappear from the group tbody.
@@ -264,9 +268,9 @@ class TestGroupRemoveInPlaceMove:
             "Page should not reload when removing a device from a group"
         )
 
-        # The Remove button should be gone from the moved row (now ungrouped).
+        # The Remove from group action should be gone from the moved row (now ungrouped).
         moved_row = ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')
-        expect(moved_row.locator("button", has_text="Remove")).to_have_count(0)
+        expect(moved_row.locator('button[role="menuitem"]', has_text="Remove from group")).to_have_count(0)
 
     def test_assign_to_group_moves_row_from_ungrouped_in_place(self, page: Page, api, ws_url, e2e_server):
         """Assigning an ungrouped device to a group via the inline dropdown
@@ -302,6 +306,6 @@ class TestGroupRemoveInPlaceMove:
         # No reload happened.
         assert page.url == nav_url_before
 
-        # The moved row should now have a Remove button.
+        # The moved row should now have a Remove from group action in its kebab.
         moved_row = group_tbody.locator('tr[data-device-id="inplace-002"]')
-        expect(moved_row.locator("button", has_text="Remove")).to_have_count(1)
+        expect(moved_row.locator('button[role="menuitem"]', has_text="Remove from group")).to_have_count(1)

@@ -3,6 +3,8 @@
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests_e2e.conftest import click_row_action
+
 
 @pytest.mark.e2e
 class TestProfileTableAutoDisplay:
@@ -58,7 +60,7 @@ class TestProfileTableAutoDisplay:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="edit-auto-test")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
@@ -108,7 +110,7 @@ class TestProfileEditCodecDisplay:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="codec-test")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
@@ -134,7 +136,7 @@ class TestProfileEditCodecDisplay:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="codec-h265")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
@@ -167,7 +169,7 @@ class TestProfileEditRetranscodeWarning:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="warn-crf")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
@@ -198,7 +200,7 @@ class TestProfileEditRetranscodeWarning:
         page.wait_for_load_state("domcontentloaded")
 
         row = page.locator("tr", has_text="warn-desc")
-        row.locator("button", has_text="Edit").click()
+        click_row_action(row, "Edit")
 
         modal = page.locator(".modal-box")
         expect(modal).to_be_visible(timeout=3000)
