@@ -18,19 +18,20 @@ def _asset(asset_type, duration_seconds=None):
     )
 
 
-def test_video_with_duration_shows_mmss():
-    assert asset_label_suffix(_asset(AssetType.VIDEO, 332)) == " (5:32)"
+def test_video_with_duration_shows_icon_and_mmss():
+    assert asset_label_suffix(_asset(AssetType.VIDEO, 332)) == " 🎬 (5:32)"
 
 
-def test_saved_stream_with_duration_shows_mmss():
+def test_saved_stream_with_duration_shows_icon_and_mmss():
     # The bug this is protecting: saved streams were falling through
     # because the template only rendered duration for VIDEO.
-    assert asset_label_suffix(_asset(AssetType.SAVED_STREAM, 125)) == " (2:05)"
+    assert asset_label_suffix(_asset(AssetType.SAVED_STREAM, 125)) == " 📼 (2:05)"
 
 
-def test_saved_stream_without_duration_no_suffix():
-    # Capture still in progress — don't render "(None)" or similar.
-    assert asset_label_suffix(_asset(AssetType.SAVED_STREAM, None)) == ""
+def test_saved_stream_without_duration_shows_icon_only():
+    # Capture still in progress — don't render "(None)"; icon is still
+    # shown so the asset's type is identifiable.
+    assert asset_label_suffix(_asset(AssetType.SAVED_STREAM, None)) == " 📼"
 
 
 def test_webpage_shows_globe():
@@ -41,17 +42,18 @@ def test_live_stream_shows_antenna():
     assert asset_label_suffix(_asset(AssetType.STREAM)) == " 📡"
 
 
-def test_image_no_suffix():
-    assert asset_label_suffix(_asset(AssetType.IMAGE)) == ""
+def test_image_shows_frame_icon():
+    assert asset_label_suffix(_asset(AssetType.IMAGE)) == " 🖼️"
 
 
 def test_duration_pads_seconds():
-    assert asset_label_suffix(_asset(AssetType.VIDEO, 65)) == " (1:05)"
+    assert asset_label_suffix(_asset(AssetType.VIDEO, 65)) == " 🎬 (1:05)"
 
 
-def test_duration_zero_falsy_no_suffix():
-    # A zero-duration asset is effectively unknown — don't render "(0:00)".
-    assert asset_label_suffix(_asset(AssetType.VIDEO, 0)) == ""
+def test_duration_zero_falsy_icon_only():
+    # A zero-duration asset is effectively unknown — don't render "(0:00)",
+    # but still show the video icon.
+    assert asset_label_suffix(_asset(AssetType.VIDEO, 0)) == " 🎬"
 
 
 def test_accepts_string_type_value():

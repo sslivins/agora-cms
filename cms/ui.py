@@ -82,25 +82,52 @@ def select_days(day_names, day_numbers):
 templates.env.filters["select_days"] = select_days
 
 
+_ASSET_ICONS = {
+    "video": "🎬",
+    "image": "🖼️",
+    "webpage": "🌐",
+    "stream": "📡",
+    "saved_stream": "📼",
+}
+
+
+def _asset_type_value(asset_or_type):
+    """Resolve an asset-type string from either a string or an Asset/enum."""
+    if asset_or_type is None:
+        return None
+    if isinstance(asset_or_type, str):
+        return asset_or_type
+    asset_type = getattr(asset_or_type, "asset_type", asset_or_type)
+    return getattr(asset_type, "value", asset_type)
+
+
+def asset_icon(asset_or_type):
+    """Return the emoji icon for an asset type, or empty string if unknown.
+
+    Accepts an Asset ORM object, an AssetType enum/string, or None.
+    Used across templates to give each asset type a distinct visual
+    identity (🎬 video, 🖼️ image, 🌐 webpage, 📡 stream, 📼 saved stream).
+    """
+    return _ASSET_ICONS.get(_asset_type_value(asset_or_type), "")
+
+
+templates.env.filters["asset_icon"] = asset_icon
+
+
 def asset_label_suffix(asset):
     """Return a human-readable suffix for asset labels in dropdowns.
 
-    Shows duration `(mm:ss)` for any asset with a duration (video or
-    saved stream), a 🌐 globe for webpages, and a 📡 antenna for live
-    streams. Returns an empty string for assets with no meaningful
-    suffix (e.g. images). See issue #316.
+    Always includes the type icon, plus a `(mm:ss)` duration when the
+    asset has one (video or saved stream). Returns an empty string for
+    untyped assets. See issue #316.
     """
+    icon = asset_icon(asset)
     duration = getattr(asset, "duration_seconds", None)
     if duration:
         total = int(duration)
-        return f" ({total // 60}:{total % 60:02d})"
-    asset_type = getattr(asset, "asset_type", None)
-    type_val = getattr(asset_type, "value", asset_type)
-    if type_val == "webpage":
-        return " 🌐"
-    if type_val == "stream":
-        return " 📡"
-    return ""
+        dur = f"({total // 60}:{total % 60:02d})"
+        return f" {icon} {dur}" if icon else f" {dur}"
+    return f" {icon}" if icon else ""
 
 templates.env.filters["asset_label_suffix"] = asset_label_suffix
 
