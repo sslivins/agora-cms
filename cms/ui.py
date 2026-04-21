@@ -1359,6 +1359,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         "group_name_map": group_name_map,
         "is_admin": is_admin,
         "uploader_map": uploader_map,
+        "current_user_id": user.id if user else None,
     })
 
 

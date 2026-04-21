@@ -16,12 +16,16 @@ regress. Full UI integration tests live elsewhere.
 """
 from pathlib import Path
 
-TEMPLATE = Path(__file__).resolve().parents[1] / "cms" / "templates" / "assets.html"
+TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "cms" / "templates"
+# Variant row markup moved from assets.html to the asset_row macro in
+# _macros.html (issue #87 no-reload work); check both.
+TEMPLATE = TEMPLATES_DIR / "assets.html"
+MACROS = TEMPLATES_DIR / "_macros.html"
 
 
 def test_variant_row_has_stable_data_variant_id():
     """The Jinja-rendered variant row must include data-variant-id."""
-    src = TEMPLATE.read_text(encoding="utf-8")
+    src = TEMPLATE.read_text(encoding="utf-8") + MACROS.read_text(encoding="utf-8")
     # The loop body is the only place we render variant rows inside the
     # live-variant-table tbody.
     assert "{% for v in a.visible_variants %}" in src

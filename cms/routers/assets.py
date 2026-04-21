@@ -887,6 +887,98 @@ async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> list[uuid.UUID
     return new_ids
 
 
+@router.get("/{asset_id}/row", dependencies=[Depends(require_permission(ASSETS_READ))])
+async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    """Return the rendered <tr class='asset-row'> + <tr class='asset-detail'>
+    HTML for a single asset. Used by the no-reload flows on /assets (poller
+    swap when variants first appear, cross-replica new-asset insert, upload
+    complete, etc.) so the client never has to synthesize row markup in JS.
+    See issue #87.
+    """
+    from fastapi.responses import HTMLResponse
+    from cms.ui import templates
+    from cms.services.variant_view import collapse_to_latest
+
+    await _verify_asset_access(asset_id, request, db)
+
+    result = await db.execute(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        .options(selectinload(Asset.variants).selectinload(AssetVariant.profile))
+    )
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    user: User | None = getattr(request.state, "user", None)
+    user_perms = list(user.role.permissions) if user and user.role else []
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    # Annotate the same way ui.assets_page does so the macro sees identical fields.
+    visible_variants = sorted(
+        collapse_to_latest(asset.variants),
+        key=lambda v: (v.profile.name if v.profile else ""),
+    )
+    asset.visible_variants = visible_variants
+    total = len(visible_variants)
+    asset.variant_total = total
+    asset.variant_ready = sum(1 for v in visible_variants if v.status == VariantStatus.READY)
+    asset.variant_processing = sum(1 for v in visible_variants if v.status == VariantStatus.PROCESSING)
+    asset.variant_failed = sum(1 for v in visible_variants if v.status == VariantStatus.FAILED)
+    asset.variant_aggregate_progress = (
+        round(sum((v.progress or 0.0) for v in visible_variants) / total, 1) if total > 0 else 0.0
+    )
+    sc = (await db.execute(
+        select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset.id)
+    )).scalar() or 0
+    asset.schedule_count = sc
+    ga_rows = (await db.execute(
+        select(GroupAsset).where(GroupAsset.asset_id == asset.id)
+    )).scalars().all()
+    if group_ids is not None:
+        ga_rows = [ga for ga in ga_rows if ga.group_id in group_ids]
+    asset.group_asset_entries = ga_rows
+
+    # Groups the user can add the asset to + lookup for badge names.
+    if group_ids is None:
+        user_groups = (await db.execute(
+            select(DeviceGroup).order_by(DeviceGroup.name)
+        )).scalars().all()
+        all_groups = (await db.execute(select(DeviceGroup))).scalars().all()
+    elif group_ids:
+        user_groups = (await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids)).order_by(DeviceGroup.name)
+        )).scalars().all()
+        all_groups = (await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids))
+        )).scalars().all()
+    else:
+        user_groups = []
+        all_groups = []
+    group_name_map = {str(g.id): g.name for g in all_groups}
+
+    uploader_map: dict[str, str] = {}
+    if is_admin and asset.uploaded_by_user_id:
+        row = (await db.execute(
+            select(User.id, User.username, User.email).where(User.id == asset.uploaded_by_user_id)
+        )).first()
+        if row:
+            uploader_map[str(row.id)] = row.username or row.email
+
+    macros = templates.env.get_template("_macros.html").module
+    html = macros.asset_row(
+        asset,
+        user_perms,
+        is_admin,
+        group_name_map,
+        user_groups,
+        uploader_map,
+        user.id if user else None,
+    )
+    return HTMLResponse(str(html))
+
+
 @router.get("/{asset_id}", response_model=AssetOut, dependencies=[Depends(require_permission(ASSETS_READ))])
 async def get_asset(asset_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
