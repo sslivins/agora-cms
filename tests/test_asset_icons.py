@@ -223,6 +223,10 @@ def test_option_templates_prefix_icon_before_name(
     a suffix, this catches it.
     """
     body = _read(template_file)
+    # The group-default dropdown was extracted to macros.group_panel as part
+    # of the #87 no-reload work, so also scan _macros.html for devices.html.
+    if template_file == "devices.html":
+        body += _read("_macros.html")
     pattern = "{{ a | asset_icon }} {{ a.display_name"
     count = body.count(pattern)
     assert count >= must_contain_before_name, (
