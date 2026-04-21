@@ -50,6 +50,21 @@ services:
       timeout: 3s
       retries: 5
 
+  # Local WPS-shaped broker for Stage 2 of the multi-replica rollout
+  # (#344). Opt-in under the `wps` profile until Stage 2b wires the CMS
+  # WPSTransport up to it. Today the default compose stack keeps using
+  # the direct-WS path via `cms/routers/ws.py`.
+  local-broker:
+    build: ./local-broker
+    profiles: ["wps"]
+    restart: unless-stopped
+    ports:
+      - "7080:7080"
+    environment:
+      - WPS_ACCESS_KEY=${WPS_ACCESS_KEY:-dev-broker-access-key-change-me}
+      - WPS_HUB=${WPS_HUB:-agora}
+      - WPS_UPSTREAM_URL=${WPS_UPSTREAM_URL:-http://cms:8080/internal/wps/events}
+
 volumes:
   pgdata:
   cms-assets:
