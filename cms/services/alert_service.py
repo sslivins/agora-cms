@@ -214,8 +214,8 @@ class AlertService:
         self._offline_timers.pop(device_id, None)
 
         # Double-check the device hasn't reconnected during the sleep
-        from cms.services.device_manager import device_manager
-        if device_manager.is_connected(device_id):
+        from cms.services.transport import transport
+        if transport.is_connected(device_id):
             return
 
         self._was_offline.add(device_id)
