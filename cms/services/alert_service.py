@@ -16,6 +16,7 @@ from typing import Optional
 
 from cms.models.device_event import DeviceEvent, DeviceEventType
 from cms.models.notification import Notification
+from cms.services.transport import get_transport
 
 
 def _to_uuid(val: str | _uuid.UUID | None) -> _uuid.UUID | None:
@@ -214,8 +215,7 @@ class AlertService:
         self._offline_timers.pop(device_id, None)
 
         # Double-check the device hasn't reconnected during the sleep
-        from cms.services.transport import get_transport
-        if get_transport().is_connected(device_id):
+        if await get_transport().is_connected(device_id):
             return
 
         self._was_offline.add(device_id)

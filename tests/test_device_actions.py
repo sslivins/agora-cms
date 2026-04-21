@@ -66,8 +66,13 @@ class TestLocalApiToggle:
             assert msg["type"] == "config"
             assert msg["local_api_enabled"] is False
 
-            conn = device_manager.get("la-001")
-            assert conn.local_api_enabled is False
+            # set_state_flags persists to the DB now
+            from sqlalchemy import select
+            from cms.models.device import Device as _D
+            val = (await db_session.execute(
+                select(_D.local_api_enabled).where(_D.id == "la-001")
+            )).scalar_one()
+            assert val is False
         finally:
             device_manager.disconnect("la-001")
 
@@ -85,8 +90,12 @@ class TestLocalApiToggle:
             msg = ws.send_json.call_args[0][0]
             assert msg["local_api_enabled"] is True
 
-            conn = device_manager.get("la-002")
-            assert conn.local_api_enabled is True
+            from sqlalchemy import select
+            from cms.models.device import Device as _D
+            val = (await db_session.execute(
+                select(_D.local_api_enabled).where(_D.id == "la-002")
+            )).scalar_one()
+            assert val is True
         finally:
             device_manager.disconnect("la-002")
 

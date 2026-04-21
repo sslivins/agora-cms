@@ -53,6 +53,20 @@ class _FakeSession:
     async def commit(self):
         self.commits += 1
 
+    async def execute(self, stmt, *args, **kwargs):
+        # The wps_webhook receiver runs ``device_presence.mark_online`` /
+        # ``mark_offline`` which issue UPDATE statements.  Record them so
+        # tests can assert the side effect without needing a real DB.
+        if not hasattr(self, "executed"):
+            self.executed = []
+        self.executed.append(stmt)
+
+        class _Result:
+            def scalar_one_or_none(self_inner):
+                return None
+
+        return _Result()
+
     async def refresh(self, obj, *args, **kwargs):  # pragma: no cover - not hit here
         pass
 
@@ -185,9 +199,9 @@ class TestSignatureVerification:
 
 @pytest.mark.asyncio
 class TestSystemEvents:
-    async def test_connected_registers_remote(self, client):
-        from cms.services.device_manager import device_manager
-
+    async def test_connected_marks_online_in_db(self, client, app_and_session):
+        """Stage 2c: sys.connected must issue an UPDATE on devices.online."""
+        _, session = app_and_session
         cid = "conn-register"
         r = await client.post(
             "/internal/wps/events",
@@ -202,19 +216,16 @@ class TestSystemEvents:
             },
         )
         assert r.status_code == 204
-        assert device_manager.is_connected("pi-register")
-        conn = device_manager.get("pi-register")
-        assert conn is not None
-        assert conn.websocket is None
-        assert conn.connection_id == cid
-
-    async def test_disconnected_removes_from_manager(self, client):
+        # mark_online → one UPDATE + one commit.
+        assert getattr(session, "executed", []), "mark_online should have issued an UPDATE"
+        assert session.commits >= 1
+        # No ghost in the in-memory registry any more — presence is DB-only.
         from cms.services.device_manager import device_manager
+        assert not device_manager.is_connected("pi-register")
 
-        # Arrange: pre-register.
-        device_manager.register_remote("pi-gone", connection_id="old-cid")
-        assert device_manager.is_connected("pi-gone")
-
+    async def test_disconnected_marks_offline_in_db(self, client, app_and_session):
+        """Stage 2c: sys.disconnected must issue an UPDATE on devices.online."""
+        _, session = app_and_session
         cid = "old-cid"
         r = await client.post(
             "/internal/wps/events",
@@ -229,7 +240,8 @@ class TestSystemEvents:
             },
         )
         assert r.status_code == 204
-        assert not device_manager.is_connected("pi-gone")
+        assert getattr(session, "executed", []), "mark_offline should have issued an UPDATE"
+        assert session.commits >= 1
 
 
 # ---------------------------------------------------------------- user events

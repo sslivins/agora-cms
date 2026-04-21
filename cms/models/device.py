@@ -100,6 +100,10 @@ class Device(Base):
     ssh_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     local_api_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     display_connected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Last-known IP address written by whichever replica processed the
+    # most recent register.  None when no registering replica has written
+    # yet (or the device is only reachable via WPS, which has no IP).
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
     profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")

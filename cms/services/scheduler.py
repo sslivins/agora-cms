@@ -250,7 +250,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
 
     # Resolve target devices for each active schedule (filter per-device skips)
     now_playing = []
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    live_states = {s["device_id"]: s for s in await get_transport().get_all_states()}
 
     # Get device names
     all_device_ids = set()
@@ -826,7 +826,7 @@ async def push_sync_to_device(device_id: str, db) -> None:
     """Build and push a fresh sync to a single connected device."""
     await _ensure_skips_loaded(db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         return
 
     # Only sync adopted devices — pending/orphaned devices should not receive content
@@ -857,7 +857,7 @@ async def push_sync_to_affected_devices(schedule: Schedule, db) -> None:
 
 async def evaluate_schedules() -> None:
     """Single evaluation pass: sync schedules to devices and detect MISSED playback."""
-    if not get_transport().connected_count:
+    if not await get_transport().connected_count():
         return
 
     sf = _get_session_factory()
@@ -876,7 +876,7 @@ async def evaluate_schedules() -> None:
         tz_name = tz_result.scalar_one_or_none() or "UTC"
         local_now = now.astimezone(ZoneInfo(tz_name)).replace(tzinfo=None)
 
-        connected = set(get_transport().connected_ids)
+        connected = set(await get_transport().connected_ids())
 
         # Push full sync to each connected device (dedup via hash)
         for did in connected:
@@ -999,7 +999,7 @@ async def evaluate_schedules() -> None:
 
         # Seed _confirmed_playing from live device state after CMS restart
         live_states = {
-            s["device_id"]: s for s in get_transport().get_all_states()
+            s["device_id"]: s for s in await get_transport().get_all_states()
         }
         from shared.models.asset import AssetType
         for s in active:

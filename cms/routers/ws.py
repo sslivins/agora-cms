@@ -229,6 +229,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         # ── 3. Register connection ──
         client_ip = raw.get("ip_address") or (websocket.client.host if websocket.client else None)
         device_manager.register(device_id, websocket, ip_address=client_ip)
+        # Stage 2c: reflect presence in the DB so every replica can see it.
+        from cms.services import device_presence
+        await device_presence.mark_online(db, device_id, ip_address=client_ip)
 
         # ── 3b. Notify alert service of reconnection ──
         _group_id = str(device.group_id) if device.group_id else None
@@ -313,6 +316,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
     finally:
         if device_id:
             device_manager.disconnect(device_id)
+            # Stage 2c: clear the DB presence flag so other replicas
+            # stop treating this device as online.
+            try:
+                from cms.services import device_presence
+                await device_presence.mark_offline(db, device_id)
+            except Exception:
+                logger.exception("Failed to mark %s offline in DB", device_id)
             # Refresh group/name/status so a group reassignment made mid-connection
             # is reflected in the disconnect notification. The STATUS path already
             # refreshes these (see above), but a device may disconnect before any

@@ -117,6 +117,14 @@ def upgrade() -> None:
         "devices",
         sa.Column("display_connected", sa.Boolean(), nullable=True),
     )
+    # Last-known IP address (populated on register; cleared on disconnect).
+    # The per-connection value is replica-local but the DB column lets
+    # other replicas render it in the UI after the registering replica
+    # has written it.
+    op.add_column(
+        "devices",
+        sa.Column("ip_address", sa.Text(), nullable=True),
+    )
 
     # HOT-friendly page layout for the high-churn telemetry columns.
     # Applies to new pages; existing small rows get rewritten organically.

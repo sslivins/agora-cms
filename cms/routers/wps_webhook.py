@@ -129,14 +129,22 @@ async def events_receiver(
     if ce_type == "azure.webpubsub.sys.connected":
         if not ce_user_id:
             return Response(status_code=400, content="missing ce-userId")
-        device_manager.register_remote(
-            ce_user_id, connection_id=ce_connection_id, ip_address=None,
+        # Stage 2c: presence now lives in the DB.  The in-memory
+        # ``device_manager.register_remote`` ghost entry was only kept
+        # so the per-replica ``pending_log_requests`` map and the
+        # existing dispatcher could look up the user; the pending-log
+        # map is now addressed by request_id only, so we skip the ghost
+        # entry entirely.
+        from cms.services import device_presence
+        await device_presence.mark_online(
+            db, ce_user_id, connection_id=ce_connection_id,
         )
         return Response(status_code=204)
 
     if ce_type == "azure.webpubsub.sys.disconnected":
         if ce_user_id:
-            device_manager.disconnect(ce_user_id)
+            from cms.services import device_presence
+            await device_presence.mark_offline(db, ce_user_id)
         return Response(status_code=204)
 
     # ---- user events ---------------------------------------------------

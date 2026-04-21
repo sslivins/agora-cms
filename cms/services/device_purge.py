@@ -30,7 +30,7 @@ async def purge_stale_pending_devices(db: AsyncSession, ttl_hours: int) -> list[
 
     for device in candidates:
         # Skip devices that are currently connected
-        if get_transport().is_connected(device.id):
+        if await get_transport().is_connected(device.id):
             continue
 
         # Use last_seen, fall back to registered_at

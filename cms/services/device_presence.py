@@ -50,6 +50,7 @@ _STATE_COLUMNS = (
     Device.display_connected,
     Device.connection_id,
     Device.online,
+    Device.ip_address,
 )
 
 
@@ -74,10 +75,10 @@ def _row_to_state(row: Any) -> dict[str, Any]:
         "connected_at": last_seen.isoformat() if last_seen else None,
         "cpu_temp_c": row.cpu_temp_c,
         "load_avg": row.load_avg,
-        # Not a column — retained as ``None`` for API shape compatibility.
-        # IP address is a per-connection property that doesn't survive
-        # across replicas; callers that care use the direct-WS path.
-        "ip_address": None,
+        # IP is now a column — populated by whichever replica processed
+        # the most recent register.  May be None for WPS-originated
+        # connections or devices that haven't reconnected since Stage 2c.
+        "ip_address": row.ip_address,
         "error": row.error,
         "error_since": error_since.isoformat() if error_since else None,
         "ssh_enabled": row.ssh_enabled,
@@ -92,6 +93,7 @@ async def mark_online(
     db: AsyncSession,
     device_id: str,
     connection_id: str | None = None,
+    ip_address: str | None = None,
 ) -> None:
     """Flip ``devices.online`` to ``true`` for *device_id*.
 
@@ -99,12 +101,22 @@ async def mark_online(
     the UI is immediately accurate after reconnect.  ``connection_id``
     is persisted when the caller has one (WPS webhook path); direct-WS
     connections don't expose a stable id and pass ``None``.
+    ``ip_address`` is persisted when the caller has it (direct-WS path);
+    WPS-only connections pass ``None`` and the column keeps its
+    previous value (so the last-known IP survives an offline blip).
     """
     now = datetime.now(timezone.utc)
+    values: dict[str, Any] = {
+        "online": True,
+        "connection_id": connection_id,
+        "last_seen": now,
+    }
+    # Only overwrite ip_address when we have one — otherwise preserve
+    # the last-known value.
+    if ip_address is not None:
+        values["ip_address"] = ip_address
     await db.execute(
-        update(Device)
-        .where(Device.id == device_id)
-        .values(online=True, connection_id=connection_id, last_seen=now)
+        update(Device).where(Device.id == device_id).values(**values)
     )
     await db.commit()
 
