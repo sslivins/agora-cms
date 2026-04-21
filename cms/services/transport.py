@@ -136,8 +136,40 @@ class LocalDeviceTransport(DeviceTransport):
 
 
 transport: DeviceTransport = LocalDeviceTransport()
-"""Process-wide device transport singleton.
+"""Process-wide device transport — retained as a module attribute for
+backwards compatibility.  Prefer ``get_transport()`` / ``set_transport()``
+at new call sites: those work even after the lifespan startup has
+swapped in a different implementation (e.g., ``WPSTransport``).
 
-Import as ``from cms.services.transport import transport`` and use its
-methods directly.  Tests may replace this attribute with a stub
-implementation (e.g., ``cms.services.transport.transport = FakeT()``)."""
+Import as ``from cms.services.transport import get_transport`` and use
+``get_transport().send_to_device(...)``.  Tests may replace the backing
+instance with :func:`set_transport` and restore with
+:func:`reset_transport_to_local`.
+"""
+
+
+def set_transport(t: DeviceTransport) -> None:
+    """Install *t* as the process-wide device transport.
+
+    Updates both the ``transport`` module attribute and the accessor's
+    backing instance so importers that captured the singleton at import
+    time (legacy pattern) continue to work.
+    """
+    global transport
+    transport = t
+
+
+def get_transport() -> DeviceTransport:
+    """Return the currently-installed device transport.
+
+    Always returns the latest instance installed by :func:`set_transport`
+    — this is what new code should call.
+    """
+    return transport
+
+
+def reset_transport_to_local() -> LocalDeviceTransport:
+    """Reinstall a fresh ``LocalDeviceTransport`` — used by test fixtures."""
+    t = LocalDeviceTransport()
+    set_transport(t)
+    return t

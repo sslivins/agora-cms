@@ -16,7 +16,7 @@ from cms.auth import require_auth, require_permission, get_user_group_ids
 from cms.database import get_db
 from cms.permissions import LOGS_READ
 from cms.models.device import Device
-from cms.services.transport import transport
+from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 
 logger = logging.getLogger("agora.cms.logs")
@@ -59,8 +59,8 @@ async def download_logs(req: LogDownloadRequest, request: Request, db: AsyncSess
         # ── Device logs ──
         tasks = {}
         for device_id in req.device_ids:
-            if transport.is_connected(device_id):
-                tasks[device_id] = transport.request_logs(
+            if get_transport().is_connected(device_id):
+                tasks[device_id] = get_transport().request_logs(
                     device_id,
                     services=req.services,
                     since=req.since,
