@@ -894,9 +894,10 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     ) or 0
 
     from cms.services.version_checker import is_update_available
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    transport = get_transport()
+    live_states = {s["device_id"]: s for s in await transport.get_all_states()}
     for d in group.devices:
-        d.is_online = get_transport().is_connected(d.id)
+        d.is_online = await transport.is_connected(d.id)
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
         d.ip_address = state["ip_address"] if state else None
