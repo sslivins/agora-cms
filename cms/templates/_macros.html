@@ -114,3 +114,307 @@
     </td>
 </tr>
 {%- endmacro %}
+
+{#
+  Asset row pair (collapsed <tr class='asset-row'> + expanded <tr class='asset-detail'>)
+  for the /assets page. Shared between the full page render and the GET
+  /api/assets/{id}/row fragment endpoint so both paths emit identical markup
+  — see issue #87.
+#}
+{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None) -%}
+            {% set is_owner = (current_user_id and a.uploaded_by_user_id == current_user_id) or is_admin %}
+            {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
+            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
+                <td class="expand-toggle">▶</td>
+                <td class="wrap asset-filename-cell">
+                    <span class="has-tooltip">
+                        <span class="asset-filename-truncate editable-name" data-asset-id="{{ a.id }}" onclick="event.stopPropagation(); editAssetName(this)" title="Click to rename">{{ a.display_name or a.original_filename or a.filename }}</span>
+                        <span class="tooltip">{{ a.display_name or a.original_filename or a.filename }}</span>
+                    </span>
+                    {% if shared_badge %}
+                    <span class="has-tooltip" style="margin-left:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
+                    {% endif %}
+                </td>
+                <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
+                <td>
+                    {% if a.is_global %}
+                    <span class="badge badge-ready">Global</span>
+                    {% elif a.group_asset_entries | length > 0 %}
+                    {% for ga in a.group_asset_entries[:2] %}
+                    <span class="badge badge-processing" style="margin-right:0.15rem">{{ group_name_map.get(ga.group_id | string, '?') }}</span>
+                    {% endfor %}
+                    {% if a.group_asset_entries | length > 2 %}
+                    <span class="badge badge-overflow has-tooltip">+{{ a.group_asset_entries | length - 2 }} more<span class="tooltip">{% for ga in a.group_asset_entries[2:] %}{% if not loop.first %}, {% endif %}{{ group_name_map.get(ga.group_id | string, '?') }}{% endfor %}</span></span>
+                    {% endif %}
+                    {% elif a.uploaded_by_user_id %}
+                    <span class="badge badge-pending">Personal</span>
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
+                    —
+                    {% else %}
+                    {% set mb = a.size_bytes / 1048576 %}
+                    {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
+                    {% endif %}
+                </td>
+                <td data-live-variants="{{ a.id }}">
+                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
+                    —
+                    {% elif a.variant_total > 0 %}
+                    {% if a.variant_failed > 0 and a.variant_ready > 0 %}
+                        <span class="has-tooltip"><span class="badge badge-partial">Partial</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_failed }} failed</span></span>
+                    {% elif a.variant_failed > 0 %}
+                        <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ a.variant_failed }} of {{ a.variant_total }} failed</span></span>
+                    {% elif a.variant_processing > 0 %}
+                        <span class="has-tooltip"><span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.variant_aggregate_progress) }}%">Transcoding</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_processing }} processing</span></span>
+                    {% elif a.variant_ready == a.variant_total %}
+                        <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">{{ a.variant_total }} variant{{ 's' if a.variant_total != 1 else '' }}</span></span>
+                    {% else %}
+                        <span class="badge badge-pending">Queued</span>
+                    {% endif %}
+                    {% elif a.asset_type.value == 'saved_stream' %}
+                        {% if a.capture_error %}
+                        <span class="has-tooltip"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
+                        {% elif a.capture_progress is not none %}
+                        <span class="has-tooltip"><span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing</span><span class="tooltip">Stream capture in progress</span></span>
+                        {% else %}
+                        <span class="has-tooltip"><span class="badge badge-pending">Pending</span><span class="tooltip">Waiting for stream capture to start</span></span>
+                        {% endif %}
+                    {% elif a.asset_type.value == 'image' %}
+                    —
+                    {% else %}
+                    <span class="text-muted">none</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if a.asset_type.value == 'image' or a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
+                    —
+                    {% elif a.duration_seconds %}
+                        {% set h = (a.duration_seconds // 3600) | int %}
+                        {% set m = ((a.duration_seconds % 3600) // 60) | int %}
+                        {% set s = (a.duration_seconds % 60) | int %}
+                        {{ "%02d:%02d:%02d"|format(h, m, s) }}
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td class="actions" onclick="event.stopPropagation()">
+                    {% call kebab_menu() %}
+                    {% if a.asset_type.value == 'webpage' %}
+                        <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open URL</a>
+                        {% if 'assets:write' in user_perms and is_owner %}
+                        <button type="button" role="menuitem" onclick="editWebpageUrl('{{ a.id }}', {{ (a.url or '') | tojson }})">Edit URL</button>
+                        {% endif %}
+                    {% elif a.asset_type.value == 'stream' %}
+                        <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open Stream</a>
+                    {% else %}
+                        <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
+                    {% endif %}
+                    {% if 'assets:write' in user_perms and a.asset_type.value == 'saved_stream' and is_owner %}
+                        <button type="button" role="menuitem" onclick="recaptureStream('{{ a.id }}', '{{ a.display_name or a.original_filename or a.filename }}')" title="Re-run the stream capture">Re-capture</button>
+                    {% endif %}
+                    {% if 'assets:write' in user_perms and is_owner %}
+                        {% if a.schedule_count > 0 %}
+                        <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Used by {{ a.schedule_count }} schedule{{ 's' if a.schedule_count != 1 }}. Remove from all schedules before deleting.">Delete</button>
+                        {% else %}
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                        {% endif %}
+                    {% endif %}
+                    {% endcall %}
+                </td>
+            </tr>
+            <tr class="asset-detail" data-detail-for="{{ a.id }}" style="display: none;">
+                <td></td>
+                <td colspan="7">
+                    <div class="detail-grid">
+                        {% if (a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' or a.asset_type.value == 'saved_stream') and a.url %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">URL</span>
+                            <span class="detail-value">
+                                <a href="{{ a.url }}" target="_blank" rel="noopener" style="word-break:break-all">{{ a.url }}</a>
+                                {% if a.asset_type.value == 'saved_stream' and a.size_bytes == 0 %}
+                                <span data-live-capture="{{ a.id }}" style="margin-left: 0.5rem;">
+                                    {% if a.capture_error %}
+                                    <span class="has-tooltip"><span class="badge badge-failed">Capture failed</span><span class="tooltip">{{ a.capture_error[:200] }}</span></span>
+                                    {% elif a.capture_progress is not none %}
+                                    <span class="badge badge-progress" style="--pct: {{ "%.1f"|format(a.capture_progress) }}%">Capturing {{ "%.0f"|format(a.capture_progress) }}%</span>
+                                    {% else %}
+                                    <span class="badge badge-pending">Queued</span>
+                                    {% endif %}
+                                </span>
+                                {% endif %}
+                            </span>
+                        </div>
+                        {% endif %}
+                        <div class="detail-item">
+                            <span class="detail-label">Uploaded</span>
+                            <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%b %d, %Y %I:%M %p') }}</span>
+                        </div>
+                        {% if is_admin and a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
+                        <div class="detail-item">
+                            <span class="detail-label">Uploaded by</span>
+                            <span class="detail-value">{{ uploader_map[a.uploaded_by_user_id | string] }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.width and a.height %}
+                        <div class="detail-item">
+                            <span class="detail-label">Resolution</span>
+                            <span class="detail-value">{{ a.width }}×{{ a.height }}</span>
+                        </div>
+                        {% endif %}
+                        <div class="detail-item">
+                            <span class="detail-label">Size</span>
+                            <span class="detail-value">
+                                {% set mb = a.size_bytes / 1048576 %}
+                                {% if mb >= 1 %}{{ "%.1f"|format(mb) }} MB{% else %}{{ "%.0f"|format(a.size_bytes / 1024) }} KB{% endif %}
+                            </span>
+                        </div>
+                        {% if a.video_codec %}
+                        <div class="detail-item">
+                            <span class="detail-label">{% if a.asset_type.value == 'image' %}Format{% else %}Video Codec{% endif %}</span>
+                            <span class="detail-value">{{ a.video_codec }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.asset_type.value != 'image' and a.audio_codec %}
+                        <div class="detail-item">
+                            <span class="detail-label">Audio Codec</span>
+                            <span class="detail-value">{{ a.audio_codec }}</span>
+                        </div>
+                        {% endif %}
+                        {% if a.asset_type.value != 'image' and a.frame_rate %}
+                        <div class="detail-item">
+                            <span class="detail-label">Frame Rate</span>
+                            <span class="detail-value">{{ a.frame_rate }} fps</span>
+                        </div>
+                        {% endif %}
+                        {% if a.asset_type.value != 'image' and a.bitrate %}
+                        <div class="detail-item">
+                            <span class="detail-label">Bitrate</span>
+                            <span class="detail-value">{{ "%.1f"|format(a.bitrate / 1000000) }} Mbps</span>
+                        </div>
+                        {% endif %}
+                        {% if a.color_space %}
+                        <div class="detail-item">
+                            <span class="detail-label">Color Space</span>
+                            <span class="detail-value">{{ a.color_space }}</span>
+                        </div>
+                        {% endif %}
+                        <div class="detail-item">
+                            <span class="detail-label">Stored As</span>
+                            <span class="detail-value monospace">{{ a.filename }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Checksum</span>
+                            <span class="detail-value">
+                                <span class="checksum-wrap has-tooltip">
+                                    <span class="checksum-text">{{ a.checksum }}</span>
+                                    <button class="btn-copy" onclick="event.stopPropagation(); copyChecksum(this, '{{ a.checksum }}')" type="button">Copy</button>
+                                    <span class="tooltip">{{ a.checksum }}</span>
+                                </span>
+                            </span>
+                        </div>
+                        {% if 'assets:write' in user_perms %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">Scope</span>
+                            <span class="detail-value" id="scope-{{ a.id }}" style="display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap; white-space:normal; overflow:visible">
+                                {% if a.is_global %}
+                                <span class="badge badge-ready">Global{% if is_admin %} <button class="btn-x" onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" title="Remove global visibility">&times;</button>{% endif %}</span>
+                                {% elif a.group_asset_entries | length == 0 %}
+                                <span class="badge badge-pending">Personal</span>
+                                {% else %}
+                                {% for ga in a.group_asset_entries %}
+                                <span class="badge badge-processing" data-group-id="{{ ga.group_id }}">
+                                    {{ group_name_map.get(ga.group_id | string, 'Unknown') }}
+                                    <button class="btn-x" onclick="event.stopPropagation(); unshareAsset('{{ a.id }}', '{{ ga.group_id }}')" title="Remove from group">&times;</button>
+                                </span>
+                                {% endfor %}
+                                {% endif %}
+                                {% if user_groups | length > 0 and not a.is_global %}
+                                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                                    {% set unassigned = [] %}{% for g in user_groups %}{% set already = a.group_asset_entries | selectattr('group_id', 'equalto', g.id) | list %}{% if not already %}{% if unassigned.append(g) %}{% endif %}{% endif %}{% endfor %}
+                                    <button class="btn-add-group" onclick="event.stopPropagation(); openGroupPopup('group-popup-{{ a.id }}')" type="button" title="Add to group" {% if unassigned | length == 0 %}disabled{% endif %}>+</button>
+                                    <div id="group-popup-{{ a.id }}" popover class="group-popup">
+                                        {% for g in unassigned %}
+                                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}"
+                                                onclick="event.stopPropagation(); pickAssetGroup('{{ a.id }}', '{{ g.id }}', '{{ g.name }}', this)">{{ g.name }}</button>
+                                        {% endfor %}
+                                    </div>
+                                </span>
+                                {% endif %}
+                                {% if is_admin and not a.is_global %}
+                                <button class="btn btn-sm btn-secondary" style="margin-left:0.25rem;"
+                                        onclick="event.stopPropagation(); toggleGlobal('{{ a.id }}')" type="button"
+                                        title="Make visible to all groups">
+                                    Make Global
+                                </button>
+                                {% endif %}
+                            </span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% if a.visible_variants | length > 0 %}
+                    <div style="margin-top: 0.5rem;" data-live-variant-section="{{ a.id }}">
+                        <span class="detail-label">Variants</span>
+                        <table class="variants-table" style="margin-top: 0.35rem; font-size: 0.85rem;">
+                            <thead>
+                                <tr>
+                                    <th>Profile</th>
+                                    <th>Status</th>
+                                    <th>Resolution</th>
+                                    {% if a.asset_type.value != 'image' %}
+                                    <th>Codec</th>
+                                    <th>Bitrate</th>
+                                    <th>FPS</th>
+                                    {% else %}
+                                    <th>Format</th>
+                                    {% endif %}
+                                    <th>Size</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody data-live-variant-table="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}">
+                                {% for v in a.visible_variants %}
+                                <tr data-variant-id="{{ v.id }}">
+                                    <td>{{ v.profile.name if v.profile else '—' }}</td>
+                                    <td>
+                                        {% if v.status.value == 'ready' %}
+                                        <span class="badge badge-ready">Ready</span>
+                                        {% elif v.status.value == 'processing' %}
+                                        <span class="badge badge-progress" style="--pct: {{ "%.1f"|format(v.progress) }}%">{{ "%.0f"|format(v.progress) }}%</span>
+                                        {% elif v.status.value == 'failed' %}
+                                        <span class="has-tooltip"><span class="badge badge-failed">Failed</span><span class="tooltip">{{ v.error_message[:120] if v.error_message else 'Unknown error' }}</span></span>
+                                        {% elif v.status.value == 'cancelled' %}
+                                        <span class="has-tooltip"><span class="badge badge-cancelled">Cancelled</span><span class="tooltip">{{ v.error_message[:120] if v.error_message else 'Cancelled mid-transcode' }}</span></span>
+                                        {% else %}
+                                        <span class="badge badge-pending">Queued</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ ("%d×%d"|format(v.width, v.height)) if v.width and v.height else '—' }}</td>
+                                    <td>{{ v.video_codec or '—' }}</td>
+                                    {% if a.asset_type.value != 'image' %}
+                                    <td>{{ ("%.1f Mbps"|format(v.bitrate / 1000000)) if v.bitrate else '—' }}</td>
+                                    <td>{{ (v.frame_rate ~ " fps") if v.frame_rate else '—' }}</td>
+                                    {% endif %}
+                                    <td>
+                                        {% if v.size_bytes > 0 %}
+                                            {% set vmb = v.size_bytes / 1048576 %}
+                                            {% if vmb >= 1 %}{{ "%.1f"|format(vmb) }} MB{% else %}{{ "%.0f"|format(v.size_bytes / 1024) }} KB{% endif %}
+                                        {% else %}—{% endif %}
+                                    </td>
+                                    <td>
+                                        {% if v.status.value == 'ready' %}
+                                        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); previewVariant('{{ v.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}', '{{ v.profile.name if v.profile else '' }}')">Preview</button>
+                                        {% else %}—{% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
+                </td>
+            </tr>
+{%- endmacro %}

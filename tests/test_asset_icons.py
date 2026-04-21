@@ -117,11 +117,15 @@ def _read(name: str) -> str:
 
 
 def test_assets_table_badge_uses_asset_icon_filter():
-    """The Type column in the assets library must render the icon."""
-    body = _read("assets.html")
+    """The Type column in the assets library must render the icon.
+
+    The per-asset row was extracted to the _macros.asset_row macro as part
+    of the #87 no-reload work, so check both assets.html and _macros.html.
+    """
+    body = _read("assets.html") + _read("_macros.html")
     assert "a | asset_icon" in body, (
-        "assets.html must use the asset_icon filter on each row's type badge. "
-        "If you moved it, update this test accordingly."
+        "asset_row macro (in _macros.html) must use the asset_icon filter on each "
+        "row's type badge. If you moved it, update this test accordingly."
     )
 
 

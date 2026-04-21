@@ -371,3 +371,65 @@ class TestProfilesCrossSession:
         expect(
             second_page.locator(f'tr[data-profile-id="{prof_id}"]'),
         ).to_contain_text("High", timeout=POLL_TIMEOUT_MS)
+
+
+# ─────────────────────────── Assets ──────────────────────────────────
+
+
+class TestAssetsCrossSession:
+    """Session B's /assets poller must reflect session A's asset changes.
+
+    Added as part of the #87 no-reload rework of assets.html: the page used
+    to call ``location.reload()`` when a new asset appeared on a second
+    replica; it now fetches the rendered row pair from
+    ``GET /api/assets/{id}/row`` and inserts it in place.
+    """
+
+    def test_upload_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A uploads an asset → session B's poller inserts the row."""
+        page.goto("/assets")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/assets")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        resp = api.create_asset("xsess-upload.mp4")
+        assert resp.status_code == 201, resp.text
+        asset_id = resp.json()["id"]
+
+        # Session A does not act through the UI here (upload flow is covered
+        # by the in-session tests). We're testing that the *other* session's
+        # poller detects the new id and fetches its row fragment.
+        expect(
+            second_page.locator(f'tr.asset-row[data-asset-id="{asset_id}"]')
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+        # Both the collapsed row and its paired detail row must land.
+        expect(
+            second_page.locator(f'tr.asset-detail[data-detail-for="{asset_id}"]')
+        ).to_have_count(1, timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A deletes an asset → session B sees the row disappear."""
+        resp = api.create_asset("xsess-delete.mp4")
+        assert resp.status_code == 201, resp.text
+        asset_id = resp.json()["id"]
+
+        page.goto("/assets")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/assets")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        # Both sessions start with the row visible.
+        expect(
+            second_page.locator(f'tr.asset-row[data-asset-id="{asset_id}"]')
+        ).to_be_visible(timeout=5000)
+
+        del_resp = api.delete(f"/api/assets/{asset_id}")
+        assert del_resp.status_code in (200, 204), del_resp.text
+
+        expect(
+            second_page.locator(f'tr.asset-row[data-asset-id="{asset_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+        expect(
+            second_page.locator(f'tr.asset-detail[data-detail-for="{asset_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+

@@ -15,7 +15,13 @@ of Google Drive / Dropbox / OneDrive.
 from pathlib import Path
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "cms" / "templates"
-ASSETS_HTML = (TEMPLATES_DIR / "assets.html").read_text(encoding="utf-8")
+# Per-asset row markup moved from assets.html to _macros.html (issue #87
+# no-reload work); concatenate both so the structural guards still apply.
+ASSETS_HTML = (
+    (TEMPLATES_DIR / "assets.html").read_text(encoding="utf-8")
+    + "\n"
+    + (TEMPLATES_DIR / "_macros.html").read_text(encoding="utf-8")
+)
 
 
 def test_shared_badge_is_in_name_column_not_actions():
@@ -46,13 +52,20 @@ def test_shared_badge_set_is_row_scoped():
     the Name cell) so they're still in scope for the Actions column,
     which uses ``is_owner`` to gate delete/recapture buttons.
     """
-    # The {% set is_owner %} must appear before the <tr ... asset-row> that
-    # starts each row so the variable is in scope for the whole row.
-    is_owner_idx = ASSETS_HTML.find("{% set is_owner = ")
-    tr_idx = ASSETS_HTML.find('<tr class="asset-row"')
+    # After #87 the row was extracted into the _macros.asset_row macro. Check
+    # the macro body specifically so the `{% set is_owner %}` before the <tr>
+    # ordering still holds.
+    macro_body = (TEMPLATES_DIR / "_macros.html").read_text(encoding="utf-8")
+    # Narrow to the asset_row macro body to avoid finding the word elsewhere.
+    start = macro_body.find("{% macro asset_row(")
+    end = macro_body.find("{%- endmacro %}", start)
+    assert start >= 0 and end > start, "asset_row macro not found in _macros.html"
+    body = macro_body[start:end]
+    is_owner_idx = body.find("{% set is_owner = ")
+    tr_idx = body.find('<tr class="asset-row"')
     assert is_owner_idx >= 0 and tr_idx >= 0, (
         "Expected `{% set is_owner %}` and `<tr class=\"asset-row\">` in "
-        "assets.html."
+        "the asset_row macro."
     )
     assert is_owner_idx < tr_idx, (
         "`is_owner` must be defined before the `<tr class=\"asset-row\">` "
