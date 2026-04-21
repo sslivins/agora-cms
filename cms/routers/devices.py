@@ -37,6 +37,11 @@ from cms.services.version_checker import check_now
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 
+# Separate router for device-originated endpoints — these authenticate
+# via X-Device-API-Key, so they must NOT inherit the browser-session
+# `require_auth` dependency from the main devices router.
+device_originated_router = APIRouter(prefix="/api/devices", tags=["devices (device-originated)"])
+
 # Track devices with an in-flight upgrade to prevent concurrent upgrade commands
 _upgrading: set[str] = set()
 
@@ -807,3 +812,82 @@ async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession =
     await db.delete(group)
     await db.commit()
     return {"deleted": str(group_id)}
+
+
+# ── Device-originated: WPS connect token ────────────────────────────
+#
+# A device authenticates with its API key and asks the CMS to mint a
+# WPS client access token.  Only available when DEVICE_TRANSPORT=wps;
+# returns 404 on the direct-WS deployment so devices discover the mode
+# automatically.
+
+
+def _hash_device_api_key(key: str) -> str:
+    import hashlib
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+async def _authenticate_device(
+    device_id: str, api_key: str | None, db: AsyncSession,
+) -> Device:
+    """Verify the presented X-Device-API-Key matches `device_id`.
+
+    Returns the Device on success, raises 401/404 otherwise.  Accepts
+    the previous key within the standard rotation grace window.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    if not api_key:
+        raise HTTPException(status_code=401, detail="X-Device-API-Key required")
+
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    key_hash = _hash_device_api_key(api_key)
+    if device.device_api_key_hash == key_hash:
+        return device
+    if (
+        device.previous_api_key_hash == key_hash
+        and device.api_key_rotated_at is not None
+    ):
+        rotated_at = device.api_key_rotated_at
+        if rotated_at.tzinfo is None:
+            rotated_at = rotated_at.replace(tzinfo=_tz.utc)
+        if datetime.now(_tz.utc) - rotated_at < timedelta(seconds=300):
+            return device
+    raise HTTPException(status_code=401, detail="Invalid device API key")
+
+
+@device_originated_router.post("/{device_id}/connect-token")
+async def connect_token(
+    device_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Mint a WPS client access token (URL + JWT) for `device_id`.
+
+    Auth: `X-Device-API-Key` header bound to `device_id`.
+    Behaviour depends on the configured transport:
+      - `DEVICE_TRANSPORT=wps`: return {url, token} from the WPS SDK.
+      - else: 404 so devices flip back to the direct-WS path.
+    """
+    settings = get_settings()
+    if settings.device_transport != "wps":
+        raise HTTPException(status_code=404, detail="WPS transport not enabled")
+
+    api_key = request.headers.get("X-Device-API-Key")
+    await _authenticate_device(device_id, api_key, db)
+
+    transport = get_transport()
+    if not hasattr(transport, "get_client_access_token"):
+        raise HTTPException(
+            status_code=500, detail="Transport does not support client tokens",
+        )
+    minutes = getattr(settings, "wps_token_lifetime_minutes", 60)
+    token = await transport.get_client_access_token(device_id, minutes_to_expire=minutes)
+    return {
+        "url": token.get("url"),
+        "token": token.get("token"),
+    }

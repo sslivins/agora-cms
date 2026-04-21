@@ -486,6 +486,7 @@ app.mount("/static", StaticFiles(directory="cms/static"), name="static")
 from cms.routers.assets import device_router as assets_device_router  # noqa: E402
 from cms.routers.assets import router as assets_router  # noqa: E402
 from cms.routers.devices import router as devices_router  # noqa: E402
+from cms.routers.devices import device_originated_router as devices_device_router  # noqa: E402
 from cms.routers.logs import router as logs_router  # noqa: E402
 from cms.routers.mcp import router as mcp_router  # noqa: E402
 from cms.routers.profiles import router as profiles_router  # noqa: E402
@@ -502,6 +503,7 @@ from cms.routers.users import router as users_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
 
 app.include_router(devices_router)
+app.include_router(devices_device_router)
 app.include_router(assets_router)
 app.include_router(assets_device_router)
 app.include_router(schedules_router)
