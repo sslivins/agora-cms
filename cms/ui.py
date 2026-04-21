@@ -1015,6 +1015,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.ready_for_selection = ready
         a.not_ready_reason = reason
     for d in devices:
+        # Detach from session before decorating with live-state attributes
+        # — some of those attribute names (pipeline_state, cpu_temp_c, …)
+        # are real columns in Stage 2c so setting them None would trigger
+        # a stray UPDATE on the next autoflush.
+        db.expunge(d)
         d.is_online = get_transport().is_connected(d.id)
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
@@ -1062,6 +1067,9 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         g.device_count = len(g.devices)
         g.schedule_count = group_sched_counts.get(g.id, 0)
         for d in g.devices:
+            # See note above: detach before decorating with live-state
+            # attributes since some names now collide with real columns.
+            db.expunge(d)
             d.is_online = get_transport().is_connected(d.id)
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
