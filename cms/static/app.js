@@ -1119,7 +1119,9 @@ async function editWebpageUrl(assetId, currentUrl) {
             return;
         }
         showToast("URL updated");
-        location.reload();
+        if (window._replaceAssetDetailRow) {
+            await window._replaceAssetDetailRow(assetId);
+        }
     } catch (e) {
         showToast("URL update failed: " + e.message, true);
     }
@@ -1169,7 +1171,27 @@ async function uploadAsset(form) {
             } else if (xhr.status >= 200 && xhr.status < 300) {
                 statusEl.textContent = "Upload complete!";
                 statusEl.className = "form-status text-success";
-                setTimeout(() => location.reload(), 500);
+                let newId = null;
+                try { newId = JSON.parse(xhr.responseText)?.id || null; } catch (_) {}
+                // Reset the form so another upload can start immediately
+                form.reset();
+                const badges = document.getElementById("upload-groups-badges");
+                if (badges) {
+                    badges.querySelectorAll(".badge[data-group-id]").forEach(b => b.remove());
+                }
+                const popup = document.getElementById("upload-group-popup");
+                if (popup) popup.querySelectorAll("[data-group-id]").forEach(b => { b.style.display = ""; });
+                submitBtn.disabled = false;
+                // Insert the new row (server-rendered, newest-first)
+                if (newId && window._insertAssetRow) {
+                    window._insertAssetRow(newId).finally(() => {
+                        setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
+                    });
+                } else {
+                    setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
+                }
+                resolve(true);
+                return;
             } else {
                 try {
                     const err = JSON.parse(xhr.responseText);
@@ -1282,11 +1304,21 @@ async function addWebpageAsset(form) {
             const err = await resp.json().catch(() => ({}));
             throw new Error(err.detail || `HTTP ${resp.status}`);
         }
+        const created = await resp.json().catch(() => null);
         statusEl.textContent = "✓ Webpage added successfully";
         statusEl.className = "form-status text-success";
         urlInput.value = "";
         nameInput.value = "";
-        setTimeout(() => location.reload(), 800);
+        // Clear group badges and reset popup options
+        const gb = document.getElementById("webpage-groups-badges");
+        if (gb) gb.querySelectorAll(".badge[data-group-id]").forEach(b => b.remove());
+        const wp = document.getElementById("webpage-group-popup");
+        if (wp) wp.querySelectorAll("[data-group-id]").forEach(b => { b.style.display = ""; });
+        submitBtn.disabled = false;
+        if (created && created.id && window._insertAssetRow) {
+            await window._insertAssetRow(created.id);
+        }
+        setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
     } catch (e) {
         statusEl.textContent = "✗ " + e.message;
         statusEl.className = "form-status text-danger";
@@ -1511,13 +1543,23 @@ async function addStreamAsset(form) {
             const err = await resp.json().catch(() => ({}));
             throw new Error(extractErrorMsg(err));
         }
+        const created = await resp.json().catch(() => null);
         statusEl.textContent = "✓ Stream added successfully";
         statusEl.className = "form-status text-success";
         urlInput.value = "";
         nameInput.value = "";
         document.getElementById('stream-info-card').style.display = 'none';
         _lastProbe = null;
-        setTimeout(() => location.reload(), 800);
+        // Clear group badges and reset popup options
+        const gb = document.getElementById("stream-groups-badges");
+        if (gb) gb.querySelectorAll(".badge[data-group-id]").forEach(b => b.remove());
+        const sp = document.getElementById("stream-group-popup");
+        if (sp) sp.querySelectorAll("[data-group-id]").forEach(b => { b.style.display = ""; });
+        submitBtn.disabled = false;
+        if (created && created.id && window._insertAssetRow) {
+            await window._insertAssetRow(created.id);
+        }
+        setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
     } catch (e) {
         statusEl.textContent = "✗ " + e.message;
         statusEl.className = "form-status text-danger";
@@ -1629,7 +1671,10 @@ async function pickAssetGroup(assetId, groupId, groupName, btnEl) {
     const resp = await apiCall("POST", `/api/assets/${assetId}/share?group_id=${groupId}`);
     if (resp && resp.ok) {
         const scopeEl = document.getElementById("scope-" + assetId);
-        if (!scopeEl) { location.reload(); return; }
+        if (!scopeEl) {
+            if (window._replaceAssetDetailRow) await window._replaceAssetDetailRow(assetId);
+            return;
+        }
         // Remove any "Personal" badge
         const personalBadge = scopeEl.querySelector(".badge-pending");
         if (personalBadge) personalBadge.remove();
@@ -1655,7 +1700,10 @@ async function unshareAsset(assetId, groupId) {
     if (resp && resp.ok) {
         const data = await resp.json();
         const scopeEl = document.getElementById("scope-" + assetId);
-        if (!scopeEl) { location.reload(); return; }
+        if (!scopeEl) {
+            if (window._replaceAssetDetailRow) await window._replaceAssetDetailRow(assetId);
+            return;
+        }
 
         // If asset is no longer visible to us, remove its rows entirely
         if (data.still_visible === false) {

@@ -437,3 +437,43 @@ class TestAssetsCrossSession:
             second_page.locator(f'tr.asset-detail[data-detail-for="{asset_id}"]')
         ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)
 
+
+class TestAssetsInSessionNoReload:
+    """Acting in a single browser session must NOT trigger location.reload().
+
+    Added with the #87 app.js asset-handler rework: upload / addWebpage /
+    addStream / editWebpageUrl used to do a full reload, which wiped any
+    open menu / scroll / popover state. They now insert the server-rendered
+    row fragment inline. We verify by stamping a sentinel on window and
+    confirming it survives.
+    """
+
+    def test_webpage_add_no_reload(self, page: Page, e2e_server):
+        """Adding a webpage via the UI inserts the row without reloading."""
+        page.goto("/assets")
+        page.wait_for_load_state("domcontentloaded")
+        # Stamp a sentinel that a reload would wipe.
+        page.evaluate("window.__noReloadSentinel = 'keep-me'")
+
+        # Submit the webpage form directly (bypasses the gate-enabled button;
+        # gate state isn't what we're testing).
+        page.evaluate("""
+            () => {
+                document.getElementById('webpage-url').value =
+                    'https://example.com/no-reload-' + Date.now();
+                document.getElementById('webpage-form').dispatchEvent(
+                    new Event('submit', { cancelable: true })
+                );
+            }
+        """)
+
+        # The new row should appear without a reload. We assert >=1 webpage
+        # row exists since the page may already have one; the key property
+        # we care about is that the sentinel survives.
+        page.wait_for_function(
+            "() => document.querySelectorAll('tr.asset-row').length >= 1",
+            timeout=POLL_TIMEOUT_MS,
+        )
+        # Small settle so any (buggy) reload path would have fired by now.
+        page.wait_for_timeout(500)
+        assert page.evaluate("window.__noReloadSentinel") == "keep-me"
