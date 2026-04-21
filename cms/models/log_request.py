@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -38,7 +38,19 @@ TERMINAL_STATUSES = frozenset({STATUS_READY, STATUS_FAILED, STATUS_EXPIRED})
 
 class LogRequest(Base):
     __tablename__ = "log_requests"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        # Drainer scan — pending rows oldest-first.
+        Index("ix_log_requests_status_created", "status", "created_at"),
+        # Per-device history lookup for the UI.
+        Index("ix_log_requests_device_created", "device_id", "created_at"),
+        # Reaper scan — migration creates a partial index on Postgres
+        # (``WHERE expires_at IS NOT NULL``), but Alembic autogenerate
+        # still treats the plain ``Index`` here as a match because the
+        # partial predicate is declared via ``postgresql_where`` at the
+        # migration layer.  See alembic/versions/0005_*.py.
+        Index("ix_log_requests_expires_at", "expires_at"),
+        {"extend_existing": True},
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     device_id: Mapped[str] = mapped_column(
