@@ -529,3 +529,139 @@ class TestGroupsCrossSession:
         expect(
             second_page.locator(f'.group-panel[data-group-id="{group_id}"]')
         ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)
+
+
+# ─────────────────────────── Users & Roles ────────────────────────────
+
+
+def _seed_smtp_via_api(api):
+    """Configure SMTP so /api/users POSTs don't hit the pre-flight gate."""
+    api.post("/api/settings/smtp", json={
+        "host": "smtp.example.com",
+        "port": 587,
+        "from_email": "noreply@example.com",
+        "username": "",
+    })
+
+
+def _get_role_id(api, name: str) -> str:
+    roles = api.get("/api/roles").json()
+    return next(r["id"] for r in roles if r["name"] == name)
+
+
+class TestUsersCrossSession:
+    """Cross-session visibility for the /users page Users tab.
+
+    Added as part of the #87 no-reload rework (users & roles slice):
+    session A creating/deleting a user used to require session B to
+    reload. Now session B's 5s user poller inserts the row via the
+    GET /api/users/{id}/row fragment and removes it on delete.
+    """
+
+    def test_create_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A creates a user → session B inserts the row inline."""
+        _seed_smtp_via_api(api)
+        viewer_id = _get_role_id(api, "Viewer")
+
+        page.goto("/users")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/users")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        resp = api.post("/api/users", json={
+            "email": "xsess-user-create@test.com",
+            "display_name": "Cross Session Create",
+            "role_id": viewer_id,
+            "group_ids": [],
+        })
+        assert resp.status_code == 201, resp.text
+        user_id = resp.json()["id"]
+
+        expect(
+            second_page.locator(f'tr[data-user-id="{user_id}"]')
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A deletes a user → session B removes the row."""
+        _seed_smtp_via_api(api)
+        viewer_id = _get_role_id(api, "Viewer")
+
+        resp = api.post("/api/users", json={
+            "email": "xsess-user-delete@test.com",
+            "display_name": "Cross Session Delete",
+            "role_id": viewer_id,
+            "group_ids": [],
+        })
+        assert resp.status_code == 201, resp.text
+        user_id = resp.json()["id"]
+
+        page.goto("/users")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/users")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        expect(
+            second_page.locator(f'tr[data-user-id="{user_id}"]')
+        ).to_be_visible(timeout=5000)
+
+        del_resp = api.delete(f"/api/users/{user_id}")
+        assert del_resp.status_code in (200, 204), del_resp.text
+
+        expect(
+            second_page.locator(f'tr[data-user-id="{user_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)
+
+
+class TestRolesCrossSession:
+    """Cross-session visibility for the /users page Roles tab.
+
+    Added as part of the #87 no-reload rework: session A creating or
+    deleting a role used to require session B to reload. Now session
+    B's 5s role poller inserts the card via the
+    GET /api/roles/{id}/card fragment and removes it on delete.
+    """
+
+    def test_create_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A creates a role → session B inserts the card inline."""
+        page.goto("/users")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/users")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        resp = api.post("/api/roles", json={
+            "name": "xsess-role-create",
+            "description": "cross-session test",
+            "permissions": ["devices:read"],
+        })
+        assert resp.status_code == 201, resp.text
+        role_id = resp.json()["id"]
+
+        expect(
+            second_page.locator(f'.role-card[data-role-id="{role_id}"]')
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A deletes a role → session B removes the card."""
+        resp = api.post("/api/roles", json={
+            "name": "xsess-role-delete",
+            "description": "",
+            "permissions": ["devices:read"],
+        })
+        assert resp.status_code == 201, resp.text
+        role_id = resp.json()["id"]
+
+        page.goto("/users")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/users")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        expect(
+            second_page.locator(f'.role-card[data-role-id="{role_id}"]')
+        ).to_be_visible(timeout=5000)
+
+        del_resp = api.delete(f"/api/roles/{role_id}")
+        assert del_resp.status_code in (200, 204), del_resp.text
+
+        expect(
+            second_page.locator(f'.role-card[data-role-id="{role_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)

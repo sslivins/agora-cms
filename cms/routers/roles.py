@@ -38,6 +38,37 @@ async def get_role(
     return role
 
 
+@router.get("/{role_id}/card", dependencies=[Depends(require_permission(ROLES_READ))])
+async def get_role_card(
+    role_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the rendered <div class="role-card"> HTML for a single role.
+
+    Used by the no-reload flows on the /users page Roles tab (create,
+    update, and the cross-session poller) so the client never has to
+    synthesize card markup in JS. See issue #87.
+    """
+    from fastapi.responses import HTMLResponse
+    from cms.permissions import PERMISSION_DESCRIPTIONS
+    from cms.ui import templates
+
+    result = await db.execute(select(Role).where(Role.id == role_id))
+    role = result.scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    actor = getattr(request.state, "user", None)
+    can_write_roles = bool(
+        actor and actor.role and ROLES_WRITE in actor.role.permissions
+    )
+
+    macros = templates.env.get_template("_macros.html").module
+    html = macros.role_card(role, PERMISSION_DESCRIPTIONS, can_write_roles)
+    return HTMLResponse(str(html))
+
+
 @router.post("", response_model=RoleRead, status_code=201)
 async def create_role(
     data: RoleCreate,
