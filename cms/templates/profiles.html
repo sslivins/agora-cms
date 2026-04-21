@@ -261,7 +261,7 @@ async function createProfile(form) {
         toggleBitrateCreate(form);
         if (created && created.id) {
             window._rememberProfile && window._rememberProfile(created.id, created);
-            await _insertProfileRow(created.id);
+            await window._insertProfileRow(created.id);
         } else {
             location.reload();
         }
@@ -383,7 +383,7 @@ async function editProfile(profileId) {
             if (updated && updated.id) {
                 window._rememberProfile && window._rememberProfile(updated.id, updated);
             }
-            await _replaceProfileRow(profileId);
+            await window._replaceProfileRow(profileId);
         } else if (r) {
             const err = await r.json().catch(() => null);
             showToast(err?.detail || "Update failed", true);
@@ -397,7 +397,7 @@ async function deleteProfile(profileId, name) {
     if (resp && resp.ok) {
         showToast("Profile deleted");
         window._forgetProfile && window._forgetProfile(profileId);
-        _removeProfileRow(profileId);
+        window._removeProfileRow(profileId);
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Delete failed", true);
@@ -411,7 +411,7 @@ async function copyProfile(profileId, name) {
         showToast(`Copied profile "${name}"`);
         if (created && created.id) {
             window._rememberProfile && window._rememberProfile(created.id, created);
-            await _insertProfileRow(created.id);
+            await window._insertProfileRow(created.id);
         } else {
             location.reload();
         }
@@ -442,7 +442,7 @@ async function resetProfile(profileId, name) {
         if (updated && updated.id) {
             window._rememberProfile && window._rememberProfile(updated.id, updated);
         }
-        await _replaceProfileRow(profileId);
+        await window._replaceProfileRow(profileId);
     } else if (resp) {
         const err = await resp.json().catch(() => null);
         showToast(err?.detail || "Reset failed", true);
