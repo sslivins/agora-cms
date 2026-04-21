@@ -226,7 +226,14 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       scale: {
         minReplicas: 1
-        maxReplicas: 3
+        // Pinned to 1 until multi-replica architecture lands (issue #344).
+        // CMS is not multi-replica safe today: in-memory device manager,
+        // scheduler caches, singleton background loops, and the
+        // `_upgrading` guard all assume a single process. Scaling > 1
+        // silently drops device traffic and double-schedules work. See
+        // docs/multi-replica-architecture.md for the staged plan to
+        // lift this restriction.
+        maxReplicas: 1
       }
     }
   }
