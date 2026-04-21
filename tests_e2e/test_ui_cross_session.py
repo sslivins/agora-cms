@@ -426,10 +426,14 @@ class TestAssetsCrossSession:
         del_resp = api.delete(f"/api/assets/{asset_id}")
         assert del_resp.status_code in (200, 204), del_resp.text
 
+        # Give a little extra headroom over POLL_TIMEOUT_MS: on CI the initial
+        # `to_be_visible` check above can consume most of one 5s poll cycle,
+        # leaving only ~7s before the row must go — tight for 1-2 poll cycles
+        # plus the fragment fetch + DOM swap.
         expect(
             second_page.locator(f'tr.asset-row[data-asset-id="{asset_id}"]')
-        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)
         expect(
             second_page.locator(f'tr.asset-detail[data-detail-for="{asset_id}"]')
-        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)
 
