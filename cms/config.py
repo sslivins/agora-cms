@@ -33,5 +33,18 @@ class Settings(SharedSettings):
     # Transcode worker signaling (Azure)
     azure_transcode_queue_url: str | None = None
 
+    # Device transport — issue #344 Stage 2b.2
+    # "local" = direct WebSocket (today's behaviour; /ws/device handler).
+    # "wps"   = Azure Web PubSub; CMS sends via REST and receives events
+    #           via the upstream webhook receiver mounted at
+    #           /internal/wps/events.  Requires wps_connection_string.
+    device_transport: str = "local"
+    wps_connection_string: str | None = None
+    wps_hub: str = "agora"
+    wps_token_lifetime_minutes: int = 60
+    # Optional allow-list for the WebHook-Request-Origin handshake.
+    # If unset, the receiver echoes back whatever Azure sent (dev-friendly).
+    wps_webhook_allowed_origin: str | None = None
+
     # SMTP is configured via the web UI settings page (stored in DB)
     base_url: str | None = None  # public URL for login links in emails
