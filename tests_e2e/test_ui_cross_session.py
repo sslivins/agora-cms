@@ -636,9 +636,13 @@ class TestRolesCrossSession:
         assert resp.status_code == 201, resp.text
         role_id = resp.json()["id"]
 
+        # The Roles tab starts hidden (display:none) until clicked, so we
+        # assert the card was attached to the DOM rather than visible.
+        # Propagation is what this test cares about; visibility is a tab
+        # state concern.
         expect(
             second_page.locator(f'.role-card[data-role-id="{role_id}"]')
-        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+        ).to_have_count(1, timeout=POLL_TIMEOUT_MS)
 
     def test_delete_propagates(self, page: Page, second_page: Page, api, e2e_server):
         """Session A deletes a role → session B removes the card."""
@@ -655,9 +659,11 @@ class TestRolesCrossSession:
         second_page.goto("/users")
         second_page.wait_for_load_state("domcontentloaded")
 
+        # Same reasoning as test_create_propagates: the Roles tab is hidden
+        # by default; we care about DOM attachment, not visibility.
         expect(
             second_page.locator(f'.role-card[data-role-id="{role_id}"]')
-        ).to_be_visible(timeout=5000)
+        ).to_have_count(1, timeout=POLL_TIMEOUT_MS)
 
         del_resp = api.delete(f"/api/roles/{role_id}")
         assert del_resp.status_code in (200, 204), del_resp.text
