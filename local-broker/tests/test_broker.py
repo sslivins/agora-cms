@@ -39,7 +39,7 @@ def app_and_registry():
 class TestJwt:
     def test_mint_and_verify_server_token_roundtrip(self):
         token = broker.mint_server_token(audience="http://example/api/hubs/h")
-        claims = broker._verify_jwt(token, expected_aud_prefix="http://example/api/hubs/h")
+        claims = broker._verify_jwt(token, expected_aud_prefix="http://example/api/hubs/h")  # gitleaks:allow
         assert claims["sub"] == "cms"
         assert claims["aud"].startswith("http://example/api/hubs/h")
 
@@ -64,7 +64,7 @@ class TestJwt:
         import jwt as _jwt
         token = broker.mint_server_token(audience="http://other/api/hubs/h")
         with pytest.raises(_jwt.InvalidTokenError):
-            broker._verify_jwt(token, expected_aud_prefix="http://expected/api/hubs/h")
+            broker._verify_jwt(token, expected_aud_prefix="http://expected/api/hubs/h")  # gitleaks:allow
 
 
 # ---------------------------------------------------------------- webhook sig
