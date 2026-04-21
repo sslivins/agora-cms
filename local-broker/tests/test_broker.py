@@ -72,23 +72,34 @@ class TestJwt:
 
 class TestWebhookSignature:
     def test_signature_roundtrip(self):
-        body = b'{"hello":"world"}'
-        header = broker._sign_webhook(body)
+        cid = "conn-123"
+        header = broker._sign_webhook(cid)
         assert header.startswith("sha256=")
-        assert broker.verify_webhook_signature(body, header)
+        assert broker.verify_webhook_signature(cid, header)
 
-    def test_signature_rejects_tampered_body(self):
-        body = b'{"hello":"world"}'
-        header = broker._sign_webhook(body)
-        assert not broker.verify_webhook_signature(b'{"hello":"evil"}', header)
+    def test_signature_rejects_tampered_connection_id(self):
+        header = broker._sign_webhook("conn-abc")
+        assert not broker.verify_webhook_signature("conn-xyz", header)
 
     def test_signature_rejects_wrong_key(self):
-        body = b'{"x":1}'
-        header = broker._sign_webhook(body)
-        assert not broker.verify_webhook_signature(body, header, key="other-key")
+        cid = "conn-1"
+        header = broker._sign_webhook(cid)
+        assert not broker.verify_webhook_signature(cid, header, keys=["other-key"])
 
     def test_signature_rejects_blank_header(self):
-        assert not broker.verify_webhook_signature(b'{}', "")
+        assert not broker.verify_webhook_signature("conn-1", "")
+
+    def test_multi_signature_rotation(self):
+        """Two keys → two comma-separated sigs → valid if either matches."""
+        cid = "conn-rot"
+        header = broker._sign_webhook(cid, keys=["new-key", "old-key"])
+        assert header.count("sha256=") == 2
+        # Receiver holding only the new key verifies.
+        assert broker.verify_webhook_signature(cid, header, keys=["new-key"])
+        # Receiver holding only the old key verifies too.
+        assert broker.verify_webhook_signature(cid, header, keys=["old-key"])
+        # Receiver holding neither key rejects.
+        assert not broker.verify_webhook_signature(cid, header, keys=["stranger"])
 
 
 # ---------------------------------------------------------------- REST auth
@@ -269,18 +280,25 @@ def _client_base(port: int):
 @pytest.mark.asyncio
 class TestUpstreamWebhooks:
     async def test_connected_and_disconnected_fire(self, monkeypatch):
-        """Full loopback: connect, then close, assert webhooks arrive with valid sig."""
+        """Full loopback: connect, then close, assert webhooks arrive with
+        valid sig and the CloudEvents 1.0 binary-binding header shape."""
         received: list[dict] = []
 
         async def _capture(request):
             import httpx
             body = await request.aread()
             event_type = request.headers.get("ce-type")
+            cid = request.headers.get("ce-connectionid") or request.headers.get("ce-connectionId")
             sig = request.headers.get("ce-signature") or ""
-            assert broker.verify_webhook_signature(body, sig), (
-                f"bad sig on {event_type}: got {sig}"
+            # Signature signs the connection id, not the body.
+            assert broker.verify_webhook_signature(cid, sig), (
+                f"bad sig on {event_type}: got {sig} cid={cid}"
             )
-            received.append({"type": event_type, "body": json.loads(body)})
+            received.append({
+                "type": event_type,
+                "headers": dict(request.headers),
+                "body": body,
+            })
             return httpx.Response(200)
 
         import httpx
@@ -300,7 +318,7 @@ class TestUpstreamWebhooks:
             uri = f"ws://127.0.0.1:{port}/client/hubs/agora?access_token={token}"
             async with websockets.connect(uri) as ws:
                 await ws.send(json.dumps({"type": "HEARTBEAT"}))
-                # Wait for messages to propagate + webhooks to fire.
+                # Wait for connected + message to propagate.
                 for _ in range(100):
                     await asyncio.sleep(0.05)
                     if len(received) >= 2:
@@ -319,14 +337,25 @@ class TestUpstreamWebhooks:
         assert "azure.webpubsub.user.message" in types
         assert "azure.webpubsub.sys.disconnected" in types
 
-        # Connected payload shape
-        conn_ev = next(r for r in received if r["type"].endswith(".connected"))
-        assert conn_ev["body"]["userId"] == "pi-hook"
-        assert conn_ev["body"]["hub"] == "agora"
-        assert "connectionId" in conn_ev["body"]
+        # Header shape — every event carries ce-hub / ce-userId / ce-connectionId
+        # / ce-source / ce-specversion.
+        for ev in received:
+            h = ev["headers"]
+            assert h.get("ce-specversion") == "1.0"
+            assert h.get("ce-hub") == "agora"
+            assert h.get("ce-userid") == "pi-hook"
+            cid = h.get("ce-connectionid")
+            assert cid, "ce-connectionId missing"
+            assert h.get("ce-source") == f"/hubs/agora/client/{cid}"
 
-        # User message payload shape
+        # System events have empty-object body and short ce-eventName.
+        for ev in received:
+            if ev["type"].startswith("azure.webpubsub.sys."):
+                assert ev["body"] == b"{}", f"sys event body must be empty obj, got {ev['body']!r}"
+                assert ev["headers"].get("ce-eventname") in ("connected", "disconnected")
+
+        # User message: raw client JSON bytes, ce-eventName = "message".
         msg_ev = next(r for r in received if r["type"].endswith("user.message"))
-        assert msg_ev["body"]["userId"] == "pi-hook"
-        assert msg_ev["body"]["data"] == {"type": "HEARTBEAT"}
-        assert msg_ev["body"]["dataType"] == "json"
+        assert msg_ev["headers"].get("ce-eventname") == "message"
+        assert json.loads(msg_ev["body"]) == {"type": "HEARTBEAT"}
+        assert msg_ev["headers"].get("content-type", "").startswith("application/json")
