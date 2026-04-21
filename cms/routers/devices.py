@@ -29,7 +29,7 @@ from cms.schemas.device import (
     ToggleRequest,
 )
 from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage, WipeAssetsMessage
-from cms.services.device_manager import device_manager
+from cms.services.transport import transport
 from cms.services.scheduler import push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
@@ -72,7 +72,7 @@ async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: A
 
     fetch = await _resolve_asset_for_device(asset, device, base_url, db)
     if fetch:
-        await device_manager.send_to_device(device_id, fetch.model_dump(mode="json"))
+        await transport.send_to_device(device_id, fetch.model_dump(mode="json"))
 
     # Push a fresh sync so the device learns the new default_asset and splash
     # immediately (instead of waiting up to 15s for the scheduler cycle).
@@ -121,7 +121,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(query)
     devices = result.scalars().all()
-    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    live_states = {s["device_id"]: s for s in transport.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Build URL→display name map for resolving URL-based asset names
@@ -144,7 +144,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
         DeviceOut(
             **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
             group_name=d.group.name if d.group else None,
-            is_online=device_manager.is_connected(d.id),
+            is_online=transport.is_connected(d.id),
             is_upgrading=d.id in _upgrading,
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
             playback_asset=_resolve_asset_name(d.id),
@@ -177,7 +177,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
 
     device = await _get_device_with_access(device_id, request, db)
     await db.refresh(device, ["group"])
-    live_states = {s["device_id"]: s for s in device_manager.get_all_states()}
+    live_states = {s["device_id"]: s for s in transport.get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Resolve URL-based asset names
@@ -195,7 +195,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
-        is_online=device_manager.is_connected(device.id),
+        is_online=transport.is_connected(device.id),
         is_upgrading=device.id in _upgrading,
         playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
         playback_asset=raw_asset,
@@ -286,7 +286,7 @@ async def update_device(
     return DeviceOut(
         **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
         group_name=device.group.name if device.group else None,
-        is_online=device_manager.is_connected(device.id),
+        is_online=transport.is_connected(device.id),
     )
 
 
@@ -305,11 +305,11 @@ async def set_device_password(
 
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     config_msg = ConfigMessage(web_password=password)
-    sent = await device_manager.send_to_device(device_id, config_msg.model_dump(mode="json"))
+    sent = await transport.send_to_device(device_id, config_msg.model_dump(mode="json"))
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
@@ -332,11 +332,11 @@ async def reboot_device(
 ):
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     reboot_msg = RebootMessage()
-    sent = await device_manager.send_to_device(device_id, reboot_msg.model_dump(mode="json"))
+    sent = await transport.send_to_device(device_id, reboot_msg.model_dump(mode="json"))
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
@@ -359,7 +359,7 @@ async def upgrade_device(
 ):
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         _upgrading.discard(device_id)
         raise HTTPException(status_code=409, detail="Device is not connected")
 
@@ -368,7 +368,7 @@ async def upgrade_device(
 
     _upgrading.add(device_id)
     upgrade_msg = UpgradeMessage()
-    sent = await device_manager.send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
+    sent = await transport.send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
     if not sent:
         _upgrading.discard(device_id)
         raise HTTPException(status_code=502, detail="Failed to send to device")
@@ -394,18 +394,16 @@ async def toggle_device_ssh(
     enabled = body.enabled
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     config_msg = ConfigMessage(ssh_enabled=enabled)
-    sent = await device_manager.send_to_device(device_id, config_msg.model_dump(mode="json"))
+    sent = await transport.send_to_device(device_id, config_msg.model_dump(mode="json"))
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     # Track the SSH state immediately so the UI reflects it
-    conn = device_manager.get(device_id)
-    if conn:
-        conn.ssh_enabled = enabled
+    transport.set_state_flags(device_id, ssh_enabled=enabled)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -427,11 +425,11 @@ async def factory_reset_device(
 ):
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     msg = FactoryResetMessage()
-    sent = await device_manager.send_to_device(device_id, msg.model_dump(mode="json"))
+    sent = await transport.send_to_device(device_id, msg.model_dump(mode="json"))
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
@@ -456,17 +454,15 @@ async def toggle_device_local_api(
     enabled = body.enabled
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     config_msg = ConfigMessage(local_api_enabled=enabled)
-    sent = await device_manager.send_to_device(device_id, config_msg.model_dump(mode="json"))
+    sent = await transport.send_to_device(device_id, config_msg.model_dump(mode="json"))
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
-    conn = device_manager.get(device_id)
-    if conn:
-        conn.local_api_enabled = enabled
+    transport.set_state_flags(device_id, local_api_enabled=enabled)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -530,7 +526,7 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
 
     # Tell the device to wipe cached assets so it starts clean
     wipe_msg = WipeAssetsMessage(reason="adopted")
-    await device_manager.send_to_device(device_id, wipe_msg.model_dump(mode="json"))
+    await transport.send_to_device(device_id, wipe_msg.model_dump(mode="json"))
 
     # Push a fresh sync so the device learns its new status immediately
     # (e.g. the OOBE screen advances from "waiting for adoption" to "adopted").
@@ -570,7 +566,7 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
 
     # Tell the device to wipe cached assets before we remove it from the DB
     wipe_msg = WipeAssetsMessage(reason="deleted")
-    await device_manager.send_to_device(device_id, wipe_msg.model_dump(mode="json"))
+    await transport.send_to_device(device_id, wipe_msg.model_dump(mode="json"))
 
     # Remove referencing rows before deleting the device
     from cms.models.asset import DeviceAsset
@@ -605,11 +601,11 @@ async def request_device_logs(
     """
     device = await _get_device_with_access(device_id, request, db)
 
-    if not device_manager.is_connected(device_id):
+    if not transport.is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     try:
-        logs = await device_manager.request_logs(device_id, services=body.services, since=body.since)
+        logs = await transport.request_logs(device_id, services=body.services, since=body.since)
     except TimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))
     except ValueError as e:

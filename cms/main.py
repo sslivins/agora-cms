@@ -297,6 +297,26 @@ async def lifespan(app: FastAPI):
         await fix_image_variant_extensions(db)
 
     # Start background tasks (transcoding is handled by the dedicated worker container)
+    #
+    # Multi-replica classification (issue #344, Stage 1 annotation —
+    # locking lands in Stage 4):
+    #
+    # | Loop                          | Class                | Notes |
+    # |-------------------------------|----------------------|-------|
+    # | scheduler_loop                | leader-only          | schedule dispatch, dedupe-critical |
+    # | _backfill_media_metadata      | leader-only          | one-shot; per-asset UPDATEs race |
+    # | version_check_loop            | replicated           | per-process cache warmer; dupes = extra GH hit |
+    # | device_purge_loop             | leader-only          | per-tick DELETEs; dupes waste work |
+    # | service_key_rotation_loop     | leader-only          | rotation races corrupt shared key |
+    # | _alert_settings_refresh_loop  | replicated           | per-process settings cache |
+    # | stream_capture_monitor_loop   | leader-only          | may create variant rows; dupes = double-create |
+    # | deleted_asset_reaper_loop     | leader-only          | concurrent deletes waste work |
+    # | outbox_drain_loop             | replicated (safe)    | already idempotent; worker-side dedupes |
+    #
+    # Today (maxReplicas=1 per Stage 0) every CMS process runs every loop —
+    # the classification is purely informational until the Stage 4 leader
+    # election lands.  See docs/multi-replica-architecture.md on branch
+    # `docs/multi-replica-plan` for the full rollout plan.
     scheduler_task = asyncio.create_task(scheduler_loop())
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
     version_check_task = asyncio.create_task(version_check_loop())
