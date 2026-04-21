@@ -28,6 +28,58 @@
 
 
 {#
+  Profile row (playback profiles page). Shared between the full page
+  render and the GET /api/profiles/{id}/row fragment endpoint so both
+  paths emit identical markup — see issue #87. The row carries
+  data-profile-id so the poller and action handlers can locate/swap
+  /remove it.
+#}
+{% macro profile_row(p, user_perms) -%}
+<tr data-profile-id="{{ p.id }}">
+    <td>
+        {{ p.name }}
+        {% if p.builtin %}<span class="badge badge-builtin">built-in</span>{% endif %}
+    </td>
+    <td>{% if p.video_codec == 'h264' %}H.264{% elif p.video_codec == 'h265' %}HEVC{% elif p.video_codec == 'av1' %}AV1{% else %}{{ p.video_codec }}{% endif %} / {{ p.video_profile | capitalize }}</td>
+    <td>{{ p.max_width }}×{{ p.max_height }}</td>
+    <td>{{ p.max_fps }}</td>
+    <td>{% if p.video_bitrate %}{{ p.video_bitrate }} Mbps{% else %}CRF {{ p.crf }}{% endif %}</td>
+    <td>{% if p.pixel_format == 'auto' %}Auto{% else %}{{ p.pixel_format }}{% endif %}</td>
+    <td>{% if p.color_space == 'auto' %}Auto{% else %}{{ p.color_space }}{% if p.color_space == 'bt709' %} (SDR){% elif p.color_space == 'bt2020-pq' %} (HDR10){% elif p.color_space == 'bt2020-hlg' %} (HLG){% elif p.color_space == 'smpte170m' %} (SD){% endif %}{% endif %}</td>
+    <td>{{ p.device_count }}</td>
+    <td data-profile-variants="{{ p.id }}">
+        {% if p.total_variants > 0 %}
+        {% if p.ready_variants == p.total_variants %}
+            <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">{{ p.total_variants }} variant{{ 's' if p.total_variants != 1 else '' }}</span></span>
+        {% elif p.ready_variants > 0 %}
+            <span class="has-tooltip"><span class="badge badge-processing">In Progress</span><span class="tooltip">{{ p.ready_variants }} of {{ p.total_variants }} ready</span></span>
+        {% else %}
+            <span class="has-tooltip"><span class="badge badge-pending">Queued</span><span class="tooltip">{{ p.total_variants }} variant{{ 's' if p.total_variants != 1 else '' }} queued</span></span>
+        {% endif %}
+        {% else %}
+        —
+        {% endif %}
+    </td>
+    <td>
+        {% if 'profiles:write' in user_perms %}
+        {% call kebab_menu() %}
+            <button type="button" role="menuitem" onclick="editProfile('{{ p.id }}')">Edit</button>
+            <button type="button" role="menuitem" onclick="copyProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})">Copy</button>
+            {% if p.builtin %}
+                {% if p.matches_defaults %}
+                <button type="button" role="menuitem" disabled title="Profile is already at factory defaults" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
+                {% else %}
+                <button type="button" role="menuitem" onclick="resetProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
+                {% endif %}
+            {% else %}
+                <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})">Delete</button>
+            {% endif %}
+        {% endcall %}
+        {% endif %}
+    </td>
+</tr>
+{%- endmacro %}
+{#
   Active-schedule row. Shared between the full page render and the
   GET /api/schedules/{id}/row fragment endpoint so both paths emit
   identical markup — see issue #87. The row carries data-schedule-id

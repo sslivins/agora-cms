@@ -268,3 +268,106 @@ class TestDevicesCrossSession:
         expect(
             second_page.locator(f'tr[data-device-id="{device_id}"]')
         ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+
+
+# ─────────────────────────── Profiles ────────────────────────────────
+
+
+def _create_profile_via_ui(page, *, name, description="cross-session"):
+    page.fill('input[name="name"]', name)
+    page.fill('input[name="description"]', description)
+    page.click('button[type="submit"]')
+
+
+class TestProfilesCrossSession:
+    """Session B's /profiles poller must reflect session A's profile changes."""
+
+    def test_create_propagates(self, page: Page, second_page: Page, e2e_server):
+        """Session A creates a profile → session B sees the row appear."""
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/profiles")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        _create_profile_via_ui(page, name="xsess-create")
+
+        # Session A sees it inline.
+        row_a = page.locator('tr[data-profile-id]').filter(has_text="xsess-create")
+        expect(row_a).to_be_visible(timeout=5000)
+        # Session B picks it up via the structural diff on its next cycle.
+        expect(
+            second_page.locator('tr[data-profile-id]').filter(has_text="xsess-create")
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A deletes a profile → session B sees it disappear."""
+        resp = api.post("/api/profiles", json={
+            "name": "xsess-delete",
+            "description": "",
+            "video_codec": "h264", "video_profile": "main",
+            "max_width": 1920, "max_height": 1080, "max_fps": 30,
+            "crf": 23, "video_bitrate": "",
+            "pixel_format": "auto", "color_space": "auto",
+            "audio_codec": "aac", "audio_bitrate": "128k",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        prof_id = resp.json()["id"]
+
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/profiles")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        expect(
+            second_page.locator(f'tr[data-profile-id="{prof_id}"]')
+        ).to_be_visible(timeout=5000)
+
+        row = page.locator(f'tr[data-profile-id="{prof_id}"]')
+        click_row_action(row, "Delete")
+        page.locator(".modal-overlay").locator(
+            "button", has_text="Confirm"
+        ).click()
+
+        expect(
+            second_page.locator(f'tr[data-profile-id="{prof_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS)
+
+    def test_edit_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A edits a profile's description → session B sees the row
+        re-render via per-row signature fragment swap (not a full reload)."""
+        resp = api.post("/api/profiles", json={
+            "name": "xsess-edit",
+            "description": "original",
+            "video_codec": "h264", "video_profile": "main",
+            "max_width": 1920, "max_height": 1080, "max_fps": 30,
+            "crf": 23, "video_bitrate": "",
+            "pixel_format": "auto", "color_space": "auto",
+            "audio_codec": "aac", "audio_bitrate": "128k",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        prof_id = resp.json()["id"]
+
+        page.goto("/profiles")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/profiles")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        # Edit via API (faster, deterministic) — the UI edit modal path is
+        # already covered by the non-cross-session profile tests.
+        api.put(f"/api/profiles/{prof_id}", json={
+            "description": "renamed",
+            "video_codec": "h264", "video_profile": "high",
+            "max_width": 1920, "max_height": 1080, "max_fps": 30,
+            "crf": 23, "video_bitrate": "",
+            "pixel_format": "auto", "color_space": "auto",
+            "audio_codec": "aac", "audio_bitrate": "128k",
+        })
+
+        # Both sessions' pollers should pick the edit up and fragment-swap
+        # the row so "High" now shows in the Codec cell.
+        expect(
+            page.locator(f'tr[data-profile-id="{prof_id}"]'),
+        ).to_contain_text("High", timeout=POLL_TIMEOUT_MS)
+        expect(
+            second_page.locator(f'tr[data-profile-id="{prof_id}"]'),
+        ).to_contain_text("High", timeout=POLL_TIMEOUT_MS)

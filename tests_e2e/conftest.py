@@ -355,6 +355,9 @@ def api(context: BrowserContext, base_url: str):
         def patch(self, path, **kwargs):
             return self._client.patch(path, **kwargs)
 
+        def put(self, path, **kwargs):
+            return self._client.put(path, **kwargs)
+
         def delete(self, path, **kwargs):
             return self._client.delete(path, **kwargs)
 
