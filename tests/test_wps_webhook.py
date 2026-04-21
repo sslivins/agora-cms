@@ -40,8 +40,16 @@ class _FakeSession:
         self.device_row = device_row
         self.commits = 0
         self.added: list = []
+        self.executed: list = []
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt, *args, **kwargs):
+        # Record UPDATE statements emitted by ``device_presence.mark_online``
+        # / ``mark_offline`` so tests can assert the side effect without
+        # needing a real DB.
+        self.executed.append(stmt)
+        # SELECT-style reads (the webhook's device lookup) return
+        # ``device_row``; everything else returns ``None``.  The webhook's
+        # only ``.scalar_one_or_none()`` caller is the device lookup.
         row = self.device_row
         result = MagicMock()
         result.scalar_one_or_none = MagicMock(return_value=row)
@@ -52,20 +60,6 @@ class _FakeSession:
 
     async def commit(self):
         self.commits += 1
-
-    async def execute(self, stmt, *args, **kwargs):
-        # The wps_webhook receiver runs ``device_presence.mark_online`` /
-        # ``mark_offline`` which issue UPDATE statements.  Record them so
-        # tests can assert the side effect without needing a real DB.
-        if not hasattr(self, "executed"):
-            self.executed = []
-        self.executed.append(stmt)
-
-        class _Result:
-            def scalar_one_or_none(self_inner):
-                return None
-
-        return _Result()
 
     async def refresh(self, obj, *args, **kwargs):  # pragma: no cover - not hit here
         pass

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.models.device import Device, DeviceStatus
-from cms.services.transport import get_transport
+from cms.services import device_presence
 
 logger = logging.getLogger("agora.cms.device_purge")
 
@@ -29,8 +29,8 @@ async def purge_stale_pending_devices(db: AsyncSession, ttl_hours: int) -> list[
     purged: list[str] = []
 
     for device in candidates:
-        # Skip devices that are currently connected
-        if await get_transport().is_connected(device.id):
+        # Skip devices that are currently connected (DB-backed presence).
+        if await device_presence.is_online(db, device.id):
             continue
 
         # Use last_seen, fall back to registered_at

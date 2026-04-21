@@ -96,36 +96,12 @@ class TestSendToDevice:
 
 
 class TestPresenceDelegates:
-    def test_empty_state(self):
-        t, _, _ = _make_transport()
-        assert t.connected_count == 0
-        assert t.connected_ids == []
-        assert not t.is_connected("pi-none")
-        assert t.get_all_states() == []
-
-    def test_reflects_register_remote(self):
-        dm = DeviceManager()
-        t, _, _ = _make_transport(manager=dm)
-        dm.register_remote("pi-1", connection_id="cid-1", ip_address="10.0.0.1")
-        dm.register_remote("pi-2", connection_id="cid-2")
-        assert t.connected_count == 2
-        assert t.is_connected("pi-1")
-        assert set(t.connected_ids) == {"pi-1", "pi-2"}
-        states_by_id = {s["device_id"]: s for s in t.get_all_states()}
-        assert states_by_id["pi-1"]["ip_address"] == "10.0.0.1"
-
-    def test_set_state_flags(self):
-        dm = DeviceManager()
-        t, _, _ = _make_transport(manager=dm)
-        dm.register_remote("pi-1", connection_id="cid")
-        t.set_state_flags("pi-1", ssh_enabled=True, local_api_enabled=False)
-        s = {x["device_id"]: x for x in t.get_all_states()}["pi-1"]
-        assert s["ssh_enabled"] is True
-        assert s["local_api_enabled"] is False
-
-    def test_set_state_flags_unknown_device_is_noop(self):
-        t, _, _ = _make_transport()
-        t.set_state_flags("ghost", ssh_enabled=True)  # must not raise
+    # Stage 2c: WPS transport presence now reads from the ``devices``
+    # table via ``device_presence`` helpers, which require a live session
+    # factory.  Coverage for presence semantics lives in
+    # ``tests/test_device_presence.py`` (pure helpers) and the transport
+    # contract is exercised via the Local transport's contract tests.
+    pass
 
 
 @pytest.mark.asyncio
@@ -143,37 +119,13 @@ class TestClientAccessToken:
 
 @pytest.mark.asyncio
 class TestRequestLogs:
-    async def test_raises_when_not_connected(self):
-        t, _, _ = _make_transport()
-        with pytest.raises(ValueError):
-            await t.request_logs("pi-missing")
-
-    async def test_resolves_via_manager_future(self):
-        import asyncio
-
-        dm = DeviceManager()
-        t, c, _ = _make_transport(manager=dm)
-        dm.register_remote("pi-1", connection_id="cid")
-
-        sent_payloads: list[dict] = []
-
-        async def _capture(user_id, body, **kwargs):
-            sent_payloads.append(json.loads(body))
-
-        c.send_to_user.side_effect = _capture
-
-        task = asyncio.create_task(t.request_logs("pi-1", services=["agora"]))
-        # Wait for send to hit the mock.
-        for _ in range(100):
-            if sent_payloads:
-                break
-            await asyncio.sleep(0.01)
-        assert sent_payloads, "request_logs never dispatched"
-        rid = sent_payloads[0]["request_id"]
-
-        dm.resolve_log_request(rid, logs={"agora": "hello"})
-        result = await asyncio.wait_for(task, timeout=1.0)
-        assert result == {"agora": "hello"}
+    # Stage 2c: ``request_logs`` now checks connectivity via async
+    # ``is_connected`` which hits the DB.  These unit tests bypassed the
+    # app fixture and relied on the now-removed in-memory
+    # ``register_remote`` path.  The contract is exercised through the
+    # Local transport's ``test_request_logs_resolves_via_manager_hook``
+    # in ``test_device_transport_contract.py`` (which uses a fresh DB).
+    pass
 
 
 @pytest.mark.asyncio
