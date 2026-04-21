@@ -64,15 +64,15 @@
         {% if 'profiles:write' in user_perms %}
         {% call kebab_menu() %}
             <button type="button" role="menuitem" onclick="editProfile('{{ p.id }}')">Edit</button>
-            <button type="button" role="menuitem" onclick="copyProfile('{{ p.id }}', {{ p.name | tojson }})">Copy</button>
+            <button type="button" role="menuitem" onclick="copyProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})">Copy</button>
             {% if p.builtin %}
                 {% if p.matches_defaults %}
                 <button type="button" role="menuitem" disabled title="Profile is already at factory defaults" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
                 {% else %}
-                <button type="button" role="menuitem" onclick="resetProfile('{{ p.id }}', {{ p.name | tojson }})" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
+                <button type="button" role="menuitem" onclick="resetProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})" data-profile-reset="{{ p.id }}" data-profile-name="{{ p.name }}">Reset</button>
                 {% endif %}
             {% else %}
-                <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteProfile('{{ p.id }}', {{ p.name | tojson }})">Delete</button>
+                <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})">Delete</button>
             {% endif %}
         {% endcall %}
         {% endif %}
