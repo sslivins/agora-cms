@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.models.device import Device, DeviceStatus
-from cms.services.transport import transport
+from cms.services.transport import get_transport
 
 logger = logging.getLogger("agora.cms.device_purge")
 
@@ -30,7 +30,7 @@ async def purge_stale_pending_devices(db: AsyncSession, ttl_hours: int) -> list[
 
     for device in candidates:
         # Skip devices that are currently connected
-        if transport.is_connected(device.id):
+        if get_transport().is_connected(device.id):
             continue
 
         # Use last_seen, fall back to registered_at

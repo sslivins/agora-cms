@@ -55,6 +55,35 @@ class TestDeviceManager:
         dm = DeviceManager()
         assert dm.get("nonexistent") is None
 
+    def test_register_remote(self):
+        """WPS webhook path: no local socket, stable connection_id tracked."""
+        dm = DeviceManager()
+        conn = dm.register_remote("device-r", connection_id="wps-conn-abc", ip_address="10.0.0.7")
+        assert conn.device_id == "device-r"
+        assert conn.websocket is None
+        assert conn.connection_id == "wps-conn-abc"
+        assert conn.ip_address == "10.0.0.7"
+        assert dm.is_connected("device-r")
+        assert dm.connected_count == 1
+        # get_all_states still surfaces the ghost entry so the UI works.
+        states = dm.get_all_states()
+        assert len(states) == 1
+        assert states[0]["device_id"] == "device-r"
+        assert states[0]["ip_address"] == "10.0.0.7"
+
+    @pytest.mark.asyncio
+    async def test_remote_device_send_via_manager_raises(self):
+        """Calling DeviceManager.send_to_device on a ghost entry must
+        fail loudly — the WPS path has to route through the transport's
+        REST client, never through the in-memory socket."""
+        dm = DeviceManager()
+        dm.register_remote("device-r", connection_id="cid")
+        # DeviceManager.send_to_device swallows exceptions + disconnects,
+        # so the observable behaviour is: no-op + drop the entry.
+        ok = await dm.send_to_device("device-r", {"type": "ping"})
+        assert ok is False
+        assert not dm.is_connected("device-r")
+
     def test_multiple_devices(self):
         dm = DeviceManager()
 

@@ -12,10 +12,13 @@ logger = logging.getLogger("agora.cms.device_manager")
 
 
 class ConnectedDevice:
-    def __init__(self, device_id: str, websocket: WebSocket, ip_address: Optional[str] = None):
+    def __init__(self, device_id: str, websocket: WebSocket | None = None, ip_address: Optional[str] = None):
         self.device_id = device_id
         self.websocket = websocket
         self.ip_address = ip_address
+        # Populated for WPS-backed connections (webhook path); None on the
+        # direct-WS path where no stable id is exposed.
+        self.connection_id: Optional[str] = None
         self.connected_at = datetime.now(timezone.utc)
         # Playback state from last STATUS message
         self.mode: str = "unknown"
@@ -33,6 +36,14 @@ class ConnectedDevice:
         self.error_since: Optional[datetime] = None
 
     async def send_json(self, data: dict):
+        if self.websocket is None:
+            # Ghost entries created by the WPS webhook path have no local
+            # socket — callers must route via transport.send_to_device.
+            # Raising here catches any site that hasn't been migrated.
+            raise RuntimeError(
+                f"device {self.device_id} has no local WebSocket — "
+                "route via transport.send_to_device instead",
+            )
         await self.websocket.send_json(data)
 
 
@@ -47,6 +58,32 @@ class DeviceManager:
         conn = ConnectedDevice(device_id, websocket, ip_address=ip_address)
         self._connections[device_id] = conn
         logger.info("Device %s connected (%d total)", device_id, len(self._connections))
+        return conn
+
+    def register_remote(
+        self,
+        device_id: str,
+        connection_id: str,
+        ip_address: Optional[str] = None,
+    ) -> ConnectedDevice:
+        """Register a device whose transport is remote (Web PubSub).
+
+        No local WebSocket is associated — sends must go through the
+        transport (``WPSTransport.send_to_device`` → REST call to the
+        broker/WPS).  The in-memory entry still tracks playback state so
+        the existing UI / presence queries keep working from this replica.
+
+        Stage 2c will migrate this in-memory state to the DB so presence
+        is visible across all replicas; today it intentionally keeps the
+        same single-replica behaviour as the direct-WS path.
+        """
+        conn = ConnectedDevice(device_id, websocket=None, ip_address=ip_address)
+        conn.connection_id = connection_id
+        self._connections[device_id] = conn
+        logger.info(
+            "Device %s connected via WPS (connection_id=%s, %d total)",
+            device_id, connection_id, len(self._connections),
+        )
         return conn
 
     def disconnect(self, device_id: str):

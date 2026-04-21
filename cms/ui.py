@@ -47,7 +47,7 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.group_asset import GroupAsset
 from cms.models.user import User, UserGroup
-from cms.services.transport import transport
+from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
 from cms.services.version_checker import get_latest_device_version, is_update_available
@@ -605,7 +605,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         pending_q = await db.execute(pending_query)
         pending_devices = pending_q.scalars().all()
         for d in pending_devices:
-            d.is_online = transport.is_connected(d.id)
+            d.is_online = get_transport().is_connected(d.id)
     else:
         pending_devices = []
 
@@ -626,7 +626,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     devices_q = await db.execute(devices_query)
     all_devices = devices_q.scalars().all()
     for d in all_devices:
-        d.is_online = transport.is_connected(d.id)
+        d.is_online = get_transport().is_connected(d.id)
 
     # Offline devices (adopted but not connected)
     offline_devices = [d for d in all_devices if not d.is_online]
@@ -675,7 +675,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             if start_t and end_t <= start_t:
                 end_today += _td(days=1)
             np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
-    live_states = {s["device_id"]: s for s in transport.get_all_states()}
+    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
     for np in now_playing:
         did = np["device_id"]
         live = live_states.get(did, {})
@@ -693,12 +693,12 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
                 if actual_mode != "play":
-                    if not transport.is_connected(did):
+                    if not get_transport().is_connected(did):
                         np["device_offline"] = True
                     else:
                         np["starting"] = True
         # Outside the grace period, flag offline devices distinctly
-        if np.get("mismatch") and not transport.is_connected(did):
+        if np.get("mismatch") and not get_transport().is_connected(did):
             np["mismatch"] = False
             np["device_offline"] = True
 
@@ -861,7 +861,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ADOPTED))
     )
     all_device_ids = [r[0] for r in devices_q.all()]
-    offline_ids = [did for did in all_device_ids if not transport.is_connected(did)]
+    offline_ids = [did for did in all_device_ids if not get_transport().is_connected(did)]
 
     now_playing = await compute_now_playing(db, tz, now)
     # Scope now_playing to user's visible devices
@@ -886,7 +886,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
                 end_today += _td(days=1)
             np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
 
-    live_states = {s["device_id"]: s for s in transport.get_all_states()}
+    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
     for np in now_playing:
         did = np["device_id"]
         live = live_states.get(did, {})
@@ -992,7 +992,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(device_query)
     devices = result.scalars().all()
-    live_states = {s["device_id"]: s for s in transport.get_all_states()}
+    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Build URL→display name map for resolving playback_asset on URL-based assets
@@ -1015,7 +1015,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.ready_for_selection = ready
         a.not_ready_reason = reason
     for d in devices:
-        d.is_online = transport.is_connected(d.id)
+        d.is_online = get_transport().is_connected(d.id)
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
         d.ip_address = state["ip_address"] if state else None
@@ -1062,7 +1062,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         g.device_count = len(g.devices)
         g.schedule_count = group_sched_counts.get(g.id, 0)
         for d in g.devices:
-            d.is_online = transport.is_connected(d.id)
+            d.is_online = get_transport().is_connected(d.id)
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
             d.ip_address = state["ip_address"] if state else None
@@ -1576,7 +1576,7 @@ async def settings_page(
     result = await db.execute(select(Device).order_by(Device.name))
     devices = result.scalars().all()
     device_list = [
-        {"id": d.id, "name": d.name, "connected": transport.is_connected(d.id)}
+        {"id": d.id, "name": d.name, "connected": get_transport().is_connected(d.id)}
         for d in devices
     ]
 
@@ -1889,7 +1889,7 @@ async def change_timezone(
     result = await db.execute(select(Device).order_by(Device.name))
     devices = result.scalars().all()
     device_list = [
-        {"id": d.id, "name": d.name, "connected": transport.is_connected(d.id)}
+        {"id": d.id, "name": d.name, "connected": get_transport().is_connected(d.id)}
         for d in devices
     ]
 

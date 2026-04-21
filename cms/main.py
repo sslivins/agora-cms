@@ -344,9 +344,45 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to log CMS_STARTED event")
 
+    # ── Device transport selection (issue #344 Stage 2b.2) ──
+    # Default is "local" (direct WebSocket via cms/routers/ws.py, today's
+    # behaviour).  Setting AGORA_CMS_DEVICE_TRANSPORT=wps swaps in the
+    # WPSTransport + mounts the upstream webhook receiver — the /ws/device
+    # endpoint stays registered so a running deployment can flip back by
+    # restarting, but devices talk to it through Azure Web PubSub instead.
+    from cms.services import transport as transport_module
+    from cms.services.transport import LocalDeviceTransport
+    if settings.device_transport == "wps":
+        if not settings.wps_connection_string:
+            raise RuntimeError(
+                "AGORA_CMS_DEVICE_TRANSPORT=wps requires "
+                "AGORA_CMS_WPS_CONNECTION_STRING"
+            )
+        from cms.services.wps_transport import WPSTransport
+        wps_transport = WPSTransport(
+            settings.wps_connection_string, settings.wps_hub,
+        )
+        transport_module.set_transport(wps_transport)
+        from cms.routers.wps_webhook import router as wps_router
+        app.include_router(wps_router)
+        logger.info(
+            "Device transport: WPS (hub=%s, webhook=/internal/wps/events)",
+            settings.wps_hub,
+        )
+    else:
+        transport_module.set_transport(LocalDeviceTransport())
+        logger.info("Device transport: local (direct WebSocket)")
+
     logger.info("Agora CMS %s started", __version__)
     yield
     # Shutdown — log CMS shutdown first so the event is persisted before tasks stop
+    # Close the WPS client if we installed one (httpx pool etc).
+    try:
+        _t = transport_module.get_transport()
+        if hasattr(_t, "close"):
+            await _t.close()
+    except Exception:
+        logger.exception("Error closing device transport")
     try:
         from cms.models.device_event import DeviceEvent, DeviceEventType
         async for db in get_db():
@@ -486,6 +522,7 @@ app.mount("/static", StaticFiles(directory="cms/static"), name="static")
 from cms.routers.assets import device_router as assets_device_router  # noqa: E402
 from cms.routers.assets import router as assets_router  # noqa: E402
 from cms.routers.devices import router as devices_router  # noqa: E402
+from cms.routers.devices import device_originated_router as devices_device_router  # noqa: E402
 from cms.routers.logs import router as logs_router  # noqa: E402
 from cms.routers.mcp import router as mcp_router  # noqa: E402
 from cms.routers.profiles import router as profiles_router  # noqa: E402
@@ -502,6 +539,7 @@ from cms.routers.users import router as users_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
 
 app.include_router(devices_router)
+app.include_router(devices_device_router)
 app.include_router(assets_router)
 app.include_router(assets_device_router)
 app.include_router(schedules_router)

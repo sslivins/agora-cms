@@ -20,3 +20,5 @@ aiohttp>=3.9,<4.0
 # Azure Key Vault (service key exchange in Azure deployments)
 azure-identity>=1.16,<2.0
 azure-keyvault-secrets>=4.8,<5.0
+# Azure Web PubSub (#344 Stage 2b.2 — DEVICE_TRANSPORT=wps)
+azure-messaging-webpubsubservice>=1.2,<2.0

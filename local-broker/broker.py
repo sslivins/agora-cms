@@ -18,28 +18,39 @@ WSS (device → broker):
 
 Webhooks (broker → CMS) — Azure CloudEvents 1.0 binary binding:
   POST UPSTREAM_URL  with headers:
-    ce-specversion: 1.0
-    ce-type:        azure.webpubsub.sys.connected
-                  | azure.webpubsub.sys.disconnected
-                  | azure.webpubsub.user.message
-    ce-source:      /hubs/{hub}
-    ce-id:          <unique>
-    ce-time:        <RFC3339>
-    ce-signature:   sha256=<hex HMAC-SHA256 of body with access_key>
+    ce-specversion:  1.0
+    ce-type:         azure.webpubsub.sys.connected
+                   | azure.webpubsub.sys.disconnected
+                   | azure.webpubsub.user.<eventName>
+    ce-source:       /hubs/{hub}/client/{connectionId}
+    ce-id:           <unique>
+    ce-time:         <RFC3339>
+    ce-hub:          {hub}
+    ce-connectionId: {connectionId}
+    ce-userId:       {userId}
+    ce-eventName:    {event_name}  (user events only; short form for
+                                    system events: "connected" / "disconnected")
+    ce-signature:    sha256=<hex HMAC_SHA256(access_key, connectionId)>
+                     (comma-separated for key rotation; one entry today)
+  Body:
+    system events: b"{}"
+    user events:   raw client data (application/json today)
 
 Not implemented (intentionally — CMS does not use them):
   - Group operations
   - Broadcast to hub
   - Permissions / ACLs beyond user-scoped JWT
   - Connection state, custom protocols beyond raw JSON
+  - `.connect` blocking event (our devices use JWT auth handled at WPS layer)
 
 Security:
   - WSS: `access_token` JWT is HS256, signed with WPS_ACCESS_KEY.
     Claims required: `sub` (device_id / userId), `exp` (expiry).
   - REST: `Authorization: Bearer <server-jwt>` HS256, same key.
     `aud` claim must start with this broker's REST URI prefix.
-  - Webhook: `ce-signature` is HMAC-SHA256(body, access_key), hex,
-    prefixed `sha256=`.  CMS rejects on mismatch.
+  - Webhook: `ce-signature` = `hex(HMAC_SHA256(access_key, connectionId))`
+    prefixed `sha256=`.  The signature covers the *connectionId*, not
+    the body — matches Azure's contract.  CMS rejects on mismatch.
 
 Environment variables:
   WPS_ACCESS_KEY            shared HS256 secret (required)
@@ -180,17 +191,53 @@ def _verify_jwt(token: str, *, expected_aud_prefix: str | None = None) -> dict[s
     return claims
 
 
-def _sign_webhook(body: bytes) -> str:
-    digest = hmac.new(ACCESS_KEY.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return f"sha256={digest}"
+def _sign_webhook(connection_id: str, keys: list[str] | None = None) -> str:
+    """Return the ``ce-signature`` header value.
+
+    Signs the ``connection_id`` (not the body) — matches Azure's
+    contract.  ``keys`` is a list to allow primary+secondary signatures
+    for rotation; today the broker has exactly one key, so callers pass
+    ``[ACCESS_KEY]`` and a single ``sha256=<hex>`` entry is emitted.
+    """
+    key_list = keys if keys is not None else [ACCESS_KEY]
+    parts: list[str] = []
+    payload = connection_id.encode("utf-8")
+    for k in key_list:
+        digest = hmac.new(k.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+        parts.append(f"sha256={digest}")
+    return ",".join(parts)
 
 
-def verify_webhook_signature(body: bytes, header_value: str, *, key: str | None = None) -> bool:
-    """Helper re-used by CMS tests — keeps the signing contract in one place."""
-    k = (key if key is not None else ACCESS_KEY).encode("utf-8")
-    want = hmac.new(k, body, hashlib.sha256).hexdigest()
-    expected = f"sha256={want}"
-    return hmac.compare_digest(expected, header_value or "")
+def verify_webhook_signature(
+    connection_id: str,
+    header_value: str,
+    keys: list[str] | None = None,
+) -> bool:
+    """Helper re-used by the broker's tests and the CMS receiver.
+
+    A valid ``header_value`` is a comma-separated list of
+    ``sha256=<hex>`` entries; the request is accepted if any entry
+    matches ``hex(HMAC_SHA256(k, connection_id))`` for any ``k`` in
+    ``keys``.
+    """
+    if not header_value:
+        return False
+    key_list = keys if keys is not None else [ACCESS_KEY]
+    presented: list[str] = []
+    for entry in header_value.split(","):
+        entry = entry.strip()
+        if not entry.lower().startswith("sha256="):
+            continue
+        presented.append(entry[len("sha256="):])
+    if not presented:
+        return False
+    payload = connection_id.encode("utf-8")
+    for k in key_list:
+        want = hmac.new(k.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+        for got in presented:
+            if hmac.compare_digest(want, got):
+                return True
+    return False
 
 
 # --------------------------------------------------------------------- webhook
@@ -201,23 +248,43 @@ async def _post_webhook(
     *,
     event_type: str,
     hub: str,
-    body: dict[str, Any],
+    connection_id: str,
+    user_id: str,
+    event_name: str | None = None,
+    raw_body: bytes = b"{}",
+    content_type: str = "application/json",
 ) -> None:
+    """Post a CloudEvents 1.0 binary-binding webhook to the CMS.
+
+    - System events (``azure.webpubsub.sys.connected`` /
+      ``.disconnected``): ``raw_body`` is ``b"{}"``; ``event_name`` is
+      the short form (``"connected"`` / ``"disconnected"``).
+    - User events (``azure.webpubsub.user.<name>``): ``raw_body`` is the
+      raw client payload bytes; ``event_name`` is the custom event name
+      (e.g. ``"message"``).
+
+    The ``ce-signature`` header signs ``connection_id``, not the body —
+    matches Azure's upstream webhook contract.
+    """
     if not UPSTREAM_URL:
         logger.debug("WPS_UPSTREAM_URL not set; dropping %s event", event_type)
         return
-    raw = json.dumps(body, separators=(",", ":"), sort_keys=False).encode("utf-8")
     headers = {
-        "content-type": "application/json",
+        "content-type": content_type,
         "ce-specversion": "1.0",
         "ce-type": event_type,
-        "ce-source": f"/hubs/{hub}",
+        "ce-source": f"/hubs/{hub}/client/{connection_id}",
         "ce-id": str(uuid.uuid4()),
         "ce-time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        "ce-signature": _sign_webhook(raw),
+        "ce-hub": hub,
+        "ce-connectionId": connection_id,
+        "ce-userId": user_id,
+        "ce-signature": _sign_webhook(connection_id),
     }
+    if event_name:
+        headers["ce-eventName"] = event_name
     try:
-        r = await client.post(UPSTREAM_URL, content=raw, headers=headers, timeout=UPSTREAM_TIMEOUT_S)
+        r = await client.post(UPSTREAM_URL, content=raw_body, headers=headers, timeout=UPSTREAM_TIMEOUT_S)
         if r.status_code >= 400:
             logger.warning(
                 "Upstream webhook %s -> %s failed: %s",
@@ -393,19 +460,13 @@ def create_app() -> FastAPI:
                 http_client,
                 event_type="azure.webpubsub.sys.connected",
                 hub=hub,
-                body={
-                    "userId": user_id,
-                    "hub": hub,
-                    "connectionId": connection_id,
-                    "claims": {k: v for k, v in claims.items() if k not in {"exp", "iat", "nbf"}},
-                    "query": {},
-                    "headers": {},
-                    "subprotocols": [],
-                },
+                connection_id=connection_id,
+                user_id=user_id,
+                event_name="connected",
+                raw_body=b"{}",
             )
         )
 
-        disconnect_reason = "client_close"
         try:
             while True:
                 msg = await websocket.receive()
@@ -413,25 +474,16 @@ def create_app() -> FastAPI:
                     break
                 if "text" in msg and msg["text"] is not None:
                     text = msg["text"]
-                    try:
-                        data_obj: Any = json.loads(text)
-                        data_type = "json"
-                    except json.JSONDecodeError:
-                        data_obj = text
-                        data_type = "text"
                     asyncio.create_task(
                         _post_webhook(
                             http_client,
                             event_type="azure.webpubsub.user.message",
                             hub=hub,
-                            body={
-                                "userId": user_id,
-                                "hub": hub,
-                                "connectionId": connection_id,
-                                "data": data_obj,
-                                "dataType": data_type,
-                                "eventName": "message",
-                            },
+                            connection_id=connection_id,
+                            user_id=user_id,
+                            event_name="message",
+                            raw_body=text.encode("utf-8"),
+                            content_type="application/json",
                         )
                     )
                 elif "bytes" in msg and msg["bytes"] is not None:
@@ -441,21 +493,17 @@ def create_app() -> FastAPI:
                             http_client,
                             event_type="azure.webpubsub.user.message",
                             hub=hub,
-                            body={
-                                "userId": user_id,
-                                "hub": hub,
-                                "connectionId": connection_id,
-                                "data": msg["bytes"].hex(),
-                                "dataType": "binary",
-                                "eventName": "message",
-                            },
+                            connection_id=connection_id,
+                            user_id=user_id,
+                            event_name="message",
+                            raw_body=msg["bytes"],
+                            content_type="application/octet-stream",
                         )
                     )
         except WebSocketDisconnect:
-            disconnect_reason = "client_close"
+            pass
         except Exception:
             logger.exception("Unexpected error on client socket %s", connection_id)
-            disconnect_reason = "server_error"
         finally:
             await registry.remove(connection_id)
             # Fire disconnected webhook (fire-and-forget — no await on teardown).
@@ -464,12 +512,10 @@ def create_app() -> FastAPI:
                     http_client,
                     event_type="azure.webpubsub.sys.disconnected",
                     hub=hub,
-                    body={
-                        "userId": user_id,
-                        "hub": hub,
-                        "connectionId": connection_id,
-                        "reason": disconnect_reason,
-                    },
+                    connection_id=connection_id,
+                    user_id=user_id,
+                    event_name="disconnected",
+                    raw_body=b"{}",
                 )
             )
 

@@ -48,3 +48,6 @@ coverage.xml
 htmlcov/
 tests/nightly/coverage-data/
 
+
+.commit_msg.txt
+

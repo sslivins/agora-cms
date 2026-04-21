@@ -5,6 +5,19 @@ services:
     ports:
       - "8080:8080"
     env_file: .env
+    # Device transport wiring (#344 Stage 2b.2).
+    # Defaults keep the direct-WS path.  To switch to the WPS path under
+    # the `wps` profile (see `local-broker` below), set in your .env:
+    #     AGORA_CMS_DEVICE_TRANSPORT=wps
+    #     AGORA_CMS_WPS_CONNECTION_STRING=Endpoint=http://local-broker:7080;AccessKey=<same as WPS_ACCESS_KEY>;Version=1.0;
+    #     AGORA_CMS_WPS_HUB=agora
+    # ...then bring the stack up with: `docker compose --profile wps up`.
+    environment:
+      - AGORA_CMS_DEVICE_TRANSPORT=${AGORA_CMS_DEVICE_TRANSPORT:-local}
+      - AGORA_CMS_WPS_CONNECTION_STRING=${AGORA_CMS_WPS_CONNECTION_STRING:-}
+      - AGORA_CMS_WPS_HUB=${AGORA_CMS_WPS_HUB:-agora}
+      - AGORA_CMS_WPS_TOKEN_LIFETIME_MINUTES=${AGORA_CMS_WPS_TOKEN_LIFETIME_MINUTES:-60}
+      - AGORA_CMS_WPS_WEBHOOK_ALLOWED_ORIGIN=${AGORA_CMS_WPS_WEBHOOK_ALLOWED_ORIGIN:-}
     depends_on:
       db:
         condition: service_healthy
@@ -51,9 +64,10 @@ services:
       retries: 5
 
   # Local WPS-shaped broker for Stage 2 of the multi-replica rollout
-  # (#344). Opt-in under the `wps` profile until Stage 2b wires the CMS
-  # WPSTransport up to it. Today the default compose stack keeps using
-  # the direct-WS path via `cms/routers/ws.py`.
+  # (#344). Opt-in under the `wps` profile. Stage 2b.2 added the
+  # WPSTransport + /internal/wps/events receiver in the CMS — flipping
+  # AGORA_CMS_DEVICE_TRANSPORT=wps (see comment on the cms service) is
+  # the only app-side change needed to route device traffic through here.
   local-broker:
     build: ./local-broker
     profiles: ["wps"]

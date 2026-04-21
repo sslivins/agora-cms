@@ -108,6 +108,9 @@ async def test_real_lifespan_logs_cms_started_event(app, db_session, monkeypatch
         azure_storage_account_name = None
         azure_storage_account_key = None
         azure_sas_expiry_hours = 1
+        device_transport = "local"
+        wps_connection_string = None
+        wps_hub = "agora"
     monkeypatch.setattr(main_mod, "get_settings", lambda: _S())
 
     # init_storage no-op already done by the app fixture (it initializes local storage).
