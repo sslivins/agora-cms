@@ -189,7 +189,10 @@ async def dispatch_device_message(
         # device reassigned to a group mid-connection keeps firing
         # with the stale (usually None) group_id cached at handshake
         # and alert_service silently drops the sample.
-        await db.refresh(device, ["group_id", "group", "name", "status"])
+        await db.refresh(
+            device,
+            ["group_id", "group", "name", "status", "display_connected", "error"],
+        )
         ctx.group_id = str(device.group_id) if device.group_id else None
         ctx.device_name = device.name or device_id
         ctx.device_status = device.status.value
@@ -197,28 +200,29 @@ async def dispatch_device_message(
         if device.group_id and device.group is not None:
             ctx.group_name = device.group.name or ""
 
-        # Track playback state (including error)
-        # Capture previous values for transition detection *before* update_status overwrites them.
-        _prev_conn = device_manager.get(device_id)
-        _prev_display = _prev_conn.display_connected if _prev_conn else None
-        _prev_error = _prev_conn.error if _prev_conn else None
+        # Capture previous values for transition detection *before* the
+        # UPDATE overwrites them.  Stage 2c: read from the Device row
+        # (these live on the DB now) rather than device_manager.
+        _prev_display = device.display_connected
+        _prev_error = device.error
         _new_display = msg.get("display_connected")
         _new_error = msg.get("error")
 
-        device_manager.update_status(
-            device_id,
-            mode=msg.get("mode", "unknown"),
-            asset=msg.get("asset"),
-            uptime_seconds=msg.get("uptime_seconds", 0),
-            cpu_temp_c=msg.get("cpu_temp_c"),
-            error=msg.get("error"),
-            pipeline_state=msg.get("pipeline_state", "NULL"),
-            started_at=msg.get("started_at"),
-            playback_position_ms=msg.get("playback_position_ms"),
-            ssh_enabled=msg.get("ssh_enabled"),
-            local_api_enabled=msg.get("local_api_enabled"),
-            display_connected=msg.get("display_connected"),
-        )
+        # Persist the STATUS heartbeat.  The call is idempotent under
+        # the monotonic guard — if an older or duplicate event slips
+        # through, update_status returns False and we skip transition
+        # detection (the already-stored state is newer than what we
+        # just received, so transitions were/are about to be emitted
+        # by the replica that saw the newer event).
+        from cms.services import device_presence
+        applied = await device_presence.update_status(db, device_id, msg)
+        # Refresh the ORM instance so downstream code sees the new values
+        # — other branches in this dispatcher read ``device.X`` fields.
+        await db.refresh(device)
+        if not applied:
+            # Skip transition events for stale/duplicate deliveries.
+            _new_display = _prev_display
+            _new_error = _prev_error
 
         # Emit DISPLAY_CONNECTED / DISPLAY_DISCONNECTED transitions.
         # Only fire on explicit True<->False flips. A None->bool

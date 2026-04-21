@@ -164,14 +164,20 @@ class TestWebSocket:
                     "storage_used_mb": 200,
                 })
 
-                # Poll device_manager until the status message is processed,
+                # Poll the DB until the STATUS heartbeat has been persisted,
                 # so we don't close the WS mid-commit and hang pool teardown.
-                from cms.services.device_manager import device_manager
+                from sqlalchemy import select
+                from cms.models.device import Device as _Device
+                from shared.database import get_session_factory
+                factory = get_session_factory()
                 deadline = time.time() + 5.0
                 while time.time() < deadline:
-                    states = {s["device_id"]: s for s in device_manager.get_all_states()}
-                    if states.get("ws-test-status", {}).get("mode") == "splash":
-                        break
+                    async with factory() as probe_db:
+                        row = (await probe_db.execute(
+                            select(_Device.mode).where(_Device.id == "ws-test-status")
+                        )).scalar_one_or_none()
+                        if row == "splash":
+                            break
                     time.sleep(0.05)
 
                 ws.close()

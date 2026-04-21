@@ -604,8 +604,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
                 pending_query = pending_query.where(Device.group_id.is_(None))
         pending_q = await db.execute(pending_query)
         pending_devices = pending_q.scalars().all()
+        # One DB round-trip for presence, then in-memory check per device.
+        _connected_ids = set(await get_transport().connected_ids())
         for d in pending_devices:
-            d.is_online = get_transport().is_connected(d.id)
+            d.is_online = d.id in _connected_ids
     else:
         pending_devices = []
 
@@ -625,8 +627,9 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             devices_query = devices_query.where(Device.group_id.is_(None))
     devices_q = await db.execute(devices_query)
     all_devices = devices_q.scalars().all()
+    _connected_ids = set(await get_transport().connected_ids())
     for d in all_devices:
-        d.is_online = get_transport().is_connected(d.id)
+        d.is_online = d.id in _connected_ids
 
     # Offline devices (adopted but not connected)
     offline_devices = [d for d in all_devices if not d.is_online]
@@ -675,7 +678,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             if start_t and end_t <= start_t:
                 end_today += _td(days=1)
             np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    live_states = {s["device_id"]: s for s in await get_transport().get_all_states()}
     for np in now_playing:
         did = np["device_id"]
         live = live_states.get(did, {})
@@ -693,12 +696,12 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             if (now - since).total_seconds() < 45:
                 np["mismatch"] = False
                 if actual_mode != "play":
-                    if not get_transport().is_connected(did):
+                    if did not in _connected_ids:
                         np["device_offline"] = True
                     else:
                         np["starting"] = True
         # Outside the grace period, flag offline devices distinctly
-        if np.get("mismatch") and not get_transport().is_connected(did):
+        if np.get("mismatch") and did not in _connected_ids:
             np["mismatch"] = False
             np["device_offline"] = True
 
@@ -861,7 +864,8 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         _scope_device_query(select(Device.id).where(Device.status == DeviceStatus.ADOPTED))
     )
     all_device_ids = [r[0] for r in devices_q.all()]
-    offline_ids = [did for did in all_device_ids if not get_transport().is_connected(did)]
+    _connected_ids = set(await get_transport().connected_ids())
+    offline_ids = [did for did in all_device_ids if did not in _connected_ids]
 
     now_playing = await compute_now_playing(db, tz, now)
     # Scope now_playing to user's visible devices
@@ -886,7 +890,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
                 end_today += _td(days=1)
             np["remaining_seconds"] = max(0, int((end_today - local_now).total_seconds()))
 
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    live_states = {s["device_id"]: s for s in await get_transport().get_all_states()}
     for np in now_playing:
         did = np["device_id"]
         live = live_states.get(did, {})
@@ -992,7 +996,9 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(device_query)
     devices = result.scalars().all()
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    _transport = get_transport()
+    live_states = {s["device_id"]: s for s in await _transport.get_all_states()}
+    _connected_ids = set(await _transport.connected_ids())
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Build URL→display name map for resolving playback_asset on URL-based assets
@@ -1015,7 +1021,12 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         a.ready_for_selection = ready
         a.not_ready_reason = reason
     for d in devices:
-        d.is_online = get_transport().is_connected(d.id)
+        # Detach from session before decorating with live-state attributes
+        # — some of those attribute names (pipeline_state, cpu_temp_c, …)
+        # are real columns in Stage 2c so setting them None would trigger
+        # a stray UPDATE on the next autoflush.
+        db.expunge(d)
+        d.is_online = d.id in _connected_ids
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
         d.ip_address = state["ip_address"] if state else None
@@ -1062,7 +1073,10 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         g.device_count = len(g.devices)
         g.schedule_count = group_sched_counts.get(g.id, 0)
         for d in g.devices:
-            d.is_online = get_transport().is_connected(d.id)
+            # See note above: detach before decorating with live-state
+            # attributes since some names now collide with real columns.
+            db.expunge(d)
+            d.is_online = d.id in _connected_ids
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
             d.ip_address = state["ip_address"] if state else None
@@ -1575,8 +1589,9 @@ async def settings_page(
     from cms.models.device import Device
     result = await db.execute(select(Device).order_by(Device.name))
     devices = result.scalars().all()
+    _connected_ids = set(await get_transport().connected_ids())
     device_list = [
-        {"id": d.id, "name": d.name, "connected": get_transport().is_connected(d.id)}
+        {"id": d.id, "name": d.name, "connected": d.id in _connected_ids}
         for d in devices
     ]
 
@@ -1888,8 +1903,9 @@ async def change_timezone(
     from cms.models.device import Device
     result = await db.execute(select(Device).order_by(Device.name))
     devices = result.scalars().all()
+    _connected_ids = set(await get_transport().connected_ids())
     device_list = [
-        {"id": d.id, "name": d.name, "connected": get_transport().is_connected(d.id)}
+        {"id": d.id, "name": d.name, "connected": d.id in _connected_ids}
         for d in devices
     ]
 

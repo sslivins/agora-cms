@@ -1,9 +1,12 @@
 """Tests for CPU temperature monitoring across the status pipeline.
 
 Covers:
-- DeviceManager tracking cpu_temp_c in update_status / get_all_states
 - Dashboard HTML rendering of temperature warnings and critical alerts
 - Dashboard JSON API including cpu_temp_c in device_states
+- End-to-end STATUS message → DB cpu_temp_c persistence
+
+DeviceManager no longer tracks cpu_temp_c since Stage 2c (#344) — see
+:mod:`tests.test_device_presence` for the DB-backed helper coverage.
 """
 
 import hashlib
@@ -14,53 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from cms.models.device import Device, DeviceStatus
-from cms.services.device_manager import DeviceManager, device_manager
-
-
-# ── DeviceManager unit tests ──
-
-
-class TestDeviceManagerTemperature:
-    def _make_dm(self):
-        dm = DeviceManager()
-
-        class FakeWS:
-            pass
-
-        dm.register("hot-device", FakeWS())
-        dm.register("cool-device", FakeWS())
-        return dm
-
-    def test_cpu_temp_defaults_to_none(self):
-        dm = self._make_dm()
-        conn = dm.get("hot-device")
-        assert conn.cpu_temp_c is None
-
-    def test_update_status_stores_cpu_temp(self):
-        dm = self._make_dm()
-        dm.update_status("hot-device", mode="play", asset="video.mp4", cpu_temp_c=72.5)
-        conn = dm.get("hot-device")
-        assert conn.cpu_temp_c == 72.5
-
-    def test_update_status_cpu_temp_none(self):
-        dm = self._make_dm()
-        dm.update_status("hot-device", mode="play", asset=None, cpu_temp_c=None)
-        conn = dm.get("hot-device")
-        assert conn.cpu_temp_c is None
-
-    def test_get_all_states_includes_cpu_temp(self):
-        dm = self._make_dm()
-        dm.update_status("hot-device", mode="play", asset="v.mp4", cpu_temp_c=85.0)
-        dm.update_status("cool-device", mode="splash", asset=None, cpu_temp_c=42.0)
-
-        states = {s["device_id"]: s for s in dm.get_all_states()}
-        assert states["hot-device"]["cpu_temp_c"] == 85.0
-        assert states["cool-device"]["cpu_temp_c"] == 42.0
-
-    def test_get_all_states_cpu_temp_none_when_not_set(self):
-        dm = self._make_dm()
-        states = {s["device_id"]: s for s in dm.get_all_states()}
-        assert states["hot-device"]["cpu_temp_c"] is None
+from cms.services.device_manager import device_manager
 
 
 # ── Dashboard integration tests ──
@@ -79,14 +36,30 @@ async def _seed_device(db_session, device_id, name, status=DeviceStatus.ADOPTED)
     return device
 
 
-def _simulate_connected(dm, device_id, cpu_temp_c=None, mode="play"):
-    """Register a fake WS connection and set its status."""
+async def _simulate_connected(db_session, device_id, cpu_temp_c=None, mode="play"):
+    """Register a fake WS connection and persist status in the DB.
+
+    Stage 2c: telemetry lives in the ``devices`` row, not in the
+    in-memory connection.  This helper mirrors what ``/ws/device`` does:
+    local register + ``device_presence.mark_online`` + STATUS write.
+    """
+    from cms.services import device_presence
 
     class FakeWS:
         pass
 
-    dm.register(device_id, FakeWS())
-    dm.update_status(device_id, mode=mode, asset=None, cpu_temp_c=cpu_temp_c)
+    device_manager.register(device_id, FakeWS())
+    await device_presence.mark_online(db_session, device_id)
+    await device_presence.update_status(
+        db_session, device_id,
+        {"mode": mode, "asset": None, "cpu_temp_c": cpu_temp_c},
+    )
+
+
+async def _simulate_disconnected(db_session, device_id):
+    from cms.services import device_presence
+    device_manager.disconnect(device_id)
+    await device_presence.mark_offline(db_session, device_id)
 
 
 @pytest.mark.asyncio
@@ -96,7 +69,7 @@ class TestDashboardTemperature:
     async def test_normal_temp_shows_healthy(self, app, db_session, client):
         """A device at normal temperature should not trigger the Device Status alert banner."""
         await _seed_device(db_session, "dev-normal", "Normal Device")
-        _simulate_connected(device_manager, "dev-normal", cpu_temp_c=45.0)
+        await _simulate_connected(db_session, "dev-normal", cpu_temp_c=45.0)
 
         try:
             resp = await client.get("/")
@@ -106,12 +79,12 @@ class TestDashboardTemperature:
             assert "badge-temp-warning" not in html
             assert "badge-temp-critical" not in html
         finally:
-            device_manager.disconnect("dev-normal")
+            await _simulate_disconnected(db_session, "dev-normal")
 
     async def test_warning_temp_shows_in_device_status(self, app, db_session, client):
         """A device at 75°C should appear in the Device Status card with a warning badge."""
         await _seed_device(db_session, "dev-warm", "Warm Device")
-        _simulate_connected(device_manager, "dev-warm", cpu_temp_c=75.0)
+        await _simulate_connected(db_session, "dev-warm", cpu_temp_c=75.0)
 
         try:
             resp = await client.get("/")
@@ -124,12 +97,12 @@ class TestDashboardTemperature:
             # Card should have danger styling
             assert "card-danger" in html
         finally:
-            device_manager.disconnect("dev-warm")
+            await _simulate_disconnected(db_session, "dev-warm")
 
     async def test_critical_temp_shows_in_device_status(self, app, db_session, client):
         """A device at 85°C should appear with a critical badge and throttling message."""
         await _seed_device(db_session, "dev-hot", "Hot Device")
-        _simulate_connected(device_manager, "dev-hot", cpu_temp_c=85.0)
+        await _simulate_connected(db_session, "dev-hot", cpu_temp_c=85.0)
 
         try:
             resp = await client.get("/")
@@ -141,12 +114,12 @@ class TestDashboardTemperature:
             assert "CPU throttling likely" in html
             assert "card-danger" in html
         finally:
-            device_manager.disconnect("dev-hot")
+            await _simulate_disconnected(db_session, "dev-hot")
 
     async def test_boundary_70_is_warning(self, app, db_session, client):
         """Exactly 70°C should trigger a warning (threshold is >= 70)."""
         await _seed_device(db_session, "dev-70", "Boundary Device")
-        _simulate_connected(device_manager, "dev-70", cpu_temp_c=70.0)
+        await _simulate_connected(db_session, "dev-70", cpu_temp_c=70.0)
 
         try:
             resp = await client.get("/")
@@ -154,12 +127,12 @@ class TestDashboardTemperature:
             assert "badge-temp-warning" in html
             assert "All devices are online and healthy" not in html
         finally:
-            device_manager.disconnect("dev-70")
+            await _simulate_disconnected(db_session, "dev-70")
 
     async def test_boundary_80_is_critical(self, app, db_session, client):
         """Exactly 80°C should trigger a critical alert (threshold is >= 80)."""
         await _seed_device(db_session, "dev-80", "Boundary Hot Device")
-        _simulate_connected(device_manager, "dev-80", cpu_temp_c=80.0)
+        await _simulate_connected(db_session, "dev-80", cpu_temp_c=80.0)
 
         try:
             resp = await client.get("/")
@@ -167,12 +140,12 @@ class TestDashboardTemperature:
             assert "badge-temp-critical" in html
             assert "badge-temp-warning" not in html  # 80+ is critical, not warning
         finally:
-            device_manager.disconnect("dev-80")
+            await _simulate_disconnected(db_session, "dev-80")
 
     async def test_69_is_not_warning(self, app, db_session, client):
         """69.9°C should NOT trigger a warning — just below threshold."""
         await _seed_device(db_session, "dev-69", "Almost Warm")
-        _simulate_connected(device_manager, "dev-69", cpu_temp_c=69.9)
+        await _simulate_connected(db_session, "dev-69", cpu_temp_c=69.9)
 
         try:
             resp = await client.get("/")
@@ -181,12 +154,12 @@ class TestDashboardTemperature:
             assert "badge-temp-critical" not in html
             assert "card-danger" not in html
         finally:
-            device_manager.disconnect("dev-69")
+            await _simulate_disconnected(db_session, "dev-69")
 
     async def test_null_temp_not_warning(self, app, db_session, client):
         """A device with no temperature reading (None) should not trigger warnings."""
         await _seed_device(db_session, "dev-null", "No Temp Device")
-        _simulate_connected(device_manager, "dev-null", cpu_temp_c=None)
+        await _simulate_connected(db_session, "dev-null", cpu_temp_c=None)
 
         try:
             resp = await client.get("/")
@@ -195,7 +168,7 @@ class TestDashboardTemperature:
             assert "badge-temp-critical" not in html
             assert "card-danger" not in html
         finally:
-            device_manager.disconnect("dev-null")
+            await _simulate_disconnected(db_session, "dev-null")
 
 
 @pytest.mark.asyncio
@@ -204,7 +177,7 @@ class TestDashboardJsonTemperature:
 
     async def test_json_includes_cpu_temp(self, app, db_session, client):
         await _seed_device(db_session, "dev-json", "JSON Device")
-        _simulate_connected(device_manager, "dev-json", cpu_temp_c=55.3)
+        await _simulate_connected(db_session, "dev-json", cpu_temp_c=55.3)
 
         try:
             resp = await client.get("/api/dashboard")
@@ -214,7 +187,7 @@ class TestDashboardJsonTemperature:
             assert "dev-json" in states
             assert states["dev-json"]["cpu_temp_c"] == 55.3
         finally:
-            device_manager.disconnect("dev-json")
+            await _simulate_disconnected(db_session, "dev-json")
 
     async def test_json_cpu_temp_null_when_offline(self, app, db_session, client):
         await _seed_device(db_session, "dev-off", "Offline Device")
@@ -280,18 +253,28 @@ class TestWebSocketStatusTemperature:
                     "cpu_temp_c": 73.2,
                 })
 
-                # Poll device_manager until the temperature lands (CI can be slow).
+                # Poll the DB (telemetry lives there now) until the
+                # STATUS heartbeat lands.  CI can be slow — give it 5s.
                 import time
+                from shared.database import get_session_factory
+                factory = get_session_factory()
                 deadline = time.time() + 5.0
-                states: dict = {}
+                row_mode = None
+                row_temp = None
                 while time.time() < deadline:
-                    states = {s["device_id"]: s for s in device_manager.get_all_states()}
-                    if states.get("ws-temp-001", {}).get("cpu_temp_c") == 73.2:
-                        break
+                    async with factory() as probe_db:
+                        r = (await probe_db.execute(
+                            select(Device.mode, Device.cpu_temp_c)
+                            .where(Device.id == "ws-temp-001")
+                        )).one_or_none()
+                        if r:
+                            row_mode, row_temp = r
+                            if row_temp == 73.2:
+                                break
                     time.sleep(0.05)
 
-                assert "ws-temp-001" in states
-                assert states["ws-temp-001"]["cpu_temp_c"] == 73.2
+                assert row_mode == "play"
+                assert row_temp == 73.2
 
     async def test_status_without_cpu_temp_stays_none(self, app, db_session):
         """A STATUS message without cpu_temp_c should leave it as None."""
@@ -337,17 +320,26 @@ class TestWebSocketStatusTemperature:
                     "storage_used_mb": 50,
                 })
 
-                # Poll device_manager until the device status lands. Absence of
-                # cpu_temp_c means it should remain None, so wait for the mode
-                # update as proof the status was processed.
+                # Poll DB until the STATUS heartbeat lands.  Absence of
+                # cpu_temp_c means it should remain None — wait for the
+                # mode update as proof the status was processed.
                 import time
+                from shared.database import get_session_factory
+                factory = get_session_factory()
                 deadline = time.time() + 5.0
-                states: dict = {}
+                row_mode = None
+                row_temp = "not-yet"
                 while time.time() < deadline:
-                    states = {s["device_id"]: s for s in device_manager.get_all_states()}
-                    if states.get("ws-temp-002", {}).get("mode") == "splash":
-                        break
+                    async with factory() as probe_db:
+                        r = (await probe_db.execute(
+                            select(Device.mode, Device.cpu_temp_c)
+                            .where(Device.id == "ws-temp-002")
+                        )).one_or_none()
+                        if r:
+                            row_mode, row_temp = r
+                            if row_mode == "splash":
+                                break
                     time.sleep(0.05)
 
-                assert "ws-temp-002" in states
-                assert states["ws-temp-002"]["cpu_temp_c"] is None
+                assert row_mode == "splash"
+                assert row_temp is None

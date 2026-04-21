@@ -140,10 +140,18 @@ async def test_offline_past_grace_then_reconnect_fires_both_notifications(
     svc = fresh_alert_service
     svc._offline_grace_seconds = 1
 
-    # Patch device_manager.is_connected to ensure grace expiration fires
-    from cms.services import device_manager as _dm_mod
-    original = _dm_mod.device_manager.is_connected
-    _dm_mod.device_manager.is_connected = lambda _did: False
+    # Stage 2c: alert_service now reads presence via the transport
+    # (which reads from the DB).  Patch the transport call so grace
+    # expiration sees the device as offline even though the DB row isn't
+    # seeded with online=False in this test.
+    from cms.services import alert_service as _alert_mod
+
+    class _OfflineTransport:
+        async def is_connected(self, _did):
+            return False
+
+    original = _alert_mod.get_transport
+    _alert_mod.get_transport = lambda: _OfflineTransport()
     try:
         svc.device_disconnected(info["device_id"], info["device_name"],
                                  info["group_id"], info["group_name"], status="adopted")
@@ -167,7 +175,7 @@ async def test_offline_past_grace_then_reconnect_fires_both_notifications(
         back_online = [n for n in notifs if "back online" in n.title.lower()]
         assert len(back_online) == 1
     finally:
-        _dm_mod.device_manager.is_connected = original
+        _alert_mod.get_transport = original
 
 
 # ── Disconnect → quick reconnect → disconnect again past grace ──
@@ -182,9 +190,14 @@ async def test_fresh_grace_timer_after_quick_reconnect(
     svc = fresh_alert_service
     svc._offline_grace_seconds = 1
 
-    from cms.services import device_manager as _dm_mod
-    original = _dm_mod.device_manager.is_connected
-    _dm_mod.device_manager.is_connected = lambda _did: False
+    from cms.services import alert_service as _alert_mod
+
+    class _OfflineTransport:
+        async def is_connected(self, _did):
+            return False
+
+    original = _alert_mod.get_transport
+    _alert_mod.get_transport = lambda: _OfflineTransport()
     try:
         # Disconnect — starts timer
         svc.device_disconnected(info["device_id"], info["device_name"],
@@ -211,4 +224,4 @@ async def test_fresh_grace_timer_after_quick_reconnect(
         offline_events = await _count_events(app, info["device_id"], DeviceEventType.OFFLINE)
         assert len(offline_events) == 2
     finally:
-        _dm_mod.device_manager.is_connected = original
+        _alert_mod.get_transport = original

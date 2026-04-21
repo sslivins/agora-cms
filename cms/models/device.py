@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -68,6 +68,50 @@ class Device(Base):
     registered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+    # ---- Stage 2c: presence + telemetry (see alembic/versions/0004_*) ----
+    # Presence (DB is the sole source of truth across replicas).
+    online: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Monotonic guard — incoming STATUS writes that are older than this
+    # timestamp are dropped so out-of-order deliveries can't rewind state.
+    last_status_ts: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Health metrics from the most recent STATUS heartbeat.
+    cpu_temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    load_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uptime_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+    # Playback state.
+    mode: Mapped[str] = mapped_column(
+        Text, default="unknown", server_default=text("'unknown'"), nullable=False
+    )
+    asset: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_state: Mapped[str] = mapped_column(
+        Text, default="NULL", server_default=text("'NULL'"), nullable=False
+    )
+    playback_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    playback_position_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Error state — ``error_since`` latches on the first error and only
+    # clears when the device reports no error again.
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Device-side toggles + hardware presence.
+    ssh_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    local_api_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    display_connected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Last-known IP address written by whichever replica processed the
+    # most recent register.  None when no registering replica has written
+    # yet (or the device is only reachable via WPS, which has no IP).
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
     profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")

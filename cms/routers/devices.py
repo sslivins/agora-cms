@@ -45,6 +45,48 @@ device_originated_router = APIRouter(prefix="/api/devices", tags=["devices (devi
 # Track devices with an in-flight upgrade to prevent concurrent upgrade commands
 _upgrading: set[str] = set()
 
+# Device model columns that are *also* passed explicitly as kwargs when
+# building a ``DeviceOut`` from the live-state + ORM row merge below.
+# We exclude them from the ``**{c.key: getattr(d, c.key) ...}`` splat so
+# Pydantic doesn't raise ``got multiple values for keyword argument``.
+# These are the Stage 2c telemetry columns — they live on the Device row
+# now, but the construction paths below still override them with the
+# live_states dict produced from ``get_transport().get_all_states()``
+# (which itself reads from the same DB row in Stage 2c; Stage 4 will
+# collapse this into a single read).
+_DEVICE_OUT_OVERLAP_COLUMNS = {
+    "online",
+    "connection_id",
+    "last_status_ts",
+    "cpu_temp_c",
+    "load_avg",
+    "uptime_seconds",
+    "mode",
+    "asset",
+    "pipeline_state",
+    "playback_started_at",
+    "playback_position_ms",
+    "error",
+    "error_since",
+    "ssh_enabled",
+    "local_api_enabled",
+    "display_connected",
+    "ip_address",
+}
+
+
+def _device_row_kwargs(device: Device) -> dict:
+    """Return ``DeviceOut`` kwargs drawn from the ORM row.
+
+    Excludes columns that are supplied as explicit kwargs (live state,
+    presence) at every ``DeviceOut(...)`` call site.
+    """
+    return {
+        c.key: getattr(device, c.key)
+        for c in Device.__table__.columns
+        if c.key not in _DEVICE_OUT_OVERLAP_COLUMNS
+    }
+
 
 async def _get_device_with_access(
     device_id: str, request: Request, db: AsyncSession,
@@ -126,7 +168,9 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(query)
     devices = result.scalars().all()
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    _transport = get_transport()
+    live_states = {s["device_id"]: s for s in await _transport.get_all_states()}
+    connected_ids = set(await _transport.connected_ids())
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Build URL→display name map for resolving URL-based asset names
@@ -147,9 +191,9 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.version_checker import is_update_available
     return [
         DeviceOut(
-            **{c.key: getattr(d, c.key) for c in Device.__table__.columns},
+            **_device_row_kwargs(d),
             group_name=d.group.name if d.group else None,
-            is_online=get_transport().is_connected(d.id),
+            is_online=d.id in connected_ids,
             is_upgrading=d.id in _upgrading,
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
             playback_asset=_resolve_asset_name(d.id),
@@ -182,7 +226,9 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
 
     device = await _get_device_with_access(device_id, request, db)
     await db.refresh(device, ["group"])
-    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    _transport = get_transport()
+    live_states = {s["device_id"]: s for s in await _transport.get_all_states()}
+    is_online = await _transport.is_connected(device.id)
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
     # Resolve URL-based asset names
@@ -198,9 +244,9 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
 
     from cms.services.version_checker import is_update_available
     return DeviceOut(
-        **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
+        **_device_row_kwargs(device),
         group_name=device.group.name if device.group else None,
-        is_online=get_transport().is_connected(device.id),
+        is_online=is_online,
         is_upgrading=device.id in _upgrading,
         playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
         playback_asset=raw_asset,
@@ -289,9 +335,9 @@ async def update_device(
         await push_sync_to_device(device_id, db)
 
     return DeviceOut(
-        **{c.key: getattr(device, c.key) for c in Device.__table__.columns},
+        **_device_row_kwargs(device),
         group_name=device.group.name if device.group else None,
-        is_online=get_transport().is_connected(device.id),
+        is_online=await get_transport().is_connected(device.id),
     )
 
 
@@ -310,7 +356,7 @@ async def set_device_password(
 
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     config_msg = ConfigMessage(web_password=password)
@@ -337,7 +383,7 @@ async def reboot_device(
 ):
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     reboot_msg = RebootMessage()
@@ -364,7 +410,7 @@ async def upgrade_device(
 ):
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         _upgrading.discard(device_id)
         raise HTTPException(status_code=409, detail="Device is not connected")
 
@@ -399,7 +445,7 @@ async def toggle_device_ssh(
     enabled = body.enabled
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     config_msg = ConfigMessage(ssh_enabled=enabled)
@@ -408,7 +454,7 @@ async def toggle_device_ssh(
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     # Track the SSH state immediately so the UI reflects it
-    get_transport().set_state_flags(device_id, ssh_enabled=enabled)
+    await get_transport().set_state_flags(device_id, ssh_enabled=enabled)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -430,7 +476,7 @@ async def factory_reset_device(
 ):
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     msg = FactoryResetMessage()
@@ -459,7 +505,7 @@ async def toggle_device_local_api(
     enabled = body.enabled
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     config_msg = ConfigMessage(local_api_enabled=enabled)
@@ -467,7 +513,7 @@ async def toggle_device_local_api(
     if not sent:
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
-    get_transport().set_state_flags(device_id, local_api_enabled=enabled)
+    await get_transport().set_state_flags(device_id, local_api_enabled=enabled)
 
     await audit_log(
         db, user=getattr(request.state, "user", None),
@@ -606,7 +652,7 @@ async def request_device_logs(
     """
     device = await _get_device_with_access(device_id, request, db)
 
-    if not get_transport().is_connected(device_id):
+    if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
     try:

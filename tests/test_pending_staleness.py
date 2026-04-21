@@ -135,19 +135,19 @@ async def test_purge_uses_registered_at_when_never_seen(db_session):
 @pytest.mark.asyncio
 async def test_purge_skips_connected_pending_devices(db_session):
     """Even if last_seen is stale, don't purge a pending device that's currently connected."""
-    from cms.services.device_manager import device_manager
+    from cms.services import device_presence
     from cms.services.device_purge import purge_stale_pending_devices
 
     stale_time = datetime.now(timezone.utc) - timedelta(hours=48)
     await _create_pending_device(db_session, "connected-pending", last_seen=stale_time)
 
-    # Device is connected right now
-    device_manager.register("connected-pending", websocket=None)
+    # Device is connected right now (DB-backed presence)
+    await device_presence.mark_online(db_session, "connected-pending")
     try:
         purged = await purge_stale_pending_devices(db_session, ttl_hours=24)
         assert purged == []
     finally:
-        device_manager.disconnect("connected-pending")
+        await device_presence.mark_offline(db_session, "connected-pending")
 
 
 @pytest.mark.asyncio

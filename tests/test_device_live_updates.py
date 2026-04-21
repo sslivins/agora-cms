@@ -103,10 +103,11 @@ class TestDeviceOutSchema:
 
 @pytest_asyncio.fixture
 async def device_with_live_state(app):
-    """Create a device and register it in device_manager with live state."""
+    """Create a device, register it, and persist live state in the DB."""
     from cms.database import get_db
     from cms.models.device import Device, DeviceStatus
     from cms.services.device_manager import device_manager
+    from cms.services import device_presence
     from unittest.mock import AsyncMock
 
     factory = app.dependency_overrides[get_db]
@@ -125,25 +126,33 @@ async def device_with_live_state(app):
 
     # Register a mock WebSocket connection
     mock_ws = AsyncMock()
-    conn = device_manager.register(device_id, mock_ws, ip_address="10.0.0.42")
+    device_manager.register(device_id, mock_ws, ip_address="10.0.0.42")
 
-    # Update with live status
-    device_manager.update_status(
-        device_id,
-        mode="playback",
-        asset="test-video.mp4",
-        uptime_seconds=7200,
-        cpu_temp_c=72.5,
-        pipeline_state="PLAYING",
-        ssh_enabled=True,
-        local_api_enabled=False,
-        display_connected=True,
-    )
+    # Update with live status (now persisted in DB via device_presence)
+    async for db in factory():
+        await device_presence.mark_online(db, device_id, ip_address="10.0.0.42")
+        await device_presence.update_status(
+            db, device_id,
+            {
+                "mode": "playback",
+                "asset": "test-video.mp4",
+                "uptime_seconds": 7200,
+                "cpu_temp_c": 72.5,
+                "pipeline_state": "PLAYING",
+                "ssh_enabled": True,
+                "local_api_enabled": False,
+                "display_connected": True,
+            },
+        )
+        break
 
     yield device_id
 
     # Cleanup
     device_manager.disconnect(device_id)
+    async for db in factory():
+        await device_presence.mark_offline(db, device_id)
+        break
 
 
 @pytest.mark.asyncio

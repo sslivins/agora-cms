@@ -321,9 +321,10 @@ class TestDevicePlaybackFields:
         assert dev["has_active_schedule"] is False
 
     async def test_playback_fields_from_live_state(self, client, db_session):
-        """Connected device should expose playback fields from device_manager state."""
+        """Connected device should expose playback fields persisted in the DB."""
         from cms.models.device import Device, DeviceStatus
         from cms.services.device_manager import device_manager
+        from cms.services import device_presence
 
         device = Device(id="pb-live", name="pb-live", status=DeviceStatus.ADOPTED)
         db_session.add(device)
@@ -333,8 +334,10 @@ class TestDevicePlaybackFields:
             async def send_json(self, data): pass
 
         device_manager.register("pb-live", FakeWS())
-        device_manager.update_status(
-            "pb-live", mode="play", asset="demo.mp4", pipeline_state="PLAYING",
+        await device_presence.mark_online(db_session, "pb-live")
+        await device_presence.update_status(
+            db_session, "pb-live",
+            {"mode": "play", "asset": "demo.mp4", "pipeline_state": "PLAYING"},
         )
 
         try:
@@ -345,6 +348,7 @@ class TestDevicePlaybackFields:
             assert dev["pipeline_state"] == "PLAYING"
         finally:
             device_manager.disconnect("pb-live")
+            await device_presence.mark_offline(db_session, "pb-live")
 
     async def test_has_active_schedule_from_scheduler(self, client, db_session):
         """Device with an active schedule in DB should have has_active_schedule=True."""
@@ -383,6 +387,7 @@ class TestDevicePlaybackFields:
         """Device showing splash should report mode=splash and no asset."""
         from cms.models.device import Device, DeviceStatus
         from cms.services.device_manager import device_manager
+        from cms.services import device_presence
 
         device = Device(id="pb-splash", name="pb-splash", status=DeviceStatus.ADOPTED)
         db_session.add(device)
@@ -392,8 +397,10 @@ class TestDevicePlaybackFields:
             async def send_json(self, data): pass
 
         device_manager.register("pb-splash", FakeWS())
-        device_manager.update_status(
-            "pb-splash", mode="splash", asset=None, pipeline_state="NULL",
+        await device_presence.mark_online(db_session, "pb-splash")
+        await device_presence.update_status(
+            db_session, "pb-splash",
+            {"mode": "splash", "asset": None, "pipeline_state": "NULL"},
         )
 
         try:
@@ -404,6 +411,7 @@ class TestDevicePlaybackFields:
             assert dev["pipeline_state"] == "NULL"
         finally:
             device_manager.disconnect("pb-splash")
+            await device_presence.mark_offline(db_session, "pb-splash")
 
 
 @pytest.mark.asyncio
@@ -414,6 +422,7 @@ class TestGetSingleDevice:
         """Single device endpoint should include live playback state fields."""
         from cms.models.device import Device, DeviceStatus
         from cms.services.device_manager import device_manager
+        from cms.services import device_presence
 
         device = Device(id="single-live", name="single-live", status=DeviceStatus.ADOPTED)
         db_session.add(device)
@@ -423,9 +432,13 @@ class TestGetSingleDevice:
             async def send_json(self, data): pass
 
         device_manager.register("single-live", FakeWS())
-        device_manager.update_status(
-            "single-live", mode="play", asset="beach.mp4", pipeline_state="PLAYING",
-            display_connected=True,
+        await device_presence.mark_online(db_session, "single-live")
+        await device_presence.update_status(
+            db_session, "single-live",
+            {
+                "mode": "play", "asset": "beach.mp4",
+                "pipeline_state": "PLAYING", "display_connected": True,
+            },
         )
 
         try:
@@ -438,6 +451,7 @@ class TestGetSingleDevice:
             assert dev["display_connected"] is True
         finally:
             device_manager.disconnect("single-live")
+            await device_presence.mark_offline(db_session, "single-live")
 
     async def test_get_device_has_active_schedule(self, client, db_session):
         """Single device endpoint should include has_active_schedule from scheduler."""

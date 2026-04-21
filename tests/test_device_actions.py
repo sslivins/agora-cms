@@ -66,8 +66,13 @@ class TestLocalApiToggle:
             assert msg["type"] == "config"
             assert msg["local_api_enabled"] is False
 
-            conn = device_manager.get("la-001")
-            assert conn.local_api_enabled is False
+            # set_state_flags persists to the DB now
+            from sqlalchemy import select
+            from cms.models.device import Device as _D
+            val = (await db_session.execute(
+                select(_D.local_api_enabled).where(_D.id == "la-001")
+            )).scalar_one()
+            assert val is False
         finally:
             device_manager.disconnect("la-001")
 
@@ -85,8 +90,12 @@ class TestLocalApiToggle:
             msg = ws.send_json.call_args[0][0]
             assert msg["local_api_enabled"] is True
 
-            conn = device_manager.get("la-002")
-            assert conn.local_api_enabled is True
+            from sqlalchemy import select
+            from cms.models.device import Device as _D
+            val = (await db_session.execute(
+                select(_D.local_api_enabled).where(_D.id == "la-002")
+            )).scalar_one()
+            assert val is True
         finally:
             device_manager.disconnect("la-002")
 
@@ -112,27 +121,10 @@ class TestLocalApiToggle:
 
 
 class TestDeviceManagerLocalApi:
-    def test_local_api_enabled_default(self):
-        dm = DeviceManager()
-        ws = AsyncMock()
-        conn = dm.register("dm-la-1", ws)
-        assert conn.local_api_enabled is None
-
-    def test_update_status_sets_local_api_enabled(self):
-        dm = DeviceManager()
-        ws = AsyncMock()
-        dm.register("dm-la-2", ws)
-        dm.update_status("dm-la-2", mode="splash", asset=None, local_api_enabled=True)
-        conn = dm.get("dm-la-2")
-        assert conn.local_api_enabled is True
-
-    def test_local_api_enabled_in_get_all_states(self):
-        dm = DeviceManager()
-        ws = AsyncMock()
-        dm.register("dm-la-3", ws)
-        dm.update_status("dm-la-3", mode="splash", asset=None, local_api_enabled=False)
-        states = {s["device_id"]: s for s in dm.get_all_states()}
-        assert states["dm-la-3"]["local_api_enabled"] is False
+    # Stage 2c: DeviceManager no longer caches status fields.  The
+    # equivalent coverage (set_flags + update_status + list_states)
+    # lives in ``tests/test_device_presence.py``.
+    pass
 
 
 @pytest.mark.asyncio

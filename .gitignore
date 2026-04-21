@@ -51,3 +51,5 @@ tests/nightly/coverage-data/
 
 .commit_msg.txt
 
+
+test_run*.log

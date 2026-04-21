@@ -58,8 +58,9 @@ async def download_logs(req: LogDownloadRequest, request: Request, db: AsyncSess
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         # ── Device logs ──
         tasks = {}
+        connected_ids = set(await get_transport().connected_ids())
         for device_id in req.device_ids:
-            if get_transport().is_connected(device_id):
+            if device_id in connected_ids:
                 tasks[device_id] = get_transport().request_logs(
                     device_id,
                     services=req.services,
