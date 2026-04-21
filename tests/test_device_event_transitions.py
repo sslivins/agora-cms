@@ -1,5 +1,6 @@
 """Tests for display_connected / error transition -> DeviceEvent emission (#122)."""
 
+import asyncio
 import hashlib
 import time
 
@@ -8,6 +9,30 @@ from sqlalchemy import select
 
 from cms.models.device import Device, DeviceStatus
 from cms.models.device_event import DeviceEvent, DeviceEventType
+
+
+async def _wait_for_events(db_session, device_id, predicate, timeout=5.0):
+    """Poll DeviceEvent rows for ``device_id`` until ``predicate(rows)`` is
+    True or ``timeout`` expires.
+
+    The WebSocket status handler commits asynchronously.  Using a fixed
+    ``time.sleep`` after the last message raced on slow CI runners —
+    the final event hadn't been committed before the test read the DB.
+    """
+    deadline = time.monotonic() + timeout
+    rows: list = []
+    while True:
+        db_session.expire_all()
+        rows = (await db_session.execute(
+            select(DeviceEvent)
+            .where(DeviceEvent.device_id == device_id)
+            .order_by(DeviceEvent.created_at.asc())
+        )).scalars().all()
+        if predicate(rows):
+            return rows
+        if time.monotonic() >= deadline:
+            return rows
+        await asyncio.sleep(0.1)
 
 
 def _make_adopted_device(device_id: str) -> tuple[Device, str]:
@@ -71,11 +96,10 @@ class TestDeviceEventTransitions:
                 time.sleep(0.3)
                 ws.close()
 
-        rows = (await db_session.execute(
-            select(DeviceEvent)
-            .where(DeviceEvent.device_id == "evt-display-001")
-            .order_by(DeviceEvent.created_at.asc())
-        )).scalars().all()
+        rows = await _wait_for_events(
+            db_session, "evt-display-001",
+            lambda r: sum(1 for x in r if x.event_type.startswith("display_")) >= 2,
+        )
         types = [r.event_type for r in rows]
         assert DeviceEventType.DISPLAY_DISCONNECTED.value in types
         assert DeviceEventType.DISPLAY_CONNECTED.value in types
@@ -106,11 +130,10 @@ class TestDeviceEventTransitions:
                 time.sleep(0.3)
                 ws.close()
 
-        rows = (await db_session.execute(
-            select(DeviceEvent)
-            .where(DeviceEvent.device_id == "evt-err-001")
-            .order_by(DeviceEvent.created_at.asc())
-        )).scalars().all()
+        rows = await _wait_for_events(
+            db_session, "evt-err-001",
+            lambda r: sum(1 for x in r if x.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)) >= 2,
+        )
         err_rows = [r for r in rows if r.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)]
         assert len(err_rows) == 2
         assert err_rows[0].event_type == DeviceEventType.ERROR.value
@@ -135,11 +158,10 @@ class TestDeviceEventTransitions:
                 time.sleep(0.3)
                 ws.close()
 
-        rows = (await db_session.execute(
-            select(DeviceEvent)
-            .where(DeviceEvent.device_id == "evt-err-002")
-            .order_by(DeviceEvent.created_at.asc())
-        )).scalars().all()
+        rows = await _wait_for_events(
+            db_session, "evt-err-002",
+            lambda r: sum(1 for x in r if x.event_type == DeviceEventType.ERROR.value) >= 2,
+        )
         err_rows = [r for r in rows if r.event_type == DeviceEventType.ERROR.value]
         assert len(err_rows) == 2
         assert err_rows[-1].details.get("error") == "second fault"

@@ -139,7 +139,7 @@ async def unauthed_setup_client(setup_app):
 # ── Middleware redirect tests ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_redirect_to_setup_when_not_completed(unauthed_setup_client):
     """HTML requests should redirect to /setup when setup is incomplete."""
     resp = await unauthed_setup_client.get(
@@ -149,7 +149,7 @@ async def test_redirect_to_setup_when_not_completed(unauthed_setup_client):
     assert resp.headers["location"] == "/setup"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_api_returns_503_when_not_completed(unauthed_setup_client):
     """API requests should get 503 when setup is incomplete."""
     resp = await unauthed_setup_client.get(
@@ -159,7 +159,7 @@ async def test_api_returns_503_when_not_completed(unauthed_setup_client):
     assert "setup" in resp.json()["detail"].lower()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_setup_page_redirects_to_login_when_unauthenticated(unauthed_setup_client):
     """GET /setup should redirect to /login when not logged in."""
     resp = await unauthed_setup_client.get(
@@ -169,7 +169,7 @@ async def test_setup_page_redirects_to_login_when_unauthenticated(unauthed_setup
     assert resp.headers["location"] == "/login"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_login_accessible_during_setup(unauthed_setup_client):
     """The login page should be accessible even when setup is incomplete."""
     resp = await unauthed_setup_client.get(
@@ -178,7 +178,7 @@ async def test_login_accessible_during_setup(unauthed_setup_client):
     assert resp.status_code == 200
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_setup_page_accessible_when_authenticated(setup_client):
     """GET /setup should render the wizard when logged in and setup incomplete."""
     resp = await setup_client.get("/setup", headers={"accept": "text/html"})
@@ -186,7 +186,7 @@ async def test_setup_page_accessible_when_authenticated(setup_client):
     assert "Welcome to Agora CMS" in resp.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_setup_page_redirects_when_completed(client):
     """GET /setup should redirect to / when setup is already done."""
     resp = await client.get("/setup", follow_redirects=False)
@@ -197,7 +197,7 @@ async def test_setup_page_redirects_when_completed(client):
 # ── Account update ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_account_update(setup_client, db_session):
     """POST /setup/account should update the logged-in admin's profile."""
     resp = await setup_client.post("/setup/account", json={
@@ -219,7 +219,7 @@ async def test_account_update(setup_client, db_session):
     assert admin.is_active is True
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_account_update_validates_email(setup_client):
     """POST /setup/account should reject invalid emails."""
     resp = await setup_client.post("/setup/account", json={
@@ -231,7 +231,7 @@ async def test_account_update_validates_email(setup_client):
     assert "email" in resp.json()["error"].lower()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_account_update_validates_short_password(setup_client):
     """POST /setup/account should reject passwords < 6 chars."""
     resp = await setup_client.post("/setup/account", json={
@@ -243,7 +243,7 @@ async def test_account_update_validates_short_password(setup_client):
     assert "6 characters" in resp.json()["error"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_account_update_rejects_unauthenticated(unauthed_setup_client):
     """POST /setup/account should return 401 without a session."""
     resp = await unauthed_setup_client.post("/setup/account", json={
@@ -257,7 +257,7 @@ async def test_account_update_rejects_unauthenticated(unauthed_setup_client):
 # ── SMTP ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_smtp_save(setup_client, db_session):
     """POST /setup/smtp should persist SMTP settings."""
     resp = await setup_client.post("/setup/smtp", json={
@@ -275,7 +275,7 @@ async def test_smtp_save(setup_client, db_session):
 # ── Timezone ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_timezone_save(setup_client, db_session):
     """POST /setup/timezone should persist the timezone."""
     resp = await setup_client.post("/setup/timezone", json={
@@ -286,7 +286,7 @@ async def test_timezone_save(setup_client, db_session):
     assert val == "America/New_York"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_timezone_rejects_invalid(setup_client):
     """POST /setup/timezone should reject invalid timezone strings."""
     resp = await setup_client.post("/setup/timezone", json={
@@ -298,7 +298,7 @@ async def test_timezone_rejects_invalid(setup_client):
 # ── MCP ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_mcp_save(setup_client, db_session):
     """POST /setup/mcp should persist the MCP enabled flag."""
     resp = await setup_client.post("/setup/mcp", json={"enabled": True})
@@ -310,7 +310,7 @@ async def test_mcp_save(setup_client, db_session):
 # ── Completion ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_setup_complete(setup_client, db_session):
     """POST /setup/complete should set the completion flag."""
     resp = await setup_client.post("/setup/complete", json={})
@@ -319,7 +319,7 @@ async def test_setup_complete(setup_client, db_session):
     assert val == "true"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_setup_complete_prevents_reentry(setup_client):
     """After completion, setup endpoints should return 400."""
     await setup_client.post("/setup/complete", json={})
@@ -333,7 +333,7 @@ async def test_setup_complete_prevents_reentry(setup_client):
     assert "already completed" in resp.json()["error"].lower()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_normal_routes_accessible_after_setup(setup_client):
     """After setup, normal routes should be accessible."""
     # Update account
@@ -359,7 +359,7 @@ async def test_normal_routes_accessible_after_setup(setup_client):
 # ── Upgrade-path migration tests ──
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_upgrade_migration_sets_flag_when_admin_exists(db_engine):
     """Existing deployments (admin already in DB) should auto-set setup_completed
     so the wizard doesn't block returning admins after upgrade."""
@@ -416,7 +416,7 @@ async def test_upgrade_migration_sets_flag_when_admin_exists(db_engine):
         assert await get_setting(db, SETTING_SETUP_COMPLETED) == "true"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_fresh_install_does_not_set_flag(db_engine):
     """On a truly fresh install (no admin in DB yet), the migration must NOT
     set the flag — the wizard needs to run."""
