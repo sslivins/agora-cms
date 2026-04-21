@@ -604,59 +604,48 @@ function _deleteGroupFromDom(groupId) {
     return true;
 }
 
-// Build (and insert) the DOM for a newly-created empty group-panel so the
-// user sees their group immediately. Matches the jinja-rendered structure
-// closely enough that subsequent moveDeviceRowInDom() calls Just Work.
-function _renderNewGroupPanel(group) {
-    // Anchor the insert so the new panel slots in right before the
-    // "Add Group" form. If we can't find the form, we can't reliably place
-    // the panel and must fall back to a reload.
+// Fetch the server-rendered <div class="group-panel"> for a group and
+// insert it into the #device-groups card before the "Add Group" form. Used
+// by createGroup (same-session) and the cross-session poller. Mirrors the
+// _insertAssetRow / _insertProfileRow pattern from the #87 reload-hunt.
+async function _insertGroupPanel(groupId) {
+    const resp = await fetch(`/api/devices/groups/${groupId}/panel`);
+    if (!resp.ok) return false;
+    const html = (await resp.text()).trim();
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const panel = tpl.content.querySelector(`.group-panel[data-group-id="${groupId}"]`);
+    if (!panel) return false;
+
+    // Anchor to the "Add Group" form's row so the new panel slots in right
+    // before it (matches the jinja render order).
     const addBtn = document.getElementById('add-group-btn');
     const formRow = addBtn ? addBtn.closest('div') : null;
     const container = formRow ? formRow.parentElement : null;
     if (!container || !formRow) return false;
+
     // First-group bookkeeping: hide the "No groups created yet" placeholder.
     container.querySelectorAll('p.empty-state').forEach(p => {
         if (/No groups created/i.test(p.textContent)) p.remove();
     });
-    const panel = document.createElement('div');
-    panel.className = 'group-panel';
-    panel.setAttribute('data-group-id', group.id);
-    panel.setAttribute('ondragover', "event.preventDefault(); this.classList.add('drag-over')");
-    panel.setAttribute('ondragleave', "this.classList.remove('drag-over')");
-    panel.setAttribute('ondrop', `dropDevice(event, '${group.id}'); this.classList.remove('drag-over')`);
-    const escName = _escHtmlLocal(group.name || '');
-    const escDesc = _escHtmlLocal(group.description || '');
-    panel.innerHTML =
-        `<div class="group-header" onclick="toggleGroup(this)">` +
-            `<span class="expand-toggle">▶</span>` +
-            `<strong><span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="${group.id}" data-field="name">${escName}</span></strong> ` +
-            `<span class="text-muted">— <span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="${group.id}" data-field="description" data-placeholder="No description">${escDesc || 'No description'}</span></span> ` +
-            `<span class="badge badge-count" data-group-count="${group.id}">0 devices</span>` +
-        `</div>` +
-        `<div class="group-body" style="display: none;">` +
-            `<table data-group-table="${group.id}" style="display: none;"><tbody data-group-tbody="${group.id}"></tbody></table>` +
-            `<p class="text-muted empty-state" data-group-empty="${group.id}">No devices in this group. Drag a device here to add it.</p>` +
-        `</div>`;
     container.insertBefore(panel, formRow);
+
     // Append a new <option> to every inline group-select on the main table
     // so the user can immediately assign a device to the freshly-made group.
+    const gName = panel.querySelector('.editable-name[data-field="name"]')?.textContent
+                || panel.querySelector('strong')?.textContent
+                || '';
     const opt = document.createElement('option');
-    opt.value = group.id;
-    opt.textContent = group.name;
+    opt.value = groupId;
+    opt.textContent = gName;
     document.querySelectorAll('select[data-device-group-select]').forEach(sel => {
-        sel.appendChild(opt.cloneNode(true));
+        if (!sel.querySelector(`option[value="${groupId}"]`)) {
+            sel.appendChild(opt.cloneNode(true));
+        }
     });
     return true;
 }
-
-// Minimal HTML escaper used by the group-panel synth. Scoped local so we
-// don't collide with any page-specific _escHtml in the templates.
-function _escHtmlLocal(s) {
-    return String(s).replace(/[&<>"']/g, c => (
-        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
-}
+window._insertGroupPanel = _insertGroupPanel;
 
 async function adoptDevice(deviceId, deviceName) {
     // Show adoption modal with name + optional location + optional group + required profile
@@ -923,16 +912,14 @@ async function createGroup() {
         return;
     }
     const group = await resp.json().catch(() => null);
-    if (!group || !_renderNewGroupPanel(group)) {
-        // We couldn't synth the panel (unknown page layout); fall back so the
-        // user still sees the new group.
-        location.reload();
+    if (!group || !(await _insertGroupPanel(group.id))) {
+        showToast("Group created — refresh to see it", true);
         return;
     }
     showToast("Group created");
+    if (window._rememberGroup) window._rememberGroup(group.id);
     nameInput.value = "";
     descInput.value = "";
-    // Re-disable the Add button since the name field is now empty.
     const addBtn = document.getElementById("add-group-btn");
     if (addBtn) addBtn.disabled = true;
 }
@@ -948,7 +935,8 @@ async function deleteGroup(groupId) {
         return;
     }
     showToast("Group deleted");
-    if (!_deleteGroupFromDom(groupId)) location.reload();
+    if (window._forgetGroup) window._forgetGroup(groupId);
+    _deleteGroupFromDom(groupId);
 }
 
 // ── Asset actions ──

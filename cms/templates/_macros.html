@@ -418,3 +418,137 @@
                 </td>
             </tr>
 {%- endmacro %}
+
+
+{#
+  Header row for the compact device table used inside group panels and
+  the "Ungrouped Devices" table on the /devices page. Moved here (from
+  devices.html) so the group-panel fragment endpoint can render it
+  without depending on page-scope {% set %} blocks. See issue #87.
+#}
+{% macro th_row_compact() -%}
+<tr>
+    <th>Name</th>
+    <th>Status</th>
+    <th>Group</th>
+    <th>Actions</th>
+</tr>
+{%- endmacro %}
+
+
+{#
+  Compact device row — used inside each group panel and the "Ungrouped"
+  table. Moved from devices.html so that both the full-page render and
+  the GET /api/devices/groups/{id}/panel fragment endpoint can emit
+  identical markup. See issue #87.
+
+  `pending_ttl_hours` is passed in explicitly (it lives on the page
+  template context, not on `d`) so the macro stays self-contained.
+#}
+{% macro device_row_compact(d, groups, user_perms, pending_ttl_hours, draggable=false) -%}
+<tr class="device-row device-row-compact{% if draggable %} draggable-device{% endif %}" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
+    <td>
+        {% if 'devices:write' in user_perms %}
+        <span class="editable-name" onclick="event.stopPropagation(); editDeviceName(this)" data-device-id="{{ d.id }}" data-fallback="{{ d.id }}">{{ d.name or d.id }}</span>
+        {% else %}
+        {{ d.name or d.id }}
+        {% endif %}
+    </td>
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}">
+        {% if d.status.value == 'orphaned' %}
+        <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">Re-flashed device — needs re-adoption</span></span>
+        {% elif d.status.value == 'pending' %}
+        {% if d.is_online %}
+        <span class="badge badge-pending">Pending</span>
+        {% else %}
+        <span class="has-tooltip"><span class="badge badge-offline">Pending (Offline)</span><span class="tooltip">This device registered but hasn't been seen recently. Stale pending devices are automatically removed after {{ pending_ttl_hours }} hours.</span></span>
+        {% endif %}
+        {% elif d.is_online %}
+        <span class="badge badge-online">Online</span>
+        {% else %}
+        <span class="badge badge-offline">Offline</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if 'devices:write' in user_perms %}
+        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
+            <option value="">None</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
+            {% endfor %}
+        </select>
+        {% else %}
+        {{ d.group.name if d.group else '—' }}
+        {% endif %}
+    </td>
+    <td class="actions" onclick="event.stopPropagation()">
+        {% if d.group_id and 'devices:write' in user_perms %}
+        {% call kebab_menu() %}
+            <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from the group">Remove from group</button>
+        {% endcall %}
+        {% endif %}
+    </td>
+</tr>
+{%- endmacro %}
+
+
+{#
+  Device group panel — renders a single expandable <div class="group-panel">
+  with header (name, description, device count, group-actions kebab) and
+  body (compact device table).
+
+  Shared between the /devices full-page render and the
+  GET /api/devices/groups/{id}/panel fragment endpoint so the cross-session
+  poller and the createGroup handler insert identical markup. See issue #87.
+#}
+{% macro group_panel(g, user_perms, assets, groups, pending_ttl_hours) -%}
+<div class="group-panel" data-group-id="{{ g.id }}"
+     ondragover="event.preventDefault(); this.classList.add('drag-over')"
+     ondragleave="this.classList.remove('drag-over')"
+     ondrop="dropDevice(event, '{{ g.id }}'); this.classList.remove('drag-over')">
+    <div class="group-header" onclick="toggleGroup(this)">
+        <span class="expand-toggle">▶</span>
+        {% if 'groups:write' in user_perms %}
+        <strong><span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="{{ g.id }}" data-field="name">{{ g.name }}</span></strong>
+        <span class="text-muted">— <span class="editable-name" onclick="event.stopPropagation(); editGroupField(this)" data-group-id="{{ g.id }}" data-field="description" data-placeholder="No description">{{ g.description or 'No description' }}</span></span>
+        {% else %}
+        <strong>{{ g.name }}</strong>
+        <span class="text-muted">— {{ g.description or 'No description' }}</span>
+        {% endif %}
+        <span class="badge badge-count" data-group-count="{{ g.id }}">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
+        <span class="group-actions" onclick="event.stopPropagation()">
+            <span class="has-tooltip inline-label">Group Splash Screen<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
+            {% if 'groups:write' in user_perms %}
+            <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
+                <option value="">No default asset</option>
+                {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
+                <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}{% if not a.ready_for_selection %} disabled{% endif %}>{{ a | asset_icon }} {{ a.display_name or a.original_filename or a.filename }}{{ a | asset_label_suffix }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
+                {% endfor %}
+            </select>
+            {% if g.schedule_count %}
+            {% call kebab_menu() %}
+                <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Cannot delete — used by {{ g.schedule_count }} schedule{{ 's' if g.schedule_count != 1 }}. Remove from all schedules first.">Delete</button>
+            {% endcall %}
+            {% else %}
+            {% call kebab_menu() %}
+                <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteGroup('{{ g.id }}')" title="Delete this group — devices will be ungrouped">Delete</button>
+            {% endcall %}
+            {% endif %}
+            {% else %}
+            <span class="text-muted">{% if g.default_asset_id %}{% set da = (assets | selectattr('id', 'equalto', g.default_asset_id) | first) %}{{ da.display_name or da.original_filename or da.filename }}{% else %}No default asset{% endif %}</span>
+            {% endif %}
+        </span>
+    </div>
+    <div class="group-body" style="display: none;">
+        <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
+            <thead>{{ th_row_compact() }}</thead>
+            <tbody data-group-tbody="{{ g.id }}">
+                {% for d in g.devices | sort(attribute='name') %}
+                {{ device_row_compact(d, groups, user_perms, pending_ttl_hours) }}
+                {% endfor %}
+            </tbody>
+        </table>
+        <p class="text-muted empty-state" data-group-empty="{{ g.id }}"{% if g.devices %} style="display: none;"{% endif %}>No devices in this group. Drag a device here to add it.</p>
+    </div>
+</div>
+{%- endmacro %}

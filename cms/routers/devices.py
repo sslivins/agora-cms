@@ -814,6 +814,92 @@ async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession =
     return {"deleted": str(group_id)}
 
 
+@router.get("/groups/{group_id}/panel", dependencies=[Depends(require_permission(GROUPS_READ))])
+async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    """Return the rendered <div class='group-panel'> HTML for one group.
+
+    Mirrors the pattern established by GET /api/assets/{id}/row and
+    /api/profiles/{id}/row so the cross-session poller on /devices and the
+    createGroup handler can insert server-rendered markup instead of
+    synthesizing HTML in JS or issuing a full page reload. See issue #87.
+    """
+    from fastapi.responses import HTMLResponse
+    from cms.ui import templates
+    from cms.services.variant_view import is_asset_ready as _is_asset_ready
+    from cms.models.schedule import Schedule as ScheduleModel
+
+    user = getattr(request.state, "user", None)
+    if user:
+        await verify_resource_group_access(user, db, group_id)
+
+    result = await db.execute(
+        select(DeviceGroup)
+        .where(DeviceGroup.id == group_id)
+        .options(selectinload(DeviceGroup.devices))
+    )
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    # Annotate the same fields the /devices page template expects.
+    group.device_count = len(group.devices)
+    group.schedule_count = await db.scalar(
+        select(func.count()).select_from(ScheduleModel).where(ScheduleModel.group_id == group_id)
+    ) or 0
+
+    from cms.services.version_checker import is_update_available
+    live_states = {s["device_id"]: s for s in get_transport().get_all_states()}
+    for d in group.devices:
+        d.is_online = get_transport().is_connected(d.id)
+        state = live_states.get(d.id)
+        d.cpu_temp_c = state["cpu_temp_c"] if state else None
+        d.ip_address = state["ip_address"] if state else None
+        d.playback_mode = state["mode"] if state else None
+        d.playback_asset = state["asset"] if state else None
+        d.pipeline_state = state["pipeline_state"] if state else None
+        d.started_at = state["started_at"] if state else None
+        d.playback_position_ms = state["playback_position_ms"] if state else None
+        d.ssh_enabled = state["ssh_enabled"] if state else None
+        d.local_api_enabled = state["local_api_enabled"] if state else None
+        d.update_available = is_update_available(d.firmware_version)
+        d.has_active_schedule = False  # poller will flip this via updateLiveFields
+
+    # Splash-screen dropdown options need the same ready annotations ui.py
+    # applies on the full page render.
+    assets_q = await db.execute(
+        select(Asset)
+        .options(selectinload(Asset.variants))
+        .where(Asset.deleted_at.is_(None))
+        .order_by(Asset.filename)
+    )
+    assets = assets_q.scalars().all()
+    for a in assets:
+        ready, reason = _is_asset_ready(a.variants)
+        a.ready_for_selection = ready
+        a.not_ready_reason = reason
+
+    # All groups the user can see — populates each device row's group-select.
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+    if is_admin:
+        visible_groups = (await db.execute(
+            select(DeviceGroup).order_by(DeviceGroup.name)
+        )).scalars().all()
+    elif group_ids:
+        visible_groups = (await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids)).order_by(DeviceGroup.name)
+        )).scalars().all()
+    else:
+        visible_groups = []
+
+    user_perms = list(user.role.permissions) if user and user.role else []
+    pending_ttl_hours = get_settings().pending_device_ttl_hours
+
+    macros = templates.env.get_template("_macros.html").module
+    html = macros.group_panel(group, user_perms, assets, visible_groups, pending_ttl_hours)
+    return HTMLResponse(str(html))
+
+
 # ── Device-originated: WPS connect token ────────────────────────────
 #
 # A device authenticates with its API key and asks the CMS to mint a

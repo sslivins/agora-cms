@@ -477,3 +477,55 @@ class TestAssetsInSessionNoReload:
         # Small settle so any (buggy) reload path would have fired by now.
         page.wait_for_timeout(500)
         assert page.evaluate("window.__noReloadSentinel") == "keep-me"
+
+class TestGroupsCrossSession:
+    """Cross-session visibility for the Device Groups card on /devices.
+
+    Added as part of the #87 no-reload rework (see PR following assets):
+    session A creating/deleting a group used to require session B to
+    reload. Now session B's 5s group poller inserts the panel via the
+    GET /api/devices/groups/{id}/panel fragment and removes it on delete.
+    """
+
+    def test_create_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A creates a group → session B inserts the panel inline."""
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/devices")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        resp = api.post("/api/devices/groups/", json={
+            "name": "xsess-group-create", "description": "cross-session test",
+        })
+        assert resp.status_code == 201, resp.text
+        group_id = resp.json()["id"]
+
+        expect(
+            second_page.locator(f'.group-panel[data-group-id="{group_id}"]')
+        ).to_be_visible(timeout=POLL_TIMEOUT_MS)
+
+    def test_delete_propagates(self, page: Page, second_page: Page, api, e2e_server):
+        """Session A deletes a group → session B removes the panel."""
+        resp = api.post("/api/devices/groups/", json={
+            "name": "xsess-group-delete", "description": "",
+        })
+        assert resp.status_code == 201, resp.text
+        group_id = resp.json()["id"]
+
+        page.goto("/devices")
+        page.wait_for_load_state("domcontentloaded")
+        second_page.goto("/devices")
+        second_page.wait_for_load_state("domcontentloaded")
+
+        expect(
+            second_page.locator(f'.group-panel[data-group-id="{group_id}"]')
+        ).to_be_visible(timeout=5000)
+
+        del_resp = api.delete(f"/api/devices/groups/{group_id}")
+        assert del_resp.status_code in (200, 204), del_resp.text
+
+        # Same CI-jitter headroom as the assets delete test (one 5s poll
+        # cycle can be consumed by the pre-delete to_be_visible check).
+        expect(
+            second_page.locator(f'.group-panel[data-group-id="{group_id}"]')
+        ).to_have_count(0, timeout=POLL_TIMEOUT_MS + 8000)
