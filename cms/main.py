@@ -371,6 +371,22 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # ── Log-blob reaper (issue #345 Stage 3e) ──
+    # Walks ``log_requests`` for rows past ``expires_at`` on a slow
+    # cadence (10 min default), deletes the blob, and flips the row to
+    # ``expired``.  Bounds device-logs container growth to the default
+    # 30-day retention window.  Uses ``FOR UPDATE SKIP LOCKED`` on PG
+    # so concurrent replicas don't race on the same row.
+    from cms.services.log_reaper import run_loop as log_reaper_run_loop
+    log_reaper_stop = asyncio.Event()
+    log_reaper_task = asyncio.create_task(
+        log_reaper_run_loop(
+            _get_session_factory,
+            settings=settings,
+            stop_event=log_reaper_stop,
+        )
+    )
+
     # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
     try:
         from cms.models.device_event import DeviceEvent, DeviceEventType
@@ -454,6 +470,7 @@ async def lifespan(app: FastAPI):
     outbox_drain_task.cancel()
     log_drainer_stop.set()
     log_chunk_reaper_stop.set()
+    log_reaper_stop.set()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -510,6 +527,16 @@ async def lifespan(app: FastAPI):
             pass
     except Exception:
         logger.exception("log_chunk_reaper: error during shutdown")
+    try:
+        await asyncio.wait_for(log_reaper_task, timeout=5.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        log_reaper_task.cancel()
+        try:
+            await log_reaper_task
+        except asyncio.CancelledError:
+            pass
+    except Exception:
+        logger.exception("log_reaper: error during shutdown")
     # Close storage backend (Azure: close async blob client)
     if hasattr(backend, "close"):
         await backend.close()
