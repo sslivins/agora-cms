@@ -50,9 +50,17 @@ async def purge_stale_pending_devices(db: AsyncSession, ttl_hours: int) -> list[
 
 
 async def device_purge_loop() -> None:
-    """Background loop that periodically purges stale pending devices."""
+    """Background loop that periodically purges stale pending devices.
+
+    Stage 4 (#344): gated by a session-advisory lock so only one
+    replica runs the DELETE pass at a time.  DELETEs are idempotent
+    but running them on N replicas at once wastes a DB round-trip.
+    """
     from cms.auth import get_settings
     from cms.database import get_db
+    from cms.services.leader import session_advisory_lock
+
+    _LOCK_ID = 0x4147_4F52_41_02  # 'AGORA' + 02
 
     # Wait for startup
     try:
@@ -65,10 +73,12 @@ async def device_purge_loop() -> None:
             settings = get_settings()
             ttl = settings.pending_device_ttl_hours
             if ttl > 0:
-                async for db in get_db():
-                    purged = await purge_stale_pending_devices(db, ttl)
-                    if purged:
-                        logger.info("Purged %d stale pending device(s)", len(purged))
+                async with session_advisory_lock(_LOCK_ID) as got:
+                    if got:
+                        async for db in get_db():
+                            purged = await purge_stale_pending_devices(db, ttl)
+                            if purged:
+                                logger.info("Purged %d stale pending device(s)", len(purged))
         except asyncio.CancelledError:
             return
         except Exception:

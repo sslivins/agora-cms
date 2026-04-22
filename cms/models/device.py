@@ -113,6 +113,16 @@ class Device(Base):
     # yet (or the device is only reachable via WPS, which has no IP).
     ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # ---- Stage 4: atomic upgrade claim (see 0007_alert_state_upgrade_claim) ----
+    # Timestamp-as-claim token for the upgrade endpoint.  Set by an
+    # atomic CAS update that only succeeds if the column is NULL or
+    # older than the configured TTL; cleared by the ``/ws/device``
+    # register path on reconnect and by the upgrade endpoint's failure
+    # rollback (compare-and-clear against the claimed timestamp).
+    upgrade_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
     profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys="[Device.default_asset_id]")

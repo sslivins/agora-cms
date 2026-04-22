@@ -1127,11 +1127,33 @@ async def evaluate_schedules() -> None:
 
 
 async def scheduler_loop() -> None:
-    """Background loop that periodically evaluates schedules."""
+    """Background loop that periodically evaluates schedules.
+
+    Stage 4 (#344): gated by a :class:`LeaderLease` so at most one
+    replica dispatches syncs at a time.  Non-leaders sleep on the
+    heartbeat interval and skip evaluation; on failover the new
+    leader picks up within ``ttl_s`` and resumes ticks.  On SQLite
+    (unit tests) the lease degrades to "always leader".
+    """
+    from cms.services.leader import LeaderLease
+
     logger.info("Scheduler started (interval=%ds)", EVAL_INTERVAL_SECONDS)
-    while True:
-        try:
-            await evaluate_schedules()
-        except Exception:
-            logger.exception("Scheduler evaluation error")
-        await asyncio.sleep(EVAL_INTERVAL_SECONDS)
+    lease = LeaderLease("scheduler", ttl_s=30, heartbeat_s=10)
+    try:
+        await lease.start()
+        while True:
+            try:
+                if lease.is_leader:
+                    await evaluate_schedules()
+                else:
+                    logger.debug("scheduler_loop: not leader, skipping tick")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Scheduler evaluation error")
+            try:
+                await asyncio.sleep(EVAL_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+    finally:
+        await lease.stop()

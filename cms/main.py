@@ -92,49 +92,69 @@ async def _seed_profiles(db):
 
 
 async def _backfill_media_metadata(settings):
-    """One-shot: probe existing assets/variants that have no metadata yet."""
+    """One-shot: probe existing assets/variants that have no metadata yet.
+
+    Stage 4 (#344): gated by a Postgres session-advisory lock so only
+    one replica probes the shared filesystem at a time.  If another
+    replica holds the lock, this call is a no-op.  The backfill runs
+    once per process startup, so the losing replica simply won't
+    backfill this startup — on the leader's next restart / crash the
+    survivors will retry.  For true resume-on-leader-death semantics
+    we'd convert to a periodic SKIP-LOCKED loop, but the cost/benefit
+    isn't there while fleets are small.
+    """
     from sqlalchemy import select
     from cms.models.asset import Asset, AssetVariant
+    from cms.services.leader import session_advisory_lock
     from cms.services.transcoder import probe_media
 
+    # Dedicated lock-id for this housekeeping pass.  Keep the id stable
+    # across releases so running replicas agree on the lock namespace.
+    _BACKFILL_LOCK_ID = 0x4147_4F52_41_01  # 'AGORA' + 01
     try:
-        async for db in get_db():
-            # Backfill source assets
-            result = await db.execute(
-                select(Asset).where(Asset.width.is_(None))
-            )
-            assets = result.scalars().all()
-            for asset in assets:
-                file_path = settings.asset_storage_path / asset.filename
-                if not file_path.is_file():
-                    continue
-                meta = await probe_media(file_path)
-                for key, val in meta.items():
-                    if val is not None:
-                        setattr(asset, key, val)
-            if assets:
-                await db.commit()
-                logger.info("Backfilled metadata for %d assets", len(assets))
-
-            # Backfill variants
-            result = await db.execute(
-                select(AssetVariant).where(
-                    AssetVariant.width.is_(None),
-                    AssetVariant.status == "ready",
+        async with session_advisory_lock(_BACKFILL_LOCK_ID) as got_lock:
+            if not got_lock:
+                logger.info(
+                    "Metadata backfill: another replica holds the lock, skipping"
                 )
-            )
-            variants = result.scalars().all()
-            for variant in variants:
-                file_path = settings.asset_storage_path / "variants" / variant.filename
-                if not file_path.is_file():
-                    continue
-                meta = await probe_media(file_path)
-                for key, val in meta.items():
-                    if val is not None:
-                        setattr(variant, key, val)
-            if variants:
-                await db.commit()
-                logger.info("Backfilled metadata for %d variants", len(variants))
+                return
+            async for db in get_db():
+                # Backfill source assets
+                result = await db.execute(
+                    select(Asset).where(Asset.width.is_(None))
+                )
+                assets = result.scalars().all()
+                for asset in assets:
+                    file_path = settings.asset_storage_path / asset.filename
+                    if not file_path.is_file():
+                        continue
+                    meta = await probe_media(file_path)
+                    for key, val in meta.items():
+                        if val is not None:
+                            setattr(asset, key, val)
+                if assets:
+                    await db.commit()
+                    logger.info("Backfilled metadata for %d assets", len(assets))
+
+                # Backfill variants
+                result = await db.execute(
+                    select(AssetVariant).where(
+                        AssetVariant.width.is_(None),
+                        AssetVariant.status == "ready",
+                    )
+                )
+                variants = result.scalars().all()
+                for variant in variants:
+                    file_path = settings.asset_storage_path / "variants" / variant.filename
+                    if not file_path.is_file():
+                        continue
+                    meta = await probe_media(file_path)
+                    for key, val in meta.items():
+                        if val is not None:
+                            setattr(variant, key, val)
+                if variants:
+                    await db.commit()
+                    logger.info("Backfilled metadata for %d variants", len(variants))
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -169,7 +189,13 @@ async def _seed_roles(db):
 
 
 async def service_key_rotation_loop() -> None:
-    """Background loop that auto-rotates the MCP service key every hour."""
+    """Background loop that auto-rotates the MCP service key every hour.
+
+    Stage 4 (#344): gated by a :class:`LeaderLease` so only one
+    replica rotates the shared key at a time; racing rotations would
+    write different hashes and leave the fleet half-trusting the
+    wrong secret.
+    """
     from cms.auth import (
         SETTING_MCP_ENABLED,
         SETTING_MCP_SERVICE_KEY_HASH,
@@ -179,6 +205,7 @@ async def service_key_rotation_loop() -> None:
     )
     from cms.database import get_db
     from cms.mcp_utils import notify_mcp_reload
+    from cms.services.leader import LeaderLease
 
     # Wait for startup
     try:
@@ -186,28 +213,40 @@ async def service_key_rotation_loop() -> None:
     except asyncio.CancelledError:
         return
 
-    while True:
-        try:
-            settings = get_settings()
-            async for db in get_db():
-                enabled = await get_setting(db, SETTING_MCP_ENABLED)
-                has_key = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
-                if enabled == "true" and has_key:
-                    await provision_service_key(
-                        db, settings.service_key_path,
-                        keyvault_uri=settings.azure_keyvault_uri,
+    lease = LeaderLease("service_key_rotation", ttl_s=90, heartbeat_s=30)
+    try:
+        await lease.start()
+        while True:
+            try:
+                if not lease.is_leader:
+                    logger.debug(
+                        "service_key_rotation_loop: not leader, skipping tick"
                     )
-                    await notify_mcp_reload(settings)
-                    logger.info("MCP service key rotated")
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("Error in service key rotation loop")
+                else:
+                    settings = get_settings()
+                    async for db in get_db():
+                        enabled = await get_setting(db, SETTING_MCP_ENABLED)
+                        has_key = await get_setting(
+                            db, SETTING_MCP_SERVICE_KEY_HASH
+                        )
+                        if enabled == "true" and has_key:
+                            await provision_service_key(
+                                db, settings.service_key_path,
+                                keyvault_uri=settings.azure_keyvault_uri,
+                            )
+                            await notify_mcp_reload(settings)
+                            logger.info("MCP service key rotated")
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Error in service key rotation loop")
 
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            return
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                return
+    finally:
+        await lease.stop()
 
 
 async def _alert_settings_refresh_loop() -> None:
@@ -225,6 +264,51 @@ async def _alert_settings_refresh_loop() -> None:
             await asyncio.sleep(300)  # Refresh every 5 minutes
         except asyncio.CancelledError:
             return
+
+
+async def _offline_sweep_loop() -> None:
+    """Leader-gated loop emitting 'offline' alerts for devices past grace.
+
+    Stage 4 (#344): the disconnect path only records
+    ``offline_since``; the actual "device went offline" notification
+    + event fire from this sweep, which checks the configured offline
+    grace window and flips ``offline_notified=TRUE`` inside the same
+    transaction that writes the notification.  Running from exactly
+    one replica keeps the alert single-shot across the fleet.
+    """
+    from cms.database import get_db
+    from cms.services.alert_service import alert_service
+    from cms.services.leader import LeaderLease
+
+    # Wait for startup
+    try:
+        await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        return
+
+    lease = LeaderLease("offline_sweep", ttl_s=60, heartbeat_s=20)
+    try:
+        await lease.start()
+        while True:
+            try:
+                if lease.is_leader:
+                    async for db in get_db():
+                        emitted = await alert_service.offline_sweep_once(db)
+                        if emitted:
+                            logger.info(
+                                "Offline sweep: emitted %d offline notification(s)",
+                                emitted,
+                            )
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Error in offline sweep loop")
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                return
+    finally:
+        await lease.stop()
 
 
 @asynccontextmanager
@@ -308,25 +392,24 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks (transcoding is handled by the dedicated worker container)
     #
-    # Multi-replica classification (issue #344, Stage 1 annotation —
-    # locking lands in Stage 4):
+    # Multi-replica leader-election (issue #344, Stage 4):
     #
-    # | Loop                          | Class                | Notes |
+    # | Loop                          | Primitive            | Notes |
     # |-------------------------------|----------------------|-------|
-    # | scheduler_loop                | leader-only          | schedule dispatch, dedupe-critical |
-    # | _backfill_media_metadata      | leader-only          | one-shot; per-asset UPDATEs race |
-    # | version_check_loop            | replicated           | per-process cache warmer; dupes = extra GH hit |
-    # | device_purge_loop             | leader-only          | per-tick DELETEs; dupes waste work |
-    # | service_key_rotation_loop     | leader-only          | rotation races corrupt shared key |
+    # | scheduler_loop                | LeaderLease          | dedupe-critical; bounded failover matters |
+    # | service_key_rotation_loop     | LeaderLease          | rotation races corrupt shared key |
+    # | offline_sweep_loop            | LeaderLease          | time-sensitive offline-alert emission |
+    # | _backfill_media_metadata      | session_advisory_lock | one-shot; wasteful dupes only |
+    # | device_purge_loop             | session_advisory_lock | idempotent DELETEs |
+    # | stream_capture_monitor_loop   | session_advisory_lock | creates variant rows; needs real lock |
+    # | deleted_asset_reaper_loop     | session_advisory_lock | wasteful external blob-delete calls |
+    # | version_check_loop            | replicated           | per-process cache warmer |
     # | _alert_settings_refresh_loop  | replicated           | per-process settings cache |
-    # | stream_capture_monitor_loop   | leader-only          | may create variant rows; dupes = double-create |
-    # | deleted_asset_reaper_loop     | leader-only          | concurrent deletes waste work |
-    # | outbox_drain_loop             | replicated (safe)    | already idempotent; worker-side dedupes |
+    # | outbox_drain_loop             | replicated (safe)    | already uses SKIP LOCKED |
+    # | log_*_loop                    | replicated (safe)    | use SKIP LOCKED on Postgres |
     #
-    # Today (maxReplicas=1 per Stage 0) every CMS process runs every loop —
-    # the classification is purely informational until the Stage 4 leader
-    # election lands.  See docs/multi-replica-architecture.md on branch
-    # `docs/multi-replica-plan` for the full rollout plan.
+    # Non-Postgres backends (SQLite tests) degrade all primitives to
+    # "always leader" / "always got lock" so the loops run identically.
     scheduler_task = asyncio.create_task(scheduler_loop())
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
     version_check_task = asyncio.create_task(version_check_loop())
@@ -336,6 +419,7 @@ async def lifespan(app: FastAPI):
     capture_monitor_task = asyncio.create_task(stream_capture_monitor_loop())
     reaper_task = asyncio.create_task(deleted_asset_reaper_loop())
     outbox_drain_task = asyncio.create_task(outbox_drain_loop())
+    offline_sweep_task = asyncio.create_task(_offline_sweep_loop())
 
     # ── Log-request drainer (issue #345 Stage 3d) ──
     # Self-healing loop for the log_requests outbox: retries stuck
@@ -469,6 +553,7 @@ async def lifespan(app: FastAPI):
     capture_monitor_task.cancel()
     reaper_task.cancel()
     outbox_drain_task.cancel()
+    offline_sweep_task.cancel()
     log_drainer_stop.set()
     log_chunk_reaper_stop.set()
     log_reaper_stop.set()
@@ -506,6 +591,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await outbox_drain_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await offline_sweep_task
     except asyncio.CancelledError:
         pass
     try:

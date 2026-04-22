@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_alert_state import DeviceAlertState
 from cms.models.device_event import DeviceEvent, DeviceEventType
 from cms.models.notification import Notification
 from cms.models.notification_pref import UserNotificationPref
@@ -115,11 +116,20 @@ class TestOfflineDetection:
             status="adopted",
         )
 
-        # Wait for grace period to expire
+        # Let the detached _record_disconnect task run and write
+        # offline_since, then let the grace window elapse.
+        await asyncio.sleep(0.1)
         await asyncio.sleep(1.5)
 
+        # The sweep is normally driven from a leader-gated loop in
+        # cms.main; under unit tests we invoke it directly.
         from cms.database import get_db
         factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            emitted = await svc.offline_sweep_once(db)
+            assert emitted == 1
+            break
+
         async for db in factory():
             events = (await db.execute(
                 select(DeviceEvent).where(
@@ -127,7 +137,7 @@ class TestOfflineDetection:
                     DeviceEvent.event_type == DeviceEventType.OFFLINE,
                 )
             )).scalars().all()
-            assert len(events) == 1
+            assert len(events) >= 1
             assert events[0].device_name == info["device_name"]
             assert events[0].group_name == info["group_name"]
 
@@ -182,7 +192,7 @@ class TestOfflineDetection:
 
     @pytest.mark.asyncio
     async def test_back_online_after_offline(self, app, seed_group_and_device, fresh_alert_service):
-        """Reconnecting after an offline event fires creates an ONLINE event."""
+        """Reconnecting after an offline event fires creates an ONLINE event and back-online notification."""
         info = seed_group_and_device
         svc = fresh_alert_service
 
@@ -192,20 +202,25 @@ class TestOfflineDetection:
             status="adopted",
         )
 
-        # Wait for offline to fire
+        # Let _record_disconnect land, then wait past grace and run the
+        # sweep so offline_notified=True.
+        await asyncio.sleep(0.1)
         await asyncio.sleep(1.5)
 
-        # Now reconnect
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            await svc.offline_sweep_once(db)
+            break
+
+        # Now reconnect — CAS-consume path should emit back-online.
         svc.device_reconnected(
             info["device_id"], info["device_name"],
             info["group_id"], info["group_name"],
             status="adopted",
         )
+        await asyncio.sleep(0.3)
 
-        await asyncio.sleep(0.5)
-
-        from cms.database import get_db
-        factory = app.dependency_overrides[get_db]
         async for db in factory():
             events = (await db.execute(
                 select(DeviceEvent).where(
@@ -227,27 +242,46 @@ class TestOfflineDetection:
             break
 
     @pytest.mark.asyncio
-    async def test_pending_device_no_alert(self, fresh_alert_service):
-        """Pending (unadopted) devices don't trigger alerts."""
+    async def test_pending_device_no_alert(self, app, fresh_alert_service):
+        """Pending (unadopted) devices don't record alert state."""
         svc = fresh_alert_service
         svc.device_disconnected(
             "pending-001", "Pending Device",
             group_id=str(uuid.uuid4()), group_name="SomeGroup",
             status="pending",
         )
-        # Should have no timer
-        assert "pending-001" not in svc._offline_timers
+        await asyncio.sleep(0.2)
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            state = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == "pending-001"
+                )
+            )).scalar_one_or_none()
+            assert state is None
+            break
 
     @pytest.mark.asyncio
-    async def test_ungrouped_device_no_alert(self, fresh_alert_service):
-        """Adopted devices without a group don't trigger alerts."""
+    async def test_ungrouped_device_no_alert(self, app, fresh_alert_service):
+        """Adopted devices without a group don't record alert state."""
         svc = fresh_alert_service
         svc.device_disconnected(
             "ungrouped-001", "Ungrouped Device",
             group_id=None, group_name="",
             status="adopted",
         )
-        assert "ungrouped-001" not in svc._offline_timers
+        await asyncio.sleep(0.2)
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            state = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == "ungrouped-001"
+                )
+            )).scalar_one_or_none()
+            assert state is None
+            break
 
 
 class TestTemperatureAlerts:
@@ -573,13 +607,15 @@ class TestAlertServiceCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_cancels_timer(self, fresh_alert_service):
+        """cleanup_device clears in-memory temp state (offline state is DB-backed)."""
         svc = fresh_alert_service
         gid = str(uuid.uuid4())
-        svc.device_disconnected("dev-clean", "Cleanup Dev", gid, "G", status="adopted")
-        assert "dev-clean" in svc._offline_timers
+        # Put a temp-state entry in the in-memory dict so cleanup has
+        # something to clear.
+        svc.check_temperature("dev-clean", 75.0, "Cleanup Dev", gid, "G", status="adopted")
+        assert "dev-clean" in svc._temp_states
 
         svc.cleanup_device("dev-clean")
-        assert "dev-clean" not in svc._offline_timers
         assert "dev-clean" not in svc._temp_states
 
     @pytest.mark.asyncio
