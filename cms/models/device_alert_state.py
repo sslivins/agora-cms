@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from cms.database import Base
@@ -30,7 +30,14 @@ class DeviceAlertState(Base):
     """
 
     __tablename__ = "device_alert_state"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        Index(
+            "ix_device_alert_state_pending",
+            "offline_since",
+            postgresql_where=text("offline_notified = false"),
+        ),
+        {"extend_existing": True},
+    )
 
     device_id: Mapped[str] = mapped_column(
         String(64),
