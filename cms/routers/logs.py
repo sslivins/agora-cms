@@ -1,4 +1,21 @@
-"""Log collection API — request device logs and download as zip."""
+"""Log collection API.
+
+The legacy ``POST /api/logs/download`` endpoint below is **deprecated** and
+retained only as a safety net while the UI migration to the async outbox
+API (``/api/logs/requests``) bakes in prod.  It does a synchronous
+``request_logs`` call per device which does not work under N>1 CMS
+replicas (the WS target may live on a different replica than the one
+handling the HTTP request).  It will be removed once the UI has been
+verified and the back-compat shim in
+:mod:`cms.services.device_inbound` covers old firmware cases.
+
+New user flow uses:
+
+* ``POST   /api/logs/requests``                  — enqueue per-device
+* ``GET    /api/logs/requests/{id}``             — poll status
+* ``GET    /api/logs/requests/{id}/download``    — download bundle
+* ``GET    /api/cms/logs``                       — CMS in-memory log buffer
+"""
 
 import asyncio
 import io
@@ -23,6 +40,9 @@ logger = logging.getLogger("agora.cms.logs")
 
 router = APIRouter(prefix="/api/logs", dependencies=[Depends(require_auth)])
 
+# Separate router for ``/api/cms/logs`` so it's not nested under ``/api/logs``.
+cms_logs_router = APIRouter(prefix="/api/cms", dependencies=[Depends(require_auth)])
+
 
 class LogDownloadRequest(BaseModel):
     device_ids: list[str] = []
@@ -31,9 +51,17 @@ class LogDownloadRequest(BaseModel):
     since: str = "24h"
 
 
-@router.post("/download", dependencies=[Depends(require_permission(LOGS_READ))])
+@router.post("/download", dependencies=[Depends(require_permission(LOGS_READ))], deprecated=True)
 async def download_logs(req: LogDownloadRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    """Collect logs from selected devices (+ optionally CMS) and return a zip file."""
+    """**Deprecated.** Synchronous multi-device log collection; see module docstring.
+
+    Collect logs from selected devices (+ optionally CMS) and return a zip file.
+    """
+    logger.warning(
+        "legacy /api/logs/download called (device_ids=%d, include_cms=%s); "
+        "UI should migrate to /api/logs/requests",
+        len(req.device_ids), req.include_cms,
+    )
     # Validate the requesting user has group access to every requested device
     user = getattr(request.state, "user", None)
     if user and req.device_ids:
@@ -113,6 +141,45 @@ async def download_logs(req: LogDownloadRequest, request: Request, db: AsyncSess
             "services": req.services,
             "since": req.since,
         },
+        request=request,
+    )
+    await db.commit()
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── CMS-only log download (new async UI flow) ───────────────────────
+
+@cms_logs_router.get(
+    "/logs",
+    dependencies=[Depends(require_permission(LOGS_READ))],
+)
+async def download_cms_logs(request: Request, db: AsyncSession = Depends(get_db)):
+    """Download the CMS in-memory log buffer as a zip.
+
+    Small, synchronous endpoint used by the new UI flow to fetch CMS
+    logs separately from per-device log bundles.  Unlike the legacy
+    ``/api/logs/download`` path this does not reach across the network
+    to devices, so it is safe under N>1 replicas (each replica returns
+    its own buffer; we document this caveat in the UI).
+    """
+    from cms.main import _log_buffer
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("cms/cms.log", "\n".join(_log_buffer))
+    buf.seek(0)
+
+    filename = f"agora-cms-logs-{timestamp}.zip"
+    user = getattr(request.state, "user", None)
+    await audit_log(
+        db, user=user,
+        action="logs.download_cms", resource_type="logs",
+        description="Downloaded CMS log buffer",
         request=request,
     )
     await db.commit()
