@@ -216,6 +216,25 @@ class TestLogDownloadAPI:
         assert resp.status_code == 200
 
 
+# ── CMS-only log endpoint (new async UI flow) ──
+
+
+class TestCmsLogsEndpoint:
+    @pytest.mark.asyncio
+    async def test_cms_logs_returns_zip(self, client):
+        """GET /api/cms/logs returns a zip containing cms/cms.log."""
+        import io
+        import zipfile
+
+        resp = await client.get("/api/cms/logs")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        assert "agora-cms-logs-" in resp.headers.get("content-disposition", "")
+
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        assert "cms/cms.log" in zf.namelist()
+
+
 # ── Protocol message tests ──
 
 

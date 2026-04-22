@@ -128,6 +128,7 @@ ENDPOINTS: list[EP] = [
 
     # ── Logs ──
     EP("POST", "/api/logs/download", (ADMIN, OPERATOR, VIEWER), json_body={}),
+    EP("GET", "/api/cms/logs", (ADMIN, OPERATOR, VIEWER)),
 
     # ── Admin-managed API keys ──
     EP("GET", "/api/keys", (ADMIN,)),

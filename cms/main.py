@@ -589,7 +589,7 @@ from cms.routers.assets import device_router as assets_device_router  # noqa: E4
 from cms.routers.assets import router as assets_router  # noqa: E402
 from cms.routers.devices import router as devices_router  # noqa: E402
 from cms.routers.devices import device_originated_router as devices_device_router  # noqa: E402
-from cms.routers.logs import router as logs_router  # noqa: E402
+from cms.routers.logs import router as logs_router, cms_logs_router  # noqa: E402
 from cms.routers.log_requests import (  # noqa: E402
     device_upload_router as log_upload_router,
     router as log_requests_router,
@@ -615,6 +615,7 @@ app.include_router(assets_device_router)
 app.include_router(schedules_router)
 app.include_router(profiles_router)
 app.include_router(logs_router)
+app.include_router(cms_logs_router)
 app.include_router(log_requests_router)
 app.include_router(log_upload_router)
 app.include_router(mcp_router)

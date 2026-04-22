@@ -300,7 +300,8 @@ async function saveAlertSettings() {
 <div class="card" id="logs-card">
     <h2>Download Logs</h2>
     <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
-        Collect logs from selected devices and the CMS, then download as a zip file.
+        Request logs from each selected device asynchronously, then download the resulting bundle.
+        Each device produces a separate bundle; CMS logs are downloaded separately.
     </p>
 
     <div class="form-group">
@@ -374,6 +375,59 @@ async function saveAlertSettings() {
         });
     });
 
+    // ── async log-request flow (Stage 3d UI migration) ──
+    // Each selected device triggers a POST /api/logs/requests, we poll
+    // GET /api/logs/requests/{id} until status=ready, then trigger a
+    // download via an invisible <a> link.  CMS logs (if checked) are
+    // downloaded from GET /api/cms/logs as a separate zip.
+
+    const POLL_INTERVAL_MS = 2000;
+    const POLL_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes per device
+
+    async function sleep(ms) {
+        return new Promise(r => setTimeout(r, ms));
+    }
+
+    function triggerDownload(url, filename) {
+        const a = document.createElement("a");
+        a.href = url;
+        if (filename) a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
+
+    async function createRequest(deviceId, since) {
+        const resp = await fetch("/api/logs/requests", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({device_id: deviceId, since: since}),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Request failed: ${resp.status}`);
+        }
+        return (await resp.json()).request_id;
+    }
+
+    async function pollUntilReady(requestId, onTick) {
+        const deadline = Date.now() + POLL_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            const resp = await fetch(`/api/logs/requests/${requestId}`);
+            if (!resp.ok) {
+                throw new Error(`Poll failed: ${resp.status}`);
+            }
+            const body = await resp.json();
+            if (body.status === "ready") return body;
+            if (body.status === "failed" || body.status === "expired" || body.status === "cancelled") {
+                throw new Error(`Request ${body.status}: ${body.last_error || "unknown"}`);
+            }
+            if (onTick) onTick(body);
+            await sleep(POLL_INTERVAL_MS);
+        }
+        throw new Error("Timed out waiting for logs");
+    }
+
     downloadBtn.addEventListener("click", async () => {
         const deviceIds = [...checkboxes()]
             .filter(cb => cb.checked)
@@ -387,43 +441,48 @@ async function saveAlertSettings() {
         }
 
         downloadBtn.disabled = true;
-        statusSpan.textContent = "Collecting logs…";
-
+        let errors = 0;
         try {
-            const resp = await fetch("/api/logs/download", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({
-                    device_ids: deviceIds,
-                    include_cms: includeCms,
-                    since: since,
-                }),
-            });
-
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || "Download failed");
+            // ── Per-device async path ──
+            for (let i = 0; i < deviceIds.length; i++) {
+                const deviceId = deviceIds[i];
+                const label = `device ${i + 1} of ${deviceIds.length}`;
+                statusSpan.textContent = `Requesting logs for ${label}…`;
+                try {
+                    const requestId = await createRequest(deviceId, since);
+                    statusSpan.textContent = `Waiting for ${label}…`;
+                    const body = await pollUntilReady(requestId, (st) => {
+                        statusSpan.textContent =
+                            `Waiting for ${label} (status=${st.status}, attempts=${st.attempts})…`;
+                    });
+                    statusSpan.textContent = `Downloading ${label}…`;
+                    // Trigger download via <a>; browser follows the redirect to the SAS URL.
+                    triggerDownload(body.download_url);
+                    // Space out downloads slightly so the browser actually fires each.
+                    await sleep(500);
+                } catch (err) {
+                    errors += 1;
+                    showToast(`${deviceId}: ${err.message}`, true);
+                }
             }
 
-            const blob = await resp.blob();
-            const disposition = resp.headers.get("content-disposition") || "";
-            const match = disposition.match(/filename="(.+)"/);
-            const filename = match ? match[1] : "agora-logs.zip";
-
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
+            // ── CMS logs ──
+            if (includeCms) {
+                statusSpan.textContent = "Downloading CMS logs…";
+                try {
+                    triggerDownload("/api/cms/logs");
+                } catch (err) {
+                    errors += 1;
+                    showToast(`CMS logs: ${err.message}`, true);
+                }
+            }
 
             statusSpan.textContent = "";
-            showToast("Logs downloaded");
-        } catch (err) {
-            showToast(err.message || "Failed to download logs", true);
-            statusSpan.textContent = "";
+            if (errors === 0) {
+                showToast("Logs downloaded");
+            } else {
+                showToast(`Completed with ${errors} error(s)`, true);
+            }
         } finally {
             downloadBtn.disabled = false;
         }
