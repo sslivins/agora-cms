@@ -334,16 +334,26 @@ def test_03a_operator_a_creates_own_group_and_sees_it(
         timeout=5_000,
     )
     add_btn.click()
-    # createGroup() POSTs then calls location.reload().
-    op_page.wait_for_load_state("networkidle", timeout=10_000)
+    # createGroup() POSTs /api/devices/groups/ and then updates the DOM in place
+    # (no more location.reload() since #383). wait_for_load_state("networkidle")
+    # is not reliable here: the post-click call can resolve before the JS POST
+    # has even left the browser, so we poll the API directly until the new
+    # group appears — or fail with a clear diagnostic.
+    import time as _time
+    deadline = _time.monotonic() + 10.0
+    names: list[str] = []
+    while _time.monotonic() < deadline:
+        groups = _api_get(op_page, "/api/devices/groups/")
+        names = [g["name"] for g in groups]
+        if group_name in names:
+            break
+        _time.sleep(0.25)
 
     # API-level assertion using the now-logged-in browser session: the
     # filtered list for this operator must include the group they just
     # created. If the creator was not auto-added to user_groups, the
     # server-side scoping filter would hide it here and the regression
     # would fire. This is the precise contract that broke in prod.
-    groups = _api_get(op_page, "/api/devices/groups/")
-    names = [g["name"] for g in groups]
     assert group_name in names, (
         f"Operator created group {group_name!r} but it's not in their "
         f"GET /api/devices/groups/ response — the creator was not auto-added. "
