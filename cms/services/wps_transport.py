@@ -159,6 +159,28 @@ class WPSTransport(DeviceTransport):
                 f"Device {device_id} did not respond within {timeout}s"
             )
 
+    async def dispatch_request_logs(
+        self,
+        device_id: str,
+        *,
+        request_id: str,
+        services: list[str] | None = None,
+        since: str = "24h",
+    ) -> None:
+        """Send REQUEST_LOGS without awaiting a reply — Stage 3b path.
+
+        The outbox row owns the state machine; we just fire the message
+        through WPS and surface any transport error as ``ValueError``.
+        """
+        from cms.schemas.protocol import RequestLogsMessage
+
+        msg = RequestLogsMessage(
+            request_id=request_id, services=services, since=since,
+        )
+        ok = await self.send_to_device(device_id, msg.model_dump(mode="json"))
+        if not ok:
+            raise ValueError(f"Failed to send request to device {device_id}")
+
     # ---- state hints ---------------------------------------------------
 
     async def set_state_flags(self, device_id: str, **flags: Any) -> None:

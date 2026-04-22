@@ -95,6 +95,23 @@ class DeviceTransport(ABC):
         be removed from the interface at that point."""
 
     @abstractmethod
+    async def dispatch_request_logs(
+        self,
+        device_id: str,
+        *,
+        request_id: str,
+        services: list[str] | None = None,
+        since: str = "24h",
+    ) -> None:
+        """Send a ``request_logs`` command without awaiting the reply.
+
+        Stage 3b's async path: the outbox row owns the state machine;
+        the transport just fires the message and returns.  Raises
+        :class:`ValueError` on transport failure (device offline or WS
+        send error) so the caller can bump ``attempts`` / record the
+        error in the outbox."""
+
+    @abstractmethod
     async def set_state_flags(self, device_id: str, **flags: Any) -> None:
         """Optimistically update flag columns on the device row.
 
@@ -169,6 +186,32 @@ class LocalDeviceTransport(DeviceTransport):
         return await self._manager.request_logs(
             device_id, services=services, since=since, timeout=timeout,
         )
+
+    async def dispatch_request_logs(
+        self,
+        device_id: str,
+        *,
+        request_id: str,
+        services: list[str] | None = None,
+        since: str = "24h",
+    ) -> None:
+        # Look up the live WS directly — this transport is single-replica
+        # so if we don't own a socket, nobody does.  Do NOT register a
+        # future in ``_pending_log_requests``: the outbox owns state.
+        conn = self._manager.get(device_id)
+        if conn is None:
+            raise ValueError(f"Device {device_id} is not connected")
+
+        from cms.schemas.protocol import RequestLogsMessage
+        msg = RequestLogsMessage(
+            request_id=request_id, services=services, since=since,
+        )
+        try:
+            await conn.send_json(msg.model_dump(mode="json"))
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to send request to device {device_id}: {exc}"
+            ) from exc
 
     async def set_state_flags(self, device_id: str, **flags: Any) -> None:
         async with _session() as db:
