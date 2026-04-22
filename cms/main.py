@@ -41,6 +41,7 @@ from cms.services.storage import (
     LocalStorageBackend,
     init_storage,
 )
+from cms.services.log_blob import init_log_storage
 from cms.services.version_checker import version_check_loop
 from cms.services.device_purge import device_purge_loop
 from cms.services.transcoder import (
@@ -257,6 +258,9 @@ async def lifespan(app: FastAPI):
     else:
         backend = LocalStorageBackend(base_path=settings.asset_storage_path)
     init_storage(backend)
+
+    # Initialize log-blob backend (separate from asset storage — Stage 3b).
+    await init_log_storage(settings)
 
     # Seed built-in RBAC roles (Admin, Operator, Viewer)
     async for db in get_db():
@@ -524,6 +528,10 @@ from cms.routers.assets import router as assets_router  # noqa: E402
 from cms.routers.devices import router as devices_router  # noqa: E402
 from cms.routers.devices import device_originated_router as devices_device_router  # noqa: E402
 from cms.routers.logs import router as logs_router  # noqa: E402
+from cms.routers.log_requests import (  # noqa: E402
+    device_upload_router as log_upload_router,
+    router as log_requests_router,
+)
 from cms.routers.mcp import router as mcp_router  # noqa: E402
 from cms.routers.profiles import router as profiles_router  # noqa: E402
 from cms.routers.schedules import router as schedules_router  # noqa: E402
@@ -545,6 +553,8 @@ app.include_router(assets_device_router)
 app.include_router(schedules_router)
 app.include_router(profiles_router)
 app.include_router(logs_router)
+app.include_router(log_requests_router)
+app.include_router(log_upload_router)
 app.include_router(mcp_router)
 app.include_router(api_keys_router)
 app.include_router(audit_router)

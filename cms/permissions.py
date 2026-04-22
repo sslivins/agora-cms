@@ -52,6 +52,7 @@ API_KEYS_MANAGE = "api_keys:manage"  # Admin: see/revoke/regenerate any user's k
 
 # ── Log permissions ──
 LOGS_READ = "logs:read"
+LOGS_WRITE = "logs:write"  # Stage 3b: upload log bundles (device-auth endpoint)
 
 # ── Audit permissions ──
 AUDIT_READ = "audit:read"
@@ -78,6 +79,7 @@ ALL_PERMISSIONS: list[str] = [
     API_KEYS_READ, API_KEYS_WRITE,
     MCP_KEYS_SELF, API_KEYS_SELF, API_KEYS_MANAGE,
     LOGS_READ,
+    LOGS_WRITE,
     AUDIT_READ,
     NOTIFICATIONS_SYSTEM,
     GROUPS_VIEW_ALL,
@@ -108,6 +110,7 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     API_KEYS_SELF: "Create, revoke, and regenerate your own API keys",
     API_KEYS_MANAGE: "View and manage all users' API keys",
     LOGS_READ: "View system and device logs",
+    LOGS_WRITE: "Upload device log bundles (device-to-CMS log transfer)",
     AUDIT_READ: "View audit trail and activity history",
     NOTIFICATIONS_SYSTEM: "View system-level notifications (SMTP failures, errors)",
     GROUPS_VIEW_ALL: "View all groups and their resources regardless of group assignment",
