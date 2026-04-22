@@ -53,6 +53,15 @@ param workerMemory string = '8Gi'
 // ── Azure Key Vault (service key exchange) ──
 param keyVaultUri string = ''
 
+// ── Azure Web PubSub (device transport) ──
+@description('Azure Web PubSub connection string used by CMS to relay device traffic through WPS. When empty, CMS falls back to direct /ws/device websocket mode.')
+@secure()
+param wpsConnectionString string = ''
+
+@description('Device transport mode: "wps" routes all device traffic through Azure Web PubSub (multi-replica safe); "local" uses direct CMS→device websockets (single-replica only).')
+@allowed(['wps', 'local'])
+param deviceTransport string = 'wps'
+
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${environmentName}-logs'
@@ -148,6 +157,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'storage-connection-string'
           value: storageConnectionString
         }
+        {
+          name: 'wps-connection-string'
+          value: wpsConnectionString
+        }
       ]
     }
     template: {
@@ -207,6 +220,14 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               // source IP in audit logs.
               name: 'FORWARDED_ALLOW_IPS'
               value: containerAppsSubnetCidr
+            }
+            {
+              name: 'AGORA_CMS_DEVICE_TRANSPORT'
+              value: deviceTransport
+            }
+            {
+              name: 'AGORA_CMS_WPS_CONNECTION_STRING'
+              secretRef: 'wps-connection-string'
             }
           ]
           volumeMounts: [

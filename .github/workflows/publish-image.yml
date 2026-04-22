@@ -176,6 +176,7 @@ jobs:
               postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
               cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
+              wpsConnectionString='${{ secrets.WPS_CONNECTION_STRING }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=false \
               cmsImage="$CMS_REF" \

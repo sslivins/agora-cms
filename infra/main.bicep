@@ -42,6 +42,14 @@ param cmsAdminUsername string = 'admin'
 @secure()
 param cmsAdminPassword string
 
+@description('Azure Web PubSub connection string for device transport (required in prod). When empty, CMS falls back to direct websocket mode.')
+@secure()
+param wpsConnectionString string = ''
+
+@description('Device transport mode: "wps" (multi-replica safe, routes via Azure Web PubSub) or "local" (direct CMS→device websockets, single-replica only).')
+@allowed(['wps', 'local'])
+param deviceTransport string = 'wps'
+
 @description('CMS container image (e.g., agoracr.azurecr.io/agora-cms:latest)')
 param cmsImage string = ''
 
@@ -197,6 +205,10 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Key Vault (service key exchange)
     keyVaultUri: keyVault.outputs.keyVaultUri
+
+    // Device transport (Azure Web PubSub)
+    wpsConnectionString: wpsConnectionString
+    deviceTransport: deviceTransport
   }
 }
 
