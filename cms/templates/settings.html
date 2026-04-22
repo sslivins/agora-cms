@@ -321,6 +321,7 @@ async function saveAlertSettings() {
             {% for device in devices %}
             <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; cursor: pointer;">
                 <input type="checkbox" name="log_device" value="{{ device.id }}"
+                       data-device-name="{{ device.name }}"
                        {% if device.connected %}checked{% endif %}
                        style="width: auto; margin: 0;">
                 <span>{{ device.name }}</span>
@@ -353,6 +354,8 @@ async function saveAlertSettings() {
     <span id="logs-status" class="text-muted" style="margin-left: 1rem; font-size: 0.85rem;"></span>
 </div>
 
+<script src="/static/vendor/jszip.min.js"></script>
+<script src="/static/vendor/untar.js"></script>
 <script>
 (function() {
     const downloadBtn = document.getElementById("logs-download-btn");
@@ -377,24 +380,36 @@ async function saveAlertSettings() {
 
     // ── async log-request flow (Stage 3d UI migration) ──
     // Each selected device triggers a POST /api/logs/requests, we poll
-    // GET /api/logs/requests/{id} until status=ready, then trigger a
-    // download via an invisible <a> link.  CMS logs (if checked) are
-    // downloaded from GET /api/cms/logs as a separate zip.
+    // GET /api/logs/requests/{id} until status=ready, then fetch the
+    // resulting tar.gz blob, extract it client-side, and add its files
+    // under a folder named after the device inside a single combined
+    // ``agora-logs-<ISO>.zip`` archive.  CMS logs (if checked) are
+    // fetched from GET /api/cms/logs as a zip and unpacked under
+    // ``cms-logs/``.  A single Save As dialog is presented at the end.
 
     const POLL_INTERVAL_MS = 2000;
     const POLL_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes per device
 
-    async function sleep(ms) {
+    function sleep(ms) {
         return new Promise(r => setTimeout(r, ms));
     }
 
-    function triggerDownload(url, filename) {
-        const a = document.createElement("a");
-        a.href = url;
-        if (filename) a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+    function slugify(name) {
+        const slug = (name || "").toString()
+            .trim()
+            .replace(/[\/\\:*?"<>|]+/g, "-")   // strip path-unsafe chars
+            .replace(/\s+/g, "-")
+            .replace(/-+/g, "-")
+            .replace(/^-+|-+$/g, "");
+        return slug || "device";
+    }
+
+    function isoStamp() {
+        // e.g. 2026-04-22T15-03-14
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+             + `T${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
     }
 
     async function createRequest(deviceId, since) {
@@ -428,60 +443,150 @@ async function saveAlertSettings() {
         throw new Error("Timed out waiting for logs");
     }
 
+    async function fetchBytes(url) {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+        return new Uint8Array(await resp.arrayBuffer());
+    }
+
+    async function ungzip(bytes) {
+        // Native gzip decompression — supported in all modern browsers.
+        if (typeof DecompressionStream === "undefined") {
+            throw new Error("Browser does not support DecompressionStream('gzip')");
+        }
+        const stream = new Response(bytes).body
+            .pipeThrough(new DecompressionStream("gzip"));
+        const buf = await new Response(stream).arrayBuffer();
+        return new Uint8Array(buf);
+    }
+
+    async function addTarGzToFolder(zip, folder, tarGzBytes) {
+        const tarBytes = await ungzip(tarGzBytes);
+        const entries = Untar.parse(tarBytes);
+        if (entries.length === 0) {
+            folder.file("EMPTY.txt", "Archive contained no files.\n");
+            return;
+        }
+        for (const entry of entries) {
+            const cleanName = entry.name.replace(/^\.?\//, "").replace(/\\/g, "/");
+            if (!cleanName || cleanName.endsWith("/")) continue;
+            folder.file(cleanName, entry.data);
+        }
+    }
+
+    async function addZipToFolder(zip, folder, zipBytes) {
+        const inner = await JSZip.loadAsync(zipBytes);
+        const names = Object.keys(inner.files);
+        if (names.length === 0) {
+            folder.file("EMPTY.txt", "Archive contained no files.\n");
+            return;
+        }
+        for (const name of names) {
+            const entry = inner.files[name];
+            if (entry.dir) continue;
+            const data = await entry.async("uint8array");
+            folder.file(name, data);
+        }
+    }
+
     downloadBtn.addEventListener("click", async () => {
-        const deviceIds = [...checkboxes()]
+        const selected = [...checkboxes()]
             .filter(cb => cb.checked)
-            .map(cb => cb.value);
+            .map(cb => ({
+                id: cb.value,
+                name: cb.dataset.deviceName || cb.value,
+            }));
         const includeCms = document.getElementById("logs-include-cms").checked;
         const since = document.getElementById("logs-since").value;
 
-        if (deviceIds.length === 0 && !includeCms) {
+        if (selected.length === 0 && !includeCms) {
             showToast("Select at least one device or include CMS logs", true);
             return;
         }
 
         downloadBtn.disabled = true;
+        const zip = new JSZip();
         let errors = 0;
+
+        // Ensure folder names are unique even if two devices share a display name.
+        const usedFolders = new Set();
+        function uniqueFolder(name) {
+            let base = slugify(name);
+            let candidate = base;
+            let i = 2;
+            while (usedFolders.has(candidate)) {
+                candidate = `${base}-${i}`;
+                i += 1;
+            }
+            usedFolders.add(candidate);
+            return candidate;
+        }
+
         try {
-            // ── Per-device async path ──
-            for (let i = 0; i < deviceIds.length; i++) {
-                const deviceId = deviceIds[i];
-                const label = `device ${i + 1} of ${deviceIds.length}`;
-                statusSpan.textContent = `Requesting logs for ${label}…`;
+            for (let i = 0; i < selected.length; i++) {
+                const dev = selected[i];
+                const folderName = uniqueFolder(dev.name);
+                const folder = zip.folder(folderName);
+                const label = `${dev.name} (${i + 1}/${selected.length})`;
                 try {
-                    const requestId = await createRequest(deviceId, since);
+                    statusSpan.textContent = `Requesting logs for ${label}…`;
+                    const requestId = await createRequest(dev.id, since);
                     statusSpan.textContent = `Waiting for ${label}…`;
                     const body = await pollUntilReady(requestId, (st) => {
                         statusSpan.textContent =
                             `Waiting for ${label} (status=${st.status}, attempts=${st.attempts})…`;
                     });
-                    statusSpan.textContent = `Downloading ${label}…`;
-                    // Trigger download via <a>; browser follows the redirect to the SAS URL.
-                    triggerDownload(body.download_url);
-                    // Space out downloads slightly so the browser actually fires each.
-                    await sleep(500);
+                    statusSpan.textContent = `Fetching ${label}…`;
+                    const bytes = await fetchBytes(body.download_url);
+                    statusSpan.textContent = `Extracting ${label}…`;
+                    await addTarGzToFolder(zip, folder, bytes);
                 } catch (err) {
                     errors += 1;
-                    showToast(`${deviceId}: ${err.message}`, true);
+                    folder.file("ERROR.txt",
+                        `Failed to retrieve logs for ${dev.name} (${dev.id}):\n${err.message}\n`);
+                    showToast(`${dev.name}: ${err.message}`, true);
                 }
             }
 
-            // ── CMS logs ──
             if (includeCms) {
-                statusSpan.textContent = "Downloading CMS logs…";
+                const folderName = uniqueFolder("cms-logs");
+                const folder = zip.folder(folderName);
                 try {
-                    triggerDownload("/api/cms/logs");
+                    statusSpan.textContent = "Fetching CMS logs…";
+                    const bytes = await fetchBytes("/api/cms/logs");
+                    statusSpan.textContent = "Extracting CMS logs…";
+                    await addZipToFolder(zip, folder, bytes);
                 } catch (err) {
                     errors += 1;
+                    folder.file("ERROR.txt",
+                        `Failed to retrieve CMS logs:\n${err.message}\n`);
                     showToast(`CMS logs: ${err.message}`, true);
                 }
+            }
+
+            statusSpan.textContent = "Building archive…";
+            const blob = await zip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+                compressionOptions: {level: 6},
+            });
+            const url = URL.createObjectURL(blob);
+            try {
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `agora-logs-${isoStamp()}.zip`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            } finally {
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
             }
 
             statusSpan.textContent = "";
             if (errors === 0) {
                 showToast("Logs downloaded");
             } else {
-                showToast(`Completed with ${errors} error(s)`, true);
+                showToast(`Completed with ${errors} error(s) — see ERROR.txt in archive`, true);
             }
         } finally {
             downloadBtn.disabled = false;
