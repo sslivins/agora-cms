@@ -205,20 +205,23 @@ class TestDashboardJsonTemperature:
 class TestWebSocketStatusTemperature:
     """Test that cpu_temp_c sent via WebSocket STATUS is tracked correctly."""
 
-    async def test_status_message_tracks_cpu_temp(self, app, db_session):
+    async def test_status_message_tracks_cpu_temp(self, app):
         """Send a STATUS message with cpu_temp_c and verify device_manager stores it."""
         token = "temp-test-token"
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
-        device = Device(
-            id="ws-temp-001",
-            name="WS Temp Device",
-            status=DeviceStatus.ADOPTED,
-            device_auth_token_hash=token_hash,
-        )
-        db_session.add(device)
-        await db_session.commit()
-        await db_session.close()
+        from shared.database import get_session_factory
+        factory = get_session_factory()
+
+        async with factory() as setup_db:
+            device = Device(
+                id="ws-temp-001",
+                name="WS Temp Device",
+                status=DeviceStatus.ADOPTED,
+                device_auth_token_hash=token_hash,
+            )
+            setup_db.add(device)
+            await setup_db.commit()
 
         from starlette.testclient import TestClient
 
@@ -276,20 +279,23 @@ class TestWebSocketStatusTemperature:
                 assert row_mode == "play"
                 assert row_temp == 73.2
 
-    async def test_status_without_cpu_temp_stays_none(self, app, db_session):
+    async def test_status_without_cpu_temp_stays_none(self, app):
         """A STATUS message without cpu_temp_c should leave it as None."""
         token = "temp-test-token2"
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
-        device = Device(
-            id="ws-temp-002",
-            name="WS No Temp Device",
-            status=DeviceStatus.ADOPTED,
-            device_auth_token_hash=token_hash,
-        )
-        db_session.add(device)
-        await db_session.commit()
-        await db_session.close()
+        from shared.database import get_session_factory
+        factory = get_session_factory()
+
+        async with factory() as setup_db:
+            device = Device(
+                id="ws-temp-002",
+                name="WS No Temp Device",
+                status=DeviceStatus.ADOPTED,
+                device_auth_token_hash=token_hash,
+            )
+            setup_db.add(device)
+            await setup_db.commit()
 
         from starlette.testclient import TestClient
 
