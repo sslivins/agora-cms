@@ -404,12 +404,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to log CMS_STARTED event")
 
-    # ── Device transport selection (issue #344 Stage 2b.2) ──
-    # Default is "local" (direct WebSocket via cms/routers/ws.py, today's
-    # behaviour).  Setting AGORA_CMS_DEVICE_TRANSPORT=wps swaps in the
-    # WPSTransport + mounts the upstream webhook receiver — the /ws/device
-    # endpoint stays registered so a running deployment can flip back by
-    # restarting, but devices talk to it through Azure Web PubSub instead.
+    # Device transport selection (issue #344 Stage 2b.2).
+    # Default is "local" (direct WebSocket via cms/routers/ws.py).  Setting
+    # AGORA_CMS_DEVICE_TRANSPORT=wps swaps in the WPSTransport + mounts the
+    # upstream webhook receiver.  The /ws/device endpoint is ONLY mounted in
+    # local mode (see include_router call near the end of this module) —
+    # flipping back requires a container restart, which Container Apps does
+    # automatically on any env-var change.
     from cms.services import transport as transport_module
     from cms.services.transport import LocalDeviceTransport
     if settings.device_transport == "wps":
@@ -654,7 +655,12 @@ app.include_router(device_events_router)
 app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(stream_probe_router)
-app.include_router(ws_router)
+# /ws/device is only mounted in local transport mode. In WPS mode, devices
+# reach the CMS via Azure Web PubSub, and exposing a direct websocket is a
+# security/confusion risk (devices that connect there appear "online" but
+# commands routed through WPS are silently dropped).
+if get_settings().device_transport == "local":
+    app.include_router(ws_router)
 app.include_router(ui_router)
 
 
