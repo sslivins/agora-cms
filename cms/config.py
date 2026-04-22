@@ -69,3 +69,9 @@ class Settings(SharedSettings):
     log_chunk_max_bytes: int = 22_020_096  # 21 MiB
     log_chunk_buffer_ttl_sec: int = 300
     log_chunk_reaper_interval_sec: float = 5.0
+
+    # Log-blob reaper (issue #345 Stage 3e).  Periodically scans the
+    # ``log_requests`` table for rows whose ``expires_at`` has passed,
+    # deletes the associated blob, and flips the row to ``expired``.
+    log_reaper_interval_sec: float = 600.0  # 10 minutes
+    log_reaper_batch_size: int = 100
