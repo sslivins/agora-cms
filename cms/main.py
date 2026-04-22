@@ -331,6 +331,25 @@ async def lifespan(app: FastAPI):
     reaper_task = asyncio.create_task(deleted_asset_reaper_loop())
     outbox_drain_task = asyncio.create_task(outbox_drain_loop())
 
+    # ── Log-request drainer (issue #345 Stage 3d) ──
+    # Self-healing loop for the log_requests outbox: retries stuck
+    # pending rows with exponential backoff and rescues rows that are
+    # stuck in 'sent' past the configured timeout.  Transport + session
+    # factory are resolved per-tick via getters so the loop picks up
+    # the real instances after `init_db` / `set_transport` run.
+    from cms.services.log_drainer import run_loop as log_drainer_run_loop
+    from cms.services.transport import get_transport as _get_transport
+    from cms.database import get_session_factory as _get_session_factory
+    log_drainer_stop = asyncio.Event()
+    log_drainer_task = asyncio.create_task(
+        log_drainer_run_loop(
+            _get_session_factory,
+            _get_transport,
+            settings=settings,
+            stop_event=log_drainer_stop,
+        )
+    )
+
     # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
     try:
         from cms.models.device_event import DeviceEvent, DeviceEventType
@@ -412,6 +431,7 @@ async def lifespan(app: FastAPI):
     capture_monitor_task.cancel()
     reaper_task.cancel()
     outbox_drain_task.cancel()
+    log_drainer_stop.set()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -448,6 +468,16 @@ async def lifespan(app: FastAPI):
         await outbox_drain_task
     except asyncio.CancelledError:
         pass
+    try:
+        await asyncio.wait_for(log_drainer_task, timeout=5.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        log_drainer_task.cancel()
+        try:
+            await log_drainer_task
+        except asyncio.CancelledError:
+            pass
+    except Exception:
+        logger.exception("log_drainer: error during shutdown")
     # Close storage backend (Azure: close async blob client)
     if hasattr(backend, "close"):
         await backend.close()

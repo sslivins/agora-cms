@@ -48,3 +48,12 @@ class Settings(SharedSettings):
 
     # SMTP is configured via the web UI settings page (stored in DB)
     base_url: str | None = None  # public URL for login links in emails
+
+    # Log-request drainer (issue #345 Stage 3d).  Self-healing loop for
+    # the ``log_requests`` outbox: retries stuck ``pending`` rows with
+    # exponential backoff and rescues rows that are stuck in ``sent``
+    # past ``sent_timeout_sec``.
+    log_drainer_interval_sec: float = 5.0
+    log_drainer_batch_size: int = 25
+    log_drainer_sent_timeout_sec: int = 900
+    log_drainer_max_attempts: int = 10
