@@ -8,9 +8,9 @@ one device-facing upload endpoint:
 * ``GET    /api/logs/requests/{id}/download``    — fetch the tar.gz
 * ``POST   /api/devices/{device_id}/logs/{id}/upload`` — Pi uploads
 
-The user-facing endpoints use the standard RBAC + group scoping that
-``/api/logs/download`` already applies.  The upload endpoint uses
-device-token auth (reused from the asset download path).
+The user-facing endpoints use the standard RBAC + group scoping.
+The upload endpoint uses device-token auth (reused from the asset
+download path).
 
 See ``docs/multi-replica-architecture.md`` §Stage 3 and
 ``cms/models/log_request.py`` for the schema.
