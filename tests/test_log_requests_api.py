@@ -310,6 +310,66 @@ class TestDownloadLogRequest:
         assert "attachment" in resp.headers.get("content-disposition", "")
 
     @pytest.mark.asyncio
+    async def test_successful_download_marks_row_for_expiry(
+        self, app, client, seeded, tmp_path,
+    ):
+        # Once the user has pulled the bundle we don't want to keep the
+        # blob around — the download handler should bump ``expires_at``
+        # to now so the next reaper tick cleans it up.
+        from datetime import datetime, timezone
+        from cms.services.log_blob import (
+            LocalLogBlobBackend,
+            init_log_storage,
+            set_log_backend,
+            write_log_blob,
+        )
+        from cms.auth import get_settings
+
+        settings = app.dependency_overrides[get_settings]()
+        set_log_backend(LocalLogBlobBackend(base_path=settings.asset_storage_path))
+        await init_log_storage(settings)
+
+        factory = get_session_factory()
+        async with factory() as db:
+            row = await log_outbox.create(db, device_id=DEVICE_ID)
+            await db.commit()
+            rid = row.id
+            original_expires_at = row.expires_at
+
+        blob_path = f"{DEVICE_ID}/{rid}.tar.gz"
+        payload = b"hello-tarball"
+        await write_log_blob(blob_path, payload)
+        async with factory() as db:
+            await log_outbox.mark_ready(
+                db, rid, blob_path=blob_path, size_bytes=len(payload),
+            )
+            await db.commit()
+
+        before = datetime.now(timezone.utc)
+        resp = await client.get(f"/api/logs/requests/{rid}/download")
+        assert resp.status_code == 200
+
+        async with factory() as db:
+            refreshed = await log_outbox.get(db, rid)
+            # Row stays ``ready`` with blob_path intact so the reaper
+            # can find the blob; only expires_at moves to "now".
+            assert refreshed.status == STATUS_READY
+            assert refreshed.blob_path == blob_path
+            assert refreshed.expires_at is not None
+            # SQLite strips tz info; normalise for comparison.
+            expires = refreshed.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            original = original_expires_at
+            if original.tzinfo is None:
+                original = original.replace(tzinfo=timezone.utc)
+            assert expires <= datetime.now(timezone.utc)
+            # And it was genuinely moved forward — not just the
+            # original 1 h TTL.
+            assert expires < original
+            assert expires >= before
+
+    @pytest.mark.asyncio
     async def test_pending_row_returns_409(self, client, seeded):
         factory = get_session_factory()
         async with factory() as db:
