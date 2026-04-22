@@ -95,32 +95,36 @@ class TestDeviceEventTransitions:
             setup_session.add(dev)
             await setup_session.commit()
 
+        # Poll for events WHILE the websocket is still open.  If we close the
+        # WS before the server-side handler has processed the last inbound
+        # status message, the handler task can be cancelled mid-commit and
+        # we lose the final DeviceEvent.  Verifying before close removes that
+        # race entirely.
         with TestClient(app) as tc:
             with tc.websocket_connect("/ws/device") as ws:
                 _register(ws, "evt-display-001", token)
                 # First observation: display_connected=True (no prior -> no event)
                 _status(ws, "evt-display-001", display_connected=True)
-                time.sleep(0.3)
                 # Flip to False -> DISPLAY_DISCONNECTED
                 _status(ws, "evt-display-001", display_connected=False)
-                time.sleep(0.3)
                 # Flip back to True -> DISPLAY_CONNECTED
                 _status(ws, "evt-display-001", display_connected=True)
-                time.sleep(0.3)
+
+                async with factory() as verify_session:
+                    rows = await _wait_for_events(
+                        verify_session, "evt-display-001",
+                        lambda r: sum(1 for x in r if x.event_type.startswith("display_")) >= 2,
+                        timeout=10.0,
+                    )
                 ws.close()
 
-        async with factory() as verify_session:
-            rows = await _wait_for_events(
-                verify_session, "evt-display-001",
-                lambda r: sum(1 for x in r if x.event_type.startswith("display_")) >= 2,
-            )
-            types = [r.event_type for r in rows]
-            assert DeviceEventType.DISPLAY_DISCONNECTED.value in types
-            assert DeviceEventType.DISPLAY_CONNECTED.value in types
-            # First status should NOT have emitted anything (None -> True)
-            # so we expect exactly 2 display transitions.
-            display_rows = [r for r in rows if r.event_type.startswith("display_")]
-            assert len(display_rows) == 2
+        types = [r.event_type for r in rows]
+        assert DeviceEventType.DISPLAY_DISCONNECTED.value in types
+        assert DeviceEventType.DISPLAY_CONNECTED.value in types
+        # First status should NOT have emitted anything (None -> True)
+        # so we expect exactly 2 display transitions.
+        display_rows = [r for r in rows if r.event_type.startswith("display_")]
+        assert len(display_rows) == 2
 
     async def test_error_set_and_cleared_emits_events(self, app, db_engine):
         from starlette.testclient import TestClient
@@ -137,25 +141,24 @@ class TestDeviceEventTransitions:
                 _register(ws, "evt-err-001", token)
                 # Clean status (no prior, no error) — no event
                 _status(ws, "evt-err-001")
-                time.sleep(0.3)
                 # Error appears
                 _status(ws, "evt-err-001", error="pipeline stalled")
-                time.sleep(0.3)
                 # Error cleared
                 _status(ws, "evt-err-001", error=None)
-                time.sleep(0.3)
+
+                async with factory() as verify_session:
+                    rows = await _wait_for_events(
+                        verify_session, "evt-err-001",
+                        lambda r: sum(1 for x in r if x.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)) >= 2,
+                        timeout=10.0,
+                    )
                 ws.close()
 
-        async with factory() as verify_session:
-            rows = await _wait_for_events(
-                verify_session, "evt-err-001",
-                lambda r: sum(1 for x in r if x.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)) >= 2,
-            )
-            err_rows = [r for r in rows if r.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)]
-            assert len(err_rows) == 2
-            assert err_rows[0].event_type == DeviceEventType.ERROR.value
-            assert err_rows[0].details and err_rows[0].details.get("error") == "pipeline stalled"
-            assert err_rows[1].event_type == DeviceEventType.ERROR_CLEARED.value
+        err_rows = [r for r in rows if r.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)]
+        assert len(err_rows) == 2
+        assert err_rows[0].event_type == DeviceEventType.ERROR.value
+        assert err_rows[0].details and err_rows[0].details.get("error") == "pipeline stalled"
+        assert err_rows[1].event_type == DeviceEventType.ERROR_CLEARED.value
 
     async def test_error_string_change_emits_new_error_event(self, app, db_engine):
         from starlette.testclient import TestClient
@@ -171,20 +174,20 @@ class TestDeviceEventTransitions:
             with tc.websocket_connect("/ws/device") as ws:
                 _register(ws, "evt-err-002", token)
                 _status(ws, "evt-err-002", error="first fault")
-                time.sleep(0.3)
                 # Different error string while still in error state → another ERROR event
                 _status(ws, "evt-err-002", error="second fault")
-                time.sleep(0.3)
+
+                async with factory() as verify_session:
+                    rows = await _wait_for_events(
+                        verify_session, "evt-err-002",
+                        lambda r: sum(1 for x in r if x.event_type == DeviceEventType.ERROR.value) >= 2,
+                        timeout=10.0,
+                    )
                 ws.close()
 
-        async with factory() as verify_session:
-            rows = await _wait_for_events(
-                verify_session, "evt-err-002",
-                lambda r: sum(1 for x in r if x.event_type == DeviceEventType.ERROR.value) >= 2,
-            )
-            err_rows = [r for r in rows if r.event_type == DeviceEventType.ERROR.value]
-            assert len(err_rows) == 2
-            assert err_rows[-1].details.get("error") == "second fault"
+        err_rows = [r for r in rows if r.event_type == DeviceEventType.ERROR.value]
+        assert len(err_rows) == 2
+        assert err_rows[-1].details.get("error") == "second fault"
 
     async def test_no_event_on_stable_state(self, app, db_engine):
         """Repeated identical status messages must NOT emit spurious events."""
@@ -202,15 +205,19 @@ class TestDeviceEventTransitions:
                 _register(ws, "evt-stable-001", token)
                 for _ in range(3):
                     _status(ws, "evt-stable-001", display_connected=True)
-                    time.sleep(0.15)
+
+                # Give the server a beat to process all three before we read.
+                # Using async sleep so we don't block the pytest-asyncio loop.
+                await asyncio.sleep(1.0)
+
+                async with factory() as verify_session:
+                    rows = (await verify_session.execute(
+                        select(DeviceEvent)
+                        .where(DeviceEvent.device_id == "evt-stable-001")
+                    )).scalars().all()
                 ws.close()
 
-        async with factory() as verify_session:
-            rows = (await verify_session.execute(
-                select(DeviceEvent)
-                .where(DeviceEvent.device_id == "evt-stable-001")
-            )).scalars().all()
-            display_rows = [r for r in rows if r.event_type.startswith("display_")]
-            err_rows = [r for r in rows if r.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)]
-            assert display_rows == []
-            assert err_rows == []
+        display_rows = [r for r in rows if r.event_type.startswith("display_")]
+        err_rows = [r for r in rows if r.event_type in (DeviceEventType.ERROR.value, DeviceEventType.ERROR_CLEARED.value)]
+        assert display_rows == []
+        assert err_rows == []
