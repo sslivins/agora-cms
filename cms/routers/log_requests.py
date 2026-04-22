@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -299,6 +300,12 @@ async def download_log_request(
         },
         request=request,
     )
+    # Once the user has the bundle, we have no reason to hold onto the
+    # blob.  Mark the row for immediate expiry so the next reaper tick
+    # deletes the blob and transitions the row to ``expired``.  We
+    # intentionally don't delete inline — the download response below
+    # still needs ``row.blob_path`` to stream through.
+    row.expires_at = datetime.now(timezone.utc)
     await db.commit()
 
     filename = f"{row.device_id}-{row.id[:8]}.tar.gz"

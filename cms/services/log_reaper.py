@@ -49,7 +49,7 @@ logger = logging.getLogger("agora.cms.log_reaper")
 
 # Defaults applied when the caller doesn't pass a Settings object.
 # Matches the AGORA_CMS_LOG_REAPER_* fields declared in cms.config.
-_DEFAULT_INTERVAL_SEC = 600.0  # 10 minutes — retention is measured in days
+_DEFAULT_INTERVAL_SEC = 600.0  # 10 minutes — matches the hourly retention
 _DEFAULT_BATCH_SIZE = 100
 
 

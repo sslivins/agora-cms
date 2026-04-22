@@ -41,9 +41,13 @@ from cms.models.log_request import (
 logger = logging.getLogger("agora.cms.log_outbox")
 
 
-# Default retention: Stage 3 arch doc targets a 30-day blob lifecycle.
+# Default retention for a newly-created log bundle.  Kept short because
+# the common case is "user clicks Download and is done" — the download
+# handler also sets ``expires_at`` to now on success so the next reaper
+# tick cleans the blob up within a few minutes.  The 1 h ceiling is the
+# safety net for bundles that are produced but never downloaded.
 # Individual callers can override by passing ``expires_in`` explicitly.
-DEFAULT_RETENTION = timedelta(days=30)
+DEFAULT_RETENTION = timedelta(hours=1)
 
 
 def _now() -> datetime:
