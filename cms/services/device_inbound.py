@@ -449,5 +449,53 @@ async def dispatch_device_message(
         logger.info("Device %s sent logs (request %s, %d services)", device_id, request_id, len(logs))
         device_manager.resolve_log_request(request_id, logs, error)
 
+        # Stage 3b back-compat shim: if ``request_id`` matches an outbox
+        # row (new async path), route the legacy inline payload into
+        # blob storage + flip the row.  Wrapped in its own try/except
+        # because a failure here must never break the legacy synchronous
+        # path above — LOGS_RESPONSE from old firmware still has to
+        # resolve the in-flight future.
+        if request_id:
+            try:
+                from cms.models.log_request import STATUS_PENDING, STATUS_SENT
+                from cms.services import log_outbox
+                from cms.services.log_blob import write_log_blob
+
+                row = await log_outbox.get(db, request_id)
+                if row is not None and row.status in (STATUS_PENDING, STATUS_SENT):
+                    if error:
+                        await log_outbox.mark_failed(db, request_id, error=error)
+                        await db.commit()
+                    else:
+                        import io
+                        import tarfile
+                        import time
+
+                        buf = io.BytesIO()
+                        mtime = time.time()
+                        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                            for service_name, log_text in (logs or {}).items():
+                                safe_name = (
+                                    service_name.replace("/", "_").replace("\\", "_")
+                                )
+                                data = (log_text or "").encode("utf-8")
+                                info = tarfile.TarInfo(name=f"{safe_name}.log")
+                                info.size = len(data)
+                                info.mtime = int(mtime)
+                                tf.addfile(info, io.BytesIO(data))
+                        payload = buf.getvalue()
+                        blob_path = f"{device_id}/{request_id}.tar.gz"
+                        await write_log_blob(blob_path, payload)
+                        await log_outbox.mark_ready(
+                            db, request_id,
+                            blob_path=blob_path, size_bytes=len(payload),
+                        )
+                        await db.commit()
+            except Exception:
+                logger.warning(
+                    "LOGS_RESPONSE outbox shim failed for request %s (device %s)",
+                    request_id, device_id, exc_info=True,
+                )
+
     else:
         logger.warning("Unknown message type from %s: %s", device_id, msg_type)
