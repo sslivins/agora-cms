@@ -2,12 +2,16 @@
 
 The End Now button on the dashboard should only affect the clicked device.
 Prior behavior skipped the schedule for every device in the target group.
+
+After the scheduler-state-dbback refactor, skip state lives exclusively in
+the DB (``Schedule.skipped_until`` and ``ScheduleDeviceSkip``) — these
+tests write skips directly to the database and assert that
+:func:`build_device_sync` and :func:`load_skip_snapshot` honor them.
 """
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 
 import pytest
 import pytest_asyncio
@@ -19,84 +23,17 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.setting import CMSSetting
 from cms.services import scheduler as sched_mod
-from cms.services.scheduler import (
-    build_device_sync,
-    clear_schedule_skip,
-    is_schedule_skipped_for_device,
-    skip_schedule_until,
-)
+from cms.services.scheduler import build_device_sync, load_skip_snapshot
 
 
 @pytest.fixture(autouse=True)
 def _reset_scheduler_state():
-    """Per-test isolation for module-level skip dicts."""
-    sched_mod._skipped.clear()
-    sched_mod._device_skipped.clear()
-    sched_mod._skipped_loaded = False
+    """Clear the remaining replica-local scheduler caches between tests."""
+    sched_mod._confirmed_playing.clear()
+    sched_mod._last_sync_hash.clear()
     yield
-    sched_mod._skipped.clear()
-    sched_mod._device_skipped.clear()
-    sched_mod._skipped_loaded = False
-
-
-class TestInMemorySkipHelpers:
-    def test_schedule_wide_skip(self):
-        sid = str(uuid.uuid4())
-        until = datetime(2030, 1, 1, 12, 0)
-        skip_schedule_until(sid, until)
-        assert is_schedule_skipped_for_device(sid, "dev-a")
-        assert is_schedule_skipped_for_device(sid, "dev-b")
-
-    def test_per_device_skip_isolation(self):
-        sid = str(uuid.uuid4())
-        until = datetime(2030, 1, 1, 12, 0)
-        skip_schedule_until(sid, until, device_id="dev-a")
-        assert is_schedule_skipped_for_device(sid, "dev-a")
-        assert not is_schedule_skipped_for_device(sid, "dev-b")
-
-    def test_schedule_wide_overrides_per_device(self):
-        sid = str(uuid.uuid4())
-        until = datetime(2030, 1, 1, 12, 0)
-        skip_schedule_until(sid, until, device_id="dev-a")
-        skip_schedule_until(sid, until)  # schedule-wide
-        assert is_schedule_skipped_for_device(sid, "dev-a")
-        assert is_schedule_skipped_for_device(sid, "dev-b")
-
-    def test_clear_device_skip_only(self):
-        sid = str(uuid.uuid4())
-        until = datetime(2030, 1, 1, 12, 0)
-        skip_schedule_until(sid, until, device_id="dev-a")
-        skip_schedule_until(sid, until, device_id="dev-b")
-        clear_schedule_skip(sid, device_id="dev-a")
-        assert not is_schedule_skipped_for_device(sid, "dev-a")
-        assert is_schedule_skipped_for_device(sid, "dev-b")
-
-    def test_clear_all_drops_per_device_skips(self):
-        sid = str(uuid.uuid4())
-        until = datetime(2030, 1, 1, 12, 0)
-        skip_schedule_until(sid, until, device_id="dev-a")
-        skip_schedule_until(sid, until, device_id="dev-b")
-        clear_schedule_skip(sid)
-        assert not is_schedule_skipped_for_device(sid, "dev-a")
-        assert not is_schedule_skipped_for_device(sid, "dev-b")
-
-    def test_per_device_skip_clears_only_that_confirmed_playing(self):
-        sid = str(uuid.uuid4())
-        sched_mod._confirmed_playing["dev-a"] = {"schedule_id": sid, "since": "t"}
-        sched_mod._confirmed_playing["dev-b"] = {"schedule_id": sid, "since": "t"}
-        skip_schedule_until(sid, datetime(2030, 1, 1, 12, 0), device_id="dev-a")
-        assert "dev-a" not in sched_mod._confirmed_playing
-        assert "dev-b" in sched_mod._confirmed_playing
-        sched_mod._confirmed_playing.clear()
-
-    def test_schedule_wide_skip_clears_all_confirmed_playing(self):
-        sid = str(uuid.uuid4())
-        sched_mod._confirmed_playing["dev-a"] = {"schedule_id": sid, "since": "t"}
-        sched_mod._confirmed_playing["dev-b"] = {"schedule_id": sid, "since": "t"}
-        skip_schedule_until(sid, datetime(2030, 1, 1, 12, 0))
-        assert "dev-a" not in sched_mod._confirmed_playing
-        assert "dev-b" not in sched_mod._confirmed_playing
-        sched_mod._confirmed_playing.clear()
+    sched_mod._confirmed_playing.clear()
+    sched_mod._last_sync_hash.clear()
 
 
 @pytest.mark.asyncio
@@ -134,7 +71,12 @@ class TestPerDeviceSkipAgainstDB:
     async def test_build_sync_drops_schedule_only_for_skipped_device(self, db):
         """Skipping for device A must not affect device B's sync."""
         sched, d1, d2 = await self._setup(db)
-        skip_schedule_until(str(sched.id), datetime(2099, 1, 1), device_id=d1.id)
+        db.add(ScheduleDeviceSkip(
+            schedule_id=sched.id,
+            device_id=d1.id,
+            skip_until=datetime(2099, 1, 1),
+        ))
+        await db.commit()
 
         sync_a = await build_device_sync(d1.id, db)
         sync_b = await build_device_sync(d2.id, db)
@@ -146,7 +88,8 @@ class TestPerDeviceSkipAgainstDB:
     async def test_build_sync_honors_schedule_wide_skip(self, db):
         """Schedule-wide skip still removes schedule from every device."""
         sched, d1, d2 = await self._setup(db)
-        skip_schedule_until(str(sched.id), datetime(2099, 1, 1))
+        sched.skipped_until = datetime(2099, 1, 1)
+        await db.commit()
 
         sync_a = await build_device_sync(d1.id, db)
         sync_b = await build_device_sync(d2.id, db)
@@ -154,28 +97,40 @@ class TestPerDeviceSkipAgainstDB:
         assert len(sync_a.schedules) == 0
         assert len(sync_b.schedules) == 0
 
-    async def test_persisted_per_device_skip_is_loaded_on_first_use(self, db):
-        """_ensure_skips_loaded picks up schedule_device_skips rows."""
+    async def test_load_skip_snapshot_reads_both_scopes(self, db):
+        """load_skip_snapshot must surface both schedule-wide and per-device skips."""
         sched, d1, d2 = await self._setup(db)
+        sched.skipped_until = datetime(2099, 1, 1)
         db.add(ScheduleDeviceSkip(
             schedule_id=sched.id,
-            device_id=d1.id,
+            device_id=d2.id,
             skip_until=datetime(2099, 1, 1),
         ))
         await db.commit()
 
-        # Simulate cold boot: wipe in-memory, then trigger a build that loads
-        sched_mod._device_skipped.clear()
-        sched_mod._skipped_loaded = False
+        snap = await load_skip_snapshot(db)
+        assert str(sched.id) in snap.schedule_wide
+        assert (str(sched.id), d2.id) in snap.per_device
+        assert snap.is_schedule_skipped(str(sched.id))
+        assert snap.is_skipped_for_device(str(sched.id), d2.id)
+        # Schedule-wide skip also blocks d1 via is_skipped_for_device
+        assert snap.is_skipped_for_device(str(sched.id), d1.id)
 
-        # Force the load and verify it populated the dict
-        await sched_mod._ensure_skips_loaded(db)
-        assert (str(sched.id), d1.id) in sched_mod._device_skipped, (
-            f"expected ({str(sched.id)!r}, {d1.id!r}) in {sched_mod._device_skipped}"
-        )
+    async def test_active_as_of_drops_expired_entries(self, db):
+        """Expired skips should not appear in the active-as-of view."""
+        sched, d1, _ = await self._setup(db)
+        sched.skipped_until = datetime(2000, 1, 1)  # long past
+        db.add(ScheduleDeviceSkip(
+            schedule_id=sched.id,
+            device_id=d1.id,
+            skip_until=datetime(2000, 1, 1),
+        ))
+        await db.commit()
 
-        sync_a = await build_device_sync(d1.id, db)
-        sync_b = await build_device_sync(d2.id, db)
-
-        assert len(sync_a.schedules) == 0
-        assert len(sync_b.schedules) == 1
+        snap = await load_skip_snapshot(db)
+        active = snap.active_as_of(datetime(2030, 1, 1))
+        assert not active.is_schedule_skipped(str(sched.id))
+        assert not active.is_skipped_for_device(str(sched.id), d1.id)
+        # But expired_* still reports them for the purge loop
+        assert str(sched.id) in snap.expired_schedule_ids(datetime(2030, 1, 1))
+        assert (str(sched.id), d1.id) in snap.expired_device_pairs(datetime(2030, 1, 1))

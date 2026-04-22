@@ -13,10 +13,7 @@ import pytest
 
 from cms.models.asset import Asset, AssetType
 from cms.models.schedule import Schedule
-from cms.services.scheduler import (
-    _skipped,
-    get_upcoming_schedules,
-)
+from cms.services.scheduler import get_upcoming_schedules
 
 UTC = ZoneInfo("UTC")
 
@@ -66,12 +63,6 @@ class TestTransitionGap:
     """Schedule must stay visible when it enters its time window but the
     scheduler hasn't updated ``_now_playing`` yet."""
 
-    def setup_method(self):
-        _skipped.clear()
-
-    def teardown_method(self):
-        _skipped.clear()
-
     def test_active_schedule_not_yet_in_now_playing_stays_visible(self):
         """A schedule that just entered its window (not yet in now_playing)
         should appear in upcoming with ``starting=True``."""
@@ -119,10 +110,12 @@ class TestTransitionGap:
         s = _make_schedule(
             time(10, 0), time(11, 0), name="Ended", group_id=gid,
         )
-        _skipped[str(s.id)] = datetime(2026, 3, 28, 11, 0)
         now = datetime(2026, 3, 28, 10, 5, tzinfo=timezone.utc)
 
-        result = get_upcoming_schedules([s], now, UTC, now_playing=[])
+        result = get_upcoming_schedules(
+            [s], now, UTC, now_playing=[],
+            skipped_schedule_ids={str(s.id)},
+        )
         assert len(result) == 0
 
 
@@ -130,12 +123,6 @@ class TestPreemptionTransitionGap:
     """When a higher-priority schedule enters its window during an active
     lower-priority schedule, it should not vanish while waiting for the
     scheduler to process the switch."""
-
-    def setup_method(self):
-        _skipped.clear()
-
-    def teardown_method(self):
-        _skipped.clear()
 
     def test_new_higher_priority_schedule_shows_starting(self):
         """Higher-priority schedule just entered its window — should show as
@@ -202,12 +189,6 @@ class TestPreemptionTransitionGap:
 class TestGroupScheduleTransitionGap:
     """Group-targeted schedules must also show 'starting' during the
     transition gap — they have device_id=None."""
-
-    def setup_method(self):
-        _skipped.clear()
-
-    def teardown_method(self):
-        _skipped.clear()
 
     def test_group_schedule_not_yet_in_now_playing_stays_visible(self):
         """A group schedule entering its window should show as 'starting'."""

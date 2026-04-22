@@ -14,9 +14,8 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.services.scheduler import (
     _asset_display_name,
-    _skipped,
     _now_playing,
-    _ensure_skips_loaded,
+    load_skip_snapshot,
 )
 
 
@@ -223,19 +222,13 @@ class TestScheduleApiDisplayName:
 
 @pytest.mark.asyncio
 class TestSkippedUntilPersistence:
-    """Test that End Now writes skipped_until to DB and _ensure_skips_loaded reads it back."""
+    """Test that End Now writes skipped_until to DB and load_skip_snapshot reads it back."""
 
     def setup_method(self):
-        import cms.services.scheduler as _sched
-        _skipped.clear()
         _now_playing.clear()
-        _sched._skipped_loaded = False
 
     def teardown_method(self):
-        import cms.services.scheduler as _sched
-        _skipped.clear()
         _now_playing.clear()
-        _sched._skipped_loaded = False
 
     async def test_end_now_persists_skipped_until(self, client, db_session):
         """POST end-now should write skipped_until to the schedule row."""
@@ -258,8 +251,8 @@ class TestSkippedUntilPersistence:
             skipped_val = result.scalar_one()
             assert skipped_val is not None
 
-    async def test_ensure_skips_loaded_reads_from_db(self, db_session):
-        """_ensure_skips_loaded should populate _skipped from DB rows."""
+    async def test_load_skip_snapshot_reads_from_db(self, db_session):
+        """load_skip_snapshot should surface schedule rows with skipped_until."""
         group = await _seed_group(db_session)
         asset = await _create_asset(db_session)
         sched = await _seed_schedule(db_session, asset, group)
@@ -269,26 +262,21 @@ class TestSkippedUntilPersistence:
         sched.skipped_until = future
         await db_session.commit()
 
-        # Simulate fresh start: _skipped is empty, _skipped_loaded is False
-        _skipped.clear()
+        snap = await load_skip_snapshot(db_session)
+        assert str(sched.id) in snap.schedule_wide
 
-        await _ensure_skips_loaded(db_session)
-
-        assert str(sched.id) in _skipped
-
-    async def test_ensure_skips_loaded_idempotent(self, db_session):
-        """Second call should not re-query or duplicate entries."""
+    async def test_load_skip_snapshot_repeatable(self, db_session):
+        """Two calls return equivalent content — no hidden caching."""
         group = await _seed_group(db_session)
         asset = await _create_asset(db_session)
         sched = await _seed_schedule(db_session, asset, group)
         sched.skipped_until = datetime.now(timezone.utc) + timedelta(hours=6)
         await db_session.commit()
 
-        await _ensure_skips_loaded(db_session)
-        count_after_first = len(_skipped)
-
-        await _ensure_skips_loaded(db_session)
-        assert len(_skipped) == count_after_first
+        snap_a = await load_skip_snapshot(db_session)
+        snap_b = await load_skip_snapshot(db_session)
+        assert snap_a.schedule_wide == snap_b.schedule_wide
+        assert snap_a.per_device == snap_b.per_device
 
     async def test_schedule_edit_clears_skipped_until(self, client, db_session):
         """Editing a schedule should clear its skipped_until in DB."""
@@ -315,6 +303,7 @@ class TestSkippedUntilPersistence:
         assert skipped_val is None
 
     async def test_no_skips_loaded_when_db_empty(self, db_session):
-        """When no schedules have skipped_until, _skipped stays empty."""
-        await _ensure_skips_loaded(db_session)
-        assert len(_skipped) == 0
+        """When no schedules have skipped_until, snapshot is empty."""
+        snap = await load_skip_snapshot(db_session)
+        assert len(snap.schedule_wide) == 0
+        assert len(snap.per_device) == 0

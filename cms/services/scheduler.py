@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,7 @@ from shared.database import get_session_factory as _get_session_factory
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
+from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.setting import CMSSetting
 from cms.schemas.protocol import ScheduleEntry, SyncMessage
@@ -27,66 +29,120 @@ def _asset_display_name(asset) -> str:
         return "—"
     return asset.display_name or asset.original_filename or asset.filename
 
-# Track last sync hash per device to avoid re-sending identical syncs
+# Track last sync hash per device to avoid re-sending identical syncs.
+# NOTE: this is replica-local. Under N>1 replicas two replicas may both
+# push to the same device, but the device firmware deduplicates via the
+# sync_hash echoed in acks. See docs/multi-replica.md.
 _last_sync_hash: dict[str, str] = {}
 
 # Confirmed playback: minimal tracking of what each device has confirmed
 # it's playing.  Populated by WS PLAYBACK_STARTED, cleared by PLAYBACK_ENDED
 # or device disconnect.  Only stores {device_id: {schedule_id, since}}.
+# NOTE: replica-local. Tracked separately in the confirmed-playing-dbback
+# todo; every replica gets its own view until that lands.
 _confirmed_playing: dict[str, dict] = {}
 _now_playing = _confirmed_playing  # backwards-compat alias for tests
 
-# Skipped schedule occurrences: {schedule_id: skip_until_local_datetime}.
-# Schedule-wide skips (applies to every device targeted by the schedule).
-_skipped: dict[str, datetime] = {}
-# Per-device skips: {(schedule_id, device_id): skip_until_local_datetime}.
-# Used when an operator ends a schedule for a single device via the dashboard.
-_device_skipped: dict[tuple[str, str], datetime] = {}
-_skipped_loaded: bool = False
+
+# ── Skip-state snapshot (DB-backed) ───────────────────────────────────
+#
+# Skip state (which schedules the operator has "ended now" for the rest
+# of the day, schedule-wide or per-device) lives in two DB tables:
+#   - Schedule.skipped_until          (schedule-wide)
+#   - ScheduleDeviceSkip              (per-device)
+#
+# Historically this module kept an in-memory cache mirroring those rows,
+# but the cache was written only by the replica that handled the skip
+# API call. Under multi-replica deployments every other replica would
+# happily push syncs containing the "skipped" schedule (and the scheduler
+# loop on a different replica would evaluate as if no skip existed).
+#
+# The cache is now gone. Every top-level consumer (scheduler tick,
+# build_device_sync, push_sync_to_device, compute_now_playing, UI
+# routes calling get_upcoming_schedules) loads a fresh SkipSnapshot
+# from the DB at the start of its pass and threads it through. The
+# snapshot is cheap — two small indexed queries — and is consistent for
+# the duration of a single request/tick.
+
+@dataclass(frozen=True)
+class SkipSnapshot:
+    """Immutable view of currently-persisted schedule skips.
+
+    ``schedule_wide`` maps ``schedule_id`` -> ``skip_until`` (naive local
+    datetime, CMS timezone).  ``per_device`` maps
+    ``(schedule_id, device_id)`` -> ``skip_until``.
+    """
+
+    schedule_wide: dict[str, datetime] = field(default_factory=dict)
+    per_device: dict[tuple[str, str], datetime] = field(default_factory=dict)
+
+    @classmethod
+    def empty(cls) -> "SkipSnapshot":
+        return cls()
+
+    def active_as_of(self, local_now: datetime) -> "SkipSnapshot":
+        """Return a new snapshot with expired entries dropped."""
+        sw = {
+            sid: until for sid, until in self.schedule_wide.items()
+            if local_now < until
+        }
+        pd = {
+            key: until for key, until in self.per_device.items()
+            if local_now < until
+        }
+        return SkipSnapshot(schedule_wide=sw, per_device=pd)
+
+    def expired_schedule_ids(self, local_now: datetime) -> list[str]:
+        return [
+            sid for sid, until in self.schedule_wide.items()
+            if local_now >= until
+        ]
+
+    def expired_device_pairs(self, local_now: datetime) -> list[tuple[str, str]]:
+        return [
+            key for key, until in self.per_device.items()
+            if local_now >= until
+        ]
+
+    def is_schedule_skipped(self, schedule_id: str) -> bool:
+        """True iff a schedule-wide skip is active for this schedule."""
+        return schedule_id in self.schedule_wide
+
+    def is_skipped_for_device(self, schedule_id: str, device_id: str) -> bool:
+        """True iff schedule is skipped for this device (wide OR per-device)."""
+        if schedule_id in self.schedule_wide:
+            return True
+        return (schedule_id, device_id) in self.per_device
 
 
-async def _ensure_skips_loaded(db) -> None:
-    """Load persisted skips (schedule-wide + per-device) from DB on first call."""
-    global _skipped_loaded
-    if _skipped_loaded:
-        return
-    skip_result = await db.execute(
+async def load_skip_snapshot(db) -> SkipSnapshot:
+    """Load all persisted skips from DB into an immutable snapshot.
+
+    Two small indexed queries.  Returns both expired and active entries;
+    callers that only want active ones should call ``.active_as_of(now)``.
+    """
+    sw: dict[str, datetime] = {}
+    sw_result = await db.execute(
         select(Schedule.id, Schedule.skipped_until)
         .where(Schedule.skipped_until.isnot(None))
     )
-    for sid, until in skip_result.all():
-        _skipped[str(sid)] = until.replace(tzinfo=None) if until.tzinfo else until
+    for sid, until in sw_result.all():
+        sw[str(sid)] = until.replace(tzinfo=None) if until.tzinfo else until
 
-    from cms.models.schedule_device_skip import ScheduleDeviceSkip
-    dev_skip_result = await db.execute(
+    pd: dict[tuple[str, str], datetime] = {}
+    pd_result = await db.execute(
         select(
             ScheduleDeviceSkip.schedule_id,
             ScheduleDeviceSkip.device_id,
             ScheduleDeviceSkip.skip_until,
         )
     )
-    for sid, did, until in dev_skip_result.all():
+    for sid, did, until in pd_result.all():
         key = (str(sid), did)
-        _device_skipped[key] = until.replace(tzinfo=None) if until.tzinfo else until
+        pd[key] = until.replace(tzinfo=None) if until.tzinfo else until
 
-    _skipped_loaded = True
-    if _skipped or _device_skipped:
-        logger.info(
-            "Loaded %d schedule skips and %d per-device skips from DB",
-            len(_skipped), len(_device_skipped),
-        )
+    return SkipSnapshot(schedule_wide=sw, per_device=pd)
 
-
-def is_schedule_skipped_for_device(schedule_id: str, device_id: str) -> bool:
-    """Return True if this schedule is currently skipped for the given device.
-
-    Covers both schedule-wide (``_skipped``) and per-device (``_device_skipped``)
-    skips.  The scheduler should treat a skipped schedule/device combo as if the
-    schedule were not active.
-    """
-    if schedule_id in _skipped:
-        return True
-    return (schedule_id, device_id) in _device_skipped
 
 # Track which schedule+device combos we've already logged as MISSED this eval cycle
 # Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
@@ -168,45 +224,47 @@ def clear_now_playing(device_id: str) -> dict | None:
 
 def skip_schedule_until(
     schedule_id: str,
-    until: datetime,
+    until: datetime | None = None,
     device_id: str | None = None,
 ) -> None:
-    """Skip a schedule until ``until``.
+    """Invalidate confirmed-playing cache after a skip has been written to DB.
 
-    If ``device_id`` is omitted, the skip applies to every device targeted by
-    the schedule (legacy behavior).  If provided, only that device is skipped —
-    other devices on the same schedule continue to play.
+    **NOTE:** as of the scheduler-state-dbback refactor, this function no
+    longer stores skip state.  Skip state is persisted in
+    ``Schedule.skipped_until`` / ``ScheduleDeviceSkip`` by the API router.
+    All read paths load a fresh :class:`SkipSnapshot` from DB and don't
+    consult any module-level cache.
 
-    The function also removes matching entries from ``_confirmed_playing`` so
-    the dashboard reflects the change immediately.
+    The function is kept (with its original signature) because the router
+    still needs a hook to invalidate the process-local
+    ``_confirmed_playing`` dict so the dashboard reflects the change on
+    this replica immediately.  The ``until`` parameter is ignored.
     """
+    _ = until  # signature-compat only; skip state is persisted in DB
     if device_id is None:
-        _skipped[schedule_id] = until
-        to_remove = [did for did, info in _confirmed_playing.items() if info.get("schedule_id") == schedule_id]
+        to_remove = [
+            did for did, info in _confirmed_playing.items()
+            if info.get("schedule_id") == schedule_id
+        ]
         for did in to_remove:
             _confirmed_playing.pop(did, None)
         return
 
-    _device_skipped[(schedule_id, device_id)] = until
     info = _confirmed_playing.get(device_id)
     if info and info.get("schedule_id") == schedule_id:
         _confirmed_playing.pop(device_id, None)
 
 
 def clear_schedule_skip(schedule_id: str, device_id: str | None = None) -> None:
-    """Remove an active skip so the schedule can be re-evaluated.
+    """No-op kept for router backward-compat.
 
-    With ``device_id=None`` the schedule-wide skip AND all per-device skips
-    for this schedule are cleared.  With a specific ``device_id`` only that
-    one per-device skip is cleared.
+    Prior to scheduler-state-dbback this cleared the module-level skip
+    dicts so a freshly-enabled schedule would re-evaluate.  Now that skip
+    state lives only in the DB (and expired rows are purged by the
+    scheduler tick), the API router's DB writes are authoritative and
+    no in-memory cleanup is needed.
     """
-    if device_id is None:
-        _skipped.pop(schedule_id, None)
-        keys = [k for k in _device_skipped if k[0] == schedule_id]
-        for k in keys:
-            _device_skipped.pop(k, None)
-        return
-    _device_skipped.pop((schedule_id, device_id), None)
+    _ = schedule_id, device_id  # signature-compat only
 
 
 def clear_sync_hash(device_id: str) -> None:
@@ -223,7 +281,9 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
 
     Returns a list of dicts ready for the dashboard template / JSON API.
     """
-    await _ensure_skips_loaded(db)
+    skips = (await load_skip_snapshot(db)).active_as_of(
+        now.astimezone(tz).replace(tzinfo=None)
+    )
     from shared.models.asset import AssetType
 
     local_now = now.astimezone(tz).replace(tzinfo=None)
@@ -242,7 +302,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
     # Filter to currently active schedules (in their time window, not skipped)
     active = [
         s for s in schedules
-        if _matches_now(s, local_now) and str(s.id) not in _skipped
+        if _matches_now(s, local_now) and not skips.is_schedule_skipped(str(s.id))
     ]
 
     if not active:
@@ -262,7 +322,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
         # Drop any device with an active per-device skip on this schedule
         target_ids = [
             did for did in target_ids
-            if (str(s.id), did) not in _device_skipped
+            if not skips.is_skipped_for_device(str(s.id), did)
         ]
         if not target_ids:
             continue
@@ -323,6 +383,7 @@ def get_upcoming_schedules(
     schedules: list, now: datetime, tz: ZoneInfo,
     now_playing: list[dict] | None = None,
     offline_device_ids: set[str] | None = None,
+    skipped_schedule_ids: set[str] | None = None,
 ) -> list[dict]:
     """Return schedules starting within the next 24 hours.
 
@@ -332,8 +393,16 @@ def get_upcoming_schedules(
 
     Each entry includes start/end time, duration, countdown, and whether it's
     today or tomorrow.
+
+    ``skipped_schedule_ids`` is the set of schedule IDs (as strings) that the
+    operator has "Ended Now" and should therefore be hidden from the upcoming
+    list.  Callers should pass ``skips.schedule_wide.keys()`` from a
+    :func:`load_skip_snapshot` (filtered to active entries) — the default of
+    ``None`` treats no schedules as skipped, which is safe for unit tests
+    that never exercise the skip path.
     """
     _offline = offline_device_ids or set()
+    _skipped_ids: set[str] = set(skipped_schedule_ids or ())
     local_now = now.astimezone(tz).replace(tzinfo=None)
     today = local_now.date()
     tomorrow = today + timedelta(days=1)
@@ -360,7 +429,7 @@ def get_upcoming_schedules(
                 continue  # legacy: no preemption info available
             if str(s.id) in _winning_sids:
                 continue  # currently winning — shown in Now Playing
-            if str(s.id) in _skipped:
+            if str(s.id) in _skipped_ids:
                 continue  # deliberately ended via End Now
             # Check if genuinely preempted (higher-priority schedule active on same target)
             resume_at = _find_resume_time(s, schedules, local_now)
@@ -701,11 +770,20 @@ def _sync_hash(sync: SyncMessage) -> str:
     return hashlib.md5(sync.model_dump_json().encode()).hexdigest()
 
 
-async def build_device_sync(device_id: str, db) -> SyncMessage | None:
+async def build_device_sync(
+    device_id: str,
+    db,
+    skips: "SkipSnapshot | None" = None,
+) -> SyncMessage | None:
     """Build a full SyncMessage for a specific device.
 
     Used by both the scheduler loop and the on-change push.
     Returns None if the database isn't ready.
+
+    ``skips`` is an optional pre-loaded snapshot of active schedule skips.
+    If omitted, this function loads and filters one itself.  The scheduler
+    tick passes its own snapshot in to amortize the cost across every
+    device it syncs.
     """
     # Read configured timezone (per-device overrides CMS global)
     tz_result = await db.execute(
@@ -720,6 +798,11 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
     # PDT is still valid at 9 PM PDT even though it's April 2nd UTC).
     local_now = now.astimezone(ZoneInfo(cms_tz))
     local_cutoff = cutoff.astimezone(ZoneInfo(cms_tz))
+
+    if skips is None:
+        skips = (await load_skip_snapshot(db)).active_as_of(
+            local_now.replace(tzinfo=None)
+        )
 
     # Load device with default asset
     dev_result = await db.execute(
@@ -805,7 +888,7 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
         if device_id in target_ids:
             # Skip if this schedule's current occurrence is being skipped
             # (either schedule-wide, or just for this device).
-            if is_schedule_skipped_for_device(str(s.id), device_id):
+            if skips.is_skipped_for_device(str(s.id), device_id):
                 continue
             entries.append(_schedule_to_entry(s, variant_checksums))
 
@@ -822,10 +905,18 @@ async def build_device_sync(device_id: str, db) -> SyncMessage | None:
     )
 
 
-async def push_sync_to_device(device_id: str, db) -> None:
-    """Build and push a fresh sync to a single connected device."""
-    await _ensure_skips_loaded(db)
+async def push_sync_to_device(
+    device_id: str,
+    db,
+    skips: "SkipSnapshot | None" = None,
+) -> None:
+    """Build and push a fresh sync to a single connected device.
 
+    ``skips`` may be an already-loaded :class:`SkipSnapshot` (active
+    entries only) so the scheduler tick can share one snapshot across
+    every device it syncs.  If omitted, :func:`build_device_sync` loads
+    its own.
+    """
     if not await get_transport().is_connected(device_id):
         return
 
@@ -835,7 +926,7 @@ async def push_sync_to_device(device_id: str, db) -> None:
     if status != DeviceStatus.ADOPTED:
         return
 
-    sync = await build_device_sync(device_id, db)
+    sync = await build_device_sync(device_id, db, skips=skips)
     if sync is None:
         return
 
@@ -867,8 +958,6 @@ async def evaluate_schedules() -> None:
     now = datetime.now(timezone.utc)
 
     async with sf() as db:
-        await _ensure_skips_loaded(db)
-
         # Read timezone for schedule evaluation
         tz_result = await db.execute(
             select(CMSSetting.value).where(CMSSetting.key == "timezone")
@@ -876,11 +965,18 @@ async def evaluate_schedules() -> None:
         tz_name = tz_result.scalar_one_or_none() or "UTC"
         local_now = now.astimezone(ZoneInfo(tz_name)).replace(tzinfo=None)
 
+        # Load the full skip snapshot once for this tick.  We use the
+        # raw snapshot to compute expirations, then derive an
+        # "active-as-of-now" view for downstream filtering.
+        raw_skips = await load_skip_snapshot(db)
+        skips = raw_skips.active_as_of(local_now)
+
         connected = set(await get_transport().connected_ids())
 
-        # Push full sync to each connected device (dedup via hash)
+        # Push full sync to each connected device (dedup via hash).
+        # Share the snapshot across all devices to amortize the DB load.
         for did in connected:
-            await push_sync_to_device(did, db)
+            await push_sync_to_device(did, db, skips=skips)
 
         # ── Detect MISSED schedules ──
         result = await db.execute(
@@ -893,11 +989,9 @@ async def evaluate_schedules() -> None:
         )
         schedules = result.scalars().all()
 
-        # Purge expired skips (memory + DB) — schedule-wide
-        expired = [sid for sid, until in _skipped.items() if local_now >= until]
+        # Purge expired schedule-wide skips from DB.
+        expired = raw_skips.expired_schedule_ids(local_now)
         for sid in expired:
-            _skipped.pop(sid, None)
-            # Clear DB column
             await db.execute(
                 Schedule.__table__.update()
                 .where(Schedule.id == sid)
@@ -909,11 +1003,9 @@ async def evaluate_schedules() -> None:
         if expired:
             await db.commit()
 
-        # Purge expired per-device skips
-        from cms.models.schedule_device_skip import ScheduleDeviceSkip
-        dev_expired = [k for k, until in _device_skipped.items() if local_now >= until]
+        # Purge expired per-device skips from DB.
+        dev_expired = raw_skips.expired_device_pairs(local_now)
         for key in dev_expired:
-            _device_skipped.pop(key, None)
             sid, did = key
             await db.execute(
                 ScheduleDeviceSkip.__table__.delete().where(
@@ -927,7 +1019,7 @@ async def evaluate_schedules() -> None:
 
         active = [
             s for s in schedules
-            if _matches_now(s, local_now) and str(s.id) not in _skipped
+            if _matches_now(s, local_now) and not skips.is_schedule_skipped(str(s.id))
         ]
 
         # Detect MISSED schedules: active schedules targeting offline adopted devices
@@ -946,7 +1038,7 @@ async def evaluate_schedules() -> None:
             for did in target_ids:
                 key = (str(s.id), did)
                 # Don't flag MISSED for a device whose skip is active.
-                if key in _device_skipped:
+                if skips.is_skipped_for_device(str(s.id), did):
                     _offline_since.pop(key, None)
                     continue
                 if did in connected or did not in all_adopted:

@@ -576,7 +576,7 @@ async def setup_complete(
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from datetime import datetime as _dt, timezone as _tz
-    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules
+    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules, load_skip_snapshot
     from cms.auth import get_user_group_ids
 
     # CMS timezone
@@ -741,7 +741,15 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
     offline_set = set(d.id for d in offline_devices)
-    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
+    _skips_for_ui = (await load_skip_snapshot(db)).active_as_of(
+        now.astimezone(tz).replace(tzinfo=None)
+    )
+    upcoming = get_upcoming_schedules(
+        all_schedules, now, tz,
+        now_playing=now_playing,
+        offline_device_ids=offline_set,
+        skipped_schedule_ids=set(_skips_for_ui.schedule_wide.keys()),
+    )
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
@@ -822,7 +830,7 @@ async def server_time_json(db: AsyncSession = Depends(get_db)):
 async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""
     from datetime import datetime as _dt, timezone as _tz
-    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules
+    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules, load_skip_snapshot
     from cms.auth import get_user_group_ids
 
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
@@ -939,9 +947,18 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         else:
             upcoming_q = upcoming_q.where(sqlalchemy.false())
     sched_q = await db.execute(upcoming_q)
+    sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
     offline_set = set(offline_ids)
-    upcoming = get_upcoming_schedules(all_schedules, now, tz, now_playing=now_playing, offline_device_ids=offline_set)
+    _skips_for_ui = (await load_skip_snapshot(db)).active_as_of(
+        now.astimezone(tz).replace(tzinfo=None)
+    )
+    upcoming = get_upcoming_schedules(
+        all_schedules, now, tz,
+        now_playing=now_playing,
+        offline_device_ids=offline_set,
+        skipped_schedule_ids=set(_skips_for_ui.schedule_wide.keys()),
+    )
 
     # Recent activity count for change detection
     from datetime import timedelta
