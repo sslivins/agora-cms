@@ -262,6 +262,12 @@ async def lifespan(app: FastAPI):
     # Initialize log-blob backend (separate from asset storage — Stage 3b).
     await init_log_storage(settings)
 
+    # Initialize the log chunk assembler (Stage 3c): process-local
+    # buffer for binary ``LGCK`` frames from Pi firmware advertising
+    # ``logs_chunk_v1``.  Must run before the reaper task starts.
+    from cms.services.log_chunk_assembler import init_assembler as _init_chunk_assembler
+    _init_chunk_assembler(settings)
+
     # Seed built-in RBAC roles (Admin, Operator, Viewer)
     async for db in get_db():
         await _seed_roles(db)
@@ -350,6 +356,21 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # ── Log chunk reaper (issue #345 Stage 3c) ──
+    # Evicts stalled chunked-upload buffers past the configured TTL and
+    # flips the matching outbox rows to ``failed`` so the user sees the
+    # transfer timed out.  Cheap tick — a no-op when no transfers are
+    # in flight.
+    from cms.services.log_chunk_assembler import run_reaper_loop as log_chunk_reaper_run_loop
+    log_chunk_reaper_stop = asyncio.Event()
+    log_chunk_reaper_task = asyncio.create_task(
+        log_chunk_reaper_run_loop(
+            _get_session_factory,
+            settings=settings,
+            stop_event=log_chunk_reaper_stop,
+        )
+    )
+
     # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
     try:
         from cms.models.device_event import DeviceEvent, DeviceEventType
@@ -432,6 +453,7 @@ async def lifespan(app: FastAPI):
     reaper_task.cancel()
     outbox_drain_task.cancel()
     log_drainer_stop.set()
+    log_chunk_reaper_stop.set()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -478,6 +500,16 @@ async def lifespan(app: FastAPI):
             pass
     except Exception:
         logger.exception("log_drainer: error during shutdown")
+    try:
+        await asyncio.wait_for(log_chunk_reaper_task, timeout=5.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        log_chunk_reaper_task.cancel()
+        try:
+            await log_chunk_reaper_task
+        except asyncio.CancelledError:
+            pass
+    except Exception:
+        logger.exception("log_chunk_reaper: error during shutdown")
     # Close storage backend (Azure: close async blob client)
     if hasattr(backend, "close"):
         await backend.close()

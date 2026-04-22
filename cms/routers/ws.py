@@ -16,6 +16,7 @@ from cms.models.device import Device, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
     AuthAssignedMessage,
     MessageType,
 )
@@ -27,6 +28,10 @@ from cms.services.device_inbound import (
 )
 from cms.services.device_manager import device_manager
 from cms.services.alert_service import alert_service
+from cms.services.log_chunk_assembler import (
+    handle_frame as handle_log_chunk_frame,
+    is_chunk_frame,
+)
 from cms.services.scheduler import build_device_sync
 
 logger = logging.getLogger("agora.cms.ws")
@@ -124,9 +129,12 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             return
 
         protocol = raw.get("protocol_version", 0)
-        if protocol != PROTOCOL_VERSION:
+        if protocol not in SUPPORTED_PROTOCOL_VERSIONS:
             await websocket.send_json({
-                "error": f"Protocol mismatch: expected {PROTOCOL_VERSION}, got {protocol}"
+                "error": (
+                    f"Protocol mismatch: supported {sorted(SUPPORTED_PROTOCOL_VERSIONS)}, "
+                    f"got {protocol}"
+                )
             })
             await websocket.close(code=4003)
             return
@@ -303,10 +311,52 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         # ── 8. Message loop ──
         while True:
             try:
-                msg = await asyncio.wait_for(websocket.receive_json(), timeout=WS_RECEIVE_TIMEOUT)
+                event = await asyncio.wait_for(websocket.receive(), timeout=WS_RECEIVE_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.info("Device %s timed out (no message in %ds)", device_id, WS_RECEIVE_TIMEOUT)
                 break
+
+            # Starlette surfaces disconnects as dicts with type=websocket.disconnect.
+            event_type = event.get("type")
+            if event_type == "websocket.disconnect":
+                raise WebSocketDisconnect(code=event.get("code", 1005))
+            if event_type != "websocket.receive":
+                logger.warning("Device %s sent unknown event type %s", device_id, event_type)
+                continue
+
+            # Stage 3c (#345): binary frames tagged with the LGCK magic
+            # carry chunked LOGS_RESPONSE payloads too large for a single
+            # WPS message (~1 MiB cap).  Dispatch them to the assembler
+            # and skip JSON parsing.
+            binary = event.get("bytes")
+            if binary is not None:
+                if is_chunk_frame(binary):
+                    try:
+                        await handle_log_chunk_frame(
+                            db, device_id=device_id, frame_bytes=binary,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Log chunk handling failed for device %s", device_id,
+                        )
+                    continue
+                logger.warning(
+                    "Device %s sent unknown binary frame (%d bytes)",
+                    device_id, len(binary),
+                )
+                continue
+
+            text = event.get("text")
+            if text is None:
+                continue
+            import json
+            try:
+                msg = json.loads(text)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Device %s sent malformed JSON: %s", device_id, exc,
+                )
+                continue
             await dispatch_device_message(msg=msg, ctx=ctx, db=db, send=_ws_send)
 
     except WebSocketDisconnect:

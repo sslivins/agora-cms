@@ -1,6 +1,6 @@
 """WebSocket protocol message types — shared contract with device repo (sslivins/agora).
 
-Protocol version: 1
+Protocol version: 2
 
 Any changes to this file MUST be mirrored in the device-side implementation.
 """
@@ -11,7 +11,26 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION = 1
+# Protocol versioning
+#
+# ``PROTOCOL_VERSION`` is the canonical current version.  ``SUPPORTED_PROTOCOL_VERSIONS``
+# is the set the CMS accepts on the REGISTER handshake.  Keep older versions
+# here during fleet OTA rollouts so devices running previous firmware don't
+# get kicked when the CMS bumps its version.
+#
+#   v1 — original text-only JSON protocol.
+#   v2 — adds binary ``LGCK`` frames carrying chunked ``LOGS_RESPONSE``
+#        payloads so log bundles larger than the 1 MiB WPS message cap
+#        can be delivered over the device WebSocket.  Small payloads
+#        still use the original JSON ``LOGS_RESPONSE`` path.
+PROTOCOL_VERSION = 2
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
+
+# Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
+# firmware advertising the ``logs_chunk_v1`` capability sends these as
+# WS binary frames when a log bundle exceeds the single-message cap.
+LOGS_CHUNK_MAGIC = b"LGCK"
+LOGS_CHUNK_HEADER_VERSION = 1
 
 
 # ── Base ──
