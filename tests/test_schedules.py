@@ -539,7 +539,9 @@ class TestEndNowClearedOnEdit:
 
     async def test_patch_clears_end_now_skip(self, client, db_session):
         """PATCH /api/schedules/<id> should clear any active End Now skip."""
-        from cms.services.scheduler import _skipped
+        from sqlalchemy import select
+        from cms.models.schedule import Schedule
+        import uuid
 
         group_id, asset_id = await self._seed(db_session)
 
@@ -557,18 +559,27 @@ class TestEndNowClearedOnEdit:
         # End it now
         resp = await client.post(f"/api/schedules/{sched_id}/end-now")
         assert resp.status_code == 200
-        assert sched_id in _skipped
+        row = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert row is not None
 
         # Edit the schedule (even without real changes)
         resp = await client.patch(f"/api/schedules/{sched_id}", json={"name": "End Now Test"})
         assert resp.status_code == 200
 
-        # The skip should be cleared
-        assert sched_id not in _skipped
+        # The skip should be cleared in the DB
+        db_session.expire_all()
+        row = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert row is None
 
     async def test_toggle_enabled_clears_skip(self, client, db_session):
         """Toggling enabled on a skipped schedule should clear the skip."""
-        from cms.services.scheduler import _skipped
+        from sqlalchemy import select
+        from cms.models.schedule import Schedule
+        import uuid
 
         group_id, asset_id = await self._seed(db_session)
 
@@ -583,11 +594,19 @@ class TestEndNowClearedOnEdit:
 
         # End it now
         await client.post(f"/api/schedules/{sched_id}/end-now")
-        assert sched_id in _skipped
+        db_session.expire_all()
+        row = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert row is not None
 
         # Toggle enabled off then on
         await client.patch(f"/api/schedules/{sched_id}", json={"enabled": False})
-        assert sched_id not in _skipped
+        db_session.expire_all()
+        row = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert row is None
 
 
 @pytest.mark.asyncio
@@ -610,8 +629,8 @@ class TestEndNowPerDevice:
         return str(group.id), str(asset.id), d1.id, d2.id
 
     async def test_end_now_with_device_id_scopes_skip(self, client, db_session):
-        from cms.services import scheduler as sched_mod
         from cms.models.schedule_device_skip import ScheduleDeviceSkip
+        from cms.models.schedule import Schedule
         from sqlalchemy import select
 
         group_id, asset_id, dev_a, dev_b = await self._seed_two_devices(db_session)
@@ -626,9 +645,6 @@ class TestEndNowPerDevice:
         assert created.status_code == 201
         sched_id = created.json()["id"]
 
-        sched_mod._skipped.clear()
-        sched_mod._device_skipped.clear()
-
         resp = await client.post(
             f"/api/schedules/{sched_id}/end-now",
             json={"device_id": dev_a},
@@ -638,22 +654,26 @@ class TestEndNowPerDevice:
         assert body["device_id"] == dev_a
 
         # Schedule-wide skip must NOT be set; per-device skip must be set.
-        assert sched_id not in sched_mod._skipped
-        assert (sched_id, dev_a) in sched_mod._device_skipped
-        assert (sched_id, dev_b) not in sched_mod._device_skipped
-
-        # And persisted to DB
         import uuid
+        db_session.expire_all()
+        sched_wide = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert sched_wide is None
+
         rows = (await db_session.execute(
             select(ScheduleDeviceSkip.device_id).where(
                 ScheduleDeviceSkip.schedule_id == uuid.UUID(sched_id)
             )
         )).scalars().all()
-        assert rows == [dev_a]
+        assert sorted(rows) == [dev_a]
 
     async def test_end_now_without_body_still_schedule_wide(self, client, db_session):
         """Back-compat: POST with no body skips all devices on the schedule."""
-        from cms.services import scheduler as sched_mod
+        from cms.models.schedule_device_skip import ScheduleDeviceSkip
+        from cms.models.schedule import Schedule
+        from sqlalchemy import select
+        import uuid
 
         group_id, asset_id, dev_a, dev_b = await self._seed_two_devices(db_session)
 
@@ -666,13 +686,20 @@ class TestEndNowPerDevice:
         })
         sched_id = created.json()["id"]
 
-        sched_mod._skipped.clear()
-        sched_mod._device_skipped.clear()
-
         resp = await client.post(f"/api/schedules/{sched_id}/end-now")
         assert resp.status_code == 200
-        assert sched_id in sched_mod._skipped
-        assert not any(k[0] == sched_id for k in sched_mod._device_skipped)
+
+        db_session.expire_all()
+        sched_wide = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert sched_wide is not None
+        rows = (await db_session.execute(
+            select(ScheduleDeviceSkip.device_id).where(
+                ScheduleDeviceSkip.schedule_id == uuid.UUID(sched_id)
+            )
+        )).scalars().all()
+        assert rows == []
 
     async def test_end_now_rejects_unknown_device(self, client, db_session):
         group_id, asset_id, dev_a, dev_b = await self._seed_two_devices(db_session)

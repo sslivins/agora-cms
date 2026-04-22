@@ -15,21 +15,18 @@ from cms.models.schedule import Schedule
 from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
     _matches_now,
-    _skipped,
     _now_playing,
     _last_sync_hash,
     _offline_since,
     _missed_logged,
     MISSED_GRACE_SECONDS,
     build_device_sync,
-    clear_schedule_skip,
     clear_sync_hash,
     clear_now_playing,
     evaluate_schedules,
     get_now_playing,
     get_upcoming_schedules,
     set_now_playing,
-    skip_schedule_until,
 )
 
 
@@ -89,95 +86,54 @@ def _make_schedule_with_asset(
     return s
 
 
-# ── skip_schedule_until / End Now ──
+# ── Skipped schedules (End Now) — now DB-backed via skipped_schedule_ids kwarg ──
 
 
-class TestSkipSchedule:
-    """Tests for the in-memory skip mechanism (End Now feature)."""
+class TestSkipScheduleBehavior:
+    """After the dbback refactor, skip state is passed as a set to
+    ``get_upcoming_schedules`` (and loaded from DB inside scheduler tick).
+    These tests cover the hide-in-upcoming behavior."""
 
     def setup_method(self):
-        _skipped.clear()
         _now_playing.clear()
         _last_sync_hash.clear()
 
     def teardown_method(self):
-        _skipped.clear()
         _now_playing.clear()
         _last_sync_hash.clear()
 
-    def test_skip_adds_to_skipped_dict(self):
-        until = datetime(2026, 3, 29, 17, 0)
-        skip_schedule_until("sched-1", until)
-        assert "sched-1" in _skipped
-        assert _skipped["sched-1"] == until
-
-    def test_skip_removes_from_now_playing(self):
-        _now_playing["device-a"] = {"schedule_id": "sched-1", "device_id": "device-a"}
-        _now_playing["device-b"] = {"schedule_id": "sched-2", "device_id": "device-b"}
-
-        skip_schedule_until("sched-1", datetime(2026, 3, 29, 17, 0))
-
-        assert "device-a" not in _now_playing
-        assert "device-b" in _now_playing
-
-    def test_skip_removes_multiple_devices_same_schedule(self):
-        _now_playing["d1"] = {"schedule_id": "sched-1", "device_id": "d1"}
-        _now_playing["d2"] = {"schedule_id": "sched-1", "device_id": "d2"}
-        _now_playing["d3"] = {"schedule_id": "sched-2", "device_id": "d3"}
-
-        skip_schedule_until("sched-1", datetime(2026, 3, 29, 17, 0))
-
-        assert "d1" not in _now_playing
-        assert "d2" not in _now_playing
-        assert "d3" in _now_playing
-
-    def test_skip_nonexistent_schedule_is_harmless(self):
-        skip_schedule_until("no-such-id", datetime(2026, 3, 29, 17, 0))
-        assert "no-such-id" in _skipped
-        assert len(_now_playing) == 0
-
-    def test_get_now_playing_returns_list(self):
-        _now_playing["d1"] = {"schedule_id": "s1", "device_id": "d1"}
-        _now_playing["d2"] = {"schedule_id": "s2", "device_id": "d2"}
-
-        result = get_now_playing()
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    def test_clear_skip_removes_entry(self):
-        skip_schedule_until("sched-1", datetime(2026, 3, 29, 17, 0))
-        assert "sched-1" in _skipped
-        clear_schedule_skip("sched-1")
-        assert "sched-1" not in _skipped
-
-    def test_clear_skip_nonexistent_is_harmless(self):
-        clear_schedule_skip("no-such-id")
-        assert "no-such-id" not in _skipped
-
-    def test_clear_skip_allows_schedule_to_reappear(self):
-        """After clearing a skip, the schedule should appear in upcoming again."""
+    def test_skipped_schedule_hidden_from_upcoming(self):
         low = _make_schedule(
-            time(8, 0), time(17, 0), priority=1, name="Resumed",
+            time(8, 0), time(17, 0), priority=1, name="Ended",
             group_id=uuid.uuid4(),
         )
-        skip_schedule_until(str(low.id), datetime(2026, 3, 28, 17, 0))
-
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
-        np = []
-
-        # Should not appear while skipped
-        result = get_upcoming_schedules([low], now, ZoneInfo("UTC"), now_playing=np)
+        result = get_upcoming_schedules(
+            [low], now, ZoneInfo("UTC"), now_playing=[],
+            skipped_schedule_ids={str(low.id)},
+        )
         assert len(result) == 0
 
-        # Clear the skip
-        clear_schedule_skip(str(low.id))
-
-        # Should now be visible again
-        result = get_upcoming_schedules([low], now, ZoneInfo("UTC"), now_playing=np)
-        # It won't show in "upcoming" as preempted because there's no winner,
-        # but it won't be hidden by the skip filter either.
-        # The key assertion is that the _skipped dict no longer blocks it.
-        assert str(low.id) not in _skipped
+    def test_default_no_skip_does_not_hide(self):
+        """Omitting skipped_schedule_ids must not spuriously hide schedules."""
+        low = _make_schedule(
+            time(8, 0), time(17, 0), priority=1, name="Running",
+            group_id=uuid.uuid4(),
+        )
+        now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+        # No explicit skip set. Without a higher-priority winner the
+        # schedule would itself be the winner, so just assert absence of
+        # any "skipped" filter by passing a now_playing entry that makes
+        # the schedule preempted — it should surface as preempted=True.
+        high = _make_schedule(
+            time(8, 0), time(17, 0), priority=10, name="High",
+            group_id=low.group_id,
+        )
+        np = [{"schedule_id": str(high.id), "device_id": "d1",
+               "schedule_name": "High", "asset": "a", "since": now.isoformat()}]
+        result = get_upcoming_schedules([low, high], now, ZoneInfo("UTC"), now_playing=np)
+        # Low must show up as preempted because skipped_schedule_ids defaults to empty
+        assert any(r.get("preempted") for r in result)
 
 
 class TestClearSyncHash:
@@ -324,17 +280,18 @@ class TestPrioritySelection:
         s2 = _make_schedule_with_asset(time(9, 0), time(17, 0), priority=1, name="Low", group_id=gid)
         now = datetime(2026, 3, 28, 12, 0)
 
-        _skipped.clear()
-        _skipped[str(s1.id)] = datetime(2026, 3, 28, 17, 0)
+        # Simulate the post-refactor pattern: caller loads a SkipSnapshot
+        # and filters on membership.  Here we use a plain set literal
+        # equivalent to ``snap.schedule_wide.keys()`` for the active-
+        # as-of view.
+        skipped_ids = {str(s1.id)}
 
         active = [
             s for s in [s1, s2]
-            if _matches_now(s, now) and str(s.id) not in _skipped
+            if _matches_now(s, now) and str(s.id) not in skipped_ids
         ]
         assert len(active) == 1
         assert active[0].name == "Low"
-
-        _skipped.clear()
 
 
 # ── get_upcoming_schedules tests ──
@@ -613,11 +570,9 @@ class TestEndNowEndpoint:
         return resp.json()["id"]
 
     def setup_method(self):
-        _skipped.clear()
         _now_playing.clear()
 
     def teardown_method(self):
-        _skipped.clear()
         _now_playing.clear()
 
     async def test_end_now_success(self, client, db_session):
@@ -627,7 +582,12 @@ class TestEndNowEndpoint:
         data = resp.json()
         assert data["ended"] == sched_id
         assert "resumes_after" in data
-        assert sched_id in _skipped
+        # Post-refactor: skip state lives in DB only.
+        from sqlalchemy import select
+        row = (await db_session.execute(
+            select(Schedule.skipped_until).where(Schedule.id == uuid.UUID(sched_id))
+        )).scalar_one()
+        assert row is not None
 
     async def test_end_now_not_found(self, client):
         resp = await client.post("/api/schedules/00000000-0000-0000-0000-000000000000/end-now")
@@ -660,10 +620,10 @@ class TestBuildDeviceSyncSkipped:
             yield session
 
     def setup_method(self):
-        _skipped.clear()
+        pass
 
     def teardown_method(self):
-        _skipped.clear()
+        pass
 
     async def _setup(self, db):
         setting = CMSSetting(key="timezone", value="UTC")
@@ -683,11 +643,12 @@ class TestBuildDeviceSyncSkipped:
         )
         db.add(sched)
         await db.commit()
-        return str(sched.id)
+        return sched
 
     async def test_skipped_schedule_excluded_from_sync(self, db):
-        sched_id = await self._setup(db)
-        _skipped[sched_id] = datetime(2026, 3, 29, 17, 0)
+        sched = await self._setup(db)
+        sched.skipped_until = datetime(2099, 1, 1)
+        await db.commit()
 
         sync = await build_device_sync("skip-pi-01", db)
         assert sync is not None
@@ -695,7 +656,6 @@ class TestBuildDeviceSyncSkipped:
 
     async def test_unskipped_schedule_included(self, db):
         await self._setup(db)
-        # Don't skip anything
         sync = await build_device_sync("skip-pi-01", db)
         assert len(sync.schedules) == 1
         assert sync.schedules[0].name == "Skippable"
@@ -708,12 +668,10 @@ class TestNowPlayingCleanup:
     def setup_method(self):
         _now_playing.clear()
         _last_sync_hash.clear()
-        _skipped.clear()
 
     def teardown_method(self):
         _now_playing.clear()
         _last_sync_hash.clear()
-        _skipped.clear()
 
     async def test_now_playing_cleared_when_schedule_deleted(self, app, db_session):
         """Deleting a schedule should clear its _now_playing entries."""

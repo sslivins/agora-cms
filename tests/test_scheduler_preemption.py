@@ -11,7 +11,6 @@ from cms.models.schedule import Schedule
 from cms.services.scheduler import (
     _find_resume_time,
     _matches_now,
-    _skipped,
     get_upcoming_schedules,
 )
 
@@ -195,24 +194,20 @@ class TestLegacyBehavior:
 class TestSkippedNotPreempted:
     """Schedules ended via End Now should not appear as preempted."""
 
-    def setup_method(self):
-        _skipped.clear()
-
-    def teardown_method(self):
-        _skipped.clear()
-
     def test_skipped_schedule_hidden(self):
         """A schedule that was 'Ended Now' should not appear in upcoming."""
         low = _make_schedule(
             time(8, 0), time(17, 0), priority=1, name="Ended",
             group_id=uuid.uuid4(),
         )
-        _skipped[str(low.id)] = datetime(2026, 3, 28, 17, 0)
 
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
         np = []  # no winner
 
-        result = get_upcoming_schedules([low], now, UTC, now_playing=np)
+        result = get_upcoming_schedules(
+            [low], now, UTC, now_playing=np,
+            skipped_schedule_ids={str(low.id)},
+        )
         assert len(result) == 0
 
     def test_skipped_while_preempted_hidden(self):
@@ -227,12 +222,14 @@ class TestSkippedNotPreempted:
             time(8, 0), time(17, 0), priority=10, name="High",
             group_id=gid,
         )
-        _skipped[str(low.id)] = datetime(2026, 3, 28, 17, 0)
 
         now = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
         np = [_now_playing_entry(high, "d1")]
 
-        result = get_upcoming_schedules([low, high], now, UTC, now_playing=np)
+        result = get_upcoming_schedules(
+            [low, high], now, UTC, now_playing=np,
+            skipped_schedule_ids={str(low.id)},
+        )
         assert len(result) == 0
 
 
