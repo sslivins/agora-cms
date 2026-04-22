@@ -1,7 +1,6 @@
 """WebSocket endpoint for device connections."""
 
 import asyncio
-import hashlib
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -13,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import get_settings
 from cms.database import get_db
 from cms.models.device import Device, DeviceStatus
-from cms.models.device_profile import DeviceProfile
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -27,6 +25,12 @@ from cms.services.device_inbound import (
     rotate_api_key,
 )
 from cms.services.device_manager import device_manager
+from cms.services.device_register import (
+    _DEVICE_TYPE_PROFILE_MAP,
+    auto_assign_profile as _auto_assign_profile,
+    hash_token as _hash_token,
+    register_known_device,
+)
 from cms.services.alert_service import alert_service
 from cms.services.log_chunk_assembler import (
     handle_frame as handle_log_chunk_frame,
@@ -40,11 +44,6 @@ router = APIRouter()
 
 # Device sends status every 30s; timeout at 45s to detect dead connections quickly
 WS_RECEIVE_TIMEOUT = 45
-
-
-def _hash_token(token: str) -> str:
-    """SHA-256 hash of a token for storage."""
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def get_asset_base_url(request=None) -> str:
@@ -67,39 +66,8 @@ def get_asset_base_url(request=None) -> str:
     return "http://localhost:8080"
 
 
-# Mapping of device_type substrings to built-in profile names.
-# Checked in order — more specific patterns first.
-_DEVICE_TYPE_PROFILE_MAP = {
-    "pi zero 2 w": "pi-zero-2w",
-    "raspberry pi zero 2 w": "pi-zero-2w",
-    "pi 5": "pi-5",
-    "pi 4": "pi-4",
-}
-
-
-async def _auto_assign_profile(device: Device, db: AsyncSession) -> None:
-    """Auto-assign a device profile based on device_type if not already set."""
-    if device.profile_id or not device.device_type:
-        return
-
-    dt_lower = device.device_type.lower()
-    profile_name = None
-    for pattern, name in _DEVICE_TYPE_PROFILE_MAP.items():
-        if pattern in dt_lower:
-            profile_name = name
-            break
-
-    if not profile_name:
-        return
-
-    result = await db.execute(
-        select(DeviceProfile).where(DeviceProfile.name == profile_name)
-    )
-    profile = result.scalar_one_or_none()
-    if profile:
-        device.profile_id = profile.id
-        await db.commit()
-        logger.info("Auto-assigned profile '%s' to device %s", profile_name, device.id)
+# Mapping of device_type substrings to built-in profile names moved to
+# cms/services/device_register.py so the WPS webhook path can share it.
 
 
 @router.websocket("/ws/device")
@@ -139,8 +107,6 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             await websocket.close(code=4003)
             return
 
-        auth_token = raw.get("auth_token", "")
-
         # ── 2. Authenticate ──
         result = await db.execute(select(Device).where(Device.id == device_id))
         device = result.scalar_one_or_none()
@@ -177,62 +143,21 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             # Auto-assign profile based on device_type
             await _auto_assign_profile(device, db)
         else:
-            # Known device — verify auth token if device has one stored
-            if device.device_auth_token_hash:
-                if not auth_token:
-                    # Empty token = device was re-flashed / factory reset.
-                    # Reset to PENDING and assign a new auth token so the
-                    # device can re-register without admin intervention.
-                    logger.info(
-                        "Device %s connected with empty token (likely re-flashed) "
-                        "— resetting to pending", device_id,
+            # Known device — delegate to the shared helper that the WPS
+            # webhook path also uses.  Orphaned → close 4004; otherwise
+            # push any newly-minted auth token back to the device.
+            reg_result = await register_known_device(device, raw, db)
+            if reg_result.orphaned:
+                await websocket.send_json({
+                    "error": (
+                        "Invalid credentials — device marked as orphaned. "
+                        "An admin must re-adopt this device."
                     )
-                    device.status = DeviceStatus.PENDING
-                    device.device_auth_token_hash = None
-                    device.last_seen = datetime.now(timezone.utc)
-                    await db.commit()
-
-                    device_auth_token = secrets.token_urlsafe(32)
-                    device.device_auth_token_hash = _hash_token(device_auth_token)
-                    await db.commit()
-
-                    auth_msg = AuthAssignedMessage(device_auth_token=device_auth_token)
-                    await websocket.send_json(auth_msg.model_dump(mode="json"))
-                    logger.info("New auth token assigned to re-flashed device %s", device_id)
-                elif _hash_token(auth_token) != device.device_auth_token_hash:
-                    logger.warning("Device %s failed auth — marking as orphaned", device_id)
-                    device.status = DeviceStatus.ORPHANED
-                    device.last_seen = datetime.now(timezone.utc)
-                    await db.commit()
-                    await websocket.send_json({"error": "Invalid credentials — device marked as orphaned. An admin must re-adopt this device."})
-                    await websocket.close(code=4004)
-                    return
-            else:
-                # Device exists but has no auth token yet — assign one
-                device_auth_token = secrets.token_urlsafe(32)
-                device.device_auth_token_hash = _hash_token(device_auth_token)
-                await db.commit()
-                auth_msg = AuthAssignedMessage(device_auth_token=device_auth_token)
-                await websocket.send_json(auth_msg.model_dump(mode="json"))
-                logger.info("Auth token assigned to existing device %s", device_id)
-
-            # Update device stats
-            device.firmware_version = raw.get("firmware_version", device.firmware_version)
-            device.device_type = raw.get("device_type", device.device_type)
-            reg_codecs = raw.get("supported_codecs")
-            if reg_codecs is not None:
-                device.supported_codecs = ",".join(reg_codecs)
-            device.storage_capacity_mb = raw.get("storage_capacity_mb", device.storage_capacity_mb)
-            device.storage_used_mb = raw.get("storage_used_mb", device.storage_used_mb)
-            device.last_seen = datetime.now(timezone.utc)
-            # Update name only if user explicitly set it via captive portal
-            reg_name = raw.get("device_name", "")
-            if reg_name and raw.get("device_name_custom", False):
-                device.name = reg_name
-            await db.commit()
-
-            # Auto-assign profile if not already set
-            await _auto_assign_profile(device, db)
+                })
+                await websocket.close(code=4004)
+                return
+            if reg_result.auth_assigned is not None:
+                await websocket.send_json(reg_result.auth_assigned)
 
         # ── 3. Register connection ──
         client_ip = raw.get("ip_address") or (websocket.client.host if websocket.client else None)

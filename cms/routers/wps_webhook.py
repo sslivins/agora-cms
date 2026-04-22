@@ -35,6 +35,7 @@ from cms.database import get_db
 from cms.models.device import Device
 from cms.services.device_inbound import InboundContext, dispatch_device_message
 from cms.services.device_manager import device_manager
+from cms.services.device_register import register_known_device
 from cms.services.transport import get_transport
 from shared.wps_signature import verify_signature
 
@@ -161,17 +162,50 @@ async def events_receiver(
             )
             return Response(status_code=400, content="body is not JSON")
 
-        # Look up the device row — dispatch_device_message wants a
-        # fully-hydrated ORM instance on the context.  Stage 2b.2 does
-        # NOT port the direct-WS register/adoption handshake over to the
-        # webhook path, so if the device row is missing we log and drop.
+        # Look up the device row.  The connect-token endpoint that
+        # mints WPS URLs requires the device to exist + have a valid
+        # X-Device-API-Key, so a device reaching us here should
+        # already be provisioned.  If the row is missing we have a
+        # race (row deleted between connect-token and the first
+        # message), not a new-device bootstrap — drop and move on.
         result = await db.execute(select(Device).where(Device.id == ce_user_id))
         device = result.scalar_one_or_none()
         if device is None:
             logger.warning(
-                "WPS message from unknown device %s — registration over WPS "
-                "not implemented yet (Stage 2b.2)", ce_user_id,
+                "WPS message from unknown device %s — connect-token race "
+                "or row was deleted mid-session", ce_user_id,
             )
+            return Response(status_code=204)
+
+        transport = get_transport()
+
+        # ---- register handshake over WPS -----------------------------
+        #
+        # Mirrors the ``else`` (known-device) branch of
+        # ``cms/routers/ws.py``: refresh metadata, verify/mint the
+        # device_auth_token, auto-assign a profile.  Brand-new devices
+        # still bootstrap over direct-WS — they can't hit connect-token
+        # without an API key and a device row.
+        if msg.get("type") == "register":
+            reg_result = await register_known_device(device, msg, db)
+            if reg_result.orphaned:
+                # Over direct-WS we'd close 4004.  Over WPS we can't
+                # close the WPS connection from here; the device is
+                # now ORPHANED in the DB so subsequent inbound messages
+                # will land the same way, and admins see the status.
+                logger.warning(
+                    "WPS device %s failed auth — marked ORPHANED", ce_user_id,
+                )
+                return Response(status_code=204)
+            if reg_result.auth_assigned is not None:
+                try:
+                    await transport.send_to_device(
+                        ce_user_id, reg_result.auth_assigned,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to push auth_assigned to WPS device %s", ce_user_id,
+                    )
             return Response(status_code=204)
 
         base_url = _get_asset_base_url(request, settings)
@@ -185,7 +219,6 @@ async def events_receiver(
             device_status=device.status.value if device.status else "pending",
             group_name="",
         )
-        transport = get_transport()
 
         async def _send(payload: dict) -> None:
             await transport.send_to_device(ce_user_id, payload)

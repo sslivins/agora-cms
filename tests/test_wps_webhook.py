@@ -244,8 +244,13 @@ class TestSystemEvents:
 @pytest.mark.asyncio
 class TestUserEvents:
     async def test_unknown_device_is_logged_and_204(self, client, app_and_session):
-        """Until the register-over-WPS handshake is ported, messages
-        from devices with no DB row are dropped with a warning."""
+        """Devices with no DB row are dropped with a warning.
+
+        The connect-token endpoint that mints WPS URLs requires the
+        device row to exist + have a valid X-Device-API-Key, so unknown
+        devices reaching the webhook imply a race (row deleted mid-session)
+        rather than a new-device bootstrap.
+        """
         app, session = app_and_session
         session.device_row = None
 
@@ -322,6 +327,151 @@ class TestUserEvents:
             },
         )
         assert r.status_code == 400
+
+    async def test_register_over_wps_calls_helper_and_pushes_auth(
+        self, client, app_and_session,
+    ):
+        """A register message over WPS runs the shared known-device helper
+        and pushes any newly-minted auth_assigned payload back to the
+        device via the transport — it does NOT fall through to
+        dispatch_device_message (register isn't a dispatcher event)."""
+        app, session = app_and_session
+        device = MagicMock()
+        device.id = "pi-wps"
+        device.name = "Kiosk"
+        device.group_id = None
+        device.status = MagicMock(value="adopted")
+        session.device_row = device
+
+        auth_payload = {"type": "auth_assigned", "device_auth_token": "new-token"}
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg"
+        payload = {
+            "type": "register",
+            "device_id": "pi-wps",
+            "auth_token": "",
+            "firmware_version": "1.11.7",
+        }
+
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=auth_payload,
+            )),
+        ) as mock_reg, patch(
+            "cms.routers.wps_webhook.dispatch_device_message",
+            new=AsyncMock(return_value=None),
+        ) as mock_dispatch, patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps(payload).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+
+        assert r.status_code == 204
+        mock_reg.assert_awaited_once()
+        args, _ = mock_reg.call_args
+        assert args[0] is device
+        assert args[1] == payload
+        fake_transport.send_to_device.assert_awaited_once_with("pi-wps", auth_payload)
+        mock_dispatch.assert_not_called()
+
+    async def test_register_over_wps_no_auth_token_no_push(
+        self, client, app_and_session,
+    ):
+        """If the helper returns auth_assigned=None (token was valid),
+        the transport is not hit."""
+        app, session = app_and_session
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-ok"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        fake_transport.send_to_device.assert_not_called()
+
+    async def test_register_over_wps_orphaned_device(self, client, app_and_session):
+        """Orphaned result returns 204 without pushing — direct-WS path
+        would close 4004 but over WPS we can't close from here."""
+        app, session = app_and_session
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="orphaned"),
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-orph"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=True, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "wrong-token",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        fake_transport.send_to_device.assert_not_called()
 
 
 # ---------------------------------------------------------------- unknown type
