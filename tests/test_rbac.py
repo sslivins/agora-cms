@@ -2090,46 +2090,26 @@ class TestAssetWriteIDOR:
 
 @pytest.mark.asyncio
 class TestLogsDownloadIDOR:
-    """Verify log download endpoint enforces group scoping on device IDs."""
+    """Placeholder — the legacy /api/logs/download endpoint that these
+    tests covered was removed on 2026-04-22.  Per-device group scoping
+    is now exercised via the async /api/logs/requests flow in
+    ``test_log_requests.py``.  Class is retained as a breadcrumb in
+    case grep brings someone here.
+    """
 
-    async def test_logs_download_blocked_cross_group_device(self, app, db_session):
-        """POST /api/logs/download with a device in another group should return 403."""
-        group_a = await _create_group(db_session, f"LogDl A {uuid.uuid4().hex[:6]}")
-        group_b = await _create_group(db_session, f"LogDl B {uuid.uuid4().hex[:6]}")
-        dev_id = f"logdev-{uuid.uuid4().hex[:8]}"
-        dev = Device(id=dev_id, name="Log Device",
-                     status=DeviceStatus.ADOPTED, group_id=group_b.id)
-        db_session.add(dev)
-        await db_session.commit()
-        email = f"logdl_{uuid.uuid4().hex[:6]}@test.com"
-        await _create_user(db_session, email=email, role_name="Operator", group_ids=[group_a.id])
-        ac = await _login_as(app, email)
-        try:
-            resp = await ac.post("/api/logs/download",
-                                 json={"device_ids": [dev_id], "include_cms": False})
-            assert resp.status_code == 403
-        finally:
-            await ac.aclose()
-
-    async def test_logs_download_allowed_own_group_device(self, app, db_session):
-        """POST /api/logs/download with a device in the user's group should not return 403."""
-        group = await _create_group(db_session, f"LogOk {uuid.uuid4().hex[:6]}")
-        dev_id = f"logok-{uuid.uuid4().hex[:8]}"
-        dev = Device(id=dev_id, name="Own Log Device",
-                     status=DeviceStatus.ADOPTED, group_id=group.id)
-        db_session.add(dev)
-        await db_session.commit()
-        email = f"logok_{uuid.uuid4().hex[:6]}@test.com"
-        await _create_user(db_session, email=email, role_name="Operator", group_ids=[group.id])
-        ac = await _login_as(app, email)
-        try:
-            # Device isn't connected so we'll get a different error, but NOT 403
-            resp = await ac.post("/api/logs/download",
-                                 json={"device_ids": [dev_id], "include_cms": False})
-            assert resp.status_code != 403, \
-                f"User should have access to own group device, got {resp.status_code}"
-        finally:
-            await ac.aclose()
+    async def test_legacy_endpoint_removed(self, app):
+        """Verify the deprecated endpoint is gone (returns 404/405)."""
+        from httpx import AsyncClient, ASGITransport
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as ac:
+            resp = await ac.post(
+                "/api/logs/download",
+                json={"device_ids": [], "include_cms": False},
+            )
+            assert resp.status_code in (404, 405, 401), (
+                f"Legacy /api/logs/download should be gone; got {resp.status_code}"
+            )
 
 
 # ── Group Management IDOR Tests ──

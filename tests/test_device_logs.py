@@ -175,47 +175,6 @@ class TestDeviceLogsAPI:
             device_manager.disconnect("log-test-device")
 
 
-# ── Log download (zip) endpoint tests ──
-
-
-class TestLogDownloadAPI:
-    @pytest.mark.asyncio
-    async def test_download_cms_only(self, client):
-        """Download zip with only CMS logs (no devices selected)."""
-        resp = await client.post(
-            "/api/logs/download",
-            json={"device_ids": [], "include_cms": True, "since": "1h"},
-        )
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "application/zip"
-        assert "agora-logs-" in resp.headers.get("content-disposition", "")
-
-    @pytest.mark.asyncio
-    async def test_download_offline_device(self, client, device_in_db):
-        """Offline devices should get a not_connected.txt in the zip."""
-        import io
-        import zipfile
-
-        resp = await client.post(
-            "/api/logs/download",
-            json={"device_ids": ["log-test-device"], "include_cms": False, "since": "1h"},
-        )
-        assert resp.status_code == 200
-
-        zf = zipfile.ZipFile(io.BytesIO(resp.content))
-        names = zf.namelist()
-        assert any("not_connected" in n for n in names)
-
-    @pytest.mark.asyncio
-    async def test_download_nothing_selected(self, client):
-        """No devices and no CMS logs should still return a valid (empty) zip."""
-        resp = await client.post(
-            "/api/logs/download",
-            json={"device_ids": [], "include_cms": False, "since": "1h"},
-        )
-        assert resp.status_code == 200
-
-
 # ── CMS-only log endpoint (new async UI flow) ──
 
 
