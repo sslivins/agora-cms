@@ -233,7 +233,7 @@ class TestProtocolMessages:
         assert data["request_id"] == "test-123"
         assert data["services"] == ["agora-player"]
         assert data["since"] == "6h"
-        assert data["protocol_version"] == 1
+        assert data["protocol_version"] == 2
 
     def test_logs_response_message(self):
         from cms.schemas.protocol import LogsResponseMessage

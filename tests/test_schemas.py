@@ -19,7 +19,7 @@ class TestProtocolMessages:
         )
         data = msg.model_dump()
         assert data["type"] == "register"
-        assert data["protocol_version"] == 1
+        assert data["protocol_version"] == 2
         assert data["device_id"] == "pi-001"
 
     def test_sync_message_defaults(self):
@@ -28,7 +28,7 @@ class TestProtocolMessages:
         msg = SyncMessage()
         data = msg.model_dump(mode="json")
         assert data["type"] == "sync"
-        assert data["protocol_version"] == 1
+        assert data["protocol_version"] == 2
 
     def test_auth_assigned_message(self):
         from cms.schemas.protocol import AuthAssignedMessage

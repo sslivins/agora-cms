@@ -57,3 +57,15 @@ class Settings(SharedSettings):
     log_drainer_batch_size: int = 25
     log_drainer_sent_timeout_sec: int = 900
     log_drainer_max_attempts: int = 10
+
+    # Log chunk assembler (issue #345 Stage 3c).  Pi firmware splits
+    # large log bundles into sequential binary WS frames tagged with
+    # the ``LGCK`` magic.  The assembler buffers frames in-process
+    # keyed by ``(device_id, request_id)`` until the ``is_final`` bit
+    # arrives, then writes the reassembled tar.gz to blob storage.
+    # ``max_count`` and ``max_bytes`` bound memory use per request;
+    # ``buffer_ttl_sec`` lets the TTL reaper evict stalled transfers.
+    log_chunk_max_count: int = 30
+    log_chunk_max_bytes: int = 22_020_096  # 21 MiB
+    log_chunk_buffer_ttl_sec: int = 300
+    log_chunk_reaper_interval_sec: float = 5.0
