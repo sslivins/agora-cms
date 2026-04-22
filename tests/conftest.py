@@ -1,5 +1,6 @@
 """Shared test fixtures for Agora CMS tests."""
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -192,10 +193,25 @@ async def db_engine(tmp_path):
     yield engine
 
     if "postgresql" in db_url:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+        # Guard against the anyio BlockingPortal × asyncpg teardown race:
+        # if the app fixture's TestClient closed while a WebSocket handler
+        # was still committing a status row, the connection termination
+        # that NullPool triggers can be cancelled by the portal shutdown
+        # and hang for 60s until pytest-timeout fires.  Bound both the
+        # drop + dispose behind a short wait_for so the whole test run
+        # doesn't fail a teardown even if one connection is stuck.
+        try:
+            async def _drop():
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.drop_all)
+            await asyncio.wait_for(_drop(), timeout=10.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
-    await engine.dispose()
+    try:
+        await asyncio.wait_for(engine.dispose(), timeout=10.0)
+    except (asyncio.TimeoutError, Exception):
+        pass
 
 
 @pytest_asyncio.fixture
