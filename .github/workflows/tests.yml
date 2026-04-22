@@ -96,7 +96,7 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout pytest-cov pytest-xdist httpx aiosqlite psycopg2-binary
 
       - name: Run tests
-        run: python -m pytest tests/ --ignore=tests/e2e -n auto --dist=loadfile --tb=short -v -rfEsxX --maxfail=5 --durations=20 --cov=cms --cov=shared --cov-report=xml --cov-report=term --cov-fail-under=50
+        run: python -m pytest tests/ --ignore=tests/e2e -n auto --dist=loadfile --tb=short -q -rs --durations=20 --cov=cms --cov=shared --cov-report=xml --cov-report=term --cov-fail-under=50
 
       - name: Upload coverage report
         if: always()
