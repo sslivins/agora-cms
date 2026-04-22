@@ -249,8 +249,32 @@ class AzureLogBlobBackend(LogBlobBackend):
         )
 
     async def get_download_response(self, relative_path: str, filename: str):
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=self._sas_url(relative_path), status_code=302)
+        # Stream the blob back through the CMS instead of redirecting to
+        # a SAS URL. The redirect approach was nice in theory (browser
+        # goes directly to Blob Storage, CMS never buffers the tar) but
+        # broke the UI's ``fetch()``-based client-side zip flow:
+        # ``*.blob.core.windows.net`` has no CORS policy, so a browser
+        # ``fetch()`` following the 302 redirect trips the cross-origin
+        # check and throws ``TypeError: Failed to fetch``. Streaming the
+        # bytes through the CMS keeps the response same-origin. The read
+        # uses ``BlobClient.download_blob().chunks()`` so the CMS never
+        # holds the whole tar.gz in memory.
+        from fastapi.responses import StreamingResponse
+
+        client = self._blob_client(relative_path)
+        downloader = await client.download_blob()
+
+        async def _iter() -> AsyncIterator[bytes]:
+            async for chunk in downloader.chunks():
+                yield chunk
+
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        size = getattr(downloader, "size", None)
+        if isinstance(size, int) and size >= 0:
+            headers["Content-Length"] = str(size)
+        return StreamingResponse(
+            _iter(), media_type="application/gzip", headers=headers,
+        )
 
     async def close(self) -> None:
         await self._service_client.close()
