@@ -947,7 +947,6 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         else:
             upcoming_q = upcoming_q.where(sqlalchemy.false())
     sched_q = await db.execute(upcoming_q)
-    sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
     offline_set = set(offline_ids)
     _skips_for_ui = (await load_skip_snapshot(db)).active_as_of(
