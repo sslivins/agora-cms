@@ -1866,11 +1866,13 @@ class TestDeviceActionIDOR:
             await ac.aclose()
 
     async def test_logs_blocked_cross_group(self, app, db_session):
-        """POST /api/devices/{id}/logs should return 403 for device in another group."""
+        """POST /api/logs/requests should return 403 for device in another group."""
         dev_id, email = await self._setup_cross_group_device(db_session)
         ac = await _login_as(app, email)
         try:
-            resp = await ac.post(f"/api/devices/{dev_id}/logs")
+            resp = await ac.post(
+                "/api/logs/requests", json={"device_id": dev_id},
+            )
             assert resp.status_code == 403
         finally:
             await ac.aclose()

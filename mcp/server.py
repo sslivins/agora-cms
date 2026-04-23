@@ -588,10 +588,13 @@ async def get_device_logs(
     services: list[str] | None = None,
     since: str = "24h",
 ) -> str:
-    """Request logs from a connected device via its WebSocket connection.
+    """Request logs from a connected device and return the captured output.
 
-    Returns journalctl output from the device's agora services.
-    The device must be online (connected via WebSocket).
+    Creates an async log request on the CMS, waits for the device to
+    reply (up to ~60s), and returns the captured journalctl output as
+    ``{service_name: log_text}``.  If the device doesn't reply in time,
+    returns the request_id and status so the caller can retrieve it
+    later via the CMS UI or API.
 
     Args:
         device_id: ID of the device to get logs from.

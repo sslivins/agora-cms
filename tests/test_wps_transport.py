@@ -46,7 +46,6 @@ def _make_transport(manager: DeviceManager | None = None):
         t = WPSTransport(
             "Endpoint=http://broker:7080;AccessKey=k;Version=1.0;",
             hub="agora",
-            device_manager=manager,
         )
     return t, fake_client, manager
 
@@ -115,17 +114,6 @@ class TestClientAccessToken:
         _, kwargs = c.get_client_access_token.call_args
         assert kwargs["user_id"] == "pi-1"
         assert kwargs["minutes_to_expire"] == 30
-
-
-@pytest.mark.asyncio
-class TestRequestLogs:
-    # Stage 2c: ``request_logs`` now checks connectivity via async
-    # ``is_connected`` which hits the DB.  These unit tests bypassed the
-    # app fixture and relied on the now-removed in-memory
-    # ``register_remote`` path.  The contract is exercised through the
-    # Local transport's ``test_request_logs_resolves_via_manager_hook``
-    # in ``test_device_transport_contract.py`` (which uses a fresh DB).
-    pass
 
 
 @pytest.mark.asyncio

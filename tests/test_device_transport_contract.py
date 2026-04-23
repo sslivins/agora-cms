@@ -38,8 +38,11 @@ class TestLocalDeviceTransportContract:
     # async and DB-backed.  ``update_status`` was removed from
     # ``DeviceManager`` (moved to ``device_presence.update_status``).
     #
+    # PR #345 retired the synchronous ``request_logs`` RPC on the
+    # transport interface; the async ``dispatch_request_logs`` flow is
+    # covered by ``tests/test_log_requests_api.py`` + ``tests/test_log_drainer.py``.
     # The unit-testable transport surface that doesn't need a session
-    # factory is send_to_device and request_logs — those remain below.
+    # factory is just ``send_to_device``.
 
     @pytest.mark.asyncio
     async def test_send_to_device_success(self):
@@ -49,35 +52,6 @@ class TestLocalDeviceTransportContract:
         ok = await t.send_to_device("d1", {"type": "ping"})
         assert ok is True
         assert ws.sent == [{"type": "ping"}]
-
-    @pytest.mark.asyncio
-    async def test_request_logs_resolves_via_manager_hook(self):
-        t, dm = _fresh_local()
-
-        captured: list[dict] = []
-
-        class CaptureWS:
-            async def send_json(self, data):
-                captured.append(data)
-
-        dm.register("d1", CaptureWS())
-
-        # Fire request_logs; capture the request_id from the WS message and
-        # resolve it synchronously from the "device".
-        import asyncio
-        task = asyncio.create_task(t.request_logs("d1", services=["agora"]))
-        await asyncio.sleep(0)
-        # Spin briefly until the message hits CaptureWS.
-        for _ in range(100):
-            if captured:
-                break
-            await asyncio.sleep(0.01)
-        assert captured, "request_logs never dispatched"
-        rid = captured[0]["request_id"]
-
-        dm.resolve_log_request(rid, logs={"agora": "hello"})
-        result = await asyncio.wait_for(task, timeout=1.0)
-        assert result == {"agora": "hello"}
 
     def test_transport_is_an_abc(self):
         # Cannot instantiate the abstract base

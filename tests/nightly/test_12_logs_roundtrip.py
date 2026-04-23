@@ -1,26 +1,24 @@
-"""Phase 9d: Logs round-trip — ``POST /api/devices/{id}/logs`` (#250).
+"""Phase 9d: Logs round-trip — ``POST /api/logs/requests`` (#345).
 
-Covers the end-to-end path for the "Get Logs" UI action:
+Covers the end-to-end path for the "Get Logs" UI action, now via the
+multi-replica-safe async outbox introduced in PR #345:
 
-1. Happy-ish path — CMS forwards the ``request_logs`` command over WS and
-   the simulator records it with ``services`` and ``since`` as sent. The
-   simulator container has no ``journalctl`` binary, so the device
-   responds with ``error="journalctl not available on this device"``;
-   the CMS router turns that into a 502 with the device's error string.
-   Either way, proof of delivery is the recorded command on the sim.
+1. Happy-ish path — ``POST /api/logs/requests`` enqueues an outbox row,
+   CMS forwards the ``request_logs`` command over WS, and the simulator
+   records it with ``services`` and ``since`` as sent. The simulator
+   container has no ``journalctl`` binary, so the device eventually
+   responds with an error that flips the row to ``failed``; we poll
+   ``GET /api/logs/requests/{id}`` until the row reaches a terminal
+   state (ready or failed). Proof of delivery is the recorded command
+   on the sim, which is independent of the terminal row status.
 
-2. Unknown device — ``POST /api/devices/unknown/logs`` returns 404 from
-   the ``_get_device_with_access`` guard.
+2. Unknown device — ``POST /api/logs/requests`` returns 404 from the
+   access-check guard that loads the device row.
 
-3. Disconnected device — forcing the target offline first makes the
-   endpoint short-circuit with 409 (``device not connected``) rather
-   than timing out.
-
-These tests are intentionally forgiving about the *content* of the
-successful response: the production path relies on a real ``journalctl``
-that isn't present in the sim container, so reaching a clean 200 would
-require either modifying the sim or seeding fake logs. Shipping end-to-end
-WS delivery coverage here; fake-logs fixture can follow later if needed.
+3. Disconnected device — forcing the target offline first still returns
+   202 (row created + queued); the terminal status will be "pending"
+   until the device reconnects and replies, so we just assert the row
+   exists and stays in a non-ready state.
 """
 
 from __future__ import annotations
@@ -35,7 +33,8 @@ from tests.nightly.helpers.simulator import SimulatorClient
 
 
 LOGS_RESPONSE_TIMEOUT_S = 45.0
-OFFLINE_DURATION_S = 15.0
+LOGS_POLL_TIMEOUT_S = 45.0
+OFFLINE_DURATION_S = 20.0
 OFFLINE_DETECT_TIMEOUT_S = 30.0
 ONLINE_DETECT_TIMEOUT_S = 45.0
 
@@ -69,6 +68,25 @@ def _wait_for_online(page: Page, device_id: str, expected: bool, *, timeout: flo
     )
 
 
+def _poll_log_request(
+    page: Page, request_id: str, *, timeout: float,
+    terminal: tuple[str, ...] = ("ready", "failed"),
+) -> dict:
+    """Poll ``GET /api/logs/requests/{id}`` until status is terminal or timeout."""
+    deadline = time.monotonic() + timeout
+    last: dict = {}
+    while time.monotonic() < deadline:
+        resp = page.request.get(f"/api/logs/requests/{request_id}")
+        assert resp.status == 200, (
+            f"GET /api/logs/requests/{request_id} -> {resp.status}: {resp.text()[:400]}"
+        )
+        last = resp.json()
+        if last.get("status") in terminal:
+            return last
+        time.sleep(1.0)
+    return last
+
+
 # ── fixtures ─────────────────────────────────────────────────────────────
 
 
@@ -97,32 +115,35 @@ def test_request_logs_delivers_request_logs_command_to_device(
     simulator: SimulatorClient,
     logs_device: str,
 ) -> None:
-    """POST /api/devices/{id}/logs -> the simulator records a
-    ``request_logs`` command containing request_id, services, since."""
+    """POST /api/logs/requests -> the simulator records a ``request_logs``
+    command containing request_id, services, since; the outbox row flips
+    to a terminal status (ready or failed)."""
     page = authenticated_page
     device_id = logs_device
 
     services = ["agora-player", "agora-cms-client"]
     since = "1h"
     resp = page.request.post(
-        f"/api/devices/{device_id}/logs",
-        data={"services": services, "since": since},
-        timeout=LOGS_RESPONSE_TIMEOUT_S * 1000,
+        "/api/logs/requests",
+        data={"device_id": device_id, "services": services, "since": since},
+        timeout=15_000,
+    )
+    assert resp.status == 202, (
+        f"POST /api/logs/requests -> {resp.status}: {resp.text()[:400]}"
+    )
+    created = resp.json()
+    request_id = created.get("request_id")
+    assert isinstance(request_id, str) and request_id, (
+        f"expected request_id in response, got: {created!r}"
+    )
+    # When the device is online we expect the initial dispatch to succeed
+    # synchronously and the API to report "sent".
+    assert created.get("status") == "sent", (
+        f"expected status=sent for online device, got: {created!r}"
     )
 
-    # Simulator has no journalctl; expect either 200 (fake logs somehow
-    # returned) or 502 (device reported an error). Never a raw 500.
-    assert resp.status in (200, 502), (
-        f"POST /api/devices/{device_id}/logs -> {resp.status}: {resp.text()[:400]}"
-    )
-    if resp.status == 502:
-        detail = (resp.json() or {}).get("detail", "")
-        assert "journalctl" in detail.lower() or "not available" in detail.lower(), (
-            f"expected device-side error message, got: {detail!r}"
-        )
-
-    # The simulator must have recorded the command irrespective of the
-    # eventual response — this is the real proof-of-delivery.
+    # The simulator must have recorded the command — this is the real
+    # proof-of-delivery irrespective of the eventual row status.
     matches = simulator.wait_for_command(
         device_id, "request_logs", timeout=LOGS_RESPONSE_TIMEOUT_S,
     )
@@ -131,7 +152,16 @@ def test_request_logs_delivers_request_logs_command_to_device(
     assert payload.get("type") == "request_logs"
     assert payload.get("services") == services
     assert payload.get("since") == since
-    assert isinstance(payload.get("request_id"), str) and payload["request_id"]
+    assert payload.get("request_id") == request_id
+
+    # The row should eventually reach a terminal state. Simulator has no
+    # journalctl, so "failed" is the most likely terminal status; a
+    # sufficiently-rigged sim could return "ready". Either is fine.
+    final = _poll_log_request(page, request_id, timeout=LOGS_POLL_TIMEOUT_S)
+    assert final.get("status") in ("ready", "failed"), (
+        f"log request {request_id} did not reach terminal status in "
+        f"{LOGS_POLL_TIMEOUT_S}s: {final!r}"
+    )
 
 
 def test_request_logs_unknown_device_returns_404(
@@ -139,19 +169,20 @@ def test_request_logs_unknown_device_returns_404(
 ) -> None:
     """Asking for logs on a non-existent device yields a clean 404."""
     resp = authenticated_page.request.post(
-        "/api/devices/nonexistent-device-zzz/logs",
-        data={},
+        "/api/logs/requests",
+        data={"device_id": "nonexistent-device-zzz"},
     )
     assert resp.status == 404, f"unexpected status: {resp.status} body={resp.text()[:400]}"
 
 
-def test_request_logs_on_disconnected_device_returns_409(
+def test_request_logs_on_disconnected_device_queues_pending(
     authenticated_page: Page,
     simulator: SimulatorClient,
     logs_device: str,
 ) -> None:
-    """When the target device is offline, the endpoint short-circuits with
-    409 from the ``is_connected`` guard rather than waiting for a timeout."""
+    """When the target device is offline, the new endpoint still accepts
+    the request (202) but the dispatch fails, so the row stays in a
+    non-``sent`` state until the device reconnects."""
     page = authenticated_page
     device_id = logs_device
 
@@ -160,13 +191,28 @@ def test_request_logs_on_disconnected_device_returns_409(
 
     try:
         resp = page.request.post(
-            f"/api/devices/{device_id}/logs",
-            data={},
+            "/api/logs/requests",
+            data={"device_id": device_id},
             timeout=15_000,
         )
-        assert resp.status == 409, (
-            f"expected 409 from disconnected device, got {resp.status}: {resp.text()[:400]}"
+        assert resp.status == 202, (
+            f"expected 202 while offline, got {resp.status}: {resp.text()[:400]}"
         )
+        body = resp.json()
+        # Dispatch failed (device offline) → status must NOT be "sent" right
+        # away. It should be "pending" with a last_error recorded when we
+        # poll.  Some scheduling may flip it before we read, but never to
+        # "ready" without the device having replied.
+        assert body.get("status") == "pending", (
+            f"expected status=pending for offline device, got: {body!r}"
+        )
+        request_id = body["request_id"]
+
+        row = page.request.get(f"/api/logs/requests/{request_id}").json()
+        assert row.get("status") in ("pending", "sent"), (
+            f"offline device log-request reached unexpected status: {row!r}"
+        )
+        assert row.get("status") != "ready"
     finally:
         # Make sure the device reconnects before downstream tests run.
         _wait_for_online(page, device_id, True, timeout=ONLINE_DETECT_TIMEOUT_S)

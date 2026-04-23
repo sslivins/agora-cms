@@ -101,9 +101,6 @@ class FakeTransport:
     async def get_all_states(self):  # pragma: no cover
         raise NotImplementedError
 
-    async def request_logs(self, *a, **kw):  # pragma: no cover
-        raise NotImplementedError
-
     async def set_state_flags(self, *a, **kw):  # pragma: no cover
         raise NotImplementedError
 

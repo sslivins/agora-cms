@@ -57,7 +57,8 @@ ENDPOINTS: list[EP] = [
     # ── Devices ──
     EP("GET", "/api/devices", (ADMIN, OPERATOR, VIEWER)),
     EP("GET", f"/api/devices/{_FAKE_ID}", (ADMIN, OPERATOR, VIEWER)),
-    EP("POST", f"/api/devices/{_FAKE_ID}/logs", (ADMIN, OPERATOR, VIEWER)),
+    EP("POST", "/api/logs/requests", (ADMIN, OPERATOR, VIEWER),
+       json_body={"device_id": _FAKE_ID}),
     EP("PATCH", f"/api/devices/{_FAKE_ID}", (ADMIN, OPERATOR), json_body={}),
     EP("POST", "/api/devices/check-updates", (ADMIN,)),
     EP("POST", f"/api/devices/{_FAKE_ID}/password", (ADMIN,), json_body={}),
