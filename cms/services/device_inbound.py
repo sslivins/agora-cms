@@ -60,6 +60,13 @@ class InboundContext:
     device_name: str = ""
     device_status: str = "pending"
     group_name: str = ""
+    # Azure server time the current inbound message was received at
+    # (parsed from WPS ``ce-time`` header).  Used as the monotonic
+    # timestamp for persisted temperature alert state so out-of-order
+    # webhook deliveries don't overwrite newer state with older data.
+    # None on the direct-WebSocket path (local transport); callers then
+    # fall back to ``datetime.now(UTC)``.
+    received_at: datetime | None = None
 
 
 async def _resolve_asset_for_device(
@@ -298,14 +305,19 @@ async def dispatch_device_message(
         except Exception:
             logger.exception("Failed to log error transition for %s", device_id)
 
-        # Check temperature thresholds
-        alert_service.check_temperature(
+        # Check temperature thresholds (DB-backed, multi-replica safe).
+        # sample_ts comes from Azure WPS ce-time header when available.
+        # In local-transport mode ctx.received_at is None; alert_service
+        # falls back to server now() with a loud log.
+        await alert_service.check_temperature(
+            db,
             device_id,
             cpu_temp_c=msg.get("cpu_temp_c"),
             device_name=ctx.device_name,
             group_id=ctx.group_id,
             group_name=ctx.group_name,
             status=ctx.device_status,
+            sample_ts=getattr(ctx, "received_at", None),
         )
 
         # Rotate API key if due
