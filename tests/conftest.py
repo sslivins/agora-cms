@@ -93,6 +93,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Run nightly E2E tests (requires docker + agora-device-simulator sibling repo).",
     )
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Run multi-replica integration tests (requires docker compose).",
+    )
 
 
 def _nightly_opted_in(config: pytest.Config) -> bool:
@@ -102,18 +108,33 @@ def _nightly_opted_in(config: pytest.Config) -> bool:
     )
 
 
+def _integration_opted_in(config: pytest.Config) -> bool:
+    return bool(
+        config.getoption("--run-integration")
+        or os.environ.get("AGORA_RUN_INTEGRATION", "").lower() in ("1", "true", "yes")
+    )
+
+
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    """Skip collection of tests/nightly/ entirely unless opted in.
+    """Skip collection of tests/nightly/ and tests/integration/ unless opted in.
 
     The nightly modules import playwright, httpx, and sqlalchemy at
     module scope; without this guard, unit-test CI (which doesn't
     install playwright) fails with ImportError during collection, and
     the `--run-nightly` skip marker never gets a chance to apply
     because the error happens before modifyitems runs.
+
+    Integration tests require a docker-compose harness (two CMS
+    replicas + Postgres); gated behind ``--run-integration`` or
+    ``AGORA_RUN_INTEGRATION=1`` so normal pytest runs don't try to
+    start containers.
     """
     parts = str(collection_path).replace("\\", "/").split("/")
-    if "nightly" in parts and "tests" in parts:
-        return not _nightly_opted_in(config)
+    if "tests" in parts:
+        if "nightly" in parts:
+            return not _nightly_opted_in(config)
+        if "integration" in parts:
+            return not _integration_opted_in(config)
     return None
 
 

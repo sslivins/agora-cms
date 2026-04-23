@@ -1,0 +1,66 @@
+name: Integration (multi-replica)
+
+# Opt-in integration workflow. Spins up the compose harness at
+# tests/integration/docker-compose.integration.yml (two CMS replicas +
+# shared postgres) and runs the pytest suite gated by
+# ``--run-integration``. Not required on PRs initially — the suite
+# currently covers a minimal slice of cross-replica behaviour
+# (leader-election, DB-backed skip propagation, upgrade CAS).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cms/**'
+      - 'shared/**'
+      - 'alembic/**'
+      - 'tests/integration/**'
+      - '.github/workflows/integration.yml'
+      - 'Dockerfile'
+      - 'requirements*.txt'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install host-side test deps
+        run: |
+          python -m pip install --upgrade pip
+          # The integration tests import SQLAlchemy async + asyncpg
+          # from the runtime requirements and pytest/httpx from the
+          # test requirements. Install both so the host process can
+          # talk to the compose-exposed Postgres on :5434.
+          pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run multi-replica integration tests
+        env:
+          AGORA_RUN_INTEGRATION: "1"
+        run: |
+          # The pytest fixture owns the compose lifecycle (up + health
+          # + leader poll + down). Running ``compose up`` here too
+          # would just double the build/start time.
+          pytest tests/integration/ \
+            --run-integration \
+            -p no:xdist -p no:timeout \
+            -v --tb=short
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/integration/docker-compose.integration.yml logs \
+            --no-color --tail=500
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f tests/integration/docker-compose.integration.yml \
+            down -v --remove-orphans || true
