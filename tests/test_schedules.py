@@ -392,13 +392,13 @@ class TestScheduleDeletePlayingWarning:
 
     async def test_playing_schedule_id_injected(self, client, db_session):
         """When a schedule is currently playing, its ID appears in _playingScheduleIds."""
-        from unittest.mock import patch, AsyncMock
+        from unittest.mock import patch
         sched_id, device_id = await self._seed(db_session)
 
-        fake_np = [{"schedule_id": sched_id, "device_id": device_id, "source": "confirmed"}]
+        fake_np = [{"schedule_id": sched_id, "device_id": device_id}]
         with patch(
-            "cms.services.scheduler.compute_now_playing",
-            new=AsyncMock(return_value=fake_np),
+            "cms.services.scheduler.get_now_playing",
+            return_value=fake_np,
         ):
             resp = await client.get("/schedules")
 
@@ -410,10 +410,10 @@ class TestScheduleDeletePlayingWarning:
         """When nothing is playing, _playingScheduleIds is an empty array."""
         await self._seed(db_session)
 
-        from unittest.mock import patch, AsyncMock
+        from unittest.mock import patch
         with patch(
-            "cms.services.scheduler.compute_now_playing",
-            new=AsyncMock(return_value=[]),
+            "cms.services.scheduler.get_now_playing",
+            return_value=[],
         ):
             resp = await client.get("/schedules")
 
