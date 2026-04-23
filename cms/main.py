@@ -6,6 +6,11 @@ from collections import deque
 from contextlib import asynccontextmanager
 
 # ── In-memory log buffer for log download feature ──
+# Per-replica ring buffer. Under multi-replica deployments each replica
+# maintains its own buffer independently — ``GET /api/cms/logs`` returns
+# only the buffer of the replica that handled the HTTP request. See
+# :func:`cms.routers.logs.download_cms_logs` for the user-facing
+# implications (and ``cms/templates/settings.html`` for the UI hint).
 _log_buffer: deque[str] = deque(maxlen=50_000)
 
 
