@@ -1513,10 +1513,18 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     tz_options = build_tz_options()
 
-    # Determine which schedules are currently playing on at least one device
-    from cms.services.scheduler import get_now_playing as _get_now_playing
+    # Determine which schedules are currently playing on at least one device.
+    # Use compute_now_playing so this works on any replica (falls back to
+    # DB-backed live state when the local _confirmed_playing cache is empty
+    # — WPS webhook delivery is replica-sticky so we can't rely on the cache
+    # alone under N>1 replicas).
+    from cms.services.scheduler import compute_now_playing
+    _now_playing = await compute_now_playing(
+        db, ZoneInfo(current_timezone), now_utc,
+    )
     playing_schedule_ids = list({
-        np["schedule_id"] for np in _get_now_playing() if "schedule_id" in np
+        np["schedule_id"] for np in _now_playing
+        if np.get("source") == "confirmed" and "schedule_id" in np
     })
 
     return templates.TemplateResponse(request, "schedules.html", {

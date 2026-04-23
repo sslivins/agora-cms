@@ -393,10 +393,29 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
 
         device_name = device_names.get(did, did)
         confirmed = _confirmed_playing.get(did)
-        # Use confirmed "since" if this device confirmed THIS schedule
         since = now.isoformat()
+        is_confirmed = False
         if confirmed and confirmed.get("schedule_id") == str(s.id):
             since = confirmed.get("since", since)
+            is_confirmed = True
+        else:
+            # N>1 fallback: WPS webhook delivery is replica-sticky, so
+            # `_confirmed_playing` is only populated on whichever replica
+            # received this device's ``PLAYBACK_STARTED``.  Derive
+            # confirmation from DB-backed live state (populated from the
+            # device's shadow report) so dashboards on any replica show
+            # the correct "since" and keep the confirmed-vs-scheduled
+            # distinction.
+            live = live_states.get(did)
+            if live and live.get("mode") == "play":
+                expected_raw = (
+                    s.asset.url if is_url_asset else s.asset.filename
+                )
+                if live.get("asset") == expected_raw:
+                    started = live.get("playback_started_at")
+                    if started is not None:
+                        since = started.isoformat() if hasattr(started, "isoformat") else str(started)
+                    is_confirmed = True
 
         entry = {
             "device_id": did,
@@ -406,7 +425,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
             "asset_filename": display_name,
             "asset_raw": asset_raw,
             "since": since,
-            "source": "confirmed" if (confirmed and confirmed.get("schedule_id") == str(s.id)) else "scheduled",
+            "source": "confirmed" if is_confirmed else "scheduled",
             "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
             "start_time_raw": s.start_time.strftime("%H:%M:%S"),
             "end_time_raw": s.end_time.strftime("%H:%M:%S"),
