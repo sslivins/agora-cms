@@ -390,6 +390,44 @@ async def lifespan(app: FastAPI):
         from cms.services.transcoder import fix_image_variant_extensions
         await fix_image_variant_extensions(db)
 
+    # Device transport selection (issue #344 Stage 2b.2).
+    # Default is "local" (direct WebSocket via cms/routers/ws.py).  Setting
+    # AGORA_CMS_DEVICE_TRANSPORT=wps swaps in the WPSTransport + mounts the
+    # upstream webhook receiver.  The /ws/device endpoint is ONLY mounted in
+    # local mode (see include_router call near the end of this module) —
+    # flipping back requires a container restart, which Container Apps does
+    # automatically on any env-var change.
+    #
+    # IMPORTANT: this runs BEFORE the background tasks below so that
+    # scheduler_loop / outbox_drain_loop / etc. never observe the module-default
+    # LocalDeviceTransport during a cold start in WPS mode.  If they did, a
+    # send attempt before this block runs could call
+    # LocalDeviceTransport.send_to_device, which unconditionally calls
+    # device_presence.mark_offline on failure — potentially flipping healthy
+    # WPS devices offline.  See issue #344 multi-replica audit.
+    from cms.services import transport as transport_module
+    from cms.services.transport import LocalDeviceTransport
+    if settings.device_transport == "wps":
+        if not settings.wps_connection_string:
+            raise RuntimeError(
+                "AGORA_CMS_DEVICE_TRANSPORT=wps requires "
+                "AGORA_CMS_WPS_CONNECTION_STRING"
+            )
+        from cms.services.wps_transport import WPSTransport
+        wps_transport = WPSTransport(
+            settings.wps_connection_string, settings.wps_hub,
+        )
+        transport_module.set_transport(wps_transport)
+        from cms.routers.wps_webhook import router as wps_router
+        app.include_router(wps_router)
+        logger.info(
+            "Device transport: WPS (hub=%s, webhook=/internal/wps/events)",
+            settings.wps_hub,
+        )
+    else:
+        transport_module.set_transport(LocalDeviceTransport())
+        logger.info("Device transport: local (direct WebSocket)")
+
     # Start background tasks (transcoding is handled by the dedicated worker container)
     #
     # Multi-replica leader-election (issue #344, Stage 4):
@@ -487,36 +525,6 @@ async def lifespan(app: FastAPI):
             break
     except Exception:
         logger.exception("Failed to log CMS_STARTED event")
-
-    # Device transport selection (issue #344 Stage 2b.2).
-    # Default is "local" (direct WebSocket via cms/routers/ws.py).  Setting
-    # AGORA_CMS_DEVICE_TRANSPORT=wps swaps in the WPSTransport + mounts the
-    # upstream webhook receiver.  The /ws/device endpoint is ONLY mounted in
-    # local mode (see include_router call near the end of this module) —
-    # flipping back requires a container restart, which Container Apps does
-    # automatically on any env-var change.
-    from cms.services import transport as transport_module
-    from cms.services.transport import LocalDeviceTransport
-    if settings.device_transport == "wps":
-        if not settings.wps_connection_string:
-            raise RuntimeError(
-                "AGORA_CMS_DEVICE_TRANSPORT=wps requires "
-                "AGORA_CMS_WPS_CONNECTION_STRING"
-            )
-        from cms.services.wps_transport import WPSTransport
-        wps_transport = WPSTransport(
-            settings.wps_connection_string, settings.wps_hub,
-        )
-        transport_module.set_transport(wps_transport)
-        from cms.routers.wps_webhook import router as wps_router
-        app.include_router(wps_router)
-        logger.info(
-            "Device transport: WPS (hub=%s, webhook=/internal/wps/events)",
-            settings.wps_hub,
-        )
-    else:
-        transport_module.set_transport(LocalDeviceTransport())
-        logger.info("Device transport: local (direct WebSocket)")
 
     logger.info("Agora CMS %s started", __version__)
     yield
