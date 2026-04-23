@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -16,6 +17,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
+from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
 from cms.schemas.protocol import ScheduleEntry, SyncMessage
 from cms.services.transport import get_transport
@@ -144,17 +146,52 @@ async def load_skip_snapshot(db) -> SkipSnapshot:
     return SkipSnapshot(schedule_wide=sw, per_device=pd)
 
 
-# Track which schedule+device combos we've already logged as MISSED this eval cycle
-# Key: (schedule_id, device_id), cleared when the schedule/device combo resolves
-_missed_logged: set[tuple[str, str]] = set()
+# ── MISSED-event dedup (DB-backed, N>1 failover safe) ───────────────
+#
+# The scheduler's MISSED-alert dedup + grace-clock state used to live
+# in the ``_missed_logged`` and ``_offline_since`` module-level dicts.
+# Those are replica-local and on leader failover (deploy rollover,
+# pod crash) the new leader would start with empty memory, which both
+# (a) restarts the grace clock from zero, delaying MISSED emission, and
+# (b) re-emits MISSED for schedule+device combos the prior leader
+# already alerted on.  State now lives in ``schedule_missed_events``
+# keyed by (schedule_id, device_id, occurrence_date).
 
-# Track when a (schedule_id, device_id) combo was first seen offline
-# Only log MISSED after MISSED_GRACE_SECONDS of continuous offline
-_offline_since: dict[tuple[str, str], datetime] = {}
+def _insert_missed_event_stmt(schedule_id, device_id, occurrence_date, first_seen):
+    """Return a dialect-aware ``INSERT ... ON CONFLICT DO NOTHING`` stmt.
+
+    Ensures the first observation of ``(schedule, device, date)`` seeds
+    ``first_seen_offline_at`` without clobbering an existing grace-clock
+    entry written by a prior replica or tick.
+    """
+    from cms.database import get_engine
+    engine = get_engine()
+    dialect = engine.dialect.name if engine is not None else "sqlite"
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        return pg_insert(ScheduleMissedEvent).values(
+            schedule_id=schedule_id,
+            device_id=device_id,
+            occurrence_date=occurrence_date,
+            first_seen_offline_at=first_seen,
+        ).on_conflict_do_nothing(
+            index_elements=["schedule_id", "device_id", "occurrence_date"],
+        )
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    return sqlite_insert(ScheduleMissedEvent).values(
+        schedule_id=schedule_id,
+        device_id=device_id,
+        occurrence_date=occurrence_date,
+        first_seen_offline_at=first_seen,
+    ).on_conflict_do_nothing(
+        index_elements=["schedule_id", "device_id", "occurrence_date"],
+    )
+
 
 EVAL_INTERVAL_SECONDS = 15
 MISSED_GRACE_SECONDS = 60
 SCHEDULE_WINDOW_DAYS = 30
+MISSED_RETENTION_DAYS = 7  # prune dedup rows older than this each tick
 
 
 async def _log_event(db, event: ScheduleLogEvent, schedule_name: str, device_name: str,
@@ -947,10 +984,13 @@ async def push_sync_to_affected_devices(schedule: Schedule, db) -> None:
 
 
 async def evaluate_schedules() -> None:
-    """Single evaluation pass: sync schedules to devices and detect MISSED playback."""
-    if not await get_transport().connected_count():
-        return
+    """Single evaluation pass: sync schedules to devices and detect MISSED playback.
 
+    Runs on every tick regardless of connected-device count — the MISSED
+    block specifically needs to fire when devices are offline, which is
+    when ``connected_count() == 0`` is most likely.  The sync-push loop
+    below no-ops when ``connected`` is empty.
+    """
     sf = _get_session_factory()
     if sf is None:
         return
@@ -1022,58 +1062,207 @@ async def evaluate_schedules() -> None:
             if _matches_now(s, local_now) and not skips.is_schedule_skipped(str(s.id))
         ]
 
-        # Detect MISSED schedules: active schedules targeting offline adopted devices
-        # Only log MISSED after MISSED_GRACE_SECONDS of continuous offline
+        # ── Detect MISSED schedules (DB-backed dedup + grace clock) ──
+        #
+        # For each (active schedule × offline adopted device) pair:
+        #   1. Upsert a ``schedule_missed_events`` row keyed by
+        #      (schedule_id, device_id, occurrence_date).  ON CONFLICT
+        #      DO NOTHING preserves the original ``first_seen_offline_at``
+        #      so the grace clock survives leader failover and sampling
+        #      skew between replicas.
+        #   2. Once elapsed >= grace, atomically claim emission via
+        #      ``UPDATE ... WHERE emitted_at IS NULL RETURNING`` — only
+        #      one replica can win for a given (schedule, device, date).
+        #   3. Commit the claim *before* writing the ScheduleLog entry,
+        #      so a downstream ``_log_event`` rollback (FK fallback on
+        #      deleted schedule/device) cannot resurrect the claim and
+        #      cause a duplicate MISSED emission on the next tick.
         all_adopted_q = await db.execute(
             select(Device.id, Device.name).where(Device.status == DeviceStatus.ADOPTED)
         )
         all_adopted = {r[0]: (r[1] or r[0]) for r in all_adopted_q.all()}
 
         utc_now = datetime.now(timezone.utc)
+        occurrence_date = local_now.date()
+
+        # (active_offline_keys) drives both emission and cleanup below.
+        # ``active_offline_context`` preserves the schedule/device names
+        # and asset filename we need for the MISSED log entry.
+        active_offline_keys: set[tuple[str, str]] = set()
+        active_offline_context: dict[tuple[str, str], dict] = {}
 
         for s in active:
             if not s.asset:
                 continue
             target_ids = await _get_target_device_ids(s, db)
             for did in target_ids:
-                key = (str(s.id), did)
                 # Don't flag MISSED for a device whose skip is active.
                 if skips.is_skipped_for_device(str(s.id), did):
-                    _offline_since.pop(key, None)
                     continue
                 if did in connected or did not in all_adopted:
-                    # Device is online or not adopted — clear offline tracking
-                    _offline_since.pop(key, None)
+                    # Device is online or not adopted.
                     continue
-                # Device is offline and adopted
-                if key not in _offline_since:
-                    _offline_since[key] = utc_now
-                elapsed = (utc_now - _offline_since[key]).total_seconds()
-                if elapsed >= MISSED_GRACE_SECONDS and key not in _missed_logged:
-                    _missed_logged.add(key)
-                    await _log_event(
-                        db, ScheduleLogEvent.MISSED,
-                        schedule_name=s.name,
-                        device_name=all_adopted.get(did, did),
-                        asset_filename=_asset_display_name(s.asset),
-                        schedule_id=s.id, device_id=did,
-                        details=f"Device offline for {int(elapsed)}s",
-                    )
+                key = (str(s.id), did)
+                active_offline_keys.add(key)
+                active_offline_context[key] = {
+                    "schedule_id": s.id,
+                    "_device_id": did,
+                    "schedule_name": s.name,
+                    "device_name": all_adopted.get(did, did),
+                    "asset_filename": _asset_display_name(s.asset),
+                }
 
-        # Clear missed/offline tracking for combos that are no longer active
-        active_keys = set()
-        for s in active:
-            if not s.asset:
+        # Step 1: seed the dedup row (no-op if already present).
+        for (_sid_str, did), ctx in active_offline_context.items():
+            await db.execute(
+                _insert_missed_event_stmt(
+                    ctx["schedule_id"], did, occurrence_date, utc_now,
+                )
+            )
+        if active_offline_context:
+            await db.commit()
+
+        # Step 2: for each active×offline pair whose grace window has
+        # elapsed, claim emission + write the MISSED log atomically in a
+        # single outer transaction.  The ScheduleLog INSERT runs inside a
+        # SAVEPOINT so a FK violation (schedule/device deleted mid-tick)
+        # can be retried with null FKs without discarding the CAS claim.
+        # If the savepoint AND its fallback both fail, we revert the CAS
+        # claim (set ``emitted_at`` back to NULL) so the next tick retries
+        # rather than silently dropping the MISSED.
+        from sqlalchemy.exc import IntegrityError
+
+        grace_cutoff = utc_now - timedelta(seconds=MISSED_GRACE_SECONDS)
+        for (_sid_str, did), ctx in active_offline_context.items():
+            # CAS claim.
+            claim_result = await db.execute(
+                ScheduleMissedEvent.__table__.update()
+                .where(
+                    (ScheduleMissedEvent.schedule_id == ctx["schedule_id"])
+                    & (ScheduleMissedEvent.device_id == did)
+                    & (ScheduleMissedEvent.occurrence_date == occurrence_date)
+                    & (ScheduleMissedEvent.emitted_at.is_(None))
+                    & (ScheduleMissedEvent.first_seen_offline_at <= grace_cutoff)
+                )
+                .values(emitted_at=utc_now)
+                .returning(ScheduleMissedEvent.first_seen_offline_at)
+            )
+            row = claim_result.first()
+            if row is None:
                 continue
-            target_ids = await _get_target_device_ids(s, db)
-            for did in target_ids:
-                if did not in connected and did in all_adopted:
-                    active_keys.add((str(s.id), did))
-        _missed_logged.difference_update(_missed_logged - active_keys)
-        # Clear offline_since for combos no longer relevant
-        stale_offline = [k for k in _offline_since if k not in active_keys]
-        for k in stale_offline:
-            del _offline_since[k]
+
+            first_seen = row[0]
+            # SQLite strips timezone — coerce naive timestamps to UTC.
+            if first_seen.tzinfo is None:
+                first_seen = first_seen.replace(tzinfo=timezone.utc)
+            elapsed = int((utc_now - first_seen).total_seconds())
+
+            # Write ScheduleLog inside a nested SAVEPOINT so a FK failure
+            # (schedule or device deleted mid-tick) can be caught and
+            # retried without rolling back the CAS claim above.  Catch
+            # ANY exception — high-temperature / missed-schedule alerts
+            # must never be silently dropped.
+            log_written = False
+            _sched_id = ctx["schedule_id"] if isinstance(ctx["schedule_id"], uuid.UUID) else None
+            if not isinstance(ctx["schedule_id"], uuid.UUID):
+                try:
+                    _sched_id = uuid.UUID(str(ctx["schedule_id"]))
+                except (ValueError, TypeError):
+                    _sched_id = None
+            try:
+                async with db.begin_nested():
+                    db.add(ScheduleLog(
+                        schedule_id=_sched_id,
+                        schedule_name=ctx["schedule_name"],
+                        device_id=did,
+                        device_name=ctx["device_name"],
+                        asset_filename=ctx["asset_filename"],
+                        event=ScheduleLogEvent.MISSED,
+                        details=f"Device offline for {elapsed}s",
+                    ))
+                log_written = True
+            except IntegrityError:
+                logger.warning(
+                    "ScheduleLog FK violation for MISSED "
+                    "(schedule=%s device=%s) — retrying without FKs",
+                    _sched_id, did,
+                )
+                try:
+                    async with db.begin_nested():
+                        db.add(ScheduleLog(
+                            schedule_id=None,
+                            schedule_name=ctx["schedule_name"],
+                            device_id=None,
+                            device_name=ctx["device_name"],
+                            asset_filename=ctx["asset_filename"],
+                            event=ScheduleLogEvent.MISSED,
+                            details=f"Device offline for {elapsed}s",
+                        ))
+                    log_written = True
+                except Exception:
+                    logger.exception(
+                        "ScheduleLog null-FK retry failed for MISSED "
+                        "(schedule=%s device=%s)",
+                        _sched_id, did,
+                    )
+            except Exception:
+                logger.exception(
+                    "ScheduleLog insert failed for MISSED "
+                    "(schedule=%s device=%s) — claim will be reverted "
+                    "so next tick retries",
+                    _sched_id, did,
+                )
+
+            if not log_written:
+                # Revert the CAS claim so the next tick retries rather
+                # than silently dropping the MISSED alert.
+                await db.execute(
+                    ScheduleMissedEvent.__table__.update()
+                    .where(
+                        (ScheduleMissedEvent.schedule_id == ctx["schedule_id"])
+                        & (ScheduleMissedEvent.device_id == did)
+                        & (ScheduleMissedEvent.occurrence_date == occurrence_date)
+                        & (ScheduleMissedEvent.emitted_at == utc_now)
+                    )
+                    .values(emitted_at=None)
+                )
+
+        # Commit the claim + log (or revert) as a single atomic unit per
+        # tick.  If this commit itself fails the whole batch rolls back
+        # and the next tick will retry every claim it attempted here.
+        await db.commit()
+
+        # Cleanup: drop dedup rows whose (schedule, device) combo is no
+        # longer in the active-offline set for today (device reconnected
+        # or schedule deactivated) so a subsequent offline stretch gets
+        # a fresh grace clock.  Also prune rows older than the retention
+        # window so the table doesn't grow unbounded.
+        stale_today_q = await db.execute(
+            select(
+                ScheduleMissedEvent.schedule_id, ScheduleMissedEvent.device_id,
+            ).where(ScheduleMissedEvent.occurrence_date == occurrence_date)
+        )
+        stale_today = [
+            (sid, did) for sid, did in stale_today_q.all()
+            if (str(sid), did) not in active_offline_keys
+        ]
+        for sid, did in stale_today:
+            await db.execute(
+                ScheduleMissedEvent.__table__.delete().where(
+                    (ScheduleMissedEvent.schedule_id == sid)
+                    & (ScheduleMissedEvent.device_id == did)
+                    & (ScheduleMissedEvent.occurrence_date == occurrence_date)
+                )
+            )
+        retention_cutoff = occurrence_date - timedelta(days=MISSED_RETENTION_DAYS)
+        await db.execute(
+            ScheduleMissedEvent.__table__.delete().where(
+                ScheduleMissedEvent.occurrence_date < retention_cutoff
+            )
+        )
+        # Always commit here so cleanup is visible to the next tick even
+        # when there were no emission claims above.
+        await db.commit()
 
         # Clean up _confirmed_playing for devices that disconnected
         stale = [did for did in list(_confirmed_playing) if did not in connected]

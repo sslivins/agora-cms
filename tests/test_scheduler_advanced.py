@@ -12,13 +12,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
+from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
     _matches_now,
     _now_playing,
     _last_sync_hash,
-    _offline_since,
-    _missed_logged,
     MISSED_GRACE_SECONDS,
     build_device_sync,
     clear_sync_hash,
@@ -1066,13 +1065,9 @@ class TestMissedGracePeriod:
 
     def setup_method(self):
         _now_playing.clear()
-        _missed_logged.clear()
-        _offline_since.clear()
 
     def teardown_method(self):
         _now_playing.clear()
-        _missed_logged.clear()
-        _offline_since.clear()
 
     async def test_missed_not_logged_before_grace_period(self, app, db_session):
         """MISSED should NOT be logged immediately when device goes offline."""
@@ -1121,10 +1116,18 @@ class TestMissedGracePeriod:
             assert len(missed_logs) == 0, \
                 "MISSED should NOT be logged before grace period expires"
 
-            # Verify offline tracking started
-            key = (str(sched.id), "grace-dev-01")
-            assert key in _offline_since, \
-                "_offline_since should track when device first seen offline"
+            # Verify offline tracking started in the DB (dedup row seeded)
+            tracker = await db_session.execute(
+                sa_select(ScheduleMissedEvent).where(
+                    ScheduleMissedEvent.schedule_id == sched.id,
+                    ScheduleMissedEvent.device_id == "grace-dev-01",
+                )
+            )
+            rows = tracker.scalars().all()
+            assert len(rows) == 1, \
+                "schedule_missed_events row should seed grace clock"
+            assert rows[0].emitted_at is None, \
+                "emitted_at must stay NULL before grace expires"
         finally:
             device_manager.disconnect("grace-dummy")
 
@@ -1163,11 +1166,17 @@ class TestMissedGracePeriod:
         device_manager.register("grace-dummy-2", FakeWS())
 
         try:
-            # Pre-seed _offline_since to simulate device offline > grace period
-            key = (str(sched.id), "grace-dev-02")
-            _offline_since[key] = datetime.now(timezone.utc) - timedelta(
-                seconds=MISSED_GRACE_SECONDS + 10
-            )
+            # Pre-seed dedup row with first_seen > grace period ago so the
+            # next tick's CAS claim fires immediately.
+            now = datetime.now(timezone.utc)
+            db_session.add(ScheduleMissedEvent(
+                schedule_id=sched.id,
+                device_id="grace-dev-02",
+                occurrence_date=now.date(),
+                first_seen_offline_at=now - timedelta(seconds=MISSED_GRACE_SECONDS + 10),
+                emitted_at=None,
+            ))
+            await db_session.commit()
 
             await evaluate_schedules()
 
@@ -1178,11 +1187,23 @@ class TestMissedGracePeriod:
             assert len(missed_logs) == 1, \
                 "MISSED should be logged after grace period expires"
             assert missed_logs[0].device_name == "Grace Device 2"
+
+            # Verify the dedup row was claimed (emitted_at set).
+            tracker = await db_session.execute(
+                sa_select(ScheduleMissedEvent).where(
+                    ScheduleMissedEvent.schedule_id == sched.id,
+                    ScheduleMissedEvent.device_id == "grace-dev-02",
+                )
+            )
+            row = tracker.scalars().one()
+            assert row.emitted_at is not None, \
+                "CAS claim should set emitted_at"
         finally:
             device_manager.disconnect("grace-dummy-2")
 
     async def test_missed_cleared_when_device_reconnects(self, app, db_session):
-        """When device reconnects, offline tracking should be cleared."""
+        """When device reconnects, dedup row should be removed so a later
+        offline stretch gets a fresh grace clock."""
         from cms.services.device_manager import device_manager
 
         setting = CMSSetting(key="timezone", value="UTC")
@@ -1207,9 +1228,16 @@ class TestMissedGracePeriod:
         db_session.add(sched)
         await db_session.commit()
 
-        key = (str(sched.id), "grace-dev-03")
-        # Pre-seed offline tracking
-        _offline_since[key] = datetime.now(timezone.utc) - timedelta(seconds=30)
+        # Pre-seed offline tracking in the DB (not module dict)
+        now = datetime.now(timezone.utc)
+        db_session.add(ScheduleMissedEvent(
+            schedule_id=sched.id,
+            device_id="grace-dev-03",
+            occurrence_date=now.date(),
+            first_seen_offline_at=now - timedelta(seconds=30),
+            emitted_at=None,
+        ))
+        await db_session.commit()
 
         # Connect the device
         class FakeWS:
@@ -1219,8 +1247,249 @@ class TestMissedGracePeriod:
 
         try:
             await evaluate_schedules()
-            # Offline tracking should be cleared since device is now connected
-            assert key not in _offline_since, \
-                "_offline_since should be cleared when device reconnects"
+            # Dedup row should be cleaned up because the device is back online.
+            from sqlalchemy import select as sa_select
+            tracker = await db_session.execute(
+                sa_select(ScheduleMissedEvent).where(
+                    ScheduleMissedEvent.schedule_id == sched.id,
+                    ScheduleMissedEvent.device_id == "grace-dev-03",
+                )
+            )
+            assert tracker.scalars().first() is None, \
+                "Dedup row should be cleared when device reconnects"
         finally:
             device_manager.disconnect("grace-dev-03")
+
+    async def test_missed_dedup_survives_failover(self, app, db_session):
+        """A second tick after the grace clock has been persisted (simulating
+        leader failover where the new leader has no in-memory state) MUST NOT
+        duplicate the MISSED alert."""
+        from cms.services.device_manager import device_manager
+        from cms.models.schedule_log import ScheduleLog
+        from sqlalchemy import select as sa_select
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="fo.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="fo1")
+        group = DeviceGroup(name="Failover Group")
+        device = Device(id="fo-dev-01", name="Failover Device",
+                        status=DeviceStatus.ADOPTED)
+        dummy = Device(id="fo-dummy", name="FO Dummy",
+                       status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, group, device, dummy])
+        await db_session.flush()
+        device.group_id = group.id
+        sched = Schedule(
+            name="Failover Test",
+            group_id=group.id,
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("fo-dummy", FakeWS())
+
+        try:
+            now = datetime.now(timezone.utc)
+            # Persisted dedup row with grace already elapsed.
+            db_session.add(ScheduleMissedEvent(
+                schedule_id=sched.id,
+                device_id="fo-dev-01",
+                occurrence_date=now.date(),
+                first_seen_offline_at=now - timedelta(seconds=MISSED_GRACE_SECONDS + 5),
+                emitted_at=None,
+            ))
+            await db_session.commit()
+
+            # First tick claims + emits MISSED.
+            await evaluate_schedules()
+            # Second tick (simulating a new leader) must NOT re-emit.
+            await evaluate_schedules()
+
+            result = await db_session.execute(sa_select(ScheduleLog))
+            missed = [l for l in result.scalars().all() if l.event.value == "MISSED"]
+            assert len(missed) == 1, \
+                f"MISSED should fire exactly once across ticks; got {len(missed)}"
+        finally:
+            device_manager.disconnect("fo-dummy")
+
+    async def test_missed_not_duplicated_when_already_emitted(self, app, db_session):
+        """If the dedup row already has ``emitted_at`` set (prior leader
+        already alerted), a new tick MUST NOT re-emit even with grace
+        fully elapsed."""
+        from cms.services.device_manager import device_manager
+        from cms.models.schedule_log import ScheduleLog
+        from sqlalchemy import select as sa_select
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="dup.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="dup1")
+        group = DeviceGroup(name="Dup Group")
+        device = Device(id="dup-dev-01", name="Dup Device",
+                        status=DeviceStatus.ADOPTED)
+        dummy = Device(id="dup-dummy", name="Dup Dummy",
+                       status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, group, device, dummy])
+        await db_session.flush()
+        device.group_id = group.id
+        sched = Schedule(
+            name="Dup Test",
+            group_id=group.id,
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("dup-dummy", FakeWS())
+
+        try:
+            now = datetime.now(timezone.utc)
+            # Pre-emitted dedup row — prior leader already fired MISSED.
+            db_session.add(ScheduleMissedEvent(
+                schedule_id=sched.id,
+                device_id="dup-dev-01",
+                occurrence_date=now.date(),
+                first_seen_offline_at=now - timedelta(seconds=MISSED_GRACE_SECONDS + 60),
+                emitted_at=now - timedelta(seconds=30),
+            ))
+            await db_session.commit()
+
+            await evaluate_schedules()
+
+            result = await db_session.execute(sa_select(ScheduleLog))
+            missed = [l for l in result.scalars().all() if l.event.value == "MISSED"]
+            assert len(missed) == 0, \
+                "MISSED should not re-fire when emitted_at is already set"
+        finally:
+            device_manager.disconnect("dup-dummy")
+
+    async def test_missed_detected_when_no_devices_connected(self, app, db_session):
+        """MISSED detection MUST run even when zero devices are connected —
+        that's precisely the scenario where MISSED alerts matter most."""
+        from cms.models.schedule_log import ScheduleLog
+        from sqlalchemy import select as sa_select
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="none.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="none1")
+        group = DeviceGroup(name="None Group")
+        device = Device(id="none-dev-01", name="None Device",
+                        status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, group, device])
+        await db_session.flush()
+        device.group_id = group.id
+        sched = Schedule(
+            name="None Test",
+            group_id=group.id,
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        now = datetime.now(timezone.utc)
+        # Pre-seed grace clock so the first tick claims + emits.
+        db_session.add(ScheduleMissedEvent(
+            schedule_id=sched.id,
+            device_id="none-dev-01",
+            occurrence_date=now.date(),
+            first_seen_offline_at=now - timedelta(seconds=MISSED_GRACE_SECONDS + 5),
+            emitted_at=None,
+        ))
+        await db_session.commit()
+
+        # No devices registered via device_manager — connected_count == 0.
+        await evaluate_schedules()
+
+        result = await db_session.execute(sa_select(ScheduleLog))
+        missed = [l for l in result.scalars().all() if l.event.value == "MISSED"]
+        assert len(missed) == 1, \
+            "MISSED must fire when the only adopted device is offline"
+
+    async def test_missed_claim_reverted_if_log_write_fails(self, app, db_session, monkeypatch):
+        """If the ScheduleLog insert fails (both attempts), the CAS claim
+        MUST be reverted so the next tick retries rather than silently
+        dropping the MISSED."""
+        from cms.services.device_manager import device_manager
+        from cms.models.schedule_log import ScheduleLog
+        from sqlalchemy import select as sa_select
+        import cms.services.scheduler as scheduler_mod
+
+        setting = CMSSetting(key="timezone", value="UTC")
+        asset = Asset(filename="revert.mp4", asset_type=AssetType.VIDEO,
+                      size_bytes=1000, checksum="revert1")
+        group = DeviceGroup(name="Revert Group")
+        device = Device(id="revert-dev-01", name="Revert Device",
+                        status=DeviceStatus.ADOPTED)
+        dummy = Device(id="revert-dummy", name="Revert Dummy",
+                       status=DeviceStatus.ADOPTED)
+        db_session.add_all([setting, asset, group, device, dummy])
+        await db_session.flush()
+        device.group_id = group.id
+        sched = Schedule(
+            name="Revert Test",
+            group_id=group.id,
+            asset_id=asset.id,
+            start_time=time(0, 0),
+            end_time=time(23, 59, 59),
+            priority=10,
+            enabled=True,
+        )
+        db_session.add(sched)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("revert-dummy", FakeWS())
+
+        now = datetime.now(timezone.utc)
+        db_session.add(ScheduleMissedEvent(
+            schedule_id=sched.id,
+            device_id="revert-dev-01",
+            occurrence_date=now.date(),
+            first_seen_offline_at=now - timedelta(seconds=MISSED_GRACE_SECONDS + 5),
+            emitted_at=None,
+        ))
+        await db_session.commit()
+
+        # Monkeypatch ScheduleLog.__init__ so every log insert raises.
+        class _BoomError(Exception):
+            pass
+        orig_init = ScheduleLog.__init__
+        def _bad_init(self, *a, **kw):
+            raise _BoomError("simulated log insert failure")
+        monkeypatch.setattr(ScheduleLog, "__init__", _bad_init)
+
+        try:
+            await evaluate_schedules()
+        finally:
+            monkeypatch.setattr(ScheduleLog, "__init__", orig_init)
+            device_manager.disconnect("revert-dummy")
+
+        # Claim should have been reverted → emitted_at back to NULL, so
+        # next tick retries.
+        tracker = await db_session.execute(
+            sa_select(ScheduleMissedEvent).where(
+                ScheduleMissedEvent.schedule_id == sched.id,
+                ScheduleMissedEvent.device_id == "revert-dev-01",
+            )
+        )
+        row = tracker.scalars().one()
+        assert row.emitted_at is None, \
+            "CAS claim must be reverted when log write fails — " \
+            "otherwise MISSED is silently dropped forever"
