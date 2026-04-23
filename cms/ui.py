@@ -576,7 +576,7 @@ async def setup_complete(
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from datetime import datetime as _dt, timezone as _tz
-    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules, load_skip_snapshot
+    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules, load_skip_snapshot, load_target_devices_by_schedule
     from cms.auth import get_user_group_ids
 
     # CMS timezone
@@ -744,11 +744,14 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     _skips_for_ui = (await load_skip_snapshot(db)).active_as_of(
         now.astimezone(tz).replace(tzinfo=None)
     )
+    _targets_for_ui = await load_target_devices_by_schedule(all_schedules, db)
     upcoming = get_upcoming_schedules(
         all_schedules, now, tz,
         now_playing=now_playing,
         offline_device_ids=offline_set,
         skipped_schedule_ids=set(_skips_for_ui.schedule_wide.keys()),
+        per_device_skipped=set(_skips_for_ui.per_device.keys()),
+        target_devices_by_schedule=_targets_for_ui,
     )
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
@@ -830,7 +833,7 @@ async def server_time_json(db: AsyncSession = Depends(get_db)):
 async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     """Lightweight JSON endpoint for dashboard polling."""
     from datetime import datetime as _dt, timezone as _tz
-    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules, load_skip_snapshot
+    from cms.services.scheduler import compute_now_playing, get_upcoming_schedules, load_skip_snapshot, load_target_devices_by_schedule
     from cms.auth import get_user_group_ids
 
     tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
@@ -952,11 +955,14 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     _skips_for_ui = (await load_skip_snapshot(db)).active_as_of(
         now.astimezone(tz).replace(tzinfo=None)
     )
+    _targets_for_ui = await load_target_devices_by_schedule(all_schedules, db)
     upcoming = get_upcoming_schedules(
         all_schedules, now, tz,
         now_playing=now_playing,
         offline_device_ids=offline_set,
         skipped_schedule_ids=set(_skips_for_ui.schedule_wide.keys()),
+        per_device_skipped=set(_skips_for_ui.per_device.keys()),
+        target_devices_by_schedule=_targets_for_ui,
     )
 
     # Recent activity count for change detection
