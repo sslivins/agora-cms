@@ -95,6 +95,25 @@ class SimulatorClient:
         r.raise_for_status()
         return r.json().get("now_playing")
 
+    def set_logs(self, serial: str, content: dict[str, int | str]) -> dict:
+        """Configure synthetic journalctl output for ``request_logs`` smoke tests.
+
+        Each value is either an ``int`` (synthesize that many bytes of
+        ASCII filler — useful for sizing payloads against the firmware
+        ``LOGS_JSON_MAX_BYTES`` threshold) or a ``str`` (literal text).
+
+        Requires sim image with ``POST /devices/{serial}/logs`` endpoint
+        (agora-device-simulator PR #6 / commit cec9b97).
+        """
+        r = self._client.post(f"/devices/{serial}/logs", json=content)
+        r.raise_for_status()
+        return r.json()
+
+    def clear_logs(self, serial: str) -> dict:
+        r = self._client.delete(f"/devices/{serial}/logs")
+        r.raise_for_status()
+        return r.json()
+
     def wait_for_command(
         self, serial: str, command_type: str,
         *, count: int = 1, timeout: float = 10.0,
