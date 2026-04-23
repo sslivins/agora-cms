@@ -396,7 +396,10 @@ class TestScheduleDeletePlayingWarning:
         sched_id, device_id = await self._seed(db_session)
 
         fake_np = [{"schedule_id": sched_id, "device_id": device_id}]
-        with patch("cms.services.scheduler.get_now_playing", return_value=fake_np):
+        with patch(
+            "cms.services.scheduler.get_now_playing",
+            return_value=fake_np,
+        ):
             resp = await client.get("/schedules")
 
         assert resp.status_code == 200
@@ -408,7 +411,10 @@ class TestScheduleDeletePlayingWarning:
         await self._seed(db_session)
 
         from unittest.mock import patch
-        with patch("cms.services.scheduler.get_now_playing", return_value=[]):
+        with patch(
+            "cms.services.scheduler.get_now_playing",
+            return_value=[],
+        ):
             resp = await client.get("/schedules")
 
         assert resp.status_code == 200

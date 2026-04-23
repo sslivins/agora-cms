@@ -442,3 +442,83 @@ class TestDashboardDeviceOffline:
         finally:
             await _fake_disconnect(db_session, "mismatch-01")
             _sched._confirmed_playing.pop("mismatch-01", None)
+
+
+@pytest.mark.asyncio
+class TestConfirmedPlayingReplicaFallback:
+    """Regression: under N>1 replicas the WPS webhook is replica-sticky,
+    so ``_confirmed_playing`` is only populated on whichever replica
+    received the device's ``PLAYBACK_STARTED``.  Other replicas must
+    still render the correct confirmation + ``since`` by falling back
+    to DB-backed live state.
+    """
+
+    async def test_confirmed_derived_from_live_state_when_cache_empty(
+        self, app, db_session,
+    ):
+        """Simulate a non-leader replica that never saw PLAYBACK_STARTED:
+        _confirmed_playing is empty, but compute_now_playing should still
+        mark the entry as ``source=confirmed`` using live device state.
+        """
+        from zoneinfo import ZoneInfo
+        from cms.services.scheduler import compute_now_playing
+
+        await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
+        await _fake_connect(db_session, "mismatch-01", mode="play",
+                            asset="sony-clip.mp4")
+
+        # Explicitly empty — simulates replica that never received the
+        # PLAYBACK_STARTED WPS webhook.
+        _sched._confirmed_playing.pop("mismatch-01", None)
+
+        try:
+            entries = await compute_now_playing(
+                db_session, ZoneInfo("UTC"), datetime.now(timezone.utc),
+            )
+            e = next(
+                (x for x in entries if x["device_id"] == "mismatch-01"),
+                None,
+            )
+            assert e is not None, "Device should appear in now-playing"
+            assert e["source"] == "confirmed", (
+                "Must fall back to DB-backed live state on replicas that "
+                "never received PLAYBACK_STARTED — without this, a "
+                "replica that never saw the event would render "
+                "'Starting…' forever"
+            )
+        finally:
+            await _fake_disconnect(db_session, "mismatch-01")
+
+    async def test_scheduled_when_device_not_playing_expected_asset(
+        self, app, db_session,
+    ):
+        """If live state shows device playing a DIFFERENT asset, the
+        entry must NOT be marked confirmed — avoids showing 'playing'
+        when device is actually on the wrong content.
+        """
+        from zoneinfo import ZoneInfo
+        from cms.services.scheduler import compute_now_playing
+
+        await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
+        await _fake_connect(db_session, "mismatch-01", mode="play",
+                            asset="some-other-asset.mp4")
+
+        _sched._confirmed_playing.pop("mismatch-01", None)
+
+        try:
+            entries = await compute_now_playing(
+                db_session, ZoneInfo("UTC"), datetime.now(timezone.utc),
+            )
+            e = next(
+                (x for x in entries if x["device_id"] == "mismatch-01"),
+                None,
+            )
+            assert e is not None
+            assert e["source"] == "scheduled", (
+                "Should not claim confirmed when device is playing a "
+                "different asset than scheduled"
+            )
+        finally:
+            await _fake_disconnect(db_session, "mismatch-01")
