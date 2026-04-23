@@ -250,22 +250,57 @@ class AlertService:
                     event_type=DeviceEventType.ONLINE,
                 ))
 
-                # 2. CAS-consume offline_notified + clear offline_since.
-                state = (await db.execute(
-                    select(DeviceAlertState).where(
-                        DeviceAlertState.device_id == device_id
+                # 2. Atomically CAS-consume offline_notified.  Only the
+                #    replica whose UPDATE lands first gets a returned
+                #    row — other replicas handling the same reconnect
+                #    event see an empty result and skip the "back
+                #    online" notification, so it fires exactly once
+                #    across the cluster.
+                claim = await db.execute(
+                    update(DeviceAlertState)
+                    .where(
+                        DeviceAlertState.device_id == device_id,
+                        DeviceAlertState.offline_notified.is_(True),
                     )
-                )).scalar_one_or_none()
-                was_notified = bool(state and state.offline_notified)
-                if state is None:
-                    db.add(DeviceAlertState(
-                        device_id=device_id,
-                        offline_since=None,
-                        offline_notified=False,
-                    ))
-                else:
-                    state.offline_since = None
-                    state.offline_notified = False
+                    .values(offline_since=None, offline_notified=False)
+                    .returning(DeviceAlertState.device_id)
+                )
+                was_notified = claim.scalar_one_or_none() is not None
+
+                if not was_notified:
+                    # Either no alert-state row existed, or it existed
+                    # but offline_notified was already False.  Ensure
+                    # the row exists with offline_since cleared so the
+                    # next disconnect starts a fresh grace window.
+                    existing = (await db.execute(
+                        select(DeviceAlertState).where(
+                            DeviceAlertState.device_id == device_id
+                        )
+                    )).scalar_one_or_none()
+                    if existing is None:
+                        # Two replicas can reach this branch
+                        # simultaneously for the same device's first
+                        # reconnect.  The second INSERT would violate
+                        # the PK constraint and poison the outer
+                        # transaction (rolling back our ONLINE event).
+                        # Isolate the INSERT in a SAVEPOINT and treat
+                        # IntegrityError as benign — the other replica
+                        # already created the row.
+                        from sqlalchemy.exc import IntegrityError
+                        try:
+                            async with db.begin_nested():
+                                db.add(DeviceAlertState(
+                                    device_id=device_id,
+                                    offline_since=None,
+                                    offline_notified=False,
+                                ))
+                        except IntegrityError:
+                            logger.debug(
+                                "DeviceAlertState for %s created concurrently; ignoring",
+                                device_id,
+                            )
+                    elif existing.offline_since is not None:
+                        existing.offline_since = None
 
                 # 3. If we'd previously fired an offline notification,
                 #    emit the matching back-online notification in the
@@ -322,11 +357,16 @@ class AlertService:
     async def offline_sweep_once(self, db: AsyncSession) -> int:
         """Fire offline notifications for any device past the grace period.
 
-        Must be called from a leader-gated loop (see
-        :func:`cms.main.offline_sweep_loop`) — the transition writes
-        ``offline_notified = TRUE`` and emits the notification in one
-        transaction, but we avoid duplicate notifications across
-        replicas by only running on the leader.
+        Safe to call from multiple replicas concurrently: the claim
+        step is a single ``UPDATE ... RETURNING`` that atomically flips
+        ``offline_notified`` from FALSE→TRUE for all due rows.  Only
+        one replica's UPDATE returns any given row; other replicas'
+        UPDATEs find nothing matching and emit no duplicate alerts.
+
+        The loop is still wrapped in :class:`LeaderLease` in
+        :func:`cms.main._offline_sweep_loop` as a belt-and-braces
+        efficiency gate (avoids N replicas all scanning the table
+        every tick), but correctness no longer depends on the lease.
 
         Returns the number of notifications emitted.
         """
@@ -334,33 +374,38 @@ class AlertService:
             seconds=self._offline_grace_seconds
         )
 
-        rows = (await db.execute(
-            select(DeviceAlertState).where(
+        # Atomic claim: flip offline_notified=FALSE→TRUE for every
+        # device past the grace window in a single statement.  The
+        # RETURNING clause gives us only the rows this replica won.
+        claimed_ids = (await db.execute(
+            update(DeviceAlertState)
+            .where(
                 DeviceAlertState.offline_notified.is_(False),
                 DeviceAlertState.offline_since.is_not(None),
                 DeviceAlertState.offline_since <= cutoff,
             )
+            .values(offline_notified=True)
+            .returning(DeviceAlertState.device_id)
         )).scalars().all()
-        if not rows:
+        if not claimed_ids:
             return 0
 
         emitted = 0
-        for state in rows:
+        for device_id in claimed_ids:
             device = (await db.execute(
                 select(Device)
                 .options(selectinload(Device.group))
-                .where(Device.id == state.device_id)
+                .where(Device.id == device_id)
             )).scalar_one_or_none()
             if not device or device.status != DeviceStatus.ADOPTED or not device.group_id:
-                # Device is no longer adopted/grouped — flag as notified
-                # so we don't re-scan it every tick.  No alert fired.
-                state.offline_notified = True
+                # Device is no longer adopted/grouped — we've already
+                # flipped offline_notified to TRUE via the claim, so
+                # it won't be re-scanned.  No alert fired.
                 continue
 
             group_name = device.group.name if device.group else ""
             device_name = device.name or device.id
 
-            state.offline_notified = True
             db.add(DeviceEvent(
                 device_id=device.id,
                 device_name=device_name,
