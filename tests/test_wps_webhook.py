@@ -498,6 +498,206 @@ class TestUnknownEventType:
         assert r.status_code == 400
 
 
+# ---------------------------------------------------------------- alert_service hooks
+#
+# Regression guard for the gap discovered during PR #404 prod validation:
+# the WPS webhook path never fired alert_service.device_{re,dis}connected,
+# so every online/offline lifecycle event on WPS-only devices (which is
+# now 100% of prod) silently skipped alert bookkeeping — zero
+# ``device_events`` rows, zero notifications, zero
+# ``device_alert_state`` updates.  These tests pin the contract.
+
+
+@pytest.mark.asyncio
+class TestAlertServiceHooks:
+    async def test_register_success_fires_device_reconnected(
+        self, client, app_and_session,
+    ):
+        """Happy path: a valid WPS register message triggers
+        alert_service.device_reconnected so the ONLINE event is logged
+        and any prior offline alert state is cleared."""
+        _, session = app_and_session
+        device = MagicMock(id="pi-recon", group_id="g-1", status=MagicMock(value="adopted"))
+        device.name = "Lobby"
+        session.device_row = device
+
+        cid = "conn-recon"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.alert_service"
+        ) as mock_alert:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-recon",
+                    "auth_token": "valid",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-recon",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_alert.device_reconnected.assert_called_once()
+        kwargs = mock_alert.device_reconnected.call_args.kwargs
+        assert mock_alert.device_reconnected.call_args.args[0] == "pi-recon"
+        assert kwargs["device_name"] == "Lobby"
+        assert kwargs["group_id"] == "g-1"
+        assert kwargs["status"] == "adopted"
+
+    async def test_orphaned_register_does_not_fire_reconnect(
+        self, client, app_and_session,
+    ):
+        """Orphaned devices must not emit an ONLINE alert — the
+        register was rejected, not accepted."""
+        _, session = app_and_session
+        device = MagicMock(id="pi-orph", group_id=None, status=MagicMock(value="orphaned"))
+        device.name = "Old"
+        session.device_row = device
+
+        cid = "conn-orph-alert"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=True, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.alert_service"
+        ) as mock_alert:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-orph",
+                    "auth_token": "wrong",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-orph",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_alert.device_reconnected.assert_not_called()
+
+    async def test_disconnected_with_matching_conn_id_fires_alert(
+        self, client, app_and_session,
+    ):
+        """sys.disconnected for the *current* connection loads the
+        device + group and fires alert_service.device_disconnected."""
+        _, session = app_and_session
+        device = MagicMock(id="pi-dc", group_id="g-2", status=MagicMock(value="adopted"))
+        device.name = "Kitchen"
+        session.device_row = device
+
+        cid = "cid-current"
+        with patch(
+            "cms.routers.wps_webhook.alert_service"
+        ) as mock_alert:
+            r = await client.post(
+                "/internal/wps/events",
+                content=b"{}",
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.sys.disconnected",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-dc",
+                    "ce-eventName": "disconnected",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_alert.device_disconnected.assert_called_once()
+        assert mock_alert.device_disconnected.call_args.args[0] == "pi-dc"
+        kwargs = mock_alert.device_disconnected.call_args.kwargs
+        assert kwargs["device_name"] == "Kitchen"
+        assert kwargs["group_id"] == "g-2"
+        assert kwargs["status"] == "adopted"
+
+    async def test_disconnected_stale_conn_id_suppressed(
+        self, client, app_and_session,
+    ):
+        """If the stored connection_id has been replaced (the device
+        already reconnected on another replica), mark_offline returns
+        False and we must NOT fire a disconnect alert — the device
+        isn't actually offline."""
+        _, session = app_and_session
+        device = MagicMock(id="pi-stale", group_id="g-3", status=MagicMock(value="adopted"))
+        device.name = "Lobby"
+        session.device_row = device
+
+        # Force the guard to reject: mark_offline returns False when
+        # rowcount == 0 (stored connection_id no longer matches).
+        original_execute = session.execute
+
+        async def _rowcount_zero(stmt, *a, **kw):
+            result = await original_execute(stmt, *a, **kw)
+            # Only the UPDATE from mark_offline is affected — SELECTs
+            # coming after would also see rowcount=0, but our code
+            # returns before issuing any SELECT when was_current is False.
+            result.rowcount = 0
+            return result
+
+        session.execute = _rowcount_zero
+
+        cid = "cid-stale"
+        with patch(
+            "cms.routers.wps_webhook.alert_service"
+        ) as mock_alert:
+            r = await client.post(
+                "/internal/wps/events",
+                content=b"{}",
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.sys.disconnected",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-stale",
+                    "ce-eventName": "disconnected",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_alert.device_disconnected.assert_not_called()
+
+    async def test_disconnected_unknown_device_no_alert(
+        self, client, app_and_session,
+    ):
+        """If the guard matches but the device row was deleted between
+        register and disconnect, the SELECT returns None and we skip
+        the alert path quietly — no crash, no alert, just 204."""
+        _, session = app_and_session
+        session.device_row = None  # no row to load
+
+        cid = "cid-ghost"
+        with patch(
+            "cms.routers.wps_webhook.alert_service"
+        ) as mock_alert:
+            r = await client.post(
+                "/internal/wps/events",
+                content=b"{}",
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.sys.disconnected",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-ghost",
+                    "ce-eventName": "disconnected",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_alert.device_disconnected.assert_not_called()
+
+
 # ---------------------------------------------------------------- multi-key
 
 
