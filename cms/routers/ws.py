@@ -111,6 +111,9 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         # ── 2. Authenticate ──
         result = await db.execute(select(Device).where(Device.id == device_id))
         device = result.scalar_one_or_none()
+        is_new_device = device is None
+        pre_register_fw: str = ""
+        pre_register_upgrade_claim = None  # datetime or None
 
         if device is None:
             # New device — create as pending, prefer device_name over raw ID
@@ -147,6 +150,14 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             # Known device — delegate to the shared helper that the WPS
             # webhook path also uses.  Orphaned → close 4004; otherwise
             # push any newly-minted auth token back to the device.
+            # Capture pre-register firmware AND upgrade-claim token
+            # before the helper mutates them.  Firmware-change gates
+            # whether we clear the claim; the claim token itself is
+            # used as a compare-and-swap guard so a successor upgrade
+            # claim (written between our SELECT and our CLEAR) isn't
+            # wiped by this register path.
+            pre_register_fw = device.firmware_version or ""
+            pre_register_upgrade_claim = device.upgrade_started_at
             reg_result = await register_known_device(device, raw, db)
             if reg_result.orphaned:
                 await websocket.send_json({
@@ -176,18 +187,34 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             db, device_id, connection_id=conn_id, ip_address=client_ip,
         )
         # Stage 4: clear any stale upgrade-in-progress claim so the
-        # device can be upgraded again on a future request.  A
-        # successful reconnect means the device has booted, so whatever
-        # upgrade was in flight is either done or abandoned.  The TTL
-        # on the column (see upgrade endpoint) is the safety net in
-        # case we never see this register.
-        await db.execute(
-            update(Device)
-            .where(Device.id == device_id)
-            .values(upgrade_started_at=None)
-            .execution_options(synchronize_session=False)
-        )
-        await db.commit()
+        # Stage 4: clear any stale upgrade-in-progress claim so the
+        # device can be upgraded again on a future request — but only
+        # when this register represents an actual completed upgrade:
+        #   - there was a claim at register time (``pre_register_upgrade_claim``),
+        #   - both the prior and reported firmware are non-empty, and
+        #   - they differ (so the device booted into a new version).
+        # The UPDATE uses compare-and-swap on ``upgrade_started_at``
+        # equal to the pre-register value, so a successor upgrade
+        # claim written between our SELECT and our clear isn't wiped.
+        # Under N>1 with rolling restarts, transient reconnects during
+        # an upgrade (same firmware) leave the claim in place; the
+        # TTL on the column (see upgrade endpoint) is the safety net
+        # that releases the claim if no firmware change is ever
+        # reported.  For brand-new devices there's no claim to clear.
+        if not is_new_device and pre_register_upgrade_claim is not None:
+            reported_fw = (raw.get("firmware_version") or "").strip()
+            prior_fw = (pre_register_fw or "").strip()
+            if reported_fw and prior_fw and reported_fw != prior_fw:
+                await db.execute(
+                    update(Device)
+                    .where(
+                        Device.id == device_id,
+                        Device.upgrade_started_at == pre_register_upgrade_claim,
+                    )
+                    .values(upgrade_started_at=None)
+                    .execution_options(synchronize_session=False)
+                )
+                await db.commit()
 
         # ── 3b. Notify alert service of reconnection ──
         _group_id = str(device.group_id) if device.group_id else None
