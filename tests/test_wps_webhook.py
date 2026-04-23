@@ -74,7 +74,6 @@ async def app_and_session(monkeypatch):
     # Fresh DeviceManager for every test — isolation across webhook events.
     from cms.services import device_manager as dm_module
     dm_module.device_manager._connections.clear()
-    dm_module.device_manager._pending_log_requests.clear()
 
     # Stub Settings that satisfies the receiver's needs.
     class _S:

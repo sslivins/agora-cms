@@ -92,6 +92,4 @@ class ToggleRequest(BaseModel):
     enabled: StrictBool
 
 
-class LogRequest(BaseModel):
-    services: Optional[list[str]] = None
-    since: str = "24h"
+

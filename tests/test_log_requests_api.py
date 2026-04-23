@@ -73,9 +73,6 @@ class FakeTransport:
     async def get_all_states(self):
         return []
 
-    async def request_logs(self, device_id, services=None, since="24h", timeout=30.0):
-        raise NotImplementedError
-
     async def set_state_flags(self, device_id, **flags):
         pass
 

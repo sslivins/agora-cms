@@ -10,10 +10,11 @@ registers presence and dispatches each payload through
 
 Presence + telemetry live in Postgres since Stage 2c (#344) — read-side
 helpers are shared with ``LocalDeviceTransport`` via
-:mod:`cms.services.device_presence`.  The only per-replica state the
-WPS path still keeps in-memory is the ``_pending_log_requests`` future
-map used by the synchronous logs RPC (see Stage 3 for the outbox
-replacement).
+:mod:`cms.services.device_presence`.  With the synchronous
+``request_logs`` RPC retired (#345 Stage 3), the WPS transport now holds
+no per-replica in-memory state at all — every mutable field this
+process used to cache is either on the DB row or in a transactional
+outbox.
 """
 
 from __future__ import annotations
@@ -44,14 +45,7 @@ class WPSTransport(DeviceTransport):
         self,
         connection_string: str,
         hub: str,
-        device_manager: Any | None = None,
     ) -> None:
-        if device_manager is None:
-            from cms.services.device_manager import device_manager as _dm
-            device_manager = _dm
-        # Only still needed for ``_pending_log_requests`` — the log RPC
-        # is replica-local by nature (the awaiting future lives here).
-        self._manager = device_manager
         self._hub = hub
         self._client: WebPubSubServiceClient = (
             WebPubSubServiceClient.from_connection_string(
@@ -116,48 +110,7 @@ class WPSTransport(DeviceTransport):
         async with _session() as db:
             return await device_presence.list_states(db)
 
-    # ---- synchronous RPC (logs) ----------------------------------------
-
-    async def request_logs(
-        self,
-        device_id: str,
-        services: list[str] | None = None,
-        since: str = "24h",
-        timeout: float = 30.0,
-    ) -> dict[str, str]:
-        """Send a ``request_logs`` command and await the device's reply.
-
-        The awaiting future is held in-process (per-replica) — Stage 3
-        will replace this with a blob-upload outbox so logs are
-        deliverable from any replica.
-        """
-        import asyncio
-        import uuid
-
-        from cms.schemas.protocol import RequestLogsMessage
-
-        if not await self.is_connected(device_id):
-            raise ValueError(f"Device {device_id} is not connected")
-
-        request_id = str(uuid.uuid4())
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._manager._pending_log_requests[request_id] = fut
-
-        msg = RequestLogsMessage(
-            request_id=request_id, services=services, since=since,
-        )
-        ok = await self.send_to_device(device_id, msg.model_dump(mode="json"))
-        if not ok:
-            self._manager._pending_log_requests.pop(request_id, None)
-            raise ValueError(f"Failed to send request to device {device_id}")
-
-        try:
-            return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
-            self._manager._pending_log_requests.pop(request_id, None)
-            raise TimeoutError(
-                f"Device {device_id} did not respond within {timeout}s"
-            )
+    # ---- async log dispatch (fire-and-forget) --------------------------
 
     async def dispatch_request_logs(
         self,

@@ -1,18 +1,20 @@
 """Device WebSocket connection registry.
 
-After Stage 2c (#344), this module only tracks per-replica ephemeral
-state — the live WebSocket objects this process owns and the
-``_pending_log_requests`` future map for synchronous log RPCs.
+After Stage 2c (#344) and the logs-RPC retirement (#345 Stage 3), this
+module only tracks per-replica ephemeral state — the live WebSocket
+objects this process owns.
 
 Presence (``online``), identity (``connection_id``), and telemetry
 (mode/asset/pipeline_state/cpu_temp_c/…) live on the ``devices`` table
 and are read via :mod:`cms.services.device_presence`.  ``ConnectedDevice``
 used to cache those fields too; that cache is now the DB row.
+
+The synchronous ``request_logs`` RPC and its in-memory future map were
+removed — everything now goes through the multi-replica-safe outbox in
+:mod:`cms.routers.log_requests`.
 """
 
-import asyncio
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -63,7 +65,6 @@ class DeviceManager:
 
     def __init__(self):
         self._connections: dict[str, ConnectedDevice] = {}
-        self._pending_log_requests: dict[str, asyncio.Future] = {}
 
     def register(
         self,
@@ -113,67 +114,6 @@ class DeviceManager:
     async def broadcast(self, message: dict):
         for device_id in list(self._connections.keys()):
             await self.send_to_device(device_id, message)
-
-    async def request_logs(
-        self,
-        device_id: str,
-        services: list[str] | None = None,
-        since: str = "24h",
-        timeout: float = 30.0,
-    ) -> dict:
-        """Send a request_logs command to a device and await its response.
-
-        Returns the logs dict ``{service_name: log_text}`` or raises
-        TimeoutError/ValueError.  The awaiting future lives on this
-        replica — Stage 3 replaces this with a blob-upload outbox.
-        """
-        conn = self._connections.get(device_id)
-        if not conn:
-            raise ValueError(f"Device {device_id} is not connected")
-
-        request_id = str(uuid.uuid4())
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending_log_requests[request_id] = fut
-
-        from cms.schemas.protocol import RequestLogsMessage
-        msg = RequestLogsMessage(
-            request_id=request_id,
-            services=services,
-            since=since,
-        )
-        try:
-            await conn.send_json(msg.model_dump(mode="json"))
-        except Exception:
-            self._pending_log_requests.pop(request_id, None)
-            raise ValueError(f"Failed to send request to device {device_id}")
-
-        try:
-            result = await asyncio.wait_for(fut, timeout=timeout)
-            return result
-        except asyncio.TimeoutError:
-            self._pending_log_requests.pop(request_id, None)
-            raise TimeoutError(
-                f"Device {device_id} did not respond within {timeout}s",
-            )
-
-    def resolve_log_request(
-        self,
-        request_id: str,
-        logs: dict[str, str],
-        error: str | None = None,
-    ):
-        """Resolve a pending ``request_logs`` future.
-
-        Called by :func:`cms.services.device_inbound.dispatch_device_message`
-        when a ``logs_response`` frame arrives — the WPS webhook and the
-        direct-WS paths both dispatch through that function.
-        """
-        fut = self._pending_log_requests.pop(request_id, None)
-        if fut and not fut.done():
-            if error:
-                fut.set_exception(RuntimeError(error))
-            else:
-                fut.set_result(logs)
 
 
 # Singleton — shared across the application

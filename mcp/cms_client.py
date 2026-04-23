@@ -4,11 +4,35 @@ Authenticates using the MCP service key (X-API-Key header) and passes
 the real user identity via X-On-Behalf-Of for audit logging.
 """
 
+import asyncio
+import io
 import logging
+import tarfile
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_tar_gz(blob: bytes) -> dict[str, str]:
+    """Extract a ``tar.gz`` bundle into ``{service_name: log_text}``.
+
+    Strips any ``.log`` suffix so the output shape matches what the
+    legacy synchronous RPC returned.
+    """
+    out: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            fh = tf.extractfile(member)
+            if fh is None:
+                continue
+            name = member.name
+            if name.endswith(".log"):
+                name = name[:-4]
+            out[name] = fh.read().decode("utf-8", errors="replace")
+    return out
 
 
 class CMSClient:
@@ -133,12 +157,66 @@ class CMSClient:
     # ── Logs ──
 
     async def request_device_logs(
-        self, device_id: str, services: list[str] | None = None, since: str = "24h",
+        self,
+        device_id: str,
+        services: list[str] | None = None,
+        since: str = "24h",
+        *,
+        poll_timeout: float = 60.0,
+        poll_interval: float = 2.0,
     ) -> dict:
-        params = {"since": since}
+        """Create a log request, poll for completion, and return the logs.
+
+        Under the hood this exercises the multi-replica-safe async flow:
+        ``POST /api/logs/requests`` → poll ``GET .../{id}`` → ``GET
+        .../{id}/download`` (which returns a ``tar.gz`` bundle).  The
+        returned shape matches the legacy tool for callers that expected
+        ``{service_name: log_text}``.
+
+        If the device doesn't reply within ``poll_timeout`` seconds this
+        returns ``{"request_id", "status", "last_error"}`` — the row is
+        still live on the CMS and can be retrieved later.
+        """
+        body: dict = {"device_id": device_id, "since": since}
         if services:
-            params["services"] = services
-        return await self._post(f"/api/devices/{device_id}/logs", params)
+            body["services"] = services
+
+        created = await self._post("/api/logs/requests", body)
+        if not isinstance(created, dict) or "request_id" not in created:
+            raise RuntimeError(f"Unexpected create response: {created!r}")
+        request_id = created["request_id"]
+
+        deadline = asyncio.get_event_loop().time() + poll_timeout
+        last: dict = {"request_id": request_id, "status": created.get("status")}
+        while asyncio.get_event_loop().time() < deadline:
+            row = await self._get(f"/api/logs/requests/{request_id}")
+            if not isinstance(row, dict):
+                raise RuntimeError(f"Unexpected status response: {row!r}")
+            last = row
+            status = row.get("status")
+            if status == "ready":
+                resp = await self._client.get(
+                    f"/api/logs/requests/{request_id}/download",
+                )
+                resp.raise_for_status()
+                return _extract_tar_gz(resp.content)
+            if status == "failed":
+                return {
+                    "request_id": request_id,
+                    "status": "failed",
+                    "last_error": row.get("last_error"),
+                }
+            await asyncio.sleep(poll_interval)
+
+        return {
+            "request_id": request_id,
+            "status": last.get("status", "pending"),
+            "last_error": last.get("last_error"),
+            "message": (
+                "Device did not reply within "
+                f"{poll_timeout:.0f}s — request is still live on the CMS."
+            ),
+        }
 
     # ── Dashboard ──
 

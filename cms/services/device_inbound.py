@@ -32,7 +32,6 @@ from cms.schemas.protocol import (
     MessageType,
 )
 from cms.services.alert_service import alert_service
-from cms.services.device_manager import device_manager
 from cms.services.scheduler import (
     clear_now_playing,
     log_schedule_event,
@@ -459,14 +458,14 @@ async def dispatch_device_message(
         logs = msg.get("logs", {})
         error = msg.get("error")
         logger.info("Device %s sent logs (request %s, %d services)", device_id, request_id, len(logs))
-        device_manager.resolve_log_request(request_id, logs, error)
 
-        # Stage 3b back-compat shim: if ``request_id`` matches an outbox
-        # row (new async path), route the legacy inline payload into
-        # blob storage + flip the row.  Wrapped in its own try/except
-        # because a failure here must never break the legacy synchronous
-        # path above — LOGS_RESPONSE from old firmware still has to
-        # resolve the in-flight future.
+        # Route the inline JSON payload into the async outbox flow: when
+        # the device receives REQUEST_LOGS (either from an explicit
+        # ``dispatch_request_logs`` call or the drainer), its reply lands
+        # here, we fold the payload into a tar.gz blob and flip the
+        # outbox row to ``ready`` so the user-facing polling endpoint
+        # can serve it.  This is the *only* path that handles
+        # LOGS_RESPONSE since the synchronous RPC was retired.
         if request_id:
             try:
                 from cms.models.log_request import STATUS_PENDING, STATUS_SENT
@@ -505,7 +504,7 @@ async def dispatch_device_message(
                         await db.commit()
             except Exception:
                 logger.warning(
-                    "LOGS_RESPONSE outbox shim failed for request %s (device %s)",
+                    "LOGS_RESPONSE outbox write failed for request %s (device %s)",
                     request_id, device_id, exc_info=True,
                 )
 

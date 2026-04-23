@@ -25,7 +25,6 @@ from cms.schemas.device import (
     DeviceGroupUpdate,
     DeviceOut,
     DeviceUpdate,
-    LogRequest,
     SetPasswordRequest,
     ToggleRequest,
 )
@@ -686,37 +685,6 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
     await db.delete(device)
     await db.commit()
     return {"deleted": device_id}
-
-
-@router.post("/{device_id}/logs", dependencies=[Depends(require_permission(DEVICES_READ))])
-async def request_device_logs(
-    device_id: str,
-    request: Request,
-    body: LogRequest = LogRequest(),
-    db: AsyncSession = Depends(get_db),
-):
-    """Request logs from a connected device via WebSocket.
-
-    Returns a dict of {service_name: log_text}.
-    """
-    device = await _get_device_with_access(device_id, request, db)
-
-    if not await get_transport().is_connected(device_id):
-        raise HTTPException(status_code=409, detail="Device is not connected")
-
-    try:
-        logs = await get_transport().request_logs(device_id, services=body.services, since=body.since)
-    except TimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except RuntimeError as e:
-        # The device reported an error while collecting logs (e.g. journalctl
-        # not installed). Surface it as an upstream/bad-gateway response with
-        # the device's own error string so the operator can diagnose.
-        raise HTTPException(status_code=502, detail=str(e))
-
-    return {"device_id": device_id, "logs": logs}
 
 
 # ── Groups ──

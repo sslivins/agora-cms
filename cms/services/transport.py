@@ -9,11 +9,15 @@ sees the same view.  Presence queries (``is_connected``,
 the DB — they are ``async`` and open a short-lived session from the
 configured session factory when the caller doesn't supply one.
 
-WS-lifecycle operations (``register``/``disconnect``/``update_status``/
-``resolve_log_request``) remain implementation details of the direct-WS
-connection registry on ``device_manager`` — only ``cms/routers/ws.py``
-and the unit tests that fabricate device connections import it
-directly.  Other code touches presence through this interface.
+WS-lifecycle operations (``register``/``disconnect``/``update_status``)
+remain implementation details of the direct-WS connection registry on
+``device_manager`` — only ``cms/routers/ws.py`` and the unit tests that
+fabricate device connections import it directly.  Other code touches
+presence through this interface.
+
+The synchronous ``request_logs`` RPC was retired in favour of the
+multi-replica-safe outbox in :mod:`cms.routers.log_requests`; only
+the fire-and-forget ``dispatch_request_logs`` method remains.
 """
 
 from __future__ import annotations
@@ -80,19 +84,6 @@ class DeviceTransport(ABC):
     @abstractmethod
     async def get_all_states(self) -> list[dict[str, Any]]:
         """Latest playback/health state for every connected device."""
-
-    @abstractmethod
-    async def request_logs(
-        self,
-        device_id: str,
-        services: list[str] | None = None,
-        since: str = "24h",
-        timeout: float = 30.0,
-    ) -> dict[str, str]:
-        """Synchronous RPC to pull device logs.
-
-        Stage 3 replaces this with a blob-upload outbox; this method will
-        be removed from the interface at that point."""
 
     @abstractmethod
     async def dispatch_request_logs(
@@ -176,17 +167,6 @@ class LocalDeviceTransport(DeviceTransport):
         async with _session() as db:
             return await device_presence.list_states(db)
 
-    async def request_logs(
-        self,
-        device_id: str,
-        services: list[str] | None = None,
-        since: str = "24h",
-        timeout: float = 30.0,
-    ) -> dict[str, str]:
-        return await self._manager.request_logs(
-            device_id, services=services, since=since, timeout=timeout,
-        )
-
     async def dispatch_request_logs(
         self,
         device_id: str,
@@ -196,8 +176,8 @@ class LocalDeviceTransport(DeviceTransport):
         since: str = "24h",
     ) -> None:
         # Look up the live WS directly — this transport is single-replica
-        # so if we don't own a socket, nobody does.  Do NOT register a
-        # future in ``_pending_log_requests``: the outbox owns state.
+        # so if we don't own a socket, nobody does.  The outbox row owns
+        # the state machine; we just fire the message.
         conn = self._manager.get(device_id)
         if conn is None:
             raise ValueError(f"Device {device_id} is not connected")
