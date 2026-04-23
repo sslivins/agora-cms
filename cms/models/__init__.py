@@ -15,6 +15,7 @@ from cms.models.notification_pref import UserNotificationPref  # noqa: F401
 from cms.models.schedule import Schedule  # noqa: F401
 from cms.models.schedule_device_skip import ScheduleDeviceSkip  # noqa: F401
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent  # noqa: F401
+from cms.models.schedule_missed_event import ScheduleMissedEvent  # noqa: F401
 from cms.models.setting import CMSSetting  # noqa: F401
 from cms.models.user import Role, User, UserGroup  # noqa: F401
 
