@@ -343,10 +343,15 @@ async function saveAlertSettings() {
         </div>
     </div>
 
-    <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; cursor: pointer;">
+    <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; cursor: pointer;">
         <input type="checkbox" id="logs-include-cms" checked style="width: auto; margin: 0;">
         <span>Include CMS logs</span>
     </label>
+    <p class="text-muted" style="margin: 0 0 1rem 1.75rem; font-size: 0.8rem;">
+        Includes recent logs from the CMS instance that serves this download.
+        In single-instance deployments this is the full CMS log buffer; in
+        multi-instance deployments use Azure Log Analytics for a complete view.
+    </p>
 
     <button type="button" class="btn btn-primary" id="logs-download-btn">
         Download Logs
@@ -386,6 +391,11 @@ async function saveAlertSettings() {
     // ``agora-logs-<ISO>.zip`` archive.  CMS logs (if checked) are
     // fetched from GET /api/cms/logs as a zip and unpacked under
     // ``cms-logs/``.  A single Save As dialog is presented at the end.
+    //
+    // Replica-local caveat: the CMS log buffer is per-replica, so in
+    // a multi-replica deployment behind a load balancer the CMS zip
+    // reflects only whichever replica handled the download request.
+    // Use Azure Log Analytics for a complete CMS-side view.
 
     const POLL_INTERVAL_MS = 2000;
     const POLL_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes per device

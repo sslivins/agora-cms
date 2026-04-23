@@ -48,8 +48,16 @@ async def download_cms_logs(request: Request, db: AsyncSession = Depends(get_db)
 
     Small, synchronous endpoint used by the new UI flow to fetch CMS
     logs separately from per-device log bundles.  Does not reach
-    across the network to devices, so it is safe under N>1 replicas
-    (each replica returns its own buffer; the UI documents this).
+    across the network to devices, so it is safe to call on any
+    replica.
+
+    Replica-local caveat: under any multi-replica deployment behind a
+    load balancer (including Azure Container Apps), the load balancer
+    routes each HTTP request to an arbitrary replica, so the returned
+    buffer reflects only that replica's recent logs.  In single-replica
+    deployments this is the full CMS log buffer.  For a complete view
+    across all replicas in a multi-replica deployment, use the Azure
+    Log Analytics workspace (container stdout is shipped there).
     """
     from cms.main import _log_buffer
 
