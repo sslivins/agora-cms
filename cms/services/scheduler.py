@@ -440,6 +440,8 @@ def get_upcoming_schedules(
     now_playing: list[dict] | None = None,
     offline_device_ids: set[str] | None = None,
     skipped_schedule_ids: set[str] | None = None,
+    per_device_skipped: set[tuple[str, str]] | None = None,
+    target_devices_by_schedule: dict[str, set[str]] | None = None,
 ) -> list[dict]:
     """Return schedules starting within the next 24 hours.
 
@@ -451,14 +453,27 @@ def get_upcoming_schedules(
     today or tomorrow.
 
     ``skipped_schedule_ids`` is the set of schedule IDs (as strings) that the
-    operator has "Ended Now" and should therefore be hidden from the upcoming
-    list.  Callers should pass ``skips.schedule_wide.keys()`` from a
-    :func:`load_skip_snapshot` (filtered to active entries) — the default of
-    ``None`` treats no schedules as skipped, which is safe for unit tests
-    that never exercise the skip path.
+    operator has "Ended Now" (schedule-wide) and should therefore be hidden
+    from the upcoming list.  Callers should pass
+    ``skips.schedule_wide.keys()`` from a :func:`load_skip_snapshot`
+    (filtered to active entries) — the default of ``None`` treats no
+    schedules as skipped, which is safe for unit tests that never exercise
+    the skip path.
+
+    ``per_device_skipped`` is the set of ``(schedule_id, device_id)`` tuples
+    with active per-device skips (from ``skips.per_device.keys()``).  When
+    combined with ``target_devices_by_schedule`` (mapping schedule_id →
+    set of ADOPTED target device ids), a schedule whose time window matches
+    but whose *every adopted target* has an active per-device skip is
+    filtered out.  This prevents "End Now" on a per-device row from leaving
+    the schedule stuck in "Coming Up" with a "Starting…" badge.  Both args
+    must be provided together to activate per-device filtering; either
+    ``None`` disables it (safe default for tests).
     """
     _offline = offline_device_ids or set()
     _skipped_ids: set[str] = set(skipped_schedule_ids or ())
+    _per_device_skipped: set[tuple[str, str]] = set(per_device_skipped or ())
+    _targets_by_sched: dict[str, set[str]] = target_devices_by_schedule or {}
     local_now = now.astimezone(tz).replace(tzinfo=None)
     today = local_now.date()
     tomorrow = today + timedelta(days=1)
@@ -486,7 +501,17 @@ def get_upcoming_schedules(
             if str(s.id) in _winning_sids:
                 continue  # currently winning — shown in Now Playing
             if str(s.id) in _skipped_ids:
-                continue  # deliberately ended via End Now
+                continue  # deliberately ended via End Now (schedule-wide)
+            # Per-device End Now: if every ADOPTED target has an active
+            # per-device skip for this schedule, hide it from Coming Up
+            # too.  (Dashboard "End Now" button always posts device_id,
+            # so a single-target schedule ends up here rather than in
+            # schedule_wide.)
+            sid_str = str(s.id)
+            targets = _targets_by_sched.get(sid_str)
+            if targets:
+                if all((sid_str, did) in _per_device_skipped for did in targets):
+                    continue
             # Check if genuinely preempted (higher-priority schedule active on same target)
             resume_at = _find_resume_time(s, schedules, local_now)
             if resume_at is not None:
@@ -783,6 +808,36 @@ async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
         )
         return [row[0] for row in result.all()]
     return []
+
+
+async def load_target_devices_by_schedule(
+    schedules: list[Schedule], db
+) -> dict[str, set[str]]:
+    """Bulk-resolve {schedule_id_str: {adopted_device_ids}} for many schedules.
+
+    Single indexed SQL query over the distinct ``group_id`` set referenced
+    by ``schedules``; used by dashboard / schedules UI to feed
+    ``get_upcoming_schedules(..., target_devices_by_schedule=...)`` without
+    per-schedule DB round-trips.  Only ADOPTED devices count as targets —
+    matches :func:`_get_target_device_ids`.
+    """
+    group_ids = {s.group_id for s in schedules if s.group_id}
+    if not group_ids:
+        return {}
+    result = await db.execute(
+        select(Device.group_id, Device.id).where(
+            Device.group_id.in_(group_ids),
+            Device.status == DeviceStatus.ADOPTED,
+        )
+    )
+    devices_by_group: dict = {}
+    for gid, did in result.all():
+        devices_by_group.setdefault(gid, set()).add(did)
+    return {
+        str(s.id): devices_by_group.get(s.group_id, set())
+        for s in schedules
+        if s.group_id
+    }
 
 
 def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = None) -> ScheduleEntry:
