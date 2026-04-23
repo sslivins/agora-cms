@@ -32,6 +32,7 @@ jobs:
               - 'pyproject.toml'
               - 'requirements*.txt'
               - '.github/workflows/tests.yml'
+              - 'Dockerfile'
             broker:
               - 'local-broker/**'
               - '.github/workflows/tests.yml'
@@ -203,13 +204,63 @@ jobs:
       - name: Run broker tests
         run: python -m pytest tests/ -v --tb=short
 
+  # Multi-replica smoke subset. Spins up the compose harness and runs
+  # the ``smoke``-marked integration tests: both replicas answer an
+  # authenticated GET, exactly one live leader per critical loop
+  # (scheduler, offline_sweep), skip written on B is visible via A,
+  # and concurrent upgrades hit the atomic claim. Wired into
+  # ci-gate so a cross-replica regression blocks merge.
+  multireplica-smoke:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install host-side test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run multi-replica smoke tests
+        env:
+          AGORA_RUN_INTEGRATION: "1"
+        run: |
+          # Fixture owns the compose lifecycle (up + healthz + leader
+          # poll + down). ``-m smoke`` restricts to the required
+          # subset; non-smoke integration tests (when they land) run
+          # elsewhere.
+          pytest tests/integration/ \
+            --run-integration \
+            -m smoke \
+            -p no:xdist -p no:timeout \
+            -v --tb=short
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/integration/docker-compose.integration.yml logs \
+            --no-color --tail=500 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f tests/integration/docker-compose.integration.yml \
+            down -v --remove-orphans || true
+
   # Umbrella check that branch protection requires. Runs on every PR so
   # it always reports a status. Passes iff every upstream job is either
   # success or skipped (path-filtered out); fails on failure/cancelled.
   # Keeps tests-only PRs unblocked while still catching real breakage.
   ci-gate:
     name: ci-gate
-    needs: [changes, test, e2e, broker-test]
+    needs: [changes, test, e2e, broker-test, multireplica-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -220,8 +271,9 @@ jobs:
           echo "test=${{ needs.test.result }}"
           echo "e2e=${{ needs.e2e.result }}"
           echo "broker-test=${{ needs.broker-test.result }}"
+          echo "multireplica-smoke=${{ needs.multireplica-smoke.result }}"
           fail=0
-          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}" "${{ needs.broker-test.result }}"; do
+          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}" "${{ needs.broker-test.result }}" "${{ needs.multireplica-smoke.result }}"; do
             case "$r" in
               success|skipped) ;;
               *) fail=1 ;;
