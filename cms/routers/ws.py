@@ -187,6 +187,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             db, device_id, connection_id=conn_id, ip_address=client_ip,
         )
         # Stage 4: clear any stale upgrade-in-progress claim so the
+        # Stage 4: clear any stale upgrade-in-progress claim so the
         # device can be upgraded again on a future request — but only
         # when this register represents an actual completed upgrade:
         #   - there was a claim at register time (``pre_register_upgrade_claim``),
