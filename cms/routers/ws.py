@@ -185,6 +185,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             update(Device)
             .where(Device.id == device_id)
             .values(upgrade_started_at=None)
+            .execution_options(synchronize_session=False)
         )
         await db.commit()
 

@@ -63,6 +63,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_device_alert_state_pending", table_name="device_alert_state")
-    op.drop_table("device_alert_state")
-    op.drop_column("devices", "upgrade_started_at")
+    raise NotImplementedError("Downgrade is not supported for this migration.")

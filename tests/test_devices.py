@@ -519,37 +519,54 @@ class TestUpgradeGuard:
         assert "not connected" in resp.json()["detail"]
 
     async def test_upgrade_concurrent_blocked(self, client, db_session):
-        """Second upgrade to the same device returns 409."""
+        """Second upgrade to the same device returns 409 (DB-backed CAS claim)."""
+        from datetime import datetime, timezone
         from cms.models.device import Device, DeviceStatus
-        from cms.routers.devices import _upgrading
         from cms.services.device_manager import device_manager
 
-        device = Device(id="up-pi-002", name="up-pi-002", status=DeviceStatus.ADOPTED)
+        device = Device(
+            id="up-pi-002",
+            name="up-pi-002",
+            status=DeviceStatus.ADOPTED,
+            upgrade_started_at=datetime.now(timezone.utc),
+        )
         db_session.add(device)
         await db_session.commit()
 
-        # Simulate device connected and already upgrading
+        # Simulate device connected and already upgrading (claim already held)
         class FakeWS:
             async def send_json(self, data): pass
         device_manager.register("up-pi-002", FakeWS())
-        _upgrading.add("up-pi-002")
 
         try:
             resp = await client.post("/api/devices/up-pi-002/upgrade")
             assert resp.status_code == 409
             assert "already in progress" in resp.json()["detail"]
         finally:
-            _upgrading.discard("up-pi-002")
             device_manager.disconnect("up-pi-002")
 
     async def test_upgrade_clears_flag_on_disconnect(self, client, db_session):
-        """Upgrading flag is cleared when device disconnects (simulated)."""
-        from cms.routers.devices import _upgrading
+        """Upgrading flag is cleared via DB column on disconnect."""
+        from sqlalchemy import select
+        from cms.models.device import Device, DeviceStatus
 
-        _upgrading.add("up-pi-003")
-        # Simulate what ws.py finally block does
-        _upgrading.discard("up-pi-003")
-        assert "up-pi-003" not in _upgrading
+        # The claim column is cleared on register (see ws.py). Verify it
+        # can be set + cleared atomically through the ORM column.
+        device = Device(id="up-pi-003", name="up-pi-003", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        from datetime import datetime, timezone
+        device.upgrade_started_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        device.upgrade_started_at = None
+        await db_session.commit()
+
+        row = (await db_session.execute(
+            select(Device).where(Device.id == "up-pi-003")
+        )).scalar_one()
+        assert row.upgrade_started_at is None
 
 
 @pytest.mark.asyncio

@@ -60,4 +60,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("leader_leases")
+    raise NotImplementedError("Downgrade is not supported for this migration.")
