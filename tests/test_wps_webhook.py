@@ -311,6 +311,124 @@ class TestUserEvents:
             # send closure should be wired to the current transport.
             assert callable(kwargs["send"])
 
+    async def test_ce_time_header_parsed_into_received_at(
+        self, client, app_and_session,
+    ):
+        """ce-time header (CloudEvents 1.0) is parsed into ctx.received_at.
+
+        Temperature-alert dedupe relies on this monotonic timestamp;
+        this test guards against regressions that drop the header.
+        """
+        from datetime import datetime, timezone
+
+        app, session = app_and_session
+        device = MagicMock()
+        device.id = "pi-ce"
+        device.name = "L"
+        device.group_id = None
+        device.status = MagicMock(value="adopted")
+        session.device_row = device
+
+        cid = "conn-ce"
+        payload = {"type": "STATUS", "cpu_temp_c": 50.0}
+        with patch(
+            "cms.routers.wps_webhook.dispatch_device_message",
+            new=AsyncMock(return_value=None),
+        ) as mock_dispatch:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps(payload).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-ce",
+                    "ce-eventName": "message",
+                    "ce-signature": _sig(cid),
+                    "ce-time": "2026-04-23T06:30:00.123Z",
+                },
+            )
+            assert r.status_code == 204
+            _, kwargs = mock_dispatch.call_args
+            received_at = kwargs["ctx"].received_at
+            assert received_at is not None
+            assert received_at == datetime(
+                2026, 4, 23, 6, 30, 0, 123000, tzinfo=timezone.utc,
+            )
+
+    async def test_ce_time_missing_falls_back_to_none(
+        self, client, app_and_session,
+    ):
+        """Missing ce-time header results in ctx.received_at=None.
+
+        alert_service then falls back to server now() with a warning
+        log.  Prevents a hard failure if Azure ever drops the header.
+        """
+        app, session = app_and_session
+        device = MagicMock()
+        device.id = "pi-no-time"
+        device.name = "L"
+        device.group_id = None
+        device.status = MagicMock(value="adopted")
+        session.device_row = device
+
+        cid = "conn-no-time"
+        payload = {"type": "STATUS"}
+        with patch(
+            "cms.routers.wps_webhook.dispatch_device_message",
+            new=AsyncMock(return_value=None),
+        ) as mock_dispatch:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps(payload).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-no-time",
+                    "ce-eventName": "message",
+                    "ce-signature": _sig(cid),
+                },
+            )
+            assert r.status_code == 204
+            _, kwargs = mock_dispatch.call_args
+            assert kwargs["ctx"].received_at is None
+
+    async def test_ce_time_malformed_falls_back_to_none(
+        self, client, app_and_session,
+    ):
+        """Malformed ce-time header is logged and ctx.received_at=None."""
+        app, session = app_and_session
+        device = MagicMock()
+        device.id = "pi-bad-time"
+        device.name = "L"
+        device.group_id = None
+        device.status = MagicMock(value="adopted")
+        session.device_row = device
+
+        cid = "conn-bad-time"
+        payload = {"type": "STATUS"}
+        with patch(
+            "cms.routers.wps_webhook.dispatch_device_message",
+            new=AsyncMock(return_value=None),
+        ) as mock_dispatch:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps(payload).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-bad-time",
+                    "ce-eventName": "message",
+                    "ce-signature": _sig(cid),
+                    "ce-time": "totally not a timestamp",
+                },
+            )
+            assert r.status_code == 204
+            _, kwargs = mock_dispatch.call_args
+            assert kwargs["ctx"].received_at is None
+
     async def test_non_json_body_is_400(self, client, app_and_session):
         _, session = app_and_session
         session.device_row = MagicMock(

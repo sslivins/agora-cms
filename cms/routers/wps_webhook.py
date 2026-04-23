@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlalchemy import select
@@ -274,6 +275,36 @@ async def events_receiver(
             return Response(status_code=204)
 
         base_url = _get_asset_base_url(request, settings)
+
+        # Parse CloudEvents 1.0 ``ce-time`` header (RFC 3339).  This is
+        # the Azure server time the event was produced — we use it as
+        # the monotonic timestamp for persisted temperature-alert state
+        # so out-of-order webhook deliveries don't overwrite newer
+        # state with older data.
+        received_at: datetime | None = None
+        ce_time_raw = request.headers.get("ce-time")
+        if ce_time_raw:
+            try:
+                # fromisoformat accepts ``+00:00`` but not ``Z`` until
+                # 3.11; normalize just in case.
+                received_at = datetime.fromisoformat(
+                    ce_time_raw.replace("Z", "+00:00"),
+                )
+                if received_at.tzinfo is None:
+                    received_at = received_at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                logger.warning(
+                    "Malformed ce-time header '%s' on WPS webhook for %s "
+                    "(conn=%s); falling back to server now()",
+                    ce_time_raw, ce_user_id, ce_connection_id,
+                )
+        else:
+            logger.warning(
+                "Missing ce-time header on WPS webhook for %s (conn=%s); "
+                "falling back to server now()",
+                ce_user_id, ce_connection_id,
+            )
+
         ctx = InboundContext(
             device_id=ce_user_id,
             device=device,
@@ -283,6 +314,7 @@ async def events_receiver(
             device_name=device.name or ce_user_id,
             device_status=device.status.value if device.status else "pending",
             group_name="",
+            received_at=received_at,
         )
 
         async def _send(payload: dict) -> None:

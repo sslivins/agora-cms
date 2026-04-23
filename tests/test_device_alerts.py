@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -285,27 +286,41 @@ class TestOfflineDetection:
 
 
 class TestTemperatureAlerts:
-    """Test temperature threshold monitoring and hysteresis."""
+    """Test temperature threshold monitoring and hysteresis (DB-backed)."""
+
+    _UNSET = object()
+
+    async def _call(
+        self, app, svc, info, temp, *, sample_ts=None, status="adopted",
+        group_id=_UNSET,
+    ):
+        """Helper: run ``check_temperature`` against the test DB."""
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            await svc.check_temperature(
+                db,
+                info["device_id"],
+                cpu_temp_c=temp,
+                device_name=info["device_name"],
+                group_id=info["group_id"] if group_id is self._UNSET else group_id,
+                group_name=info["group_name"],
+                status=status,
+                sample_ts=sample_ts,
+            )
+            break
 
     @pytest.mark.asyncio
     async def test_warning_threshold(self, app, seed_group_and_device, fresh_alert_service):
         """Crossing the warning threshold creates a TEMP_HIGH event."""
         info = seed_group_and_device
         svc = fresh_alert_service
+        t0 = datetime.now(timezone.utc)
 
         # Send temp below threshold — no alert
-        svc.check_temperature(
-            info["device_id"], 65.0, info["device_name"],
-            info["group_id"], info["group_name"], status="adopted",
-        )
-        await asyncio.sleep(0.3)
-
+        await self._call(app, svc, info, 65.0, sample_ts=t0)
         # Send temp above warning
-        svc.check_temperature(
-            info["device_id"], 72.0, info["device_name"],
-            info["group_id"], info["group_name"], status="adopted",
-        )
-        await asyncio.sleep(0.5)
+        await self._call(app, svc, info, 72.0, sample_ts=t0 + timedelta(seconds=1))
 
         from cms.database import get_db
         factory = app.dependency_overrides[get_db]
@@ -334,11 +349,7 @@ class TestTemperatureAlerts:
         info = seed_group_and_device
         svc = fresh_alert_service
 
-        svc.check_temperature(
-            info["device_id"], 85.0, info["device_name"],
-            info["group_id"], info["group_name"], status="adopted",
-        )
-        await asyncio.sleep(0.5)
+        await self._call(app, svc, info, 85.0, sample_ts=datetime.now(timezone.utc))
 
         from cms.database import get_db
         factory = app.dependency_overrides[get_db]
@@ -366,20 +377,10 @@ class TestTemperatureAlerts:
         """Temperature returning to normal creates a TEMP_CLEARED event."""
         info = seed_group_and_device
         svc = fresh_alert_service
+        t0 = datetime.now(timezone.utc)
 
-        # Go high
-        svc.check_temperature(
-            info["device_id"], 75.0, info["device_name"],
-            info["group_id"], info["group_name"], status="adopted",
-        )
-        await asyncio.sleep(0.5)
-
-        # Go back to normal
-        svc.check_temperature(
-            info["device_id"], 55.0, info["device_name"],
-            info["group_id"], info["group_name"], status="adopted",
-        )
-        await asyncio.sleep(0.5)
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        await self._call(app, svc, info, 55.0, sample_ts=t0 + timedelta(seconds=1))
 
         from cms.database import get_db
         factory = app.dependency_overrides[get_db]
@@ -393,6 +394,11 @@ class TestTemperatureAlerts:
             assert DeviceEventType.TEMP_HIGH in types
             assert DeviceEventType.TEMP_CLEARED in types
 
+            cleared = [e for e in events if e.event_type == DeviceEventType.TEMP_CLEARED]
+            # previous_level should be preserved in details so operators
+            # can see what was cleared from.
+            assert cleared[0].details.get("previous_level") == "warning"
+
             notifs = (await db.execute(
                 select(Notification).where(
                     Notification.group_id == uuid.UUID(info["group_id"]),
@@ -403,51 +409,232 @@ class TestTemperatureAlerts:
             break
 
     @pytest.mark.asyncio
-    async def test_no_duplicate_alerts(self, fresh_alert_service):
-        """Repeated heartbeats at same temp level don't create duplicate alerts."""
+    async def test_no_duplicate_alerts_same_level(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """Repeated heartbeats at same temp level, within cooldown, don't fire duplicates."""
+        info = seed_group_and_device
         svc = fresh_alert_service
-        gid = str(uuid.uuid4())
+        svc._temp_cooldown_seconds = 60
+        t0 = datetime.now(timezone.utc)
 
-        # First: go warning
-        svc.check_temperature("dev1", 75.0, "Dev1", gid, "G", status="adopted")
-        # Same level again — should be ignored
-        svc.check_temperature("dev1", 76.0, "Dev1", gid, "G", status="adopted")
-        svc.check_temperature("dev1", 74.0, "Dev1", gid, "G", status="adopted")
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        # Subsequent same-level samples within cooldown: no new event.
+        await self._call(app, svc, info, 76.0, sample_ts=t0 + timedelta(seconds=1))
+        await self._call(app, svc, info, 74.0, sample_ts=t0 + timedelta(seconds=2))
 
-        # Only one transition happened
-        state = svc._temp_states["dev1"]
-        assert state.level == "warning"
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            events = (await db.execute(
+                select(DeviceEvent).where(
+                    DeviceEvent.device_id == info["device_id"],
+                    DeviceEvent.event_type == DeviceEventType.TEMP_HIGH,
+                )
+            )).scalars().all()
+            assert len(events) == 1
+            break
 
     @pytest.mark.asyncio
-    async def test_cooldown_prevents_flapping(self, fresh_alert_service):
-        """After temp clears, cooldown prevents immediate re-alert."""
+    async def test_reminder_fires_after_cooldown(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """Sustained high-temp past cooldown fires a reminder TEMP_HIGH.
+
+        User requirement: "never miss a high-temp alert."
+        """
+        info = seed_group_and_device
         svc = fresh_alert_service
-        svc._temp_cooldown_seconds = 60  # Long cooldown
-        gid = str(uuid.uuid4())
+        svc._temp_cooldown_seconds = 10
+        t0 = datetime.now(timezone.utc)
 
-        # Go high
-        svc.check_temperature("dev2", 75.0, "Dev2", gid, "G", status="adopted")
-        # Go normal (cleared)
-        svc.check_temperature("dev2", 55.0, "Dev2", gid, "G", status="adopted")
-        # Go high again within cooldown — should be suppressed
-        svc.check_temperature("dev2", 75.0, "Dev2", gid, "G", status="adopted")
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        # Past cooldown, still warning — should fire a reminder.
+        await self._call(app, svc, info, 75.0, sample_ts=t0 + timedelta(seconds=15))
 
-        state = svc._temp_states["dev2"]
-        assert state.level == "normal"  # Didn't transition because of cooldown
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            events = (await db.execute(
+                select(DeviceEvent).where(
+                    DeviceEvent.device_id == info["device_id"],
+                    DeviceEvent.event_type == DeviceEventType.TEMP_HIGH,
+                )
+            )).scalars().all()
+            assert len(events) == 2
+            break
 
     @pytest.mark.asyncio
-    async def test_none_temp_ignored(self, fresh_alert_service):
-        """None temperature values are silently ignored."""
+    async def test_escalation_bypasses_cooldown(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """warning→critical always fires, even inside cooldown window."""
+        info = seed_group_and_device
         svc = fresh_alert_service
-        svc.check_temperature("dev3", None, "Dev3", str(uuid.uuid4()), "G", status="adopted")
-        assert "dev3" not in svc._temp_states
+        svc._temp_cooldown_seconds = 600  # Long cooldown
+        t0 = datetime.now(timezone.utc)
+
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        # Within cooldown, escalating to critical: MUST fire.
+        await self._call(app, svc, info, 85.0, sample_ts=t0 + timedelta(seconds=1))
+
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            events = (await db.execute(
+                select(DeviceEvent).where(
+                    DeviceEvent.device_id == info["device_id"],
+                    DeviceEvent.event_type == DeviceEventType.TEMP_HIGH,
+                )
+            )).scalars().all()
+            assert len(events) == 2
+            levels = [e.details["level"] for e in events]
+            assert "warning" in levels
+            assert "critical" in levels
+            break
 
     @pytest.mark.asyncio
-    async def test_pending_device_temp_ignored(self, fresh_alert_service):
-        """Pending devices don't trigger temperature alerts."""
+    async def test_stale_sample_ignored(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """Out-of-order delivery: older sample_ts doesn't overwrite newer state."""
+        info = seed_group_and_device
         svc = fresh_alert_service
-        svc.check_temperature("dev4", 85.0, "Dev4", str(uuid.uuid4()), "G", status="pending")
-        assert "dev4" not in svc._temp_states
+        t0 = datetime.now(timezone.utc)
+
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        # Stale sample — older ts, lower temp. Must be ignored.
+        await self._call(app, svc, info, 55.0, sample_ts=t0 - timedelta(seconds=30))
+
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            state = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == info["device_id"]
+                )
+            )).scalar_one()
+            assert state.temp_level == "warning"
+            # SQLite strips tzinfo on round-trip; compare naive-UTC.
+            stored_ts = state.temp_last_sample_ts
+            if stored_ts.tzinfo is not None:
+                stored_ts = stored_ts.astimezone(timezone.utc).replace(tzinfo=None)
+            assert stored_ts == t0.replace(tzinfo=None)
+
+            cleared = (await db.execute(
+                select(DeviceEvent).where(
+                    DeviceEvent.device_id == info["device_id"],
+                    DeviceEvent.event_type == DeviceEventType.TEMP_CLEARED,
+                )
+            )).scalars().all()
+            assert len(cleared) == 0
+            break
+
+    @pytest.mark.asyncio
+    async def test_none_temp_ignored(self, app, seed_group_and_device, fresh_alert_service):
+        """None temperature values are silently ignored (no state written)."""
+        info = seed_group_and_device
+        svc = fresh_alert_service
+        await self._call(app, svc, info, None, sample_ts=datetime.now(timezone.utc))
+
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            state = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == info["device_id"]
+                )
+            )).scalar_one_or_none()
+            # Either no row or default 'normal' state — just assert no
+            # non-normal state leaked.
+            assert state is None or state.temp_level == "normal"
+            break
+
+    @pytest.mark.asyncio
+    async def test_pending_device_temp_resets_state(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """Non-adopted heartbeat resets any persisted temp state.
+
+        Prevents the following bug: device A warns at 75°C, gets
+        unadopted, later re-adopted in a different group — first
+        warning should fire cleanly, not be suppressed by stale state.
+        """
+        info = seed_group_and_device
+        svc = fresh_alert_service
+        t0 = datetime.now(timezone.utc)
+
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        # Now pretend the device got unadopted and sends a pending
+        # heartbeat — state should reset.
+        await self._call(
+            app, svc, info, 90.0, sample_ts=t0 + timedelta(seconds=1),
+            status="pending",
+        )
+
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            state = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == info["device_id"]
+                )
+            )).scalar_one_or_none()
+            assert state is not None
+            assert state.temp_level == "normal"
+            assert state.temp_last_alert_at is None
+            assert state.temp_last_sample_ts is None
+            break
+
+    @pytest.mark.asyncio
+    async def test_ungrouped_device_temp_resets_state(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """Ungrouped device resets temp state even if still adopted."""
+        info = seed_group_and_device
+        svc = fresh_alert_service
+        t0 = datetime.now(timezone.utc)
+
+        await self._call(app, svc, info, 75.0, sample_ts=t0)
+        # Device got un-grouped — state should reset.
+        await self._call(
+            app, svc, info, 90.0, sample_ts=t0 + timedelta(seconds=1),
+            group_id=None,
+        )
+
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            state = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == info["device_id"]
+                )
+            )).scalar_one_or_none()
+            assert state is not None
+            assert state.temp_level == "normal"
+            break
+
+    @pytest.mark.asyncio
+    async def test_sample_ts_fallback_to_now_when_missing(
+        self, app, seed_group_and_device, fresh_alert_service,
+    ):
+        """Missing sample_ts falls back to server now() with a log warning."""
+        info = seed_group_and_device
+        svc = fresh_alert_service
+        # No sample_ts — exercises the fallback path.
+        await self._call(app, svc, info, 75.0, sample_ts=None)
+
+        from cms.database import get_db
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            events = (await db.execute(
+                select(DeviceEvent).where(
+                    DeviceEvent.device_id == info["device_id"],
+                    DeviceEvent.event_type == DeviceEventType.TEMP_HIGH,
+                )
+            )).scalars().all()
+            assert len(events) == 1
+            break
 
 
 # ── Device Events API Tests ──
@@ -603,26 +790,13 @@ class TestNotificationPrefsAPI:
 # ── Cleanup test ──
 
 class TestAlertServiceCleanup:
-    """Test cleanup of in-memory state."""
+    """Test cleanup_device is a safe no-op post-DB-migration."""
 
     @pytest.mark.asyncio
-    async def test_cleanup_cancels_timer(self, fresh_alert_service):
-        """cleanup_device clears in-memory temp state (offline state is DB-backed)."""
+    async def test_cleanup_is_noop(self, fresh_alert_service):
+        """cleanup_device is a no-op (temp state lives in DB, cascade-deleted)."""
         svc = fresh_alert_service
-        gid = str(uuid.uuid4())
-        # Put a temp-state entry in the in-memory dict so cleanup has
-        # something to clear.
-        svc.check_temperature("dev-clean", 75.0, "Cleanup Dev", gid, "G", status="adopted")
-        assert "dev-clean" in svc._temp_states
-
+        # Should not raise — previously cleared in-memory state, now
+        # delegated to the ON DELETE CASCADE on device_alert_state.
         svc.cleanup_device("dev-clean")
-        assert "dev-clean" not in svc._temp_states
-
-    @pytest.mark.asyncio
-    async def test_cleanup_removes_temp_state(self, fresh_alert_service):
-        svc = fresh_alert_service
-        svc.check_temperature("dev-tc", 75.0, "D", str(uuid.uuid4()), "G", status="adopted")
-        assert "dev-tc" in svc._temp_states
-
-        svc.cleanup_device("dev-tc")
-        assert "dev-tc" not in svc._temp_states
+        svc.cleanup_device("nonexistent-device")

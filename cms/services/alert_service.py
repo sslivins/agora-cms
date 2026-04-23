@@ -1,25 +1,29 @@
 """Alert service — DB-backed device health monitoring (Stage 4 of #344).
 
-Two independent alert streams:
+Two independent alert streams, both persisted in ``device_alert_state``
+so they survive replica failover and don't double-fire across replicas:
 
-1. **Offline detection** — persisted in ``device_alert_state`` so alerts
-   survive failover and don't double-fire across replicas.  The
-   disconnect path only transitions ``offline_since`` NULL→timestamp
-   (duplicate disconnects don't reset the grace window).  A
-   leader-gated sweep loop (:func:`offline_sweep_once` driven from
-   ``cms/main.py``) flips ``offline_notified`` and emits the
-   "offline" notification + event in a single transaction.  The
-   reconnect path CAS-consumes ``offline_notified`` in the same
-   transaction that emits the "back online" notification, so a race
-   between two replicas handling the reconnect only lets one of them
-   fire the alert.
+1. **Offline detection** — the disconnect path only transitions
+   ``offline_since`` NULL→timestamp (duplicate disconnects don't reset
+   the grace window).  A leader-gated sweep loop
+   (:func:`offline_sweep_once` driven from ``cms/main.py``) flips
+   ``offline_notified`` and emits the "offline" notification + event
+   in a single transaction.  The reconnect path CAS-consumes
+   ``offline_notified`` in the same transaction that emits the "back
+   online" notification, so a race between two replicas handling the
+   reconnect only lets one of them fire the alert.
 
-2. **Temperature monitoring** — still replica-local.  Temp alerts
-   come from STATUS heartbeats; under WPS those land on whichever
-   replica the webhook is routed to.  Each replica maintains its own
-   cooldown state; duplicate temperature warnings are acceptable (and
-   arguably informative), so persisting this state is not a
-   correctness requirement for multi-replica.
+2. **Temperature monitoring** — STATUS heartbeats land on whichever
+   replica the WPS webhook is routed to.  ``check_temperature`` locks
+   the device's ``device_alert_state`` row via ``SELECT ... FOR
+   UPDATE`` and inspects-and-mutates the persisted ``temp_level`` /
+   ``temp_last_alert_at`` / ``temp_last_sample_ts`` columns in one
+   transaction.  Out-of-order samples (older ``sample_ts`` than the
+   one stored) are ignored.  High-temperature alerts are never
+   deduped away silently: if a device sits at warning or critical for
+   longer than the cooldown, we re-emit a reminder alert so the
+   operator is notified every cooldown window.  No leader election is
+   needed — the row lock is the serializer.
 
 Notifications use scope="group" so only users with access to the
 device's group (plus admins via groups:view_all) see them in the bell.
@@ -50,6 +54,28 @@ def _to_uuid(val: str | _uuid.UUID | None) -> _uuid.UUID | None:
     return val if isinstance(val, _uuid.UUID) else _uuid.UUID(str(val))
 
 
+def _upsert_alert_state_stmt(device_id: str):
+    """Return a dialect-aware ``INSERT ... ON CONFLICT DO NOTHING`` stmt.
+
+    Used to lazily create a ``device_alert_state`` row for a device the
+    first time we need to mutate its temp state.  Postgres path uses
+    ``ON CONFLICT DO NOTHING``; sqlite tests use ``OR IGNORE``.
+    """
+    from cms.database import get_engine
+    engine = get_engine()
+    dialect = engine.dialect.name if engine is not None else "sqlite"
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        return pg_insert(DeviceAlertState).values(
+            device_id=device_id, temp_level="normal",
+        ).on_conflict_do_nothing(index_elements=["device_id"])
+    # sqlite / other
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    return sqlite_insert(DeviceAlertState).values(
+        device_id=device_id, temp_level="normal",
+    ).on_conflict_do_nothing(index_elements=["device_id"])
+
+
 logger = logging.getLogger("agora.cms.alerts")
 
 # Default settings (overridable via CMSSetting)
@@ -59,27 +85,14 @@ DEFAULT_TEMP_CRITICAL_C = 80.0
 DEFAULT_TEMP_COOLDOWN_SECONDS = 300
 
 
-class _TempState:
-    """Per-device temperature alert state machine (in-memory, replica-local)."""
-
-    __slots__ = ("level", "last_alert_at")
-
-    def __init__(self):
-        self.level: str = "normal"   # "normal", "warning", "critical"
-        self.last_alert_at: Optional[datetime] = None
-
-
 class AlertService:
-    """Singleton service wired into the WebSocket handler.
+    """Singleton service wired into the WebSocket + WPS webhook handlers.
 
-    Offline alerting state lives in the ``device_alert_state`` table so
-    it survives replica failover and doesn't double-fire.  Temperature
-    alert state is in-memory per replica (see module docstring for
-    rationale).
+    All alert state lives in the ``device_alert_state`` table so it
+    survives replica failover and doesn't double-fire under N>1.
     """
 
     def __init__(self):
-        self._temp_states: dict[str, _TempState] = {}
         # Cached settings (refreshed periodically by
         # ``_alert_settings_refresh_loop`` in ``cms/main.py``).
         self._offline_grace_seconds: int = DEFAULT_OFFLINE_GRACE_SECONDS
@@ -438,147 +451,301 @@ class AlertService:
         await db.commit()
         return emitted
 
-    # ── Temperature monitoring (replica-local, unchanged) ──
+    # ── Temperature monitoring (DB-backed, multi-replica safe) ──
 
-    def check_temperature(
+    def _classify_temp(self, cpu_temp_c: float) -> str:
+        """Map a temperature reading to a level string."""
+        if cpu_temp_c >= self._temp_critical_c:
+            return "critical"
+        if cpu_temp_c >= self._temp_warning_c:
+            return "warning"
+        return "normal"
+
+    async def check_temperature(
         self,
+        db: AsyncSession,
         device_id: str,
         cpu_temp_c: Optional[float],
         device_name: str,
         group_id: Optional[str],
         group_name: str,
         status: str,
+        sample_ts: Optional[datetime] = None,
     ):
-        """Called on every STATUS heartbeat.  Only alerts for adopted+grouped devices."""
-        if cpu_temp_c is None or status != "adopted" or not group_id:
+        """Persistently track temperature alert state for a device.
+
+        Called on every STATUS heartbeat.  Serializes concurrent
+        replicas via ``SELECT ... FOR UPDATE`` on the
+        ``device_alert_state`` row for this device.
+
+        Firing rules (in order of precedence):
+
+        - Out-of-order samples (older ``sample_ts`` than the last
+          one stored) are ignored.
+        - Ungrouped / non-adopted / missing-reading paths RESET the
+          persisted temp state so re-adoption or re-grouping starts
+          fresh.  This prevents a device that was at ``warning``,
+          got ungrouped, then later regrouped from suppressing the
+          first warning in its new scope.
+        - Transitions between adjacent levels (normal↔warning,
+          warning↔critical, normal↔critical) fire an event +
+          notification.
+        - A cooldown applies to re-firing *after a cleared event*
+          (normal→non-normal): we wait at least ``cooldown`` since
+          the last alert before firing again.  Escalations (warning
+          →critical) fire immediately regardless of cooldown so we
+          never miss the more serious level.
+        - If the device stays at ``warning`` or ``critical`` for
+          longer than the cooldown, we emit a reminder TEMP_HIGH
+          every cooldown.  User requirement: "never miss a high-temp
+          alert."
+
+        The bell notification insert + DeviceEvent insert + state
+        mutation all happen inside the same ``db.commit()`` so a
+        crash between them rolls back cleanly.
+
+        ``sample_ts`` should come from the Azure WPS ``ce-time``
+        header (CloudEvents 1.0) when available.  Falls back to
+        ``datetime.now(UTC)`` — logged loudly when that happens so
+        missing headers can be spotted in prod.
+        """
+        if cpu_temp_c is None:
             return
 
-        state = self._temp_states.get(device_id)
+        # Ungrouped / non-adopted: reset persisted state so the first
+        # alert after re-adoption/regrouping fires cleanly.
+        if status != "adopted" or not group_id:
+            await self._reset_temp_state(db, device_id)
+            return
+
+        if sample_ts is None:
+            sample_ts = datetime.now(timezone.utc)
+            logger.warning(
+                "check_temperature for %s had no sample_ts; using server "
+                "now() as fallback (ce-time header likely missing from "
+                "WPS webhook)",
+                device_id,
+            )
+
+        new_level = self._classify_temp(cpu_temp_c)
+
+        # Lazily create the alert-state row; no-op if already present.
+        try:
+            await db.execute(_upsert_alert_state_stmt(device_id))
+        except Exception:
+            # The row may already exist; fine.  Other errors (FK
+            # violation from a not-yet-created device) bubble below.
+            logger.debug("Upsert of device_alert_state row for %s failed "
+                         "(likely already exists)", device_id)
+
+        # Lock the row for the duration of this transaction.  Under
+        # Postgres this serializes concurrent replicas processing
+        # heartbeats for the same device.  Under sqlite it degrades
+        # to a no-op but the test suite doesn't race on the same row.
+        stmt = (
+            select(DeviceAlertState)
+            .where(DeviceAlertState.device_id == device_id)
+            .with_for_update()
+        )
+        try:
+            result = await db.execute(stmt)
+            state = result.scalar_one_or_none()
+        except Exception:
+            logger.exception(
+                "Failed to lock device_alert_state for %s; skipping temp "
+                "alert this cycle", device_id,
+            )
+            return
+
         if state is None:
-            state = _TempState()
-            self._temp_states[device_id] = state
+            # Upsert failed AND the row doesn't exist — probably the
+            # device FK isn't there yet.  Log and bail.
+            logger.warning(
+                "device_alert_state row for %s unexpectedly missing after "
+                "upsert; skipping temp alert",
+                device_id,
+            )
+            return
 
-        # Determine new level
-        if cpu_temp_c >= self._temp_critical_c:
-            new_level = "critical"
-        elif cpu_temp_c >= self._temp_warning_c:
-            new_level = "warning"
-        else:
-            new_level = "normal"
+        # Reject stale samples (out-of-order webhook delivery).  We
+        # compare >= so that a duplicate retry with the same ts is a
+        # no-op (idempotent).  SQLite strips tzinfo on read, so
+        # normalize both sides to naive-UTC for the comparison.  In
+        # Postgres both are TIMESTAMPTZ and compare naturally.
+        def _to_naive_utc(dt: datetime) -> datetime:
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
 
-        if new_level == state.level:
-            return  # No transition
-
-        old_level = state.level
-        now = datetime.now(timezone.utc)
-
-        # Cooldown: don't re-alert within cooldown after a cleared event
-        if (
-            old_level == "normal"
-            and new_level != "normal"
-            and state.last_alert_at
-        ):
-            elapsed = (now - state.last_alert_at).total_seconds()
-            if elapsed < self._temp_cooldown_seconds:
+        if state.temp_last_sample_ts is not None:
+            stored = _to_naive_utc(state.temp_last_sample_ts)
+            incoming = _to_naive_utc(sample_ts)
+            if stored >= incoming:
                 return
 
-        state.level = new_level
+        old_level = state.temp_level
+        cooldown = timedelta(seconds=self._temp_cooldown_seconds)
+        if state.temp_last_alert_at is None:
+            past_cooldown = True
+        else:
+            last_alert = _to_naive_utc(state.temp_last_alert_at)
+            incoming_naive = _to_naive_utc(sample_ts)
+            past_cooldown = last_alert + cooldown <= incoming_naive
 
-        if new_level == "normal" and old_level != "normal":
-            # Temperature cleared
-            state.last_alert_at = now
-            asyncio.create_task(
-                self._create_temp_event(
-                    device_id, device_name, group_id, group_name,
-                    DeviceEventType.TEMP_CLEARED, cpu_temp_c, old_level,
-                )
-            )
+        should_fire = False
+        event_type: DeviceEventType | None = None
+        notif_level = "info"
+
+        if old_level != new_level:
+            # Transition.
+            if new_level == "normal":
+                # Cleared.  Always fire (no cooldown on good news).
+                should_fire = True
+                event_type = DeviceEventType.TEMP_CLEARED
+                notif_level = "success"
+            elif old_level == "warning" and new_level == "critical":
+                # Escalation — never miss a critical.
+                should_fire = True
+                event_type = DeviceEventType.TEMP_HIGH
+                notif_level = "error"
+            else:
+                # normal→warning, normal→critical, critical→warning.
+                # Apply cooldown.
+                if past_cooldown:
+                    should_fire = True
+                    event_type = DeviceEventType.TEMP_HIGH
+                    notif_level = "error" if new_level == "critical" else "warning"
         elif new_level != "normal":
-            # Temperature high (warning or critical)
-            state.last_alert_at = now
-            asyncio.create_task(
-                self._create_temp_event(
-                    device_id, device_name, group_id, group_name,
-                    DeviceEventType.TEMP_HIGH, cpu_temp_c, new_level,
-                )
+            # Same non-normal level.  Reminder path: re-alert every
+            # cooldown window so sustained high temperatures aren't
+            # silently swallowed.
+            if past_cooldown:
+                should_fire = True
+                event_type = DeviceEventType.TEMP_HIGH
+                notif_level = "error" if new_level == "critical" else "warning"
+
+        # Always advance the monotonic sample timestamp + stored level
+        # so future samples see accurate state — even on a no-fire
+        # branch (we learned something new even if we don't alert).
+        state.temp_level = new_level
+        state.temp_last_sample_ts = sample_ts
+
+        if should_fire and event_type is not None:
+            state.temp_last_alert_at = sample_ts
+            await self._emit_temp_alert(
+                db, device_id, device_name, group_id, group_name,
+                event_type=event_type,
+                notif_level=notif_level,
+                cpu_temp_c=cpu_temp_c,
+                new_level=new_level,
+                previous_level=old_level,
             )
 
-    async def _create_temp_event(
+        await db.commit()
+
+    async def _reset_temp_state(self, db: AsyncSession, device_id: str):
+        """Clear persisted temp state for a device.
+
+        Called when a STATUS heartbeat arrives for a device that is
+        ungrouped, non-adopted, or has no temperature reading.  The
+        next valid high-temp reading will then fire normally.
+
+        Uses a plain UPDATE; no-op if the row doesn't exist.  Does
+        not commit — caller owns the transaction.
+        """
+        try:
+            stmt = (
+                update(DeviceAlertState)
+                .where(DeviceAlertState.device_id == device_id)
+                .values(
+                    temp_level="normal",
+                    temp_last_alert_at=None,
+                    temp_last_sample_ts=None,
+                )
+            )
+            await db.execute(stmt)
+            await db.commit()
+        except Exception:
+            logger.exception("Failed to reset temp state for %s", device_id)
+
+    async def _emit_temp_alert(
         self,
+        db: AsyncSession,
         device_id: str,
         device_name: str,
         group_id: str,
         group_name: str,
+        *,
         event_type: DeviceEventType,
+        notif_level: str,
         cpu_temp_c: float,
-        level: str,
+        new_level: str,
+        previous_level: str,
     ):
-        """Create a temperature event + notification."""
-        try:
-            from cms.database import get_db
-            gid = _to_uuid(group_id)
-            async for db in get_db():
-                event = DeviceEvent(
-                    device_id=device_id,
-                    device_name=device_name,
-                    group_id=gid,
-                    group_name=group_name,
-                    event_type=event_type,
-                    details={
-                        "cpu_temp_c": cpu_temp_c,
-                        "threshold_warning": self._temp_warning_c,
-                        "threshold_critical": self._temp_critical_c,
-                        "level": level,
-                    },
-                )
-                db.add(event)
+        """Insert a DeviceEvent + Notification for a temperature transition.
 
-                if event_type == DeviceEventType.TEMP_HIGH:
-                    notif_level = "error" if level == "critical" else "warning"
-                    title = f"High temperature: {device_name}"
-                    message = (
-                        f"Device '{device_name}' in group '{group_name}' "
-                        f"is at {cpu_temp_c:.1f}°C ({level})."
-                    )
-                else:
-                    notif_level = "success"
-                    title = f"Temperature normal: {device_name}"
-                    message = (
-                        f"Device '{device_name}' in group '{group_name}' "
-                        f"temperature returned to normal ({cpu_temp_c:.1f}°C)."
-                    )
+        Caller owns the transaction (we only ``db.add``; no commit).
+        """
+        gid = _to_uuid(group_id)
+        details = {
+            "cpu_temp_c": cpu_temp_c,
+            "threshold_warning": self._temp_warning_c,
+            "threshold_critical": self._temp_critical_c,
+            "level": new_level,
+            "previous_level": previous_level,
+        }
+        db.add(DeviceEvent(
+            device_id=device_id,
+            device_name=device_name,
+            group_id=gid,
+            group_name=group_name,
+            event_type=event_type,
+            details=details,
+        ))
 
-                notification = Notification(
-                    scope="group",
-                    level=notif_level,
-                    title=title,
-                    message=message,
-                    group_id=gid,
-                    details={
-                        "device_id": device_id,
-                        "event_type": event_type,
-                        "cpu_temp_c": cpu_temp_c,
-                    },
-                )
-                db.add(notification)
-                await db.commit()
-                logger.info(
-                    "Temperature %s notification for device %s (%.1f°C)",
-                    event_type, device_id, cpu_temp_c,
-                )
-                break
-        except Exception:
-            logger.exception("Failed to create temp event for device %s", device_id)
+        if event_type == DeviceEventType.TEMP_HIGH:
+            title = f"High temperature: {device_name}"
+            message = (
+                f"Device '{device_name}' in group '{group_name}' "
+                f"is at {cpu_temp_c:.1f}°C ({new_level})."
+            )
+        else:
+            title = f"Temperature normal: {device_name}"
+            message = (
+                f"Device '{device_name}' in group '{group_name}' "
+                f"temperature returned to normal ({cpu_temp_c:.1f}°C)."
+            )
+
+        db.add(Notification(
+            scope="group",
+            level=notif_level,
+            title=title,
+            message=message,
+            group_id=gid,
+            details={
+                "device_id": device_id,
+                "event_type": event_type.value if hasattr(event_type, "value") else str(event_type),
+                "cpu_temp_c": cpu_temp_c,
+                "level": new_level,
+                "previous_level": previous_level,
+            },
+        ))
+        logger.info(
+            "Temperature %s for device %s (%.1f°C, %s→%s)",
+            event_type, device_id, cpu_temp_c, previous_level, new_level,
+        )
 
     # ── Cleanup ──
 
     def cleanup_device(self, device_id: str):
-        """Remove in-memory temp state for a device (e.g. when deleted).
+        """Backward-compat no-op.
 
-        DB-backed offline state is cleaned up by the ``ON DELETE CASCADE``
-        on ``device_alert_state.device_id``.
+        Previously cleaned up the in-memory ``_temp_states`` dict.
+        Now that all temp state lives in ``device_alert_state``, the
+        ``ON DELETE CASCADE`` on ``device_alert_state.device_id``
+        handles cleanup when a device is deleted.
         """
-        self._temp_states.pop(device_id, None)
+        return
 
 
 # Singleton
