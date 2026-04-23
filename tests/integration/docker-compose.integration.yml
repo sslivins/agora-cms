@@ -1,0 +1,80 @@
+# Multi-replica integration harness (issue #344 Stage 4).
+#
+# Standalone compose file — brings up TWO CMS replicas (cms-0, cms-1)
+# against a shared Postgres + asset volume.  Used by tests under
+# ``tests/integration/`` to exercise the DB-backed state surfaces
+# (leader election, CAS claims, cross-replica reads/writes) before
+# flipping the prod ACA deployment to ``minReplicas/maxReplicas=2``.
+#
+# Usage (from the agora-cms repo root):
+#
+#   docker compose -f tests/integration/docker-compose.integration.yml up -d --build
+#
+# The two CMS replicas are exposed on 8080 and 8081 on the host.
+# Postgres is exposed on 5434 (avoids collision with the default
+# docker-compose.yml stack if both are running).
+#
+# Tear down with:
+#   docker compose -f tests/integration/docker-compose.integration.yml down -v
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      - POSTGRES_USER=agora
+      - POSTGRES_PASSWORD=agora
+      - POSTGRES_DB=agora_cms
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata-integration:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agora -d agora_cms"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  cms-0: &cms_replica
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: "no"
+    environment: &cms_env
+      - AGORA_CMS_DATABASE_URL=postgresql+asyncpg://agora:agora@db:5432/agora_cms
+      - AGORA_CMS_SECRET_KEY=integration-test-secret
+      - AGORA_CMS_ADMIN_USERNAME=admin
+      - AGORA_CMS_ADMIN_PASSWORD=integration-testpass
+      - AGORA_CMS_DEVICE_TRANSPORT=local
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - cms-assets-integration:/opt/agora-cms/assets
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).status==200 else 1)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  cms-1:
+    <<: *cms_replica
+    environment: *cms_env
+    depends_on:
+      db:
+        condition: service_healthy
+      # Serialize Alembic: cms-0 owns the migration, cms-1 waits until
+      # cms-0 is healthy (post-migration). Both replicas still run
+      # simultaneously in steady state — this just avoids the startup
+      # race on an empty DB.
+      cms-0:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+
+volumes:
+  pgdata-integration:
+  cms-assets-integration:
