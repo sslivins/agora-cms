@@ -32,7 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import get_settings
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.device import Device
+from cms.models.device import Device, DeviceGroup
+from cms.services.alert_service import alert_service
 from cms.services.device_inbound import InboundContext, dispatch_device_message
 from cms.services.device_manager import device_manager
 from cms.services.device_register import register_known_device
@@ -145,7 +146,47 @@ async def events_receiver(
     if ce_type == "azure.webpubsub.sys.disconnected":
         if ce_user_id:
             from cms.services import device_presence
-            await device_presence.mark_offline(db, ce_user_id)
+            # Guard the presence flip with the closing connection's id.
+            # Under N>=2 an old socket on replica A can receive
+            # ``sys.disconnected`` *after* the device has already
+            # reconnected on replica B; without this guard we'd flip
+            # ``online=false`` for the fresh session and fire a bogus
+            # OFFLINE alert.  ``mark_offline`` returns False when the
+            # stored ``connection_id`` no longer matches — in that case
+            # we also skip the alert-service notification.
+            was_current = await device_presence.mark_offline(
+                db, ce_user_id, expected_connection_id=ce_connection_id,
+            )
+            if not was_current:
+                logger.info(
+                    "WPS device %s: stale disconnect suppressed "
+                    "(connection_id replaced)", ce_user_id,
+                )
+                return Response(status_code=204)
+            # Load the device + group so alert_service has the name /
+            # group context it needs to route the OFFLINE event and
+            # (eventually, via the sweep loop) the offline notification.
+            result = await db.execute(select(Device).where(Device.id == ce_user_id))
+            device = result.scalar_one_or_none()
+            if device is not None:
+                _group_id = str(device.group_id) if device.group_id else None
+                _device_name = device.name or ce_user_id
+                _device_status = device.status.value if device.status else "pending"
+                _group_name = ""
+                if device.group_id:
+                    g = await db.execute(
+                        select(DeviceGroup.name).where(
+                            DeviceGroup.id == device.group_id,
+                        )
+                    )
+                    _group_name = g.scalar_one_or_none() or ""
+                alert_service.device_disconnected(
+                    ce_user_id,
+                    device_name=_device_name,
+                    group_id=_group_id,
+                    group_name=_group_name,
+                    status=_device_status,
+                )
         return Response(status_code=204)
 
     # ---- user events ---------------------------------------------------
@@ -206,6 +247,30 @@ async def events_receiver(
                     logger.exception(
                         "Failed to push auth_assigned to WPS device %s", ce_user_id,
                     )
+            # Notify alert service of reconnection — mirrors ws.py's
+            # direct-WS register path.  This is what emits the ONLINE
+            # device_event, clears ``offline_notified`` on
+            # ``device_alert_state``, and (if applicable) fires the
+            # "back online" notification.  Without this call, WPS
+            # devices silently skip all alert-service bookkeeping.
+            _group_id = str(device.group_id) if device.group_id else None
+            _device_name = device.name or ce_user_id
+            _device_status = device.status.value if device.status else "pending"
+            _group_name = ""
+            if device.group_id:
+                g = await db.execute(
+                    select(DeviceGroup.name).where(
+                        DeviceGroup.id == device.group_id,
+                    )
+                )
+                _group_name = g.scalar_one_or_none() or ""
+            alert_service.device_reconnected(
+                ce_user_id,
+                device_name=_device_name,
+                group_id=_group_id,
+                group_name=_group_name,
+                status=_device_status,
+            )
             return Response(status_code=204)
 
         base_url = _get_asset_base_url(request, settings)
