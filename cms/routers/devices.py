@@ -1,10 +1,11 @@
 """Device management API routes."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,8 +43,23 @@ router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 # `require_auth` dependency from the main devices router.
 device_originated_router = APIRouter(prefix="/api/devices", tags=["devices (device-originated)"])
 
-# Track devices with an in-flight upgrade to prevent concurrent upgrade commands
-_upgrading: set[str] = set()
+# Stage 4 (#344): the in-memory `_upgrading` set was replaced with the
+# `devices.upgrade_started_at` column + TTL, so upgrade state is visible
+# across replicas and survives restarts.  The timestamp doubles as a
+# claim token — the upgrade endpoint captures the value written by its
+# atomic CAS and any cleanup compares against that exact timestamp so
+# we can't accidentally clear a successor's claim.  ``UPGRADE_TTL`` is
+# the max time we'll treat an in-flight upgrade as still valid before
+# letting another upgrade request reclaim it (covers stuck reboots).
+UPGRADE_TTL = timedelta(minutes=15)
+
+
+def _is_upgrading(device: Device, *, now: datetime | None = None) -> bool:
+    """Return whether *device* has an active upgrade claim within TTL."""
+    if device.upgrade_started_at is None:
+        return False
+    ref = now or datetime.now(timezone.utc)
+    return (ref - device.upgrade_started_at) < UPGRADE_TTL
 
 # Device model columns that are *also* passed explicitly as kwargs when
 # building a ``DeviceOut`` from the live-state + ORM row merge below.
@@ -194,7 +210,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             **_device_row_kwargs(d),
             group_name=d.group.name if d.group else None,
             is_online=d.id in connected_ids,
-            is_upgrading=d.id in _upgrading,
+            is_upgrading=_is_upgrading(d),
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
             playback_asset=_resolve_asset_name(d.id),
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
@@ -247,7 +263,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         **_device_row_kwargs(device),
         group_name=device.group.name if device.group else None,
         is_online=is_online,
-        is_upgrading=device.id in _upgrading,
+        is_upgrading=_is_upgrading(device),
         playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
         playback_asset=raw_asset,
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
@@ -411,17 +427,50 @@ async def upgrade_device(
     device = await _get_device_with_access(device_id, request, db)
 
     if not await get_transport().is_connected(device_id):
-        _upgrading.discard(device_id)
         raise HTTPException(status_code=409, detail="Device is not connected")
 
-    if device_id in _upgrading:
-        raise HTTPException(status_code=409, detail="Upgrade already in progress for this device")
+    # Stage 4: atomic claim — set ``upgrade_started_at`` iff it's NULL
+    # or older than the TTL.  The timestamp we just wrote is captured
+    # via RETURNING so a later failure can compare-and-clear without
+    # stomping a successor's claim.
+    claim_ts = datetime.now(timezone.utc)
+    ttl_cutoff = claim_ts - UPGRADE_TTL
+    result = await db.execute(
+        update(Device)
+        .where(Device.id == device_id)
+        .where(
+            or_(
+                Device.upgrade_started_at.is_(None),
+                Device.upgrade_started_at < ttl_cutoff,
+            )
+        )
+        .values(upgrade_started_at=claim_ts)
+        .returning(Device.upgrade_started_at)
+        .execution_options(synchronize_session=False)
+    )
+    claimed = result.scalar_one_or_none()
+    await db.commit()
+    if claimed is None:
+        # Another request holds a live claim within TTL.
+        raise HTTPException(
+            status_code=409,
+            detail="Upgrade already in progress for this device",
+        )
 
-    _upgrading.add(device_id)
     upgrade_msg = UpgradeMessage()
     sent = await get_transport().send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
     if not sent:
-        _upgrading.discard(device_id)
+        # Compare-and-clear using the claimed timestamp as the claim
+        # token — if another request reclaimed the slot after TTL
+        # expired (or we somehow raced), this leaves their claim alone.
+        await db.execute(
+            update(Device)
+            .where(Device.id == device_id)
+            .where(Device.upgrade_started_at == claimed)
+            .values(upgrade_started_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     await audit_log(

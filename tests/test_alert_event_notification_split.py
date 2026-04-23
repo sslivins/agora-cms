@@ -124,9 +124,18 @@ async def test_reconnect_before_grace_no_notification_but_events_logged(
     notifs = await _count_notifications(app, info["group_id"])
     assert len(notifs) == 0
 
-    # Grace timer was cancelled
-    assert info["device_id"] not in svc._offline_timers or \
-           svc._offline_timers[info["device_id"]].task.cancelled()
+    # DB-backed state: offline_since should have been cleared by reconnect
+    from cms.database import get_db
+    from cms.models.device_alert_state import DeviceAlertState
+    factory = app.dependency_overrides[get_db]
+    async for db in factory():
+        state = (await db.execute(
+            select(DeviceAlertState).where(
+                DeviceAlertState.device_id == info["device_id"]
+            )
+        )).scalar_one_or_none()
+        assert state is None or state.offline_since is None
+        break
 
 
 # ── Offline past grace, then reconnect: offline + online notifications ──
@@ -140,42 +149,37 @@ async def test_offline_past_grace_then_reconnect_fires_both_notifications(
     svc = fresh_alert_service
     svc._offline_grace_seconds = 1
 
-    # Stage 2c: alert_service now reads presence via the transport
-    # (which reads from the DB).  Patch the transport call so grace
-    # expiration sees the device as offline even though the DB row isn't
-    # seeded with online=False in this test.
-    from cms.services import alert_service as _alert_mod
+    # Offline detection is now driven by the leader-gated sweep loop;
+    # under unit tests we call offline_sweep_once directly to simulate a
+    # tick after the grace window.
+    from cms.database import get_db
+    factory = app.dependency_overrides[get_db]
 
-    class _OfflineTransport:
-        async def is_connected(self, _did):
-            return False
+    svc.device_disconnected(info["device_id"], info["device_name"],
+                             info["group_id"], info["group_name"], status="adopted")
+    # Let _record_disconnect land, then wait past grace and run sweep.
+    await asyncio.sleep(0.1)
+    await asyncio.sleep(1.5)
+    async for db in factory():
+        await svc.offline_sweep_once(db)
+        break
 
-    original = _alert_mod.get_transport
-    _alert_mod.get_transport = lambda: _OfflineTransport()
-    try:
-        svc.device_disconnected(info["device_id"], info["device_name"],
-                                 info["group_id"], info["group_name"], status="adopted")
-        # Wait past grace
-        await asyncio.sleep(1.5)
+    # Offline notification should exist
+    notifs = await _count_notifications(app, info["group_id"])
+    offline_notifs = [n for n in notifs if "offline" in n.title.lower()]
+    assert len(offline_notifs) == 1
 
-        # Offline notification should exist
-        notifs = await _count_notifications(app, info["group_id"])
-        offline_notifs = [n for n in notifs if "offline" in n.title.lower()]
-        assert len(offline_notifs) == 1
+    # Now reconnect — should fire ONLINE event + "back online" notification
+    svc.device_reconnected(info["device_id"], info["device_name"],
+                            info["group_id"], info["group_name"], status="adopted")
+    await asyncio.sleep(0.3)
 
-        # Now reconnect — should fire ONLINE event + "back online" notification
-        svc.device_reconnected(info["device_id"], info["device_name"],
-                                info["group_id"], info["group_name"], status="adopted")
-        await asyncio.sleep(0.3)
+    online_events = await _count_events(app, info["device_id"], DeviceEventType.ONLINE)
+    assert len(online_events) == 1
 
-        online_events = await _count_events(app, info["device_id"], DeviceEventType.ONLINE)
-        assert len(online_events) == 1
-
-        notifs = await _count_notifications(app, info["group_id"])
-        back_online = [n for n in notifs if "back online" in n.title.lower()]
-        assert len(back_online) == 1
-    finally:
-        _alert_mod.get_transport = original
+    notifs = await _count_notifications(app, info["group_id"])
+    back_online = [n for n in notifs if "back online" in n.title.lower()]
+    assert len(back_online) == 1
 
 
 # ── Disconnect → quick reconnect → disconnect again past grace ──
@@ -190,38 +194,43 @@ async def test_fresh_grace_timer_after_quick_reconnect(
     svc = fresh_alert_service
     svc._offline_grace_seconds = 1
 
-    from cms.services import alert_service as _alert_mod
+    from cms.database import get_db
+    factory = app.dependency_overrides[get_db]
 
-    class _OfflineTransport:
-        async def is_connected(self, _did):
-            return False
+    # Disconnect — starts grace window
+    svc.device_disconnected(info["device_id"], info["device_name"],
+                             info["group_id"], info["group_name"], status="adopted")
+    await asyncio.sleep(0.1)
+    # Reconnect quickly — offline_since cleared; sweep must emit nothing
+    svc.device_reconnected(info["device_id"], info["device_name"],
+                            info["group_id"], info["group_name"], status="adopted")
+    await asyncio.sleep(0.2)
+    async for db in factory():
+        await svc.offline_sweep_once(db)
+        break
+    notifs = await _count_notifications(app, info["group_id"])
+    assert len(notifs) == 0
 
-    original = _alert_mod.get_transport
-    _alert_mod.get_transport = lambda: _OfflineTransport()
-    try:
-        # Disconnect — starts timer
-        svc.device_disconnected(info["device_id"], info["device_name"],
-                                 info["group_id"], info["group_name"], status="adopted")
-        await asyncio.sleep(0.1)
-        # Reconnect quickly — timer cancelled, no notifications yet
-        svc.device_reconnected(info["device_id"], info["device_name"],
-                                info["group_id"], info["group_name"], status="adopted")
-        await asyncio.sleep(0.2)
-        notifs = await _count_notifications(app, info["group_id"])
-        assert len(notifs) == 0
+    # Now disconnect again and let grace expire; sweep should fire once.
+    svc.device_disconnected(info["device_id"], info["device_name"],
+                             info["group_id"], info["group_name"], status="adopted")
+    await asyncio.sleep(0.1)
+    await asyncio.sleep(1.5)
+    async for db in factory():
+        await svc.offline_sweep_once(db)
+        break
 
-        # Now disconnect again and let grace expire
-        svc.device_disconnected(info["device_id"], info["device_name"],
-                                 info["group_id"], info["group_name"], status="adopted")
-        await asyncio.sleep(1.5)
+    # Offline notification should now exist
+    notifs = await _count_notifications(app, info["group_id"])
+    offline_notifs = [n for n in notifs if "offline" in n.title.lower()]
+    assert len(offline_notifs) == 1
 
-        # Offline notification should now exist
-        notifs = await _count_notifications(app, info["group_id"])
-        offline_notifs = [n for n in notifs if "offline" in n.title.lower()]
-        assert len(offline_notifs) == 1
-
-        # Two OFFLINE events (one per disconnect)
-        offline_events = await _count_events(app, info["device_id"], DeviceEventType.OFFLINE)
-        assert len(offline_events) == 2
-    finally:
-        _alert_mod.get_transport = original
+    # Two OFFLINE events from the disconnect signals themselves
+    # (offline_sweep_once also emits a grace_expired OFFLINE event, so
+    # we exclude those when counting the disconnect-driven events).
+    offline_events = await _count_events(app, info["device_id"], DeviceEventType.OFFLINE)
+    disconnect_events = [
+        e for e in offline_events
+        if (e.details or {}).get("kind") != "grace_expired"
+    ]
+    assert len(disconnect_events) == 2

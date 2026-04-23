@@ -53,6 +53,9 @@ class _FakeSession:
         row = self.device_row
         result = MagicMock()
         result.scalar_one_or_none = MagicMock(return_value=row)
+        # Stage 4: mark_offline reads result.rowcount and compares to int
+        # (> 0) to return a bool — make sure the mock returns an int.
+        result.rowcount = 1
         return result
 
     def add(self, obj):

@@ -3,10 +3,11 @@
 import asyncio
 import logging
 import secrets
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.auth import get_settings
@@ -163,8 +164,30 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         client_ip = raw.get("ip_address") or (websocket.client.host if websocket.client else None)
         device_manager.register(device_id, websocket, ip_address=client_ip)
         # Stage 2c: reflect presence in the DB so every replica can see it.
+        # Stage 4: generate a per-connection UUID token and persist it on
+        # the Device row.  The disconnect handler below compares this
+        # token against the current column value before marking offline,
+        # so a stale socket closing on replica A after the device has
+        # already reconnected on replica B can't flip the fresh
+        # connection offline.
         from cms.services import device_presence
-        await device_presence.mark_online(db, device_id, ip_address=client_ip)
+        conn_id = str(uuid.uuid4())
+        await device_presence.mark_online(
+            db, device_id, connection_id=conn_id, ip_address=client_ip,
+        )
+        # Stage 4: clear any stale upgrade-in-progress claim so the
+        # device can be upgraded again on a future request.  A
+        # successful reconnect means the device has booted, so whatever
+        # upgrade was in flight is either done or abandoned.  The TTL
+        # on the column (see upgrade endpoint) is the safety net in
+        # case we never see this register.
+        await db.execute(
+            update(Device)
+            .where(Device.id == device_id)
+            .values(upgrade_started_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
 
         # ── 3b. Notify alert service of reconnection ──
         _group_id = str(device.group_id) if device.group_id else None
@@ -291,13 +314,30 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
     finally:
         if device_id:
             device_manager.disconnect(device_id)
-            # Stage 2c: clear the DB presence flag so other replicas
-            # stop treating this device as online.
+            # Stage 2c/4: clear the DB presence flag so other replicas
+            # stop treating this device as online.  The Stage 4
+            # connection-id guard ensures a stale disconnect on replica
+            # A doesn't flip a fresh connection on replica B offline.
+            was_current = False
             try:
                 from cms.services import device_presence
-                await device_presence.mark_offline(db, device_id)
+                was_current = await device_presence.mark_offline(
+                    db, device_id,
+                    expected_connection_id=(conn_id if "conn_id" in locals() else None),
+                )
             except Exception:
                 logger.exception("Failed to mark %s offline in DB", device_id)
+            # If the disconnect is stale (connection_id has already been
+            # replaced by a newer register on another replica), skip the
+            # alert-service disconnect path entirely — the device is not
+            # actually offline.
+            if not was_current and "conn_id" in locals():
+                logger.info(
+                    "Device %s: stale disconnect suppressed "
+                    "(connection_id was replaced)",
+                    device_id,
+                )
+                return
             # Refresh group/name/status so a group reassignment made mid-connection
             # is reflected in the disconnect notification. The STATUS path already
             # refreshes these (see above), but a device may disconnect before any
@@ -334,6 +374,6 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 group_name=_group_name,
                 status=_device_status,
             )
-            # Clear upgrade-in-progress flag so the device can be upgraded again after reconnect
-            from cms.routers.devices import _upgrading
-            _upgrading.discard(device_id)
+            # Stage 4: ``_upgrading`` set has been replaced with the
+            # ``devices.upgrade_started_at`` column; the register path
+            # clears it on reconnect.  No explicit discard needed here.

@@ -121,14 +121,33 @@ async def mark_online(
     await db.commit()
 
 
-async def mark_offline(db: AsyncSession, device_id: str) -> None:
-    """Flip ``devices.online`` to ``false`` and clear ``connection_id``."""
-    await db.execute(
-        update(Device)
-        .where(Device.id == device_id)
-        .values(online=False, connection_id=None)
-    )
+async def mark_offline(
+    db: AsyncSession,
+    device_id: str,
+    *,
+    expected_connection_id: str | None = None,
+) -> bool:
+    """Flip ``devices.online`` to ``false`` and clear ``connection_id``.
+
+    When *expected_connection_id* is provided, the write is guarded by
+    the current ``connection_id`` column — the flip only takes effect
+    if the stored value matches.  This protects against stale
+    disconnects (an old socket closing on replica A after the device
+    has already reconnected on replica B) from flipping the fresh
+    connection offline.  Returns ``True`` if the row was updated,
+    ``False`` when the guard rejected the write.
+
+    When *expected_connection_id* is ``None``, the clear is
+    unconditional (matches the pre-Stage-4 behaviour and the WPS
+    webhook path which doesn't have a stable token to compare).
+    """
+    stmt = update(Device).where(Device.id == device_id)
+    if expected_connection_id is not None:
+        stmt = stmt.where(Device.connection_id == expected_connection_id)
+    stmt = stmt.values(online=False, connection_id=None)
+    result = await db.execute(stmt)
     await db.commit()
+    return (result.rowcount or 0) > 0
 
 
 def _parse_timestamp(value: Any) -> datetime | None:

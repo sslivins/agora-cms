@@ -1,22 +1,46 @@
-"""Alert service — monitors device health and creates notifications.
+"""Alert service — DB-backed device health monitoring (Stage 4 of #344).
 
-Handles two alert types:
-  1. Offline detection with configurable grace period
-  2. Temperature alerts with hysteresis to prevent flapping
+Two independent alert streams:
 
-Notifications use scope="group" so only users with access to the device's
-group (plus admins via groups:view_all) see them in the bell.
+1. **Offline detection** — persisted in ``device_alert_state`` so alerts
+   survive failover and don't double-fire across replicas.  The
+   disconnect path only transitions ``offline_since`` NULL→timestamp
+   (duplicate disconnects don't reset the grace window).  A
+   leader-gated sweep loop (:func:`offline_sweep_once` driven from
+   ``cms/main.py``) flips ``offline_notified`` and emits the
+   "offline" notification + event in a single transaction.  The
+   reconnect path CAS-consumes ``offline_notified`` in the same
+   transaction that emits the "back online" notification, so a race
+   between two replicas handling the reconnect only lets one of them
+   fire the alert.
+
+2. **Temperature monitoring** — still replica-local.  Temp alerts
+   come from STATUS heartbeats; under WPS those land on whichever
+   replica the webhook is routed to.  Each replica maintains its own
+   cooldown state; duplicate temperature warnings are acceptable (and
+   arguably informative), so persisting this state is not a
+   correctness requirement for multi-replica.
+
+Notifications use scope="group" so only users with access to the
+device's group (plus admins via groups:view_all) see them in the bell.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from cms.models.device import Device, DeviceStatus
+from cms.models.device_alert_state import DeviceAlertState
 from cms.models.device_event import DeviceEvent, DeviceEventType
 from cms.models.notification import Notification
-from cms.services.transport import get_transport
 
 
 def _to_uuid(val: str | _uuid.UUID | None) -> _uuid.UUID | None:
@@ -24,6 +48,7 @@ def _to_uuid(val: str | _uuid.UUID | None) -> _uuid.UUID | None:
     if val is None:
         return None
     return val if isinstance(val, _uuid.UUID) else _uuid.UUID(str(val))
+
 
 logger = logging.getLogger("agora.cms.alerts")
 
@@ -35,7 +60,7 @@ DEFAULT_TEMP_COOLDOWN_SECONDS = 300
 
 
 class _TempState:
-    """Per-device temperature alert state machine."""
+    """Per-device temperature alert state machine (in-memory, replica-local)."""
 
     __slots__ = ("level", "last_alert_at")
 
@@ -44,28 +69,19 @@ class _TempState:
         self.last_alert_at: Optional[datetime] = None
 
 
-class _OfflineTimer:
-    """Per-device offline grace-period tracker."""
-
-    __slots__ = ("task", "device_name", "group_id", "group_name")
-
-    def __init__(self, task: asyncio.Task, device_name: str,
-                 group_id: Optional[str], group_name: str):
-        self.task = task
-        self.device_name = device_name
-        self.group_id = group_id
-        self.group_name = group_name
-
-
 class AlertService:
-    """Singleton service wired into the WebSocket handler."""
+    """Singleton service wired into the WebSocket handler.
+
+    Offline alerting state lives in the ``device_alert_state`` table so
+    it survives replica failover and doesn't double-fire.  Temperature
+    alert state is in-memory per replica (see module docstring for
+    rationale).
+    """
 
     def __init__(self):
-        self._offline_timers: dict[str, _OfflineTimer] = {}
         self._temp_states: dict[str, _TempState] = {}
-        # Tracks devices that had an OFFLINE event fired (for "back online" logic)
-        self._was_offline: set[str] = set()
-        # Cached settings (refreshed periodically)
+        # Cached settings (refreshed periodically by
+        # ``_alert_settings_refresh_loop`` in ``cms/main.py``).
         self._offline_grace_seconds: int = DEFAULT_OFFLINE_GRACE_SECONDS
         self._temp_warning_c: float = DEFAULT_TEMP_WARNING_C
         self._temp_critical_c: float = DEFAULT_TEMP_CRITICAL_C
@@ -98,7 +114,11 @@ class AlertService:
         except Exception:
             logger.debug("Could not refresh alert settings, using defaults")
 
-    # ── Offline detection ──
+    @property
+    def offline_grace_seconds(self) -> int:
+        return self._offline_grace_seconds
+
+    # ── Offline detection (DB-backed) ──
 
     def device_disconnected(
         self,
@@ -110,32 +130,18 @@ class AlertService:
     ):
         """Called from ws.py when a device's WebSocket closes.
 
-        Always logs an OFFLINE event immediately (for the event log).
-        Only starts a grace-period notification timer for adopted devices in a group.
+        Spawns a detached task that (a) logs an OFFLINE event for the
+        adopted+grouped device and (b) transitions ``device_alert_state``
+        from online→offline by writing ``offline_since = NOW()`` *only
+        when it is currently NULL*.  Duplicate disconnects do not reset
+        the grace window.  The actual notification is fired later by
+        the leader-gated sweep loop once ``offline_since + grace < now``.
         """
         if status != "adopted" or not group_id:
             return
 
-        # Log the disconnect event immediately (no grace period for events)
         asyncio.create_task(
-            self._create_offline_event(device_id, device_name, group_id, group_name)
-        )
-
-        # Cancel any existing notification timer for this device
-        existing = self._offline_timers.pop(device_id, None)
-        if existing and not existing.task.done():
-            existing.task.cancel()
-
-        task = asyncio.create_task(
-            self._offline_grace_expired(device_id, device_name, group_id, group_name)
-        )
-        self._offline_timers[device_id] = _OfflineTimer(
-            task=task, device_name=device_name,
-            group_id=group_id, group_name=group_name,
-        )
-        logger.debug(
-            "Offline grace timer started for %s (%ds)",
-            device_id, self._offline_grace_seconds,
+            self._record_disconnect(device_id, device_name, group_id, group_name)
         )
 
     def device_reconnected(
@@ -148,163 +154,246 @@ class AlertService:
     ):
         """Called from ws.py after a successful register.
 
-        Always logs an ONLINE event immediately (for the event log).
-        Cancels any pending grace timer.  If an OFFLINE notification was
-        previously fired, creates a "back online" notification too.
+        Spawns a detached task that:
+          1. Logs an ONLINE event for adopted+grouped devices.
+          2. Atomically consumes ``offline_notified`` — if it was TRUE
+             (we'd previously fired an offline alert), emits the
+             "back online" notification in the same transaction.
+          3. Clears ``offline_since`` so the next disconnect starts a
+             fresh grace window.
         """
-        # Log the reconnect event immediately
-        if status == "adopted" and group_id:
-            asyncio.create_task(
-                self._create_online_event(device_id, device_name, group_id, group_name)
-            )
+        if status != "adopted" or not group_id:
+            # Still clear any persisted state so orphaning/regrouping
+            # doesn't leave stale rows around.
+            asyncio.create_task(self._clear_alert_state(device_id))
+            return
 
-        # Cancel pending notification timer
-        timer = self._offline_timers.pop(device_id, None)
-        if timer and not timer.task.done():
-            timer.task.cancel()
-            logger.debug("Offline grace timer cancelled for %s (reconnected)", device_id)
+        asyncio.create_task(
+            self._record_reconnect(device_id, device_name, group_id, group_name)
+        )
 
-        # Fire "back online" notification only if we previously sent an offline notification
-        if device_id in self._was_offline:
-            self._was_offline.discard(device_id)
-            if status == "adopted" and group_id:
-                asyncio.create_task(
-                    self._create_online_notification(device_id, device_name, group_id, group_name)
-                )
+    # ── Internal: disconnect path ──
 
-    async def _create_offline_event(
+    async def _record_disconnect(
         self,
         device_id: str,
         device_name: str,
         group_id: str,
         group_name: str,
-    ):
-        """Immediately log an OFFLINE event (no grace period)."""
+    ) -> None:
+        """Persist the disconnect: OFFLINE event + offline_since transition."""
         try:
             from cms.database import get_db
+            gid = _to_uuid(group_id)
             async for db in get_db():
-                gid = _to_uuid(group_id)
-                event = DeviceEvent(
+                # 1. Always log an OFFLINE event immediately.
+                db.add(DeviceEvent(
                     device_id=device_id,
                     device_name=device_name,
                     group_id=gid,
                     group_name=group_name,
                     event_type=DeviceEventType.OFFLINE,
-                )
-                db.add(event)
+                ))
+
+                # 2. Transition-only update: set offline_since=NOW() if
+                #    currently NULL, otherwise leave it alone.  We use a
+                #    SELECT-then-write pattern so it works across
+                #    SQLite+Postgres (SQLite's ORM INSERT..ON CONFLICT
+                #    support is dialect-fiddly); the transaction isolation
+                #    from the surrounding session gives us the
+                #    atomicity we need.
+                state = (await db.execute(
+                    select(DeviceAlertState).where(
+                        DeviceAlertState.device_id == device_id
+                    )
+                )).scalar_one_or_none()
+                if state is None:
+                    db.add(DeviceAlertState(
+                        device_id=device_id,
+                        offline_since=datetime.now(timezone.utc),
+                        offline_notified=False,
+                    ))
+                elif state.offline_since is None:
+                    state.offline_since = datetime.now(timezone.utc)
+                # else: already offline, leave timestamp + notified flag alone
+
                 await db.commit()
-                logger.debug("Offline event logged for device %s", device_id)
+                logger.debug(
+                    "Offline event + state recorded for device %s", device_id,
+                )
                 break
         except Exception:
-            logger.exception("Failed to create offline event for device %s", device_id)
+            logger.exception(
+                "Failed to record disconnect for device %s", device_id,
+            )
 
-    async def _offline_grace_expired(
+    # ── Internal: reconnect path ──
+
+    async def _record_reconnect(
         self,
         device_id: str,
         device_name: str,
         group_id: str,
         group_name: str,
-    ):
-        """Fires after the grace period — creates a notification (event was already logged)."""
-        try:
-            await asyncio.sleep(self._offline_grace_seconds)
-        except asyncio.CancelledError:
-            return
-
-        # Clean up timer reference
-        self._offline_timers.pop(device_id, None)
-
-        # Double-check the device hasn't reconnected during the sleep
-        if await get_transport().is_connected(device_id):
-            return
-
-        self._was_offline.add(device_id)
-        logger.info("Device %s (%s) offline — grace period expired, sending notification", device_id, device_name)
-
-        try:
-            from cms.database import get_db
-            async for db in get_db():
-                gid = _to_uuid(group_id)
-                notification = Notification(
-                    scope="group",
-                    level="error",
-                    title=f"Device offline: {device_name}",
-                    message=(
-                        f"Device '{device_name}' in group '{group_name}' has been "
-                        f"offline for over {self._offline_grace_seconds} seconds."
-                    ),
-                    group_id=gid,
-                    details={
-                        "device_id": device_id,
-                        "event_type": "offline",
-                    },
-                )
-                db.add(notification)
-                await db.commit()
-                logger.info("Offline notification created for device %s", device_id)
-                break
-        except Exception:
-            logger.exception("Failed to create offline notification for device %s", device_id)
-
-    async def _create_online_event(
-        self,
-        device_id: str,
-        device_name: str,
-        group_id: str,
-        group_name: str,
-    ):
-        """Immediately log a "back online" event."""
+    ) -> None:
+        """Persist the reconnect: ONLINE event + CAS-consume offline_notified."""
         try:
             from cms.database import get_db
             gid = _to_uuid(group_id)
             async for db in get_db():
-                event = DeviceEvent(
+                # 1. Always log an ONLINE event.
+                db.add(DeviceEvent(
                     device_id=device_id,
                     device_name=device_name,
                     group_id=gid,
                     group_name=group_name,
                     event_type=DeviceEventType.ONLINE,
-                )
-                db.add(event)
+                ))
+
+                # 2. CAS-consume offline_notified + clear offline_since.
+                state = (await db.execute(
+                    select(DeviceAlertState).where(
+                        DeviceAlertState.device_id == device_id
+                    )
+                )).scalar_one_or_none()
+                was_notified = bool(state and state.offline_notified)
+                if state is None:
+                    db.add(DeviceAlertState(
+                        device_id=device_id,
+                        offline_since=None,
+                        offline_notified=False,
+                    ))
+                else:
+                    state.offline_since = None
+                    state.offline_notified = False
+
+                # 3. If we'd previously fired an offline notification,
+                #    emit the matching back-online notification in the
+                #    same transaction — so a crash between commit and
+                #    INSERT can't lose the signal.
+                if was_notified:
+                    db.add(Notification(
+                        scope="group",
+                        level="success",
+                        title=f"Device back online: {device_name}",
+                        message=(
+                            f"Device '{device_name}' in group '{group_name}' "
+                            f"is back online."
+                        ),
+                        group_id=gid,
+                        details={
+                            "device_id": device_id,
+                            "event_type": "online",
+                        },
+                    ))
+
                 await db.commit()
-                logger.debug("Online event logged for device %s", device_id)
+                if was_notified:
+                    logger.info(
+                        "Online notification created for device %s", device_id,
+                    )
+                else:
+                    logger.debug(
+                        "Online event recorded for device %s", device_id,
+                    )
                 break
         except Exception:
-            logger.exception("Failed to create online event for device %s", device_id)
+            logger.exception(
+                "Failed to record reconnect for device %s", device_id,
+            )
 
-    async def _create_online_notification(
-        self,
-        device_id: str,
-        device_name: str,
-        group_id: str,
-        group_name: str,
-    ):
-        """Create a "back online" notification after a previous offline alert."""
+    async def _clear_alert_state(self, device_id: str) -> None:
+        """Clear persisted alert state for a non-adopted/ungrouped device."""
         try:
             from cms.database import get_db
-            gid = _to_uuid(group_id)
             async for db in get_db():
-                notification = Notification(
-                    scope="group",
-                    level="success",
-                    title=f"Device back online: {device_name}",
-                    message=(
-                        f"Device '{device_name}' in group '{group_name}' is back online."
-                    ),
-                    group_id=gid,
-                    details={
-                        "device_id": device_id,
-                        "event_type": "online",
-                    },
+                await db.execute(
+                    update(DeviceAlertState)
+                    .where(DeviceAlertState.device_id == device_id)
+                    .values(offline_since=None, offline_notified=False)
                 )
-                db.add(notification)
                 await db.commit()
-                logger.info("Online notification created for device %s", device_id)
                 break
         except Exception:
-            logger.exception("Failed to create online notification for device %s", device_id)
+            logger.debug("Best-effort clear of alert state for %s failed", device_id)
 
-    # ── Temperature monitoring ──
+    # ── Leader-gated sweep (fires offline notifications past grace) ──
+
+    async def offline_sweep_once(self, db: AsyncSession) -> int:
+        """Fire offline notifications for any device past the grace period.
+
+        Must be called from a leader-gated loop (see
+        :func:`cms.main.offline_sweep_loop`) — the transition writes
+        ``offline_notified = TRUE`` and emits the notification in one
+        transaction, but we avoid duplicate notifications across
+        replicas by only running on the leader.
+
+        Returns the number of notifications emitted.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._offline_grace_seconds
+        )
+
+        rows = (await db.execute(
+            select(DeviceAlertState).where(
+                DeviceAlertState.offline_notified.is_(False),
+                DeviceAlertState.offline_since.is_not(None),
+                DeviceAlertState.offline_since <= cutoff,
+            )
+        )).scalars().all()
+        if not rows:
+            return 0
+
+        emitted = 0
+        for state in rows:
+            device = (await db.execute(
+                select(Device)
+                .options(selectinload(Device.group))
+                .where(Device.id == state.device_id)
+            )).scalar_one_or_none()
+            if not device or device.status != DeviceStatus.ADOPTED or not device.group_id:
+                # Device is no longer adopted/grouped — flag as notified
+                # so we don't re-scan it every tick.  No alert fired.
+                state.offline_notified = True
+                continue
+
+            group_name = device.group.name if device.group else ""
+            device_name = device.name or device.id
+
+            state.offline_notified = True
+            db.add(DeviceEvent(
+                device_id=device.id,
+                device_name=device_name,
+                group_id=device.group_id,
+                group_name=group_name,
+                event_type=DeviceEventType.OFFLINE,
+                details={"kind": "grace_expired"},
+            ))
+            db.add(Notification(
+                scope="group",
+                level="error",
+                title=f"Device offline: {device_name}",
+                message=(
+                    f"Device '{device_name}' in group '{group_name}' has "
+                    f"been offline for over {self._offline_grace_seconds} "
+                    f"seconds."
+                ),
+                group_id=device.group_id,
+                details={
+                    "device_id": device.id,
+                    "event_type": "offline",
+                },
+            ))
+            emitted += 1
+            logger.info(
+                "Offline notification emitted for device %s (%s)",
+                device.id, device_name,
+            )
+
+        await db.commit()
+        return emitted
+
+    # ── Temperature monitoring (replica-local, unchanged) ──
 
     def check_temperature(
         self,
@@ -439,12 +528,12 @@ class AlertService:
     # ── Cleanup ──
 
     def cleanup_device(self, device_id: str):
-        """Remove all in-memory state for a device (e.g. when deleted)."""
-        timer = self._offline_timers.pop(device_id, None)
-        if timer and not timer.task.done():
-            timer.task.cancel()
+        """Remove in-memory temp state for a device (e.g. when deleted).
+
+        DB-backed offline state is cleaned up by the ``ON DELETE CASCADE``
+        on ``device_alert_state.device_id``.
+        """
         self._temp_states.pop(device_id, None)
-        self._was_offline.discard(device_id)
 
 
 # Singleton

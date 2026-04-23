@@ -446,57 +446,68 @@ async def stream_capture_monitor_loop() -> None:
         try:
             await asyncio.sleep(_MONITOR_INTERVAL)
 
-            # ── 1. Completed captures → enqueue variants ──
-            async for db in get_db():
-                result = await db.execute(
-                    select(Asset).where(
-                        Asset.asset_type == AssetType.SAVED_STREAM,
-                        Asset.size_bytes > 0,
-                        Asset.deleted_at.is_(None),
-                        ~Asset.id.in_(
-                            select(AssetVariant.source_asset_id).distinct()
-                        ),
-                    )
-                )
-                ready_assets = result.scalars().all()
+            # Stage 4 (#344): gate the tick with a session-advisory lock
+            # so only one replica runs the reconciliation pass.  Creating
+            # variant rows is NOT idempotent across races (we'd end up
+            # with duplicates pointing at the same capture), so this
+            # needs an actual lock rather than a best-effort dedupe.
+            from cms.services.leader import session_advisory_lock
+            _MONITOR_LOCK_ID = 0x4147_4F52_41_03  # 'AGORA' + 03
+            async with session_advisory_lock(_MONITOR_LOCK_ID) as got:
+                if not got:
+                    continue
 
-                for asset in ready_assets:
-                    variant_ids = await _enqueue_transcoding_for_asset(asset, db)
-                    if variant_ids:
-                        await enqueue_variants(db, variant_ids)
-                        logger.info(
-                            "Stream capture complete for %s — enqueued %d variant(s)",
-                            asset.id, len(variant_ids),
+                # ── 1. Completed captures → enqueue variants ──
+                async for db in get_db():
+                    result = await db.execute(
+                        select(Asset).where(
+                            Asset.asset_type == AssetType.SAVED_STREAM,
+                            Asset.size_bytes > 0,
+                            Asset.deleted_at.is_(None),
+                            ~Asset.id.in_(
+                                select(AssetVariant.source_asset_id).distinct()
+                            ),
                         )
-
-            # ── 2. Stale PROCESSING variants → reset to PENDING ──
-            async for db in get_db():
-                cutoff = datetime.now(timezone.utc) - timedelta(seconds=_STALE_PROCESSING_TIMEOUT)
-                result = await db.execute(
-                    select(AssetVariant).where(
-                        AssetVariant.status == VariantStatus.PROCESSING,
                     )
-                )
-                processing = result.scalars().all()
+                    ready_assets = result.scalars().all()
 
-                reset_ids: list[uuid.UUID] = []
-                for v in processing:
-                    age = (datetime.now(timezone.utc) - v.created_at).total_seconds()
-                    if v.progress == 0.0 and age > _STALE_PROCESSING_TIMEOUT:
-                        v.status = VariantStatus.PENDING
-                        v.progress = 0.0
-                        reset_ids.append(v.id)
-                    elif age > _STALE_PROCESSING_TIMEOUT * 2:
-                        v.status = VariantStatus.PENDING
-                        v.progress = 0.0
-                        reset_ids.append(v.id)
+                    for asset in ready_assets:
+                        variant_ids = await _enqueue_transcoding_for_asset(asset, db)
+                        if variant_ids:
+                            await enqueue_variants(db, variant_ids)
+                            logger.info(
+                                "Stream capture complete for %s — enqueued %d variant(s)",
+                                asset.id, len(variant_ids),
+                            )
 
-                if reset_ids:
-                    await db.commit()
-                    await enqueue_variants(db, reset_ids)
-                    logger.warning(
-                        "Reset %d stale PROCESSING variant(s) to PENDING", len(reset_ids),
+                # ── 2. Stale PROCESSING variants → reset to PENDING ──
+                async for db in get_db():
+                    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_STALE_PROCESSING_TIMEOUT)
+                    result = await db.execute(
+                        select(AssetVariant).where(
+                            AssetVariant.status == VariantStatus.PROCESSING,
+                        )
                     )
+                    processing = result.scalars().all()
+
+                    reset_ids: list[uuid.UUID] = []
+                    for v in processing:
+                        age = (datetime.now(timezone.utc) - v.created_at).total_seconds()
+                        if v.progress == 0.0 and age > _STALE_PROCESSING_TIMEOUT:
+                            v.status = VariantStatus.PENDING
+                            v.progress = 0.0
+                            reset_ids.append(v.id)
+                        elif age > _STALE_PROCESSING_TIMEOUT * 2:
+                            v.status = VariantStatus.PENDING
+                            v.progress = 0.0
+                            reset_ids.append(v.id)
+
+                    if reset_ids:
+                        await db.commit()
+                        await enqueue_variants(db, reset_ids)
+                        logger.warning(
+                            "Reset %d stale PROCESSING variant(s) to PENDING", len(reset_ids),
+                        )
 
         except asyncio.CancelledError:
             logger.info("Stream capture monitor shutting down")
@@ -869,31 +880,41 @@ async def deleted_asset_reaper_loop() -> None:
     while True:
         try:
             await asyncio.sleep(_REAPER_INTERVAL)
-            async for db in get_db():
-                try:
-                    await reap_deleted_assets_once(db)
-                except Exception:
-                    logger.exception("Reaper: asset sweep failed")
-            async for db in get_db():
-                try:
-                    marked = await supersede_ready_variants_once(db)
-                    if marked:
-                        logger.info(
-                            "Reaper: supersession sweep soft-deleted %d "
-                            "stale variant(s)", marked,
-                        )
-                except Exception:
-                    logger.exception("Reaper: variant supersession sweep failed")
-            async for db in get_db():
-                try:
-                    reaped = await reap_superseded_variants_once(db)
-                    if reaped:
-                        logger.info(
-                            "Reaper: hard-deleted %d superseded variant(s)",
-                            reaped,
-                        )
-                except Exception:
-                    logger.exception("Reaper: variant hard-delete sweep failed")
+            # Stage 4 (#344): advisory-lock so only one replica runs the
+            # blob-delete + supersession sweep at a time.  All three
+            # operations are idempotent at the individual row level but
+            # the external blob-delete API calls are wasted work if
+            # duplicated across replicas.
+            from cms.services.leader import session_advisory_lock
+            _REAPER_LOCK_ID = 0x4147_4F52_41_04  # 'AGORA' + 04
+            async with session_advisory_lock(_REAPER_LOCK_ID) as got:
+                if not got:
+                    continue
+                async for db in get_db():
+                    try:
+                        await reap_deleted_assets_once(db)
+                    except Exception:
+                        logger.exception("Reaper: asset sweep failed")
+                async for db in get_db():
+                    try:
+                        marked = await supersede_ready_variants_once(db)
+                        if marked:
+                            logger.info(
+                                "Reaper: supersession sweep soft-deleted %d "
+                                "stale variant(s)", marked,
+                            )
+                    except Exception:
+                        logger.exception("Reaper: variant supersession sweep failed")
+                async for db in get_db():
+                    try:
+                        reaped = await reap_superseded_variants_once(db)
+                        if reaped:
+                            logger.info(
+                                "Reaper: hard-deleted %d superseded variant(s)",
+                                reaped,
+                            )
+                    except Exception:
+                        logger.exception("Reaper: variant hard-delete sweep failed")
         except asyncio.CancelledError:
             logger.info("Deleted asset reaper shutting down")
             raise

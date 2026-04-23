@@ -51,7 +51,7 @@ from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
 from cms.services.version_checker import get_latest_device_version, is_update_available
-from cms.routers.devices import _upgrading as _devices_upgrading
+from cms.routers.devices import _is_upgrading as _devices_is_upgrading
 
 import json as _json
 from datetime import datetime, timezone as _tz
@@ -1056,7 +1056,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
         d.update_available = is_update_available(d.firmware_version)
-        d.is_upgrading = d.id in _devices_upgrading
+        d.is_upgrading = _devices_is_upgrading(d)
         d.has_active_schedule = d.id in scheduled_device_ids
 
     groups_query = (
@@ -1106,7 +1106,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.ssh_enabled = state["ssh_enabled"] if state else None
             d.local_api_enabled = state["local_api_enabled"] if state else None
             d.update_available = is_update_available(d.firmware_version)
-            d.is_upgrading = d.id in _devices_upgrading
+            d.is_upgrading = _devices_is_upgrading(d)
             d.has_active_schedule = d.id in scheduled_device_ids
 
     # Devices not assigned to any group
