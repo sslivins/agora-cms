@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,7 +37,16 @@ class DeviceGroup(Base):
 
 class Device(Base):
     __tablename__ = "devices"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        Index(
+            "ix_devices_pubkey_unique",
+            "pubkey",
+            unique=True,
+            postgresql_where=text("pubkey IS NOT NULL"),
+            sqlite_where=text("pubkey IS NOT NULL"),
+        ),
+        {"extend_existing": True},
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # Pi serial or UUID
     name: Mapped[str] = mapped_column(String(100), default="")
