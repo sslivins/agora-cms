@@ -725,3 +725,205 @@ class TestConnectToken:
         assert r1.status_code == 200
         r2 = await unauthed_client.post("/api/devices/connect-token", json=body)
         assert r2.status_code == 401
+
+    async def test_non_adopted_status_returns_401(
+        self, unauthed_client, stub_wps_transport, db_session,
+    ):
+        """A Device row that exists and still has its pubkey but is not
+        in ``ADOPTED`` state (e.g. PENDING, or left behind by a removal
+        flow that nulled status but not pubkey) must not be able to mint
+        fresh WPS JWTs.  Prevents bypass of admin revocation that only
+        changed ``status`` without clearing ``pubkey``.
+        """
+        from cms.models.device import Device, DeviceStatus
+
+        priv, pub_b64 = _gen_keypair()
+        device = Device(
+            id=str(uuid.uuid4()), name="ct-pending",
+            status=DeviceStatus.PENDING, pubkey=pub_b64,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        ts = int(time.time())
+        nonce = uuid.uuid4().hex
+        sig = _sign_connect_token(priv, device.id, ts, nonce)
+        r = await unauthed_client.post(
+            "/api/devices/connect-token",
+            json={"device_id": device.id, "timestamp": ts,
+                  "nonce": nonce, "signature": sig},
+        )
+        assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------
+# /register — pubkey-hijack defence
+# ---------------------------------------------------------------------
+
+
+class TestRegisterPubkeyHijack:
+    async def test_same_pairing_hash_different_pubkey_returns_409(
+        self, unauthed_client, fleet_secret_enabled, db_session,
+    ):
+        """Attacker (with the fleet HMAC secret + the leaked pairing
+        secret) must not be able to overwrite an existing unadopted
+        pending row's pubkey with their own.  Doing so would cause the
+        admin's adopt-time ECIES-encrypted payload to be decryptable by
+        the attacker instead of the real device.
+        """
+        _, pub_legit = _gen_keypair()
+        _, pub_attacker = _gen_keypair()
+        _, pairing_hash = _pairing_pair()
+
+        body1 = {
+            "device_id": "pi-legit", "pubkey": pub_legit,
+            "pairing_secret_hash": pairing_hash,
+        }
+        r1 = await unauthed_client.post(
+            "/api/devices/register", json=body1,
+            headers=_fleet_headers(
+                device_id=body1["device_id"], pubkey_b64=pub_legit,
+                pairing_secret_hash_hex=pairing_hash,
+            ),
+        )
+        assert r1.status_code == 202
+
+        body2 = {
+            "device_id": "pi-attacker", "pubkey": pub_attacker,
+            "pairing_secret_hash": pairing_hash,
+        }
+        r2 = await unauthed_client.post(
+            "/api/devices/register", json=body2,
+            headers=_fleet_headers(
+                device_id=body2["device_id"], pubkey_b64=pub_attacker,
+                pairing_secret_hash_hex=pairing_hash,
+            ),
+        )
+        assert r2.status_code == 409
+        assert r2.json()["detail"] == "pubkey_mismatch"
+
+        # DB still shows the legitimate pubkey untouched.
+        from cms.models.pending_registration import PendingRegistration
+        from sqlalchemy import select
+        row = (
+            await db_session.execute(
+                select(PendingRegistration).where(
+                    PendingRegistration.pairing_secret_hash == pairing_hash,
+                )
+            )
+        ).scalar_one()
+        assert row.pubkey == pub_legit
+        assert row.device_id == "pi-legit"
+
+
+# ---------------------------------------------------------------------
+# pending_registrations TTL reaper
+# ---------------------------------------------------------------------
+
+
+class TestPendingRegistrationsReaper:
+    async def test_unpolled_expired_row_deleted(self, db_session):
+        """Rows that were created, HMAC-authed, but never polled get
+        dropped once the unpolled TTL elapses.  Main defence against
+        registration spam burning cap slots.
+        """
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+        from cms.models.pending_registration import PendingRegistration
+        from cms.services.device_bootstrap import reap_pending_registrations
+        from sqlalchemy import select, func
+
+        stale_ts = datetime.now(timezone.utc) - timedelta(hours=2)
+        db_session.add(PendingRegistration(
+            id=_uuid.uuid4(), device_id="old", pubkey="stale-pubkey",
+            pairing_secret_hash="a" * 64,
+            created_at=stale_ts, updated_at=stale_ts,
+        ))
+        db_session.add(PendingRegistration(
+            id=_uuid.uuid4(), device_id="fresh", pubkey="fresh-pubkey",
+            pairing_secret_hash="b" * 64,
+        ))
+        await db_session.commit()
+
+        deleted = await reap_pending_registrations(
+            db=db_session,
+            unpolled_ttl_seconds=3600,
+            polled_ttl_seconds=86_400,
+            adopted_ttl_seconds=86_400,
+        )
+        assert deleted == 1
+
+        remaining = (
+            await db_session.execute(
+                select(func.count()).select_from(PendingRegistration)
+            )
+        ).scalar_one()
+        assert remaining == 1
+
+    async def test_polled_unadopted_uses_polled_ttl(self, db_session):
+        """A row the device has polled survives past the unpolled TTL
+        so admins have time to finish the adoption flow — but is still
+        eventually reaped if adoption never happens.
+        """
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+        from cms.models.pending_registration import PendingRegistration
+        from cms.services.device_bootstrap import reap_pending_registrations
+        from sqlalchemy import select, func
+
+        # Polled 2h ago — past unpolled TTL (1h) but within polled TTL (24h).
+        polled_ts = datetime.now(timezone.utc) - timedelta(hours=2)
+        db_session.add(PendingRegistration(
+            id=_uuid.uuid4(), device_id="polled-recent",
+            pubkey="pk-recent", pairing_secret_hash="c" * 64,
+            polled_at=polled_ts,
+        ))
+        # Polled 30h ago — past polled TTL.
+        polled_old_ts = datetime.now(timezone.utc) - timedelta(hours=30)
+        db_session.add(PendingRegistration(
+            id=_uuid.uuid4(), device_id="polled-old",
+            pubkey="pk-old", pairing_secret_hash="d" * 64,
+            polled_at=polled_old_ts,
+        ))
+        await db_session.commit()
+
+        deleted = await reap_pending_registrations(
+            db=db_session,
+            unpolled_ttl_seconds=3600,
+            polled_ttl_seconds=86_400,
+            adopted_ttl_seconds=86_400,
+        )
+        assert deleted == 1
+
+        rows = (
+            await db_session.execute(select(PendingRegistration))
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].device_id == "polled-recent"
+
+    async def test_adopted_expired_row_deleted(self, db_session):
+        """Adopted rows are kept briefly for troubleshooting then
+        dropped.  Bounds long-term table growth for adopted devices too.
+        """
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+        from cms.models.pending_registration import PendingRegistration
+        from cms.services.device_bootstrap import reap_pending_registrations
+        from sqlalchemy import select, func
+
+        adopted_ts = datetime.now(timezone.utc) - timedelta(hours=48)
+        db_session.add(PendingRegistration(
+            id=_uuid.uuid4(), device_id="ancient-adopted",
+            pubkey="pk-adopted", pairing_secret_hash="e" * 64,
+            adopted_at=adopted_ts,
+        ))
+        await db_session.commit()
+
+        deleted = await reap_pending_registrations(
+            db=db_session,
+            unpolled_ttl_seconds=3600,
+            polled_ttl_seconds=86_400,
+            adopted_ttl_seconds=86_400,
+        )
+        assert deleted == 1
+

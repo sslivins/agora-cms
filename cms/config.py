@@ -87,6 +87,22 @@ class Settings(SharedSettings):
     # returns 503 once the cap is reached to protect the DB from
     # registration spam.
     pending_registrations_max: int = 50_000
+    # TTLs for the ``pending_registrations`` reaper loop.  All in
+    # seconds; set 0 to disable a given sweep.
+    # * ``unpolled`` — row created but the device never polled.  Tight
+    #   window because this is where registration-spam junk accumulates
+    #   (1h default).
+    # * ``polled`` — device polled but admin hasn't adopted.  Generous
+    #   window so a technician has time to scan the QR and hit /adopt
+    #   from the UI (24h default).
+    # * ``adopted`` — row was adopted; device almost certainly fetched
+    #   the payload already.  Keep briefly for troubleshooting, then
+    #   drop (24h default).
+    bootstrap_reaper_unpolled_ttl_seconds: int = 3600
+    bootstrap_reaper_polled_ttl_seconds: int = 86_400
+    bootstrap_reaper_adopted_ttl_seconds: int = 86_400
+    # How often the reaper loop wakes up to run a sweep.
+    bootstrap_reaper_interval_seconds: int = 3600
     # TTL for the in-memory nonce cache used by ``/register`` (scope=fleet)
     # and ``/connect-token`` (scope=connect-token).  Must be >= the larger
     # of the two timestamp-skew windows (300s for /register, 60s for
