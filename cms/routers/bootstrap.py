@@ -35,6 +35,7 @@ import hashlib
 import hmac
 import logging
 import time
+import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Tuple
@@ -47,11 +48,14 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.permissions import DEVICES_MANAGE
 from cms.schemas.bootstrap import (
+    AdoptPendingRequest,
     BootstrapAdoptRequest,
     BootstrapAdoptResponse,
     BootstrapStatusResponse,
     ConnectTokenRequest,
     ConnectTokenResponse,
+    PendingDeviceSummary,
+    PendingDevicesResponse,
     RegisterRequest,
     RegisterResponse,
 )
@@ -364,6 +368,199 @@ async def adopt(
     await db.commit()
 
     return BootstrapAdoptResponse(device_id=device.id, status="adopted")
+
+
+# ---------------------------------------------------------------------
+# /pending + /adopt-pending (UI-driven adopt-by-row-id flow)
+# ---------------------------------------------------------------------
+
+
+def _pending_to_summary(row) -> PendingDeviceSummary:
+    metadata = dict(row.connection_metadata or {})
+    return PendingDeviceSummary(
+        id=str(row.id),
+        device_id=row.device_id,
+        pubkey=row.pubkey,
+        metadata=metadata,
+        ip_address=row.ip_address,
+        created_at=(
+            row.created_at.isoformat().replace("+00:00", "Z")
+            if row.created_at is not None else ""
+        ),
+        polled_at=(
+            row.polled_at.isoformat().replace("+00:00", "Z")
+            if row.polled_at is not None else None
+        ),
+        has_polled=row.polled_at is not None,
+    )
+
+
+@router.get(
+    "/pending",
+    response_model=PendingDevicesResponse,
+    dependencies=[Depends(require_permission(DEVICES_MANAGE))],
+)
+async def list_pending(
+    db: AsyncSession = Depends(get_db),
+) -> PendingDevicesResponse:
+    """List every pending (un-adopted) device registration.
+
+    Drives the "Pending Devices" section of the devices page.  Items
+    are sorted newest-first so the most recently connected device is
+    always on top.
+    """
+    rows = await device_bootstrap.list_pending_registrations(db)
+    return PendingDevicesResponse(
+        items=[_pending_to_summary(r) for r in rows],
+    )
+
+
+@router.post(
+    "/adopt-pending",
+    response_model=BootstrapAdoptResponse,
+    dependencies=[Depends(require_permission(DEVICES_MANAGE))],
+)
+async def adopt_pending(
+    body: AdoptPendingRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> BootstrapAdoptResponse:
+    """Adopt a pending row by its id.
+
+    Same effect as ``POST /adopt`` with the pairing secret, but the
+    admin never sees the secret — it stays on the wire between the
+    device and CMS as an idempotency key.
+    """
+    _ip_ratelimited(request, key="adopt", limit=60, window_sec=60)
+    _user = getattr(request.state, "user", None)
+    _user_id = getattr(_user, "id", None) if _user is not None else None
+    if _user_id is not None:
+        now = time.monotonic()
+        bucket = _buckets[("adopt-user", str(_user_id))]
+        cutoff = now - 60
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= 60:
+            raise HTTPException(status_code=429, detail="rate_limited")
+        bucket.append(now)
+
+    try:
+        pending_uuid = uuid.UUID(body.pending_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="pending_not_found")
+
+    async def _mint(device_row_id: str) -> dict[str, Any]:
+        transport = get_transport()
+        if not hasattr(transport, "get_client_access_token"):
+            raise HTTPException(
+                status_code=500,
+                detail="Transport does not support client tokens",
+            )
+        return await transport.get_client_access_token(
+            device_row_id,
+            minutes_to_expire=settings.bootstrap_wps_jwt_minutes,
+        )
+
+    try:
+        device, pending = await device_bootstrap.adopt_pending_by_id(
+            db=db,
+            pending_id=pending_uuid,
+            profile_id=body.profile_id,
+            name=body.name,
+            location=body.location,
+            group_id=body.group_id,
+            mint_wps_jwt=_mint,
+            settings=settings,
+        )
+    except device_bootstrap.BootstrapPendingNotFound:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="pending_not_found")
+    except device_bootstrap.BootstrapAlreadyAdopted:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="already_adopted")
+    except ValueError as e:
+        await db.rollback()
+        msg = str(e)
+        if msg in ("group_not_found", "profile_not_found"):
+            raise HTTPException(status_code=404, detail=msg) from e
+        raise HTTPException(status_code=400, detail=msg) from e
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        logger.exception("/adopt-pending internal error")
+        raise HTTPException(status_code=500, detail="internal_error")
+
+    await audit_log(
+        db,
+        user=getattr(request.state, "user", None),
+        action="device.adopt",
+        resource_type="device",
+        resource_id=str(device.id),
+        description=(
+            f"Adopted device '{device.name or device.id}' via pending list"
+        ),
+        details={
+            "name": device.name,
+            "location": device.location,
+            "group_id": str(device.group_id) if device.group_id else None,
+            "profile_id": str(device.profile_id) if device.profile_id else None,
+            "pending_id": str(pending.id),
+            "flow": "adopt-pending",
+        },
+        request=request,
+    )
+    await db.commit()
+
+    return BootstrapAdoptResponse(device_id=device.id, status="adopted")
+
+
+@router.delete(
+    "/pending/{pending_id}",
+    status_code=204,
+    dependencies=[Depends(require_permission(DEVICES_MANAGE))],
+)
+async def reject_pending(
+    pending_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Reject / drop an un-adopted pending row.
+
+    Useful for cleaning up bogus or duplicate registrations from the
+    UI without waiting for the reaper's TTL.  Refuses to delete rows
+    that have already been adopted.
+    """
+    try:
+        pending_uuid = uuid.UUID(pending_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="pending_not_found")
+
+    try:
+        deleted = await device_bootstrap.delete_pending(db, pending_uuid)
+    except Exception:
+        await db.rollback()
+        logger.exception("/pending delete internal error")
+        raise HTTPException(status_code=500, detail="internal_error")
+
+    if not deleted:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="pending_not_found")
+
+    await audit_log(
+        db,
+        user=getattr(request.state, "user", None),
+        action="device.pending.reject",
+        resource_type="pending_registration",
+        resource_id=str(pending_uuid),
+        description="Rejected pending device registration from UI",
+        details={"pending_id": str(pending_uuid)},
+        request=request,
+    )
+    await db.commit()
+    return None
 
 
 @router.post("/connect-token", response_model=ConnectTokenResponse)

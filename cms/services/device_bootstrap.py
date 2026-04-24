@@ -321,7 +321,7 @@ def _build_bootstrap_payload(
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
-async def _lock_pending_for_adoption(
+async def _lock_pending_by_hash(
     db: AsyncSession, pairing_secret_hash: str,
 ) -> PendingRegistration | None:
     """``SELECT ... FOR UPDATE`` on PostgreSQL; plain SELECT on SQLite.
@@ -338,10 +338,67 @@ async def _lock_pending_for_adoption(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
-async def adopt_device(
+# Back-compat alias for callers that imported the old name.
+_lock_pending_for_adoption = _lock_pending_by_hash
+
+
+async def _lock_pending_by_id(
+    db: AsyncSession, pending_id: uuid.UUID,
+) -> PendingRegistration | None:
+    """Same contract as :func:`_lock_pending_by_hash` but keyed by the
+    row's primary key.  Used by the adopt-by-pending-id UI flow so the
+    admin can adopt straight from the pending-devices list without
+    typing the pairing secret.  The secret is still generated and
+    transmitted; it is simply never surfaced to the admin.
+    """
+    stmt = select(PendingRegistration).where(
+        PendingRegistration.id == pending_id,
+    )
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    if dialect == "postgresql":
+        stmt = stmt.with_for_update()
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def list_pending_registrations(
+    db: AsyncSession,
+) -> list[PendingRegistration]:
+    """Return every un-adopted pending_registrations row, newest first.
+
+    Read-only; does not take a row-level lock.  Used by the admin-only
+    ``GET /api/devices/pending`` endpoint that powers the pending-devices
+    list in the UI.
+    """
+    stmt = (
+        select(PendingRegistration)
+        .where(PendingRegistration.adopted_at.is_(None))
+        .order_by(PendingRegistration.created_at.desc())
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def delete_pending(
+    db: AsyncSession, pending_id: uuid.UUID,
+) -> bool:
+    """Delete an un-adopted pending row.  Returns True if a row was
+    removed, False otherwise (missing or already adopted).
+
+    Refuses to delete adopted rows — those still carry the outbox
+    ciphertext that the device picks up on its next /bootstrap-status
+    poll, and the reaper cleans them up after adoption.
+    """
+    pending = await _lock_pending_by_id(db, pending_id)
+    if pending is None or pending.adopted_at is not None:
+        return False
+    await db.delete(pending)
+    await db.flush()
+    return True
+
+
+async def _perform_adoption(
     *,
     db: AsyncSession,
-    pairing_secret: str,
+    pending: PendingRegistration,
     profile_id: str,
     name: str | None,
     location: str | None,
@@ -349,22 +406,10 @@ async def adopt_device(
     mint_wps_jwt,  # async callable (device_id) -> dict(url=..., token=...)
     settings: Settings,
 ) -> tuple[Device, PendingRegistration]:
-    """Adopt a pending_registrations row.
-
-    Atomic: looks up (FOR UPDATE) the pending row by pairing-secret hash,
-    creates the ``devices`` row, mints a WPS JWT, ECIES-encrypts the
-    bootstrap payload to the device's pubkey, and writes everything in
-    a single transaction.  Caller is responsible for committing.
+    """Shared body for both adopt-by-pairing-secret and
+    adopt-by-pending-id.  Caller has already acquired the row lock and
+    confirmed ``pending.adopted_at is None``.
     """
-    pairing_secret_hash = device_identity.sha256_hex(
-        pairing_secret.encode("utf-8"),
-    )
-    pending = await _lock_pending_for_adoption(db, pairing_secret_hash)
-    if pending is None:
-        raise BootstrapPendingNotFound(pairing_secret_hash)
-    if pending.adopted_at is not None:
-        raise BootstrapAlreadyAdopted(pairing_secret_hash)
-
     # Validate optional group_id.
     if group_id is not None:
         try:
@@ -414,7 +459,7 @@ async def adopt_device(
         # another devices row (shouldn't happen because pending's
         # partial unique index on pubkey blocks concurrent pending
         # rows, but double-check).
-        raise BootstrapAlreadyAdopted(pairing_secret_hash) from e
+        raise BootstrapAlreadyAdopted(str(pending.id)) from e
 
     # Mint a fresh WPS JWT for the new device.
     access = await mint_wps_jwt(device_row_id)
@@ -444,3 +489,75 @@ async def adopt_device(
     await db.flush()
 
     return device, pending
+
+
+async def adopt_device(
+    *,
+    db: AsyncSession,
+    pairing_secret: str,
+    profile_id: str,
+    name: str | None,
+    location: str | None,
+    group_id: str | None,
+    mint_wps_jwt,  # async callable (device_id) -> dict(url=..., token=...)
+    settings: Settings,
+) -> tuple[Device, PendingRegistration]:
+    """Adopt a pending_registrations row by pairing secret.
+
+    Atomic: looks up (FOR UPDATE) the pending row by pairing-secret hash,
+    creates the ``devices`` row, mints a WPS JWT, ECIES-encrypts the
+    bootstrap payload to the device's pubkey, and writes everything in
+    a single transaction.  Caller is responsible for committing.
+    """
+    pairing_secret_hash = device_identity.sha256_hex(
+        pairing_secret.encode("utf-8"),
+    )
+    pending = await _lock_pending_by_hash(db, pairing_secret_hash)
+    if pending is None:
+        raise BootstrapPendingNotFound(pairing_secret_hash)
+    if pending.adopted_at is not None:
+        raise BootstrapAlreadyAdopted(pairing_secret_hash)
+    return await _perform_adoption(
+        db=db,
+        pending=pending,
+        profile_id=profile_id,
+        name=name,
+        location=location,
+        group_id=group_id,
+        mint_wps_jwt=mint_wps_jwt,
+        settings=settings,
+    )
+
+
+async def adopt_pending_by_id(
+    *,
+    db: AsyncSession,
+    pending_id: uuid.UUID,
+    profile_id: str,
+    name: str | None,
+    location: str | None,
+    group_id: str | None,
+    mint_wps_jwt,  # async callable (device_id) -> dict(url=..., token=...)
+    settings: Settings,
+) -> tuple[Device, PendingRegistration]:
+    """Adopt a pending_registrations row by its primary key.
+
+    Same transactional contract as :func:`adopt_device` — takes a
+    row-level lock, writes the devices row + outbox ciphertext
+    atomically, caller commits.  Used by the UI's pending-devices list.
+    """
+    pending = await _lock_pending_by_id(db, pending_id)
+    if pending is None:
+        raise BootstrapPendingNotFound(str(pending_id))
+    if pending.adopted_at is not None:
+        raise BootstrapAlreadyAdopted(str(pending_id))
+    return await _perform_adoption(
+        db=db,
+        pending=pending,
+        profile_id=profile_id,
+        name=name,
+        location=location,
+        group_id=group_id,
+        mint_wps_jwt=mint_wps_jwt,
+        settings=settings,
+    )

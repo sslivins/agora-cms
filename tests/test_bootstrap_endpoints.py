@@ -598,6 +598,278 @@ class TestAdopt:
 
 
 # ---------------------------------------------------------------------
+# /pending + /adopt-pending + DELETE /pending/{id}
+# ---------------------------------------------------------------------
+
+
+async def _register_one(
+    unauthed_client, device_id: str = "pi-x",
+) -> tuple[str, str, str, Ed25519PrivateKey]:
+    """Helper: call /register once and return (device_id, pairing_secret,
+    pairing_hash, priv)."""
+    priv, pub_b64 = _gen_keypair()
+    pairing_secret, pairing_hash = _pairing_pair()
+    headers = _fleet_headers(
+        device_id=device_id, pubkey_b64=pub_b64,
+        pairing_secret_hash_hex=pairing_hash,
+    )
+    r = await unauthed_client.post(
+        "/api/devices/register",
+        json={"device_id": device_id, "pubkey": pub_b64,
+              "pairing_secret_hash": pairing_hash},
+        headers=headers,
+    )
+    assert r.status_code == 202, r.text
+    return device_id, pairing_secret, pairing_hash, priv
+
+
+class TestListPending:
+    async def test_requires_auth(
+        self, unauthed_client, fleet_secret_enabled,
+    ):
+        r = await unauthed_client.get("/api/devices/pending")
+        assert r.status_code in (401, 403)
+
+    async def test_empty_list(self, client, fleet_secret_enabled):
+        r = await client.get("/api/devices/pending")
+        assert r.status_code == 200
+        assert r.json() == {"items": []}
+
+    async def test_lists_registered_device(
+        self, client, unauthed_client, fleet_secret_enabled,
+    ):
+        await _register_one(unauthed_client, device_id="pi-alpha")
+        r = await client.get("/api/devices/pending")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 1
+        row = items[0]
+        assert row["device_id"] == "pi-alpha"
+        assert isinstance(row["id"], str)
+        uuid.UUID(row["id"])  # must parse as uuid
+        assert row["pubkey"]
+        # pairing_secret_hash and outbox_ciphertext MUST NOT leak
+        assert "pairing_secret_hash" not in row
+        assert "outbox_ciphertext" not in row
+        assert "pairing_secret" not in row
+
+    async def test_newest_first(
+        self, client, unauthed_client, fleet_secret_enabled,
+    ):
+        await _register_one(unauthed_client, device_id="pi-first")
+        await _register_one(unauthed_client, device_id="pi-second")
+        r = await client.get("/api/devices/pending")
+        items = r.json()["items"]
+        assert [i["device_id"] for i in items] == ["pi-second", "pi-first"]
+
+    async def test_adopted_rows_excluded(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport, db_session,
+    ):
+        _, secret_a, _, _ = await _register_one(
+            unauthed_client, device_id="pi-adopted",
+        )
+        await _register_one(unauthed_client, device_id="pi-still-pending")
+        profile = await _seed_profile(db_session, name="excl")
+        adopt = await client.post(
+            "/api/devices/adopt",
+            json={"pairing_secret": secret_a,
+                  "profile_id": str(profile.id)},
+        )
+        assert adopt.status_code == 200
+        r = await client.get("/api/devices/pending")
+        items = r.json()["items"]
+        assert [i["device_id"] for i in items] == ["pi-still-pending"]
+
+
+class TestAdoptPending:
+    async def test_admin_adoption_by_pending_id(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport, db_session,
+    ):
+        _, _, pairing_hash, priv = await _register_one(
+            unauthed_client, device_id="pi-by-id",
+        )
+        # Discover the pending_id via the list endpoint (admin-only).
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+
+        profile = await _seed_profile(db_session, name="byid-prof")
+        r = await client.post(
+            "/api/devices/adopt-pending",
+            json={
+                "pending_id": pending_id,
+                "name": "Lobby",
+                "profile_id": str(profile.id),
+            },
+        )
+        assert r.status_code == 200, r.text
+        device_id = r.json()["device_id"]
+
+        from cms.models.device import Device, DeviceStatus
+        from cms.models.pending_registration import PendingRegistration
+        from sqlalchemy import select
+
+        device = (
+            await db_session.execute(
+                select(Device).where(Device.id == device_id)
+            )
+        ).scalar_one()
+        assert device.status == DeviceStatus.ADOPTED
+        assert device.name == "Lobby"
+
+        pending = (
+            await db_session.execute(
+                select(PendingRegistration).where(
+                    PendingRegistration.pairing_secret_hash == pairing_hash,
+                )
+            )
+        ).scalar_one()
+        assert pending.adopted_at is not None
+        assert pending.outbox_ciphertext
+        # Device can still decrypt the outbox with its private key.
+        priv_raw = priv.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        plaintext = device_identity.decrypt_with_device_key(
+            priv_raw, pending.outbox_ciphertext,
+        )
+        payload = json.loads(plaintext)
+        assert payload["device_id"] == device_id
+
+    async def test_missing_auth_rejected(
+        self, unauthed_client, fleet_secret_enabled, db_session,
+    ):
+        profile = await _seed_profile(db_session, name="noauth-byid")
+        r = await unauthed_client.post(
+            "/api/devices/adopt-pending",
+            json={
+                "pending_id": str(uuid.uuid4()),
+                "profile_id": str(profile.id),
+            },
+        )
+        assert r.status_code in (401, 403)
+
+    async def test_unknown_pending_id_returns_404(
+        self, client, fleet_secret_enabled, stub_wps_transport, db_session,
+    ):
+        profile = await _seed_profile(db_session, name="unknown-byid")
+        r = await client.post(
+            "/api/devices/adopt-pending",
+            json={
+                "pending_id": str(uuid.uuid4()),
+                "profile_id": str(profile.id),
+            },
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"] == "pending_not_found"
+
+    async def test_malformed_uuid_returns_404(
+        self, client, fleet_secret_enabled, stub_wps_transport, db_session,
+    ):
+        profile = await _seed_profile(db_session, name="badid")
+        r = await client.post(
+            "/api/devices/adopt-pending",
+            json={
+                "pending_id": "not-a-uuid",
+                "profile_id": str(profile.id),
+            },
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"] == "pending_not_found"
+
+    async def test_already_adopted_returns_409(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport, db_session,
+    ):
+        await _register_one(unauthed_client, device_id="pi-twice")
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+        profile = await _seed_profile(db_session, name="twice")
+        r1 = await client.post(
+            "/api/devices/adopt-pending",
+            json={"pending_id": pending_id,
+                  "profile_id": str(profile.id)},
+        )
+        assert r1.status_code == 200
+        r2 = await client.post(
+            "/api/devices/adopt-pending",
+            json={"pending_id": pending_id,
+                  "profile_id": str(profile.id)},
+        )
+        assert r2.status_code == 409
+
+    async def test_unknown_profile_returns_404(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport,
+    ):
+        await _register_one(unauthed_client, device_id="pi-noprof")
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+        r = await client.post(
+            "/api/devices/adopt-pending",
+            json={"pending_id": pending_id,
+                  "profile_id": str(uuid.uuid4())},
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"] == "profile_not_found"
+
+
+class TestRejectPending:
+    async def test_requires_auth(
+        self, unauthed_client, fleet_secret_enabled,
+    ):
+        r = await unauthed_client.delete(
+            f"/api/devices/pending/{uuid.uuid4()}"
+        )
+        assert r.status_code in (401, 403)
+
+    async def test_delete_removes_row(
+        self, client, unauthed_client, fleet_secret_enabled, db_session,
+    ):
+        await _register_one(unauthed_client, device_id="pi-rm")
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+        r = await client.delete(f"/api/devices/pending/{pending_id}")
+        assert r.status_code == 204
+        listing2 = await client.get("/api/devices/pending")
+        assert listing2.json()["items"] == []
+
+    async def test_unknown_id_returns_404(
+        self, client, fleet_secret_enabled,
+    ):
+        r = await client.delete(f"/api/devices/pending/{uuid.uuid4()}")
+        assert r.status_code == 404
+
+    async def test_malformed_uuid_returns_404(
+        self, client, fleet_secret_enabled,
+    ):
+        r = await client.delete("/api/devices/pending/not-a-uuid")
+        assert r.status_code == 404
+
+    async def test_already_adopted_cannot_be_rejected(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport, db_session,
+    ):
+        _, pairing_secret, _, _ = await _register_one(
+            unauthed_client, device_id="pi-adopted-rm",
+        )
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+        profile = await _seed_profile(db_session, name="adopted-rm")
+        a = await client.post(
+            "/api/devices/adopt",
+            json={"pairing_secret": pairing_secret,
+                  "profile_id": str(profile.id)},
+        )
+        assert a.status_code == 200
+        r = await client.delete(f"/api/devices/pending/{pending_id}")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------
 # /connect-token
 # ---------------------------------------------------------------------
 
