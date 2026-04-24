@@ -86,10 +86,29 @@ router = APIRouter(prefix="/api/devices", tags=["bootstrap"])
 _buckets: dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
 
 
+def _client_ip(request: Request) -> str | None:
+    """Return the best-effort client IP for a request.
+
+    Prefers the first entry in X-Forwarded-For when present so we record
+    the real device IP instead of the Container Apps envoy ingress hop.
+    Falls back to ``request.client.host``.  Mirrors the same logic used
+    by ``audit_service._resolve_ip`` — kept local here to avoid a
+    cross-module import from the router layer.
+    """
+    xff = request.headers.get("x-forwarded-for") if hasattr(request, "headers") else None
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    if request.client:
+        return request.client.host
+    return None
+
+
 def _ip_ratelimited(
     request: Request, *, key: str, limit: int, window_sec: int,
 ) -> None:
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request) or "unknown"
     bucket_key = (key, ip)
     now = time.monotonic()
     bucket = _buckets[bucket_key]
@@ -211,7 +230,7 @@ async def register(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    client_ip = request.client.host if request.client else None
+    client_ip = _client_ip(request)
     try:
         await device_bootstrap.register_device(
             db=db,
