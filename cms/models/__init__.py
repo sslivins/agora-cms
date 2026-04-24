@@ -12,6 +12,7 @@ from cms.models.leader_lease import LeaderLease  # noqa: F401
 from cms.models.log_request import LogRequest  # noqa: F401
 from cms.models.notification import Notification  # noqa: F401
 from cms.models.notification_pref import UserNotificationPref  # noqa: F401
+from cms.models.pending_registration import PendingRegistration  # noqa: F401
 from cms.models.schedule import Schedule  # noqa: F401
 from cms.models.schedule_device_skip import ScheduleDeviceSkip  # noqa: F401
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent  # noqa: F401
