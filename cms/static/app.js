@@ -678,46 +678,70 @@ function _parsePairingQr(text) {
     const t = text.trim();
     if (!t) return null;
     if (t[0] === "{") {
-        try {
-            const obj = JSON.parse(t);
-            if (obj && typeof obj.secret === "string" && obj.secret.length >= 8) {
-                return obj.secret.trim();
+        // If it parses as JSON, only accept the schema {v:1, secret:"..."}.
+        // If it parses but mismatches, return null instead of falling through
+        // to raw-mode so we don't treat {"foo":"bar"} as a secret literal.
+        let obj;
+        try { obj = JSON.parse(t); }
+        catch (_) { obj = undefined; }
+        if (obj !== undefined) {
+            if (obj && typeof obj.secret === "string") {
+                const s = obj.secret.trim();
+                return s.length >= 8 && s.length <= 128 ? s : null;
             }
-        } catch (_) { /* fall through to raw-string interpretation */ }
+            return null;
+        }
     }
-    return t.length >= 8 && t.length <= 128 ? t : null;
+    // Raw mode: only accept strings that look like a secret, not URLs or
+    // payloads containing whitespace.
+    if (t.length < 8 || t.length > 128) return null;
+    if (/\s/.test(t)) return null;
+    if (/^https?:\/\//i.test(t)) return null;
+    return t;
 }
 
+let _bootstrapAdoptOpen = false;
+
 async function bootstrapAdoptDevice() {
-    const groups = window._adoptionGroups || [];
-    const profiles = window._adoptionProfiles || [];
-    const result = await showBootstrapAdoptModal(groups, profiles);
-    if (!result) return;
-    const body = { pairing_secret: result.pairing_secret, profile_id: result.profile_id };
-    if (result.name) body.name = result.name;
-    if (result.location) body.location = result.location;
-    if (result.group_id) body.group_id = result.group_id;
-    const resp = await apiCall("POST", "/api/devices/adopt", body);
-    if (resp && resp.ok) {
-        showToast("Device adopted");
-        if (typeof window.refreshDevices === 'function') window.refreshDevices();
-        return;
-    }
-    if (resp) {
-        let msg = "Failed to adopt device";
-        const err = await resp.json().catch(() => null);
-        const detail = err?.detail;
-        if (resp.status === 404 && detail === "pending_not_found") {
-            msg = "No device is waiting for that pairing code.";
-        } else if (resp.status === 409 || resp.status === 410) {
-            // Server currently returns 409; guard against a future 410 rollout.
-            msg = "That device has already been adopted.";
-        } else if (resp.status === 429) {
-            msg = "Too many adoption attempts — please wait a moment.";
-        } else if (typeof detail === "string") {
-            msg = detail;
+    if (_bootstrapAdoptOpen) return;
+    _bootstrapAdoptOpen = true;
+    try {
+        const groups = window._adoptionGroups || [];
+        const profiles = window._adoptionProfiles || [];
+        const result = await showBootstrapAdoptModal(groups, profiles);
+        if (!result) return;
+        const body = { pairing_secret: result.pairing_secret, profile_id: result.profile_id };
+        if (result.name) body.name = result.name;
+        if (result.location) body.location = result.location;
+        if (result.group_id) body.group_id = result.group_id;
+        const resp = await apiCall("POST", "/api/devices/adopt", body);
+        if (resp && resp.ok) {
+            showToast("Device adopted");
+            if (typeof window.refreshDevices === 'function') window.refreshDevices();
+            return;
         }
-        showToast(msg, true);
+        if (resp) {
+            let msg = "Failed to adopt device";
+            const err = await resp.json().catch(() => null);
+            const detail = err?.detail;
+            if (resp.status === 404 && detail === "pending_not_found") {
+                msg = "No device is waiting for that pairing code.";
+            } else if (resp.status === 404 && detail === "group_not_found") {
+                msg = "Selected group no longer exists — refresh and try again.";
+            } else if (resp.status === 404 && detail === "profile_not_found") {
+                msg = "Selected encoder profile no longer exists — refresh and try again.";
+            } else if (resp.status === 409 || resp.status === 410) {
+                // Server currently returns 409; guard against a future 410 rollout.
+                msg = "That device has already been adopted.";
+            } else if (resp.status === 429) {
+                msg = "Too many adoption attempts — please wait a moment.";
+            } else if (typeof detail === "string") {
+                msg = detail;
+            }
+            showToast(msg, true);
+        }
+    } finally {
+        _bootstrapAdoptOpen = false;
     }
 }
 
@@ -862,6 +886,7 @@ function showBootstrapAdoptModal(groups, profiles) {
         let _scanCtx = null;
         let _resolved = false;
         let _scanning = false;
+        let _closed = false;
 
         const stopScanner = () => {
             _scanning = false;
@@ -882,7 +907,7 @@ function showBootstrapAdoptModal(groups, profiles) {
         };
 
         const startScanner = async () => {
-            if (_scanning) return;
+            if (_scanning || _closed) return;
             if (typeof jsQR !== "function") {
                 showScanErr("QR scanner unavailable (jsQR not loaded).");
                 return;
@@ -894,8 +919,9 @@ function showBootstrapAdoptModal(groups, profiles) {
             scanStatus.style.display = "none";
             scanBtn.disabled = true;
             scanBtn.textContent = "Starting camera…";
+            let stream;
             try {
-                _stream = await navigator.mediaDevices.getUserMedia({
+                stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: "environment" },
                     audio: false,
                 });
@@ -905,8 +931,28 @@ function showBootstrapAdoptModal(groups, profiles) {
                 showScanErr("Could not access camera: " + (e && e.name ? e.name : "unknown error"));
                 return;
             }
+            // If the modal was closed while the permission prompt was pending,
+            // immediately release the tracks so we don't leak the camera.
+            if (_closed) {
+                try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                return;
+            }
+            _stream = stream;
+            // Release the camera if any track ends externally (user revokes
+            // permission, another tab grabs the device, etc.).
+            try {
+                _stream.getTracks().forEach(t => {
+                    t.addEventListener("ended", () => {
+                        if (_scanning) {
+                            stopScanner();
+                            showScanErr("Camera was stopped — try Scan QR again.");
+                        }
+                    });
+                });
+            } catch (_) {}
             scanVideo.srcObject = _stream;
             try { await scanVideo.play(); } catch (_) { /* some browsers resolve after metadata */ }
+            if (_closed) { stopScanner(); return; }
             scanWrap.style.display = "block";
             scanBtn.textContent = "Scanning…";
             _scanCanvas = document.createElement("canvas");
@@ -983,6 +1029,7 @@ function showBootstrapAdoptModal(groups, profiles) {
         secretInput.focus();
 
         const close = (val) => {
+            _closed = true;
             stopScanner();
             window.removeEventListener("pagehide", _onHide);
             document.removeEventListener("keydown", _onKey);
