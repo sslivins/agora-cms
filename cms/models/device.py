@@ -64,6 +64,15 @@ class Device(Base):
     device_api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     previous_api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     api_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Bootstrap redesign (issue #420): ed25519 public key, base64-encoded.
+    # Populated by /api/devices/adopt when the device is first adopted via
+    # the QR flow, or by the Stage C migration endpoint for devices that
+    # still have an API key.  NULL during the coexistence window for
+    # devices adopted via the legacy WS path that have not migrated yet.
+    # When cleared (set to NULL), the device is effectively revoked —
+    # signed /connect-token requests will 401 and the device will fall
+    # back to bootstrap mode.
+    pubkey: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
