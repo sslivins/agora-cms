@@ -1057,6 +1057,78 @@ function showBootstrapAdoptModal(groups, profiles) {
 }
 window.bootstrapAdoptDevice = bootstrapAdoptDevice;
 
+
+// Adopt a device by pending-id — one-click from the Pending Devices list
+// on the /devices page.  No pairing secret needed; the backend keys the
+// adoption off the row's primary key.  See bootstrap redesign A.5 and
+// `POST /api/devices/adopt-pending`.
+async function adoptPendingDevice(pendingId, deviceIdAdvisory) {
+    const groups = window._adoptionGroups || [];
+    const profiles = window._adoptionProfiles || [];
+    const suggested = deviceIdAdvisory || "";
+    const result = await showAdoptModal(suggested, groups, profiles);
+    if (!result) return;
+    const body = {
+        pending_id: pendingId,
+        name: result.name || null,
+        profile_id: result.profile_id,
+    };
+    if (result.location) body.location = result.location;
+    if (result.group_id) body.group_id = result.group_id;
+    const resp = await apiCall("POST", "/api/devices/adopt-pending", body);
+    if (resp && resp.ok) {
+        showToast("Device adopted");
+        if (typeof window.refreshDevices === 'function') window.refreshDevices();
+        if (typeof window._refreshPending === 'function') window._refreshPending();
+        return;
+    }
+    if (resp) {
+        let msg = "Failed to adopt device";
+        const err = await resp.json().catch(() => null);
+        const detail = err?.detail;
+        if (resp.status === 404 && detail === "pending_not_found") {
+            msg = "That pending device is no longer in the list — refresh and try again.";
+        } else if (resp.status === 404 && detail === "group_not_found") {
+            msg = "Selected group no longer exists — refresh and try again.";
+        } else if (resp.status === 404 && detail === "profile_not_found") {
+            msg = "Selected encoder profile no longer exists — refresh and try again.";
+        } else if (resp.status === 409) {
+            msg = "That device has already been adopted.";
+        } else if (resp.status === 429) {
+            msg = "Too many adoption attempts — please wait a moment.";
+        } else if (typeof detail === "string") {
+            msg = detail;
+        }
+        showToast(msg, true);
+        if (typeof window._refreshPending === 'function') window._refreshPending();
+    }
+}
+window.adoptPendingDevice = adoptPendingDevice;
+
+
+// Reject a pending registration — removes it from the list without
+// adopting.  Useful for cleaning up bogus or duplicate registrations.
+async function rejectPendingDevice(pendingId, deviceIdAdvisory) {
+    const label = deviceIdAdvisory || "this pending registration";
+    const ok = await showConfirm(
+        `Reject ${label}?\n\nThe device will have to re-register if it's reconnected.`,
+    );
+    if (!ok) return;
+    const resp = await apiCall("DELETE", `/api/devices/pending/${pendingId}`);
+    if (resp && resp.ok) {
+        showToast("Pending registration rejected");
+        if (typeof window._refreshPending === 'function') window._refreshPending();
+        return;
+    }
+    if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to reject pending device", true);
+        if (typeof window._refreshPending === 'function') window._refreshPending();
+    }
+}
+window.rejectPendingDevice = rejectPendingDevice;
+
+
 function showAdoptModal(defaultName, groups, profiles) {
     _closeOpenPopovers();
     return new Promise((resolve) => {

@@ -264,6 +264,29 @@
 
 {% set th_row_compact %}{{ macros.th_row_compact() }}{% endset %}
 
+{# ── Pending Devices (unadopted registrations) ── #}
+{% if 'devices:manage' in user_perms %}
+<div class="card" id="pending-devices-card" style="display: none;">
+    <h2 style="margin: 0 0 0.5rem 0;">Pending Devices</h2>
+    <p class="text-muted" style="margin: 0 0 0.75rem 0;">
+        Devices that have registered with the CMS but haven't been adopted yet.
+        Unadopted registrations expire after {{ pending_ttl_hours }} hours.
+    </p>
+    <table>
+        <thead>
+            <tr>
+                <th>Device ID</th>
+                <th>Firmware</th>
+                <th>IP</th>
+                <th>Registered</th>
+                <th style="width: 1%; white-space: nowrap;">Actions</th>
+            </tr>
+        </thead>
+        <tbody id="pending-devices-tbody"></tbody>
+    </table>
+</div>
+{% endif %}
+
 {# ── All Devices ── #}
 <div class="card">
     <div style="display: flex; gap: 0.25rem; align-items: center;">
@@ -576,6 +599,11 @@ window._adoptionProfiles = [
 
     setInterval(pollDevicesOnce, 5000);
     setInterval(pollGroupsOnce, 5000);
+    {% if 'devices:manage' in user_perms %}
+    setInterval(pollPendingOnce, 5000);
+    // Kick an immediate fetch on load so the card appears without a 5s wait.
+    pollPendingOnce();
+    {% endif %}
 
     // Keep the /devices Device Groups card in sync across replicas without
     // a full page reload. Added as part of #87: when session A creates or
@@ -663,6 +691,76 @@ window._adoptionProfiles = [
             }
         } catch (e) { /* ignore */ }
     }
+
+    {% if 'devices:manage' in user_perms %}
+    // ── Pending Devices card (bootstrap redesign A.5) ──
+    // Poll /api/devices/pending every 5s and render one row per unadopted
+    // registration.  The card is hidden when the list is empty.
+    function _escHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function _fmtRelativeAge(iso) {
+        if (!iso) return '—';
+        const t = Date.parse(iso);
+        if (isNaN(t)) return '—';
+        const secs = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        if (secs < 60) return secs + 's ago';
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return mins + 'm ago';
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return hrs + 'h ago';
+        const days = Math.floor(hrs / 24);
+        return days + 'd ago';
+    }
+    async function pollPendingOnce() {
+        // Don't swap the table while the user has a modal open — they could
+        // be in the middle of adopting one of these rows.
+        if (isModalOpen()) return;
+        const tbody = document.getElementById('pending-devices-tbody');
+        const card = document.getElementById('pending-devices-card');
+        if (!tbody || !card) return;
+        let items = [];
+        try {
+            const resp = await fetch('/api/devices/pending');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            items = data.items || [];
+        } catch (e) { return; }
+        if (!items.length) {
+            card.style.display = 'none';
+            tbody.innerHTML = '';
+            return;
+        }
+        card.style.display = '';
+        const rows = items.map(p => {
+            const devId = _escHtml(p.device_id || p.id);
+            const fw = _escHtml((p.metadata && p.metadata.firmware_version) || '—');
+            const ip = _escHtml(p.ip_address || '—');
+            const age = _escHtml(_fmtRelativeAge(p.created_at));
+            const advisoryJs = (p.device_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return (
+                '<tr>' +
+                '<td>' + devId + '</td>' +
+                '<td>' + fw + '</td>' +
+                '<td>' + ip + '</td>' +
+                '<td title="' + _escHtml(p.created_at || '') + '">' + age + '</td>' +
+                '<td style="white-space: nowrap;">' +
+                    '<button type="button" class="btn btn-primary" ' +
+                    'onclick="adoptPendingDevice(\'' + p.id + '\', \'' + advisoryJs + '\')">Adopt</button> ' +
+                    '<button type="button" class="btn" ' +
+                    'onclick="rejectPendingDevice(\'' + p.id + '\', \'' + advisoryJs + '\')">Reject</button>' +
+                '</td>' +
+                '</tr>'
+            );
+        }).join('');
+        tbody.innerHTML = rows;
+    }
+    // Expose for action handlers (adopt/reject) to request an immediate
+    // repopulate instead of waiting up to 5s for the next poll cycle.
+    window._refreshPending = () => pollPendingOnce();
+    {% endif %}
 })();
 
 async function checkForUpdates(menuItem) {
