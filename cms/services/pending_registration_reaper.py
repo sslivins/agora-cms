@@ -27,7 +27,7 @@ async def pending_registration_reaper_loop() -> None:
     from cms.services.device_bootstrap import reap_pending_registrations
     from cms.services.leader import session_advisory_lock
 
-    _LOCK_ID = 0x4147_4F52_41_03  # 'AGORA' + 03
+    _LOCK_ID = 0x4147_4F52_41_05  # 'AGORA' + 05 (01 backfill, 02 device_purge, 03 capture_monitor, 04 asset_reaper)
 
     # Wait for startup to settle.
     try:
