@@ -238,7 +238,7 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               secretRef: 'wps-connection-string'
             }
             {
-              name: 'FLEET_REGISTER_SECRETS'
+              name: 'AGORA_CMS_FLEET_REGISTER_SECRETS'
               secretRef: 'fleet-register-secrets'
             }
           ]
