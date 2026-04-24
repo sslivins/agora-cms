@@ -1521,20 +1521,34 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Determine which schedules are currently playing on at least one device.
     # Under N>1, `_confirmed_playing` is replica-local, so a direct read via
-    # get_now_playing() would miss events that landed on another replica.
-    # compute_now_playing() cross-validates against the DB-backed device
-    # shadow and recovers confirmation cross-replica.
-    from cms.services.scheduler import compute_now_playing
+    # get_now_playing() alone would miss events that landed on another replica.
+    # We union two sources so this badge lights up in both cases:
+    #   1. Cache entry on THIS replica (the playback_started landed here).
+    #   2. DB shadow says a scheduled device is actually playing the expected
+    #      asset — covers the N>1 case where the original event landed on
+    #      another replica (no local cache entry) but the device's state is
+    #      globally visible via the devices table.
+    # Intentionally permissive: we do NOT require cache+shadow to agree
+    # (compute_now_playing enforces that for dashboard grace-period accuracy,
+    # but here a simple "some source claims playing" is the right semantic
+    # for the Delete-modal warning badge).
+    from cms.services.scheduler import _confirmed_playing, compute_now_playing
     _visible_ids = {str(s.id) for s in active_schedules}
+    _cache_playing_ids = {
+        entry["schedule_id"]
+        for entry in _confirmed_playing.values()
+        if entry.get("schedule_id") in _visible_ids
+    }
     _now_playing_entries = await compute_now_playing(
         db, ZoneInfo(current_timezone), now_utc
     )
-    playing_schedule_ids = list({
+    _shadow_confirmed_ids = {
         np["schedule_id"]
         for np in _now_playing_entries
         if np.get("source") == "confirmed"
         and np.get("schedule_id") in _visible_ids
-    })
+    }
+    playing_schedule_ids = list(_cache_playing_ids | _shadow_confirmed_ids)
 
     return templates.TemplateResponse(request, "schedules.html", {
         "active_tab": "schedules",
