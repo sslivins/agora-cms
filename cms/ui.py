@@ -1519,10 +1519,21 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     tz_options = build_tz_options()
 
-    # Determine which schedules are currently playing on at least one device
-    from cms.services.scheduler import get_now_playing as _get_now_playing
+    # Determine which schedules are currently playing on at least one device.
+    # Under N>1, `_confirmed_playing` is replica-local, so a direct read via
+    # get_now_playing() would miss events that landed on another replica.
+    # compute_now_playing() cross-validates against the DB-backed device
+    # shadow and recovers confirmation cross-replica.
+    from cms.services.scheduler import compute_now_playing
+    _visible_ids = {str(s.id) for s in active_schedules}
+    _now_playing_entries = await compute_now_playing(
+        db, ZoneInfo(current_timezone), now_utc
+    )
     playing_schedule_ids = list({
-        np["schedule_id"] for np in _get_now_playing() if "schedule_id" in np
+        np["schedule_id"]
+        for np in _now_playing_entries
+        if np.get("source") == "confirmed"
+        and np.get("schedule_id") in _visible_ids
     })
 
     return templates.TemplateResponse(request, "schedules.html", {

@@ -395,10 +395,18 @@ class TestScheduleDeletePlayingWarning:
         from unittest.mock import patch
         sched_id, device_id = await self._seed(db_session)
 
-        fake_np = [{"schedule_id": sched_id, "device_id": device_id}]
+        fake_np = [{
+            "schedule_id": sched_id,
+            "device_id": device_id,
+            "source": "confirmed",
+        }]
+
+        async def _fake_compute(*_a, **_kw):
+            return fake_np
+
         with patch(
-            "cms.services.scheduler.get_now_playing",
-            return_value=fake_np,
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
         ):
             resp = await client.get("/schedules")
 
@@ -411,9 +419,38 @@ class TestScheduleDeletePlayingWarning:
         await self._seed(db_session)
 
         from unittest.mock import patch
+
+        async def _fake_compute(*_a, **_kw):
+            return []
+
         with patch(
-            "cms.services.scheduler.get_now_playing",
-            return_value=[],
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
+        ):
+            resp = await client.get("/schedules")
+
+        assert resp.status_code == 200
+        assert "_playingScheduleIds = []" in resp.text
+
+    async def test_scheduled_but_unconfirmed_excluded(self, client, db_session):
+        """An entry with source='scheduled' (time-window match but device
+        hasn't confirmed PLAYBACK_STARTED) must NOT surface in the badge.
+        """
+        from unittest.mock import patch
+        sched_id, device_id = await self._seed(db_session)
+
+        fake_np = [{
+            "schedule_id": sched_id,
+            "device_id": device_id,
+            "source": "scheduled",
+        }]
+
+        async def _fake_compute(*_a, **_kw):
+            return fake_np
+
+        with patch(
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
         ):
             resp = await client.get("/schedules")
 
