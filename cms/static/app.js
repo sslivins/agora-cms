@@ -685,7 +685,7 @@ function _parsePairingQr(text) {
         try { obj = JSON.parse(t); }
         catch (_) { obj = undefined; }
         if (obj !== undefined) {
-            if (obj && typeof obj.secret === "string") {
+            if (obj && obj.v === 1 && typeof obj.secret === "string") {
                 const s = obj.secret.trim();
                 return s.length >= 8 && s.length <= 128 ? s : null;
             }
