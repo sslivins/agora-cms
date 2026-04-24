@@ -370,6 +370,19 @@ class TestScheduleDeletePlayingWarning:
     """Verify the schedules page injects _playingScheduleIds so the JS
     delete confirmation can warn when a schedule is currently playing."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_confirmed_playing(self):
+        """Clear module-level cache so tests don't leak state into each other.
+
+        The /schedules badge now reads both compute_now_playing (mocked by
+        these tests) AND the replica-local ``_confirmed_playing`` dict, so
+        residue from prior tests could cause false positives.
+        """
+        from cms.services import scheduler as sched_mod
+        sched_mod._confirmed_playing.clear()
+        yield
+        sched_mod._confirmed_playing.clear()
+
     async def _seed(self, db_session):
         from cms.models.asset import Asset, AssetType
         from cms.models.device import Device, DeviceGroup, DeviceStatus
@@ -395,10 +408,18 @@ class TestScheduleDeletePlayingWarning:
         from unittest.mock import patch
         sched_id, device_id = await self._seed(db_session)
 
-        fake_np = [{"schedule_id": sched_id, "device_id": device_id}]
+        fake_np = [{
+            "schedule_id": sched_id,
+            "device_id": device_id,
+            "source": "confirmed",
+        }]
+
+        async def _fake_compute(*_a, **_kw):
+            return fake_np
+
         with patch(
-            "cms.services.scheduler.get_now_playing",
-            return_value=fake_np,
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
         ):
             resp = await client.get("/schedules")
 
@@ -411,14 +432,89 @@ class TestScheduleDeletePlayingWarning:
         await self._seed(db_session)
 
         from unittest.mock import patch
+
+        async def _fake_compute(*_a, **_kw):
+            return []
+
         with patch(
-            "cms.services.scheduler.get_now_playing",
-            return_value=[],
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
         ):
             resp = await client.get("/schedules")
 
         assert resp.status_code == 200
         assert "_playingScheduleIds = []" in resp.text
+
+    async def test_scheduled_but_unconfirmed_excluded(self, client, db_session):
+        """An entry with source='scheduled' (time-window match but device
+        hasn't confirmed PLAYBACK_STARTED) must NOT surface in the badge.
+        """
+        from unittest.mock import patch
+        sched_id, device_id = await self._seed(db_session)
+
+        fake_np = [{
+            "schedule_id": sched_id,
+            "device_id": device_id,
+            "source": "scheduled",
+        }]
+
+        async def _fake_compute(*_a, **_kw):
+            return fake_np
+
+        with patch(
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
+        ):
+            resp = await client.get("/schedules")
+
+        assert resp.status_code == 200
+        assert "_playingScheduleIds = []" in resp.text
+
+    async def test_cache_only_playing_included(self, client, db_session):
+        """When `_confirmed_playing` on THIS replica has a cache entry for
+        the schedule (a PLAYBACK_STARTED landed here), the schedule must
+        surface in the badge even if compute_now_playing's strict
+        cache+shadow agreement check yields source='scheduled'.
+
+        Regression for the e2e delete-warning path: the dashboard's
+        stale-cache detector downgrades source to 'scheduled' when the
+        live shadow's asset field doesn't match the scheduled asset,
+        but /schedules' "is this schedule playing" semantic is cache-
+        permissive.
+        """
+        from unittest.mock import patch
+        from cms.services import scheduler as sched_mod
+        sched_id, device_id = await self._seed(db_session)
+
+        sched_mod._confirmed_playing[device_id] = {
+            "schedule_id": sched_id,
+            "schedule_name": "Active Ad",
+            "asset": "ad.mp4",
+            "since": "2026-01-01T00:00:00+00:00",
+        }
+
+        async def _fake_compute(*_a, **_kw):
+            # compute_now_playing downgrades to 'scheduled' because the
+            # shadow disagrees — the cache-only path must still fire.
+            return [{
+                "schedule_id": sched_id,
+                "device_id": device_id,
+                "source": "scheduled",
+            }]
+
+        with patch(
+            "cms.services.scheduler.compute_now_playing",
+            side_effect=_fake_compute,
+        ):
+            resp = await client.get("/schedules")
+
+        assert resp.status_code == 200
+        assert sched_id in resp.text
+        # The JS array must contain this schedule ID (cache path).
+        import re
+        m = re.search(r"_playingScheduleIds\s*=\s*(\[[^\]]*\])", resp.text)
+        assert m, "missing _playingScheduleIds"
+        assert sched_id in m.group(1)
 
 
 @pytest.mark.asyncio

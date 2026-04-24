@@ -522,3 +522,119 @@ class TestConfirmedPlayingReplicaFallback:
             )
         finally:
             await _fake_disconnect(db_session, "mismatch-01")
+
+
+@pytest.mark.asyncio
+class TestConfirmedPlayingStaleCache:
+    """Regression: under N>1, a replica may have a stale entry in
+    ``_confirmed_playing`` because PLAYBACK_ENDED / asset-change /
+    disconnect was handled on another replica. Non-leader replicas
+    never run the scheduler cleanup tick, so ``compute_now_playing``
+    must cross-validate its local cache against the DB-backed device
+    shadow before trusting it.
+    """
+
+    async def test_stale_cache_rejected_when_live_mode_not_play(
+        self, app, db_session,
+    ):
+        """Local cache claims confirmed-playing, but shadow shows the
+        device is on splash (PLAYBACK_ENDED landed on another replica).
+        Entry must be marked ``scheduled``, not ``confirmed``.
+        """
+        from zoneinfo import ZoneInfo
+        from cms.services.scheduler import compute_now_playing
+
+        await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
+        await _fake_connect(db_session, "mismatch-01", mode="splash",
+                            asset=None)
+        _seed_confirmed("mismatch-01", schedule.id)
+
+        try:
+            entries = await compute_now_playing(
+                db_session, ZoneInfo("UTC"), datetime.now(timezone.utc),
+            )
+            e = next(
+                (x for x in entries if x["device_id"] == "mismatch-01"),
+                None,
+            )
+            assert e is not None
+            assert e["source"] == "scheduled", (
+                "Stale _confirmed_playing entry must NOT override the "
+                "DB-backed shadow — otherwise a non-leader replica would "
+                "keep showing 'playing' after PLAYBACK_ENDED landed on "
+                "the leader."
+            )
+        finally:
+            _sched._confirmed_playing.pop("mismatch-01", None)
+            await _fake_disconnect(db_session, "mismatch-01")
+
+    async def test_stale_cache_rejected_when_live_asset_mismatch(
+        self, app, db_session,
+    ):
+        """Local cache claims schedule S playing, but shadow shows the
+        device is playing a DIFFERENT asset (asset-change landed on
+        another replica). Entry must be scheduled, not confirmed.
+        """
+        from zoneinfo import ZoneInfo
+        from cms.services.scheduler import compute_now_playing
+
+        await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
+        await _fake_connect(db_session, "mismatch-01", mode="play",
+                            asset="different-asset.mp4")
+        _seed_confirmed("mismatch-01", schedule.id)
+
+        try:
+            entries = await compute_now_playing(
+                db_session, ZoneInfo("UTC"), datetime.now(timezone.utc),
+            )
+            e = next(
+                (x for x in entries if x["device_id"] == "mismatch-01"),
+                None,
+            )
+            assert e is not None
+            assert e["source"] == "scheduled", (
+                "Stale cache claiming schedule S while shadow shows a "
+                "different asset must NOT override reality."
+            )
+        finally:
+            _sched._confirmed_playing.pop("mismatch-01", None)
+            await _fake_disconnect(db_session, "mismatch-01")
+
+    async def test_cache_trusted_when_live_state_corroborates(
+        self, app, db_session,
+    ):
+        """Positive path: cache + shadow agree → confirmed, and ``since``
+        comes from the cache (the replica that received the event has
+        the accurate PLAYBACK_STARTED timestamp).
+        """
+        from zoneinfo import ZoneInfo
+        from cms.services.scheduler import compute_now_playing
+
+        await _seed_device(db_session)
+        schedule, asset, group = await _seed_schedule(db_session)
+        await _fake_connect(db_session, "mismatch-01", mode="play",
+                            asset="sony-clip.mp4")
+        cache_since = (
+            datetime.now(timezone.utc) - timedelta(seconds=90)
+        ).isoformat()
+        _seed_confirmed("mismatch-01", schedule.id, since=cache_since)
+
+        try:
+            entries = await compute_now_playing(
+                db_session, ZoneInfo("UTC"), datetime.now(timezone.utc),
+            )
+            e = next(
+                (x for x in entries if x["device_id"] == "mismatch-01"),
+                None,
+            )
+            assert e is not None
+            assert e["source"] == "confirmed"
+            assert e["since"] == cache_since, (
+                "When cache and shadow agree, `since` must come from "
+                "the cache — it has the exact PLAYBACK_STARTED timestamp."
+            )
+        finally:
+            _sched._confirmed_playing.pop("mismatch-01", None)
+            await _fake_disconnect(db_session, "mismatch-01")

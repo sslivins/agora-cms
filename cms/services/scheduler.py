@@ -37,11 +37,21 @@ def _asset_display_name(asset) -> str:
 # sync_hash echoed in acks. See docs/multi-replica.md.
 _last_sync_hash: dict[str, str] = {}
 
-# Confirmed playback: minimal tracking of what each device has confirmed
-# it's playing.  Populated by WS PLAYBACK_STARTED, cleared by PLAYBACK_ENDED
-# or device disconnect.  Only stores {device_id: {schedule_id, since}}.
-# NOTE: replica-local. Tracked separately in the confirmed-playing-dbback
-# todo; every replica gets its own view until that lands.
+# Confirmed playback: a **replica-local optimization cache** of what each
+# device has confirmed it's playing. Populated by WS PLAYBACK_STARTED,
+# cleared by PLAYBACK_ENDED or device disconnect. Only stores
+# {device_id: {schedule_id, since}}.
+#
+# Under N>1, WPS webhook delivery is replica-sticky — only the replica
+# that received the event populates/clears its copy. Entries on other
+# replicas may be absent (miss) or stale (PLAYBACK_ENDED/asset change
+# landed elsewhere).
+#
+# External consumers MUST go through :func:`compute_now_playing`, which
+# cross-validates this cache against the DB-backed device shadow
+# (``device_presence.list_states``) and falls back to the shadow when
+# the cache is missing or stale. Do not read ``_confirmed_playing``
+# directly outside this module.
 _confirmed_playing: dict[str, dict] = {}
 _now_playing = _confirmed_playing  # backwards-compat alias for tests
 
@@ -240,11 +250,14 @@ log_schedule_event = _log_event
 
 
 def get_now_playing() -> list[dict]:
-    """Return a list of confirmed playback entries (minimal).
+    """Return a snapshot of this replica's confirmed-playback cache.
 
-    For the full dashboard view with schedule details, use
-    ``compute_now_playing()`` instead.  This is kept for callers that
-    only need to know *which devices* are currently scheduled.
+    **Internal / test-only.** This returns the raw replica-local
+    ``_confirmed_playing`` dict, which under N>1 replicas may be empty
+    (miss) or stale (PLAYBACK_ENDED landed on a different replica).
+    External consumers rendering "what's playing" MUST use
+    :func:`compute_now_playing`, which validates against the DB-backed
+    device shadow.
     """
     return [d.copy() for d in _confirmed_playing.values()]
 
@@ -392,30 +405,45 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
         display_name = _asset_display_name(s.asset)
 
         device_name = device_names.get(did, did)
+        expected_raw = asset_raw
+        live = live_states.get(did)
+        live_matches = bool(
+            live
+            and live.get("mode") == "play"
+            and live.get("asset") == expected_raw
+        )
         confirmed = _confirmed_playing.get(did)
         since = now.isoformat()
         is_confirmed = False
         if confirmed and confirmed.get("schedule_id") == str(s.id):
+            # Use the cache's ``since`` regardless of whether live state
+            # corroborates — the dashboard's mismatch grace period needs
+            # the original PLAYBACK_STARTED timestamp to correctly age
+            # past 45s when the device has stopped. Only the ``source``
+            # downgrades when the shadow disagrees.
             since = confirmed.get("since", since)
-            is_confirmed = True
-        else:
+            if live_matches:
+                is_confirmed = True
+            # else: cache matches this schedule but DB-backed shadow
+            # disagrees (PLAYBACK_ENDED / asset change handled on
+            # another replica, or transient race). Leave source as
+            # 'scheduled' so /schedules' playing badge reflects reality.
+        elif live_matches:
             # N>1 fallback: WPS webhook delivery is replica-sticky, so
             # `_confirmed_playing` is only populated on whichever replica
-            # received this device's ``PLAYBACK_STARTED``.  Derive
-            # confirmation from DB-backed live state (populated from the
-            # device's shadow report) so dashboards on any replica show
-            # the correct "since" and keep the confirmed-vs-scheduled
+            # received this device's ``PLAYBACK_STARTED``. Derive
+            # confirmation from the DB-backed live state (populated from
+            # the device's shadow report) so dashboards on any replica
+            # show the correct "since" and keep the confirmed-vs-scheduled
             # distinction.
-            live = live_states.get(did)
-            if live and live.get("mode") == "play":
-                expected_raw = (
-                    s.asset.url if is_url_asset else s.asset.filename
+            started = live.get("started_at")
+            if started is not None:
+                since = (
+                    started.isoformat()
+                    if hasattr(started, "isoformat")
+                    else str(started)
                 )
-                if live.get("asset") == expected_raw:
-                    started = live.get("playback_started_at")
-                    if started is not None:
-                        since = started.isoformat() if hasattr(started, "isoformat") else str(started)
-                    is_confirmed = True
+            is_confirmed = True
 
         entry = {
             "device_id": did,
