@@ -55,6 +55,16 @@ class BootstrapPendingNotFound(Exception):
     """
 
 
+class BootstrapPubkeyMismatch(Exception):
+    """Raised by :func:`register_device` if a re-registration for the
+    same ``pairing_secret_hash`` submits a different pubkey than the
+    existing unadopted row.  Prevents an attacker (with fleet HMAC +
+    pairing secret) from hijacking an in-flight registration by swapping
+    their own pubkey in before adoption — the adopted payload would then
+    be ECIES-encrypted to the attacker.  Router translates to HTTP 409.
+    """
+
+
 # ---------------------------------------------------------------------
 # /register
 # ---------------------------------------------------------------------
@@ -109,12 +119,21 @@ async def register_device(
         # Return the existing row as-is so the caller still gets a 202.
         if existing.adopted_at is not None:
             return existing
-        # Defence-in-depth: refresh identity fields.  If a device
-        # factory-resets but somehow retained its pairing secret (should
-        # not happen per spec), the new pubkey/device_id wins so adoption
-        # encrypts to the right recipient.
-        existing.device_id = device_id
-        existing.pubkey = pubkey_b64
+        # Security: require the pubkey to match the existing unadopted
+        # row.  Allowing pubkey replacement here would let anyone with the
+        # fleet HMAC secret AND the pairing secret swap in their own
+        # pubkey before adoption, causing the admin-encrypted config
+        # payload to be delivered to the attacker.  Legit "same device
+        # retries" always re-uses the same keypair.  A factory-reset
+        # device generates a new keypair AND a new pairing secret, so
+        # it lands on the fresh-registration path below, not here.
+        if existing.pubkey != pubkey_b64:
+            raise BootstrapPubkeyMismatch(
+                "pairing_secret_hash already in use by a different pubkey"
+            )
+        # Same-pubkey retry: refresh transport metadata only.  We do not
+        # rewrite ``device_id`` either — it is keypair-stable and the
+        # caller already proved possession of the keypair via fleet HMAC.
         existing.connection_metadata = metadata or None
         existing.ip_address = ip_address
         existing.updated_at = now
@@ -203,6 +222,82 @@ async def get_bootstrap_status(
         row.polled_at = datetime.now(timezone.utc)
         await db.flush()
     return row
+
+
+# ---------------------------------------------------------------------
+# pending_registrations GC (TTL reaper)
+# ---------------------------------------------------------------------
+
+
+async def reap_pending_registrations(
+    *,
+    db: AsyncSession,
+    unpolled_ttl_seconds: int,
+    polled_ttl_seconds: int,
+    adopted_ttl_seconds: int,
+) -> int:
+    """Delete expired ``pending_registrations`` rows.
+
+    Three TTLs, applied in descending order of aggressiveness:
+
+    * ``unpolled_ttl_seconds`` — rows never polled by any device.  Most
+      likely junk: HMAC-authed but the device either never came back
+      online or is a bad actor burning cap slots.  Aggressive default
+      (1h).
+    * ``polled_ttl_seconds`` — rows a device polled but admin never
+      adopted.  Legit pending registrations fall here; give admins
+      generous time to notice the device in the UI (24h).
+    * ``adopted_ttl_seconds`` — rows already adopted.  The device has
+      polled the ciphertext (or we presume it has) and doesn't need the
+      payload anymore; keep for a short window for troubleshooting then
+      drop.  Zero or negative disables.
+
+    Returns the total number of rows deleted.  Idempotent — safe to run
+    on every replica, though the caller should gate behind a leader
+    lock to avoid wasted DB work.
+    """
+    from sqlalchemy import delete, or_, and_
+
+    now = datetime.now(timezone.utc)
+    total = 0
+
+    if unpolled_ttl_seconds > 0:
+        cutoff = now - timedelta(seconds=unpolled_ttl_seconds)
+        result = await db.execute(
+            delete(PendingRegistration).where(
+                PendingRegistration.adopted_at.is_(None),
+                PendingRegistration.polled_at.is_(None),
+                PendingRegistration.created_at < cutoff,
+            )
+        )
+        total += result.rowcount or 0
+
+    if polled_ttl_seconds > 0:
+        cutoff = now - timedelta(seconds=polled_ttl_seconds)
+        result = await db.execute(
+            delete(PendingRegistration).where(
+                PendingRegistration.adopted_at.is_(None),
+                PendingRegistration.polled_at.is_not(None),
+                PendingRegistration.polled_at < cutoff,
+            )
+        )
+        total += result.rowcount or 0
+
+    if adopted_ttl_seconds > 0:
+        cutoff = now - timedelta(seconds=adopted_ttl_seconds)
+        result = await db.execute(
+            delete(PendingRegistration).where(
+                PendingRegistration.adopted_at.is_not(None),
+                PendingRegistration.adopted_at < cutoff,
+            )
+        )
+        total += result.rowcount or 0
+
+    if total > 0:
+        await db.commit()
+    else:
+        await db.rollback()
+    return total
 
 
 # ---------------------------------------------------------------------

@@ -49,6 +49,9 @@ from cms.services.storage import (
 from cms.services.log_blob import init_log_storage
 from cms.services.version_checker import version_check_loop
 from cms.services.device_purge import device_purge_loop
+from cms.services.pending_registration_reaper import (
+    pending_registration_reaper_loop,
+)
 from cms.services.transcoder import (
     deleted_asset_reaper_loop,
     outbox_drain_loop,
@@ -457,6 +460,9 @@ async def lifespan(app: FastAPI):
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
     version_check_task = asyncio.create_task(version_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
+    pending_reg_reaper_task = asyncio.create_task(
+        pending_registration_reaper_loop()
+    )
     key_rotation_task = asyncio.create_task(service_key_rotation_loop())
     alert_refresh_task = asyncio.create_task(_alert_settings_refresh_loop())
     capture_monitor_task = asyncio.create_task(stream_capture_monitor_loop())
@@ -573,6 +579,7 @@ async def lifespan(app: FastAPI):
     backfill_task.cancel()
     version_check_task.cancel()
     device_purge_task.cancel()
+    pending_reg_reaper_task.cancel()
     key_rotation_task.cancel()
     alert_refresh_task.cancel()
     capture_monitor_task.cancel()
@@ -596,6 +603,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await device_purge_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await pending_reg_reaper_task
     except asyncio.CancelledError:
         pass
     try:

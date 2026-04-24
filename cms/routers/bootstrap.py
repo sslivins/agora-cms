@@ -223,6 +223,10 @@ async def register(
         await db.rollback()
         logger.warning("/register rejected: %s", e)
         raise HTTPException(status_code=503, detail="registration_capacity_exceeded") from e
+    except device_bootstrap.BootstrapPubkeyMismatch as e:
+        await db.rollback()
+        logger.warning("/register rejected: %s", e)
+        raise HTTPException(status_code=409, detail="pubkey_mismatch") from e
     except HTTPException:
         await db.rollback()
         raise
@@ -379,16 +383,17 @@ async def connect_token(
     _ip_ratelimited(request, key="connect-token", limit=120, window_sec=60)
 
     from sqlalchemy import select as _select
-    from cms.models.device import Device
+    from cms.models.device import Device, DeviceStatus
 
     device = (
         await db.execute(
             _select(Device).where(Device.id == body.device_id)
         )
     ).scalar_one_or_none()
-    if device is None or not device.pubkey:
+    if device is None or not device.pubkey or device.status != DeviceStatus.ADOPTED:
         # Uniform 401 for "no device", "device exists but no pubkey
-        # (revoked)", and "signature fails".  Don't leak which.
+        # (revoked)", "device not in adopted state (pending/removed)",
+        # and "signature fails".  Don't leak which.
         raise HTTPException(status_code=401, detail="unauthorized")
 
     if not device_identity.timestamp_within_skew(body.timestamp, 60):
