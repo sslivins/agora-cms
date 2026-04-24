@@ -160,6 +160,40 @@ class TestRegister:
         assert row.device_id == "raspberrypi-001"
         assert row.adopted_at is None
 
+    async def test_client_ip_uses_x_forwarded_for(
+        self, unauthed_client, fleet_secret_enabled, db_session,
+    ):
+        """The first entry of X-Forwarded-For must be stored as the device's
+        client IP, not the Container Apps ingress hop in request.client.host."""
+        _, pub_b64 = _gen_keypair()
+        _, pairing_hash = _pairing_pair()
+        body = {
+            "device_id": "xff-test-pi",
+            "pubkey": pub_b64,
+            "pairing_secret_hash": pairing_hash,
+        }
+        headers = _fleet_headers(
+            device_id=body["device_id"],
+            pubkey_b64=pub_b64,
+            pairing_secret_hash_hex=pairing_hash,
+        )
+        headers["X-Forwarded-For"] = "203.0.113.42, 10.0.0.5"
+        resp = await unauthed_client.post(
+            "/api/devices/register", json=body, headers=headers,
+        )
+        assert resp.status_code == 202, resp.text
+
+        from cms.models.pending_registration import PendingRegistration
+        from sqlalchemy import select
+        row = (
+            await db_session.execute(
+                select(PendingRegistration).where(
+                    PendingRegistration.device_id == "xff-test-pi",
+                )
+            )
+        ).scalar_one()
+        assert row.ip_address == "203.0.113.42"
+
     async def test_missing_fleet_headers_rejected(
         self, unauthed_client, fleet_secret_enabled,
     ):
