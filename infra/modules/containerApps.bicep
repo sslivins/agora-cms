@@ -62,6 +62,10 @@ param wpsConnectionString string = ''
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
 
+@description('Bootstrap v2 fleet HMAC secrets - JSON map of {fleet_id: base64_secret} used to gate POST /api/devices/register. Empty (default) disables v2 registration end-to-end (secure by default).')
+@secure()
+param fleetRegisterSecrets string = ''
+
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${environmentName}-logs'
@@ -161,6 +165,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'wps-connection-string'
           value: wpsConnectionString
         }
+        {
+          name: 'fleet-register-secrets'
+          value: fleetRegisterSecrets
+        }
       ]
     }
     template: {
@@ -228,6 +236,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AGORA_CMS_WPS_CONNECTION_STRING'
               secretRef: 'wps-connection-string'
+            }
+            {
+              name: 'FLEET_REGISTER_SECRETS'
+              secretRef: 'fleet-register-secrets'
             }
           ]
           volumeMounts: [

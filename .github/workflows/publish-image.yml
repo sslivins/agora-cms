@@ -177,6 +177,7 @@ jobs:
               cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
               wpsConnectionString='${{ secrets.WPS_CONNECTION_STRING }}' \
+              fleetRegisterSecrets='${{ secrets.FLEET_REGISTER_SECRETS }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=false \
               cmsImage="$CMS_REF" \
