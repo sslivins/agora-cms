@@ -75,3 +75,23 @@ class Settings(SharedSettings):
     # deletes the associated blob, and flips the row to ``expired``.
     log_reaper_interval_sec: float = 600.0  # 10 minutes
     log_reaper_batch_size: int = 100
+
+    # Bootstrap redesign (umbrella issue #420), Stage A.3.
+    # ------------------------------------------------------------------
+    # FLEET_REGISTER_SECRETS is a JSON map of ``fleet_id -> base64 secret``
+    # used to validate the HMAC on the anonymous ``POST /api/devices/register``
+    # endpoint.  Empty map = reject all /register calls (secure by default
+    # until the operator provisions at least one fleet secret).
+    fleet_register_secrets: dict[str, str] = Field(default_factory=dict)
+    # Hard cap on unadopted ``pending_registrations`` rows — /register
+    # returns 503 once the cap is reached to protect the DB from
+    # registration spam.
+    pending_registrations_max: int = 50_000
+    # TTL for the in-memory nonce cache used by ``/register`` (scope=fleet)
+    # and ``/connect-token`` (scope=connect-token).  Must be >= the larger
+    # of the two timestamp-skew windows (300s for /register, 60s for
+    # /connect-token) so that any message still inside its skew window
+    # is also still in the nonce cache.
+    bootstrap_nonce_ttl_seconds: int = 600
+    # WPS JWT lifetime for tokens issued via /connect-token and /adopt.
+    bootstrap_wps_jwt_minutes: int = 60

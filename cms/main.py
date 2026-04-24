@@ -532,6 +532,18 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to log CMS_STARTED event")
 
     logger.info("Agora CMS %s started", __version__)
+
+    # Bootstrap nonce cache (#420 Stage A.3).  Process-local memory is
+    # fine here — nonces only need to survive their TTL window, and
+    # under N>1 a replayed nonce that happens to land on the other
+    # replica just means the replay succeeds for one extra request,
+    # which is well inside our security model.  (Fleet HMAC is
+    # pre-shared bot-deterrence, not cryptographic authorization.)
+    from cms.services import device_identity as _device_identity
+    app.state.bootstrap_nonce_cache = _device_identity.InMemoryNonceCache(
+        ttl_seconds=getattr(settings, "bootstrap_nonce_ttl_seconds", 600),
+    )
+
     yield
     # Shutdown — log CMS shutdown first so the event is persisted before tasks stop
     # Close the WPS client if we installed one (httpx pool etc).
@@ -736,8 +748,10 @@ from cms.routers.device_events import router as device_events_router  # noqa: E4
 from cms.routers.roles import router as roles_router  # noqa: E402
 from cms.routers.stream_probe import router as stream_probe_router  # noqa: E402
 from cms.routers.users import router as users_router  # noqa: E402
+from cms.routers.bootstrap import router as bootstrap_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
 
+app.include_router(bootstrap_router)
 app.include_router(devices_router)
 app.include_router(devices_device_router)
 app.include_router(assets_router)

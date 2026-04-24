@@ -195,6 +195,51 @@ def encrypt_for_device(pubkey_b64: str, plaintext: bytes) -> str:
     return base64.b64encode(eph_pub_bytes + nonce + ct).decode("ascii")
 
 
+def _ed25519_priv_to_x25519(priv_bytes: bytes) -> X25519PrivateKey:
+    """Convert a 32-byte raw ed25519 private key to the X25519 scalar.
+
+    Counterpart to :func:`_ed25519_pub_to_x25519` — applies the same
+    RFC8032 derivation the firmware uses.
+    """
+    if len(priv_bytes) != 32:
+        raise ValueError("ed25519 private key must be 32 bytes")
+    h = hashlib.sha512(priv_bytes).digest()[:32]
+    # Clamp per RFC 7748 §5.
+    scalar = bytearray(h)
+    scalar[0] &= 248
+    scalar[31] &= 127
+    scalar[31] |= 64
+    return X25519PrivateKey.from_private_bytes(bytes(scalar))
+
+
+def decrypt_with_device_key(priv_bytes: bytes, ciphertext_b64: str) -> bytes:
+    """Inverse of :func:`encrypt_for_device`.
+
+    Takes the 32-byte raw ed25519 private key held by the device and
+    returns the plaintext payload.  Used by the device-side client
+    and by tests.
+    """
+    try:
+        blob = base64.b64decode(ciphertext_b64, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError("invalid base64 ciphertext") from e
+    if len(blob) < 32 + 12 + 16:
+        raise ValueError("ciphertext too short")
+    eph_pub, nonce, ct = blob[:32], blob[32:44], blob[44:]
+    x_priv = _ed25519_priv_to_x25519(priv_bytes)
+    shared = x_priv.exchange(X25519PublicKey.from_public_bytes(eph_pub))
+    key_material = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32 + 12,
+        salt=None,
+        info=_ECIES_HKDF_INFO,
+    ).derive(shared)
+    key, derived_nonce = key_material[:32], key_material[32:]
+    if derived_nonce != nonce:
+        raise ValueError("nonce mismatch")
+    return AESGCM(key).decrypt(nonce, ct, associated_data=None)
+
+
 # ---------------------------------------------------------------------
 # Fleet HMAC
 # ---------------------------------------------------------------------
@@ -344,3 +389,33 @@ def sha256_hex(data: bytes) -> str:
 def random_nonce(nbytes: int = 16) -> str:
     """Hex-encoded cryptographically random nonce."""
     return os.urandom(nbytes).hex()
+
+
+def canonicalize_pubkey_b64(s: str) -> str:
+    """Normalize a user-provided ed25519 pubkey encoding.
+
+    Accepts either standard base64 (``+/``) or URL-safe base64 (``-_``),
+    with or without padding.  Decodes and re-encodes using the standard
+    base64 alphabet with ``=`` padding so the resulting string is
+    byte-for-byte identical regardless of which form the caller used.
+
+    This lets ``POST /register`` (JSON body) and ``GET /bootstrap-status?pubkey=…``
+    (URL query where ``+`` is painful) agree on the same lookup key.
+
+    Raises ``ValueError`` if the input isn't valid base64 of a 32-byte
+    ed25519 public key.
+    """
+    if not isinstance(s, str):
+        raise ValueError("pubkey must be a string")
+    # Map urlsafe alphabet to standard, then add missing padding.
+    t = s.replace("-", "+").replace("_", "/")
+    # Base64 requires length to be a multiple of 4.
+    pad = (-len(t)) % 4
+    t = t + ("=" * pad)
+    try:
+        raw = base64.b64decode(t, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError("pubkey is not valid base64") from e
+    if len(raw) != 32:
+        raise ValueError("ed25519 public key must decode to 32 bytes")
+    return base64.b64encode(raw).decode("ascii")

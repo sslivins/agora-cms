@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Index, JSON, String, Text
+from sqlalchemy import DateTime, Index, JSON, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,6 +34,13 @@ class PendingRegistration(Base):
     __tablename__ = "pending_registrations"
     __table_args__ = (
         Index("ix_pending_registrations_pubkey", "pubkey"),
+        Index(
+            "ix_pending_registrations_pubkey_unique",
+            "pubkey",
+            unique=True,
+            postgresql_where=text("adopted_at IS NULL"),
+            sqlite_where=text("adopted_at IS NULL"),
+        ),
         Index("ix_pending_registrations_created_at", "created_at"),
         Index("ix_pending_registrations_polled_at", "polled_at"),
         {"extend_existing": True},
