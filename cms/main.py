@@ -541,7 +541,7 @@ async def lifespan(app: FastAPI):
     # pre-shared bot-deterrence, not cryptographic authorization.)
     from cms.services import device_identity as _device_identity
     app.state.bootstrap_nonce_cache = _device_identity.InMemoryNonceCache(
-        ttl_seconds=settings.bootstrap_nonce_ttl_seconds,
+        ttl_seconds=getattr(settings, "bootstrap_nonce_ttl_seconds", 600),
     )
 
     yield
