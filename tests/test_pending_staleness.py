@@ -151,6 +151,104 @@ async def test_purge_skips_connected_pending_devices(db_session):
 
 
 @pytest.mark.asyncio
+async def test_purge_does_not_delete_devices_adopted_during_purge(db_session):
+    """N>1 race regression: if a device is selected as a purge candidate
+    on replica A but adopted on replica B between the SELECT and DELETE,
+    the DELETE's ``status == PENDING`` guard must exclude it so the
+    adopt wins.
+
+    Simulated by hooking the session's ``execute`` so that immediately
+    after the candidate-selection query returns we flip one row's
+    status to ADOPTED (mimicking another replica's commit), then let the
+    DELETE proceed.  The adopted row must survive.
+    """
+    from sqlalchemy import update as sa_update
+
+    from cms.models.device import Device, DeviceStatus
+    from cms.services.device_purge import purge_stale_pending_devices
+
+    stale = datetime.now(timezone.utc) - timedelta(hours=48)
+    await _create_pending_device(db_session, "racy-pending", last_seen=stale)
+    await _create_pending_device(db_session, "stable-pending", last_seen=stale)
+
+    real_execute = db_session.execute
+    call_count = {"n": 0}
+
+    async def hooked_execute(stmt, *a, **kw):
+        result = await real_execute(stmt, *a, **kw)
+        call_count["n"] += 1
+        # The first execute is the candidate SELECT.  Flip racy-pending
+        # to ADOPTED before the DELETE runs.
+        if call_count["n"] == 1:
+            await real_execute(
+                sa_update(Device)
+                .where(Device.id == "racy-pending")
+                .values(status=DeviceStatus.ADOPTED)
+            )
+        return result
+
+    db_session.execute = hooked_execute  # type: ignore[method-assign]
+    try:
+        purged = await purge_stale_pending_devices(db_session, ttl_hours=24)
+    finally:
+        db_session.execute = real_execute  # type: ignore[method-assign]
+
+    assert "racy-pending" not in purged, (
+        "DELETE missing status guard — concurrent adopt was nuked"
+    )
+    assert "stable-pending" in purged
+
+    # racy-pending row still exists, now ADOPTED.
+    result = await real_execute(select(Device).where(Device.id == "racy-pending"))
+    dev = result.scalar_one_or_none()
+    assert dev is not None
+    assert dev.status == DeviceStatus.ADOPTED
+
+
+@pytest.mark.asyncio
+async def test_purge_does_not_delete_devices_that_came_online_during_purge(db_session):
+    """N>1 race regression: if a candidate device's ``online`` flag
+    flipped to true between SELECT and DELETE (the device just
+    reconnected on another replica), the DELETE's ``online == false``
+    guard must exclude it.
+    """
+    from sqlalchemy import update as sa_update
+
+    from cms.models.device import Device, DeviceStatus
+    from cms.services.device_purge import purge_stale_pending_devices
+
+    stale = datetime.now(timezone.utc) - timedelta(hours=48)
+    await _create_pending_device(db_session, "reconnecting", last_seen=stale)
+
+    real_execute = db_session.execute
+    call_count = {"n": 0}
+
+    async def hooked_execute(stmt, *a, **kw):
+        result = await real_execute(stmt, *a, **kw)
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            await real_execute(
+                sa_update(Device)
+                .where(Device.id == "reconnecting")
+                .values(online=True)
+            )
+        return result
+
+    db_session.execute = hooked_execute  # type: ignore[method-assign]
+    try:
+        purged = await purge_stale_pending_devices(db_session, ttl_hours=24)
+    finally:
+        db_session.execute = real_execute  # type: ignore[method-assign]
+
+    assert "reconnecting" not in purged
+    result = await real_execute(select(Device).where(Device.id == "reconnecting"))
+    dev = result.scalar_one_or_none()
+    assert dev is not None
+    assert dev.status == DeviceStatus.PENDING
+    assert dev.online is True
+
+
+@pytest.mark.asyncio
 async def test_purge_config_ttl(app, db_session):
     """TTL setting from config should be respected."""
     from cms.auth import get_settings

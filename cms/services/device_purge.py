@@ -4,11 +4,10 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.models.device import Device, DeviceStatus
-from cms.services import device_presence
 
 logger = logging.getLogger("agora.cms.device_purge")
 
@@ -17,33 +16,68 @@ async def purge_stale_pending_devices(db: AsyncSession, ttl_hours: int) -> list[
     """Delete pending devices not seen for longer than *ttl_hours*.
 
     Returns a list of purged device IDs.
+
+    Concurrency / N>1 safety
+    ------------------------
+    The purge runs under a session-advisory lock so only one replica's
+    loop fires at a time, but a user adopting a device on a *different*
+    replica can still race with this call between the candidate SELECT
+    and the DELETE.  To prevent silently nuking an in-flight adopt, the
+    DELETE statement re-checks ``status == PENDING`` and ``online == false``
+    in SQL: if the row was flipped to ADOPTED (or the device just
+    reconnected) between the two steps, the WHERE clause excludes it
+    and the row survives.  We use ``RETURNING id`` to learn which rows
+    actually got deleted.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
 
+    # Step 1 — gather candidates.  Cutoff comparison is done in Python
+    # because SQLAlchemy + SQLite ``DateTime(timezone=True)`` round-trips
+    # can drop tzinfo, making a SQL ``<= cutoff`` predicate fragile across
+    # backends.  Postgres handles it natively, but the same code runs in
+    # tests against SQLite, so we keep this part backend-agnostic.
     result = await db.execute(
-        select(Device).where(
-            Device.status == DeviceStatus.PENDING,
-        )
+        select(Device.id, Device.last_seen, Device.registered_at, Device.online)
+        .where(Device.status == DeviceStatus.PENDING)
     )
-    candidates = result.scalars().all()
-    purged: list[str] = []
 
-    for device in candidates:
-        # Skip devices that are currently connected (DB-backed presence).
-        if await device_presence.is_online(db, device.id):
+    candidate_ids: list[str] = []
+    for did, last_seen, registered_at, online in result.all():
+        if online:
             continue
-
-        # Use last_seen, fall back to registered_at
-        seen_at = device.last_seen or device.registered_at
-        # Ensure both sides are comparable (SQLite strips tzinfo)
+        seen_at = last_seen or registered_at
         if seen_at.tzinfo is None:
             seen_at = seen_at.replace(tzinfo=timezone.utc)
         if seen_at <= cutoff:
-            logger.info("Purging stale pending device %s (last seen %s)", device.id, seen_at)
-            await db.delete(device)
-            purged.append(device.id)
+            candidate_ids.append(did)
+
+    if not candidate_ids:
+        return []
+
+    # Step 2 — atomic guarded DELETE.  Even though candidates were
+    # filtered above, the SQL guards re-validate at DELETE time so a
+    # concurrent adopt or reconnect on another replica wins the race.
+    stmt = (
+        delete(Device)
+        .where(
+            Device.id.in_(candidate_ids),
+            Device.status == DeviceStatus.PENDING,
+            Device.online == False,  # noqa: E712 — SQLAlchemy comparator
+        )
+        .returning(Device.id)
+    )
+    res = await db.execute(stmt)
+    purged: list[str] = [row[0] for row in res.all()]
 
     if purged:
+        for did in purged:
+            logger.info("Purged stale pending device %s (cutoff %s)", did, cutoff)
+        skipped = set(candidate_ids) - set(purged)
+        if skipped:
+            logger.info(
+                "Skipped %d candidate(s) racing with adopt/reconnect: %s",
+                len(skipped), sorted(skipped),
+            )
         await db.commit()
 
     return purged
