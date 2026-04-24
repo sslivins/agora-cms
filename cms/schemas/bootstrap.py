@@ -52,9 +52,46 @@ class BootstrapAdoptRequest(BaseModel):
     profile_id: str = Field(min_length=1)  # uuid; required
 
 
+class AdoptPendingRequest(BaseModel):
+    """Request body for ``POST /api/devices/adopt-pending``.
+
+    Identifies the pending row by its primary key rather than the
+    pairing secret, so the admin never has to see or type the secret.
+    """
+
+    pending_id: str = Field(min_length=1)  # uuid
+    name: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=255)
+    group_id: str | None = None  # uuid
+    profile_id: str = Field(min_length=1)  # uuid; required
+
+
 class BootstrapAdoptResponse(BaseModel):
     device_id: str
     status: str = "adopted"
+
+
+class PendingDeviceSummary(BaseModel):
+    """One row of the pending-devices list surfaced to admins.
+
+    Excludes ``pairing_secret_hash`` and ``outbox_ciphertext`` — those
+    are on-wire secrets the admin has no reason to see.  ``pubkey`` is
+    returned in full-string form but the UI only renders a short
+    fingerprint; full value is handy for support/debugging.
+    """
+
+    id: str  # uuid primary key, used to adopt via /adopt-pending
+    device_id: str  # device-chosen (Pi serial/hostname), advisory
+    pubkey: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    ip_address: str | None = None
+    created_at: str  # ISO 8601
+    polled_at: str | None = None  # ISO 8601
+    has_polled: bool = False
+
+
+class PendingDevicesResponse(BaseModel):
+    items: list[PendingDeviceSummary]
 
 
 # ---------------------------------------------------------------------
