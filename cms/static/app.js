@@ -669,6 +669,347 @@ async function adoptDevice(deviceId, deviceName) {
     }
 }
 
+// Parse a scanned QR payload into a raw pairing secret.  Accepts either a
+// JSON object of the shape {v:1, secret:"..."} or the raw secret string
+// (which we trim and take as-is).  Returns null for anything that doesn't
+// look like a pairing secret.
+function _parsePairingQr(text) {
+    if (typeof text !== "string") return null;
+    const t = text.trim();
+    if (!t) return null;
+    if (t[0] === "{") {
+        try {
+            const obj = JSON.parse(t);
+            if (obj && typeof obj.secret === "string" && obj.secret.length >= 8) {
+                return obj.secret.trim();
+            }
+        } catch (_) { /* fall through to raw-string interpretation */ }
+    }
+    return t.length >= 8 && t.length <= 128 ? t : null;
+}
+
+async function bootstrapAdoptDevice() {
+    const groups = window._adoptionGroups || [];
+    const profiles = window._adoptionProfiles || [];
+    const result = await showBootstrapAdoptModal(groups, profiles);
+    if (!result) return;
+    const body = { pairing_secret: result.pairing_secret, profile_id: result.profile_id };
+    if (result.name) body.name = result.name;
+    if (result.location) body.location = result.location;
+    if (result.group_id) body.group_id = result.group_id;
+    const resp = await apiCall("POST", "/api/devices/adopt", body);
+    if (resp && resp.ok) {
+        showToast("Device adopted");
+        if (typeof window.refreshDevices === 'function') window.refreshDevices();
+        return;
+    }
+    if (resp) {
+        let msg = "Failed to adopt device";
+        const err = await resp.json().catch(() => null);
+        const detail = err?.detail;
+        if (resp.status === 404 && detail === "pending_not_found") {
+            msg = "No device is waiting for that pairing code.";
+        } else if (resp.status === 409 || resp.status === 410) {
+            // Server currently returns 409; guard against a future 410 rollout.
+            msg = "That device has already been adopted.";
+        } else if (resp.status === 429) {
+            msg = "Too many adoption attempts — please wait a moment.";
+        } else if (typeof detail === "string") {
+            msg = detail;
+        }
+        showToast(msg, true);
+    }
+}
+
+function showBootstrapAdoptModal(groups, profiles) {
+    _closeOpenPopovers();
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        const box = document.createElement("div");
+        box.className = "modal-box";
+
+        const title = document.createElement("h3");
+        title.textContent = "Adopt a New Device";
+        title.style.margin = "0 0 0.5rem 0";
+
+        const hint = document.createElement("p");
+        hint.className = "text-muted";
+        hint.style.margin = "0 0 1rem 0";
+        hint.textContent = "Scan the QR code on the device's splash screen, or type its pairing code by hand.";
+
+        // Pairing secret (required)
+        const secretLabel = document.createElement("label");
+        secretLabel.textContent = "Pairing Code";
+        secretLabel.className = "modal-label";
+        const secretRow = document.createElement("div");
+        secretRow.style.display = "flex";
+        secretRow.style.gap = "0.5rem";
+        secretRow.style.alignItems = "stretch";
+        const secretInput = document.createElement("input");
+        secretInput.type = "text";
+        secretInput.className = "modal-input";
+        secretInput.placeholder = "Paste pairing code or scan QR";
+        secretInput.autocomplete = "off";
+        secretInput.spellcheck = false;
+        secretInput.style.flex = "1";
+        const scanBtn = document.createElement("button");
+        scanBtn.type = "button";
+        scanBtn.className = "btn btn-secondary";
+        scanBtn.textContent = "Scan QR";
+        secretRow.appendChild(secretInput);
+        secretRow.appendChild(scanBtn);
+
+        // QR scanner container (hidden until Scan is clicked)
+        const scanWrap = document.createElement("div");
+        scanWrap.style.display = "none";
+        scanWrap.style.margin = "0.5rem 0";
+        scanWrap.style.border = "1px solid #444";
+        scanWrap.style.borderRadius = "4px";
+        scanWrap.style.overflow = "hidden";
+        scanWrap.style.background = "#000";
+        scanWrap.style.position = "relative";
+        const scanVideo = document.createElement("video");
+        scanVideo.setAttribute("playsinline", "true");
+        scanVideo.muted = true;
+        scanVideo.style.display = "block";
+        scanVideo.style.width = "100%";
+        scanVideo.style.maxHeight = "320px";
+        scanWrap.appendChild(scanVideo);
+        const scanStop = document.createElement("button");
+        scanStop.type = "button";
+        scanStop.className = "btn btn-secondary";
+        scanStop.textContent = "Stop Scanner";
+        scanStop.style.position = "absolute";
+        scanStop.style.right = "0.5rem";
+        scanStop.style.bottom = "0.5rem";
+        scanStop.style.zIndex = "2";
+        scanWrap.appendChild(scanStop);
+        const scanStatus = document.createElement("div");
+        scanStatus.style.color = "#f55";
+        scanStatus.style.margin = "0.25rem 0 0 0";
+        scanStatus.style.fontSize = "0.875rem";
+        scanStatus.style.display = "none";
+
+        // Name (optional)
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "Device Name (optional)";
+        nameLabel.className = "modal-label";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.className = "modal-input";
+        nameInput.placeholder = "e.g. Lobby North";
+
+        // Profile (required)
+        const profileLabel = document.createElement("label");
+        profileLabel.textContent = "Encoder Profile";
+        profileLabel.className = "modal-label";
+        const profileSelect = document.createElement("select");
+        profileSelect.className = "modal-input";
+        const profilePlaceholder = document.createElement("option");
+        profilePlaceholder.value = "";
+        profilePlaceholder.textContent = "Select a profile…";
+        profilePlaceholder.disabled = true;
+        profilePlaceholder.selected = true;
+        profileSelect.appendChild(profilePlaceholder);
+        (profiles || []).forEach(p => {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = p.name;
+            profileSelect.appendChild(opt);
+        });
+
+        // Location (optional)
+        const locLabel = document.createElement("label");
+        locLabel.textContent = "Location (optional)";
+        locLabel.className = "modal-label";
+        const locInput = document.createElement("input");
+        locInput.type = "text";
+        locInput.className = "modal-input";
+        locInput.placeholder = "e.g. HQ — Lobby";
+
+        // Group (optional)
+        const groupLabel = document.createElement("label");
+        groupLabel.textContent = "Group (optional)";
+        groupLabel.className = "modal-label";
+        const groupSelect = document.createElement("select");
+        groupSelect.className = "modal-input";
+        const noneOpt = document.createElement("option");
+        noneOpt.value = "";
+        noneOpt.textContent = "None";
+        groupSelect.appendChild(noneOpt);
+        (groups || []).forEach(g => {
+            const opt = document.createElement("option");
+            opt.value = g.id;
+            opt.textContent = g.name;
+            groupSelect.appendChild(opt);
+        });
+
+        // Actions
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.textContent = "Cancel";
+        const adoptBtn = document.createElement("button");
+        adoptBtn.className = "btn btn-primary";
+        adoptBtn.textContent = "Adopt";
+
+        // --- Scanner lifecycle ---
+        let _stream = null;
+        let _rafId = null;
+        let _scanCanvas = null;
+        let _scanCtx = null;
+        let _resolved = false;
+        let _scanning = false;
+
+        const stopScanner = () => {
+            _scanning = false;
+            if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+            if (_stream) {
+                try { _stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                _stream = null;
+            }
+            if (scanVideo.srcObject) scanVideo.srcObject = null;
+            scanWrap.style.display = "none";
+            scanBtn.disabled = false;
+            scanBtn.textContent = "Scan QR";
+        };
+
+        const showScanErr = (msg) => {
+            scanStatus.textContent = msg;
+            scanStatus.style.display = "block";
+        };
+
+        const startScanner = async () => {
+            if (_scanning) return;
+            if (typeof jsQR !== "function") {
+                showScanErr("QR scanner unavailable (jsQR not loaded).");
+                return;
+            }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showScanErr("Camera access is not supported in this browser.");
+                return;
+            }
+            scanStatus.style.display = "none";
+            scanBtn.disabled = true;
+            scanBtn.textContent = "Starting camera…";
+            try {
+                _stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" },
+                    audio: false,
+                });
+            } catch (e) {
+                scanBtn.disabled = false;
+                scanBtn.textContent = "Scan QR";
+                showScanErr("Could not access camera: " + (e && e.name ? e.name : "unknown error"));
+                return;
+            }
+            scanVideo.srcObject = _stream;
+            try { await scanVideo.play(); } catch (_) { /* some browsers resolve after metadata */ }
+            scanWrap.style.display = "block";
+            scanBtn.textContent = "Scanning…";
+            _scanCanvas = document.createElement("canvas");
+            _scanCtx = _scanCanvas.getContext("2d", { willReadFrequently: true });
+            _scanning = true;
+
+            const tick = () => {
+                if (!_scanning) return;
+                if (scanVideo.readyState === scanVideo.HAVE_ENOUGH_DATA) {
+                    _scanCanvas.width = scanVideo.videoWidth;
+                    _scanCanvas.height = scanVideo.videoHeight;
+                    _scanCtx.drawImage(scanVideo, 0, 0, _scanCanvas.width, _scanCanvas.height);
+                    const img = _scanCtx.getImageData(0, 0, _scanCanvas.width, _scanCanvas.height);
+                    const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+                    if (code && code.data && !_resolved) {
+                        const secret = _parsePairingQr(code.data);
+                        if (secret) {
+                            _resolved = true;
+                            secretInput.value = secret;
+                            stopScanner();
+                            validateForm();
+                            return;
+                        }
+                    }
+                }
+                _rafId = requestAnimationFrame(tick);
+            };
+            _rafId = requestAnimationFrame(tick);
+        };
+
+        scanBtn.addEventListener("click", () => {
+            if (_scanning) { stopScanner(); return; }
+            _resolved = false;
+            startScanner();
+        });
+        scanStop.addEventListener("click", stopScanner);
+
+        const validateForm = () => {
+            const secret = secretInput.value.trim();
+            adoptBtn.disabled = !(secret.length >= 8 && secret.length <= 128) || !profileSelect.value;
+        };
+        validateForm();
+
+        secretInput.addEventListener("input", validateForm);
+        profileSelect.addEventListener("change", validateForm);
+
+        const getResult = () => ({
+            pairing_secret: secretInput.value.trim(),
+            name: nameInput.value.trim() || null,
+            profile_id: profileSelect.value,
+            location: locInput.value.trim() || null,
+            group_id: groupSelect.value || null,
+        });
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(adoptBtn);
+        box.appendChild(title);
+        box.appendChild(hint);
+        box.appendChild(secretLabel);
+        box.appendChild(secretRow);
+        box.appendChild(scanWrap);
+        box.appendChild(scanStatus);
+        box.appendChild(nameLabel);
+        box.appendChild(nameInput);
+        box.appendChild(profileLabel);
+        box.appendChild(profileSelect);
+        box.appendChild(locLabel);
+        box.appendChild(locInput);
+        box.appendChild(groupLabel);
+        box.appendChild(groupSelect);
+        box.appendChild(actions);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        secretInput.focus();
+
+        const close = (val) => {
+            stopScanner();
+            window.removeEventListener("pagehide", _onHide);
+            document.removeEventListener("keydown", _onKey);
+            overlay.remove();
+            resolve(val);
+        };
+        const _onHide = () => stopScanner();
+        const _onKey = (e) => { if (e.key === "Escape") close(null); };
+        window.addEventListener("pagehide", _onHide);
+        document.addEventListener("keydown", _onKey);
+
+        cancelBtn.onclick = () => close(null);
+        adoptBtn.onclick = () => {
+            const secret = secretInput.value.trim();
+            if (!(secret.length >= 8 && secret.length <= 128) || !profileSelect.value) return;
+            close(getResult());
+        };
+        secretInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                const secret = secretInput.value.trim();
+                if (secret.length >= 8 && secret.length <= 128 && profileSelect.value) close(getResult());
+            }
+        });
+    });
+}
+window.bootstrapAdoptDevice = bootstrapAdoptDevice;
+
 function showAdoptModal(defaultName, groups, profiles) {
     _closeOpenPopovers();
     return new Promise((resolve) => {

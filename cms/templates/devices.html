@@ -269,6 +269,7 @@
     <div style="display: flex; gap: 0.25rem; align-items: center;">
         <h2 style="margin: 0;">Devices</h2>
         {% if 'devices:manage' in user_perms %}
+        <button class="btn btn-primary" style="margin-left: 0.75rem;" onclick="bootstrapAdoptDevice()" title="Adopt a new device by scanning the QR code on its splash screen or pasting its pairing code">Adopt Device</button>
         <span onclick="event.stopPropagation()">
             {% call macros.kebab_menu() %}
                 <button type="button" role="menuitem" onclick="checkForUpdates(this)" id="check-updates-btn" title="Fetch the latest available device software version. Runs automatically every hour.">Check for updates</button>
