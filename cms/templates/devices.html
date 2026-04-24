@@ -264,29 +264,6 @@
 
 {% set th_row_compact %}{{ macros.th_row_compact() }}{% endset %}
 
-{# ── Pending Devices (unadopted registrations) ── #}
-{% if 'devices:manage' in user_perms %}
-<div class="card" id="pending-devices-card" style="display: none;">
-    <h2 style="margin: 0 0 0.5rem 0;">Pending Devices</h2>
-    <p class="text-muted" style="margin: 0 0 0.75rem 0;">
-        Devices that have registered with the CMS but haven't been adopted yet.
-        Unadopted registrations expire after {{ pending_ttl_hours }} hours.
-    </p>
-    <table>
-        <thead>
-            <tr>
-                <th>Device ID</th>
-                <th>Firmware</th>
-                <th>IP</th>
-                <th>Registered</th>
-                <th style="width: 1%; white-space: nowrap;">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="pending-devices-tbody"></tbody>
-    </table>
-</div>
-{% endif %}
-
 {# ── All Devices ── #}
 <div class="card">
     <div style="display: flex; gap: 0.25rem; align-items: center;">
@@ -311,6 +288,31 @@
         </tbody>
     </table>
 </div>
+
+{# ── Pending Devices (unadopted registrations) ── #}
+{# Rendered after the main Devices card so the Devices <h2> remains the #}
+{# first heading on the page — the e2e page-load test keys off that.   #}
+{% if 'devices:manage' in user_perms %}
+<div class="card" id="pending-devices-card" style="display: none;">
+    <h2 style="margin: 0 0 0.5rem 0;">Pending Devices</h2>
+    <p class="text-muted" style="margin: 0 0 0.75rem 0;">
+        Devices that have registered with the CMS but haven't been adopted yet.
+        Unadopted registrations expire after {{ pending_ttl_hours }} hours.
+    </p>
+    <table>
+        <thead>
+            <tr>
+                <th>Device ID</th>
+                <th>Firmware</th>
+                <th>IP</th>
+                <th>Registered</th>
+                <th style="width: 1%; white-space: nowrap;">Actions</th>
+            </tr>
+        </thead>
+        <tbody id="pending-devices-tbody"></tbody>
+    </table>
+</div>
+{% endif %}
 
 {# ── Device Groups (expandable) ── #}
 {% if 'groups:read' in user_perms %}
