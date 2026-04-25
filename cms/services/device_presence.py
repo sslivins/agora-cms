@@ -101,9 +101,11 @@ async def mark_online(
     the UI is immediately accurate after reconnect.  ``connection_id``
     is persisted when the caller has one (WPS webhook path); direct-WS
     connections don't expose a stable id and pass ``None``.
-    ``ip_address`` is persisted when the caller has it (direct-WS path);
-    WPS-only connections pass ``None`` and the column keeps its
-    previous value (so the last-known IP survives an offline blip).
+    ``ip_address`` is persisted when the caller has it (direct-WS
+    register and WPS ``register`` user-message paths); the system
+    ``sys.connected`` event has no body to source one from and passes
+    ``None``, in which case the column keeps its previous value (so
+    the last-known IP survives an offline blip).
     """
     now = datetime.now(timezone.utc)
     values: dict[str, Any] = {

@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.auth import get_settings
@@ -229,7 +229,30 @@ async def events_receiver(
         # still bootstrap over direct-WS — they can't hit connect-token
         # without an API key and a device row.
         if msg.get("type") == "register":
+            # Capture pre-register firmware AND upgrade-claim token
+            # before ``register_known_device`` mutates them.  Used
+            # below to gate (and CAS-protect) clearing the
+            # upgrade-in-progress claim on a real firmware-change.
+            pre_register_fw = device.firmware_version or ""
+            pre_register_upgrade_claim = device.upgrade_started_at
             reg_result = await register_known_device(device, msg, db)
+            # Persist the device's LAN IP from the register payload.
+            # ``sys.connected`` (handled above) has no body, so it can't
+            # carry the IP — and the webhook origin we'd see at the HTTP
+            # layer is Azure Web PubSub's egress, not the device's LAN
+            # address.  The ``register`` user-message is the first hop
+            # where the device itself reports ``ip_address``.  Calling
+            # ``mark_online`` again is idempotent (it tolerates an
+            # already-current ``connection_id``) and only writes
+            # ``Device.ip_address`` when the value is non-empty.
+            client_ip = msg.get("ip_address") or None
+            if client_ip:
+                from cms.services import device_presence
+                await device_presence.mark_online(
+                    db, ce_user_id,
+                    connection_id=ce_connection_id,
+                    ip_address=client_ip,
+                )
             if reg_result.orphaned:
                 # Over direct-WS we'd close 4004.  Over WPS we can't
                 # close the WPS connection from here; the device is
@@ -248,6 +271,35 @@ async def events_receiver(
                     logger.exception(
                         "Failed to push auth_assigned to WPS device %s", ce_user_id,
                     )
+            # Clear any stale upgrade-in-progress claim so the device
+            # can be upgraded again on a future request — but only
+            # when this register represents an actual completed
+            # upgrade (mirrors ``ws.py`` Stage-4 logic):
+            #   - there was a claim at register time
+            #     (``pre_register_upgrade_claim``),
+            #   - both prior and reported firmware are non-empty, and
+            #   - they differ (so the device booted into a new version).
+            # The UPDATE uses compare-and-swap on
+            # ``upgrade_started_at`` equal to the pre-register value,
+            # so a successor upgrade claim written between our SELECT
+            # and our clear isn't wiped.  Transient reconnects during
+            # an upgrade (same firmware) leave the claim in place;
+            # the upgrade-endpoint TTL is the safety net that releases
+            # the claim if no firmware change is ever reported.
+            if pre_register_upgrade_claim is not None:
+                reported_fw = (msg.get("firmware_version") or "").strip()
+                prior_fw = (pre_register_fw or "").strip()
+                if reported_fw and prior_fw and reported_fw != prior_fw:
+                    await db.execute(
+                        update(Device)
+                        .where(
+                            Device.id == ce_user_id,
+                            Device.upgrade_started_at == pre_register_upgrade_claim,
+                        )
+                        .values(upgrade_started_at=None)
+                        .execution_options(synchronize_session=False)
+                    )
+                    await db.commit()
             # Notify alert service of reconnection — mirrors ws.py's
             # direct-WS register path.  This is what emits the ONLINE
             # device_event, clears ``offline_notified`` on

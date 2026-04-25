@@ -552,6 +552,233 @@ class TestUserEvents:
         assert r.status_code == 204
         fake_transport.send_to_device.assert_not_called()
 
+    async def test_register_over_wps_persists_ip_address(
+        self, client, app_and_session,
+    ):
+        """``register`` user-message must persist ``ip_address`` to the
+        device row.  ``sys.connected`` has no body so it can't carry
+        the IP, and the webhook origin we'd see at the HTTP layer is
+        Azure WPS's egress, not the device's LAN address.  This is a
+        regression test for #436 — the LAN IP only landed in the DB
+        on direct-WS deployments before this fix.
+        """
+        app, session = app_and_session
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-ip"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.services.device_presence.mark_online",
+            new=AsyncMock(),
+        ) as mock_mark, patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                    "ip_address": "192.168.1.53",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_mark.assert_awaited_once()
+        _, kwargs = mock_mark.call_args
+        assert kwargs.get("ip_address") == "192.168.1.53"
+        assert kwargs.get("connection_id") == cid
+
+    async def test_register_over_wps_no_ip_address_skips_mark_online(
+        self, client, app_and_session,
+    ):
+        """If the firmware omits ``ip_address`` (older builds) we don't
+        call ``mark_online`` from the register handler — the
+        ``sys.connected`` event already flipped presence and we don't
+        want to overwrite a previously-known IP with ``None``."""
+        app, session = app_and_session
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.20",
+            upgrade_started_at=None,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-noip"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.services.device_presence.mark_online",
+            new=AsyncMock(),
+        ) as mock_mark, patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_mark.assert_not_called()
+
+    async def test_register_over_wps_clears_upgrade_claim_on_fw_change(
+        self, client, app_and_session,
+    ):
+        """When register reports a different firmware than the device row
+        held *and* an upgrade claim was set at register time, the WPS
+        path must clear ``Device.upgrade_started_at`` via a CAS UPDATE.
+        Otherwise the device is permanently stuck with
+        ``is_upgrading=true`` and can't be upgraded again.  Mirrors the
+        Stage-4 logic in ``cms/routers/ws.py:204-217``.
+        """
+        from datetime import datetime, timezone
+
+        app, session = app_and_session
+        prior_claim = datetime.now(timezone.utc)
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.7",
+            upgrade_started_at=prior_claim,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-fwchg"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.11.20",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        # Confirm an UPDATE statement was issued targeting upgrade_started_at.
+        update_stmts = [
+            str(s) for s in session.executed
+            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+        ]
+        assert update_stmts, (
+            f"Expected CAS UPDATE clearing upgrade_started_at, "
+            f"got {[str(s) for s in session.executed]}"
+        )
+
+    async def test_register_over_wps_keeps_upgrade_claim_on_same_fw(
+        self, client, app_and_session,
+    ):
+        """Reconnect during an in-flight upgrade (same firmware as
+        before) must NOT clear ``upgrade_started_at`` — the upgrade
+        hasn't actually completed yet.  The upgrade-endpoint TTL is
+        the safety net that releases the claim if the device never
+        boots into the new version.
+        """
+        from datetime import datetime, timezone
+
+        app, session = app_and_session
+        prior_claim = datetime.now(timezone.utc)
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.20",
+            upgrade_started_at=prior_claim,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-samefw"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.11.20",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        update_stmts = [
+            str(s) for s in session.executed
+            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+        ]
+        assert not update_stmts, (
+            f"Did not expect upgrade_started_at UPDATE for same-fw register, "
+            f"got {update_stmts}"
+        )
+
     async def test_register_over_wps_orphaned_device(self, client, app_and_session):
         """Orphaned result returns 204 without pushing — direct-WS path
         would close 4004 but over WPS we can't close from here."""
