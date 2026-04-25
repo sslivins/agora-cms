@@ -51,12 +51,23 @@ def _schedules_seed(api, ws_url):
     """Seed one active + one expired schedule using width-stressing names.
 
     Returns a dict with the created entity ids so tests can clean up
-    or reference them. Cleans up any existing schedules first to keep
-    the fixture deterministic across test ordering.
+    or reference them.
+
+    Robust to leftover state from prior tests in the same session and
+    re-runs of parametrized cases:
+
+    * any schedule whose name starts with our long-name prefix is
+      deleted up-front so we don't trip the API's "overlapping time on
+      the same target at same priority" 409;
+    * group creation tolerates 409 by GET'ing the existing one;
+    * both schedules are created at ``priority=99`` so they cannot
+      conflict with anything left over at priority 0.
     """
-    # Wipe schedules from any prior test that ran in the same session.
+    # Wipe any of our previously-created schedules so a leftover at the
+    # same priority/target doesn't trigger the API's overlap check.
     for s in api.get("/api/schedules").json():
-        api.delete(f"/api/schedules/{s['id']}")
+        if s.get("name", "").startswith(_LONG_NAME):
+            api.delete(f"/api/schedules/{s['id']}")
 
     # Register + adopt a device so it can be a schedule target.
     device_id = "layout-444-device"
@@ -68,9 +79,23 @@ def _schedules_seed(api, ws_url):
     run_async(_register())
     api.post(f"/api/devices/{device_id}/adopt")
 
-    group = api.post(
+    # Group create — handle 409 (conflict on name) by reusing the
+    # existing group.  Some 409 bodies aren't JSON, so guard ``.json()``.
+    group_resp = api.post(
         "/api/devices/groups/", json={"name": _LONG_GROUP},
-    ).json()
+    )
+    if group_resp.status_code == 409:
+        existing = api.get("/api/devices/groups/").json()
+        group = next(
+            (g for g in existing if g.get("name") == _LONG_GROUP), None,
+        )
+        assert group is not None, (
+            f"group create returned 409 but no matching group found; "
+            f"body={group_resp.text!r}"
+        )
+    else:
+        assert group_resp.status_code in (200, 201), group_resp.text
+        group = group_resp.json()
     api.patch(f"/api/devices/{device_id}", json={"group_id": group["id"]})
 
     # Asset.
@@ -85,7 +110,9 @@ def _schedules_seed(api, ws_url):
     # name so the Asset column is forced wider.
     api.patch(f"/api/assets/{asset['id']}", json={"display_name": _LONG_ASSET})
 
-    # Active schedule with width-stressing name.
+    # Active schedule with width-stressing name.  ``priority=99`` keeps
+    # us out of the overlap check that compares schedules at the same
+    # priority on the same target.
     active = api.post("/api/schedules", json={
         "name": _LONG_NAME,
         "group_id": group["id"],
@@ -93,6 +120,7 @@ def _schedules_seed(api, ws_url):
         "start_time": "08:00",
         "end_time": "20:00",
         "days_of_week": [1, 2, 3, 4, 5, 6, 7],
+        "priority": 99,
     })
     assert active.status_code == 201, active.text
     active_id = active.json()["id"]
@@ -112,6 +140,7 @@ def _schedules_seed(api, ws_url):
         "end_time": "17:00",
         "start_date": fourteen_days_ago,
         "end_date": seven_days_ago,
+        "priority": 99,
     })
     assert expired.status_code == 201, expired.text
 
