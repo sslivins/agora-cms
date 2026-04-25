@@ -580,6 +580,13 @@ class TestDeviceGroups:
         assert data["name"] == "Lobby Screens"
         assert data["device_count"] == 0
 
+    async def test_create_group_duplicate_name_returns_409(self, client):
+        resp = await client.post("/api/devices/groups/", json={"name": "Dup Name"})
+        assert resp.status_code == 201
+        resp = await client.post("/api/devices/groups/", json={"name": "Dup Name"})
+        assert resp.status_code == 409
+        assert "already exists" in resp.json()["detail"].lower()
+
     async def test_list_groups(self, client):
         await client.post("/api/devices/groups/", json={"name": "Group A"})
         await client.post("/api/devices/groups/", json={"name": "Group B"})
