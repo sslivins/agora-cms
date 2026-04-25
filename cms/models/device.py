@@ -45,6 +45,12 @@ class Device(Base):
             postgresql_where=text("pubkey IS NOT NULL"),
             sqlite_where=text("pubkey IS NOT NULL"),
         ),
+        Index(
+            "ix_devices_stale_check",
+            "last_seen",
+            postgresql_where=text("online = true AND last_seen IS NOT NULL"),
+            sqlite_where=text("online = 1 AND last_seen IS NOT NULL"),
+        ),
         {"extend_existing": True},
     )
 
