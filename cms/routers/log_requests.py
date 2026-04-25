@@ -288,14 +288,25 @@ async def download_log_request(
         )
 
     user = getattr(request.state, "user", None)
+    # Resolve the friendly device name for the audit log so operators
+    # see "device 'Lobby Pi'" instead of a UUID.  Falls back to the GUID
+    # if the device row was deleted between the request being created
+    # and the bundle being downloaded.
+    device_name = (
+        await db.execute(
+            select(Device.name).where(Device.id == row.device_id)
+        )
+    ).scalar_one_or_none()
+    device_label = f"'{device_name}'" if device_name else row.device_id
     await audit_log(
         db, user=user,
         action="logs.download_bundle",
         resource_type="log_request",
         resource_id=row.id,
-        description=f"Downloaded log bundle for device {row.device_id}",
+        description=f"Downloaded log bundle for device {device_label}",
         details={
             "device_id": row.device_id,
+            "device_name": device_name,
             "size_bytes": row.size_bytes,
         },
         request=request,
