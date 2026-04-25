@@ -96,10 +96,10 @@ async def test_admin_save_omitted_email_flag_stored_as_false(client, db_session)
 
 @pytest.mark.asyncio
 async def test_admin_save_uses_defaults_for_missing_keys(client, db_session):
-    """Omitted numeric keys fall back to documented defaults (120/70/80/300)."""
+    """Omitted numeric keys fall back to documented defaults (300/70/80/300)."""
     resp = await client.post("/api/settings/alerts", json={})
     assert resp.status_code == 200
-    assert await get_setting(db_session, "alert_offline_grace_seconds") == "120"
+    assert await get_setting(db_session, "alert_offline_grace_seconds") == "300"
     assert await get_setting(db_session, "alert_temp_warning_c") == "70.0"
     assert await get_setting(db_session, "alert_temp_critical_c") == "80.0"
     assert await get_setting(db_session, "alert_temp_cooldown_seconds") == "300"

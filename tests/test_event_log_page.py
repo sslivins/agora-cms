@@ -141,6 +141,64 @@ async def test_event_log_page_200_with_empty_db(client):
     assert resp.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_offline_event_kinds_render_humanized(app, client):
+    """Stale/grace event details render as friendly strings, not raw JSON.
+
+    Also asserts legacy ``grace_period`` rendering is preserved.
+    """
+    from cms.database import get_db
+    factory = app.dependency_overrides[get_db]
+    async for db in factory():
+        grp = DeviceGroup(name="Polish Group")
+        db.add(grp)
+        await db.flush()
+        dev = Device(id="polish-dev", name="Polish Device",
+                     status=DeviceStatus.ADOPTED, group_id=grp.id)
+        db.add(dev)
+        await db.flush()
+        db.add(DeviceEvent(
+            device_id=dev.id, device_name=dev.name,
+            group_id=grp.id, group_name=grp.name,
+            event_type=DeviceEventType.OFFLINE,
+            details={"kind": "stale_heartbeat"},
+        ))
+        db.add(DeviceEvent(
+            device_id=dev.id, device_name=dev.name,
+            group_id=grp.id, group_name=grp.name,
+            event_type=DeviceEventType.OFFLINE,
+            details={"kind": "grace_expired"},
+        ))
+        db.add(DeviceEvent(
+            device_id=dev.id, device_name=dev.name,
+            group_id=grp.id, group_name=grp.name,
+            event_type=DeviceEventType.OFFLINE,
+            details={"grace_period": 120},
+        ))
+        await db.commit()
+        break
+
+    resp = await client.get("/event-log")
+    assert resp.status_code == 200
+    text = resp.text
+    assert "No heartbeat received within timeout" in text
+    assert "Grace period exceeded" in text
+    assert "Grace period: 120s" in text  # legacy rendering preserved
+    # Raw JSON of the new ``kind`` payloads must NOT bleed through.
+    assert '"kind": "stale_heartbeat"' not in text
+    assert '"kind": "grace_expired"' not in text
+
+
+@pytest.mark.asyncio
+async def test_settings_page_default_offline_grace_300(client):
+    """Fresh /settings render shows the new 300s default in the input."""
+    resp = await client.get("/settings")
+    assert resp.status_code == 200
+    # Input element with the documented id and the new default value.
+    assert 'id="alert-offline-grace"' in resp.text
+    assert 'value="300"' in resp.text
+
+
 # ── Non-admin (group-scoped) visibility ──
 
 

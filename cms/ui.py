@@ -1643,7 +1643,7 @@ async def settings_page(
     ]
 
     # Alert settings
-    alert_offline_grace = await get_setting(db, "alert_offline_grace_seconds") or "120"
+    alert_offline_grace = await get_setting(db, "alert_offline_grace_seconds") or "300"
     alert_temp_warning = await get_setting(db, "alert_temp_warning_c") or "70"
     alert_temp_critical = await get_setting(db, "alert_temp_critical_c") or "80"
     alert_temp_cooldown = await get_setting(db, "alert_temp_cooldown_seconds") or "300"
@@ -1829,7 +1829,7 @@ async def save_alert_settings(
 ):
     body = await request.json()
 
-    await set_setting(db, "alert_offline_grace_seconds", str(int(body.get("offline_grace_seconds", 120))))
+    await set_setting(db, "alert_offline_grace_seconds", str(int(body.get("offline_grace_seconds", 300))))
     await set_setting(db, "alert_temp_warning_c", str(float(body.get("temp_warning_c", 70))))
     await set_setting(db, "alert_temp_critical_c", str(float(body.get("temp_critical_c", 80))))
     await set_setting(db, "alert_temp_cooldown_seconds", str(int(body.get("temp_cooldown_seconds", 300))))
