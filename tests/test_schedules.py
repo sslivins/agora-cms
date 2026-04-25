@@ -770,6 +770,95 @@ class TestEndNowPerDevice:
         )).scalars().all()
         assert sorted(rows) == [dev_a]
 
+    async def test_end_now_audit_description_uses_device_name(
+        self, client, db_session,
+    ):
+        """Issue #443: end-now audit description should include device name, not GUID."""
+        from cms.models.audit_log import AuditLog
+        from sqlalchemy import select
+
+        group_id, asset_id, dev_a, _ = await self._seed_two_devices(db_session)
+        # dev_a's friendly name is "A" (set by _seed_two_devices).
+
+        created = await client.post("/api/schedules", json={
+            "name": "Audit Name Test",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        sched_id = created.json()["id"]
+
+        resp = await client.post(
+            f"/api/schedules/{sched_id}/end-now",
+            json={"device_id": dev_a},
+        )
+        assert resp.status_code == 200, resp.text
+
+        db_session.expire_all()
+        rows = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "schedule.end_now")
+        )).scalars().all()
+        assert rows, "expected an audit entry for schedule.end_now"
+        descriptions = [r.description for r in rows]
+        assert any("device 'A'" in d for d in descriptions), (
+            f"Expected friendly device name in audit description, got: {descriptions}"
+        )
+        # Must NOT contain the raw device id in the description.
+        assert all(dev_a not in d for d in descriptions), (
+            f"Audit description should not contain raw device id; got: {descriptions}"
+        )
+        # But the structured details must still carry the device_id GUID.
+        assert any(
+            (r.details or {}).get("device_id") == dev_a for r in rows
+        ), "details.device_id should remain the GUID for machine consumers"
+
+    async def test_end_now_audit_description_falls_back_to_id_if_unnamed(
+        self, client, db_session,
+    ):
+        """If a device row has no friendly name, fall back to the device_id."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.audit_log import AuditLog
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from sqlalchemy import select
+
+        group = DeviceGroup(name="Unnamed Device Group")
+        dev = Device(id="pi-no-name", name=None, status=DeviceStatus.ADOPTED)
+        asset = Asset(
+            filename="p.mp4", asset_type=AssetType.VIDEO, size_bytes=1, checksum="c",
+        )
+        db_session.add_all([group, dev, asset])
+        await db_session.flush()
+        dev.group_id = group.id
+        await db_session.commit()
+        # Capture ids before any expire/refresh so later assertions don't lazy-load.
+        dev_id = dev.id
+        group_id_str = str(group.id)
+        asset_id_str = str(asset.id)
+
+        created = await client.post("/api/schedules", json={
+            "name": "Unnamed Device Test",
+            "group_id": group_id_str,
+            "asset_id": asset_id_str,
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        sched_id = created.json()["id"]
+
+        resp = await client.post(
+            f"/api/schedules/{sched_id}/end-now",
+            json={"device_id": dev_id},
+        )
+        assert resp.status_code == 200, resp.text
+
+        db_session.expire_all()
+        rows = (await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "schedule.end_now")
+        )).scalars().all()
+        assert any(f"device '{dev_id}'" in r.description for r in rows), (
+            f"Expected fallback to device id, got: {[r.description for r in rows]}"
+        )
+
     async def test_end_now_without_body_still_schedule_wide(self, client, db_session):
         """Back-compat: POST with no body skips all devices on the schedule."""
         from cms.models.schedule_device_skip import ScheduleDeviceSkip

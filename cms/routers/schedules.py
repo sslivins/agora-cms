@@ -506,7 +506,12 @@ async def end_schedule_now(
             row.skip_until = end_today
             db.add(row)
 
-    scope = "all devices" if device_id is None else f"device {device_id}"
+    if device_id is None:
+        scope = "all devices"
+    else:
+        dev = await db.get(Device, device_id)
+        label = dev.name if dev and dev.name else device_id
+        scope = f"device '{label}'"
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="schedule.end_now", resource_type="schedule",
