@@ -7,13 +7,14 @@ authenticated via session cookie.
 
 import asyncio
 import os
+import re
 import socket
 import threading
 import time
 
 import pytest
 import uvicorn
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, expect, sync_playwright
 
 # ── Helpers ──
 
@@ -66,6 +67,36 @@ def open_row_kebab(row):
     except Exception:
         pass
     return row
+
+
+def expand_group_panel(group_panel, timeout: int = 5000):
+    """Click a .group-header until the panel reaches the .expanded state.
+
+    The /devices page's polling loop re-renders panels asynchronously and
+    can race with a single click — the click can land before the panel is
+    fully wired, leaving the body still hidden. Retry until the
+    ``expanded`` class is present, then return the body locator.
+    """
+    panel_handle = group_panel.element_handle()
+    if panel_handle and "expanded" in (panel_handle.get_attribute("class") or ""):
+        return group_panel.locator(".group-body")
+
+    attempts = 5
+    last_err = None
+    for _ in range(attempts):
+        try:
+            group_panel.locator(".group-header").click(timeout=2000)
+            expect(group_panel).to_have_class(
+                re.compile(r"(^|\s)expanded(\s|$)"),
+                timeout=timeout // attempts,
+            )
+            return group_panel.locator(".group-body")
+        except Exception as e:
+            last_err = e
+            continue
+    raise AssertionError(
+        f"Group panel never reached expanded state after {attempts} clicks: {last_err}"
+    )
 
 
 def click_row_action(row, action_text, exact=False):
