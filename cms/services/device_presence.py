@@ -24,7 +24,7 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.models.device import Device
+from cms.models.device import Device, DeviceGroup
 
 logger = logging.getLogger("agora.cms.device_presence")
 
@@ -239,8 +239,70 @@ async def update_status(
         )
         .values(**values)
     )
+    rowcount = result.rowcount or 0
+
+    # Self-heal for the stale-presence sweep (PR #440): if a previous
+    # leader-gated sweep marked this device offline (e.g., because the
+    # Container Apps load balancer kept a dead WS connection "alive"
+    # past the heartbeat threshold), accepting a new STATUS heartbeat
+    # is positive evidence the device is alive — atomically flip
+    # ``online`` back to ``true`` and dispatch the existing reconnect
+    # path so any outstanding offline alert is cleared and a "back
+    # online" notification fires when warranted.
+    #
+    # The CAS predicate ``online IS FALSE`` ensures only one replica
+    # wins if heartbeats from multiple paths race; the loser sees
+    # zero returned rows and skips dispatch.
+    healed_row = None
+    if rowcount > 0:
+        heal_claim = await db.execute(
+            update(Device)
+            .where(Device.id == device_id)
+            .where(Device.online.is_(False))
+            .values(online=True)
+            .returning(
+                Device.name, Device.group_id, Device.status,
+            )
+        )
+        healed_row = heal_claim.first()
+
     await db.commit()
-    return (result.rowcount or 0) > 0
+
+    if healed_row is not None:
+        # Look up group_name for the back-online notification payload.
+        # Done after commit so we don't extend the heartbeat
+        # transaction; tiny extra round-trip on the rare transition
+        # edge only.
+        group_name = ""
+        if healed_row.group_id is not None:
+            group_name = (
+                await db.execute(
+                    select(DeviceGroup.name).where(
+                        DeviceGroup.id == healed_row.group_id
+                    )
+                )
+            ).scalar_one_or_none() or ""
+        try:
+            from cms.services.alert_service import alert_service
+            alert_service.device_reconnected(
+                device_id,
+                device_name=healed_row.name or device_id,
+                group_id=str(healed_row.group_id) if healed_row.group_id else None,
+                group_name=group_name,
+                status=(
+                    healed_row.status.value
+                    if hasattr(healed_row.status, "value")
+                    else str(healed_row.status)
+                ),
+            )
+        except Exception:
+            # Dispatch is fire-and-forget; never let an alert-service
+            # failure break the heartbeat path.
+            logger.exception(
+                "Failed to dispatch reconnect for healed device %s", device_id,
+            )
+
+    return rowcount > 0
 
 
 async def set_flags(
