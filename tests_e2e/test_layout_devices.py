@@ -56,8 +56,17 @@ def _devices_seed(api, ws_url):
             await dev.send_status()
 
     run_async(_register())
-    # Adopt — tolerant of "already adopted" from a prior run.
-    adopt = api.post(f"/api/devices/{device_id}/adopt")
+
+    # Adopt requires a profile_id — pick the first seeded profile.
+    profiles = api.get("/api/profiles/").json()
+    assert profiles, "no transcode profiles seeded; cannot adopt"
+    profile_id = profiles[0]["id"]
+
+    # Adopt — tolerant of "already adopted" from a prior run (409).
+    adopt = api.post(
+        f"/api/devices/{device_id}/adopt",
+        json={"profile_id": profile_id},
+    )
     assert adopt.status_code in (200, 201, 409), adopt.text
 
     # Force the long display name regardless of prior state.
