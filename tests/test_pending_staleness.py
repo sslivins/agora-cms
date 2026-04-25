@@ -55,6 +55,8 @@ async def test_pending_device_shows_online_when_connected(client, db_session, ap
     await _create_pending_device(db_session, "dev-online-pending")
     # Simulate the device being connected via WebSocket
     device_manager.register("dev-online-pending", websocket=None)
+    from cms.services import device_presence
+    await device_presence.mark_online(db_session, "dev-online-pending")
 
     try:
         resp = await client.get("/")

@@ -537,6 +537,8 @@ class TestUpgradeGuard:
         class FakeWS:
             async def send_json(self, data): pass
         device_manager.register("up-pi-002", FakeWS())
+        from cms.services import device_presence
+        await device_presence.mark_online(db_session, "up-pi-002")
 
         try:
             resp = await client.post("/api/devices/up-pi-002/upgrade")
@@ -773,6 +775,9 @@ class TestGroupDefaultAssetSync:
 
         device_manager.register("grp-sync-pi-1", FakeWS1())
         device_manager.register("grp-sync-pi-2", FakeWS2())
+        from cms.services import device_presence
+        await device_presence.mark_online(db_session, "grp-sync-pi-1")
+        await device_presence.mark_online(db_session, "grp-sync-pi-2")
 
         try:
             resp = await client.patch(
@@ -817,6 +822,8 @@ class TestGroupDefaultAssetSync:
                 sent.append(data)
 
         device_manager.register("grp-clear-pi", FakeWS())
+        from cms.services import device_presence
+        await device_presence.mark_online(db_session, "grp-clear-pi")
 
         try:
             resp = await client.patch(
@@ -990,6 +997,8 @@ class TestDefaultAssetVariantResolution:
                 sent_messages.append(data)
 
         device_manager.register("test-variant-pi", FakeWS())
+        from cms.services import device_presence
+        await device_presence.mark_online(db_session, "test-variant-pi")
 
         try:
             resp = await client.patch(

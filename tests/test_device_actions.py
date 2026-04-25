@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from cms.models.device import Device, DeviceStatus
+from cms.services import device_presence
 from cms.services.device_manager import DeviceManager, device_manager
 
 
@@ -18,6 +19,7 @@ class TestFactoryReset:
 
         ws = AsyncMock()
         device_manager.register("fr-001", ws)
+        await device_presence.mark_online(db_session, "fr-001")
         try:
             resp = await client.post("/api/devices/fr-001/factory-reset")
             assert resp.status_code == 200
@@ -56,6 +58,7 @@ class TestLocalApiToggle:
 
         ws = AsyncMock()
         device_manager.register("la-001", ws)
+        await device_presence.mark_online(db_session, "la-001")
         try:
             resp = await client.post("/api/devices/la-001/local-api", json={"enabled": False})
             assert resp.status_code == 200
@@ -83,6 +86,7 @@ class TestLocalApiToggle:
 
         ws = AsyncMock()
         device_manager.register("la-002", ws)
+        await device_presence.mark_online(db_session, "la-002")
         try:
             resp = await client.post("/api/devices/la-002/local-api", json={"enabled": True})
             assert resp.status_code == 200
@@ -147,6 +151,7 @@ class TestSplashFix:
 
         ws = AsyncMock()
         device_manager.register("splash-001", ws)
+        await device_presence.mark_online(db_session, "splash-001")
         try:
             with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
                 resp = await client.patch(
@@ -176,6 +181,7 @@ class TestSplashFix:
 
         ws = AsyncMock()
         device_manager.register("splash-002", ws)
+        await device_presence.mark_online(db_session, "splash-002")
         try:
             with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
                 resp = await client.patch(
