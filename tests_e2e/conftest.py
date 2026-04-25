@@ -81,11 +81,15 @@ def expand_group_panel(group_panel, timeout: int = 5000):
     if panel_handle and "expanded" in (panel_handle.get_attribute("class") or ""):
         return group_panel.locator(".group-body")
 
+    # Click the expand-toggle arrow specifically — clicking the .group-header
+    # itself can land on inner spans (the name, kebab, splash dropdown) that
+    # call event.stopPropagation(), so toggleGroup() never fires. The
+    # .expand-toggle ▶ on the left has no children and bubbles up cleanly.
     attempts = 5
     last_err = None
     for _ in range(attempts):
         try:
-            group_panel.locator(".group-header").click(timeout=2000)
+            group_panel.locator(".group-header .expand-toggle").click(timeout=2000)
             expect(group_panel).to_have_class(
                 re.compile(r"(^|\s)expanded(\s|$)"),
                 timeout=timeout // attempts,
