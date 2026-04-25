@@ -27,7 +27,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 COMPOSE_FILE = Path(__file__).parent / "docker-compose.integration.yml"
+COMPOSE_FILE_WPS = Path(__file__).parent / "docker-compose.integration.wps.yml"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# When ``AGORA_INTEGRATION_TRANSPORT=wps`` is set in the env, we layer
+# the WPS overlay on top of the base compose file so the same harness
+# spins up local-broker + flips both replicas to WPS transport. The
+# ``multireplica-wps-smoke`` CI job sets it; the existing
+# ``multireplica-smoke`` job leaves it unset (direct-WS path).
+INTEGRATION_TRANSPORT = os.environ.get("AGORA_INTEGRATION_TRANSPORT", "local").strip().lower()
 
 CMS_A_URL = "http://127.0.0.1:8080"
 CMS_B_URL = "http://127.0.0.1:8081"
@@ -45,7 +53,10 @@ LEADER_TIMEOUT_SEC = 60
 
 
 def _compose_cmd(*args: str) -> list[str]:
-    return ["docker", "compose", "-f", str(COMPOSE_FILE), *args]
+    files = ["-f", str(COMPOSE_FILE)]
+    if INTEGRATION_TRANSPORT == "wps":
+        files += ["-f", str(COMPOSE_FILE_WPS)]
+    return ["docker", "compose", *files, *args]
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:

@@ -254,13 +254,75 @@ jobs:
           docker compose -f tests/integration/docker-compose.integration.yml \
             down -v --remove-orphans || true
 
+  # Multi-replica + WPS-transport smoke. Same harness as
+  # ``multireplica-smoke`` but layered with the WPS overlay so both
+  # cms replicas run ``AGORA_CMS_DEVICE_TRANSPORT=wps`` against a
+  # local-broker pinned at cms-0. Closes the Stage-4 coverage gap:
+  # prod runs N=2 + WPS, but the existing smoke job only exercises
+  # N=2 + direct-WS. Runs the same ``-m smoke`` cluster-health gate
+  # under WPS plus the dedicated ``-m smoke_wps`` synthetic
+  # cross-replica webhook tests in
+  # ``tests/integration/test_multireplica_wps_smoke.py``.
+  multireplica-wps-smoke:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install host-side test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run multi-replica WPS smoke tests
+        env:
+          AGORA_RUN_INTEGRATION: "1"
+          # conftest reads this and layers the WPS overlay on top of
+          # the base integration compose file (local-broker + cms env
+          # flips). Without it the harness comes up direct-WS.
+          AGORA_INTEGRATION_TRANSPORT: "wps"
+        run: |
+          # Single pytest invocation so the session-scoped compose
+          # fixture brings the stack up exactly once. ``smoke``
+          # re-validates cluster health under WPS (catches transport-
+          # specific boot/auth/leader regressions); ``smoke_wps`` runs
+          # the cross-replica synthetic webhook coverage.
+          pytest tests/integration/ \
+            --run-integration \
+            -m "smoke or smoke_wps" \
+            -p no:xdist -p no:timeout \
+            -v --tb=short
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f tests/integration/docker-compose.integration.yml \
+            -f tests/integration/docker-compose.integration.wps.yml \
+            logs --no-color --tail=500 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose \
+            -f tests/integration/docker-compose.integration.yml \
+            -f tests/integration/docker-compose.integration.wps.yml \
+            down -v --remove-orphans || true
+
   # Umbrella check that branch protection requires. Runs on every PR so
   # it always reports a status. Passes iff every upstream job is either
   # success or skipped (path-filtered out); fails on failure/cancelled.
   # Keeps tests-only PRs unblocked while still catching real breakage.
   ci-gate:
     name: ci-gate
-    needs: [changes, test, e2e, broker-test, multireplica-smoke]
+    needs: [changes, test, e2e, broker-test, multireplica-smoke, multireplica-wps-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -272,8 +334,9 @@ jobs:
           echo "e2e=${{ needs.e2e.result }}"
           echo "broker-test=${{ needs.broker-test.result }}"
           echo "multireplica-smoke=${{ needs.multireplica-smoke.result }}"
+          echo "multireplica-wps-smoke=${{ needs.multireplica-wps-smoke.result }}"
           fail=0
-          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}" "${{ needs.broker-test.result }}" "${{ needs.multireplica-smoke.result }}"; do
+          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}" "${{ needs.broker-test.result }}" "${{ needs.multireplica-smoke.result }}" "${{ needs.multireplica-wps-smoke.result }}"; do
             case "$r" in
               success|skipped) ;;
               *) fail=1 ;;

@@ -1,0 +1,86 @@
+# WPS-transport overlay for the multi-replica integration harness
+# (issue #344, post-Stage-4 parity coverage).
+#
+# Layered on top of ``docker-compose.integration.yml`` so the same
+# two-replica + shared-Postgres topology runs through the local WPS
+# broker instead of the direct-WS path. Used by the
+# ``multireplica-wps-smoke`` CI job to lock in N>=2 + WPS coverage —
+# the exact combination prod runs since the Stage 4 flip but that the
+# default integration stack still tests under direct-WS only.
+#
+# Usage (from repo root):
+#
+#   docker compose \
+#     -f tests/integration/docker-compose.integration.yml \
+#     -f tests/integration/docker-compose.integration.wps.yml \
+#     up -d --build --wait
+#
+# The WPS transport bits (env on cms-0 / cms-1, local-broker service)
+# are listed below; everything else (db, ports, volumes, healthchecks)
+# is inherited from the base file.
+#
+# Cross-replica coverage gap this overlay closes:
+#   * The base stack runs ``AGORA_CMS_DEVICE_TRANSPORT=local`` so the
+#     ``/internal/wps/events`` receiver, signature-verify path, and
+#     ``device_presence.mark_online/mark_offline_and_alert`` CAS guards
+#     are never exercised under N>=2 in CI. Stage 4 surfaced bugs in
+#     each (#445 IP persistence, #406 stale-disconnect race) — this
+#     overlay re-runs the same smoke gate against those code paths.
+#
+# What this overlay deliberately does NOT do:
+#   * Pin ``WPS_UPSTREAM_URL`` at a load-balancer in front of both
+#     replicas. Real ACA ingress round-robins; we don't have that
+#     locally and adding nginx just to mimic it adds moving parts the
+#     bug surface doesn't actually need (cross-replica reads are
+#     DB-backed; whichever replica receives the webhook is enough to
+#     prove the read coherence). The dedicated cross-replica synthetic
+#     tests in ``test_multireplica_wps_smoke.py`` POST signed events
+#     directly at *both* replicas to cover the case where webhooks for
+#     the same device land on different replicas.
+
+services:
+  cms-0:
+    environment:
+      - AGORA_CMS_DATABASE_URL=postgresql+asyncpg://agora:agora@db:5432/agora_cms
+      - AGORA_CMS_SECRET_KEY=integration-test-secret
+      - AGORA_CMS_ADMIN_USERNAME=admin
+      - AGORA_CMS_ADMIN_PASSWORD=integration-testpass
+      - AGORA_CMS_DEVICE_TRANSPORT=wps
+      - AGORA_CMS_WPS_CONNECTION_STRING=Endpoint=http://local-broker:7080;AccessKey=integration-wps-key;Version=1.0;
+      - AGORA_CMS_WPS_HUB=agora
+    depends_on:
+      db:
+        condition: service_healthy
+      local-broker:
+        condition: service_started
+
+  cms-1:
+    environment:
+      - AGORA_CMS_DATABASE_URL=postgresql+asyncpg://agora:agora@db:5432/agora_cms
+      - AGORA_CMS_SECRET_KEY=integration-test-secret
+      - AGORA_CMS_ADMIN_USERNAME=admin
+      - AGORA_CMS_ADMIN_PASSWORD=integration-testpass
+      - AGORA_CMS_DEVICE_TRANSPORT=wps
+      - AGORA_CMS_WPS_CONNECTION_STRING=Endpoint=http://local-broker:7080;AccessKey=integration-wps-key;Version=1.0;
+      - AGORA_CMS_WPS_HUB=agora
+    depends_on:
+      db:
+        condition: service_healthy
+      local-broker:
+        condition: service_started
+      cms-0:
+        condition: service_healthy
+
+  local-broker:
+    build:
+      context: ../../local-broker
+      dockerfile: Dockerfile
+    restart: "no"
+    environment:
+      - WPS_ACCESS_KEY=integration-wps-key
+      - WPS_HUB=agora
+      # Pinned at cms-0 for the broker's own webhook fan-out. The
+      # synthetic cross-replica race tests in
+      # ``test_multireplica_wps_smoke.py`` POST signed events directly
+      # at both replicas, so the pinned upstream is fine here.
+      - WPS_UPSTREAM_URL=http://cms-0:8080/internal/wps/events
