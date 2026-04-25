@@ -136,32 +136,23 @@ class LocalDeviceTransport(DeviceTransport):
         return ok
 
     async def is_connected(self, device_id: str) -> bool:
-        # Local transport is single-replica so a live socket on this
-        # process is just as authoritative as ``devices.online`` —
-        # treat the two as a union so tests that exercise the direct-WS
-        # path (``device_manager.register`` + no ``mark_online``) still
-        # see the device as connected.  Production code always pairs
-        # register with mark_online anyway.
-        if self._manager.is_connected(device_id):
-            return True
+        # Always source presence from the DB so every replica returns
+        # the same answer.  The in-memory ``device_manager`` set is
+        # only authoritative for "do *I* hold this WS so I can send to
+        # it directly?" — under N>1 a stale local entry on one replica
+        # would otherwise make ``is_online`` oscillate between True
+        # (replica holding the dead socket) and False (other replicas
+        # reading the DB) request-by-request as the LB round-robins.
         async with _session() as db:
             return await device_presence.is_online(db, device_id)
 
     async def connected_count(self) -> int:
         async with _session() as db:
-            db_count = await device_presence.count_online(db)
-            ids = await device_presence.ids_online(db)
-        local_only = [d for d in self._manager._connections if d not in ids]
-        return db_count + len(local_only)
+            return await device_presence.count_online(db)
 
     async def connected_ids(self) -> list[str]:
         async with _session() as db:
-            db_ids = await device_presence.ids_online(db)
-        merged = list(db_ids)
-        for d in self._manager._connections:
-            if d not in merged:
-                merged.append(d)
-        return merged
+            return list(await device_presence.ids_online(db))
 
     async def get_all_states(self) -> list[dict[str, Any]]:
         async with _session() as db:
