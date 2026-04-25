@@ -939,6 +939,30 @@ class TestPendingDeviceNameDisplay:
         assert "adoptDevice(" in html
         assert "Living Room TV" in html
 
+    async def test_dashboard_pending_renders_lan_ip_column(self, client, db_session):
+        """Regression for #436: dashboard pending-devices table must show
+        the device's self-reported LAN IP so admins can SSH/browse to it
+        before adopting.  The IP comes from Device.ip_address (populated
+        by ws.py from raw.get('ip_address') on register)."""
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(
+            id="pi-with-lan-ip",
+            name="Front Desk Pi",
+            status=DeviceStatus.PENDING,
+            ip_address="192.168.1.53",
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "Front Desk Pi" in html
+        assert "192.168.1.53" in html
+        # Header column added too
+        assert "<th>IP</th>" in html
+
 
 @pytest.mark.asyncio
 class TestDefaultAssetVariantResolution:

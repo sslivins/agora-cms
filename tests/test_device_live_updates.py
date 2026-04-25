@@ -215,6 +215,70 @@ class TestDeviceAPILiveFields:
         assert d["is_online"] is False
         assert d["uptime_seconds"] == 0
 
+    async def test_offline_device_falls_back_to_persisted_ip(self, client, app):
+        """Regression for #436: an offline device must surface its
+        last-known persisted ``Device.ip_address`` instead of None.
+
+        The devices page polls /api/devices every 5s and overwrites
+        the IP cell from the response.  Without this fallback, the
+        cell flips to "—" the moment the device drops offline, even
+        though we have a perfectly good last-known LAN IP in the DB.
+        """
+        from cms.database import get_db
+        from cms.models.device import Device, DeviceStatus
+
+        factory = app.dependency_overrides[get_db]
+        device_id = "offline-with-persisted-ip-001"
+
+        async for db in factory():
+            device = Device(
+                id=device_id,
+                status=DeviceStatus.ADOPTED,
+                name="Offline Device With IP",
+                firmware_version="1.0.0",
+                ip_address="192.168.1.53",
+            )
+            db.add(device)
+            await db.commit()
+            break
+
+        resp = await client.get(f"/api/devices/{device_id}")
+        assert resp.status_code == 200
+        assert resp.json()["ip_address"] == "192.168.1.53"
+
+        list_resp = await client.get("/api/devices")
+        assert list_resp.status_code == 200
+        row = next(d for d in list_resp.json() if d["id"] == device_id)
+        assert row["ip_address"] == "192.168.1.53"
+        assert row["is_online"] is False
+
+    async def test_devices_page_renders_persisted_ip_for_offline(self, client, app):
+        """Regression for #436: initial /devices server render must show
+        the persisted Device.ip_address for an offline (not in
+        live_states) adopted device — not '—' until the JS poll fixes
+        it 5s later."""
+        from cms.database import get_db
+        from cms.models.device import Device, DeviceStatus
+
+        factory = app.dependency_overrides[get_db]
+        device_id = "offline-render-test-002"
+
+        async for db in factory():
+            device = Device(
+                id=device_id,
+                status=DeviceStatus.ADOPTED,
+                name="Offline Render Pi",
+                firmware_version="1.0.0",
+                ip_address="10.20.30.40",
+            )
+            db.add(device)
+            await db.commit()
+            break
+
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert "10.20.30.40" in resp.text
+
 
 # ── UI rendering tests ──
 
