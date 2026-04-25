@@ -53,6 +53,10 @@ class _FakeSession:
         row = self.device_row
         result = MagicMock()
         result.scalar_one_or_none = MagicMock(return_value=row)
+        # ``mark_offline_and_alert`` uses ``UPDATE ... RETURNING``, then
+        # reads ``result.first()`` to get the device's name/group_id/
+        # status in one round-trip.  Drive that off ``device_row`` too.
+        result.first = MagicMock(return_value=row)
         # Stage 4: mark_offline reads result.rowcount and compares to int
         # (> 0) to return a bool — make sure the mock returns an int.
         result.rowcount = 1
@@ -946,7 +950,7 @@ class TestAlertServiceHooks:
 
         cid = "cid-current"
         with patch(
-            "cms.routers.wps_webhook.alert_service"
+            "cms.services.alert_service.alert_service"
         ) as mock_alert:
             r = await client.post(
                 "/internal/wps/events",
@@ -980,23 +984,22 @@ class TestAlertServiceHooks:
         device.name = "Lobby"
         session.device_row = device
 
-        # Force the guard to reject: mark_offline returns False when
-        # rowcount == 0 (stored connection_id no longer matches).
+        # Force the guard to reject: mark_offline_and_alert checks
+        # ``result.first() is None`` (UPDATE...RETURNING returned no rows)
+        # — surface that, plus rowcount=0 for legacy mark_offline calls.
         original_execute = session.execute
 
         async def _rowcount_zero(stmt, *a, **kw):
             result = await original_execute(stmt, *a, **kw)
-            # Only the UPDATE from mark_offline is affected — SELECTs
-            # coming after would also see rowcount=0, but our code
-            # returns before issuing any SELECT when was_current is False.
             result.rowcount = 0
+            result.first = MagicMock(return_value=None)
             return result
 
         session.execute = _rowcount_zero
 
         cid = "cid-stale"
         with patch(
-            "cms.routers.wps_webhook.alert_service"
+            "cms.services.alert_service.alert_service"
         ) as mock_alert:
             r = await client.post(
                 "/internal/wps/events",
@@ -1024,7 +1027,7 @@ class TestAlertServiceHooks:
 
         cid = "cid-ghost"
         with patch(
-            "cms.routers.wps_webhook.alert_service"
+            "cms.services.alert_service.alert_service"
         ) as mock_alert:
             r = await client.post(
                 "/internal/wps/events",
