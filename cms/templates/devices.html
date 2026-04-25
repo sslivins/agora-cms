@@ -185,7 +185,11 @@
             <div class="detail-item">
                 <span class="detail-label">Display</span>
                 <span class="detail-value" data-live-display="{{ d.id }}">
-                    {% if d.display_connected is none %}
+                    {% if d.display_ports and d.display_ports | length > 1 %}
+                        {% for p in d.display_ports %}
+                            <span class="badge {% if p.connected %}badge-online{% else %}badge-offline{% endif %}" title="{{ p.name }}: {{ 'connected' if p.connected else 'disconnected' }}">{{ p.name }}{% if p.connected %} ✓{% else %} ✗{% endif %}</span>
+                        {% endfor %}
+                    {% elif d.display_connected is none %}
                         <span class="text-muted">—</span>
                     {% elif d.display_connected %}
                         <span class="badge badge-online">Connected</span>
@@ -552,7 +556,16 @@ window._adoptionProfiles = [
             // ── Detail panel: display, pipeline, asset ──
             const displayEl = document.querySelector(`[data-live-display="${d.id}"]`);
             if (displayEl) {
-                if (d.display_connected === null || d.display_connected === undefined) displayEl.innerHTML = '<span class="text-muted">—</span>';
+                if (Array.isArray(d.display_ports) && d.display_ports.length > 1) {
+                    displayEl.innerHTML = d.display_ports.map(p => {
+                        const cls = p.connected ? 'badge-online' : 'badge-offline';
+                        const mark = p.connected ? ' ✓' : ' ✗';
+                        const label = `${p.name}: ${p.connected ? 'connected' : 'disconnected'}`;
+                        const safeName = String(p.name).replace(/[<>&]/g, '');
+                        return `<span class="badge ${cls}" title="${label}">${safeName}${mark}</span>`;
+                    }).join(' ');
+                }
+                else if (d.display_connected === null || d.display_connected === undefined) displayEl.innerHTML = '<span class="text-muted">—</span>';
                 else if (d.display_connected) displayEl.innerHTML = '<span class="badge badge-online">Connected</span>';
                 else displayEl.innerHTML = '<span class="badge badge-offline">Disconnected</span>';
             }

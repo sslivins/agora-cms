@@ -720,6 +720,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             "error": state["error"] if state else None,
             "error_since": state["error_since"] if state else None,
             "display_connected": state["display_connected"] if state else None,
+            "display_ports": state["display_ports"] if state else None,
         })
 
     # Upcoming schedules (next 24h)
@@ -929,6 +930,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
             "cpu_temp_c": live_states[did]["cpu_temp_c"] if did in live_states else None,
             "error": live_states[did]["error"] if did in live_states else None,
             "display_connected": live_states[did]["display_connected"] if did in live_states else None,
+            "display_ports": live_states[did]["display_ports"] if did in live_states else None,
         }
         for did in all_device_ids
     ]

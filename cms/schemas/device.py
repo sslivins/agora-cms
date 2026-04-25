@@ -33,6 +33,9 @@ class DeviceOut(BaseModel):
     playback_asset: Optional[str] = None
     pipeline_state: Optional[str] = None
     display_connected: Optional[bool] = None
+    # Per-HDMI-port state — see issue #350.  ``None`` for older firmware
+    # or single-port boards that don't surface per-port detail.
+    display_ports: Optional[list[dict]] = None
     has_active_schedule: bool = False
     # Live state fields from device_manager
     cpu_temp_c: Optional[float] = None
