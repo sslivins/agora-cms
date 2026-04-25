@@ -103,6 +103,10 @@
                     {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
                     {% elif event.event_type == 'temp_cleared' and event.details %}
                     {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
+                    {% elif event.event_type == 'offline' and event.details and event.details.kind == 'stale_heartbeat' %}
+                    No heartbeat received within timeout
+                    {% elif event.event_type == 'offline' and event.details and event.details.kind == 'grace_expired' %}
+                    Grace period exceeded — device declared offline
                     {% elif event.event_type == 'offline' and event.details and event.details.grace_period is defined %}
                     Grace period: {{ event.details.grace_period }}s
                     {% elif event.event_type == 'online' %}
@@ -208,6 +212,12 @@
         const d = ev.details || {};
         if (ev.event_type === "temp_high" || ev.event_type === "temp_cleared") {
             return `${d.temperature ?? "?"}°C (threshold: ${d.threshold ?? "?"}°C)`;
+        }
+        if (ev.event_type === "offline" && d.kind === "stale_heartbeat") {
+            return "No heartbeat received within timeout";
+        }
+        if (ev.event_type === "offline" && d.kind === "grace_expired") {
+            return "Grace period exceeded — device declared offline";
         }
         if (ev.event_type === "offline" && d.grace_period !== undefined) {
             return `Grace period: ${d.grace_period}s`;

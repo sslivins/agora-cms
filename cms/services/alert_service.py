@@ -79,7 +79,7 @@ def _upsert_alert_state_stmt(device_id: str):
 logger = logging.getLogger("agora.cms.alerts")
 
 # Default settings (overridable via CMSSetting)
-DEFAULT_OFFLINE_GRACE_SECONDS = 120
+DEFAULT_OFFLINE_GRACE_SECONDS = 300
 DEFAULT_TEMP_WARNING_C = 70.0
 DEFAULT_TEMP_CRITICAL_C = 80.0
 DEFAULT_TEMP_COOLDOWN_SECONDS = 300
@@ -95,6 +95,36 @@ STALE_PRESENCE_THRESHOLD_S = 60
 # datacenter blip flipping the whole fleet at once); the next tick
 # will pick up the rest.
 STALE_PRESENCE_BATCH_SIZE = 50
+
+
+def humanize_seconds(n: int) -> str:
+    """Render an integer second count as a human-readable duration.
+
+    Examples:
+      0     -> "0 seconds"
+      1     -> "1 second"
+      59    -> "59 seconds"
+      60    -> "1 minute"
+      90    -> "1 minute 30 seconds"
+      300   -> "5 minutes"
+      3600  -> "1 hour"
+      3661  -> "1 hour 1 minute 1 second"
+
+    Negative inputs are clamped to 0 (callers shouldn't pass them, but
+    we don't want a ValueError to escape into a notification body).
+    """
+    if n < 0:
+        n = 0
+    hours, rem = divmod(n, 3600)
+    minutes, seconds = divmod(rem, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    if seconds or not parts:
+        parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+    return " ".join(parts)
 
 
 class AlertService:
@@ -597,8 +627,8 @@ class AlertService:
                 title=f"Device offline: {device_name}",
                 message=(
                     f"Device '{device_name}' in group '{group_name}' has "
-                    f"been offline for over {self._offline_grace_seconds} "
-                    f"seconds."
+                    f"been offline for over "
+                    f"{humanize_seconds(self._offline_grace_seconds)}."
                 ),
                 group_id=device.group_id,
                 details={

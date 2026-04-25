@@ -275,7 +275,7 @@ async function testSmtp() {
 <script>
 async function saveAlertSettings() {
     const body = {
-        offline_grace_seconds: parseInt(document.getElementById("alert-offline-grace").value) || 120,
+        offline_grace_seconds: parseInt(document.getElementById("alert-offline-grace").value) || 300,
         temp_warning_c: parseFloat(document.getElementById("alert-temp-warning").value) || 70,
         temp_critical_c: parseFloat(document.getElementById("alert-temp-critical").value) || 80,
         temp_cooldown_seconds: parseInt(document.getElementById("alert-temp-cooldown").value) || 300,
@@ -319,16 +319,16 @@ async function saveAlertSettings() {
         <label>Devices</label>
         <div id="logs-device-list" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem;">
             {% for device in devices %}
-            <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; cursor: pointer;">
+            <label data-device-row data-device-id="{{ device.id }}" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; cursor: pointer;">
                 <input type="checkbox" name="log_device" value="{{ device.id }}"
                        data-device-name="{{ device.name }}"
                        {% if device.connected %}checked{% endif %}
                        style="width: auto; margin: 0;">
                 <span>{{ device.name }}</span>
                 {% if device.connected %}
-                    <span class="badge badge-online" style="font-size: 0.7rem;">online</span>
+                    <span class="badge badge-online" data-live-status-badge style="font-size: 0.7rem;">online</span>
                 {% else %}
-                    <span class="badge badge-offline" style="font-size: 0.7rem;">offline</span>
+                    <span class="badge badge-offline" data-live-status-badge style="font-size: 0.7rem;">offline</span>
                 {% endif %}
             </label>
             {% endfor %}
@@ -605,5 +605,51 @@ async function saveAlertSettings() {
 })();
 </script>
 {% endif %}
+
+{# ── Live online/offline status polling for the device list (issue #418) ── #}
+<script>
+(function () {
+    const list = document.getElementById("logs-device-list");
+    if (!list) return;
+
+    const POLL_MS = 5000;
+
+    async function refresh() {
+        try {
+            const resp = await fetch("/api/devices", { credentials: "same-origin" });
+            if (!resp.ok) return;
+            const devices = await resp.json();
+            const onlineMap = new Map();
+            for (const d of (devices || [])) {
+                onlineMap.set(d.id, !!d.is_online);
+            }
+            const rows = list.querySelectorAll("[data-device-row]");
+            rows.forEach((row) => {
+                const id = row.getAttribute("data-device-id");
+                if (!id || !onlineMap.has(id)) return;
+                const isOnline = onlineMap.get(id);
+                const badge = row.querySelector("[data-live-status-badge]");
+                if (!badge) return;
+                badge.classList.remove("badge-online", "badge-offline");
+                badge.classList.add(isOnline ? "badge-online" : "badge-offline");
+                badge.textContent = isOnline ? "online" : "offline";
+            });
+        } catch (e) {
+            // Network blip — try again next tick.
+        }
+    }
+
+    let timer = setInterval(refresh, POLL_MS);
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+            clearInterval(timer);
+            timer = null;
+        } else if (!timer) {
+            refresh();
+            timer = setInterval(refresh, POLL_MS);
+        }
+    });
+})();
+</script>
 
 {% endblock %}
