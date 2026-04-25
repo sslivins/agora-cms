@@ -152,6 +152,83 @@ async def mark_offline(
     return (result.rowcount or 0) > 0
 
 
+async def mark_offline_and_alert(
+    db: AsyncSession,
+    device_id: str,
+    *,
+    expected_connection_id: str | None,
+) -> bool:
+    """CAS-flip presence offline AND fire ``alert_service.device_disconnected``.
+
+    Designed for transport send-failure paths and the WPS
+    ``sys.disconnected`` webhook — anywhere we need to react to "this
+    device just dropped" by both clearing presence and emitting the
+    OFFLINE alert.
+
+    *expected_connection_id* must be the ``connection_id`` snapshotted
+    at the moment we last knew the connection was good (send-time for
+    transports, the CloudEvent header for the webhook).  The flip uses
+    that token as a CAS guard so a stale failure can't knock a fresh
+    connection on another replica offline (issue #406 + Stage 4 of
+    #344).
+
+    Pass ``None`` only when the caller has no trustworthy token.  In
+    that case the flip is best-effort (unconditional) and **no alert is
+    fired** — failing closed on alerts is safer than producing duplicate
+    OFFLINE events when we can't tell the stale case from the real one.
+
+    Returns ``True`` iff this call performed the transition (and
+    therefore dispatched the alert).
+    """
+    if expected_connection_id is None:
+        await mark_offline(db, device_id)
+        return False
+
+    # Atomic CAS that returns the alert payload from the same row in
+    # one round-trip — avoids a TOCTOU between read-then-flip.
+    result = await db.execute(
+        update(Device)
+        .where(Device.id == device_id)
+        .where(Device.connection_id == expected_connection_id)
+        .values(online=False, connection_id=None)
+        .returning(Device.name, Device.group_id, Device.status)
+    )
+    row = result.first()
+    await db.commit()
+    if row is None:
+        logger.info(
+            "Send-failure offline flip suppressed for %s "
+            "(connection_id replaced)", device_id,
+        )
+        return False
+
+    group_name = ""
+    if row.group_id is not None:
+        g = await db.execute(
+            select(DeviceGroup.name).where(DeviceGroup.id == row.group_id)
+        )
+        group_name = g.scalar_one_or_none() or ""
+
+    try:
+        from cms.services.alert_service import alert_service
+        alert_service.device_disconnected(
+            device_id,
+            device_name=row.name or device_id,
+            group_id=str(row.group_id) if row.group_id else None,
+            group_name=group_name,
+            status=(
+                row.status.value
+                if hasattr(row.status, "value")
+                else str(row.status)
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to dispatch disconnect alert for %s", device_id,
+        )
+    return True
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     """Best-effort parse of an ISO-8601 timestamp from the device wire."""
     if value is None:

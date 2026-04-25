@@ -64,7 +64,36 @@ class WPSTransport(DeviceTransport):
         distinction between "unknown device" and "known but offline" —
         both are "can't reach it").  All other errors are logged and
         swallowed into ``False`` for the same reason.
+
+        On 404, snapshots the device's ``connection_id`` *before* the
+        send so a stale failure (the device just reconnected on another
+        replica) can't flip the fresh session offline — the snapshot is
+        used as the CAS token in
+        :func:`device_presence.mark_offline_and_alert`, which also fires
+        the OFFLINE alert when the flip wins.  Without the pre-send
+        snapshot we'd race with the new ``register`` event and
+        potentially knock out the new connection.
         """
+        # Snapshot the current connection_id so we can use it as a CAS
+        # token if the send fails (issue #406).  Doing this before the
+        # send means a reconnect on another replica between the snapshot
+        # and our 404 will simply suppress our offline flip / alert — we
+        # see the stale token, the DB has the new one, the CAS misses.
+        snapshot_cid: str | None = None
+        try:
+            from sqlalchemy import select
+            from cms.models.device import Device
+            async with _session() as db:
+                row = await db.execute(
+                    select(Device.connection_id).where(Device.id == device_id)
+                )
+                snapshot_cid = row.scalar_one_or_none()
+        except Exception:
+            logger.exception(
+                "send_to_device(%s): connection_id snapshot failed",
+                device_id,
+            )
+
         try:
             await self._client.send_to_user(
                 device_id,
@@ -76,11 +105,16 @@ class WPSTransport(DeviceTransport):
             status = getattr(e, "status_code", None)
             if status == 404:
                 logger.debug("send_to_device(%s): user has no active connections", device_id)
-                # WPS says "no connections" — clear the DB presence flag
-                # so the next readerl sees the device as offline.
+                # WPS says "no connections" — clear DB presence and fire
+                # the OFFLINE alert.  CAS-guarded with the pre-send
+                # connection_id so a fresh connection on another replica
+                # is left alone.
                 try:
                     async with _session() as db:
-                        await device_presence.mark_offline(db, device_id)
+                        await device_presence.mark_offline_and_alert(
+                            db, device_id,
+                            expected_connection_id=snapshot_cid,
+                        )
                 except Exception:
                     logger.exception("Failed to clear presence after 404 send")
                 return False

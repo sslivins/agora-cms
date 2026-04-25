@@ -76,6 +76,57 @@ class TestSendToDevice:
         ok = await t.send_to_device("pi-ghost", {"type": "ping"})
         assert ok is False
 
+    async def test_404_dispatches_offline_alert_via_helper(self, monkeypatch):
+        """Issue #406 — 404 on send must trigger the offline-alert path.
+
+        We assert that ``mark_offline_and_alert`` is invoked with the
+        snapshotted ``connection_id`` (the CAS token).  Don't go all
+        the way to a real DB here — coverage for the helper's own
+        contract lives in ``tests/test_device_presence.py``.
+        """
+        from azure.core.exceptions import HttpResponseError
+
+        t, c, _ = _make_transport()
+        err = HttpResponseError(message="not connected")
+        err.status_code = 404
+        c.send_to_user.side_effect = err
+
+        # Stub the snapshot lookup to return a known cid.
+        class _DummySession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def execute(self, _stmt):
+                return SimpleNamespace(scalar_one_or_none=lambda: "cid-pre")
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(
+            "cms.services.wps_transport._session", lambda: _DummySession(),
+        )
+
+        called: list[dict] = []
+
+        async def _fake_helper(db, did, *, expected_connection_id):
+            called.append({"db": db, "did": did, "cid": expected_connection_id})
+            return True
+
+        monkeypatch.setattr(
+            "cms.services.wps_transport.device_presence."
+            "mark_offline_and_alert",
+            _fake_helper,
+        )
+
+        ok = await t.send_to_device("pi-ghost", {"type": "ping"})
+        assert ok is False
+        assert len(called) == 1
+        assert called[0]["did"] == "pi-ghost"
+        assert called[0]["cid"] == "cid-pre"
+
     async def test_other_http_error_returns_false(self):
         from azure.core.exceptions import HttpResponseError
 
