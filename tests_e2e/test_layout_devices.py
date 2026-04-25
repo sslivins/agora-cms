@@ -116,39 +116,10 @@ def _goto_devices(page: Page) -> None:
 
 
 # Three desktop viewports — same matrix as test_layout_schedules.
-#
-# The /devices table currently overflows the viewport at <=1366px
-# (#457). The xfail markers below should be removed when that bug is
-# fixed; ``strict=True`` ensures we'll notice immediately.
-_OVERFLOW_BUG_457 = (
-    "/devices table overflows viewport at <=1366px — see "
-    "sslivins/agora-cms#457"
-)
-
-_VIEWPORTS_OVERFLOW = [
-    pytest.param(
-        1024, 768, id="1024x768",
-        marks=pytest.mark.xfail(reason=_OVERFLOW_BUG_457, strict=True),
-    ),
-    pytest.param(
-        1366, 768, id="1366x768",
-        marks=pytest.mark.xfail(reason=_OVERFLOW_BUG_457, strict=True),
-    ),
+_VIEWPORTS = [
+    pytest.param(1024, 768, id="1024x768"),
+    pytest.param(1366, 768, id="1366x768"),
     pytest.param(1440, 900, id="1440x900"),
-]
-
-# Open-kebab anchoring fails at 1024 as a *consequence* of #457: the
-# trigger column lives off-screen, so the popover can't anchor near
-# it. At 1366 the trigger center is still in-viewport (just barely),
-# so anchoring works. Track separately so removing one xfail doesn't
-# accidentally hide the other.
-_VIEWPORTS_KEBAB = [
-    pytest.param(
-        1024, 768, id="1024x768",
-        marks=pytest.mark.xfail(reason=_OVERFLOW_BUG_457, strict=True),
-    ),
-    pytest.param(1366, 768,  id="1366x768"),
-    pytest.param(1440, 900,  id="1440x900"),
 ]
 
 
@@ -156,7 +127,7 @@ _VIEWPORTS_KEBAB = [
 class TestDevicesLayout:
     """Geometry assertions for the /devices page."""
 
-    @pytest.mark.parametrize("vw,vh", _VIEWPORTS_OVERFLOW)
+    @pytest.mark.parametrize("vw,vh", _VIEWPORTS)
     def test_no_overflow_devices_table(
         self, page: Page, _devices_seed, vw, vh,
     ):
@@ -180,7 +151,7 @@ class TestDevicesLayout:
             label=f"@{vw}x{vh} devices",
         )
 
-    @pytest.mark.parametrize("vw,vh", _VIEWPORTS_KEBAB)
+    @pytest.mark.parametrize("vw,vh", _VIEWPORTS)
     def test_open_kebab_stays_in_viewport_devices(
         self, page: Page, _devices_seed, vw, vh,
     ):
