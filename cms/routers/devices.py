@@ -215,7 +215,11 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
             display_connected=live_states[d.id]["display_connected"] if d.id in live_states else None,
             cpu_temp_c=live_states[d.id]["cpu_temp_c"] if d.id in live_states else None,
-            ip_address=live_states[d.id]["ip_address"] if d.id in live_states else None,
+            ip_address=(
+                live_states[d.id]["ip_address"]
+                if d.id in live_states and live_states[d.id]["ip_address"]
+                else d.ip_address
+            ),
             ssh_enabled=live_states[d.id]["ssh_enabled"] if d.id in live_states else None,
             local_api_enabled=live_states[d.id]["local_api_enabled"] if d.id in live_states else None,
             error=live_states[d.id]["error"] if d.id in live_states else None,
@@ -268,7 +272,11 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
         display_connected=live_states[device.id]["display_connected"] if device.id in live_states else None,
         cpu_temp_c=live_states[device.id]["cpu_temp_c"] if device.id in live_states else None,
-        ip_address=live_states[device.id]["ip_address"] if device.id in live_states else None,
+        ip_address=(
+            live_states[device.id]["ip_address"]
+            if device.id in live_states and live_states[device.id]["ip_address"]
+            else device.ip_address
+        ),
         ssh_enabled=live_states[device.id]["ssh_enabled"] if device.id in live_states else None,
         local_api_enabled=live_states[device.id]["local_api_enabled"] if device.id in live_states else None,
         error=live_states[device.id]["error"] if device.id in live_states else None,
@@ -914,10 +922,16 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     transport = get_transport()
     live_states = {s["device_id"]: s for s in await transport.get_all_states()}
     for d in group.devices:
+        # See cms/ui.py: detach before decorating with live-state attributes
+        # so display-only values (cpu_temp_c, ip_address, …) cannot autoflush
+        # back to the DB.  Some of these names collide with real columns.
+        db.expunge(d)
         d.is_online = await transport.is_connected(d.id)
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
-        d.ip_address = state["ip_address"] if state else None
+        # #436: prefer live LAN IP, fall back to last-known persisted value.
+        live_ip = state["ip_address"] if state else None
+        d.ip_address = live_ip or d.ip_address
         d.playback_mode = state["mode"] if state else None
         d.playback_asset = state["asset"] if state else None
         d.pipeline_state = state["pipeline_state"] if state else None

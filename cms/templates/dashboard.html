@@ -89,6 +89,7 @@
                 <th>Device</th>
                 <th>Status</th>
                 <th>Firmware</th>
+                <th>IP</th>
                 <th>Storage</th>
                 <th>First Seen</th>
                 <th>Actions</th>
@@ -106,6 +107,7 @@
                     {% endif %}
                 </td>
                 <td>{{ d.firmware_version }}</td>
+                <td class="monospace">{{ d.ip_address or '—' }}</td>
                 <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
                 <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
                 <td class="actions">

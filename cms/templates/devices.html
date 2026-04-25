@@ -739,14 +739,26 @@ window._adoptionProfiles = [
         const rows = items.map(p => {
             const devId = _escHtml(p.device_id || p.id);
             const fw = _escHtml((p.metadata && p.metadata.firmware_version) || '—');
-            const ip = _escHtml(p.ip_address || '—');
+            // Prefer device-self-reported LAN IP from metadata when present
+            // (firmware ≥ bootstrap-v2 with local_ip).  Fall back to the
+            // server-extracted origin IP (XFF) when LAN IP is unknown.
+            // When both are present and differ, render both so the operator
+            // can see LAN-IP for SSH and origin for audit.
+            const lanIp = p.metadata && p.metadata.local_ip;
+            const originIp = p.ip_address;
+            let ipCell;
+            if (lanIp && originIp && lanIp !== originIp) {
+                ipCell = 'LAN: ' + _escHtml(lanIp) + ' · Origin: ' + _escHtml(originIp);
+            } else {
+                ipCell = _escHtml(lanIp || originIp || '—');
+            }
             const age = _escHtml(_fmtRelativeAge(p.created_at));
             const advisoryJs = (p.device_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
             return (
                 '<tr>' +
                 '<td>' + devId + '</td>' +
                 '<td>' + fw + '</td>' +
-                '<td>' + ip + '</td>' +
+                '<td>' + ipCell + '</td>' +
                 '<td title="' + _escHtml(p.created_at || '') + '">' + age + '</td>' +
                 '<td style="white-space: nowrap;">' +
                     '<button type="button" class="btn btn-primary" ' +

@@ -1051,7 +1051,10 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.is_online = d.id in _connected_ids
         state = live_states.get(d.id)
         d.cpu_temp_c = state["cpu_temp_c"] if state else None
-        d.ip_address = state["ip_address"] if state else None
+        # #436: prefer live LAN IP, but fall back to last-known persisted
+        # value when offline so the rendered IP cell isn't blank.
+        live_ip = state["ip_address"] if state else None
+        d.ip_address = live_ip or d.ip_address
         d.playback_mode = state["mode"] if state else None
         d.playback_asset = state["asset"] if state else None
         if d.playback_asset and d.playback_asset in _url_display:
@@ -1101,7 +1104,9 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.is_online = d.id in _connected_ids
             state = live_states.get(d.id)
             d.cpu_temp_c = state["cpu_temp_c"] if state else None
-            d.ip_address = state["ip_address"] if state else None
+            # #436: see note in main /devices render above.
+            live_ip = state["ip_address"] if state else None
+            d.ip_address = live_ip or d.ip_address
             d.playback_mode = state["mode"] if state else None
             d.playback_asset = state["asset"] if state else None
             if d.playback_asset and d.playback_asset in _url_display:
