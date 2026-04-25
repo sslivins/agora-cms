@@ -274,3 +274,170 @@ class TestSetFlags:
         )).one()
         assert row.name == "Test Device"
         assert row.ssh_enabled is True
+
+
+class TestMarkOfflineAndAlert:
+    """Issue #406 — CAS-flip presence offline AND fire OFFLINE alert.
+
+    The helper is the single source of truth for "device just dropped"
+    side-effects: presence flip + alert dispatch.  These tests pin the
+    contract so every transport's send-failure path produces the same
+    behaviour.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cas_hit_flips_offline_and_fires_alert(
+        self, db_session, _device, monkeypatch,
+    ):
+        from cms.services import alert_service as alert_mod
+
+        await device_presence.mark_online(
+            db_session, _device.id, connection_id="cid-good",
+        )
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            alert_mod.alert_service,
+            "device_disconnected",
+            lambda did, **kw: calls.append({"device_id": did, **kw}),
+        )
+
+        ok = await device_presence.mark_offline_and_alert(
+            db_session, _device.id, expected_connection_id="cid-good",
+        )
+
+        assert ok is True
+        row = (await db_session.execute(
+            select(Device.online, Device.connection_id)
+            .where(Device.id == _device.id)
+        )).one()
+        assert row.online is False
+        assert row.connection_id is None
+        assert len(calls) == 1
+        assert calls[0]["device_id"] == _device.id
+        assert calls[0]["device_name"] == "Test Device"
+
+    @pytest.mark.asyncio
+    async def test_cas_miss_keeps_fresh_session_and_skips_alert(
+        self, db_session, _device, monkeypatch,
+    ):
+        """A stale failure must NOT knock the new session offline.
+
+        Simulates: replica A's send fails after a re-register on
+        replica B replaced ``connection_id``.  We pass A's stale token,
+        but the row already holds B's fresh token — the CAS misses.
+        """
+        from cms.services import alert_service as alert_mod
+
+        await device_presence.mark_online(
+            db_session, _device.id, connection_id="cid-fresh",
+        )
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            alert_mod.alert_service,
+            "device_disconnected",
+            lambda did, **kw: calls.append({"device_id": did, **kw}),
+        )
+
+        ok = await device_presence.mark_offline_and_alert(
+            db_session, _device.id, expected_connection_id="cid-stale",
+        )
+
+        assert ok is False
+        row = (await db_session.execute(
+            select(Device.online, Device.connection_id)
+            .where(Device.id == _device.id)
+        )).one()
+        # Fresh session left intact.
+        assert row.online is True
+        assert row.connection_id == "cid-fresh"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_none_token_unconditional_flip_no_alert(
+        self, db_session, _device, monkeypatch,
+    ):
+        """Caller without a trustworthy token: flip best-effort, no alert.
+
+        We fail closed on alerts when we can't tell the stale case from
+        the real one, to avoid duplicate OFFLINE notifications.
+        """
+        from cms.services import alert_service as alert_mod
+
+        await device_presence.mark_online(
+            db_session, _device.id, connection_id="cid-1",
+        )
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            alert_mod.alert_service,
+            "device_disconnected",
+            lambda did, **kw: calls.append({"device_id": did, **kw}),
+        )
+
+        ok = await device_presence.mark_offline_and_alert(
+            db_session, _device.id, expected_connection_id=None,
+        )
+
+        assert ok is False  # No alert fired — see docstring.
+        row = (await db_session.execute(
+            select(Device.online, Device.connection_id)
+            .where(Device.id == _device.id)
+        )).one()
+        assert row.online is False
+        assert row.connection_id is None
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_is_noop(self, db_session, monkeypatch):
+        from cms.services import alert_service as alert_mod
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            alert_mod.alert_service,
+            "device_disconnected",
+            lambda did, **kw: calls.append({"device_id": did, **kw}),
+        )
+
+        ok = await device_presence.mark_offline_and_alert(
+            db_session, "ghost-device", expected_connection_id="anything",
+        )
+
+        assert ok is False
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_alert_dispatch_failure_does_not_revert_flip(
+        self, db_session, _device, monkeypatch,
+    ):
+        """Alert subsystem blowing up must not unwind the presence flip.
+
+        The presence flip is committed before the alert call, and we
+        swallow any alert exception (logged) so a single bad listener
+        can't cascade into "device stuck online".
+        """
+        from cms.services import alert_service as alert_mod
+
+        await device_presence.mark_online(
+            db_session, _device.id, connection_id="cid-z",
+        )
+
+        def _boom(*a, **kw):
+            raise RuntimeError("alerts down")
+
+        monkeypatch.setattr(
+            alert_mod.alert_service, "device_disconnected", _boom,
+        )
+
+        ok = await device_presence.mark_offline_and_alert(
+            db_session, _device.id, expected_connection_id="cid-z",
+        )
+
+        assert ok is True  # CAS won — caller view unchanged.
+        row = (await db_session.execute(
+            select(Device.online, Device.connection_id)
+            .where(Device.id == _device.id)
+        )).one()
+        assert row.online is False
+        assert row.connection_id is None

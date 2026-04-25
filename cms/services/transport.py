@@ -126,13 +126,27 @@ class LocalDeviceTransport(DeviceTransport):
         self._manager = manager
 
     async def send_to_device(self, device_id: str, message: dict[str, Any]) -> bool:
+        # Snapshot the local socket's connection_id before the send so a
+        # stale failure (the device just reconnected via another path or
+        # replica) can't flip the fresh session offline — used as the
+        # CAS token in ``mark_offline_and_alert`` (issue #406).  When
+        # the in-process registry holds no entry for this device the
+        # snapshot is None, in which case the helper performs an
+        # unconditional flip with no alert.
+        conn = self._manager.get(device_id) if hasattr(self._manager, "get") else None
+        snapshot_cid: str | None = getattr(conn, "connection_id", None) if conn else None
+
         ok = await self._manager.send_to_device(device_id, message)
         # If the send blew up and the local socket was dropped, clear
-        # the presence flag in the DB too — otherwise stale online=true
-        # can persist across replicas until the next heartbeat loop.
+        # the presence flag in the DB and fire the OFFLINE alert via
+        # the shared helper — otherwise stale online=true can persist
+        # across replicas until the next heartbeat loop, and the alert
+        # path was missing entirely (#406).
         if not ok and not self._manager.is_connected(device_id):
             async with _session() as db:
-                await device_presence.mark_offline(db, device_id)
+                await device_presence.mark_offline_and_alert(
+                    db, device_id, expected_connection_id=snapshot_cid,
+                )
         return ok
 
     async def is_connected(self, device_id: str) -> bool:
