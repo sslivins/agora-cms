@@ -114,7 +114,6 @@ def assert_open_kebab_in_viewport(
     """
     btn_box = kebab_button.bounding_box()
     assert btn_box is not None, f"kebab trigger {label} has no bounding box"
-    btn_center_x = btn_box["x"] + btn_box["width"] / 2
 
     kebab_button.click()
     # Wait for the popover to open AND for positionKebab() to lift it
@@ -128,6 +127,18 @@ def assert_open_kebab_in_viewport(
         }""",
         timeout=5000,
     )
+
+    # Re-read the trigger's position AFTER the click. If the trigger
+    # lives inside an ``overflow-x: auto`` ancestor (e.g. a
+    # ``.table-wrap`` on /devices), Playwright auto-scrolls the
+    # ancestor to bring the trigger into view as part of ``click()``
+    # — so the pre-click ``btn_box`` is stale by the time the menu
+    # anchors. Read fresh.
+    btn_box_post = kebab_button.bounding_box()
+    assert btn_box_post is not None, (
+        f"kebab trigger {label} has no bounding box after click"
+    )
+    btn_center_x = btn_box_post["x"] + btn_box_post["width"] / 2
 
     metrics = page.evaluate("""() => {
         const m = document.querySelector('.kebab-menu:popover-open');

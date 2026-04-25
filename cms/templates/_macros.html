@@ -540,14 +540,16 @@
         </span>
     </div>
     <div class="group-body" style="display: none;">
-        <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
-            <thead>{{ th_row_compact() }}</thead>
-            <tbody data-group-tbody="{{ g.id }}">
-                {% for d in g.devices | sort(attribute='name') %}
-                {{ device_row_compact(d, groups, user_perms, pending_ttl_hours) }}
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="table-wrap">
+            <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
+                <thead>{{ th_row_compact() }}</thead>
+                <tbody data-group-tbody="{{ g.id }}">
+                    {% for d in g.devices | sort(attribute='name') %}
+                    {{ device_row_compact(d, groups, user_perms, pending_ttl_hours) }}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
         <p class="text-muted empty-state" data-group-empty="{{ g.id }}"{% if g.devices %} style="display: none;"{% endif %}>No devices in this group. Drag a device here to add it.</p>
     </div>
 </div>

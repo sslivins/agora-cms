@@ -281,16 +281,18 @@
         </span>
         {% endif %}
     </div>
-    <table>
-        <thead>{{ th_row }}</thead>
-        <tbody>
-            {% for d in devices %}
-            {{ device_row(d, groups, assets, profiles) }}
-            {% else %}
-            <tr><td colspan="{% if 'devices:manage' in user_perms %}8{% else %}6{% endif %}" class="empty">No devices registered yet</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>{{ th_row }}</thead>
+            <tbody>
+                {% for d in devices %}
+                {{ device_row(d, groups, assets, profiles) }}
+                {% else %}
+                <tr><td colspan="{% if 'devices:manage' in user_perms %}8{% else %}6{% endif %}" class="empty">No devices registered yet</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 {# ── Pending Devices (unadopted registrations) ── #}
@@ -303,18 +305,20 @@
         Devices that have registered with the CMS but haven't been adopted yet.
         Unadopted registrations expire after {{ pending_ttl_hours }} hours.
     </p>
-    <table>
-        <thead>
-            <tr>
-                <th>Device ID</th>
-                <th>Firmware</th>
-                <th>IP</th>
-                <th>Registered</th>
-                <th style="width: 1%; white-space: nowrap;">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="pending-devices-tbody"></tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Device ID</th>
+                    <th>Firmware</th>
+                    <th>IP</th>
+                    <th>Registered</th>
+                    <th style="width: 1%; white-space: nowrap;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="pending-devices-tbody"></tbody>
+        </table>
+    </div>
 </div>
 {% endif %}
 
@@ -346,14 +350,16 @@
 <div class="card" id="ungrouped-section"{% if not ungrouped %} style="display: none;"{% endif %}>
     <h2>Ungrouped Devices</h2>
     <p class="text-muted" style="margin-bottom: 0.75rem;">Drag a device onto a group above to assign it.</p>
-    <table>
-        <thead>{{ th_row_compact }}</thead>
-        <tbody data-group-tbody="ungrouped">
-            {% for d in ungrouped %}
-            {{ device_row_compact(d, groups, draggable=true) }}
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>{{ th_row_compact }}</thead>
+            <tbody data-group-tbody="ungrouped">
+                {% for d in ungrouped %}
+                {{ device_row_compact(d, groups, draggable=true) }}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 {% endif %}{# end groups:read #}
 {% endblock %}
