@@ -537,6 +537,8 @@ class TestUpgradeGuard:
         class FakeWS:
             async def send_json(self, data): pass
         device_manager.register("up-pi-002", FakeWS())
+        from cms.services import device_presence
+        await device_presence.mark_online(db_session, "up-pi-002")
 
         try:
             resp = await client.post("/api/devices/up-pi-002/upgrade")
