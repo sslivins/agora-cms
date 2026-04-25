@@ -58,7 +58,7 @@ def _devices_seed(api, ws_url):
     run_async(_register())
 
     # Adopt requires a profile_id — pick the first seeded profile.
-    profiles = api.get("/api/profiles/").json()
+    profiles = api.get("/api/profiles").json()
     assert profiles, "no transcode profiles seeded; cannot adopt"
     profile_id = profiles[0]["id"]
 
