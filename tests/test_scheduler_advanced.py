@@ -1244,6 +1244,8 @@ class TestMissedGracePeriod:
             async def send_json(self, data): pass
 
         device_manager.register("grace-dev-03", FakeWS())
+        from cms.services import device_presence
+        await device_presence.mark_online(db_session, "grace-dev-03")
 
         try:
             await evaluate_schedules()
