@@ -3,7 +3,7 @@
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async, click_row_action
+from tests_e2e.conftest import run_async, click_row_action, expand_group_panel
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -80,10 +80,7 @@ class TestGroupRemoveButtons:
         # Expand the group
         group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
         expect(group_panel).to_be_visible(timeout=5000)
-        group_panel.locator(".group-header").click()
-
-        # Find Device C's row within the group and click its Remove button
-        group_body = group_panel.locator(".group-body")
+        group_body = expand_group_panel(group_panel)
         expect(group_body).to_be_visible(timeout=3000)
         device_row = group_body.locator('tr[data-device-id="grp-rm-003"]')
         expect(device_row).to_be_visible(timeout=3000)
@@ -100,8 +97,7 @@ class TestGroupRemoveButtons:
 
         # Expand the group again
         group_panel = page.locator('div.group-panel[data-group-id="' + group_id + '"]')
-        group_panel.locator(".group-header").click()
-        group_body = group_panel.locator(".group-body")
+        group_body = expand_group_panel(group_panel)
         expect(group_body).to_be_visible(timeout=3000)
 
         # Device D should still be in the group
@@ -243,7 +239,7 @@ class TestGroupRemoveInPlaceMove:
 
         # Expand and click Remove (in the row kebab).
         group_panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
-        group_panel.locator(".group-header").click()
+        expand_group_panel(group_panel)
         device_row = group_panel.locator('tr[data-device-id="inplace-001"]')
         expect(device_row).to_be_visible(timeout=3000)
         click_row_action(device_row, "Remove from group")
