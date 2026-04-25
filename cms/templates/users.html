@@ -57,7 +57,7 @@
 {% endif %}
 
 <div class="card">
-    <h3>Users ({{ users | length }})</h3>
+    <h3 data-users-count-container>Users (<span data-users-count>{{ users | length }}</span>)</h3>
     {% if users %}
     <table>
         <thead>
@@ -70,56 +70,14 @@
                 {% if can_write %}<th>Actions</th>{% endif %}
             </tr>
         </thead>
-        <tbody>
+        <tbody data-users-tbody>
             {% for u in users %}
-            <tr class="{% if not u.is_active %}row-inactive{% endif %}">
-                <td><strong>{{ u.email }}</strong></td>
-                <td>{{ u.display_name or '—' }}</td>
-                <td>
-                    {% if u.role %}
-                    <span class="badge badge-role {% if u.role.name == 'Admin' %}badge-role-admin{% elif u.role.name == 'Operator' %}badge-role-operator{% elif u.role.name == 'Viewer' %}badge-role-viewer{% endif %}">{{ u.role.name }}</span>
-                    {% else %}
-                    <span class="badge badge-offline">No role</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if u.is_active %}
-                    <span class="badge badge-online">Active</span>
-                    {% else %}
-                    <span class="badge badge-offline">Inactive</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if u.last_login_at %}
-                    <span data-utc="{{ u.last_login_at.isoformat() }}">{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') }}</span>
-                    {% else %}
-                    <span class="text-muted">Never</span>
-                    {% endif %}
-                </td>
-                {% if can_write %}
-                <td class="actions-cell">
-                    {% call macros.kebab_menu() %}
-                        <button type="button" role="menuitem" onclick="openEditUser('{{ u.id }}')">Edit</button>
-                        {% if u.must_change_password %}
-                        <button type="button" role="menuitem" onclick="resendInvite('{{ u.id }}', '{{ u.email }}')">Resend Invite</button>
-                        {% endif %}
-                        {% if u.id | string != current_user_id %}
-                            {% if u.is_active %}
-                            <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', false)">Disable</button>
-                            {% else %}
-                            <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
-                            {% endif %}
-                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
-                        {% endif %}
-                    {% endcall %}
-                </td>
-                {% endif %}
-            </tr>
+            {{ macros.user_row(u, current_user_id, can_write) }}
             {% endfor %}
         </tbody>
     </table>
     {% else %}
-    <p class="text-muted">No users found.</p>
+    <p class="text-muted" data-users-empty>No users found.</p>
     {% endif %}
 </div>
 </div>
@@ -175,34 +133,15 @@
 {% endif %}
 
 <div class="card">
-    <h3>Roles ({{ roles | length }})</h3>
+    <h3 data-roles-count-container>Roles (<span data-roles-count>{{ roles | length }}</span>)</h3>
     {% if roles %}
+    <div data-roles-list>
     {% for role in roles %}
-    <div class="role-card">
-        <div class="role-header">
-            <div>
-                <strong>{{ role.name }}</strong>
-                {% if role.is_builtin %}<span class="badge badge-builtin">Built-in</span>{% endif %}
-                <span class="text-muted"> — {{ role.description }}</span>
-            </div>
-            {% if can_write_roles and not role.is_builtin %}
-            <div class="role-actions">
-                {% call macros.kebab_menu() %}
-                    <button type="button" role="menuitem" onclick="openEditRole('{{ role.id }}')">Edit</button>
-                    <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteRole('{{ role.id }}', '{{ role.name }}')">Delete</button>
-                {% endcall %}
-            </div>
-            {% endif %}
-        </div>
-        <div class="role-permissions">
-            {% for perm in role.permissions %}
-            <span class="perm-tag has-tooltip">{{ perm }}<span class="tooltip">{{ perm_descriptions.get(perm, perm) }}</span></span>
-            {% endfor %}
-        </div>
-    </div>
+    {{ macros.role_card(role, perm_descriptions, can_write_roles) }}
     {% endfor %}
+    </div>
     {% else %}
-    <p class="text-muted">No roles defined.</p>
+    <p class="text-muted" data-roles-empty>No roles defined.</p>
     {% endif %}
 </div>
 </div>
@@ -490,5 +429,102 @@ async function resendInvite(userId, email) {
         showToast('Failed to resend invite', 'error');
     }
 }
+
+// ── Cross-session pollers ──
+// 5s poll on both tabs so a user/role added or removed in another
+// session (or CMS replica) becomes visible without a full reload.
+// See issue #87.
+(function() {
+    const CURRENT_USER_ID = {{ current_user_id | tojson }};
+    const knownUserIds = new Set({{ users | map(attribute='id') | map('string') | list | tojson }});
+    const knownRoleIds = new Set({{ roles | map(attribute='id') | map('string') | list | tojson }});
+
+    window._rememberUser = function(id) { knownUserIds.add(String(id)); };
+    window._forgetUser = function(id) { knownUserIds.delete(String(id)); };
+    window._rememberRole = function(id) { knownRoleIds.add(String(id)); };
+    window._forgetRole = function(id) { knownRoleIds.delete(String(id)); };
+
+    function _setUsersCount(n) {
+        const el = document.querySelector('[data-users-count]');
+        if (el) el.textContent = n;
+    }
+    function _setRolesCount(n) {
+        const el = document.querySelector('[data-roles-count]');
+        if (el) el.textContent = n;
+    }
+
+    async function pollUsersOnce() {
+        let remote;
+        try {
+            const resp = await fetch('/api/users');
+            if (!resp.ok) return;
+            remote = await resp.json();
+        } catch (e) { return; }
+
+        const remoteIds = new Set(remote.map(u => String(u.id)));
+
+        // Additions → fetch row fragment + hydrate usersData.
+        for (const u of remote) {
+            const uid = String(u.id);
+            if (knownUserIds.has(uid)) continue;
+            knownUserIds.add(uid);
+            usersData[uid] = {
+                email: u.email,
+                display_name: u.display_name || '',
+                role_id: u.role_id,
+                is_active: u.is_active,
+                group_ids: (u.group_ids || []).map(String),
+            };
+            await window._insertUserRow(uid);
+        }
+
+        // Deletions → remove row (skip the current user's own row).
+        for (const uid of Array.from(knownUserIds)) {
+            if (remoteIds.has(uid) || uid === CURRENT_USER_ID) continue;
+            knownUserIds.delete(uid);
+            delete usersData[uid];
+            const row = document.querySelector(`tr[data-user-id="${uid}"]`);
+            if (row) row.remove();
+        }
+
+        _setUsersCount(knownUserIds.size);
+    }
+
+    async function pollRolesOnce() {
+        let remote;
+        try {
+            const resp = await fetch('/api/roles');
+            if (!resp.ok) return;
+            remote = await resp.json();
+        } catch (e) { return; }
+
+        const remoteIds = new Set(remote.map(r => String(r.id)));
+
+        for (const r of remote) {
+            const rid = String(r.id);
+            if (knownRoleIds.has(rid)) continue;
+            knownRoleIds.add(rid);
+            rolesData[rid] = {
+                name: r.name,
+                description: r.description || '',
+                permissions: r.permissions,
+            };
+            await window._insertRoleCard(rid);
+        }
+
+        for (const rid of Array.from(knownRoleIds)) {
+            if (remoteIds.has(rid)) continue;
+            knownRoleIds.delete(rid);
+            delete rolesData[rid];
+            const card = document.querySelector(`.role-card[data-role-id="${rid}"]`);
+            if (card) card.remove();
+        }
+
+        _setRolesCount(knownRoleIds.size);
+    }
+
+    setInterval(pollUsersOnce, 5000);
+    setInterval(pollRolesOnce, 5000);
+})();
 </script>
 {% endblock %}

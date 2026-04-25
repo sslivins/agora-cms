@@ -552,3 +552,88 @@
     </div>
 </div>
 {%- endmacro %}
+
+
+{#
+  User row (users page, Users tab). Shared between the full page render
+  and the GET /api/users/{id}/row fragment endpoint so both paths emit
+  identical markup — see issue #87. Row carries data-user-id so the
+  poller and action handlers can locate/swap/remove it.
+#}
+{% macro user_row(u, current_user_id, can_write) -%}
+<tr data-user-id="{{ u.id }}" class="{% if not u.is_active %}row-inactive{% endif %}">
+    <td><strong>{{ u.email }}</strong></td>
+    <td>{{ u.display_name or '—' }}</td>
+    <td>
+        {% if u.role %}
+        <span class="badge badge-role {% if u.role.name == 'Admin' %}badge-role-admin{% elif u.role.name == 'Operator' %}badge-role-operator{% elif u.role.name == 'Viewer' %}badge-role-viewer{% endif %}">{{ u.role.name }}</span>
+        {% else %}
+        <span class="badge badge-offline">No role</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if u.is_active %}
+        <span class="badge badge-online">Active</span>
+        {% else %}
+        <span class="badge badge-offline">Inactive</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if u.last_login_at %}
+        <span data-utc="{{ u.last_login_at.isoformat() }}">{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') }}</span>
+        {% else %}
+        <span class="text-muted">Never</span>
+        {% endif %}
+    </td>
+    {% if can_write %}
+    <td class="actions-cell">
+        {% call kebab_menu() %}
+            <button type="button" role="menuitem" onclick="openEditUser('{{ u.id }}')">Edit</button>
+            {% if u.must_change_password %}
+            <button type="button" role="menuitem" onclick="resendInvite('{{ u.id }}', '{{ u.email }}')">Resend Invite</button>
+            {% endif %}
+            {% if u.id | string != current_user_id %}
+                {% if u.is_active %}
+                <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', false)">Disable</button>
+                {% else %}
+                <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
+                {% endif %}
+                <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
+            {% endif %}
+        {% endcall %}
+    </td>
+    {% endif %}
+</tr>
+{%- endmacro %}
+
+
+{#
+  Role card (users page, Roles tab). Shared between the full page render
+  and the GET /api/roles/{id}/card fragment endpoint — see issue #87.
+  Card carries data-role-id so the poller and action handlers can
+  locate/swap/remove it.
+#}
+{% macro role_card(role, perm_descriptions, can_write_roles) -%}
+<div class="role-card" data-role-id="{{ role.id }}">
+    <div class="role-header">
+        <div>
+            <strong>{{ role.name }}</strong>
+            {% if role.is_builtin %}<span class="badge badge-builtin">Built-in</span>{% endif %}
+            <span class="text-muted"> — {{ role.description }}</span>
+        </div>
+        {% if can_write_roles and not role.is_builtin %}
+        <div class="role-actions">
+            {% call kebab_menu() %}
+                <button type="button" role="menuitem" onclick="openEditRole('{{ role.id }}')">Edit</button>
+                <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteRole('{{ role.id }}', '{{ role.name }}')">Delete</button>
+            {% endcall %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="role-permissions">
+        {% for perm in role.permissions %}
+        <span class="perm-tag has-tooltip">{{ perm }}<span class="tooltip">{{ perm_descriptions.get(perm, perm) }}</span></span>
+        {% endfor %}
+    </div>
+</div>
+{%- endmacro %}

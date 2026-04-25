@@ -2385,6 +2385,72 @@ function closeModal(id) {
     document.getElementById(id).style.display = 'none';
 }
 
+// ── Users/Roles fragment helpers (issue #87 no-reload) ──
+// Fetch the server-rendered <tr> / .role-card HTML for a single
+// entity and insert or replace it in-place. Mirrors the
+// _insertAssetRow / _replaceAssetDetailRow / _insertGroupPanel
+// pattern used for the other pages.
+
+async function _insertUserRow(userId) {
+    const resp = await fetch(`/api/users/${userId}/row`);
+    if (!resp.ok) return false;
+    const html = (await resp.text()).trim();
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const newRow = tpl.content.querySelector(`tr[data-user-id="${userId}"]`);
+    if (!newRow) return false;
+    const existing = document.querySelector(`tr[data-user-id="${userId}"]`);
+    if (existing) {
+        existing.replaceWith(newRow);
+    } else {
+        const tbody = document.querySelector('[data-users-tbody]');
+        if (!tbody) return false;
+        tbody.appendChild(newRow);
+    }
+    return true;
+}
+window._insertUserRow = _insertUserRow;
+
+async function _insertRoleCard(roleId) {
+    const resp = await fetch(`/api/roles/${roleId}/card`);
+    if (!resp.ok) return false;
+    const html = (await resp.text()).trim();
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const newCard = tpl.content.querySelector(`.role-card[data-role-id="${roleId}"]`);
+    if (!newCard) return false;
+    const existing = document.querySelector(`.role-card[data-role-id="${roleId}"]`);
+    if (existing) {
+        existing.replaceWith(newCard);
+    } else {
+        const list = document.querySelector('[data-roles-list]');
+        if (!list) return false;
+        list.appendChild(newCard);
+    }
+    return true;
+}
+window._insertRoleCard = _insertRoleCard;
+
+function _updateUsersCount(delta) {
+    const el = document.querySelector('[data-users-count]');
+    if (!el) return;
+    const n = parseInt(el.textContent, 10) || 0;
+    el.textContent = Math.max(0, n + delta);
+}
+
+function _updateRolesCount(delta) {
+    const el = document.querySelector('[data-roles-count]');
+    if (!el) return;
+    const n = parseInt(el.textContent, 10) || 0;
+    el.textContent = Math.max(0, n + delta);
+}
+
+function _resetForm(form) {
+    if (!form) return;
+    form.reset();
+    form.querySelectorAll('button[type="submit"]').forEach(b => { b.disabled = true; });
+}
+
 async function createUser(form) {
     const data = new FormData(form);
     const groupIds = data.getAll("group_ids");
@@ -2397,7 +2463,21 @@ async function createUser(form) {
     const resp = await apiCall("POST", "/api/users", body);
     if (resp && resp.ok) {
         showToast("User created — welcome email sent (if SMTP configured)");
-        location.reload();
+        const created = await resp.json().catch(() => null);
+        if (created && created.id) {
+            const uid = String(created.id);
+            usersData[uid] = {
+                email: created.email,
+                display_name: created.display_name || '',
+                role_id: created.role_id,
+                is_active: created.is_active,
+                group_ids: (created.group_ids || []).map(String),
+            };
+            if (window._rememberUser) window._rememberUser(uid);
+            const ok = await _insertUserRow(uid);
+            if (ok) _updateUsersCount(+1);
+        }
+        _resetForm(form);
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);
@@ -2470,7 +2550,19 @@ async function updateUser(form) {
         const resp = await apiCall("PATCH", `/api/users/${userId}`, body);
         if (resp && resp.ok) {
             showToast("User updated");
-            location.reload();
+            const updated = await resp.json().catch(() => null);
+            if (updated) {
+                const uid = String(userId);
+                usersData[uid] = {
+                    email: updated.email,
+                    display_name: updated.display_name || '',
+                    role_id: updated.role_id,
+                    is_active: updated.is_active,
+                    group_ids: (updated.group_ids || []).map(String),
+                };
+            }
+            await _insertUserRow(userId);
+            closeModal('edit-user-modal');
         } else if (resp) {
             const err = await resp.json().catch(() => ({}));
             showToast(err.detail || `Error: ${resp.status}`, true);
@@ -2485,7 +2577,12 @@ async function deleteUser(userId, email) {
     const resp = await apiCall("DELETE", `/api/users/${userId}`);
     if (resp && resp.ok) {
         showToast("User deleted");
-        location.reload();
+        const uid = String(userId);
+        const row = document.querySelector(`tr[data-user-id="${uid}"]`);
+        if (row) row.remove();
+        delete usersData[uid];
+        if (window._forgetUser) window._forgetUser(uid);
+        _updateUsersCount(-1);
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);
@@ -2496,7 +2593,9 @@ async function toggleUserActive(userId, active) {
     const resp = await apiCall("PATCH", `/api/users/${userId}`, { is_active: active });
     if (resp && resp.ok) {
         showToast(active ? "User enabled" : "User disabled");
-        location.reload();
+        const uid = String(userId);
+        if (usersData[uid]) usersData[uid].is_active = active;
+        await _insertUserRow(userId);
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);
@@ -2514,7 +2613,29 @@ async function createRole(form) {
     const resp = await apiCall("POST", "/api/roles", body);
     if (resp && resp.ok) {
         showToast("Role created");
-        location.reload();
+        const created = await resp.json().catch(() => null);
+        if (created && created.id) {
+            const rid = String(created.id);
+            rolesData[rid] = {
+                name: created.name,
+                description: created.description || '',
+                permissions: created.permissions,
+            };
+            if (window._rememberRole) window._rememberRole(rid);
+            const ok = await _insertRoleCard(rid);
+            if (ok) _updateRolesCount(+1);
+            // Also append a new <option> to every role <select> so the
+            // just-created role is usable immediately without a reload.
+            document.querySelectorAll('select[name="role_id"]').forEach(sel => {
+                if (!sel.querySelector(`option[value="${rid}"]`)) {
+                    const opt = document.createElement('option');
+                    opt.value = rid;
+                    opt.textContent = created.name;
+                    sel.appendChild(opt);
+                }
+            });
+        }
+        _resetForm(form);
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);
@@ -2546,7 +2667,22 @@ async function updateRole(form) {
     const resp = await apiCall("PATCH", `/api/roles/${roleId}`, body);
     if (resp && resp.ok) {
         showToast("Role updated");
-        location.reload();
+        const updated = await resp.json().catch(() => null);
+        if (updated) {
+            const rid = String(roleId);
+            rolesData[rid] = {
+                name: updated.name,
+                description: updated.description || '',
+                permissions: updated.permissions,
+            };
+            // Update the role's label in every role <select> so changes
+            // propagate without a reload.
+            document.querySelectorAll(`select[name="role_id"] option[value="${rid}"]`).forEach(opt => {
+                opt.textContent = updated.name;
+            });
+        }
+        await _insertRoleCard(roleId);
+        closeModal('edit-role-modal');
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);
@@ -2558,7 +2694,13 @@ async function deleteRole(roleId, roleName) {
     const resp = await apiCall("DELETE", `/api/roles/${roleId}`);
     if (resp && resp.ok) {
         showToast("Role deleted");
-        location.reload();
+        const rid = String(roleId);
+        const card = document.querySelector(`.role-card[data-role-id="${rid}"]`);
+        if (card) card.remove();
+        delete rolesData[rid];
+        if (window._forgetRole) window._forgetRole(rid);
+        _updateRolesCount(-1);
+        document.querySelectorAll(`select[name="role_id"] option[value="${rid}"]`).forEach(opt => opt.remove());
     } else if (resp) {
         const err = await resp.json();
         showToast(extractErrorMsg(err), true);
