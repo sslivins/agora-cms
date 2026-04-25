@@ -79,21 +79,18 @@ def _schedules_seed(api, ws_url):
     run_async(_register())
     api.post(f"/api/devices/{device_id}/adopt")
 
-    # Group create — handle 409 (conflict on name) by reusing the
-    # existing group.  Some 409 bodies aren't JSON, so guard ``.json()``.
-    group_resp = api.post(
-        "/api/devices/groups/", json={"name": _LONG_GROUP},
+    # Group create — sidestep the duplicate-group 500 by GET'ing first.
+    # The CMS POST raises IntegrityError on duplicate name (returns 500
+    # rather than 409), and there's no upsert endpoint, so we reuse a
+    # pre-existing group whenever possible.
+    existing_groups = api.get("/api/devices/groups/").json()
+    group = next(
+        (g for g in existing_groups if g.get("name") == _LONG_GROUP), None,
     )
-    if group_resp.status_code == 409:
-        existing = api.get("/api/devices/groups/").json()
-        group = next(
-            (g for g in existing if g.get("name") == _LONG_GROUP), None,
+    if group is None:
+        group_resp = api.post(
+            "/api/devices/groups/", json={"name": _LONG_GROUP},
         )
-        assert group is not None, (
-            f"group create returned 409 but no matching group found; "
-            f"body={group_resp.text!r}"
-        )
-    else:
         assert group_resp.status_code in (200, 201), group_resp.text
         group = group_resp.json()
     api.patch(f"/api/devices/{device_id}", json={"group_id": group["id"]})
@@ -110,9 +107,11 @@ def _schedules_seed(api, ws_url):
     # name so the Asset column is forced wider.
     api.patch(f"/api/assets/{asset['id']}", json={"display_name": _LONG_ASSET})
 
-    # Active schedule with width-stressing name.  ``priority=99`` keeps
-    # us out of the overlap check that compares schedules at the same
-    # priority on the same target.
+    # Active schedule with width-stressing name.  Distinct priorities
+    # for active vs expired keep them out of the overlap check (the
+    # check compares only same-priority schedules on the same target;
+    # date_range is ignored, so 09–17 expired would otherwise conflict
+    # with 08–20 active even though they're temporally disjoint).
     active = api.post("/api/schedules", json={
         "name": _LONG_NAME,
         "group_id": group["id"],
@@ -140,7 +139,7 @@ def _schedules_seed(api, ws_url):
         "end_time": "17:00",
         "start_date": fourteen_days_ago,
         "end_date": seven_days_ago,
-        "priority": 99,
+        "priority": 98,
     })
     assert expired.status_code == 201, expired.text
 
