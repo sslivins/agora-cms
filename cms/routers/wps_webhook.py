@@ -152,42 +152,13 @@ async def events_receiver(
             # ``sys.disconnected`` *after* the device has already
             # reconnected on replica B; without this guard we'd flip
             # ``online=false`` for the fresh session and fire a bogus
-            # OFFLINE alert.  ``mark_offline`` returns False when the
-            # stored ``connection_id`` no longer matches — in that case
-            # we also skip the alert-service notification.
-            was_current = await device_presence.mark_offline(
+            # OFFLINE alert.  ``mark_offline_and_alert`` does the CAS
+            # flip + ``alert_service.device_disconnected`` in one shot
+            # — same helper used by the transport send-failure paths
+            # (issue #406), so behaviour stays consistent.
+            await device_presence.mark_offline_and_alert(
                 db, ce_user_id, expected_connection_id=ce_connection_id,
             )
-            if not was_current:
-                logger.info(
-                    "WPS device %s: stale disconnect suppressed "
-                    "(connection_id replaced)", ce_user_id,
-                )
-                return Response(status_code=204)
-            # Load the device + group so alert_service has the name /
-            # group context it needs to route the OFFLINE event and
-            # (eventually, via the sweep loop) the offline notification.
-            result = await db.execute(select(Device).where(Device.id == ce_user_id))
-            device = result.scalar_one_or_none()
-            if device is not None:
-                _group_id = str(device.group_id) if device.group_id else None
-                _device_name = device.name or ce_user_id
-                _device_status = device.status.value if device.status else "pending"
-                _group_name = ""
-                if device.group_id:
-                    g = await db.execute(
-                        select(DeviceGroup.name).where(
-                            DeviceGroup.id == device.group_id,
-                        )
-                    )
-                    _group_name = g.scalar_one_or_none() or ""
-                alert_service.device_disconnected(
-                    ce_user_id,
-                    device_name=_device_name,
-                    group_id=_group_id,
-                    group_name=_group_name,
-                    status=_device_status,
-                )
         return Response(status_code=204)
 
     # ---- user events ---------------------------------------------------
