@@ -6,6 +6,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -741,7 +742,18 @@ async def create_group(data: DeviceGroupCreate, request: Request, db: AsyncSessi
 
     group = DeviceGroup(name=data.name, description=data.description, default_asset_id=data.default_asset_id)
     db.add(group)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Unique constraint on ``device_groups.name`` — surface as 409
+        # so callers (UI, e2e tests, scripts) can distinguish a
+        # duplicate from a real server error.  Race-safe: we let the
+        # DB enforce uniqueness rather than do a TOCTOU pre-check.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Device group named '{data.name}' already exists",
+        )
 
     # Auto-add non-admin creator to the new group. Without this, the list_groups
     # endpoint (which filters by user_groups for non-admins) would hide the
