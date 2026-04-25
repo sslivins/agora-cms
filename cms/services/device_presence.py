@@ -48,6 +48,7 @@ _STATE_COLUMNS = (
     Device.ssh_enabled,
     Device.local_api_enabled,
     Device.display_connected,
+    Device.display_ports,
     Device.connection_id,
     Device.online,
     Device.ip_address,
@@ -84,6 +85,7 @@ def _row_to_state(row: Any) -> dict[str, Any]:
         "ssh_enabled": row.ssh_enabled,
         "local_api_enabled": row.local_api_enabled,
         "display_connected": row.display_connected,
+        "display_ports": row.display_ports,
         "connection_id": row.connection_id,
         "online": bool(row.online),
     }
@@ -308,6 +310,12 @@ async def update_status(
     # as-is (including None, which means "unknown on this device").
     if "display_connected" in status:
         values["display_connected"] = status["display_connected"]
+    # ``display_ports`` is the per-HDMI-port array reported by Pi 5 / Pi 4
+    # firmware (issue #350).  Same passthrough policy: persist whatever
+    # the device sent, including None / missing-key (no overwrite when
+    # absent so a malformed STATUS doesn't blow away a known-good list).
+    if "display_ports" in status and status["display_ports"] is not None:
+        values["display_ports"] = status["display_ports"]
 
     result = await db.execute(
         update(Device)

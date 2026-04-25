@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -132,6 +132,14 @@ class Device(Base):
     ssh_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     local_api_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     display_connected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Per-HDMI-port connection state from the most recent STATUS heartbeat.
+    # Multi-port boards (Pi 5, Pi 4) report each port independently here;
+    # the legacy ``display_connected`` is kept for backward compatibility
+    # and tracks ``display_ports[0].connected`` on the device side.
+    # Stored as a list of {"name": str, "connected": bool} dicts; ``None``
+    # means the device hasn't reported per-port state yet (older firmware
+    # or single-port boards).  See issue #350.
+    display_ports: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Last-known IP address written by whichever replica processed the
     # most recent register.  None when no registering replica has written
     # yet (or the device is only reachable via WPS, which has no IP).

@@ -82,6 +82,10 @@ class TestUpdateStatus:
                 "ssh_enabled": True,
                 "local_api_enabled": True,
                 "display_connected": True,
+                "display_ports": [
+                    {"name": "HDMI-1", "connected": True},
+                    {"name": "HDMI-2", "connected": False},
+                ],
             },
         )
         assert ok is True
@@ -96,7 +100,27 @@ class TestUpdateStatus:
         assert row.playback_position_ms == 1234
         assert row.ssh_enabled is True
         assert row.display_connected is True
+        assert row.display_ports == [
+            {"name": "HDMI-1", "connected": True},
+            {"name": "HDMI-2", "connected": False},
+        ]
         assert row.last_status_ts is not None
+
+    @pytest.mark.asyncio
+    async def test_display_ports_absent_does_not_clobber(self, db_session, _device):
+        # First STATUS reports two ports.
+        await device_presence.update_status(
+            db_session, _device.id,
+            {"display_ports": [{"name": "HDMI-1", "connected": True}]},
+        )
+        # Second STATUS omits the field — must NOT wipe the previous list.
+        await device_presence.update_status(
+            db_session, _device.id, {"mode": "play"},
+        )
+        row = (await db_session.execute(
+            select(Device.display_ports).where(Device.id == _device.id)
+        )).scalar_one()
+        assert row == [{"name": "HDMI-1", "connected": True}]
 
     @pytest.mark.asyncio
     async def test_monotonic_guard_rejects_older_status(self, db_session, _device):
@@ -229,7 +253,7 @@ class TestListStates:
         for key in (
             "device_id", "mode", "asset", "pipeline_state", "connected_at",
             "cpu_temp_c", "ip_address", "ssh_enabled", "local_api_enabled",
-            "display_connected", "error", "error_since", "uptime_seconds",
+            "display_connected", "display_ports", "error", "error_since", "uptime_seconds",
         ):
             assert key in s, f"missing key: {key}"
         assert s["device_id"] == _device.id

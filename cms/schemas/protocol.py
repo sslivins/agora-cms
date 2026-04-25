@@ -104,6 +104,23 @@ class StatusMessage(BaseMessage):
     ssh_enabled: Optional[bool] = None
     local_api_enabled: Optional[bool] = None
     display_connected: Optional[bool] = None
+    # Per-HDMI-port connection state (issue #350).  Multi-port boards
+    # report one entry per port; ``display_connected`` mirrors port 0
+    # for backward compat with single-port readers.  Older firmware
+    # omits this field entirely.
+    display_ports: Optional[list["PortStatus"]] = None
+
+
+class PortStatus(BaseModel):
+    """One HDMI port's connection state — element of ``display_ports``."""
+
+    name: str
+    connected: bool
+
+
+# ``StatusMessage.display_ports`` is declared with a forward reference
+# above; resolve it now that ``PortStatus`` is defined.
+StatusMessage.model_rebuild()
 
 
 class AssetAckMessage(BaseMessage):

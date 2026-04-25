@@ -87,6 +87,7 @@ _DEVICE_OUT_OVERLAP_COLUMNS = {
     "ssh_enabled",
     "local_api_enabled",
     "display_connected",
+    "display_ports",
     "ip_address",
 }
 
@@ -215,6 +216,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             playback_asset=_resolve_asset_name(d.id),
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
             display_connected=live_states[d.id]["display_connected"] if d.id in live_states else None,
+            display_ports=live_states[d.id]["display_ports"] if d.id in live_states else None,
             cpu_temp_c=live_states[d.id]["cpu_temp_c"] if d.id in live_states else None,
             ip_address=(
                 live_states[d.id]["ip_address"]
@@ -272,6 +274,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         playback_asset=raw_asset,
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
         display_connected=live_states[device.id]["display_connected"] if device.id in live_states else None,
+        display_ports=live_states[device.id]["display_ports"] if device.id in live_states else None,
         cpu_temp_c=live_states[device.id]["cpu_temp_c"] if device.id in live_states else None,
         ip_address=(
             live_states[device.id]["ip_address"]
