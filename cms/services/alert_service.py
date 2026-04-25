@@ -84,6 +84,18 @@ DEFAULT_TEMP_WARNING_C = 70.0
 DEFAULT_TEMP_CRITICAL_C = 80.0
 DEFAULT_TEMP_COOLDOWN_SECONDS = 300
 
+# Stale-presence sweep (PR #440): how long a device may go without a
+# STATUS heartbeat before we infer it is offline regardless of the
+# WebSocket / WPS connection state. Matches roughly 2 missed 30s
+# heartbeats — short enough that the UI flips offline within a minute
+# of a power-cut Pi, long enough to absorb a one-off network blip.
+STALE_PRESENCE_THRESHOLD_S = 60
+# Maximum devices flipped offline in a single sweep tick. Caps the
+# cost of a pathological backlog (e.g., a clock-skew bug or a
+# datacenter blip flipping the whole fleet at once); the next tick
+# will pick up the rest.
+STALE_PRESENCE_BATCH_SIZE = 50
+
 
 class AlertService:
     """Singleton service wired into the WebSocket + WPS webhook handlers.
@@ -366,6 +378,158 @@ class AlertService:
             logger.debug("Best-effort clear of alert state for %s failed", device_id)
 
     # ── Leader-gated sweep (fires offline notifications past grace) ──
+
+    async def stale_presence_sweep_once(self, db: AsyncSession) -> int:
+        """Mark devices that have stopped heartbeating as offline.
+
+        Backstop for the WS-disconnect path under N>1 replicas: when
+        Container Apps' load balancer keeps a dead WebSocket "alive"
+        for many minutes (or when a device drops off the WPS gateway
+        without a clean close), no replica observes the disconnect, so
+        ``devices.online`` stays TRUE and ``device_alert_state.offline_since``
+        is never written. The offline-alert pipeline therefore can't
+        fire and the UI keeps showing the device as healthy.
+
+        This sweep claims any row with ``online = TRUE`` and
+        ``last_seen < now - STALE_PRESENCE_THRESHOLD_S`` in a single
+        atomic ``UPDATE ... RETURNING``, so two replicas running the
+        sweep concurrently can't double-process a device. For each
+        adopted+grouped row it emits an OFFLINE event (kind
+        ``stale_heartbeat``) and transitions
+        ``device_alert_state.offline_since`` from NULL to NOW so the
+        existing :func:`offline_sweep_once` can fire the notification
+        once the configured grace window elapses.
+
+        Devices that aren't adopted+grouped are still flipped to
+        offline (so the UI doesn't lie) but receive no event or alert
+        state — pending registrations and orphaned devices have no
+        owner group to notify.
+
+        The sweep is idempotent: a device whose row is already
+        ``online = FALSE`` won't match the claim predicate. Returns
+        the number of devices flipped offline by this call.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=STALE_PRESENCE_THRESHOLD_S)
+
+        # Cap claim size *before* mutation. Using a subquery with
+        # LIMIT (rather than slicing the RETURNING result) avoids
+        # stranding rows that were flipped offline but never had
+        # ``offline_since`` written, which would leave them invisible
+        # to the offline-alert pipeline.
+        cap_subq = (
+            select(Device.id)
+            .where(Device.online.is_(True))
+            .where(Device.last_seen.is_not(None))
+            .where(Device.last_seen < cutoff)
+            .limit(STALE_PRESENCE_BATCH_SIZE)
+        )
+        claim_stmt = (
+            update(Device)
+            .where(Device.id.in_(cap_subq))
+            # Re-assert the claim predicate on the outer UPDATE so
+            # races with concurrent reconnects (which flip
+            # ``online`` and bump ``last_seen`` from a heartbeat
+            # path) can't accidentally re-flip an already-online row.
+            .where(Device.online.is_(True))
+            .where(Device.last_seen.is_not(None))
+            .where(Device.last_seen < cutoff)
+            .values(online=False, connection_id=None)
+            .returning(
+                Device.id,
+                Device.name,
+                Device.group_id,
+                Device.status,
+            )
+        )
+        claimed = (await db.execute(claim_stmt)).all()
+        if not claimed:
+            return 0
+
+        # Batch-fetch group names for the rows we'll alert on so we
+        # don't issue one SELECT per device.
+        from cms.models.device import DeviceGroup
+        group_ids = {row.group_id for row in claimed if row.group_id}
+        group_names: dict = {}
+        if group_ids:
+            for gid, gname in (
+                await db.execute(
+                    select(DeviceGroup.id, DeviceGroup.name).where(
+                        DeviceGroup.id.in_(group_ids)
+                    )
+                )
+            ).all():
+                group_names[gid] = gname or ""
+
+        from sqlalchemy.exc import IntegrityError
+        for row in claimed:
+            # Only adopted + grouped devices have an owner to alert.
+            if row.status != DeviceStatus.ADOPTED or not row.group_id:
+                continue
+
+            group_name = group_names.get(row.group_id, "")
+            device_name = row.name or row.id
+
+            # 1. OFFLINE event with stale-detection marker so operators
+            #    can distinguish heartbeat-timeout offlines from
+            #    WS-close offlines in the audit trail.
+            db.add(DeviceEvent(
+                device_id=row.id,
+                device_name=device_name,
+                group_id=row.group_id,
+                group_name=group_name,
+                event_type=DeviceEventType.OFFLINE,
+                details={"kind": "stale_heartbeat"},
+            ))
+
+            # 2. Transition ``offline_since`` NULL → NOW. Mirrors the
+            #    semantics of ``_record_disconnect`` so duplicate
+            #    sweep ticks (or a sweep tick racing with a real WS
+            #    close) don't reset the grace window.
+            existing = (await db.execute(
+                select(DeviceAlertState).where(
+                    DeviceAlertState.device_id == row.id
+                )
+            )).scalar_one_or_none()
+            if existing is None:
+                # No row yet — common path for a freshly-adopted
+                # device that has never disconnected. Insert in a
+                # SAVEPOINT so a concurrent insert by the WS path
+                # (e.g., racing with a near-simultaneous real
+                # disconnect) raises IntegrityError that we can
+                # treat as benign without poisoning the outer
+                # transaction.
+                try:
+                    async with db.begin_nested():
+                        db.add(DeviceAlertState(
+                            device_id=row.id,
+                            offline_since=now,
+                            offline_notified=False,
+                        ))
+                except IntegrityError:
+                    logger.debug(
+                        "DeviceAlertState for %s created concurrently "
+                        "during stale-presence sweep; ignoring",
+                        row.id,
+                    )
+            elif existing.offline_since is None:
+                # Online → offline transition: mark when we first
+                # noticed and ensure the notified flag starts clean
+                # so the offline_sweep can claim it after grace.
+                existing.offline_since = now
+                existing.offline_notified = False
+            # else: device is already in an offline_since window
+            # (e.g., a partial ws disconnect happened and the sweep
+            # is catching up). Leave the timestamp + flag alone.
+
+        await db.commit()
+        flipped = len(claimed)
+        logger.info(
+            "Stale-presence sweep: marked %d device(s) offline "
+            "(no heartbeat for ≥ %ds)",
+            flipped, STALE_PRESENCE_THRESHOLD_S,
+        )
+        return flipped
 
     async def offline_sweep_once(self, db: AsyncSession) -> int:
         """Fire offline notifications for any device past the grace period.

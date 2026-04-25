@@ -301,12 +301,48 @@ async def _offline_sweep_loop() -> None:
             try:
                 if lease.is_leader:
                     async for db in get_db():
-                        emitted = await alert_service.offline_sweep_once(db)
-                        if emitted:
-                            logger.info(
-                                "Offline sweep: emitted %d offline notification(s)",
-                                emitted,
-                            )
+                        # Stale-presence sweep first (PR #440): flip
+                        # devices.online=false for rows whose last
+                        # heartbeat is older than the threshold so the
+                        # offline-alert pipeline below can claim them.
+                        # Wrapped in its own try/rollback so an error
+                        # here doesn't poison the session for the
+                        # offline sweep.
+                        try:
+                            flipped = await alert_service.stale_presence_sweep_once(db)
+                            if flipped:
+                                logger.info(
+                                    "Stale-presence sweep: flipped %d device(s) offline",
+                                    flipped,
+                                )
+                        except asyncio.CancelledError:
+                            return
+                        except Exception:
+                            logger.exception("Error in stale-presence sweep")
+                            try:
+                                await db.rollback()
+                            except Exception:
+                                logger.exception(
+                                    "Rollback after stale-presence sweep failed",
+                                )
+
+                        try:
+                            emitted = await alert_service.offline_sweep_once(db)
+                            if emitted:
+                                logger.info(
+                                    "Offline sweep: emitted %d offline notification(s)",
+                                    emitted,
+                                )
+                        except asyncio.CancelledError:
+                            return
+                        except Exception:
+                            logger.exception("Error in offline sweep")
+                            try:
+                                await db.rollback()
+                            except Exception:
+                                logger.exception(
+                                    "Rollback after offline sweep failed",
+                                )
             except asyncio.CancelledError:
                 return
             except Exception:
