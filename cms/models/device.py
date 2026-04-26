@@ -140,6 +140,15 @@ class Device(Base):
     # means the device hasn't reported per-port state yet (older firmware
     # or single-port boards).  See issue #350.
     display_ports: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Firmware-advertised capability flags from the REGISTER handshake.
+    # Used to gate features that require specific firmware behaviour —
+    # e.g. ``slideshow_v1`` is required to receive slideshow assets via
+    # ``FETCH_ASSET`` with a resolved slide manifest.  Older firmware
+    # registers without this field and defaults to ``[]``; feature gates
+    # treat an empty list as "incompatible".  See migration 0016.
+    capabilities: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
     # Last-known IP address written by whichever replica processed the
     # most recent register.  None when no registering replica has written
     # yet (or the device is only reachable via WPS, which has no IP).

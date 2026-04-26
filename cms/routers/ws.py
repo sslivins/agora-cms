@@ -127,6 +127,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 supported_codecs=",".join(raw.get("supported_codecs", [])),
                 storage_capacity_mb=raw.get("storage_capacity_mb", 0),
                 storage_used_mb=raw.get("storage_used_mb", 0),
+                capabilities=list(raw.get("capabilities") or []),
                 last_seen=datetime.now(timezone.utc),
             )
             db.add(device)

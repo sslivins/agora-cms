@@ -17,6 +17,7 @@ from cms.permissions import (
     GROUPS_READ, GROUPS_WRITE,
 )
 from cms.models.asset import Asset
+from shared.models.asset import AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.schemas.device import (
@@ -324,6 +325,18 @@ async def update_device(
     # Gate splash assignment on variant readiness (issue #201).
     if updates.get("default_asset_id"):
         await require_asset_ready(db, updates["default_asset_id"])
+        # Slideshow defaults require slideshow_v1 capability on the device.
+        new_default = await db.get(Asset, updates["default_asset_id"])
+        if new_default and new_default.asset_type == AssetType.SLIDESHOW:
+            from cms.schemas.protocol import CAPABILITY_SLIDESHOW_V1
+            if CAPABILITY_SLIDESHOW_V1 not in (device.capabilities or []):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Slideshow assets require firmware advertising the "
+                        "'slideshow_v1' capability. This device is not compatible."
+                    ),
+                )
 
     # Snapshot before mutation so we can build a true diff for the audit log
     changes = compute_diff(device, updates)
@@ -816,6 +829,35 @@ async def update_group(
     # Gate splash assignment on variant readiness (issue #201).
     if updates.get("default_asset_id"):
         await require_asset_ready(db, updates["default_asset_id"])
+        # Slideshow group default requires every adopted member to advertise
+        # slideshow_v1 — same precedent as the schedule create/update gate.
+        new_default = await db.get(Asset, updates["default_asset_id"])
+        if new_default and new_default.asset_type == AssetType.SLIDESHOW:
+            from cms.schemas.protocol import CAPABILITY_SLIDESHOW_V1
+            members_q = await db.execute(
+                select(Device).where(
+                    Device.group_id == group_id,
+                    Device.status == DeviceStatus.ADOPTED,
+                )
+            )
+            incompatible = [
+                d for d in members_q.scalars().all()
+                if CAPABILITY_SLIDESHOW_V1 not in (d.capabilities or [])
+            ]
+            if incompatible:
+                names = ", ".join(d.name or d.id for d in incompatible[:3])
+                suffix = (
+                    f" and {len(incompatible) - 3} more"
+                    if len(incompatible) > 3 else ""
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Slideshow assets require firmware advertising the "
+                        "'slideshow_v1' capability. These devices in the "
+                        f"group are not compatible: {names}{suffix}"
+                    ),
+                )
 
     for field, value in updates.items():
         setattr(group, field, value)

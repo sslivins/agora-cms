@@ -165,6 +165,14 @@ async def register_known_device(
     reg_codecs = raw.get("supported_codecs")
     if reg_codecs is not None:
         device.supported_codecs = ",".join(reg_codecs)
+    # Capabilities are firmware-determined.  Older firmware omits the
+    # field — preserve whatever was previously persisted in that case so
+    # a transient pre-upgrade reconnect doesn't drop the slideshow_v1
+    # flag a newer firmware once advertised.  Replace wholesale rather
+    # than mutate in place so SQLAlchemy reliably sees the change.
+    reg_caps = raw.get("capabilities")
+    if reg_caps is not None:
+        device.capabilities = list(reg_caps)
     device.storage_capacity_mb = raw.get(
         "storage_capacity_mb", device.storage_capacity_mb,
     )
