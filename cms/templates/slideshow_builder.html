@@ -77,11 +77,34 @@
 .ssb-timeline-wrap {
     margin-top: 0.5rem;
     padding: 0.75rem 0.5rem;
-    background: linear-gradient(#0d0d0d, #181818);
-    border: 1px solid #2a2a2a;
-    border-radius: 0.4rem;
+    background: linear-gradient(var(--bg), var(--surface));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     overflow-x: auto;
     overflow-y: hidden;
+    /* Firefox: thin scrollbar in page palette */
+    scrollbar-width: thin;
+    scrollbar-color: var(--primary) transparent;
+}
+/* WebKit/Blink: match the page palette so the scrollbar doesn't look
+   like a stock OS widget against our dark-blue theme. */
+.ssb-timeline-wrap::-webkit-scrollbar {
+    height: 10px;
+}
+.ssb-timeline-wrap::-webkit-scrollbar-track {
+    background: transparent;
+    border-top: 1px solid var(--border);
+}
+.ssb-timeline-wrap::-webkit-scrollbar-thumb {
+    background: var(--primary);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.ssb-timeline-wrap::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+    background-clip: padding-box;
+    border: 2px solid transparent;
 }
 .ssb-timeline {
     display: flex;
@@ -604,7 +627,7 @@ function makeSlot(s, i) {
     if (pte) pte.addEventListener('change', (e) => updateSlidePlayToEnd(i, e.target.checked));
 
     slot.addEventListener('dragstart', (e) => {
-        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.effectAllowed = 'copyMove';
         e.dataTransfer.setData('application/x-slideshow-source', JSON.stringify({kind: 'reorder', from_index: i}));
         slot.classList.add('ssb-dragging');
     });
@@ -845,12 +868,13 @@ function setStatus(msg, isError) {
     s.style.color = isError ? '#e74c3c' : '#16a085';
 }
 
-async function saveSlideshow() {
+async function saveSlideshow(opts) {
+    opts = opts || {};
     setStatus('');
     const name = document.getElementById('ss-name').value.trim();
-    if (!name) { setStatus('Name is required', true); return; }
-    if (slides.length === 0) { setStatus('Add at least one slide', true); return; }
-    if (slides.length > SS_MAX_SLIDES) { setStatus('Too many slides', true); return; }
+    if (!name) { setStatus('Name is required', true); return false; }
+    if (slides.length === 0) { setStatus('Add at least one slide', true); return false; }
+    if (slides.length > SS_MAX_SLIDES) { setStatus('Too many slides', true); return false; }
 
     const submit = document.getElementById('ss-submit');
     submit.disabled = true;
@@ -872,7 +896,12 @@ async function saveSlideshow() {
             }
             clearDirty();
             setStatus('Saved.');
-            setTimeout(() => { window.location.href = '/assets'; }, 600);
+            // Stay on the page after a normal Save; only redirect when the
+            // caller explicitly asks for it (e.g. the unsaved-changes
+            // modal's "Save" action when leaving the page).
+            if (opts.redirectTo) {
+                setTimeout(() => { window.location.href = opts.redirectTo; }, 600);
+            }
         } else {
             const body = {
                 name,
@@ -890,10 +919,19 @@ async function saveSlideshow() {
             }
             clearDirty();
             setStatus('Created.');
-            setTimeout(() => { window.location.href = '/assets'; }, 600);
+            // For new slideshows we always navigate — either where the
+            // caller asked, or to the new asset's edit page so the user
+            // can keep iterating without creating a duplicate on next save.
+            const data = await r.json().catch(() => ({}));
+            const newId = data.id || data.asset_id;
+            const dest = opts.redirectTo
+                || (newId ? `/assets/${newId}/slideshow` : '/assets');
+            setTimeout(() => { window.location.href = dest; }, 600);
         }
+        return true;
     } catch (e) {
         setStatus(typeof e.message === 'string' ? e.message : 'Save failed', true);
+        return false;
     } finally {
         submit.disabled = !__ssDirty;
     }
@@ -967,10 +1005,11 @@ function showUnsavedChangesModal(targetHref) {
         window.location.href = targetHref;
     };
     saveBtn.onclick = () => {
-        // saveSlideshow() already redirects to /assets on success and
-        // re-enables the form on failure (so the user can retry).
+        // saveSlideshow() will navigate to targetHref on success; on
+        // failure it surfaces an inline error and the user stays on the
+        // builder so they can fix and retry.
         close();
-        saveSlideshow();
+        saveSlideshow({redirectTo: targetHref});
     };
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 }
