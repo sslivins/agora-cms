@@ -379,9 +379,11 @@ async def list_pending_registrations(
 
 async def delete_pending(
     db: AsyncSession, pending_id: uuid.UUID,
-) -> bool:
-    """Delete an un-adopted pending row.  Returns True if a row was
-    removed, False otherwise (missing or already adopted).
+) -> str | None:
+    """Delete an un-adopted pending row.
+
+    Returns the ``device_id`` (Pi serial) of the deleted row on
+    success, or ``None`` if the row is missing or already adopted.
 
     Refuses to delete adopted rows — those still carry the outbox
     ciphertext that the device picks up on its next /bootstrap-status
@@ -389,10 +391,13 @@ async def delete_pending(
     """
     pending = await _lock_pending_by_id(db, pending_id)
     if pending is None or pending.adopted_at is not None:
-        return False
+        return None
+    # Capture before delete so we don't read off a deleted ORM
+    # instance after flush.
+    device_id = pending.device_id
     await db.delete(pending)
     await db.flush()
-    return True
+    return device_id
 
 
 async def _perform_adoption(

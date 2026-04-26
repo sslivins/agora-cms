@@ -558,13 +558,13 @@ async def reject_pending(
         raise HTTPException(status_code=404, detail="pending_not_found")
 
     try:
-        deleted = await device_bootstrap.delete_pending(db, pending_uuid)
+        device_id = await device_bootstrap.delete_pending(db, pending_uuid)
     except Exception:
         await db.rollback()
         logger.exception("/pending delete internal error")
         raise HTTPException(status_code=500, detail="internal_error")
 
-    if not deleted:
+    if device_id is None:
         await db.rollback()
         raise HTTPException(status_code=404, detail="pending_not_found")
 
@@ -572,10 +572,10 @@ async def reject_pending(
         db,
         user=getattr(request.state, "user", None),
         action="device.pending.reject",
-        resource_type="pending_registration",
-        resource_id=str(pending_uuid),
-        description="Rejected pending device registration from UI",
-        details={"pending_id": str(pending_uuid)},
+        resource_type="device",
+        resource_id=device_id,
+        description=f"Rejected pending registration for device '{device_id}'",
+        details={"pending_id": str(pending_uuid), "device_id": device_id},
         request=request,
     )
     await db.commit()
