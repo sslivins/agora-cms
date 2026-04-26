@@ -415,7 +415,7 @@
 
         <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
-            <button type="submit" class="btn btn-primary" id="ss-submit">{% if edit_mode %}Save{% else %}Create{% endif %}</button>
+            <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
             <a href="/assets" class="btn btn-secondary">Cancel</a>
         </div>
     </form>
@@ -851,7 +851,7 @@ async function saveSlideshow() {
     } catch (e) {
         setStatus(typeof e.message === 'string' ? e.message : 'Save failed', true);
     } finally {
-        submit.disabled = false;
+        submit.disabled = !__ssDirty;
     }
 }
 
@@ -868,16 +868,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ---------- Unsaved-changes tracking ----------
 let __ssDirty = false;
+function _setSubmitEnabled(enabled) {
+    const btn = document.getElementById('ss-submit');
+    if (btn) btn.disabled = !enabled;
+}
 function markDirty() {
     if (__ssDirty) return;
     __ssDirty = true;
     const ind = document.getElementById('ss-dirty-indicator');
     if (ind) ind.hidden = false;
+    _setSubmitEnabled(true);
 }
 function clearDirty() {
     __ssDirty = false;
     const ind = document.getElementById('ss-dirty-indicator');
     if (ind) ind.hidden = true;
+    _setSubmitEnabled(false);
 }
 
 function initDirtyTracking() {
