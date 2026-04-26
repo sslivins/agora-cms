@@ -16,6 +16,37 @@ def test_deviceeventtype_enum_exposes_cms_started_stopped():
     assert DeviceEventType.CMS_STOPPED.value == "cms_stopped"
 
 
+# ── Replica-id helper (multi-replica diagnostics) ──
+
+
+def test_replica_id_prefers_HOSTNAME_env(monkeypatch):
+    """ACA / docker-compose set HOSTNAME per replica; we should use it verbatim."""
+    from cms import main as main_mod
+    monkeypatch.setenv("HOSTNAME", "agora-cms-rep-7-abcd1234")
+    assert main_mod._replica_id() == "agora-cms-rep-7-abcd1234"
+
+
+def test_replica_id_falls_back_to_socket_when_no_env(monkeypatch):
+    """No HOSTNAME → use socket.gethostname()."""
+    import socket as _socket
+    from cms import main as main_mod
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setattr(_socket, "gethostname", lambda: "fallback-host")
+    assert main_mod._replica_id() == "fallback-host"
+
+
+def test_replica_id_never_returns_empty(monkeypatch):
+    """Even on hosts where both signals are blank we must not write None/empty."""
+    import socket as _socket
+    from cms import main as main_mod
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setattr(_socket, "gethostname", lambda: "")
+    out = main_mod._replica_id()
+    assert isinstance(out, str)
+    assert out
+    assert out == "unknown"
+
+
 # ── Nullable device_id (migration behavior) ──
 
 
@@ -130,6 +161,11 @@ async def test_real_lifespan_logs_cms_started_event(app, db_session, monkeypatch
         assert evt.device_id is None
         assert evt.details is not None
         assert "version" in evt.details
+        # Replica identifier is stamped so operators can tell which
+        # replica emitted the event under N>1.
+        assert "replica_id" in evt.details
+        assert isinstance(evt.details["replica_id"], str)
+        assert evt.details["replica_id"]  # non-empty
 
     # After the context exits, CMS_STOPPED should also be logged.
     result = await db_session.execute(
@@ -141,3 +177,6 @@ async def test_real_lifespan_logs_cms_started_event(app, db_session, monkeypatch
     stopped = result.scalars().all()
     assert len(stopped) >= 1
     assert "version" in stopped[-1].details
+    assert "replica_id" in stopped[-1].details
+    assert isinstance(stopped[-1].details["replica_id"], str)
+    assert stopped[-1].details["replica_id"]
