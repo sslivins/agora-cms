@@ -123,6 +123,51 @@ class TestUpdateStatus:
         assert row == [{"name": "HDMI-1", "connected": True}]
 
     @pytest.mark.asyncio
+    async def test_display_ports_list_of_strings_is_dropped(self, db_session, _device):
+        """Outdated clients (e.g. simulator pre-fix) emit ``["HDMI-A-1"]``
+        instead of the dict shape required by the protocol. Persisting
+        that poisons the JSON column and breaks DeviceOut serialization
+        with a 500 on every ``GET /api/devices``. Drop + warn instead."""
+        await device_presence.update_status(
+            db_session, _device.id,
+            {"display_ports": ["HDMI-A-1", "HDMI-A-2"]},
+        )
+        row = (await db_session.execute(
+            select(Device.display_ports).where(Device.id == _device.id)
+        )).scalar_one()
+        assert row is None
+
+    @pytest.mark.asyncio
+    async def test_display_ports_malformed_dict_is_dropped(self, db_session, _device):
+        # Dict missing the required ``name`` key — also treat as garbage.
+        await device_presence.update_status(
+            db_session, _device.id,
+            {"display_ports": [{"connected": True}]},
+        )
+        row = (await db_session.execute(
+            select(Device.display_ports).where(Device.id == _device.id)
+        )).scalar_one()
+        assert row is None
+
+    @pytest.mark.asyncio
+    async def test_list_states_normalizes_legacy_display_ports(self, db_session, _device):
+        """If a malformed value somehow made it into the column (e.g.
+        from before this fix landed), ``list_states`` must coerce it to
+        ``None`` so DeviceOut serialization doesn't 500."""
+        # Bypass update_status to write garbage directly, simulating a
+        # row left over from before the write-side guard existed.
+        from sqlalchemy import update as _update
+        await db_session.execute(
+            _update(Device)
+            .where(Device.id == _device.id)
+            .values(display_ports=["HDMI-A-1"], online=True)
+        )
+        await db_session.commit()
+        states = await device_presence.list_states(db_session)
+        match = [s for s in states if s["device_id"] == _device.id]
+        assert match and match[0]["display_ports"] is None
+
+    @pytest.mark.asyncio
     async def test_monotonic_guard_rejects_older_status(self, db_session, _device):
         t1 = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
         t0 = t1 - timedelta(seconds=30)
