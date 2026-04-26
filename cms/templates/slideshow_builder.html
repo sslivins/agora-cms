@@ -182,47 +182,85 @@
 
 /* Transition gap between slots */
 .ssb-gap {
-    flex: 0 0 auto;
-    min-width: 60px;
+    flex: 0 0 44px;
     display: flex;
     align-items: center;
     justify-content: center;
     position: relative;
-    padding: 0 0.3rem;
 }
 .ssb-gap-btn {
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     background: #333;
     border: 1px solid #555;
-    color: #ccc;
-    font-size: 1rem;
+    color: #ddd;
+    font-size: 0.95rem;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 0;
-    transition: background 0.1s, border-color 0.1s;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 .ssb-gap-btn:hover {
     background: #16a085;
     border-color: #16a085;
     color: #fff;
 }
-.ssb-gap-label {
-    font-size: 0.7rem;
-    color: #888;
-    white-space: nowrap;
-    margin-right: 0.3rem;
-}
 .ssb-gap.ssb-drop-active::before {
     content: '';
     position: absolute;
-    inset: -4px 8px;
+    inset: -4px 6px;
     background: rgba(22,160,133,0.5);
     border-radius: 0.3rem;
     pointer-events: none;
+}
+/* Transition picker popup */
+.ssb-trans-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1f1f1f;
+    border: 1px solid #444;
+    border-radius: 0.35rem;
+    padding: 0.25rem 0;
+    min-width: 150px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    z-index: 50;
+}
+.ssb-trans-menu[hidden] { display: none; }
+.ssb-trans-opt {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.7rem;
+    color: #ddd;
+    font-size: 0.8rem;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    width: 100%;
+    text-align: left;
+}
+.ssb-trans-opt:hover:not(:disabled) {
+    background: rgba(22,160,133,0.2);
+}
+.ssb-trans-opt:disabled {
+    color: #666;
+    cursor: not-allowed;
+}
+.ssb-trans-opt-icon {
+    width: 1.2rem;
+    text-align: center;
+    font-size: 0.95rem;
+}
+.ssb-trans-opt-soon {
+    margin-left: auto;
+    font-size: 0.65rem;
+    color: #888;
+    font-style: italic;
 }
 
 /* Drop zone at end of timeline / when empty */
@@ -542,6 +580,17 @@ function makeSlot(s, i) {
     return slot;
 }
 
+// Transition types — only 'cut' is implemented today; the rest are placeholders.
+const SS_TRANSITIONS = [
+    {id: 'cut',      label: 'Cut',      icon: '\u2702',    enabled: true},   // ✂
+    {id: 'fade',     label: 'Fade',     icon: '\u25D0',    enabled: false},  // ◐
+    {id: 'dissolve', label: 'Dissolve', icon: '\u2592',    enabled: false},  // ▒
+    {id: 'wipe',     label: 'Wipe',     icon: '\u21E8',    enabled: false},  // ⇨
+];
+function transitionDef(id) {
+    return SS_TRANSITIONS.find(t => t.id === id) || SS_TRANSITIONS[0];
+}
+
 function makeGap(index, isLeading) {
     const gap = document.createElement('div');
     gap.className = 'ssb-gap';
@@ -551,11 +600,41 @@ function makeGap(index, isLeading) {
         gap.innerHTML = '';
         gap.style.flex = '0 0 12px';
     } else {
+        // index here is the gap position (1..slides.length-1 for between-slot gaps).
+        // The transition belongs to the slide on the right (slides[index]).
+        const slideIdx = index;
+        const current = transitionDef((slides[slideIdx] && slides[slideIdx].transition) || 'cut');
         gap.innerHTML = `
-            <span class="ssb-gap-label">Cut</span>
-            <button type="button" class="ssb-gap-btn" title="Transition (Cut). More transitions coming soon.">+</button>`;
-        gap.querySelector('.ssb-gap-btn').addEventListener('click', () => {
-            setStatus('Only "Cut" transitions are supported today. More coming soon.', false);
+            <button type="button" class="ssb-gap-btn"
+                    title="${current.label} transition — click to change">${current.icon}</button>
+            <div class="ssb-trans-menu" hidden role="menu"></div>`;
+        const btn = gap.querySelector('.ssb-gap-btn');
+        const menu = gap.querySelector('.ssb-trans-menu');
+        SS_TRANSITIONS.forEach(t => {
+            const opt = document.createElement('button');
+            opt.type = 'button';
+            opt.className = 'ssb-trans-opt';
+            opt.disabled = !t.enabled;
+            opt.title = t.enabled ? t.label : `${t.label} — coming soon`;
+            opt.innerHTML = `
+                <span class="ssb-trans-opt-icon">${t.icon}</span>
+                <span>${t.label}</span>
+                ${t.enabled ? '' : '<span class="ssb-trans-opt-soon">soon</span>'}`;
+            opt.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!t.enabled) return;
+                if (slides[slideIdx]) slides[slideIdx].transition = t.id;
+                menu.hidden = true;
+                btn.textContent = t.icon;
+                btn.title = `${t.label} transition — click to change`;
+            });
+            menu.appendChild(opt);
+        });
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Close any other open menus first
+            document.querySelectorAll('.ssb-trans-menu').forEach(m => { if (m !== menu) m.hidden = true; });
+            menu.hidden = !menu.hidden;
         });
     }
     wireDropZone(gap, index);
@@ -760,6 +839,10 @@ function openGroupPopup(id) {
 document.addEventListener('DOMContentLoaded', () => {
     renderTimeline();
     loadAvailableAssets();
+    // Close any open transition menus on outside click
+    document.addEventListener('click', () => {
+        document.querySelectorAll('.ssb-trans-menu').forEach(m => { m.hidden = true; });
+    });
 });
 </script>
 {% endblock %}
