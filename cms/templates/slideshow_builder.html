@@ -886,6 +886,51 @@ function clearDirty() {
     _setSubmitEnabled(false);
 }
 
+// Custom 3-button modal for unsaved-changes navigation: Save / Discard /
+// Cancel. Visually matches showConfirm in app.js by reusing the same
+// modal-overlay / modal-box / modal-actions classes.
+function showUnsavedChangesModal(targetHref) {
+    if (typeof _closeOpenPopovers === 'function') _closeOpenPopovers();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const box = document.createElement('div');
+    box.className = 'modal-box';
+    const msg = document.createElement('p');
+    msg.textContent = 'You have unsaved changes. Save them before leaving?';
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = 'Cancel';
+    const discardBtn = document.createElement('button');
+    discardBtn.className = 'btn btn-danger';
+    discardBtn.textContent = 'Discard';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn btn-primary';
+    saveBtn.textContent = 'Save';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(discardBtn);
+    actions.appendChild(saveBtn);
+    box.appendChild(msg);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    cancelBtn.onclick = () => close();
+    discardBtn.onclick = () => {
+        clearDirty();
+        close();
+        window.location.href = targetHref;
+    };
+    saveBtn.onclick = () => {
+        // saveSlideshow() already redirects to /assets on success and
+        // re-enables the form on failure (so the user can retry).
+        close();
+        saveSlideshow();
+    };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+}
+
 function initDirtyTracking() {
     // Mark dirty when the user types in the name field.
     const nameInput = document.getElementById('ss-name');
@@ -896,20 +941,15 @@ function initDirtyTracking() {
         });
     }
     // Intercept any in-page link that would discard unsaved changes
-    // (Cancel button + the "← Back to Assets" subtab). Uses our custom
-    // modal (showConfirm) instead of native confirm() — since showConfirm
-    // is async we always preventDefault and navigate manually on confirm.
+    // (Cancel button + the "← Back to Assets" subtab). Show a 3-button
+    // modal: Save (saveSlideshow handles its own redirect), Discard
+    // (just navigate), Cancel (stay on page).
     document.querySelectorAll('a[href="/assets"]').forEach(a => {
         a.addEventListener('click', (e) => {
             if (!__ssDirty) return;
             e.preventDefault();
             const href = a.getAttribute('href');
-            showConfirm('You have unsaved changes. Leave without saving?').then(ok => {
-                if (ok) {
-                    clearDirty();
-                    window.location.href = href;
-                }
-            });
+            showUnsavedChangesModal(href);
         });
     });
     // Native browser warning if the user closes the tab / hits browser back / refreshes.
