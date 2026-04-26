@@ -896,13 +896,20 @@ function initDirtyTracking() {
         });
     }
     // Intercept any in-page link that would discard unsaved changes
-    // (Cancel button + the "← Back to Assets" subtab).
+    // (Cancel button + the "← Back to Assets" subtab). Uses our custom
+    // modal (showConfirm) instead of native confirm() — since showConfirm
+    // is async we always preventDefault and navigate manually on confirm.
     document.querySelectorAll('a[href="/assets"]').forEach(a => {
         a.addEventListener('click', (e) => {
             if (!__ssDirty) return;
-            if (!confirm('You have unsaved changes. Leave without saving?')) {
-                e.preventDefault();
-            }
+            e.preventDefault();
+            const href = a.getAttribute('href');
+            showConfirm('You have unsaved changes. Leave without saving?').then(ok => {
+                if (ok) {
+                    clearDirty();
+                    window.location.href = href;
+                }
+            });
         });
     });
     // Native browser warning if the user closes the tab / hits browser back / refreshes.
