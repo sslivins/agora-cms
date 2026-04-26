@@ -516,6 +516,114 @@ class TestSourceSideACLGuards:
         assert img.is_global is True
 
 
+# ── Slideshow-side audience-expansion guards (commit 2) ──
+
+
+@pytest.mark.asyncio
+class TestSlideshowAudienceExpansion:
+
+    async def test_share_slideshow_with_new_group_blocked_when_source_uncovered(
+        self, client, db_session
+    ):
+        g1 = await _seed_group(db_session, "g-cov-1")
+        g2 = await _seed_group(db_session, "g-cov-2")
+        img = await _seed_image(db_session, filename="src.png", is_global=False)
+        await _share(db_session, img, g1)  # source covers g1 only
+        ss = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "ssA",
+                "group_ids": [str(g1.id)],
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )
+        assert ss.status_code == 201, ss.text
+        sid = ss.json()["id"]
+
+        # Sharing slideshow with g2 must be refused — source doesn't cover g2.
+        share = await client.post(f"/api/assets/{sid}/share?group_id={g2.id}")
+        assert share.status_code == 409
+        assert "src.png" in share.json()["detail"]
+
+        # Slideshow's group set is unchanged
+        existing = (await db_session.execute(
+            select(GroupAsset.group_id).where(GroupAsset.asset_id == uuid.UUID(sid))
+        )).scalars().all()
+        assert set(existing) == {g1.id}
+
+    async def test_share_slideshow_with_new_group_allowed_when_source_covers(
+        self, client, db_session
+    ):
+        g1 = await _seed_group(db_session, "g-ok-1")
+        g2 = await _seed_group(db_session, "g-ok-2")
+        img = await _seed_image(db_session, filename="okay.png", is_global=False)
+        await _share(db_session, img, g1)
+        await _share(db_session, img, g2)  # source covers both
+        ss = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "ssOK",
+                "group_ids": [str(g1.id)],
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )
+        assert ss.status_code == 201, ss.text
+        sid = ss.json()["id"]
+        share = await client.post(f"/api/assets/{sid}/share?group_id={g2.id}")
+        assert share.status_code == 200, share.text
+
+    async def test_mark_slideshow_global_blocked_when_sources_not_global(
+        self, client, db_session
+    ):
+        g = await _seed_group(db_session, "g-mark")
+        img = await _seed_image(db_session, filename="ng.png", is_global=False)
+        await _share(db_session, img, g)
+        ss = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "ssNG",
+                "group_ids": [str(g.id)],
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )
+        assert ss.status_code == 201
+        sid = ss.json()["id"]
+        # The slideshow is currently non-global. Toggling it global must be
+        # refused because the source isn't global.
+        toggle = await client.post(f"/api/assets/{sid}/global")
+        assert toggle.status_code == 409
+        assert "ng.png" in toggle.json()["detail"]
+        ss_row = await db_session.get(Asset, uuid.UUID(sid))
+        await db_session.refresh(ss_row)
+        assert ss_row.is_global is False
+
+    async def test_mark_slideshow_global_allowed_when_sources_are_global(
+        self, client, db_session
+    ):
+        # Create a slideshow with a single global source via a non-admin
+        # ish path: scoped user creates inside their group.  Easiest here:
+        # admin-no-group-create produces global slideshow already, so to
+        # exercise the false→true toggle we first toggle it OFF.
+        img = await _seed_image(db_session, filename="g.png", is_global=True)
+        ss = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "ssG",
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )
+        sid = ss.json()["id"]
+        ss_row = await db_session.get(Asset, uuid.UUID(sid))
+        # The just-created slideshow is global (admin-no-group rule). Drop
+        # global so we can toggle back on.
+        ss_row.is_global = False
+        await db_session.commit()
+
+        toggle = await client.post(f"/api/assets/{sid}/global")
+        assert toggle.status_code == 200, toggle.text
+        assert toggle.json()["is_global"] is True
+
+
 # ── Audit logging ──
 
 

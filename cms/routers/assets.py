@@ -890,6 +890,86 @@ def _compute_slideshow_duration_seconds(
     return total_ms / 1000.0
 
 
+async def _revalidate_slideshow_audience(
+    slideshow: Asset, db: AsyncSession
+) -> None:
+    """Re-check the ACL invariant for a slideshow after its audience changed.
+
+    Used when sharing a slideshow with a new group or marking it global.
+    Raises HTTPException(409) if any referenced source no longer covers
+    the slideshow's effective audience, naming the offending sources.
+    """
+    rows = (
+        await db.execute(
+            select(SlideshowSlide.source_asset_id)
+            .where(SlideshowSlide.slideshow_asset_id == slideshow.id)
+            .distinct()
+        )
+    ).scalars().all()
+    if not rows:
+        return
+
+    sources = (
+        await db.execute(
+            select(Asset).where(Asset.id.in_(rows), Asset.deleted_at.is_(None))
+        )
+    ).scalars().all()
+    sources_by_id = {a.id: a for a in sources}
+
+    if slideshow.is_global:
+        not_global = sorted(s.filename for s in sources if not s.is_global)
+        if not_global:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot widen slideshow audience — these source assets "
+                    f"are not global: {', '.join(not_global)}. Mark them "
+                    "global first."
+                ),
+            )
+        return
+
+    slideshow_groups = {
+        gid for (gid,) in (
+            await db.execute(
+                select(GroupAsset.group_id).where(
+                    GroupAsset.asset_id == slideshow.id
+                )
+            )
+        ).all()
+    }
+    if not slideshow_groups:
+        return
+
+    ga_rows = (
+        await db.execute(
+            select(GroupAsset.asset_id, GroupAsset.group_id).where(
+                GroupAsset.asset_id.in_(rows)
+            )
+        )
+    ).all()
+    source_groups: dict[uuid.UUID, set[uuid.UUID]] = {sid: set() for sid in rows}
+    for asset_id, group_id in ga_rows:
+        source_groups[asset_id].add(group_id)
+
+    failures: list[str] = []
+    for sid, src in sources_by_id.items():
+        if src.is_global:
+            continue
+        if not slideshow_groups.issubset(source_groups.get(sid, set())):
+            failures.append(src.filename)
+    if failures:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot widen slideshow audience — these source assets are "
+                f"not shared with all of the slideshow's groups: "
+                f"{', '.join(sorted(failures))}. Share them (or mark "
+                "global) first."
+            ),
+        )
+
+
 @router.post("/slideshow", response_model=AssetOut, status_code=201)
 async def create_slideshow_asset(
     request: Request,
@@ -1659,6 +1739,18 @@ async def share_asset(
 
     db.add(GroupAsset(asset_id=asset_id, group_id=group_id))
 
+    # ACL invariant when sharing a SLIDESHOW with a new group: every
+    # referenced source asset must already be visible to that group, or
+    # users in the group could reach the source through the slideshow
+    # without being authorised on the source directly.  Roll back the
+    # newly-added GroupAsset row if the invariant fails.
+    if asset.asset_type == AssetType.SLIDESHOW:
+        try:
+            await _revalidate_slideshow_audience(asset, db)
+        except HTTPException:
+            await db.rollback()
+            raise
+
     # Enrich audit log with uploader context so admins can trace content
     # propagation (issue #176): original uploader, filename, target group.
     uploader_email: str | None = None
@@ -1826,6 +1918,18 @@ async def toggle_asset_global(
             )
 
     asset.is_global = not asset.is_global
+
+    # ACL invariant when marking a SLIDESHOW global: every referenced
+    # source asset must already be global, otherwise users without group
+    # membership could reach a non-global source through the now-global
+    # slideshow.  Validated after the toggle so error reporting in the
+    # helper sees the post-toggle state.
+    if asset.is_global and asset.asset_type == AssetType.SLIDESHOW:
+        try:
+            await _revalidate_slideshow_audience(asset, db)
+        except HTTPException:
+            await db.rollback()
+            raise
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="asset.toggle_global", resource_type="asset",
