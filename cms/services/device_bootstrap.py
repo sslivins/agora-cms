@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -535,6 +535,25 @@ async def _perform_adoption(
     pending.adopted_device_id = device_row_id
     pending.updated_at = now
     await db.flush()
+
+    # Clean up stale un-adopted rows for the same physical device.  The
+    # firmware only knows one pairing secret at a time, so any other
+    # un-adopted pending rows with the same device_id are guaranteed
+    # stale (e.g. left over from earlier register cycles before a
+    # factory reset or firmware upgrade).  Without this they sit in the
+    # pending-devices list confusing the operator until the 24h TTL
+    # reaper purges them.  device_id is the Pi CPU serial — stable
+    # across reboots and firmware versions, but regenerated on
+    # complete hardware swap, so this is safe.
+    if pending.device_id:
+        await db.execute(
+            delete(PendingRegistration).where(
+                PendingRegistration.device_id == pending.device_id,
+                PendingRegistration.id != pending.id,
+                PendingRegistration.adopted_at.is_(None),
+            )
+        )
+        await db.flush()
 
     return device, pending
 
