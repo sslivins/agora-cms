@@ -59,6 +59,7 @@
 <div class="card">
     <h3>Users ({{ users | length }})</h3>
     {% if users %}
+    <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -118,6 +119,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted">No users found.</p>
     {% endif %}
