@@ -902,6 +902,37 @@ class TestRejectPending:
         r = await client.delete(f"/api/devices/pending/{pending_id}")
         assert r.status_code == 404
 
+    async def test_audit_row_uses_device_id(
+        self, client, unauthed_client, fleet_secret_enabled, db_session,
+    ):
+        """Reject of a pending row writes an audit entry that names
+        the physical device by its serial in description, resource_id,
+        and details — not the disposable pending UUID alone.
+        """
+        from sqlalchemy import select
+
+        from cms.models.audit_log import AuditLog
+
+        await _register_one(unauthed_client, device_id="pi-audit-name")
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+
+        r = await client.delete(f"/api/devices/pending/{pending_id}")
+        assert r.status_code == 204
+
+        result = await db_session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "device.pending.reject")
+            .order_by(AuditLog.created_at.desc())
+        )
+        entry = result.scalars().first()
+        assert entry is not None, "no audit row written for reject"
+        assert entry.resource_type == "device"
+        assert entry.resource_id == "pi-audit-name"
+        assert "pi-audit-name" in (entry.description or "")
+        assert entry.details["pending_id"] == pending_id
+        assert entry.details["device_id"] == "pi-audit-name"
+
 
 # ---------------------------------------------------------------------
 # /connect-token
