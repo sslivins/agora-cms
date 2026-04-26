@@ -342,7 +342,11 @@
 .ssb-toolbar > * { flex: 1; min-width: 200px; }
 </style>
 
-<h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}</h1>
+<h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}
+    <span id="ss-dirty-indicator" hidden
+          style="font-size:0.75rem; color:#e67e22; font-weight:normal; margin-left:0.5rem; vertical-align:middle;"
+          title="You have unsaved changes">● unsaved</span>
+</h1>
 <div class="sub-tabs">
     <a href="/assets" class="sub-tab">← Back to Assets</a>
 </div>
@@ -621,7 +625,13 @@ function makeGap(index, isLeading) {
             opt.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (!t.enabled) return;
-                if (slides[slideIdx]) slides[slideIdx].transition = t.id;
+                if (slides[slideIdx]) {
+                    const prev = slides[slideIdx].transition || 'cut';
+                    if (prev !== t.id) {
+                        slides[slideIdx].transition = t.id;
+                        markDirty();
+                    }
+                }
                 try { menu.hidePopover(); } catch {}
                 btn.textContent = t.icon;
                 btn.title = `${t.label} transition — click to change`;
@@ -689,16 +699,19 @@ function updateSlideDuration(i, v) {
     const seconds = parseFloat(v);
     if (!isFinite(seconds) || seconds <= 0) return;
     slides[i].duration_ms = Math.round(seconds * 1000);
+    markDirty();
     updateTotals();
 }
 
 function updateSlidePlayToEnd(i, checked) {
     slides[i].play_to_end = !!checked;
+    markDirty();
     renderTimeline();
 }
 
 function removeSlide(i) {
     slides.splice(i, 1);
+    markDirty();
     renderTimeline();
 }
 
@@ -724,6 +737,7 @@ function addSlideFromAsset(assetId, atIndex) {
     };
     const idx = Math.max(0, Math.min(atIndex, slides.length));
     slides.splice(idx, 0, slide);
+    markDirty();
     setStatus('');
     renderTimeline();
 }
@@ -737,6 +751,7 @@ function reorderSlide(fromIdx, dropIdx) {
     if (target === fromIdx) return;
     const [moved] = slides.splice(fromIdx, 1);
     slides.splice(target, 0, moved);
+    markDirty();
     renderTimeline();
 }
 
@@ -756,7 +771,7 @@ async function loadAvailableAssets() {
 }
 
 function pickSsGroup(id, name) {
-    if (!selectedGroupIds.includes(id)) selectedGroupIds.push(id);
+    if (!selectedGroupIds.includes(id)) { selectedGroupIds.push(id); markDirty(); }
     renderGroupBadges();
     const popup = document.getElementById('ss-group-popup');
     if (popup && popup.hidePopover) popup.hidePopover();
@@ -775,7 +790,7 @@ function renderGroupBadges() {
         span.style.cssText = 'background:#444;color:#fff;padding:0.15rem 0.5rem;border-radius:0.5rem;font-size:0.8rem;';
         span.textContent = btn.dataset.groupName + ' ✕';
         span.style.cursor = 'pointer';
-        span.onclick = () => { selectedGroupIds = selectedGroupIds.filter(x => x !== gid); renderGroupBadges(); };
+        span.onclick = () => { selectedGroupIds = selectedGroupIds.filter(x => x !== gid); markDirty(); renderGroupBadges(); };
         wrap.insertBefore(span, popupWrap);
     });
 }
@@ -811,6 +826,7 @@ async function saveSlideshow() {
                 const err = await r.json().catch(() => ({}));
                 throw new Error(err.detail || ('HTTP ' + r.status));
             }
+            clearDirty();
             setStatus('Saved.');
             setTimeout(() => { window.location.href = '/assets'; }, 600);
         } else {
@@ -828,6 +844,7 @@ async function saveSlideshow() {
                 const err = await r.json().catch(() => ({}));
                 throw new Error(err.detail || ('HTTP ' + r.status));
             }
+            clearDirty();
             setStatus('Created.');
             setTimeout(() => { window.location.href = '/assets'; }, 600);
         }
@@ -846,6 +863,49 @@ function openGroupPopup(id) {
 document.addEventListener('DOMContentLoaded', () => {
     renderTimeline();
     loadAvailableAssets();
+    initDirtyTracking();
 });
+
+// ---------- Unsaved-changes tracking ----------
+let __ssDirty = false;
+function markDirty() {
+    if (__ssDirty) return;
+    __ssDirty = true;
+    const ind = document.getElementById('ss-dirty-indicator');
+    if (ind) ind.hidden = false;
+}
+function clearDirty() {
+    __ssDirty = false;
+    const ind = document.getElementById('ss-dirty-indicator');
+    if (ind) ind.hidden = true;
+}
+
+function initDirtyTracking() {
+    // Mark dirty when the user types in the name field.
+    const nameInput = document.getElementById('ss-name');
+    if (nameInput) {
+        const initialName = nameInput.value;
+        nameInput.addEventListener('input', () => {
+            if (nameInput.value !== initialName) markDirty();
+        });
+    }
+    // Intercept any in-page link that would discard unsaved changes
+    // (Cancel button + the "← Back to Assets" subtab).
+    document.querySelectorAll('a[href="/assets"]').forEach(a => {
+        a.addEventListener('click', (e) => {
+            if (!__ssDirty) return;
+            if (!confirm('You have unsaved changes. Leave without saving?')) {
+                e.preventDefault();
+            }
+        });
+    });
+    // Native browser warning if the user closes the tab / hits browser back / refreshes.
+    window.addEventListener('beforeunload', (e) => {
+        if (!__ssDirty) return;
+        e.preventDefault();
+        // Required by some browsers; the actual string is ignored by modern browsers.
+        e.returnValue = '';
+    });
+}
 </script>
 {% endblock %}
