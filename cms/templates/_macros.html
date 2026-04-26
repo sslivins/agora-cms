@@ -153,7 +153,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
+                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' or a.asset_type.value == 'slideshow' %}
                     —
                     {% else %}
                     {% set mb = a.size_bytes / 1048576 %}
@@ -163,6 +163,12 @@
                 <td data-live-variants="{{ a.id }}">
                     {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
                     —
+                    {% elif a.asset_type.value == 'slideshow' %}
+                        {% if a.slide_count is defined and a.slide_count > 0 %}
+                        <span class="badge badge-ready">{{ a.slide_count }} slide{{ 's' if a.slide_count != 1 else '' }}</span>
+                        {% else %}
+                        <span class="badge badge-pending">Empty</span>
+                        {% endif %}
                     {% elif a.variant_total > 0 %}
                     {% if a.variant_failed > 0 and a.variant_ready > 0 %}
                         <span class="has-tooltip"><span class="badge badge-partial">Partial</span><span class="tooltip">{{ a.variant_ready }} of {{ a.variant_total }} ready, {{ a.variant_failed }} failed</span></span>
@@ -210,6 +216,12 @@
                         {% endif %}
                     {% elif a.asset_type.value == 'stream' %}
                         <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open Stream</a>
+                    {% elif a.asset_type.value == 'slideshow' %}
+                        {% if 'assets:write' in user_perms and is_owner %}
+                        <a role="menuitem" href="/assets/{{ a.id }}/slideshow">Edit slides</a>
+                        {% else %}
+                        <a role="menuitem" href="/assets/{{ a.id }}/slideshow">View slides</a>
+                        {% endif %}
                     {% else %}
                         <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
                     {% endif %}
