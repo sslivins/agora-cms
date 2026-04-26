@@ -231,6 +231,7 @@
     align-items: center;
     justify-content: center;
     position: relative;
+    transition: flex-basis 0.15s ease;
 }
 .ssb-gap-btn {
     width: 32px;
@@ -252,12 +253,22 @@
     border-color: #16a085;
     color: #fff;
 }
+/* When a draggable hovers a gap, the gap "opens up" into a slot-sized
+   placeholder so the user can preview where the new slide will land.
+   Reverts smoothly on dragleave or drop. */
+.ssb-gap.ssb-drop-active {
+    flex: 0 0 196px;
+}
+.ssb-gap.ssb-drop-active .ssb-gap-btn {
+    display: none;
+}
 .ssb-gap.ssb-drop-active::before {
     content: '';
     position: absolute;
-    inset: -4px 6px;
-    background: rgba(22,160,133,0.5);
-    border-radius: 0.3rem;
+    inset: 0 8px;
+    background: rgba(22,160,133,0.18);
+    border: 2px dashed #16a085;
+    border-radius: 0.4rem;
     pointer-events: none;
 }
 /* Transition picker popup (uses popover API → renders in top layer, never clipped) */
@@ -946,6 +957,14 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTimeline();
     loadAvailableAssets();
     initDirtyTracking();
+    // Safety net: if a drag ends anywhere (released outside any drop
+    // zone, Esc-cancelled, etc.), make sure no gap is left "opened".
+    const _clearDropActive = () => {
+        document.querySelectorAll('.ssb-drop-active').forEach(el =>
+            el.classList.remove('ssb-drop-active'));
+    };
+    document.addEventListener('dragend', _clearDropActive);
+    document.addEventListener('drop', _clearDropActive);
 });
 
 // ---------- Unsaved-changes tracking ----------
