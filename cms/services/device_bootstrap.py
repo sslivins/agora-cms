@@ -30,6 +30,49 @@ from cms.services import device_identity
 logger = logging.getLogger(__name__)
 
 
+# Crockford base32 alphabet (no I, L, O, U).  Used for short 8-char
+# pairing codes shown on the device splash screen.
+_CROCKFORD_ALPHA = frozenset("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+_SHORT_CODE_LEN = 8
+
+
+def normalize_pairing_secret(raw: str) -> str:
+    """Canonicalize a pairing secret before hashing.
+
+    The device generates an 8-char Crockford base32 code (uppercase, no
+    I/L/O/U) and shows it on screen formatted as ``XXXX-XXXX``.  Admins
+    paste/type that code into the adopt modal in any combination of:
+
+    * lowercase / uppercase
+    * with or without a separator (hyphen, space)
+    * with confusable substitutes (``I``/``L`` for ``1``, ``O`` for ``0``)
+
+    To make all of those hash to the same bytes the device sent on
+    ``/register`` we strip separators, uppercase, apply Crockford fixups,
+    and validate that the result is exactly 8 chars from the Crockford
+    alphabet.  Inputs that don't look like a short code are returned
+    unchanged so any future / non-short formats still pass through.
+    """
+    if not isinstance(raw, str):
+        return raw
+    stripped = raw.strip()
+    # Strip whitespace and hyphens (the only display separators we use).
+    candidate = "".join(ch for ch in stripped if ch not in (" ", "-", "\t"))
+    if len(candidate) != _SHORT_CODE_LEN:
+        return stripped
+    upper = candidate.upper()
+    fixed = (
+        upper.replace("I", "1")
+             .replace("L", "1")
+             .replace("O", "0")
+    )
+    if all(ch in _CROCKFORD_ALPHA for ch in fixed):
+        return fixed
+    # Looks like the right length but has out-of-alphabet chars; fall
+    # through and let the lookup miss with the user's literal input.
+    return stripped
+
+
 # ``pg_advisory_xact_lock`` key used to serialize cap-check + insert on
 # ``POST /register``.  Any 63-bit constant works; this one is picked so
 # it is trivially greppable in server-side pg_stat_activity.
@@ -515,7 +558,7 @@ async def adopt_device(
     a single transaction.  Caller is responsible for committing.
     """
     pairing_secret_hash = device_identity.sha256_hex(
-        pairing_secret.encode("utf-8"),
+        normalize_pairing_secret(pairing_secret).encode("utf-8"),
     )
     pending = await _lock_pending_by_hash(db, pairing_secret_hash)
     if pending is None:
