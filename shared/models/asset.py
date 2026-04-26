@@ -17,6 +17,7 @@ class AssetType(str, PyEnum):
     WEBPAGE = "webpage"
     STREAM = "stream"          # live stream — played directly via URL
     SAVED_STREAM = "saved_stream"  # captured stream — downloaded & transcoded for offline playback
+    SLIDESHOW = "slideshow"    # synthetic asset — ordered list of image/video sources resolved on the device
 
 
 class VariantStatus(str, PyEnum):
