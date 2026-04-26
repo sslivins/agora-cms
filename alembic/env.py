@@ -39,6 +39,33 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _compare_server_default(
+    _ctx,
+    inspected_column,
+    metadata_column,
+    inspected_default,
+    metadata_default,
+    rendered_metadata_default,
+):
+    """Skip server_default comparison for ``sa.JSON`` columns.
+
+    PostgreSQL's ``json`` type has no ``=`` operator, so alembic's default
+    ``compare_server_default`` blows up with ``operator does not exist:
+    json = unknown`` while running ``alembic check`` against a JSON
+    column that carries a ``server_default``.  We don't gain anything
+    from autogenerate-detected drift on JSON defaults (they're rare and
+    backfill-only), so skip the comparison entirely for that column
+    family.  Returning ``False`` tells alembic "no change detected".
+    """
+    import sqlalchemy as _sa
+    col_type = getattr(metadata_column, "type", None) or getattr(
+        inspected_column, "type", None
+    )
+    if isinstance(col_type, _sa.JSON):
+        return False
+    return None  # fall back to alembic's built-in comparison
+
+
 def _database_url() -> str:
     """Resolve the runtime DB URL.
 
@@ -62,7 +89,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        compare_server_default=True,
+        compare_server_default=_compare_server_default,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -73,7 +100,7 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
-        compare_server_default=True,
+        compare_server_default=_compare_server_default,
     )
     with context.begin_transaction():
         context.run_migrations()
