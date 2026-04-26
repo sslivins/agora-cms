@@ -630,6 +630,85 @@ class TestAdopt:
         )
         assert r2.status_code == 409
 
+    async def test_adoption_cleans_up_stale_pending_rows_for_same_device(
+        self, client, fleet_secret_enabled, stub_wps_transport,
+        db_session, unauthed_client,
+    ):
+        """Regression: when a Pi cycles through register attempts (e.g.
+        before a factory reset or firmware upgrade), each fresh pairing
+        secret creates a new pending_registrations row for the same
+        device_id.  Adopting the latest one must clean up the stale
+        un-adopted siblings; otherwise they linger until the 24h TTL
+        and the operator sees the device on /devices Pending Devices
+        even after a successful adopt.
+        """
+        from cms.models.pending_registration import PendingRegistration
+        from sqlalchemy import select
+
+        # First register: stale row, never adopted (e.g. pre-reset).
+        _, _, stale_hash, _ = await _register_one(
+            unauthed_client, device_id="pi-recycled",
+        )
+
+        # Second register: different keypair + secret, same device_id
+        # (e.g. post-factory-reset).  Creates a second pending row.
+        priv2, pub_b64_2 = _gen_keypair()
+        secret2, hash2 = _pairing_pair()
+        headers2 = _fleet_headers(
+            device_id="pi-recycled", pubkey_b64=pub_b64_2,
+            pairing_secret_hash_hex=hash2,
+        )
+        r = await unauthed_client.post(
+            "/api/devices/register",
+            json={"device_id": "pi-recycled", "pubkey": pub_b64_2,
+                  "pairing_secret_hash": hash2},
+            headers=headers2,
+        )
+        assert r.status_code == 202
+
+        # Sanity: both rows exist, both un-adopted.
+        rows = (
+            await db_session.execute(
+                select(PendingRegistration).where(
+                    PendingRegistration.device_id == "pi-recycled",
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        assert all(r.adopted_at is None for r in rows)
+
+        # Adopt the second (current) one.
+        profile = await _seed_profile(db_session, name="cleanup")
+        adopt_resp = await client.post(
+            "/api/devices/adopt",
+            json={"pairing_secret": secret2,
+                  "profile_id": str(profile.id)},
+        )
+        assert adopt_resp.status_code == 200, adopt_resp.text
+
+        # Stale row must be gone; adopted row must remain with
+        # adopted_at + outbox payload intact.
+        db_session.expire_all()
+        rows = (
+            await db_session.execute(
+                select(PendingRegistration).where(
+                    PendingRegistration.device_id == "pi-recycled",
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1, (
+            f"expected stale un-adopted row to be deleted; got "
+            f"{[(str(r.id), r.adopted_at) for r in rows]}"
+        )
+        assert rows[0].pairing_secret_hash == hash2
+        assert rows[0].adopted_at is not None
+        assert rows[0].outbox_ciphertext
+
+        # And /pending must not list the device any more.
+        listed = await client.get("/api/devices/pending")
+        assert listed.status_code == 200
+        assert listed.json() == {"items": []}
+
 
 # ---------------------------------------------------------------------
 # /pending + /adopt-pending + DELETE /pending/{id}
