@@ -143,6 +143,27 @@
     padding: 0;
 }
 .ssb-slot-remove:hover { background: #c0392b; }
+.ssb-slot-move {
+    position: absolute;
+    bottom: 0.3rem;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    border: none;
+    width: 1.4rem;
+    height: 1.4rem;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.ssb-slot-move:hover:not(:disabled) { background: rgba(0,0,0,0.9); }
+.ssb-slot-move:disabled { opacity: 0.3; cursor: not-allowed; }
+.ssb-slot-move.left  { left: 0.3rem; }
+.ssb-slot-move.right { right: 0.3rem; }
 .ssb-slot-meta {
     padding: 0.4rem 0.5rem;
     background: #1a1a1a;
@@ -551,6 +572,8 @@ function makeSlot(s, i) {
             ${thumb}
             <div class="ssb-slot-pos">${i + 1}</div>
             <button type="button" class="ssb-slot-remove" title="Remove" aria-label="Remove">✕</button>
+            <button type="button" class="ssb-slot-move left"  title="Move left"  aria-label="Move left"  ${i === 0 ? 'disabled' : ''}>‹</button>
+            <button type="button" class="ssb-slot-move right" title="Move right" aria-label="Move right" ${i === slides.length - 1 ? 'disabled' : ''}>›</button>
         </div>
         <div class="ssb-slot-meta">
             <div class="ssb-slot-name" title="${escapeHtml(s.source_filename || '')}">${escapeHtml(s.source_filename || s.source_asset_id)}</div>
@@ -567,6 +590,14 @@ function makeSlot(s, i) {
     slot.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
         e.stopPropagation();
         removeSlide(i);
+    });
+    slot.querySelector('.ssb-slot-move.left').addEventListener('click', (e) => {
+        e.stopPropagation();
+        moveSlide(i, -1);
+    });
+    slot.querySelector('.ssb-slot-move.right').addEventListener('click', (e) => {
+        e.stopPropagation();
+        moveSlide(i, +1);
     });
     slot.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
     const pte = slot.querySelector('input[type=checkbox]');
@@ -751,6 +782,19 @@ function reorderSlide(fromIdx, dropIdx) {
     if (target === fromIdx) return;
     const [moved] = slides.splice(fromIdx, 1);
     slides.splice(target, 0, moved);
+    markDirty();
+    renderTimeline();
+}
+
+// Nudge a slide one position left (-1) or right (+1) via the slot's
+// arrow buttons — drag-and-drop is the other way to reorder.
+function moveSlide(i, dir) {
+    const j = i + dir;
+    if (i < 0 || i >= slides.length) return;
+    if (j < 0 || j >= slides.length) return;
+    const tmp = slides[i];
+    slides[i] = slides[j];
+    slides[j] = tmp;
     markDirty();
     renderTimeline();
 }
