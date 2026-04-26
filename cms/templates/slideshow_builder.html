@@ -216,21 +216,19 @@
     border-radius: 0.3rem;
     pointer-events: none;
 }
-/* Transition picker popup */
+/* Transition picker popup (uses popover API → renders in top layer, never clipped) */
 .ssb-trans-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
+    position: fixed;
+    margin: 0;
+    inset: auto;
     background: #1f1f1f;
     border: 1px solid #444;
     border-radius: 0.35rem;
     padding: 0.25rem 0;
-    min-width: 150px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-    z-index: 50;
+    min-width: 160px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
 }
-.ssb-trans-menu[hidden] { display: none; }
+.ssb-trans-menu:not(:popover-open) { display: none; }
 .ssb-trans-opt {
     display: flex;
     align-items: center;
@@ -607,7 +605,7 @@ function makeGap(index, isLeading) {
         gap.innerHTML = `
             <button type="button" class="ssb-gap-btn"
                     title="${current.label} transition — click to change">${current.icon}</button>
-            <div class="ssb-trans-menu" hidden role="menu"></div>`;
+            <div class="ssb-trans-menu" popover="auto" role="menu"></div>`;
         const btn = gap.querySelector('.ssb-gap-btn');
         const menu = gap.querySelector('.ssb-trans-menu');
         SS_TRANSITIONS.forEach(t => {
@@ -624,7 +622,7 @@ function makeGap(index, isLeading) {
                 e.stopPropagation();
                 if (!t.enabled) return;
                 if (slides[slideIdx]) slides[slideIdx].transition = t.id;
-                menu.hidden = true;
+                try { menu.hidePopover(); } catch {}
                 btn.textContent = t.icon;
                 btn.title = `${t.label} transition — click to change`;
             });
@@ -632,9 +630,18 @@ function makeGap(index, isLeading) {
         });
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            // Close any other open menus first
-            document.querySelectorAll('.ssb-trans-menu').forEach(m => { if (m !== menu) m.hidden = true; });
-            menu.hidden = !menu.hidden;
+            const open = menu.matches(':popover-open');
+            // Close any other open transition menus
+            document.querySelectorAll('.ssb-trans-menu').forEach(m => {
+                if (m !== menu) { try { m.hidePopover(); } catch {} }
+            });
+            if (open) { menu.hidePopover(); return; }
+            // Position the popover under the button (popover starts in top layer; we set fixed coords).
+            const r = btn.getBoundingClientRect();
+            menu.style.top = (r.bottom + 6) + 'px';
+            menu.style.left = (r.left + r.width / 2) + 'px';
+            menu.style.transform = 'translateX(-50%)';
+            try { menu.showPopover(); } catch {}
         });
     }
     wireDropZone(gap, index);
@@ -839,10 +846,6 @@ function openGroupPopup(id) {
 document.addEventListener('DOMContentLoaded', () => {
     renderTimeline();
     loadAvailableAssets();
-    // Close any open transition menus on outside click
-    document.addEventListener('click', () => {
-        document.querySelectorAll('.ssb-trans-menu').forEach(m => { m.hidden = true; });
-    });
 });
 </script>
 {% endblock %}
