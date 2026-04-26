@@ -1,6 +1,290 @@
 {% extends "base.html" %}
 {% block title %}{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %} — Agora CMS{% endblock %}
 {% block content %}
+<style>
+/* --- Slideshow builder visual styles --- */
+.ssb-library {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.6rem;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 0.5rem;
+    background: var(--bg-elev, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 0.4rem;
+}
+.ssb-lib-tile {
+    position: relative;
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 0.3rem;
+    overflow: hidden;
+    cursor: grab;
+    user-select: none;
+    transition: transform 0.08s, box-shadow 0.08s, border-color 0.08s;
+}
+.ssb-lib-tile:hover {
+    border-color: #16a085;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(22,160,133,0.2);
+}
+.ssb-lib-tile:active { cursor: grabbing; }
+.ssb-lib-tile.ssb-dragging { opacity: 0.4; }
+.ssb-lib-thumb {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+    background: #111;
+    display: block;
+    pointer-events: none;
+}
+.ssb-lib-meta {
+    padding: 0.3rem 0.4rem;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    background: #1a1a1a;
+}
+.ssb-lib-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ssb-lib-type {
+    color: #888;
+    font-size: 0.7rem;
+}
+.ssb-lib-empty {
+    grid-column: 1 / -1;
+    padding: 1rem;
+    text-align: center;
+    color: #888;
+    font-size: 0.85rem;
+}
+.ssb-type-icon {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.7rem;
+    border-radius: 0.25rem;
+    pointer-events: none;
+}
+
+/* --- Film-strip timeline --- */
+.ssb-timeline-wrap {
+    margin-top: 0.5rem;
+    padding: 0.75rem 0.5rem;
+    background: linear-gradient(#0d0d0d, #181818);
+    border: 1px solid #2a2a2a;
+    border-radius: 0.4rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+.ssb-timeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-height: 200px;
+}
+.ssb-slot {
+    flex: 0 0 180px;
+    display: flex;
+    flex-direction: column;
+    background: #222;
+    border: 2px solid #333;
+    border-radius: 0.4rem;
+    overflow: hidden;
+    cursor: grab;
+    transition: border-color 0.1s, transform 0.08s;
+}
+.ssb-slot:hover { border-color: #16a085; }
+.ssb-slot.ssb-dragging { opacity: 0.4; }
+.ssb-slot-thumb-wrap {
+    position: relative;
+    background: #000;
+    aspect-ratio: 16/9;
+    overflow: hidden;
+}
+.ssb-slot-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+}
+.ssb-slot-pos {
+    position: absolute;
+    top: 0.3rem;
+    left: 0.3rem;
+    background: rgba(0,0,0,0.75);
+    color: #fff;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+    font-weight: bold;
+    border-radius: 0.25rem;
+}
+.ssb-slot-remove {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    background: rgba(231, 76, 60, 0.9);
+    color: #fff;
+    border: none;
+    width: 1.4rem;
+    height: 1.4rem;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.ssb-slot-remove:hover { background: #c0392b; }
+.ssb-slot-meta {
+    padding: 0.4rem 0.5rem;
+    background: #1a1a1a;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+}
+.ssb-slot-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #ccc;
+}
+.ssb-slot-dur {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+.ssb-slot-dur input[type=number] {
+    width: 4.5rem;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.8rem;
+    background: #2a2a2a;
+    color: #eee;
+    border: 1px solid #444;
+    border-radius: 0.2rem;
+}
+.ssb-slot-dur input[type=number]:disabled { opacity: 0.5; }
+.ssb-slot-pte {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.72rem;
+    color: #aaa;
+}
+
+/* Transition gap between slots */
+.ssb-gap {
+    flex: 0 0 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+.ssb-gap-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #333;
+    border: 1px solid #555;
+    color: #ccc;
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.1s, border-color 0.1s;
+}
+.ssb-gap-btn:hover {
+    background: #16a085;
+    border-color: #16a085;
+    color: #fff;
+}
+.ssb-gap-label {
+    position: absolute;
+    bottom: -1.2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.65rem;
+    color: #777;
+    white-space: nowrap;
+}
+.ssb-gap.ssb-drop-active::before {
+    content: '';
+    position: absolute;
+    inset: -4px 8px;
+    background: rgba(22,160,133,0.5);
+    border-radius: 0.3rem;
+    pointer-events: none;
+}
+
+/* Drop zone at end of timeline / when empty */
+.ssb-end {
+    flex: 0 0 180px;
+    min-height: 180px;
+    border: 2px dashed #444;
+    border-radius: 0.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #666;
+    font-size: 0.8rem;
+    padding: 1rem;
+    transition: border-color 0.1s, background 0.1s, color 0.1s;
+}
+.ssb-end.ssb-drop-active {
+    border-color: #16a085;
+    background: rgba(22,160,133,0.15);
+    color: #16a085;
+}
+.ssb-empty-message {
+    flex: 1;
+    align-self: center;
+    color: #888;
+    text-align: center;
+    padding: 2rem;
+    font-size: 0.9rem;
+}
+
+/* Header strip with totals */
+.ssb-timeline-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1rem;
+    margin-bottom: 0.4rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.ssb-timeline-head h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+.ssb-totals {
+    font-size: 0.85rem;
+    color: #aaa;
+}
+.ssb-totals strong { color: #16a085; }
+
+/* Group + name fields keep classic look */
+.ssb-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+}
+.ssb-toolbar > * { flex: 1; min-width: 200px; }
+</style>
+
 <h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}</h1>
 <div class="sub-tabs">
     <a href="/assets" class="sub-tab">← Back to Assets</a>
@@ -8,67 +292,67 @@
 
 <div class="card">
     <form id="slideshow-form" onsubmit="event.preventDefault(); saveSlideshow();">
-        <div class="form-group">
-            <label for="ss-name">Name</label>
-            <input type="text" id="ss-name" class="form-control" maxlength="200" required
-                   value="{{ asset_name }}" placeholder="My Slideshow">
-        </div>
-
-        {% if user_groups | length > 0 and not edit_mode %}
-        <div class="form-group">
-            <label>Assign to groups</label>
-            <div id="ss-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; min-height:1.6rem; align-items:center;">
-                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
-                    <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('ss-group-popup')" title="Add group">+</button>
-                    <div id="ss-group-popup" popover class="group-popup">
-                        {% for g in user_groups %}
-                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
-                                onclick="event.stopPropagation(); pickSsGroup('{{ g.id }}', '{{ g.name | replace("'", "\\'") }}')">{{ g.name }}</button>
-                        {% endfor %}
-                    </div>
-                </span>
+        <div class="ssb-toolbar">
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="ss-name">Name</label>
+                <input type="text" id="ss-name" class="form-control" maxlength="200" required
+                       value="{{ asset_name }}" placeholder="My Slideshow">
             </div>
-            {% if is_admin %}
-            <p class="text-muted" style="margin-top:0.5rem; font-size:0.85rem;">
-                ℹ️ Leave groups empty to make this slideshow Global (visible to all).
-            </p>
+
+            {% if user_groups | length > 0 and not edit_mode %}
+            <div class="form-group" style="margin-bottom:0;">
+                <label>Assign to groups</label>
+                <div id="ss-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; min-height:1.6rem; align-items:center;">
+                    <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                        <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('ss-group-popup')" title="Add group">+</button>
+                        <div id="ss-group-popup" popover class="group-popup">
+                            {% for g in user_groups %}
+                            <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                    onclick="event.stopPropagation(); pickSsGroup('{{ g.id }}', '{{ g.name | replace("'", "\\'") }}')">{{ g.name }}</button>
+                            {% endfor %}
+                        </div>
+                    </span>
+                </div>
+                {% if is_admin %}
+                <p class="text-muted" style="margin-top:0.25rem; font-size:0.8rem;">
+                    Leave empty to make Global.
+                </p>
+                {% endif %}
+            </div>
             {% endif %}
         </div>
-        {% endif %}
         {% if edit_mode %}
-        <p class="text-muted" style="font-size:0.85rem">
+        <p class="text-muted" style="font-size:0.85rem; margin-top:0.5rem;">
             Group assignments and rename are managed via the Assets page actions.
         </p>
         {% endif %}
 
-        <div class="form-group" style="margin-top:1rem;">
-            <label>Slides <span class="text-muted" id="ss-counter" style="font-weight:normal">0 / 50</span></label>
-            <div style="display:flex; gap:0.5rem; align-items:flex-end; margin-bottom:0.5rem;">
-                <div style="flex:1;">
-                    <select id="ss-source-picker" class="form-control">
-                        <option value="">— Choose an image or video —</option>
-                    </select>
-                </div>
-                <button type="button" class="btn btn-primary" onclick="addSlideFromPicker()">+ Add Slide</button>
+        <div style="margin-top:1.25rem;">
+            <h3 style="margin:0 0 0.5rem; font-size:1rem;">
+                Library
+                <span class="text-muted" style="font-weight:normal; font-size:0.85rem;">— drag onto the timeline, or click to append</span>
+            </h3>
+            <div id="ss-library" class="ssb-library">
+                <div class="ssb-lib-empty">Loading library…</div>
             </div>
-            <table id="ss-slides-table" style="width:100%; border-collapse: collapse;">
-                <thead>
-                    <tr>
-                        <th style="width:3rem;">#</th>
-                        <th>Source</th>
-                        <th style="width:9rem;">Duration (s)</th>
-                        <th style="width:8rem;">Play to End</th>
-                        <th style="width:11rem;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="ss-slides-body"></tbody>
-            </table>
-            <p class="text-muted" id="ss-empty-hint" style="margin-top:0.5rem; font-size:0.85rem;">
-                Add at least one slide. Total duration: <span id="ss-total">0.0s</span>
-            </p>
         </div>
 
-        <div id="ss-status" class="form-status"></div>
+        <div class="ssb-timeline-head">
+            <h3>Timeline</h3>
+            <div class="ssb-totals">
+                <span id="ss-counter">0 / 50 slides</span>
+                &nbsp;·&nbsp;
+                Total: <strong id="ss-total">0.0s</strong>
+            </div>
+        </div>
+        <div id="ss-timeline-wrap" class="ssb-timeline-wrap">
+            <div id="ss-timeline" class="ssb-timeline"></div>
+        </div>
+
+        <!-- Hidden table marker preserved for tests / future fallback -->
+        <div id="ss-slides-table" hidden></div>
+
+        <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
             <button type="submit" class="btn btn-primary" id="ss-submit">{% if edit_mode %}Save{% else %}Create{% endif %}</button>
             <a href="/assets" class="btn btn-secondary">Cancel</a>
@@ -82,11 +366,13 @@ const SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
 const SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
 const SS_MAX_SLIDES = 50;
 
-// State: array of {source_asset_id, duration_ms, play_to_end, source_filename, source_asset_type, source_duration_seconds}
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
-let availableAssets = []; // populated from /api/assets
-let selectedGroupIds = []; // for create mode
-let isGlobal = false;
+let availableAssets = [];
+let selectedGroupIds = [];
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 
 function fmtDur(s) {
     if (!s && s !== 0) return '—';
@@ -95,78 +381,215 @@ function fmtDur(s) {
     return m + 'm ' + r.toFixed(0) + 's';
 }
 
-function renderSlides() {
-    const body = document.getElementById('ss-slides-body');
-    body.innerHTML = '';
-    let totalMs = 0;
+function thumbHtml(asset) {
+    const url = `/api/assets/${asset.id}/preview`;
+    if (asset.asset_type === 'image') {
+        return `<img class="ssb-lib-thumb" src="${url}" alt="" loading="lazy">`;
+    }
+    if (asset.asset_type === 'video') {
+        // <video> with preload=metadata typically renders the first frame as poster
+        return `<video class="ssb-lib-thumb" src="${url}" preload="metadata" muted playsinline></video>`;
+    }
+    return `<div class="ssb-lib-thumb" style="display:flex;align-items:center;justify-content:center;color:#666;">No preview</div>`;
+}
+
+function renderLibrary() {
+    const root = document.getElementById('ss-library');
+    if (!availableAssets.length) {
+        root.innerHTML = '<div class="ssb-lib-empty">No images or videos in your library yet. Upload some on the Assets page first.</div>';
+        return;
+    }
+    root.innerHTML = '';
+    availableAssets.forEach(a => {
+        const tile = document.createElement('div');
+        tile.className = 'ssb-lib-tile';
+        tile.draggable = true;
+        tile.dataset.assetId = a.id;
+        const name = a.display_name || a.original_filename || a.filename;
+        tile.title = `${name}\nClick to append, or drag onto the timeline`;
+        tile.innerHTML = `
+            ${thumbHtml(a)}
+            <div class="ssb-type-icon">${a.asset_type === 'video' ? '▶' : '🖼'}</div>
+            <div class="ssb-lib-meta">
+                <div class="ssb-lib-name">${escapeHtml(name)}</div>
+                <div class="ssb-lib-type">${a.asset_type}${a.duration_seconds ? ' · ' + fmtDur(a.duration_seconds) : ''}</div>
+            </div>`;
+        tile.addEventListener('click', () => addSlideFromAsset(a.id, slides.length));
+        tile.addEventListener('dragstart', (e) => {
+            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.setData('application/x-slideshow-source', JSON.stringify({kind: 'library', asset_id: a.id}));
+            tile.classList.add('ssb-dragging');
+        });
+        tile.addEventListener('dragend', () => tile.classList.remove('ssb-dragging'));
+        root.appendChild(tile);
+    });
+}
+
+function renderTimeline() {
+    const root = document.getElementById('ss-timeline');
+    root.innerHTML = '';
+
+    if (slides.length === 0) {
+        const end = document.createElement('div');
+        end.className = 'ssb-end';
+        end.dataset.dropIndex = '0';
+        end.innerHTML = '🎬 Drag a clip from the library to begin';
+        wireDropZone(end, 0);
+        root.appendChild(end);
+        updateTotals();
+        return;
+    }
+
+    // Leading drop zone (before first slot)
+    root.appendChild(makeGap(0, /*isLeading*/ true));
+
     slides.forEach((s, i) => {
-        const dur = s.play_to_end && s.source_asset_type === 'video' && s.source_duration_seconds
+        root.appendChild(makeSlot(s, i));
+        // Gap after this slot — last gap doubles as the "append" drop zone
+        root.appendChild(makeGap(i + 1, false));
+    });
+
+    updateTotals();
+}
+
+function makeSlot(s, i) {
+    const slot = document.createElement('div');
+    slot.className = 'ssb-slot';
+    slot.draggable = true;
+    slot.dataset.slotIndex = String(i);
+
+    const isVideo = s.source_asset_type === 'video';
+    const previewUrl = `/api/assets/${s.source_asset_id}/preview`;
+    const thumb = isVideo
+        ? `<video class="ssb-slot-thumb" src="${previewUrl}" preload="metadata" muted playsinline></video>`
+        : `<img class="ssb-slot-thumb" src="${previewUrl}" alt="" loading="lazy">`;
+    const effectiveSec = s.play_to_end && isVideo && s.source_duration_seconds
+        ? s.source_duration_seconds
+        : (s.duration_ms / 1000);
+
+    slot.innerHTML = `
+        <div class="ssb-slot-thumb-wrap">
+            ${thumb}
+            <div class="ssb-slot-pos">${i + 1}</div>
+            <button type="button" class="ssb-slot-remove" title="Remove" aria-label="Remove">✕</button>
+        </div>
+        <div class="ssb-slot-meta">
+            <div class="ssb-slot-name" title="${escapeHtml(s.source_filename || '')}">${escapeHtml(s.source_filename || s.source_asset_id)}</div>
+            <div class="ssb-slot-dur">
+                <input type="number" min="0.5" max="3600" step="0.1"
+                       value="${effectiveSec.toFixed(1)}"
+                       ${s.play_to_end && isVideo ? 'disabled' : ''}
+                       aria-label="Duration in seconds">
+                <span style="color:#888;">s</span>
+            </div>
+            <label class="ssb-slot-pte" title="${isVideo ? 'Play the full video' : 'Video only'}">
+                <input type="checkbox" ${s.play_to_end ? 'checked' : ''} ${isVideo ? '' : 'disabled'}>
+                <span>play to end</span>
+            </label>
+        </div>`;
+
+    slot.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeSlide(i);
+    });
+    slot.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
+    slot.querySelector('input[type=checkbox]').addEventListener('change', (e) => updateSlidePlayToEnd(i, e.target.checked));
+
+    slot.addEventListener('dragstart', (e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('application/x-slideshow-source', JSON.stringify({kind: 'reorder', from_index: i}));
+        slot.classList.add('ssb-dragging');
+    });
+    slot.addEventListener('dragend', () => slot.classList.remove('ssb-dragging'));
+
+    return slot;
+}
+
+function makeGap(index, isLeading) {
+    const gap = document.createElement('div');
+    gap.className = 'ssb-gap';
+    gap.dataset.dropIndex = String(index);
+    if (isLeading) {
+        // Leading drop zone is small + invisible; no transition button there
+        gap.innerHTML = '';
+        gap.style.flex = '0 0 12px';
+    } else {
+        gap.innerHTML = `
+            <button type="button" class="ssb-gap-btn" title="Transition (Cut). More transitions coming soon.">+</button>
+            <span class="ssb-gap-label">Cut</span>`;
+        gap.querySelector('.ssb-gap-btn').addEventListener('click', () => {
+            setStatus('Only "Cut" transitions are supported today. More coming soon.', false);
+        });
+    }
+    wireDropZone(gap, index);
+    return gap;
+}
+
+function wireDropZone(el, dropIndex) {
+    el.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('application/x-slideshow-source')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = el.classList.contains('ssb-end') ? 'copy' : 'copy';
+        el.classList.add('ssb-drop-active');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('ssb-drop-active'));
+    el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        el.classList.remove('ssb-drop-active');
+        const raw = e.dataTransfer.getData('application/x-slideshow-source');
+        if (!raw) return;
+        let payload;
+        try { payload = JSON.parse(raw); } catch { return; }
+        const targetIdx = parseInt(el.dataset.dropIndex, 10);
+        if (payload.kind === 'library') {
+            addSlideFromAsset(payload.asset_id, targetIdx);
+        } else if (payload.kind === 'reorder') {
+            reorderSlide(payload.from_index, targetIdx);
+        }
+    });
+}
+
+function updateTotals() {
+    let totalMs = 0;
+    slides.forEach(s => {
+        const isVideo = s.source_asset_type === 'video';
+        const dur = s.play_to_end && isVideo && s.source_duration_seconds
             ? Math.round(s.source_duration_seconds * 1000)
             : s.duration_ms;
         totalMs += dur;
-        const tr = document.createElement('tr');
-        const isVideo = s.source_asset_type === 'video';
-        tr.innerHTML = `
-            <td>${i+1}</td>
-            <td>${escapeHtml(s.source_filename || s.source_asset_id)} <span class="badge badge-${s.source_asset_type}">${s.source_asset_type}</span></td>
-            <td><input type="number" min="0.5" max="3600" step="0.1" value="${(s.duration_ms/1000).toFixed(1)}"
-                       ${s.play_to_end && isVideo ? 'disabled' : ''}
-                       onchange="updateSlideDuration(${i}, this.value)" class="form-control" style="width:6rem;"></td>
-            <td><label style="display:inline-flex; align-items:center; gap:0.25rem; font-size:0.85rem;">
-                <input type="checkbox" ${s.play_to_end ? 'checked' : ''} ${isVideo ? '' : 'disabled'}
-                       onchange="updateSlidePlayToEnd(${i}, this.checked)">
-                ${isVideo ? '' : '<span class="text-muted">video only</span>'}
-            </label></td>
-            <td>
-                <button type="button" class="btn btn-sm" onclick="moveSlide(${i}, -1)" ${i===0?'disabled':''}>↑</button>
-                <button type="button" class="btn btn-sm" onclick="moveSlide(${i}, 1)" ${i===slides.length-1?'disabled':''}>↓</button>
-                <button type="button" class="btn btn-sm btn-danger" onclick="removeSlide(${i})">✕</button>
-            </td>`;
-        body.appendChild(tr);
     });
     document.getElementById('ss-total').textContent = fmtDur(totalMs / 1000);
-    document.getElementById('ss-counter').textContent = slides.length + ' / ' + SS_MAX_SLIDES;
-}
-
-function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    document.getElementById('ss-counter').textContent = slides.length + ' / ' + SS_MAX_SLIDES + ' slides';
 }
 
 function updateSlideDuration(i, v) {
     const seconds = parseFloat(v);
     if (!isFinite(seconds) || seconds <= 0) return;
     slides[i].duration_ms = Math.round(seconds * 1000);
-    renderSlides();
+    updateTotals();
 }
 
 function updateSlidePlayToEnd(i, checked) {
     slides[i].play_to_end = !!checked;
-    renderSlides();
-}
-
-function moveSlide(i, dir) {
-    const j = i + dir;
-    if (j < 0 || j >= slides.length) return;
-    [slides[i], slides[j]] = [slides[j], slides[i]];
-    renderSlides();
+    renderTimeline();
 }
 
 function removeSlide(i) {
     slides.splice(i, 1);
-    renderSlides();
+    renderTimeline();
 }
 
-function addSlideFromPicker() {
-    const sel = document.getElementById('ss-source-picker');
-    const id = sel.value;
-    if (!id) return;
+function addSlideFromAsset(assetId, atIndex) {
     if (slides.length >= SS_MAX_SLIDES) {
         setStatus('Slide cap reached (' + SS_MAX_SLIDES + ').', true);
         return;
     }
-    const a = availableAssets.find(x => x.id === id);
-    if (!a) return;
-    slides.push({
+    const a = availableAssets.find(x => x.id === assetId);
+    if (!a) {
+        setStatus('Source asset not found in library.', true);
+        return;
+    }
+    const slide = {
         source_asset_id: a.id,
         duration_ms: a.asset_type === 'video' && a.duration_seconds
             ? Math.round(a.duration_seconds * 1000)
@@ -175,9 +598,23 @@ function addSlideFromPicker() {
         source_filename: a.display_name || a.original_filename || a.filename,
         source_asset_type: a.asset_type,
         source_duration_seconds: a.duration_seconds,
-    });
-    sel.value = '';
-    renderSlides();
+    };
+    const idx = Math.max(0, Math.min(atIndex, slides.length));
+    slides.splice(idx, 0, slide);
+    setStatus('');
+    renderTimeline();
+}
+
+function reorderSlide(fromIdx, dropIdx) {
+    if (fromIdx < 0 || fromIdx >= slides.length) return;
+    // dropIdx is the index in the post-removal frame of reference for the gap.
+    // Adjust: removing first shifts indices > fromIdx down by 1.
+    let target = dropIdx;
+    if (dropIdx > fromIdx) target -= 1;
+    if (target === fromIdx) return;
+    const [moved] = slides.splice(fromIdx, 1);
+    slides.splice(target, 0, moved);
+    renderTimeline();
 }
 
 async function loadAvailableAssets() {
@@ -188,23 +625,18 @@ async function loadAvailableAssets() {
         availableAssets = (Array.isArray(data) ? data : (data.assets || [])).filter(a =>
             (a.asset_type === 'image' || a.asset_type === 'video') && !a.deleted_at
         );
-        const sel = document.getElementById('ss-source-picker');
-        availableAssets.forEach(a => {
-            const opt = document.createElement('option');
-            opt.value = a.id;
-            const name = a.display_name || a.original_filename || a.filename;
-            opt.textContent = `${name} [${a.asset_type}]`;
-            sel.appendChild(opt);
-        });
+        renderLibrary();
     } catch (e) {
-        setStatus('Failed to load assets: ' + e.message, true);
+        document.getElementById('ss-library').innerHTML =
+            '<div class="ssb-lib-empty" style="color:#e74c3c;">Failed to load assets: ' + escapeHtml(e.message) + '</div>';
     }
 }
 
 function pickSsGroup(id, name) {
     if (!selectedGroupIds.includes(id)) selectedGroupIds.push(id);
     renderGroupBadges();
-    document.getElementById('ss-group-popup').hidePopover && document.getElementById('ss-group-popup').hidePopover();
+    const popup = document.getElementById('ss-group-popup');
+    if (popup && popup.hidePopover) popup.hidePopover();
 }
 
 function renderGroupBadges() {
@@ -289,7 +721,7 @@ function openGroupPopup(id) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    renderSlides();
+    renderTimeline();
     loadAvailableAssets();
 });
 </script>
