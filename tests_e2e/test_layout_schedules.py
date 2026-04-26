@@ -95,27 +95,18 @@ def _schedules_seed(api, ws_url):
         group = group_resp.json()
     api.patch(f"/api/devices/{device_id}", json={"group_id": group["id"]})
 
-    # Asset.  Filter out webpage assets up-front: the schedules API
-    # rejects webpage targets on non-Pi-5 device groups with HTTP 422,
-    # and our seeded device above (``layout-444-device``) has no
-    # ``hw_model`` set so it fails the Pi-5 check.  Without this filter
-    # we'd accidentally schedule a webpage asset left behind by
-    # ``test_layout_assets.py`` and bring the whole class of tests down.
-    assets = [
-        a for a in api.get("/api/assets").json()
-        if (a.get("asset_type") or "").upper() != "WEBPAGE"
-    ]
-    if not assets:
-        api.create_asset(_LONG_ASSET)
-        assets = [
-            a for a in api.get("/api/assets").json()
-            if (a.get("asset_type") or "").upper() != "WEBPAGE"
-        ]
-        if not assets:
-            pytest.skip("Could not create test asset")
-    asset = assets[0]
-    # If asset already exists from a prior test, give it a long display
-    # name so the Asset column is forced wider.
+    # Asset.  Always create a fresh ready asset rather than reusing
+    # ``assets[0]``: prior tests may have left behind assets that the
+    # schedules API rejects with HTTP 422 — either webpage assets
+    # (Pi-5-only validation against our seeded device) or assets whose
+    # variants are still PENDING/PROCESSING (transcode-readiness gate
+    # from #312). ``api.create_asset`` defaults to ``ready=True`` and
+    # marks all variants READY in the DB so the schedule POST succeeds
+    # regardless of what's been created earlier in the same session.
+    asset_resp = api.create_asset(_LONG_ASSET)
+    if asset_resp.status_code != 201:
+        pytest.skip(f"Could not create test asset: {asset_resp.status_code} {asset_resp.text}")
+    asset = asset_resp.json()
     api.patch(f"/api/assets/{asset['id']}", json={"display_name": _LONG_ASSET})
 
     # Active schedule with width-stressing name.  Distinct priorities
