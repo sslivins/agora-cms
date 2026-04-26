@@ -182,11 +182,13 @@
 
 /* Transition gap between slots */
 .ssb-gap {
-    flex: 0 0 36px;
+    flex: 0 0 auto;
+    min-width: 60px;
     display: flex;
     align-items: center;
     justify-content: center;
     position: relative;
+    padding: 0 0.3rem;
 }
 .ssb-gap-btn {
     width: 28px;
@@ -209,13 +211,10 @@
     color: #fff;
 }
 .ssb-gap-label {
-    position: absolute;
-    bottom: -1.2rem;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 0.65rem;
-    color: #777;
+    font-size: 0.7rem;
+    color: #888;
     white-space: nowrap;
+    margin-right: 0.3rem;
 }
 .ssb-gap.ssb-drop-active::before {
     content: '';
@@ -553,8 +552,8 @@ function makeGap(index, isLeading) {
         gap.style.flex = '0 0 12px';
     } else {
         gap.innerHTML = `
-            <button type="button" class="ssb-gap-btn" title="Transition (Cut). More transitions coming soon.">+</button>
-            <span class="ssb-gap-label">Cut</span>`;
+            <span class="ssb-gap-label">Cut</span>
+            <button type="button" class="ssb-gap-btn" title="Transition (Cut). More transitions coming soon.">+</button>`;
         gap.querySelector('.ssb-gap-btn').addEventListener('click', () => {
             setStatus('Only "Cut" transitions are supported today. More coming soon.', false);
         });
