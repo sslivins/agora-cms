@@ -248,8 +248,23 @@ async def assets_status_json(
         )
         .order_by(Asset.uploaded_at.desc())
     )
+    all_assets = result.scalars().all()
+
+    # Slide counts for slideshow assets so the page poller can re-render the
+    # "N slides" badge without it flipping back to "none" (the JS poller
+    # would otherwise treat a slideshow with 0 variants as a generic asset).
+    slide_counts: dict = {}
+    slideshow_ids = [a.id for a in all_assets if a.asset_type == AssetType.SLIDESHOW]
+    if slideshow_ids:
+        sc_rows = (await db.execute(
+            select(SlideshowSlide.slideshow_asset_id, sa_func.count())
+            .where(SlideshowSlide.slideshow_asset_id.in_(slideshow_ids))
+            .group_by(SlideshowSlide.slideshow_asset_id)
+        )).all()
+        slide_counts = {sid: cnt for sid, cnt in sc_rows}
+
     assets_detail = []
-    for a in result.scalars().all():
+    for a in all_assets:
         # Collapse to newest live row per profile for consistency with
         # the Library template render (cms/ui.py assets_page).
         from cms.services.variant_view import collapse_to_latest
@@ -304,6 +319,7 @@ async def assets_status_json(
                 for ga in a.group_asset_links
                 if user_group_ids is None or ga.group_id in user_group_ids
             ],
+            "slide_count": slide_counts.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
         })
 
     # Compute a hash of group-asset assignments so the poller can detect scope changes
