@@ -2,8 +2,28 @@
 
 import asyncio
 import logging
+import socket
 from collections import deque
 from contextlib import asynccontextmanager
+
+
+def _replica_id() -> str:
+    """Best-effort identifier for *this* process under N>1 replicas.
+
+    Used in ``CMS_STARTED`` / ``CMS_STOPPED`` event details so operators
+    can tell which replica emitted which lifecycle event during a rolling
+    deploy.  Container Apps gives each replica a unique pod-style hostname
+    via ``HOSTNAME``; falls back to ``socket.gethostname()`` for local /
+    docker-compose / unit-test environments.  Returns a non-empty string
+    even on hosts where neither is available so we never write ``None``
+    into the JSONB column.
+    """
+    import os
+    return (
+        os.environ.get("HOSTNAME")
+        or socket.gethostname()
+        or "unknown"
+    )
 
 # ── In-memory log buffer for log download feature ──
 # Per-replica ring buffer. Under multi-replica deployments each replica
@@ -566,7 +586,7 @@ async def lifespan(app: FastAPI):
                 group_id=None,
                 group_name="",
                 event_type=DeviceEventType.CMS_STARTED,
-                details={"version": __version__},
+                details={"version": __version__, "replica_id": _replica_id()},
             ))
             await db.commit()
             break
@@ -604,7 +624,7 @@ async def lifespan(app: FastAPI):
                 group_id=None,
                 group_name="",
                 event_type=DeviceEventType.CMS_STOPPED,
-                details={"version": __version__},
+                details={"version": __version__, "replica_id": _replica_id()},
             ))
             await db.commit()
             break

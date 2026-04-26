@@ -112,7 +112,7 @@
                     {% elif event.event_type == 'online' %}
                     Back online
                     {% elif event.event_type in ['cms_started', 'cms_stopped'] and event.details and event.details.version %}
-                    Version {{ event.details.version }}
+                    Version {{ event.details.version }}{% if event.details.replica_id %} (replica {{ event.details.replica_id }}){% endif %}
                     {% else %}
                     {{ event.details | tojson if event.details else '—' }}
                     {% endif %}
@@ -224,7 +224,9 @@
         }
         if (ev.event_type === "online") return "Back online";
         if ((ev.event_type === "cms_started" || ev.event_type === "cms_stopped") && d.version) {
-            return `Version ${d.version}`;
+            return d.replica_id
+                ? `Version ${d.version} (replica ${d.replica_id})`
+                : `Version ${d.version}`;
         }
         return ev.details ? JSON.stringify(ev.details) : "—";
     }
