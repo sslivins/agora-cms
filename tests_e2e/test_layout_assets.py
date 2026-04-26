@@ -76,7 +76,19 @@ def _asset_seed(api):
         f"patch display_name: {patch_resp.status_code} {patch_resp.text}"
     )
 
-    return {"id": asset_id, "display_name": _LAYOUT_DISPLAY_NAME}
+    asset = {"id": asset_id, "display_name": _LAYOUT_DISPLAY_NAME}
+    try:
+        yield asset
+    finally:
+        # Clean up so later tests in the same session (e.g.
+        # ``test_layout_schedules.py``) don't pick up our webpage asset
+        # via ``api.get('/api/assets').json()[0]`` and then fail when
+        # the schedules API rejects webpage assets on non-Pi-5 device
+        # groups (HTTP 422). Best-effort delete; ignore failures.
+        try:
+            api.delete(f"/api/assets/{asset_id}")
+        except Exception:
+            pass
 
 
 # ── Page-load helper ──

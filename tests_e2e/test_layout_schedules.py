@@ -95,11 +95,22 @@ def _schedules_seed(api, ws_url):
         group = group_resp.json()
     api.patch(f"/api/devices/{device_id}", json={"group_id": group["id"]})
 
-    # Asset.
-    assets = api.get("/api/assets").json()
+    # Asset.  Filter out webpage assets up-front: the schedules API
+    # rejects webpage targets on non-Pi-5 device groups with HTTP 422,
+    # and our seeded device above (``layout-444-device``) has no
+    # ``hw_model`` set so it fails the Pi-5 check.  Without this filter
+    # we'd accidentally schedule a webpage asset left behind by
+    # ``test_layout_assets.py`` and bring the whole class of tests down.
+    assets = [
+        a for a in api.get("/api/assets").json()
+        if (a.get("asset_type") or "").upper() != "WEBPAGE"
+    ]
     if not assets:
         api.create_asset(_LONG_ASSET)
-        assets = api.get("/api/assets").json()
+        assets = [
+            a for a in api.get("/api/assets").json()
+            if (a.get("asset_type") or "").upper() != "WEBPAGE"
+        ]
         if not assets:
             pytest.skip("Could not create test asset")
     asset = assets[0]
