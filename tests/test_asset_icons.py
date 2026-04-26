@@ -32,6 +32,7 @@ EXPECTED_ICONS = {
     "webpage": "🌐",
     "stream": "📡",
     "saved_stream": "📼",
+    "slideshow": "🎞️",
 }
 
 

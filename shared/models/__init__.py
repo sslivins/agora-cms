@@ -17,3 +17,4 @@ from shared.models.asset import Asset, AssetType, AssetVariant, DeviceAsset, Var
 from shared.models.device_profile import DeviceProfile  # noqa: F401
 from shared.models.group_asset import GroupAsset  # noqa: F401
 from shared.models.job import Job, JobStatus, JobType, MAX_JOB_RETRIES  # noqa: F401
+from shared.models.slideshow_slide import SlideshowSlide  # noqa: F401

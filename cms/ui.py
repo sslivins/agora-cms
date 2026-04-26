@@ -38,7 +38,8 @@ from cms.auth import (
 )
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.asset import Asset, AssetVariant, VariantStatus
+from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, has_permission
 from cms.auth import get_user_group_ids
@@ -88,6 +89,7 @@ _ASSET_ICONS = {
     "webpage": "🌐",
     "stream": "📡",
     "saved_stream": "📼",
+    "slideshow": "🎞️",
 }
 
 
@@ -1309,6 +1311,19 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     )
     sched_counts = dict(sched_counts_q.all())
 
+    # Slide counts for slideshow assets — used by the assets table to show
+    # "N slides" in lieu of a transcoding-status badge.
+    slide_counts: dict = {}
+    if assets:
+        slideshow_ids = [a.id for a in assets if a.asset_type == AssetType.SLIDESHOW]
+        if slideshow_ids:
+            sc_rows = (await db.execute(
+                select(SlideshowSlide.slideshow_asset_id, func.count())
+                .where(SlideshowSlide.slideshow_asset_id.in_(slideshow_ids))
+                .group_by(SlideshowSlide.slideshow_asset_id)
+            )).all()
+            slide_counts = {sid: cnt for sid, cnt in sc_rows}
+
     # Annotate each asset with variant summary + schedule count + group info
     all_group_assets = {}
     if assets:
@@ -1355,6 +1370,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         else:
             a.variant_aggregate_progress = 0.0
         a.schedule_count = sched_counts.get(a.id, 0)
+        a.slide_count = slide_counts.get(a.id, 0)
         entries = all_group_assets.get(a.id, [])
         # Non-admin users should only see group entries for their own groups
         if group_ids is not None:
@@ -1407,6 +1423,115 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 
+
+
+# ── Slideshow builder (create + edit share one template) ──
+
+
+async def _slideshow_builder_context(request, db, *, asset_id=None):
+    """Common context for the slideshow builder template.
+
+    For ``asset_id=None`` the page is in *create* mode; otherwise it's
+    *edit* mode and we fetch the existing asset + slides + group
+    membership so the form can prefill.
+    """
+    user: User | None = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    if group_ids is None:
+        groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    elif group_ids:
+        groups_q = await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids)).order_by(DeviceGroup.name)
+        )
+    else:
+        groups_q = None
+    user_groups = groups_q.scalars().all() if groups_q else []
+
+    ctx = {
+        "active_tab": "assets",
+        "is_admin": is_admin,
+        "user_groups": user_groups,
+        "edit_mode": False,
+        "asset": None,
+        "asset_id": None,
+        "asset_name": "",
+        "slides": [],
+        "asset_groups": [],
+        "asset_is_global": False,
+    }
+
+    if asset_id is not None:
+        asset = (await db.execute(
+            select(Asset).where(
+                Asset.id == asset_id,
+                Asset.deleted_at.is_(None),
+                Asset.asset_type == AssetType.SLIDESHOW,
+            )
+        )).scalar_one_or_none()
+        if asset is None:
+            return None
+        slide_rows = (await db.execute(
+            select(SlideshowSlide, Asset)
+            .join(Asset, Asset.id == SlideshowSlide.source_asset_id)
+            .where(SlideshowSlide.slideshow_asset_id == asset_id)
+            .order_by(SlideshowSlide.position.asc())
+        )).all()
+        slides = []
+        for slide, src in slide_rows:
+            slides.append({
+                "id": str(slide.id),
+                "position": slide.position,
+                "duration_ms": slide.duration_ms,
+                "play_to_end": slide.play_to_end,
+                "source_asset_id": str(slide.source_asset_id),
+                "source_filename": src.display_name or src.original_filename or src.filename,
+                "source_asset_type": src.asset_type.value,
+                "source_duration_seconds": src.duration_seconds,
+            })
+        asset_group_rows = (await db.execute(
+            select(GroupAsset.group_id).where(GroupAsset.asset_id == asset_id)
+        )).scalars().all()
+        ctx.update({
+            "edit_mode": True,
+            "asset": asset,
+            "asset_id": str(asset.id),
+            "asset_name": asset.display_name or asset.original_filename or asset.filename,
+            "slides": slides,
+            "asset_groups": [str(g) for g in asset_group_rows],
+            "asset_is_global": bool(asset.is_global),
+        })
+    return ctx
+
+
+@router.get(
+    "/assets/new/slideshow",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_auth)],
+)
+async def slideshow_builder_new(request: Request, db: AsyncSession = Depends(get_db)):
+    ctx = await _slideshow_builder_context(request, db, asset_id=None)
+    return templates.TemplateResponse(request, "slideshow_builder.html", ctx)
+
+
+@router.get(
+    "/assets/{asset_id}/slideshow",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_auth)],
+)
+async def slideshow_builder_edit(
+    asset_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    import uuid as _uuid
+    try:
+        aid = _uuid.UUID(asset_id)
+    except ValueError:
+        return RedirectResponse("/assets", status_code=303)
+    ctx = await _slideshow_builder_context(request, db, asset_id=aid)
+    if ctx is None:
+        return RedirectResponse("/assets", status_code=303)
+    return templates.TemplateResponse(request, "slideshow_builder.html", ctx)
 
 
 # ── Schedules ──

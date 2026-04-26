@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 # Protocol versioning
 #
@@ -25,6 +25,14 @@ from pydantic import BaseModel
 #        still use the original JSON ``LOGS_RESPONSE`` path.
 PROTOCOL_VERSION = 2
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
+
+# Capability strings advertised by the device in the REGISTER handshake
+# (see ``RegisterMessage.capabilities``).  Used by the CMS to gate features
+# that require specific firmware behaviour.  ``slideshow_v1`` indicates the
+# device can render a slideshow asset whose slides are inlined in a
+# ``FETCH_ASSET`` message.  Older firmware advertises no capabilities and
+# is gated out of slideshow scheduling / default-asset assignment.
+CAPABILITY_SLIDESHOW_V1 = "slideshow_v1"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
 # firmware advertising the ``logs_chunk_v1`` capability sends these as
@@ -86,6 +94,9 @@ class RegisterMessage(BaseMessage):
     device_type: str = ""
     storage_capacity_mb: int
     storage_used_mb: int
+    # Firmware-advertised feature flags.  Older firmware omits this field
+    # and the CMS treats it as an empty list.  See ``CAPABILITY_*`` above.
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class StatusMessage(BaseMessage):
@@ -201,7 +212,51 @@ class FetchAssetMessage(BaseMessage):
     download_url: str
     checksum: str
     size_bytes: int
-    asset_type: Optional[str] = None  # video, image, saved_stream — helps device route to correct dir
+    asset_type: Optional[str] = None  # video, image, saved_stream, slideshow — helps device route to correct dir
+    # Slideshow manifest.  Only present (non-None) when ``asset_type`` is
+    # ``slideshow``: an ordered list of resolved source slides the device
+    # should fetch and play in sequence.  ``download_url`` and
+    # ``size_bytes`` on the outer message are empty/zero for slideshows
+    # (no top-level file); ``checksum`` is the resolved manifest version
+    # (hash of structural metadata + per-slide variant checksums) so the
+    # device can short-circuit when nothing has changed.  Older firmware
+    # without ``slideshow_v1`` capability never receives a slideshow
+    # FETCH_ASSET (capability gate in the scheduler / default-asset
+    # endpoints prevents slideshows being assigned to incompatible
+    # devices in the first place).
+    slides: Optional[list["SlideDescriptor"]] = None
+
+
+class SlideDescriptor(BaseModel):
+    """One slide in a resolved slideshow manifest, sent inside FetchAssetMessage."""
+
+    asset_name: str
+    asset_type: str  # "image" or "video"
+    download_url: str
+    checksum: str
+    size_bytes: int
+    duration_ms: int
+    play_to_end: bool = False
+
+    @model_validator(mode="after")
+    def _validate_invariants(self) -> "SlideDescriptor":
+        if self.asset_type not in ("image", "video"):
+            raise ValueError(
+                f"SlideDescriptor.asset_type must be 'image' or 'video', got {self.asset_type!r}"
+            )
+        if self.duration_ms <= 0:
+            raise ValueError(
+                f"SlideDescriptor.duration_ms must be positive, got {self.duration_ms}"
+            )
+        if self.play_to_end and self.asset_type != "video":
+            raise ValueError(
+                "SlideDescriptor.play_to_end=True is only valid for video sources"
+            )
+        return self
+
+
+# Resolve forward reference now that ``SlideDescriptor`` is defined.
+FetchAssetMessage.model_rebuild()
 
 
 class DeleteAssetMessage(BaseMessage):

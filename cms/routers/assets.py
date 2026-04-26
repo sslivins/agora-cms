@@ -22,8 +22,14 @@ from cms.models.device import Device, DeviceGroup
 from cms.models.device_profile import DeviceProfile
 from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
+from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.user import User
-from cms.schemas.asset import AssetOut
+from cms.schemas.asset import (
+    AssetOut,
+    MAX_SLIDE_DURATION_MS,
+    MAX_SLIDESHOW_SLIDES,
+    SlideIn,
+)
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.storage import get_storage
 
@@ -242,8 +248,23 @@ async def assets_status_json(
         )
         .order_by(Asset.uploaded_at.desc())
     )
+    all_assets = result.scalars().all()
+
+    # Slide counts for slideshow assets so the page poller can re-render the
+    # "N slides" badge without it flipping back to "none" (the JS poller
+    # would otherwise treat a slideshow with 0 variants as a generic asset).
+    slide_counts: dict = {}
+    slideshow_ids = [a.id for a in all_assets if a.asset_type == AssetType.SLIDESHOW]
+    if slideshow_ids:
+        sc_rows = (await db.execute(
+            select(SlideshowSlide.slideshow_asset_id, sa_func.count())
+            .where(SlideshowSlide.slideshow_asset_id.in_(slideshow_ids))
+            .group_by(SlideshowSlide.slideshow_asset_id)
+        )).all()
+        slide_counts = {sid: cnt for sid, cnt in sc_rows}
+
     assets_detail = []
-    for a in result.scalars().all():
+    for a in all_assets:
         # Collapse to newest live row per profile for consistency with
         # the Library template render (cms/ui.py assets_page).
         from cms.services.variant_view import collapse_to_latest
@@ -298,6 +319,7 @@ async def assets_status_json(
                 for ga in a.group_asset_links
                 if user_group_ids is None or ga.group_id in user_group_ids
             ],
+            "slide_count": slide_counts.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
         })
 
     # Compute a hash of group-asset assignments so the poller can detect scope changes
@@ -726,6 +748,523 @@ async def create_stream_asset(
     return asset
 
 
+# ── Slideshow assets ──
+
+
+async def _load_and_validate_slide_sources(
+    slides: list[SlideIn],
+    db: AsyncSession,
+    *,
+    visible_ids: list[uuid.UUID] | None,
+) -> tuple[dict[uuid.UUID, Asset], dict[uuid.UUID, set[uuid.UUID]]]:
+    """Validate the slide list against the source assets it references.
+
+    Returns ``(sources_by_id, source_groups)`` where ``sources_by_id`` maps
+    each source asset id to its loaded ``Asset`` row, and ``source_groups``
+    maps each source id to the set of group ids it has been shared with.
+    Raises HTTPException for any validation failure.
+    """
+    if not slides:
+        raise HTTPException(status_code=400, detail="Slideshow must have at least one slide")
+    if len(slides) > MAX_SLIDESHOW_SLIDES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Slideshow exceeds {MAX_SLIDESHOW_SLIDES} slide cap",
+        )
+
+    source_ids = list({s.source_asset_id for s in slides})
+    rows = (
+        await db.execute(
+            select(Asset).where(Asset.id.in_(source_ids), Asset.deleted_at.is_(None))
+        )
+    ).scalars().all()
+    sources_by_id: dict[uuid.UUID, Asset] = {a.id: a for a in rows}
+
+    missing = [str(s.source_asset_id) for s in slides if s.source_asset_id not in sources_by_id]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source asset(s) not found: {', '.join(sorted(set(missing)))}",
+        )
+
+    for s in slides:
+        src = sources_by_id[s.source_asset_id]
+        if src.asset_type not in (AssetType.IMAGE, AssetType.VIDEO):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Slide source '{src.filename}' has type "
+                    f"{src.asset_type.value}; only image and video are allowed"
+                ),
+            )
+        if s.play_to_end and src.asset_type == AssetType.IMAGE:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Slide source '{src.filename}' is an image; "
+                    "play_to_end is only valid for video sources"
+                ),
+            )
+
+    if visible_ids is not None:
+        visible_set = set(visible_ids)
+        unseen = sorted({
+            str(s.source_asset_id)
+            for s in slides
+            if s.source_asset_id not in visible_set
+        })
+        if unseen:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Not authorised for source asset(s): {', '.join(unseen)}",
+            )
+
+    ga_rows = (
+        await db.execute(
+            select(GroupAsset.asset_id, GroupAsset.group_id).where(
+                GroupAsset.asset_id.in_(source_ids)
+            )
+        )
+    ).all()
+    source_groups: dict[uuid.UUID, set[uuid.UUID]] = {sid: set() for sid in source_ids}
+    for asset_id, group_id in ga_rows:
+        source_groups[asset_id].add(group_id)
+
+    return sources_by_id, source_groups
+
+
+def _validate_slideshow_acl(
+    slideshow_groups: set[uuid.UUID],
+    slideshow_global: bool,
+    sources_by_id: dict[uuid.UUID, Asset],
+    source_groups: dict[uuid.UUID, set[uuid.UUID]],
+) -> None:
+    """Enforce that the slideshow's audience is a subset of every source's audience.
+
+    A user who can see the slideshow can effectively reach each referenced
+    source through it, so the source must already be visible to that user.
+    Sufficient (slightly conservative) rule:
+
+    * Global slideshow → every source must also be global.
+    * Group-scoped slideshow → every source must be global, or shared with
+      a superset of the slideshow's group set.
+    * Personal/unshared slideshow (no groups, not global) → no extra check;
+      ``_load_and_validate_slide_sources`` already required the uploader to
+      have visibility on every source.
+    """
+    if slideshow_global:
+        not_global = sorted(s.filename for s in sources_by_id.values() if not s.is_global)
+        if not_global:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A global slideshow can only reference global source assets. "
+                    f"Not global: {', '.join(not_global)}. Mark these global first."
+                ),
+            )
+        return
+    if not slideshow_groups:
+        return
+    failures: list[str] = []
+    for sid, src in sources_by_id.items():
+        if src.is_global:
+            continue
+        sgroups = source_groups.get(sid, set())
+        if not slideshow_groups.issubset(sgroups):
+            failures.append(src.filename)
+    if failures:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "These source assets are not shared with all of the slideshow's "
+                f"groups: {', '.join(sorted(failures))}. Share them (or mark "
+                "global) first."
+            ),
+        )
+
+
+def _compute_slideshow_duration_seconds(
+    slides: list[SlideIn], sources_by_id: dict[uuid.UUID, Asset]
+) -> float:
+    """Sum slide durations for ``Asset.duration_seconds`` denormalisation.
+
+    For ``play_to_end`` on a video, use the source's known media duration
+    when available; otherwise fall back to the configured ``duration_ms``.
+    Image slides always use the configured duration.
+    """
+    total_ms = 0.0
+    for s in slides:
+        src = sources_by_id[s.source_asset_id]
+        if (
+            s.play_to_end
+            and src.asset_type == AssetType.VIDEO
+            and src.duration_seconds
+        ):
+            total_ms += src.duration_seconds * 1000.0
+        else:
+            total_ms += s.duration_ms
+    return total_ms / 1000.0
+
+
+def _compute_slideshow_manifest_version(
+    slides: list[SlideIn], sources_by_id: dict[uuid.UUID, Asset]
+) -> str:
+    """Structural manifest hash stored on ``Asset.checksum``.
+
+    Hashes ordered slide structure plus each source asset's own checksum
+    so that any change to the slide list (reorder, add/remove, durations,
+    play_to_end) or to a source's content invalidates schedule pushes.
+    The *resolved* per-device checksum (which additionally folds in the
+    selected READY variant checksum for the device's profile) is computed
+    at sync/resolve time on top of this base value.
+    """
+    h = hashlib.sha256()
+    for idx, s in enumerate(slides):
+        src = sources_by_id[s.source_asset_id]
+        src_checksum = src.checksum or ""
+        h.update(
+            f"{idx}|{s.source_asset_id}|{src_checksum}|{s.duration_ms}|"
+            f"{int(s.play_to_end)}|".encode()
+        )
+    return h.hexdigest()
+
+
+async def _revalidate_slideshow_audience(
+    slideshow: Asset, db: AsyncSession
+) -> None:
+    """Re-check the ACL invariant for a slideshow after its audience changed.
+
+    Used when sharing a slideshow with a new group or marking it global.
+    Raises HTTPException(409) if any referenced source no longer covers
+    the slideshow's effective audience, naming the offending sources.
+    """
+    rows = (
+        await db.execute(
+            select(SlideshowSlide.source_asset_id)
+            .where(SlideshowSlide.slideshow_asset_id == slideshow.id)
+            .distinct()
+        )
+    ).scalars().all()
+    if not rows:
+        return
+
+    sources = (
+        await db.execute(
+            select(Asset).where(Asset.id.in_(rows), Asset.deleted_at.is_(None))
+        )
+    ).scalars().all()
+    sources_by_id = {a.id: a for a in sources}
+
+    if slideshow.is_global:
+        not_global = sorted(s.filename for s in sources if not s.is_global)
+        if not_global:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot widen slideshow audience — these source assets "
+                    f"are not global: {', '.join(not_global)}. Mark them "
+                    "global first."
+                ),
+            )
+        return
+
+    slideshow_groups = {
+        gid for (gid,) in (
+            await db.execute(
+                select(GroupAsset.group_id).where(
+                    GroupAsset.asset_id == slideshow.id
+                )
+            )
+        ).all()
+    }
+    if not slideshow_groups:
+        return
+
+    ga_rows = (
+        await db.execute(
+            select(GroupAsset.asset_id, GroupAsset.group_id).where(
+                GroupAsset.asset_id.in_(rows)
+            )
+        )
+    ).all()
+    source_groups: dict[uuid.UUID, set[uuid.UUID]] = {sid: set() for sid in rows}
+    for asset_id, group_id in ga_rows:
+        source_groups[asset_id].add(group_id)
+
+    failures: list[str] = []
+    for sid, src in sources_by_id.items():
+        if src.is_global:
+            continue
+        if not slideshow_groups.issubset(source_groups.get(sid, set())):
+            failures.append(src.filename)
+    if failures:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot widen slideshow audience — these source assets are "
+                f"not shared with all of the slideshow's groups: "
+                f"{', '.join(sorted(failures))}. Share them (or mark "
+                "global) first."
+            ),
+        )
+
+
+@router.post("/slideshow", response_model=AssetOut, status_code=201)
+async def create_slideshow_asset(
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a slideshow asset — a synthetic Asset whose content is an
+    ordered list of existing image/video sources resolved on the device."""
+    body = await request.json()
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Slideshow name is required")
+    if len(name) > 200:
+        raise HTTPException(
+            status_code=400, detail="Slideshow name too long (max 200 characters)"
+        )
+
+    raw_slides = body.get("slides")
+    if not isinstance(raw_slides, list):
+        raise HTTPException(status_code=400, detail="slides must be a list")
+    try:
+        slides = [SlideIn.model_validate(s) for s in raw_slides]
+    except Exception as e:  # pydantic ValidationError or TypeError on bad shapes
+        raise HTTPException(status_code=400, detail=f"Invalid slide payload: {e}")
+
+    visible = await _visible_asset_ids(user, db)
+    sources_by_id, source_groups = await _load_and_validate_slide_sources(
+        slides, db, visible_ids=visible
+    )
+
+    # Resolve groups (mirror create_webpage_asset)
+    resolved_groups: list[uuid.UUID] = []
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    raw_ids = body.get("group_ids", [])
+    if isinstance(raw_ids, str):
+        raw_ids = [g.strip() for g in raw_ids.split(",") if g.strip()]
+    group_id = body.get("group_id")
+    if group_id and not raw_ids:
+        raw_ids = [group_id]
+    for gid in raw_ids:
+        try:
+            parsed_id = uuid.UUID(str(gid))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid group_id: {gid}")
+        if not is_admin and parsed_id not in user_groups:
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        resolved_groups.append(parsed_id)
+
+    make_global = (not resolved_groups and is_admin)
+
+    _validate_slideshow_acl(
+        set(resolved_groups), make_global, sources_by_id, source_groups
+    )
+
+    duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
+    manifest_version = _compute_slideshow_manifest_version(slides, sources_by_id)
+
+    filename = await _unique_filename(db, name)
+
+    asset = Asset(
+        filename=filename,
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum=manifest_version,
+        url=None,
+        duration_seconds=duration_seconds,
+        is_global=make_global,
+        uploaded_by_user_id=user.id,
+    )
+    db.add(asset)
+    await db.flush()
+
+    for gid in resolved_groups:
+        db.add(GroupAsset(asset_id=asset.id, group_id=gid))
+
+    for idx, s in enumerate(slides):
+        db.add(
+            SlideshowSlide(
+                slideshow_asset_id=asset.id,
+                source_asset_id=s.source_asset_id,
+                position=idx,
+                duration_ms=s.duration_ms,
+                play_to_end=s.play_to_end,
+            )
+        )
+
+    await audit_log(
+        db, user=user, action="asset.create_slideshow", resource_type="asset",
+        resource_id=str(asset.id),
+        description=f"Created slideshow asset '{filename}' with {len(slides)} slide(s)",
+        details={
+            "filename": filename,
+            "slide_count": len(slides),
+            "duration_seconds": duration_seconds,
+            "group_ids": [str(g) for g in resolved_groups],
+            "is_global": make_global,
+        },
+        request=request,
+    )
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
+@router.get(
+    "/{asset_id}/slides",
+    dependencies=[Depends(require_permission(ASSETS_READ))],
+)
+async def list_slideshow_slides(
+    asset_id: uuid.UUID,
+    request: Request,
+    profile_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return ordered slides with embedded source metadata.
+
+    When ``profile_id`` is provided, also include a ``readiness`` block
+    enumerating any slides that can't be served on that profile (used by
+    the builder UI and the assets table readiness badge).
+    """
+    await _verify_asset_access(asset_id, request, db)
+    asset = (
+        await db.execute(
+            select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.asset_type != AssetType.SLIDESHOW:
+        raise HTTPException(status_code=400, detail="Asset is not a slideshow")
+
+    rows = (
+        await db.execute(
+            select(SlideshowSlide, Asset)
+            .join(Asset, Asset.id == SlideshowSlide.source_asset_id)
+            .where(SlideshowSlide.slideshow_asset_id == asset_id)
+            .order_by(SlideshowSlide.position.asc())
+        )
+    ).all()
+
+    slides_out = []
+    for slide, src in rows:
+        slides_out.append(
+            {
+                "id": str(slide.id),
+                "position": slide.position,
+                "duration_ms": slide.duration_ms,
+                "play_to_end": slide.play_to_end,
+                "source_asset_id": str(slide.source_asset_id),
+                "source_filename": src.filename,
+                "source_asset_type": src.asset_type.value,
+                "source_duration_seconds": src.duration_seconds,
+            }
+        )
+    payload: dict = {"slideshow_id": str(asset_id), "slides": slides_out}
+    if profile_id is not None:
+        from cms.services.slideshow_resolver import slideshow_readiness
+        payload["readiness"] = await slideshow_readiness(asset, profile_id, db)
+    return payload
+
+
+@router.put("/{asset_id}/slides")
+async def replace_slideshow_slides(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the entire slide list for a slideshow atomically."""
+    await _verify_asset_access(asset_id, request, db)
+    asset = (
+        await db.execute(
+            select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.asset_type != AssetType.SLIDESHOW:
+        raise HTTPException(status_code=400, detail="Asset is not a slideshow")
+
+    user_groups = await get_user_group_ids(user, db)
+    is_admin = user_groups is None
+    if not is_admin and asset.uploaded_by_user_id != user.id:
+        raise HTTPException(
+            status_code=403, detail="Only the slideshow owner can edit its slides"
+        )
+
+    body = await request.json()
+    raw_slides = body.get("slides")
+    if not isinstance(raw_slides, list):
+        raise HTTPException(status_code=400, detail="slides must be a list")
+    try:
+        slides = [SlideIn.model_validate(s) for s in raw_slides]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid slide payload: {e}")
+
+    visible = await _visible_asset_ids(user, db)
+    sources_by_id, source_groups = await _load_and_validate_slide_sources(
+        slides, db, visible_ids=visible
+    )
+
+    existing_groups = {
+        gid for (gid,) in (
+            await db.execute(
+                select(GroupAsset.group_id).where(GroupAsset.asset_id == asset_id)
+            )
+        ).all()
+    }
+    _validate_slideshow_acl(
+        existing_groups, asset.is_global, sources_by_id, source_groups
+    )
+
+    duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
+    manifest_version = _compute_slideshow_manifest_version(slides, sources_by_id)
+
+    await db.execute(
+        delete(SlideshowSlide).where(SlideshowSlide.slideshow_asset_id == asset_id)
+    )
+    await db.flush()
+    for idx, s in enumerate(slides):
+        db.add(
+            SlideshowSlide(
+                slideshow_asset_id=asset_id,
+                source_asset_id=s.source_asset_id,
+                position=idx,
+                duration_ms=s.duration_ms,
+                play_to_end=s.play_to_end,
+            )
+        )
+    asset.duration_seconds = duration_seconds
+    asset.checksum = manifest_version
+
+    await audit_log(
+        db, user=user, action="asset.replace_slides", resource_type="asset",
+        resource_id=str(asset_id),
+        description=(
+            f"Replaced slides on slideshow '{asset.filename}' "
+            f"({len(slides)} slide(s))"
+        ),
+        details={
+            "filename": asset.filename,
+            "slide_count": len(slides),
+            "duration_seconds": duration_seconds,
+        },
+        request=request,
+    )
+    await db.commit()
+    return {
+        "slideshow_id": str(asset_id),
+        "slide_count": len(slides),
+        "duration_seconds": duration_seconds,
+    }
+
+
 @router.patch("/{asset_id}", response_model=AssetOut)
 async def update_asset(
     asset_id: uuid.UUID,
@@ -1103,6 +1642,36 @@ async def delete_asset(
     if not is_admin and asset.uploaded_by_user_id != user.id:
         raise HTTPException(status_code=403, detail="Only the asset owner can delete this asset")
 
+    # Block source-asset deletion while any slideshow still references it.
+    # The FK is RESTRICT, so even soft-deleted slideshows would block the
+    # reaper's hard-delete pass; surface that to the user up-front with the
+    # offending slideshow filenames (active vs soft-deleted called out).
+    if asset.asset_type in (AssetType.IMAGE, AssetType.VIDEO):
+        slide_refs = (
+            await db.execute(
+                select(SlideshowSlide.slideshow_asset_id, Asset.filename, Asset.deleted_at)
+                .join(Asset, Asset.id == SlideshowSlide.slideshow_asset_id)
+                .where(SlideshowSlide.source_asset_id == asset_id)
+            )
+        ).all()
+        if slide_refs:
+            active_names = sorted({r[1] for r in slide_refs if r[2] is None})
+            soft_deleted_names = sorted({r[1] for r in slide_refs if r[2] is not None})
+            parts = []
+            if active_names:
+                parts.append(f"active slideshow(s): {', '.join(active_names)}")
+            if soft_deleted_names:
+                parts.append(
+                    "soft-deleted slideshow(s) pending reap: "
+                    + ", ".join(soft_deleted_names)
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot delete — asset is referenced by " + "; ".join(parts) + "."
+                ),
+            )
+
     # Block deletion only if ACTIVE schedules reference this asset.
     # A schedule is "active" if it is enabled AND either has no end_date
     # or its end_date is still in the future (hasn't expired yet).
@@ -1222,6 +1791,18 @@ async def share_asset(
 
     db.add(GroupAsset(asset_id=asset_id, group_id=group_id))
 
+    # ACL invariant when sharing a SLIDESHOW with a new group: every
+    # referenced source asset must already be visible to that group, or
+    # users in the group could reach the source through the slideshow
+    # without being authorised on the source directly.  Roll back the
+    # newly-added GroupAsset row if the invariant fails.
+    if asset.asset_type == AssetType.SLIDESHOW:
+        try:
+            await _revalidate_slideshow_audience(asset, db)
+        except HTTPException:
+            await db.rollback()
+            raise
+
     # Enrich audit log with uploader context so admins can trace content
     # propagation (issue #176): original uploader, filename, target group.
     uploader_email: str | None = None
@@ -1270,6 +1851,35 @@ async def unshare_asset(
     )).scalar_one_or_none()
     if not ga:
         raise HTTPException(status_code=404, detail="Asset is not shared with this group")
+
+    # ACL invariant: refuse to unshare a source asset from a group while a
+    # non-deleted slideshow scoped to that group still references it and
+    # would lose visibility on the source.  The slideshow's audience must
+    # remain a subset of every source's audience.
+    blocking_slideshows = (
+        await db.execute(
+            select(Asset.filename)
+            .join(SlideshowSlide, SlideshowSlide.slideshow_asset_id == Asset.id)
+            .join(GroupAsset, GroupAsset.asset_id == Asset.id)
+            .where(
+                SlideshowSlide.source_asset_id == asset_id,
+                GroupAsset.group_id == group_id,
+                Asset.deleted_at.is_(None),
+                Asset.is_global.is_(False),
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    if blocking_slideshows:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot unshare — source asset is referenced by slideshow(s) "
+                f"sharing this group: {', '.join(sorted(blocking_slideshows))}. "
+                "Remove the source from those slideshows first."
+            ),
+        )
+
     await db.delete(ga)
 
     # Load asset + group + uploader context for a richer audit log entry
@@ -1329,7 +1939,49 @@ async def toggle_asset_global(
     asset = (await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))).scalar_one_or_none()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+
+    # ACL invariant when un-globalising a source asset: any non-deleted
+    # GLOBAL slideshow referencing it would suddenly have a wider audience
+    # than its source, which is a leak.  Block the toggle and tell the
+    # user which slideshows need their global flag dropped (or the source
+    # removed) first.
+    if asset.is_global and asset.asset_type in (AssetType.IMAGE, AssetType.VIDEO):
+        blocking_slideshows = (
+            await db.execute(
+                select(Asset.filename)
+                .join(SlideshowSlide, SlideshowSlide.slideshow_asset_id == Asset.id)
+                .where(
+                    SlideshowSlide.source_asset_id == asset_id,
+                    Asset.deleted_at.is_(None),
+                    Asset.is_global.is_(True),
+                )
+                .distinct()
+            )
+        ).scalars().all()
+        if blocking_slideshows:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot unmark global — asset is referenced by global "
+                    f"slideshow(s): {', '.join(sorted(blocking_slideshows))}. "
+                    "Remove the source from those slideshows or unmark them "
+                    "global first."
+                ),
+            )
+
     asset.is_global = not asset.is_global
+
+    # ACL invariant when marking a SLIDESHOW global: every referenced
+    # source asset must already be global, otherwise users without group
+    # membership could reach a non-global source through the now-global
+    # slideshow.  Validated after the toggle so error reporting in the
+    # helper sees the post-toggle state.
+    if asset.is_global and asset.asset_type == AssetType.SLIDESHOW:
+        try:
+            await _revalidate_slideshow_audience(asset, db)
+        except HTTPException:
+            await db.rollback()
+            raise
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="asset.toggle_global", resource_type="asset",

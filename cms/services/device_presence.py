@@ -29,7 +29,42 @@ from cms.models.device import Device, DeviceGroup
 logger = logging.getLogger("agora.cms.device_presence")
 
 
-# Columns returned by :func:`list_states` — matches the keys the old
+def _normalize_display_ports(value: Any) -> list[dict] | None:
+    """Coerce a STATUS-message ``display_ports`` value into the canonical
+    ``list[{"name": str, "connected": bool}]`` shape, or ``None``.
+
+    The protocol (``cms.schemas.protocol.PortStatus``, added in PR #455)
+    defines per-HDMI-port entries as ``{name, connected}`` dicts.  But
+    ``device_inbound`` passes the raw STATUS dict here without Pydantic
+    validation, so a misbehaving client (e.g. an outdated simulator that
+    emits ``["HDMI-A-1"]``) can poison the ``display_ports`` JSON column,
+    later breaking ``DeviceOut`` serialization with a 500 on every
+    ``GET /api/devices``.
+
+    Returns ``None`` for any input that isn't a list of dicts with at
+    least a ``name`` key — the caller should treat that as "device sent
+    nothing usable".  A warning is logged once so we surface protocol
+    drift without spamming on every heartbeat.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        logger.warning(
+            "ignoring non-list display_ports: %r", type(value).__name__
+        )
+        return None
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict) or "name" not in item:
+            logger.warning(
+                "ignoring malformed display_ports entry: %r", item
+            )
+            return None
+        out.append(item)
+    return out
+
+
+# Columns returned by :func:`list_states`— matches the keys the old
 # ``DeviceManager.get_all_states()`` used to emit so the UI / scheduler /
 # alert code can keep reading the same dict shape.
 _STATE_COLUMNS = (
@@ -85,7 +120,7 @@ def _row_to_state(row: Any) -> dict[str, Any]:
         "ssh_enabled": row.ssh_enabled,
         "local_api_enabled": row.local_api_enabled,
         "display_connected": row.display_connected,
-        "display_ports": row.display_ports,
+        "display_ports": _normalize_display_ports(row.display_ports),
         "connection_id": row.connection_id,
         "online": bool(row.online),
     }
@@ -315,7 +350,9 @@ async def update_status(
     # the device sent, including None / missing-key (no overwrite when
     # absent so a malformed STATUS doesn't blow away a known-good list).
     if "display_ports" in status and status["display_ports"] is not None:
-        values["display_ports"] = status["display_ports"]
+        normalized_ports = _normalize_display_ports(status["display_ports"])
+        if normalized_ports is not None:
+            values["display_ports"] = normalized_ports
 
     result = await db.execute(
         update(Device)

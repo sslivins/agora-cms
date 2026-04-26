@@ -157,7 +157,12 @@
 {% endif %}
 
 <div class="card">
-    <h2>Library</h2>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+        <h2 style="margin:0;">Library</h2>
+        {% if 'assets:write' in user_perms %}
+        <a href="/assets/new/slideshow" class="btn btn-secondary" title="Create a slideshow from existing assets">🎞️ New Slideshow</a>
+        {% endif %}
+    </div>
     <div class="table-wrap">
     <table>
         <thead>
@@ -454,6 +459,13 @@
     };
 
     function buildVariantBadge(a) {
+        if (a.asset_type === 'slideshow') {
+            const n = a.slide_count || 0;
+            if (n > 0) {
+                return '<span class="badge badge-ready">' + n + ' slide' + (n !== 1 ? 's' : '') + '</span>';
+            }
+            return '<span class="badge badge-pending">Empty</span>';
+        }
         if (a.variant_total === 0) {
             if (a.asset_type === 'saved_stream') {
                 if (a.capture_error) {

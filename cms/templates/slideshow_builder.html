@@ -1,0 +1,1066 @@
+{% extends "base.html" %}
+{% block title %}{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %} — Agora CMS{% endblock %}
+{% block content %}
+<style>
+/* --- Slideshow builder visual styles --- */
+.ssb-library {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.6rem;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 0.5rem;
+    background: var(--bg-elev, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 0.4rem;
+}
+.ssb-lib-tile {
+    position: relative;
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 0.3rem;
+    overflow: hidden;
+    cursor: grab;
+    user-select: none;
+    transition: transform 0.08s, box-shadow 0.08s, border-color 0.08s;
+}
+.ssb-lib-tile:hover {
+    border-color: #16a085;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(22,160,133,0.2);
+}
+.ssb-lib-tile:active { cursor: grabbing; }
+.ssb-lib-tile.ssb-dragging { opacity: 0.4; }
+.ssb-lib-thumb {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+    background: #111;
+    display: block;
+    pointer-events: none;
+}
+.ssb-lib-meta {
+    padding: 0.3rem 0.4rem;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    background: #1a1a1a;
+}
+.ssb-lib-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ssb-lib-type {
+    color: #888;
+    font-size: 0.7rem;
+}
+.ssb-lib-empty {
+    grid-column: 1 / -1;
+    padding: 1rem;
+    text-align: center;
+    color: #888;
+    font-size: 0.85rem;
+}
+.ssb-type-icon {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.7rem;
+    border-radius: 0.25rem;
+    pointer-events: none;
+}
+
+/* --- Film-strip timeline --- */
+.ssb-timeline-wrap {
+    margin-top: 0.5rem;
+    padding: 0.75rem 0.5rem;
+    background: linear-gradient(var(--bg), var(--surface));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* Firefox: thin scrollbar in page palette */
+    scrollbar-width: thin;
+    scrollbar-color: var(--primary) transparent;
+}
+/* WebKit/Blink: match the page palette so the scrollbar doesn't look
+   like a stock OS widget against our dark-blue theme. */
+.ssb-timeline-wrap::-webkit-scrollbar {
+    height: 10px;
+}
+.ssb-timeline-wrap::-webkit-scrollbar-track {
+    background: transparent;
+    border-top: 1px solid var(--border);
+}
+.ssb-timeline-wrap::-webkit-scrollbar-thumb {
+    background: var(--primary);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.ssb-timeline-wrap::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+}
+.ssb-timeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-height: 200px;
+}
+.ssb-slot {
+    flex: 0 0 180px;
+    display: flex;
+    flex-direction: column;
+    background: #222;
+    border: 2px solid #333;
+    border-radius: 0.4rem;
+    overflow: hidden;
+    cursor: grab;
+    transition: border-color 0.1s, transform 0.08s;
+}
+.ssb-slot:hover { border-color: #16a085; }
+.ssb-slot.ssb-dragging { opacity: 0.4; }
+.ssb-slot-thumb-wrap {
+    position: relative;
+    background: #000;
+    aspect-ratio: 16/9;
+    overflow: hidden;
+}
+.ssb-slot-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+}
+.ssb-slot-pos {
+    position: absolute;
+    top: 0.3rem;
+    left: 0.3rem;
+    background: rgba(0,0,0,0.75);
+    color: #fff;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+    font-weight: bold;
+    border-radius: 0.25rem;
+}
+.ssb-slot-remove {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    background: rgba(231, 76, 60, 0.9);
+    color: #fff;
+    border: none;
+    width: 1.4rem;
+    height: 1.4rem;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.ssb-slot-remove:hover { background: #c0392b; }
+.ssb-slot-move {
+    position: absolute;
+    bottom: 0.3rem;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    border: none;
+    width: 1.4rem;
+    height: 1.4rem;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.ssb-slot-move:hover:not(:disabled) { background: rgba(0,0,0,0.9); }
+.ssb-slot-move:disabled { opacity: 0.3; cursor: not-allowed; }
+.ssb-slot-move.left  { left: 0.3rem; }
+.ssb-slot-move.right { right: 0.3rem; }
+.ssb-slot-meta {
+    padding: 0.4rem 0.5rem;
+    background: #1a1a1a;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+}
+.ssb-slot-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #ccc;
+}
+.ssb-slot-dur {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+.ssb-slot-dur input[type=number] {
+    width: 4.5rem;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.8rem;
+    background: #2a2a2a;
+    color: #eee;
+    border: 1px solid #444;
+    border-radius: 0.2rem;
+}
+.ssb-slot-dur input[type=number]:disabled { opacity: 0.5; }
+.ssb-slot-pte {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.72rem;
+    color: #aaa;
+}
+
+/* Transition gap between slots */
+.ssb-gap {
+    flex: 0 0 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    transition: flex-basis 0.15s ease;
+}
+.ssb-gap-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #333;
+    border: 1px solid #555;
+    color: #ddd;
+    font-size: 0.95rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.ssb-gap-btn:hover {
+    background: #16a085;
+    border-color: #16a085;
+    color: #fff;
+}
+/* When a draggable hovers a gap, the gap "opens up" into a slot-sized
+   placeholder so the user can preview where the new slide will land.
+   Reverts smoothly on dragleave or drop. */
+.ssb-gap.ssb-drop-active {
+    flex: 0 0 196px;
+}
+.ssb-gap.ssb-drop-active .ssb-gap-btn {
+    display: none;
+}
+.ssb-gap.ssb-drop-active::before {
+    content: '';
+    position: absolute;
+    inset: 0 8px;
+    background: rgba(22,160,133,0.18);
+    border: 2px dashed #16a085;
+    border-radius: 0.4rem;
+    pointer-events: none;
+}
+/* Transition picker popup (uses popover API → renders in top layer, never clipped) */
+.ssb-trans-menu {
+    position: fixed;
+    margin: 0;
+    inset: auto;
+    background: #1f1f1f;
+    border: 1px solid #444;
+    border-radius: 0.35rem;
+    padding: 0.25rem 0;
+    min-width: 160px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+}
+.ssb-trans-menu:not(:popover-open) { display: none; }
+.ssb-trans-opt {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.7rem;
+    color: #ddd;
+    font-size: 0.8rem;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    width: 100%;
+    text-align: left;
+}
+.ssb-trans-opt:hover:not(:disabled) {
+    background: rgba(22,160,133,0.2);
+}
+.ssb-trans-opt:disabled {
+    color: #666;
+    cursor: not-allowed;
+}
+.ssb-trans-opt-icon {
+    width: 1.2rem;
+    text-align: center;
+    font-size: 0.95rem;
+}
+.ssb-trans-opt-soon {
+    margin-left: auto;
+    font-size: 0.65rem;
+    color: #888;
+    font-style: italic;
+}
+
+/* Drop zone at end of timeline / when empty */
+.ssb-end {
+    flex: 0 0 180px;
+    min-height: 180px;
+    border: 2px dashed #444;
+    border-radius: 0.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #666;
+    font-size: 0.8rem;
+    padding: 1rem;
+    transition: border-color 0.1s, background 0.1s, color 0.1s;
+}
+.ssb-end.ssb-drop-active {
+    border-color: #16a085;
+    background: rgba(22,160,133,0.15);
+    color: #16a085;
+}
+/* Trailing append zone (after last slot, when timeline non-empty) */
+.ssb-append {
+    flex: 0 0 120px;
+    min-height: 100px;
+    margin-left: 0.25rem;
+    border: 2px dashed #3a3a3a;
+    border-radius: 0.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #777;
+    font-size: 0.75rem;
+    padding: 0.5rem;
+    cursor: copy;
+    transition: border-color 0.1s, background 0.1s, color 0.1s;
+}
+.ssb-append.ssb-drop-active {
+    border-color: #16a085;
+    background: rgba(22,160,133,0.15);
+    color: #16a085;
+}
+.ssb-empty-message {
+    flex: 1;
+    align-self: center;
+    color: #888;
+    text-align: center;
+    padding: 2rem;
+    font-size: 0.9rem;
+}
+
+/* Header strip with totals */
+.ssb-timeline-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1rem;
+    margin-bottom: 0.4rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.ssb-timeline-head h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+.ssb-totals {
+    font-size: 0.85rem;
+    color: #aaa;
+}
+.ssb-totals strong { color: #16a085; }
+
+/* Group + name fields keep classic look */
+.ssb-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+}
+.ssb-toolbar > * { flex: 1; min-width: 200px; }
+</style>
+
+<h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}
+    <span id="ss-dirty-indicator" hidden
+          style="font-size:0.75rem; color:#e67e22; font-weight:normal; margin-left:0.5rem; vertical-align:middle;"
+          title="You have unsaved changes">● unsaved</span>
+</h1>
+<div class="sub-tabs">
+    <a href="/assets" class="sub-tab">← Back to Assets</a>
+</div>
+
+<div class="card">
+    <form id="slideshow-form" onsubmit="event.preventDefault(); saveSlideshow();">
+        <div class="ssb-toolbar">
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="ss-name">Name</label>
+                <input type="text" id="ss-name" class="form-control" maxlength="200" required
+                       value="{{ asset_name }}" placeholder="My Slideshow">
+            </div>
+
+            {% if user_groups | length > 0 and not edit_mode %}
+            <div class="form-group" style="margin-bottom:0;">
+                <label>Assign to groups</label>
+                <div id="ss-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; min-height:1.6rem; align-items:center;">
+                    <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                        <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('ss-group-popup')" title="Add group">+</button>
+                        <div id="ss-group-popup" popover class="group-popup">
+                            {% for g in user_groups %}
+                            <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                    onclick="event.stopPropagation(); pickSsGroup('{{ g.id }}', '{{ g.name | replace("'", "\\'") }}')">{{ g.name }}</button>
+                            {% endfor %}
+                        </div>
+                    </span>
+                </div>
+                {% if is_admin %}
+                <p class="text-muted" style="margin-top:0.25rem; font-size:0.8rem;">
+                    Leave empty to make Global.
+                </p>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+        {% if edit_mode %}
+        <p class="text-muted" style="font-size:0.85rem; margin-top:0.5rem;">
+            Group assignments and rename are managed via the Assets page actions.
+        </p>
+        {% endif %}
+
+        <div style="margin-top:1.25rem;">
+            <h3 style="margin:0 0 0.5rem; font-size:1rem;">
+                Library
+                <span class="text-muted" style="font-weight:normal; font-size:0.85rem;">— drag onto the timeline, or click to append</span>
+            </h3>
+            <div id="ss-library" class="ssb-library">
+                <div class="ssb-lib-empty">Loading library…</div>
+            </div>
+        </div>
+
+        <div class="ssb-timeline-head">
+            <h3>Timeline</h3>
+            <div class="ssb-totals">
+                <span id="ss-counter">0 / 50 slides</span>
+                &nbsp;·&nbsp;
+                Total: <strong id="ss-total">0.0s</strong>
+            </div>
+        </div>
+        <div id="ss-timeline-wrap" class="ssb-timeline-wrap">
+            <div id="ss-timeline" class="ssb-timeline"></div>
+        </div>
+
+        <!-- Hidden table marker preserved for tests / future fallback -->
+        <div id="ss-slides-table" hidden></div>
+
+        <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
+        <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+            <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
+            <a href="/assets" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script id="ss-initial-slides" type="application/json">{{ slides | tojson }}</script>
+<script>
+const SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
+const SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
+const SS_MAX_SLIDES = 50;
+
+let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
+let availableAssets = [];
+let selectedGroupIds = [];
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fmtDur(s) {
+    if (!s && s !== 0) return '—';
+    if (s < 60) return s.toFixed(1) + 's';
+    const m = Math.floor(s / 60), r = s - m*60;
+    return m + 'm ' + r.toFixed(0) + 's';
+}
+
+function thumbHtml(asset) {
+    const url = `/api/assets/${asset.id}/preview`;
+    if (asset.asset_type === 'image') {
+        return `<img class="ssb-lib-thumb" src="${url}" alt="" loading="lazy">`;
+    }
+    if (asset.asset_type === 'video') {
+        // <video> with preload=metadata typically renders the first frame as poster
+        return `<video class="ssb-lib-thumb" src="${url}" preload="metadata" muted playsinline></video>`;
+    }
+    return `<div class="ssb-lib-thumb" style="display:flex;align-items:center;justify-content:center;color:#666;">No preview</div>`;
+}
+
+function renderLibrary() {
+    const root = document.getElementById('ss-library');
+    if (!availableAssets.length) {
+        root.innerHTML = '<div class="ssb-lib-empty">No images or videos in your library yet. Upload some on the Assets page first.</div>';
+        return;
+    }
+    root.innerHTML = '';
+    availableAssets.forEach(a => {
+        const tile = document.createElement('div');
+        tile.className = 'ssb-lib-tile';
+        tile.draggable = true;
+        tile.dataset.assetId = a.id;
+        const name = a.display_name || a.original_filename || a.filename;
+        tile.title = `${name}\nClick to append, or drag onto the timeline`;
+        tile.innerHTML = `
+            ${thumbHtml(a)}
+            <div class="ssb-type-icon">${a.asset_type === 'video' ? '▶' : '🖼'}</div>
+            <div class="ssb-lib-meta">
+                <div class="ssb-lib-name">${escapeHtml(name)}</div>
+                <div class="ssb-lib-type">${a.asset_type}${a.duration_seconds ? ' · ' + fmtDur(a.duration_seconds) : ''}</div>
+            </div>`;
+        tile.addEventListener('click', () => addSlideFromAsset(a.id, slides.length));
+        tile.addEventListener('dragstart', (e) => {
+            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.setData('application/x-slideshow-source', JSON.stringify({kind: 'library', asset_id: a.id}));
+            tile.classList.add('ssb-dragging');
+        });
+        tile.addEventListener('dragend', () => tile.classList.remove('ssb-dragging'));
+        root.appendChild(tile);
+    });
+}
+
+function renderTimeline() {
+    const root = document.getElementById('ss-timeline');
+    root.innerHTML = '';
+
+    if (slides.length === 0) {
+        const end = document.createElement('div');
+        end.className = 'ssb-end';
+        end.dataset.dropIndex = '0';
+        end.innerHTML = '🎬 Drag a clip from the library to begin';
+        wireDropZone(end, 0);
+        root.appendChild(end);
+        updateTotals();
+        return;
+    }
+
+    // Leading drop zone (before first slot)
+    root.appendChild(makeGap(0, /*isLeading*/ true));
+
+    slides.forEach((s, i) => {
+        root.appendChild(makeSlot(s, i));
+        // Gap between slots only — last gap is replaced by a wider append zone
+        if (i < slides.length - 1) {
+            root.appendChild(makeGap(i + 1, false));
+        }
+    });
+
+    // Trailing append zone — bigger drop target than a 36px gap
+    const append = document.createElement('div');
+    append.className = 'ssb-append';
+    append.dataset.dropIndex = String(slides.length);
+    append.innerHTML = '+ drop here<br>to append';
+    wireDropZone(append, slides.length);
+    root.appendChild(append);
+
+    updateTotals();
+}
+
+function makeSlot(s, i) {
+    const slot = document.createElement('div');
+    slot.className = 'ssb-slot';
+    slot.draggable = true;
+    slot.dataset.slotIndex = String(i);
+
+    const isVideo = s.source_asset_type === 'video';
+    const previewUrl = `/api/assets/${s.source_asset_id}/preview`;
+    const thumb = isVideo
+        ? `<video class="ssb-slot-thumb" src="${previewUrl}" preload="metadata" muted playsinline></video>`
+        : `<img class="ssb-slot-thumb" src="${previewUrl}" alt="" loading="lazy">`;
+    const effectiveSec = s.play_to_end && isVideo && s.source_duration_seconds
+        ? s.source_duration_seconds
+        : (s.duration_ms / 1000);
+    const displaySec = Math.max(1, Math.round(effectiveSec));
+
+    const playToEndCtl = isVideo
+        ? `<label class="ssb-slot-pte" title="Play the full video">
+                <input type="checkbox" ${s.play_to_end ? 'checked' : ''}>
+                <span>play to end</span>
+            </label>`
+        : '';
+
+    slot.innerHTML = `
+        <div class="ssb-slot-thumb-wrap">
+            ${thumb}
+            <div class="ssb-slot-pos">${i + 1}</div>
+            <button type="button" class="ssb-slot-remove" title="Remove" aria-label="Remove">✕</button>
+            <button type="button" class="ssb-slot-move left"  title="Move left"  aria-label="Move left"  ${i === 0 ? 'disabled' : ''}>‹</button>
+            <button type="button" class="ssb-slot-move right" title="Move right" aria-label="Move right" ${i === slides.length - 1 ? 'disabled' : ''}>›</button>
+        </div>
+        <div class="ssb-slot-meta">
+            <div class="ssb-slot-name" title="${escapeHtml(s.source_filename || '')}">${escapeHtml(s.source_filename || s.source_asset_id)}</div>
+            <div class="ssb-slot-dur">
+                <input type="number" min="1" max="3600" step="1"
+                       value="${displaySec}"
+                       ${s.play_to_end && isVideo ? 'disabled' : ''}
+                       aria-label="Duration in seconds">
+                <span style="color:#888;">s</span>
+            </div>
+            ${playToEndCtl}
+        </div>`;
+
+    slot.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeSlide(i);
+    });
+    slot.querySelector('.ssb-slot-move.left').addEventListener('click', (e) => {
+        e.stopPropagation();
+        moveSlide(i, -1);
+    });
+    slot.querySelector('.ssb-slot-move.right').addEventListener('click', (e) => {
+        e.stopPropagation();
+        moveSlide(i, +1);
+    });
+    slot.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
+    const pte = slot.querySelector('input[type=checkbox]');
+    if (pte) pte.addEventListener('change', (e) => updateSlidePlayToEnd(i, e.target.checked));
+
+    slot.addEventListener('dragstart', (e) => {
+        e.dataTransfer.effectAllowed = 'copyMove';
+        e.dataTransfer.setData('application/x-slideshow-source', JSON.stringify({kind: 'reorder', from_index: i}));
+        slot.classList.add('ssb-dragging');
+    });
+    slot.addEventListener('dragend', () => slot.classList.remove('ssb-dragging'));
+
+    return slot;
+}
+
+// Transition types — only 'cut' is implemented today; the rest are placeholders.
+const SS_TRANSITIONS = [
+    {id: 'cut',      label: 'Cut',      icon: '\u2702',    enabled: true},   // ✂
+    {id: 'fade',     label: 'Fade',     icon: '\u25D0',    enabled: false},  // ◐
+    {id: 'dissolve', label: 'Dissolve', icon: '\u2592',    enabled: false},  // ▒
+    {id: 'wipe',     label: 'Wipe',     icon: '\u21E8',    enabled: false},  // ⇨
+];
+function transitionDef(id) {
+    return SS_TRANSITIONS.find(t => t.id === id) || SS_TRANSITIONS[0];
+}
+
+function makeGap(index, isLeading) {
+    const gap = document.createElement('div');
+    gap.className = 'ssb-gap';
+    gap.dataset.dropIndex = String(index);
+    if (isLeading) {
+        // Leading drop zone is small + invisible; no transition button there
+        gap.innerHTML = '';
+        gap.style.flex = '0 0 12px';
+    } else {
+        // index here is the gap position (1..slides.length-1 for between-slot gaps).
+        // The transition belongs to the slide on the right (slides[index]).
+        const slideIdx = index;
+        const current = transitionDef((slides[slideIdx] && slides[slideIdx].transition) || 'cut');
+        gap.innerHTML = `
+            <button type="button" class="ssb-gap-btn"
+                    title="${current.label} transition — click to change">${current.icon}</button>
+            <div class="ssb-trans-menu" popover="auto" role="menu"></div>`;
+        const btn = gap.querySelector('.ssb-gap-btn');
+        const menu = gap.querySelector('.ssb-trans-menu');
+        SS_TRANSITIONS.forEach(t => {
+            const opt = document.createElement('button');
+            opt.type = 'button';
+            opt.className = 'ssb-trans-opt';
+            opt.disabled = !t.enabled;
+            opt.title = t.enabled ? t.label : `${t.label} — coming soon`;
+            opt.innerHTML = `
+                <span class="ssb-trans-opt-icon">${t.icon}</span>
+                <span>${t.label}</span>
+                ${t.enabled ? '' : '<span class="ssb-trans-opt-soon">soon</span>'}`;
+            opt.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!t.enabled) return;
+                if (slides[slideIdx]) {
+                    const prev = slides[slideIdx].transition || 'cut';
+                    if (prev !== t.id) {
+                        slides[slideIdx].transition = t.id;
+                        markDirty();
+                    }
+                }
+                try { menu.hidePopover(); } catch {}
+                btn.textContent = t.icon;
+                btn.title = `${t.label} transition — click to change`;
+            });
+            menu.appendChild(opt);
+        });
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = menu.matches(':popover-open');
+            // Close any other open transition menus
+            document.querySelectorAll('.ssb-trans-menu').forEach(m => {
+                if (m !== menu) { try { m.hidePopover(); } catch {} }
+            });
+            if (open) { menu.hidePopover(); return; }
+            // Position the popover under the button (popover starts in top layer; we set fixed coords).
+            const r = btn.getBoundingClientRect();
+            menu.style.top = (r.bottom + 6) + 'px';
+            menu.style.left = (r.left + r.width / 2) + 'px';
+            menu.style.transform = 'translateX(-50%)';
+            try { menu.showPopover(); } catch {}
+        });
+    }
+    wireDropZone(gap, index);
+    return gap;
+}
+
+function wireDropZone(el, dropIndex) {
+    el.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('application/x-slideshow-source')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = el.classList.contains('ssb-end') ? 'copy' : 'copy';
+        el.classList.add('ssb-drop-active');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('ssb-drop-active'));
+    el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        el.classList.remove('ssb-drop-active');
+        const raw = e.dataTransfer.getData('application/x-slideshow-source');
+        if (!raw) return;
+        let payload;
+        try { payload = JSON.parse(raw); } catch { return; }
+        const targetIdx = parseInt(el.dataset.dropIndex, 10);
+        if (payload.kind === 'library') {
+            addSlideFromAsset(payload.asset_id, targetIdx);
+        } else if (payload.kind === 'reorder') {
+            reorderSlide(payload.from_index, targetIdx);
+        }
+    });
+}
+
+function updateTotals() {
+    let totalMs = 0;
+    slides.forEach(s => {
+        const isVideo = s.source_asset_type === 'video';
+        const dur = s.play_to_end && isVideo && s.source_duration_seconds
+            ? Math.round(s.source_duration_seconds * 1000)
+            : s.duration_ms;
+        totalMs += dur;
+    });
+    document.getElementById('ss-total').textContent = fmtDur(totalMs / 1000);
+    document.getElementById('ss-counter').textContent = slides.length + ' / ' + SS_MAX_SLIDES + ' slides';
+}
+
+function updateSlideDuration(i, v) {
+    const seconds = parseFloat(v);
+    if (!isFinite(seconds) || seconds <= 0) return;
+    slides[i].duration_ms = Math.round(seconds * 1000);
+    markDirty();
+    updateTotals();
+}
+
+function updateSlidePlayToEnd(i, checked) {
+    slides[i].play_to_end = !!checked;
+    markDirty();
+    renderTimeline();
+}
+
+function removeSlide(i) {
+    slides.splice(i, 1);
+    markDirty();
+    renderTimeline();
+}
+
+function addSlideFromAsset(assetId, atIndex) {
+    if (slides.length >= SS_MAX_SLIDES) {
+        setStatus('Slide cap reached (' + SS_MAX_SLIDES + ').', true);
+        return;
+    }
+    const a = availableAssets.find(x => x.id === assetId);
+    if (!a) {
+        setStatus('Source asset not found in library.', true);
+        return;
+    }
+    const slide = {
+        source_asset_id: a.id,
+        duration_ms: a.asset_type === 'video' && a.duration_seconds
+            ? Math.round(a.duration_seconds * 1000)
+            : 10000,
+        play_to_end: a.asset_type === 'video',
+        source_filename: a.display_name || a.original_filename || a.filename,
+        source_asset_type: a.asset_type,
+        source_duration_seconds: a.duration_seconds,
+    };
+    const idx = Math.max(0, Math.min(atIndex, slides.length));
+    slides.splice(idx, 0, slide);
+    markDirty();
+    setStatus('');
+    renderTimeline();
+}
+
+function reorderSlide(fromIdx, dropIdx) {
+    if (fromIdx < 0 || fromIdx >= slides.length) return;
+    // dropIdx is the index in the post-removal frame of reference for the gap.
+    // Adjust: removing first shifts indices > fromIdx down by 1.
+    let target = dropIdx;
+    if (dropIdx > fromIdx) target -= 1;
+    if (target === fromIdx) return;
+    const [moved] = slides.splice(fromIdx, 1);
+    slides.splice(target, 0, moved);
+    markDirty();
+    renderTimeline();
+}
+
+// Nudge a slide one position left (-1) or right (+1) via the slot's
+// arrow buttons — drag-and-drop is the other way to reorder.
+function moveSlide(i, dir) {
+    const j = i + dir;
+    if (i < 0 || i >= slides.length) return;
+    if (j < 0 || j >= slides.length) return;
+    const tmp = slides[i];
+    slides[i] = slides[j];
+    slides[j] = tmp;
+    markDirty();
+    renderTimeline();
+}
+
+async function loadAvailableAssets() {
+    try {
+        const r = await fetch('/api/assets');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        availableAssets = (Array.isArray(data) ? data : (data.assets || [])).filter(a =>
+            (a.asset_type === 'image' || a.asset_type === 'video') && !a.deleted_at
+        );
+        renderLibrary();
+    } catch (e) {
+        document.getElementById('ss-library').innerHTML =
+            '<div class="ssb-lib-empty" style="color:#e74c3c;">Failed to load assets: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+function pickSsGroup(id, name) {
+    if (!selectedGroupIds.includes(id)) { selectedGroupIds.push(id); markDirty(); }
+    renderGroupBadges();
+    const popup = document.getElementById('ss-group-popup');
+    if (popup && popup.hidePopover) popup.hidePopover();
+}
+
+function renderGroupBadges() {
+    const wrap = document.getElementById('ss-groups-badges');
+    if (!wrap) return;
+    [...wrap.querySelectorAll('.group-badge')].forEach(n => n.remove());
+    const popupWrap = wrap.querySelector('.group-picker-wrap');
+    selectedGroupIds.forEach(gid => {
+        const btn = document.querySelector(`.group-popup-item[data-group-id="${gid}"]`);
+        if (!btn) return;
+        const span = document.createElement('span');
+        span.className = 'group-badge';
+        span.style.cssText = 'background:#444;color:#fff;padding:0.15rem 0.5rem;border-radius:0.5rem;font-size:0.8rem;';
+        span.textContent = btn.dataset.groupName + ' ✕';
+        span.style.cursor = 'pointer';
+        span.onclick = () => { selectedGroupIds = selectedGroupIds.filter(x => x !== gid); markDirty(); renderGroupBadges(); };
+        wrap.insertBefore(span, popupWrap);
+    });
+}
+
+function setStatus(msg, isError) {
+    const s = document.getElementById('ss-status');
+    s.textContent = msg;
+    s.style.color = isError ? '#e74c3c' : '#16a085';
+}
+
+async function saveSlideshow(opts) {
+    opts = opts || {};
+    setStatus('');
+    const name = document.getElementById('ss-name').value.trim();
+    if (!name) { setStatus('Name is required', true); return false; }
+    if (slides.length === 0) { setStatus('Add at least one slide', true); return false; }
+    if (slides.length > SS_MAX_SLIDES) { setStatus('Too many slides', true); return false; }
+
+    const submit = document.getElementById('ss-submit');
+    submit.disabled = true;
+    try {
+        const slidePayload = slides.map(s => ({
+            source_asset_id: s.source_asset_id,
+            duration_ms: s.duration_ms,
+            play_to_end: !!s.play_to_end,
+        }));
+        if (SS_EDIT_MODE) {
+            const r = await fetch(`/api/assets/${SS_ASSET_ID}/slides`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({slides: slidePayload}),
+            });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                throw new Error(err.detail || ('HTTP ' + r.status));
+            }
+            clearDirty();
+            setStatus('Saved.');
+            // Stay on the page after a normal Save; only redirect when the
+            // caller explicitly asks for it (e.g. the unsaved-changes
+            // modal's "Save" action when leaving the page).
+            if (opts.redirectTo) {
+                setTimeout(() => { window.location.href = opts.redirectTo; }, 600);
+            }
+        } else {
+            const body = {
+                name,
+                slides: slidePayload,
+                group_ids: selectedGroupIds,
+            };
+            const r = await fetch('/api/assets/slideshow', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                throw new Error(err.detail || ('HTTP ' + r.status));
+            }
+            clearDirty();
+            setStatus('Created.');
+            // For new slideshows we always navigate — either where the
+            // caller asked, or to the new asset's edit page so the user
+            // can keep iterating without creating a duplicate on next save.
+            const data = await r.json().catch(() => ({}));
+            const newId = data.id || data.asset_id;
+            const dest = opts.redirectTo
+                || (newId ? `/assets/${newId}/slideshow` : '/assets');
+            setTimeout(() => { window.location.href = dest; }, 600);
+        }
+        return true;
+    } catch (e) {
+        setStatus(typeof e.message === 'string' ? e.message : 'Save failed', true);
+        return false;
+    } finally {
+        submit.disabled = !__ssDirty;
+    }
+}
+
+function openGroupPopup(id) {
+    const el = document.getElementById(id);
+    if (el && el.showPopover) el.showPopover();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    renderTimeline();
+    loadAvailableAssets();
+    initDirtyTracking();
+    // Safety net: if a drag ends anywhere (released outside any drop
+    // zone, Esc-cancelled, etc.), make sure no gap is left "opened".
+    const _clearDropActive = () => {
+        document.querySelectorAll('.ssb-drop-active').forEach(el =>
+            el.classList.remove('ssb-drop-active'));
+    };
+    document.addEventListener('dragend', _clearDropActive);
+    document.addEventListener('drop', _clearDropActive);
+});
+
+// ---------- Unsaved-changes tracking ----------
+let __ssDirty = false;
+function _setSubmitEnabled(enabled) {
+    const btn = document.getElementById('ss-submit');
+    if (btn) btn.disabled = !enabled;
+}
+function markDirty() {
+    if (__ssDirty) return;
+    __ssDirty = true;
+    const ind = document.getElementById('ss-dirty-indicator');
+    if (ind) ind.hidden = false;
+    _setSubmitEnabled(true);
+}
+function clearDirty() {
+    __ssDirty = false;
+    const ind = document.getElementById('ss-dirty-indicator');
+    if (ind) ind.hidden = true;
+    _setSubmitEnabled(false);
+}
+
+// Custom 3-button modal for unsaved-changes navigation: Save / Discard /
+// Cancel. Visually matches showConfirm in app.js by reusing the same
+// modal-overlay / modal-box / modal-actions classes.
+function showUnsavedChangesModal(targetHref) {
+    if (typeof _closeOpenPopovers === 'function') _closeOpenPopovers();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const box = document.createElement('div');
+    box.className = 'modal-box';
+    const msg = document.createElement('p');
+    msg.textContent = 'You have unsaved changes. Save them before leaving?';
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = 'Cancel';
+    const discardBtn = document.createElement('button');
+    discardBtn.className = 'btn btn-danger';
+    discardBtn.textContent = 'Discard';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn btn-primary';
+    saveBtn.textContent = 'Save';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(discardBtn);
+    actions.appendChild(saveBtn);
+    box.appendChild(msg);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    cancelBtn.onclick = () => close();
+    discardBtn.onclick = () => {
+        clearDirty();
+        close();
+        window.location.href = targetHref;
+    };
+    saveBtn.onclick = () => {
+        // saveSlideshow() will navigate to targetHref on success; on
+        // failure it surfaces an inline error and the user stays on the
+        // builder so they can fix and retry.
+        close();
+        saveSlideshow({redirectTo: targetHref});
+    };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+}
+
+function initDirtyTracking() {
+    // Mark dirty when the user types in the name field.
+    const nameInput = document.getElementById('ss-name');
+    if (nameInput) {
+        const initialName = nameInput.value;
+        nameInput.addEventListener('input', () => {
+            if (nameInput.value !== initialName) markDirty();
+        });
+    }
+    // Intercept any in-page link that would discard unsaved changes
+    // (Cancel button + the "← Back to Assets" subtab). Show a 3-button
+    // modal: Save (saveSlideshow handles its own redirect), Discard
+    // (just navigate), Cancel (stay on page).
+    document.querySelectorAll('a[href="/assets"]').forEach(a => {
+        a.addEventListener('click', (e) => {
+            if (!__ssDirty) return;
+            e.preventDefault();
+            const href = a.getAttribute('href');
+            showUnsavedChangesModal(href);
+        });
+    });
+    // Native browser warning if the user closes the tab / hits browser back / refreshes.
+    window.addEventListener('beforeunload', (e) => {
+        if (!__ssDirty) return;
+        e.preventDefault();
+        // Required by some browsers; the actual string is ignored by modern browsers.
+        e.returnValue = '';
+    });
+}
+</script>
+{% endblock %}
