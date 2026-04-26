@@ -157,7 +157,12 @@
 {% endif %}
 
 <div class="card">
-    <h2>Library</h2>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+        <h2 style="margin:0;">Library</h2>
+        {% if 'assets:write' in user_perms %}
+        <a href="/assets/new/slideshow" class="btn btn-secondary" title="Create a slideshow from existing assets">🎞️ New Slideshow</a>
+        {% endif %}
+    </div>
     <div class="table-wrap">
     <table>
         <thead>

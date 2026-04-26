@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% block title %}{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %} — Agora CMS{% endblock %}
+{% block content %}
+<h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}</h1>
+<div class="sub-tabs">
+    <a href="/assets" class="sub-tab">← Back to Assets</a>
+</div>
+
+<div class="card">
+    <form id="slideshow-form" onsubmit="event.preventDefault(); saveSlideshow();">
+        <div class="form-group">
+            <label for="ss-name">Name</label>
+            <input type="text" id="ss-name" class="form-control" maxlength="200" required
+                   value="{{ asset_name }}" placeholder="My Slideshow">
+        </div>
+
+        {% if user_groups | length > 0 and not edit_mode %}
+        <div class="form-group">
+            <label>Assign to groups</label>
+            <div id="ss-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; min-height:1.6rem; align-items:center;">
+                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                    <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('ss-group-popup')" title="Add group">+</button>
+                    <div id="ss-group-popup" popover class="group-popup">
+                        {% for g in user_groups %}
+                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                onclick="event.stopPropagation(); pickSsGroup('{{ g.id }}', '{{ g.name | replace("'", "\\'") }}')">{{ g.name }}</button>
+                        {% endfor %}
+                    </div>
+                </span>
+            </div>
+            {% if is_admin %}
+            <p class="text-muted" style="margin-top:0.5rem; font-size:0.85rem;">
+                ℹ️ Leave groups empty to make this slideshow Global (visible to all).
+            </p>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% if edit_mode %}
+        <p class="text-muted" style="font-size:0.85rem">
+            Group assignments and rename are managed via the Assets page actions.
+        </p>
+        {% endif %}
+
+        <div class="form-group" style="margin-top:1rem;">
+            <label>Slides <span class="text-muted" id="ss-counter" style="font-weight:normal">0 / 50</span></label>
+            <div style="display:flex; gap:0.5rem; align-items:flex-end; margin-bottom:0.5rem;">
+                <div style="flex:1;">
+                    <select id="ss-source-picker" class="form-control">
+                        <option value="">— Choose an image or video —</option>
+                    </select>
+                </div>
+                <button type="button" class="btn btn-primary" onclick="addSlideFromPicker()">+ Add Slide</button>
+            </div>
+            <table id="ss-slides-table" style="width:100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="width:3rem;">#</th>
+                        <th>Source</th>
+                        <th style="width:9rem;">Duration (s)</th>
+                        <th style="width:8rem;">Play to End</th>
+                        <th style="width:11rem;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="ss-slides-body"></tbody>
+            </table>
+            <p class="text-muted" id="ss-empty-hint" style="margin-top:0.5rem; font-size:0.85rem;">
+                Add at least one slide. Total duration: <span id="ss-total">0.0s</span>
+            </p>
+        </div>
+
+        <div id="ss-status" class="form-status"></div>
+        <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+            <button type="submit" class="btn btn-primary" id="ss-submit">{% if edit_mode %}Save{% else %}Create{% endif %}</button>
+            <a href="/assets" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script id="ss-initial-slides" type="application/json">{{ slides | tojson }}</script>
+<script>
+const SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
+const SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
+const SS_MAX_SLIDES = 50;
+
+// State: array of {source_asset_id, duration_ms, play_to_end, source_filename, source_asset_type, source_duration_seconds}
+let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
+let availableAssets = []; // populated from /api/assets
+let selectedGroupIds = []; // for create mode
+let isGlobal = false;
+
+function fmtDur(s) {
+    if (!s && s !== 0) return '—';
+    if (s < 60) return s.toFixed(1) + 's';
+    const m = Math.floor(s / 60), r = s - m*60;
+    return m + 'm ' + r.toFixed(0) + 's';
+}
+
+function renderSlides() {
+    const body = document.getElementById('ss-slides-body');
+    body.innerHTML = '';
+    let totalMs = 0;
+    slides.forEach((s, i) => {
+        const dur = s.play_to_end && s.source_asset_type === 'video' && s.source_duration_seconds
+            ? Math.round(s.source_duration_seconds * 1000)
+            : s.duration_ms;
+        totalMs += dur;
+        const tr = document.createElement('tr');
+        const isVideo = s.source_asset_type === 'video';
+        tr.innerHTML = `
+            <td>${i+1}</td>
+            <td>${escapeHtml(s.source_filename || s.source_asset_id)} <span class="badge badge-${s.source_asset_type}">${s.source_asset_type}</span></td>
+            <td><input type="number" min="0.5" max="3600" step="0.1" value="${(s.duration_ms/1000).toFixed(1)}"
+                       ${s.play_to_end && isVideo ? 'disabled' : ''}
+                       onchange="updateSlideDuration(${i}, this.value)" class="form-control" style="width:6rem;"></td>
+            <td><label style="display:inline-flex; align-items:center; gap:0.25rem; font-size:0.85rem;">
+                <input type="checkbox" ${s.play_to_end ? 'checked' : ''} ${isVideo ? '' : 'disabled'}
+                       onchange="updateSlidePlayToEnd(${i}, this.checked)">
+                ${isVideo ? '' : '<span class="text-muted">video only</span>'}
+            </label></td>
+            <td>
+                <button type="button" class="btn btn-sm" onclick="moveSlide(${i}, -1)" ${i===0?'disabled':''}>↑</button>
+                <button type="button" class="btn btn-sm" onclick="moveSlide(${i}, 1)" ${i===slides.length-1?'disabled':''}>↓</button>
+                <button type="button" class="btn btn-sm btn-danger" onclick="removeSlide(${i})">✕</button>
+            </td>`;
+        body.appendChild(tr);
+    });
+    document.getElementById('ss-total').textContent = fmtDur(totalMs / 1000);
+    document.getElementById('ss-counter').textContent = slides.length + ' / ' + SS_MAX_SLIDES;
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function updateSlideDuration(i, v) {
+    const seconds = parseFloat(v);
+    if (!isFinite(seconds) || seconds <= 0) return;
+    slides[i].duration_ms = Math.round(seconds * 1000);
+    renderSlides();
+}
+
+function updateSlidePlayToEnd(i, checked) {
+    slides[i].play_to_end = !!checked;
+    renderSlides();
+}
+
+function moveSlide(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= slides.length) return;
+    [slides[i], slides[j]] = [slides[j], slides[i]];
+    renderSlides();
+}
+
+function removeSlide(i) {
+    slides.splice(i, 1);
+    renderSlides();
+}
+
+function addSlideFromPicker() {
+    const sel = document.getElementById('ss-source-picker');
+    const id = sel.value;
+    if (!id) return;
+    if (slides.length >= SS_MAX_SLIDES) {
+        setStatus('Slide cap reached (' + SS_MAX_SLIDES + ').', true);
+        return;
+    }
+    const a = availableAssets.find(x => x.id === id);
+    if (!a) return;
+    slides.push({
+        source_asset_id: a.id,
+        duration_ms: a.asset_type === 'video' && a.duration_seconds
+            ? Math.round(a.duration_seconds * 1000)
+            : 10000,
+        play_to_end: a.asset_type === 'video',
+        source_filename: a.display_name || a.original_filename || a.filename,
+        source_asset_type: a.asset_type,
+        source_duration_seconds: a.duration_seconds,
+    });
+    sel.value = '';
+    renderSlides();
+}
+
+async function loadAvailableAssets() {
+    try {
+        const r = await fetch('/api/assets');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        availableAssets = (Array.isArray(data) ? data : (data.assets || [])).filter(a =>
+            (a.asset_type === 'image' || a.asset_type === 'video') && !a.deleted_at
+        );
+        const sel = document.getElementById('ss-source-picker');
+        availableAssets.forEach(a => {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            const name = a.display_name || a.original_filename || a.filename;
+            opt.textContent = `${name} [${a.asset_type}]`;
+            sel.appendChild(opt);
+        });
+    } catch (e) {
+        setStatus('Failed to load assets: ' + e.message, true);
+    }
+}
+
+function pickSsGroup(id, name) {
+    if (!selectedGroupIds.includes(id)) selectedGroupIds.push(id);
+    renderGroupBadges();
+    document.getElementById('ss-group-popup').hidePopover && document.getElementById('ss-group-popup').hidePopover();
+}
+
+function renderGroupBadges() {
+    const wrap = document.getElementById('ss-groups-badges');
+    if (!wrap) return;
+    [...wrap.querySelectorAll('.group-badge')].forEach(n => n.remove());
+    const popupWrap = wrap.querySelector('.group-picker-wrap');
+    selectedGroupIds.forEach(gid => {
+        const btn = document.querySelector(`.group-popup-item[data-group-id="${gid}"]`);
+        if (!btn) return;
+        const span = document.createElement('span');
+        span.className = 'group-badge';
+        span.style.cssText = 'background:#444;color:#fff;padding:0.15rem 0.5rem;border-radius:0.5rem;font-size:0.8rem;';
+        span.textContent = btn.dataset.groupName + ' ✕';
+        span.style.cursor = 'pointer';
+        span.onclick = () => { selectedGroupIds = selectedGroupIds.filter(x => x !== gid); renderGroupBadges(); };
+        wrap.insertBefore(span, popupWrap);
+    });
+}
+
+function setStatus(msg, isError) {
+    const s = document.getElementById('ss-status');
+    s.textContent = msg;
+    s.style.color = isError ? '#e74c3c' : '#16a085';
+}
+
+async function saveSlideshow() {
+    setStatus('');
+    const name = document.getElementById('ss-name').value.trim();
+    if (!name) { setStatus('Name is required', true); return; }
+    if (slides.length === 0) { setStatus('Add at least one slide', true); return; }
+    if (slides.length > SS_MAX_SLIDES) { setStatus('Too many slides', true); return; }
+
+    const submit = document.getElementById('ss-submit');
+    submit.disabled = true;
+    try {
+        const slidePayload = slides.map(s => ({
+            source_asset_id: s.source_asset_id,
+            duration_ms: s.duration_ms,
+            play_to_end: !!s.play_to_end,
+        }));
+        if (SS_EDIT_MODE) {
+            const r = await fetch(`/api/assets/${SS_ASSET_ID}/slides`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({slides: slidePayload}),
+            });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                throw new Error(err.detail || ('HTTP ' + r.status));
+            }
+            setStatus('Saved.');
+            setTimeout(() => { window.location.href = '/assets'; }, 600);
+        } else {
+            const body = {
+                name,
+                slides: slidePayload,
+                group_ids: selectedGroupIds,
+            };
+            const r = await fetch('/api/assets/slideshow', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                throw new Error(err.detail || ('HTTP ' + r.status));
+            }
+            setStatus('Created.');
+            setTimeout(() => { window.location.href = '/assets'; }, 600);
+        }
+    } catch (e) {
+        setStatus(typeof e.message === 'string' ? e.message : 'Save failed', true);
+    } finally {
+        submit.disabled = false;
+    }
+}
+
+function openGroupPopup(id) {
+    const el = document.getElementById(id);
+    if (el && el.showPopover) el.showPopover();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    renderSlides();
+    loadAvailableAssets();
+});
+</script>
+{% endblock %}
