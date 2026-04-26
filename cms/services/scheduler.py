@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from shared.database import get_session_factory as _get_session_factory
 from cms.models.asset import Asset, AssetVariant, VariantStatus
+from shared.models.asset import AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.schedule_device_skip import ScheduleDeviceSkip
@@ -868,11 +869,24 @@ async def load_target_devices_by_schedule(
     }
 
 
-def _schedule_to_entry(s: Schedule, variant_checksums: dict[str, str] | None = None) -> ScheduleEntry:
+def _schedule_to_entry(
+    s: Schedule,
+    variant_checksums: dict[str, str] | None = None,
+    slideshow_checksums: dict[str, str] | None = None,
+) -> ScheduleEntry:
     """Convert a Schedule ORM model to a protocol ScheduleEntry."""
     from shared.models.asset import AssetType
     checksum = None
-    if variant_checksums and s.asset.filename in variant_checksums:
+    if (
+        slideshow_checksums
+        and s.asset
+        and s.asset.asset_type == AssetType.SLIDESHOW
+        and str(s.asset.id) in slideshow_checksums
+    ):
+        # Per-device resolved slideshow manifest checksum so re-transcoded
+        # source variants invalidate the device's cached schedule push.
+        checksum = slideshow_checksums[str(s.asset.id)]
+    elif variant_checksums and s.asset.filename in variant_checksums:
         checksum = variant_checksums[s.asset.filename]
     elif s.asset:
         checksum = s.asset.checksum or None
@@ -994,6 +1008,35 @@ async def build_device_sync(
         if default_asset_name and default_asset_name in variant_checksums:
             default_asset_checksum = variant_checksums[default_asset_name]
 
+    # Per-device resolved slideshow manifest checksums.  Computed lazily
+    # below so we only resolve slideshows actually referenced by this
+    # device's schedule set or default asset.
+    slideshow_checksums: dict[str, str] = {}
+
+    async def _get_slideshow_checksum(asset: Asset) -> str | None:
+        from cms.services.slideshow_resolver import resolved_slideshow_checksum
+        key = str(asset.id)
+        if key in slideshow_checksums:
+            return slideshow_checksums[key]
+        resolved = await resolved_slideshow_checksum(asset, dev.profile_id, db)
+        if resolved is not None:
+            slideshow_checksums[key] = resolved
+        return resolved
+
+    # Default-asset slideshow override
+    if dev.default_asset and dev.default_asset.asset_type == AssetType.SLIDESHOW:
+        resolved = await _get_slideshow_checksum(dev.default_asset)
+        if resolved is not None:
+            default_asset_checksum = resolved
+    elif (
+        dev.group
+        and dev.group.default_asset
+        and dev.group.default_asset.asset_type == AssetType.SLIDESHOW
+    ):
+        resolved = await _get_slideshow_checksum(dev.group.default_asset)
+        if resolved is not None:
+            default_asset_checksum = resolved
+
     # Load all enabled schedules targeting this device (directly or via group)
     result = await db.execute(
         select(Schedule)
@@ -1029,7 +1072,11 @@ async def build_device_sync(
             # (either schedule-wide, or just for this device).
             if skips.is_skipped_for_device(str(s.id), device_id):
                 continue
-            entries.append(_schedule_to_entry(s, variant_checksums))
+            if s.asset.asset_type == AssetType.SLIDESHOW:
+                # Pre-resolve slideshow checksum so the entry's
+                # asset_checksum reflects per-profile variant choice.
+                await _get_slideshow_checksum(s.asset)
+            entries.append(_schedule_to_entry(s, variant_checksums, slideshow_checksums))
 
     # Per-device timezone overrides the CMS global timezone
     device_tz = dev.timezone or cms_tz

@@ -890,6 +890,29 @@ def _compute_slideshow_duration_seconds(
     return total_ms / 1000.0
 
 
+def _compute_slideshow_manifest_version(
+    slides: list[SlideIn], sources_by_id: dict[uuid.UUID, Asset]
+) -> str:
+    """Structural manifest hash stored on ``Asset.checksum``.
+
+    Hashes ordered slide structure plus each source asset's own checksum
+    so that any change to the slide list (reorder, add/remove, durations,
+    play_to_end) or to a source's content invalidates schedule pushes.
+    The *resolved* per-device checksum (which additionally folds in the
+    selected READY variant checksum for the device's profile) is computed
+    at sync/resolve time on top of this base value.
+    """
+    h = hashlib.sha256()
+    for idx, s in enumerate(slides):
+        src = sources_by_id[s.source_asset_id]
+        src_checksum = src.checksum or ""
+        h.update(
+            f"{idx}|{s.source_asset_id}|{src_checksum}|{s.duration_ms}|"
+            f"{int(s.play_to_end)}|".encode()
+        )
+    return h.hexdigest()
+
+
 async def _revalidate_slideshow_audience(
     slideshow: Asset, db: AsyncSession
 ) -> None:
@@ -1027,6 +1050,7 @@ async def create_slideshow_asset(
     )
 
     duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
+    manifest_version = _compute_slideshow_manifest_version(slides, sources_by_id)
 
     filename = await _unique_filename(db, name)
 
@@ -1034,7 +1058,7 @@ async def create_slideshow_asset(
         filename=filename,
         asset_type=AssetType.SLIDESHOW,
         size_bytes=0,
-        checksum="",
+        checksum=manifest_version,
         url=None,
         duration_seconds=duration_seconds,
         is_global=make_global,
@@ -1082,9 +1106,15 @@ async def create_slideshow_asset(
 async def list_slideshow_slides(
     asset_id: uuid.UUID,
     request: Request,
+    profile_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Return ordered slides with embedded source metadata."""
+    """Return ordered slides with embedded source metadata.
+
+    When ``profile_id`` is provided, also include a ``readiness`` block
+    enumerating any slides that can't be served on that profile (used by
+    the builder UI and the assets table readiness badge).
+    """
     await _verify_asset_access(asset_id, request, db)
     asset = (
         await db.execute(
@@ -1119,7 +1149,11 @@ async def list_slideshow_slides(
                 "source_duration_seconds": src.duration_seconds,
             }
         )
-    return {"slideshow_id": str(asset_id), "slides": slides_out}
+    payload: dict = {"slideshow_id": str(asset_id), "slides": slides_out}
+    if profile_id is not None:
+        from cms.services.slideshow_resolver import slideshow_readiness
+        payload["readiness"] = await slideshow_readiness(asset, profile_id, db)
+    return payload
 
 
 @router.put("/{asset_id}/slides")
@@ -1174,6 +1208,7 @@ async def replace_slideshow_slides(
     )
 
     duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
+    manifest_version = _compute_slideshow_manifest_version(slides, sources_by_id)
 
     await db.execute(
         delete(SlideshowSlide).where(SlideshowSlide.slideshow_asset_id == asset_id)
@@ -1190,6 +1225,7 @@ async def replace_slideshow_slides(
             )
         )
     asset.duration_seconds = duration_seconds
+    asset.checksum = manifest_version
 
     await audit_log(
         db, user=user, action="asset.replace_slides", resource_type="asset",

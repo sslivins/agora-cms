@@ -77,7 +77,15 @@ async def _resolve_asset_for_device(
       - If a READY variant exists → use variant download URL
       - If variant exists but not ready → return None (not available yet)
     For devices without a profile → use source asset directly.
+    For slideshow assets → resolve the slide list to a manifest; return
+    None if any slide source can't be served (see
+    :mod:`cms.services.slideshow_resolver`).
     """
+    if asset.asset_type == AssetType.SLIDESHOW:
+        # Lazy import — avoids a circular reference at module import time.
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+        return await build_fetch_for_slideshow(asset, device, base_url, db)
+
     storage = get_storage()
 
     # Saved streams behave like videos for download purposes

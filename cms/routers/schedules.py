@@ -158,6 +158,40 @@ async def _validate_webpage_group(group_id: uuid.UUID, db: AsyncSession) -> None
         )
 
 
+async def _validate_slideshow_group(group_id: uuid.UUID, db: AsyncSession) -> None:
+    """Validate every adopted device in ``group_id`` advertises slideshow_v1.
+
+    Mirrors the Pi5/webpage gate.  Older firmware that doesn't include the
+    capabilities field on register has an empty list, which fails the
+    check — exactly the desired behaviour (block the schedule until the
+    fleet is upgraded).
+    """
+    from cms.schemas.protocol import CAPABILITY_SLIDESHOW_V1
+
+    result = await db.execute(
+        select(Device).where(
+            Device.group_id == group_id,
+            Device.status == DeviceStatus.ADOPTED,
+        )
+    )
+    devices = result.scalars().all()
+    incompatible = [
+        d for d in devices
+        if CAPABILITY_SLIDESHOW_V1 not in (d.capabilities or [])
+    ]
+    if incompatible:
+        names = ", ".join(d.name or d.id for d in incompatible[:3])
+        suffix = f" and {len(incompatible) - 3} more" if len(incompatible) > 3 else ""
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Slideshow assets require firmware advertising the "
+                "'slideshow_v1' capability. These devices in the group "
+                f"are not compatible: {names}{suffix}"
+            ),
+        )
+
+
 async def _resolve_loop_end_time(
     loop_count: int | None,
     asset_id: uuid.UUID,
@@ -199,6 +233,7 @@ async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSessi
     is_webpage = asset.asset_type == AssetType.WEBPAGE
     is_live_stream = asset.asset_type == AssetType.STREAM
     is_url_asset = is_webpage or is_live_stream
+    is_slideshow = asset.asset_type == AssetType.SLIDESHOW
 
     # Webpage/live-stream assets cannot use loop_count (no duration)
     if is_url_asset and data.loop_count is not None:
@@ -210,6 +245,10 @@ async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSessi
     # Webpage/live-stream assets require Pi 5+ devices
     if is_url_asset and data.group_id:
         await _validate_webpage_group(data.group_id, db)
+
+    # Slideshow assets require firmware advertising slideshow_v1
+    if is_slideshow and data.group_id:
+        await _validate_slideshow_group(data.group_id, db)
 
     # Auto-compute end_time when loop_count is set
     if not is_url_asset:
@@ -327,6 +366,7 @@ async def update_schedule(
     is_webpage = target_asset and target_asset.asset_type == AssetType.WEBPAGE
     is_live_stream = target_asset and target_asset.asset_type == AssetType.STREAM
     is_url_asset = is_webpage or is_live_stream
+    is_slideshow = target_asset and target_asset.asset_type == AssetType.SLIDESHOW
 
     # Webpage/live-stream assets cannot use loop_count
     if is_url_asset and updates.get("loop_count") is not None:
@@ -340,6 +380,13 @@ async def update_schedule(
         target_group_id = updates.get("group_id", schedule.group_id)
         if target_group_id:
             await _validate_webpage_group(target_group_id, db)
+
+    # Validate slideshow_v1 capability when switching to a slideshow or
+    # changing the group of a slideshow schedule.
+    if is_slideshow and ("asset_id" in updates or "group_id" in updates):
+        target_group_id = updates.get("group_id", schedule.group_id)
+        if target_group_id:
+            await _validate_slideshow_group(target_group_id, db)
 
     # Recompute end_time when loop_count changes (or when asset/start_time
     # change on a schedule that already has loop_count set).
