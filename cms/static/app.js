@@ -700,6 +700,25 @@ function _parsePairingQr(text) {
     return t;
 }
 
+// Canonicalize an 8-char Crockford base32 pairing code so that hyphenated /
+// lowercase / I/L/O-substituted user input hashes to the same bytes as the
+// device's QR.  Mirrors normalize_pairing_secret() in cms.services.
+// device_bootstrap; backend re-normalizes for protocol robustness, but
+// doing it here too lets validateForm() reflect the canonical form.
+const _CROCKFORD_ALPHA = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+function _normalizePairingSecret(raw) {
+    if (typeof raw !== "string") return raw;
+    const stripped = raw.trim();
+    const candidate = stripped.replace(/[\s-]/g, "");
+    if (candidate.length !== 8) return stripped;
+    const upper = candidate.toUpperCase();
+    const fixed = upper.replace(/I/g, "1").replace(/L/g, "1").replace(/O/g, "0");
+    for (const ch of fixed) {
+        if (_CROCKFORD_ALPHA.indexOf(ch) === -1) return stripped;
+    }
+    return fixed;
+}
+
 let _bootstrapAdoptOpen = false;
 
 async function bootstrapAdoptDevice() {
@@ -773,7 +792,7 @@ function showBootstrapAdoptModal(groups, profiles) {
         const secretInput = document.createElement("input");
         secretInput.type = "text";
         secretInput.className = "modal-input";
-        secretInput.placeholder = "Paste pairing code or scan QR";
+        secretInput.placeholder = "e.g. 7K3Q-4M2P (or scan QR)";
         secretInput.autocomplete = "off";
         secretInput.spellcheck = false;
         secretInput.style.flex = "1";
@@ -991,7 +1010,7 @@ function showBootstrapAdoptModal(groups, profiles) {
         scanStop.addEventListener("click", stopScanner);
 
         const validateForm = () => {
-            const secret = secretInput.value.trim();
+            const secret = _normalizePairingSecret(secretInput.value);
             adoptBtn.disabled = !(secret.length >= 8 && secret.length <= 128) || !profileSelect.value;
         };
         validateForm();
@@ -1000,7 +1019,7 @@ function showBootstrapAdoptModal(groups, profiles) {
         profileSelect.addEventListener("change", validateForm);
 
         const getResult = () => ({
-            pairing_secret: secretInput.value.trim(),
+            pairing_secret: _normalizePairingSecret(secretInput.value),
             name: nameInput.value.trim() || null,
             profile_id: profileSelect.value,
             location: locInput.value.trim() || null,
