@@ -214,14 +214,14 @@ class TestDevicesPageColumns:
         assert resp.status_code == 200
         assert ">Profile<" not in resp.text
 
-    async def test_operator_storage_column_present(self, operator_client, seed_devices):
-        """Storage column should still be visible for operators."""
+    async def test_operator_storage_column_removed(self, operator_client, seed_devices):
+        """Storage column was removed in favor of the triage bar Storage Critical chip."""
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
-        assert ">Storage<" in resp.text
+        assert "<th>Storage</th>" not in resp.text
 
     async def test_operator_column_count_matches(self, operator_client, seed_devices):
-        """Without manage, header should have 6 columns (expand, name, status, group, splash, storage)."""
+        """Without manage, header should have 5 columns (expand, name, status, group, splash)."""
         import re
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
@@ -229,14 +229,14 @@ class TestDevicesPageColumns:
         thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
         assert thead_match
         th_count = thead_match.group(1).count("<th")
-        assert th_count == 6
+        assert th_count == 5
 
     async def test_admin_column_count_matches(self, client, seed_devices):
-        """With manage, header should have 8 columns (expand, name, status, group, splash, profile, storage, actions)."""
+        """With manage, header should have 7 columns (expand, name, status, group, splash, profile, actions)."""
         import re
         resp = await client.get("/devices")
         assert resp.status_code == 200
         thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
         assert thead_match
         th_count = thead_match.group(1).count("<th")
-        assert th_count == 8
+        assert th_count == 7

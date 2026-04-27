@@ -1132,6 +1132,37 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
     profiles = profiles_q.scalars().all()
 
+    from cms.services.device_alerts import (
+        device_severity_tags,
+        fleet_counts,
+        SEVERITY_TAGS,
+        NEEDS_ATTENTION_TAGS,
+    )
+
+    # Annotate every decorated device with its severity tag list so
+    # the template emits a `data-severity-tags` attr that drives both
+    # the triage-bar filter and live count recomputation. `devices`
+    # is the authoritative permission-filtered list; group-scoped
+    # `g.devices` references share the same Python objects after the
+    # decoration loop above, so this single pass covers both renders.
+    decorated_ids: set = set()
+    for d in devices:
+        d.severity_tags = device_severity_tags(d)
+        decorated_ids.add(id(d))
+    for g in groups:
+        for d in g.devices:
+            if id(d) not in decorated_ids:
+                # Defensive — a group may surface a device the top-level
+                # query filtered out (shouldn't happen given the perm
+                # logic above, but keep us honest).
+                d.severity_tags = device_severity_tags(d)
+
+    counts = fleet_counts(devices)
+
+    raw_alert = (request.query_params.get("alert") or "").strip().lower()
+    valid_filters = {"all", "needs-attention", "healthy", *SEVERITY_TAGS}
+    active_alert = raw_alert if raw_alert in valid_filters else "all"
+
     return templates.TemplateResponse(request, "devices.html", {
         "active_tab": "devices",
         "devices": devices,
@@ -1142,6 +1173,9 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "timezones": COMMON_TIMEZONES,
         "latest_version": get_latest_device_version(),
         "pending_ttl_hours": get_settings().pending_device_ttl_hours,
+        "fleet_counts": counts,
+        "active_alert": active_alert,
+        "needs_attention_tags": sorted(NEEDS_ATTENTION_TAGS),
     })
 
 
