@@ -50,6 +50,15 @@ _buf_handler = _BufferHandler(logging.INFO)
 _buf_handler.setFormatter(logging.Formatter(_fmt))
 logging.getLogger().addHandler(_buf_handler)
 
+# ── Application Insights / OpenTelemetry bootstrap ─────────────────
+# Must run BEFORE the FastAPI app is constructed so the auto-
+# instrumentation can hook the framework at import time.  No-op when
+# APPLICATIONINSIGHTS_CONNECTION_STRING is unset — see
+# cms/observability.py.  Issue #474, Phase 0 / A1.
+from cms.observability import setup_observability  # noqa: E402
+
+setup_observability()
+
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
