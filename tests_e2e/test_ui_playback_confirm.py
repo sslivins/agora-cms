@@ -6,6 +6,8 @@ import threading
 import pytest
 from playwright.sync_api import Page, expect
 
+from .conftest import open_row_kebab
+
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -63,14 +65,11 @@ class TestPlaybackInterruptConfirm:
             page.goto("/devices")
             page.wait_for_load_state("domcontentloaded")
 
-            # Expand device detail to reveal the Reboot button
+            # Open kebab and click Reboot from the popover menu
             row = page.locator('[data-device-id="play-reboot-001"]').first
             expect(row).to_be_visible(timeout=5000)
-            row.locator(".expand-toggle").click()
-
-            detail = page.locator('[data-detail-for="play-reboot-001"]').first
-            expect(detail).to_be_visible(timeout=3000)
-            reboot_btn = detail.locator("button", has_text="Reboot")
+            menu = open_row_kebab(row)
+            reboot_btn = menu.get_by_role("menuitem", name="Reboot")
             expect(reboot_btn).to_be_visible(timeout=3000)
             reboot_btn.click()
 
@@ -97,11 +96,8 @@ class TestPlaybackInterruptConfirm:
 
             row = page.locator('[data-device-id="idle-reboot-001"]').first
             expect(row).to_be_visible(timeout=5000)
-            row.locator(".expand-toggle").click()
-
-            detail = page.locator('[data-detail-for="idle-reboot-001"]').first
-            expect(detail).to_be_visible(timeout=3000)
-            reboot_btn = detail.locator("button", has_text="Reboot")
+            menu = open_row_kebab(row)
+            reboot_btn = menu.get_by_role("menuitem", name="Reboot")
             expect(reboot_btn).to_be_visible(timeout=3000)
             reboot_btn.click()
 
