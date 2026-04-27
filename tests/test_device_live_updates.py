@@ -405,17 +405,20 @@ class TestDevicesUILiveUpdates:
         context = text[max(0, idx - 100):idx + 100]
         assert 'display:none' not in context
 
-    async def test_ssh_button_visible_for_admin(self, client, device_with_live_state):
-        """SSH toggle button wrapper should exist with data-live-ssh-btn."""
+    async def test_kebab_actions_visible_for_admin(self, client, device_with_live_state):
+        """Admin should see the row's actions kebab with manage actions."""
         resp = await client.get("/devices")
         assert resp.status_code == 200
-        assert f'data-live-ssh-btn="{device_with_live_state}"' in resp.text
+        # The data-live-actions cell hosts the kebab; admin should see it.
+        assert f'data-live-actions="{device_with_live_state}"' in resp.text
+        # SSH option lives in the kebab now (toolbar was removed).
+        assert "Enable SSH" in resp.text or "Disable SSH" in resp.text
 
-    async def test_toolbar_hidden_for_operator(self, operator_client, device_with_live_state):
-        """Operator should NOT see the detail toolbar (manage actions)."""
+    async def test_actions_cell_hidden_for_operator(self, operator_client, device_with_live_state):
+        """Operator should NOT see the actions kebab cell (manage-only)."""
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
-        assert f'data-live-toolbar="{device_with_live_state}"' not in resp.text
+        assert f'data-live-actions="{device_with_live_state}"' not in resp.text
 
     async def test_temp_displays_with_value(self, client, device_with_live_state):
         """Device with cpu_temp_c=72.5 should show temperature in the HTML."""
