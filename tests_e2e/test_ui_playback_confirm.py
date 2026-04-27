@@ -68,6 +68,7 @@ class TestPlaybackInterruptConfirm:
             # Open kebab and click Reboot from the popover menu
             row = page.locator('[data-device-id="play-reboot-001"]').first
             expect(row).to_be_visible(timeout=5000)
+            expect(row.locator(".badge-online").first).to_be_visible(timeout=10000)
             menu = open_row_kebab(row)
             reboot_btn = menu.get_by_role("menuitem", name="Reboot")
             expect(reboot_btn).to_be_visible(timeout=3000)
@@ -96,6 +97,7 @@ class TestPlaybackInterruptConfirm:
 
             row = page.locator('[data-device-id="idle-reboot-001"]').first
             expect(row).to_be_visible(timeout=5000)
+            expect(row.locator(".badge-online").first).to_be_visible(timeout=10000)
             menu = open_row_kebab(row)
             reboot_btn = menu.get_by_role("menuitem", name="Reboot")
             expect(reboot_btn).to_be_visible(timeout=3000)
