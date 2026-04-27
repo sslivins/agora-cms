@@ -41,7 +41,7 @@ from cms.database import get_db
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, has_permission
+from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, has_permission
 from cms.auth import get_user_group_ids
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
@@ -1506,9 +1506,24 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
 
 
 @router.get(
+    "/assets/new",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
+)
+async def assets_new_hub(request: Request, db: AsyncSession = Depends(get_db)):
+    """Hub page listing builders that author synthetic assets.
+
+    Today: Slideshow. Future: Composed Slide / Scene.
+    """
+    return templates.TemplateResponse(request, "assets_new.html", {
+        "active_tab": "assets",
+    })
+
+
+@router.get(
     "/assets/new/slideshow",
     response_class=HTMLResponse,
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
 )
 async def slideshow_builder_new(request: Request, db: AsyncSession = Depends(get_db)):
     ctx = await _slideshow_builder_context(request, db, asset_id=None)
@@ -1518,7 +1533,7 @@ async def slideshow_builder_new(request: Request, db: AsyncSession = Depends(get
 @router.get(
     "/assets/{asset_id}/slideshow",
     response_class=HTMLResponse,
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
 )
 async def slideshow_builder_edit(
     asset_id: str, request: Request, db: AsyncSession = Depends(get_db)

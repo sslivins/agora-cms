@@ -5,6 +5,9 @@
 <h1>Assets</h1>
 <div class="sub-tabs">
     <a href="/assets" class="sub-tab active">Library</a>
+    {% if 'assets:write' in user_perms %}
+    <a href="/assets/new" class="sub-tab">Create</a>
+    {% endif %}
     <a href="/profiles" class="sub-tab">Playback Profiles</a>
 </div>
 
@@ -159,9 +162,6 @@
 <div class="card">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
         <h2 style="margin:0;">Library</h2>
-        {% if 'assets:write' in user_perms %}
-        <a href="/assets/new/slideshow" class="btn btn-secondary" title="Create a slideshow from existing assets">🎞️ New Slideshow</a>
-        {% endif %}
     </div>
     <div class="table-wrap">
     <table>
