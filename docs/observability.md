@@ -82,12 +82,42 @@ Driven by env vars on the Container Apps deployment:
 * **Logs show `azure-monitor-opentelemetry not installed`** — the
   Docker image was built against an older `requirements.txt`.  Rebuild
   and redeploy.
-* **Bursts of 4xx / 5xx in `requests`** — A1.5 alert rules are designed
-  to catch these.  Until A1.5 lands, eyeball the workbook manually.
+* **Bursts of 4xx / 5xx in `requests`** — A1.5 alert rules now page the
+  on-call email when these spike.  See _Alerts and workbook_ below.
+
+## Alerts and workbook (A1.5)
+
+Provisioned by `infra/modules/alerts.bicep` and wired in from
+`infra/main.bicep`.  Recipient is set per-environment via the
+`alertEmail` bicepparam; production currently goes to
+`sslivins+agora_alerts@gmail.com`.  Setting `alertEmail` to an empty
+string in a `.bicepparam` disables the action group and all alert
+rules, useful for short-lived dev environments.  The workbook is
+always provisioned regardless of `alertEmail` so dashboards remain
+available even when paging is off.
+
+The five alert rules all query the workspace-based App Insights tables
+(`AppRequests`, `AppDependencies`, `AppExceptions`).  Signal-based
+rules use `!contains "/health"` and `!contains "/metrics"` so probe
+traffic never trips them.  The heartbeat rule is the deliberate
+exception — it counts probes too, because their absence is itself the
+strongest "service is gone" signal.
+
+| Rule                            | Severity | Window | Threshold                                      | Why this threshold |
+|---------------------------------|----------|--------|------------------------------------------------|--------------------|
+| CMS heartbeat (no telemetry)    | 1        | 15 min | `AppRequests` count `< 1` (probes counted)     | Catches the worst-case outage where nothing is emitting telemetry — the four signal-based rules would silently miss it |
+| CMS 5xx response spike          | 2        | 5 min  | `> 5` 5xx responses in any 5-min bin           | A handful is noise; 5+ usually indicates a real bug or downstream failure |
+| CMS slow requests (p95 > 3s)    | 3        | 15 min | p95 > 3000 ms across ≥ 20 non-probe samples in the rolling window, 2 of 3 evaluations | Bursty single slow calls don't page; sustained latency does |
+| CMS dependency failures         | 2        | 5 min  | `> 5` failed deps (DB / outbound HTTP) in 5 min | DB or WPS REST falling over should page immediately |
+| CMS unhandled exceptions        | 2        | 5 min  | `> 3` exceptions in 5 min                      | Rare exceptions are tolerable; a sustained source is not |
+
+A companion workbook ("Agora CMS — Telemetry triage") is provisioned
+alongside the alerts and shows the same signals plus a 24-hour
+request-volume timechart.  Find it in the App Insights resource under
+**Workbooks → Shared**.
 
 ## What's next
 
-* **A1.5** — health workbook and alert rules (issue #474, same phase).
 * **Phase 1** — Pi-side telemetry (devices report their own request /
   exception / playback metrics).  Will arrive in `requests` /
   `customEvents` from the device fleet, queryable by `client_Id`.

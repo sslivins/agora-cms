@@ -29,6 +29,9 @@ param cmsAdminUsername = 'admin'
 
 param adminPrincipalId = '224d9903-ad74-4629-982b-1db94580d901'
 
+// Telemetry alert recipient (Phase 0 / A1.5 — issue #474)
+param alertEmail = 'sslivins+agora_alerts@gmail.com'
+
 // Container images — set by CD pipeline via --parameters override:
 // param cmsImage = 'agoracmsacr.azurecr.io/agora-cms:latest'
 // param mcpImage = 'agoracmsacr.azurecr.io/agora-cms-mcp:latest'
