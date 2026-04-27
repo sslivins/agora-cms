@@ -79,6 +79,26 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
+// ── Application Insights (workspace-based) ──
+// Phase 0 / A1 of the telemetry roadmap (issue #474).  Auto-instruments
+// the CMS app via OpenTelemetry — request/dependency/exception tables
+// are populated without any per-route code changes.  Reuses the
+// Container Apps log analytics workspace so all telemetry lives in one
+// place and is queryable with a single KQL connection.
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: '${environmentName}-ai'
+  location: location
+  tags: tags
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    IngestionMode: 'LogAnalytics'
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
 resource containerAppsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
@@ -169,6 +189,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'fleet-register-secrets'
           value: fleetRegisterSecrets
         }
+        {
+          name: 'app-insights-connection-string'
+          value: appInsights.properties.ConnectionString
+        }
       ]
     }
     template: {
@@ -240,6 +264,20 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AGORA_CMS_FLEET_REGISTER_SECRETS'
               secretRef: 'fleet-register-secrets'
+            }
+            {
+              // Picked up by azure-monitor-opentelemetry's
+              // configure_azure_monitor() at process start (see
+              // cms/observability.py).  When unset (e.g. local dev,
+              // docker-compose) telemetry export is silently disabled.
+              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+              secretRef: 'app-insights-connection-string'
+            }
+            {
+              // Tag every emitted record so we can distinguish prod from
+              // dev/staging in shared workbooks and KQL.
+              name: 'OTEL_RESOURCE_ATTRIBUTES'
+              value: 'service.name=agora-cms,service.namespace=agora,deployment.environment=${environmentName}'
             }
           ]
           volumeMounts: [
@@ -451,3 +489,6 @@ output mcpAppUrl string = 'https://${mcpApp.properties.configuration.ingress.fqd
 output environmentId string = containerAppsEnv.id
 output cmsPrincipalId string = cmsApp.identity.principalId
 output mcpPrincipalId string = mcpApp.identity.principalId
+output logAnalyticsWorkspaceId string = logAnalytics.id
+output appInsightsId string = appInsights.id
+output appInsightsName string = appInsights.name

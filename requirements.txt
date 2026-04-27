@@ -23,3 +23,10 @@ azure-identity>=1.16,<2.0
 azure-keyvault-secrets>=4.8,<5.0
 # Azure Web PubSub (#344 Stage 2b.2 — DEVICE_TRANSPORT=wps)
 azure-messaging-webpubsubservice>=1.2,<2.0
+
+# Telemetry — Application Insights via OpenTelemetry (issue #474, Phase 0 / A1).
+# Meta-package that pulls in opentelemetry-api/sdk + the Azure Monitor exporter
+# + auto-instrumentations for FastAPI, SQLAlchemy, HTTPX, urllib3, requests.
+# A no-op when APPLICATIONINSIGHTS_CONNECTION_STRING is unset — see
+# cms/observability.py for the wiring.
+azure-monitor-opentelemetry>=1.6,<2.0
