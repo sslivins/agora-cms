@@ -52,6 +52,34 @@ def _adopt_device(page: Page, device_id: str):
             page.wait_for_load_state("networkidle")
 
 
+def _click_reboot_via_kebab(page, device_id, timeout_ms=15000):
+    """Open the row's kebab and click Reboot, retrying until the device is
+    online (Reboot menuitem only renders for online devices).
+    """
+    import time
+    row = page.locator(f'[data-device-id="{device_id}"]').first
+    expect(row).to_be_visible(timeout=5000)
+    deadline = time.time() + timeout_ms / 1000
+    last_err = None
+    while time.time() < deadline:
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        menu = open_row_kebab(row)
+        reboot = menu.get_by_role("menuitem", name="Reboot")
+        try:
+            if reboot.count() > 0 and reboot.first.is_visible():
+                reboot.first.click()
+                return
+        except Exception as e:
+            last_err = e
+        time.sleep(0.5)
+    raise AssertionError(
+        f"Reboot menuitem never appeared in kebab for {device_id} within {timeout_ms}ms (last_err={last_err})"
+    )
+
+
 class TestPlaybackInterruptConfirm:
     """Actions on a playing device should show a playback-interrupt warning."""
 
@@ -65,14 +93,8 @@ class TestPlaybackInterruptConfirm:
             page.goto("/devices")
             page.wait_for_load_state("domcontentloaded")
 
-            # Open kebab and click Reboot from the popover menu
-            row = page.locator('[data-device-id="play-reboot-001"]').first
-            expect(row).to_be_visible(timeout=5000)
-            expect(row.locator(".badge-online").first).to_be_visible(timeout=10000)
-            menu = open_row_kebab(row)
-            reboot_btn = menu.get_by_role("menuitem", name="Reboot")
-            expect(reboot_btn).to_be_visible(timeout=3000)
-            reboot_btn.click()
+            # Open kebab and click Reboot from the popover menu (retries until online).
+            _click_reboot_via_kebab(page, "play-reboot-001")
 
             # Confirm dialog should NOT mention "currently playing" — no schedule active
             modal = page.locator(".modal-overlay")
@@ -95,13 +117,7 @@ class TestPlaybackInterruptConfirm:
             page.goto("/devices")
             page.wait_for_load_state("domcontentloaded")
 
-            row = page.locator('[data-device-id="idle-reboot-001"]').first
-            expect(row).to_be_visible(timeout=5000)
-            expect(row.locator(".badge-online").first).to_be_visible(timeout=10000)
-            menu = open_row_kebab(row)
-            reboot_btn = menu.get_by_role("menuitem", name="Reboot")
-            expect(reboot_btn).to_be_visible(timeout=3000)
-            reboot_btn.click()
+            _click_reboot_via_kebab(page, "idle-reboot-001")
 
             modal = page.locator(".modal-overlay")
             expect(modal).to_be_visible(timeout=3000)
