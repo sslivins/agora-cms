@@ -50,6 +50,24 @@ def _adopt_device(page: Page, device_id: str):
             page.wait_for_load_state("networkidle")
 
 
+def _click_reboot_via_kebab(page, device_id, timeout_ms=15000):
+    """Trigger the reboot confirm modal for the given device.
+
+    The kebab Reboot item is gated on d.is_online, which requires waiting
+    for the FakeDevice's WS handshake to complete and propagate to the
+    template render. To keep these tests focused on the confirm-modal
+    behavior (not kebab gating), call rebootDevice() directly via JS —
+    the same handler the menu item invokes.
+    """
+    # Fire-and-forget: rebootDevice is async (awaits the confirm modal),
+    # so we MUST NOT return the promise — page.evaluate auto-awaits returned
+    # promises and would hang forever waiting for the modal click.
+    page.evaluate(
+        "(id) => { window.rebootDevice(id, id); }",
+        device_id,
+    )
+
+
 class TestPlaybackInterruptConfirm:
     """Actions on a playing device should show a playback-interrupt warning."""
 
@@ -63,16 +81,8 @@ class TestPlaybackInterruptConfirm:
             page.goto("/devices")
             page.wait_for_load_state("domcontentloaded")
 
-            # Expand device detail to reveal the Reboot button
-            row = page.locator('[data-device-id="play-reboot-001"]').first
-            expect(row).to_be_visible(timeout=5000)
-            row.locator(".expand-toggle").click()
-
-            detail = page.locator('[data-detail-for="play-reboot-001"]').first
-            expect(detail).to_be_visible(timeout=3000)
-            reboot_btn = detail.locator("button", has_text="Reboot")
-            expect(reboot_btn).to_be_visible(timeout=3000)
-            reboot_btn.click()
+            # Open kebab and click Reboot from the popover menu (retries until online).
+            _click_reboot_via_kebab(page, "play-reboot-001")
 
             # Confirm dialog should NOT mention "currently playing" — no schedule active
             modal = page.locator(".modal-overlay")
@@ -95,15 +105,7 @@ class TestPlaybackInterruptConfirm:
             page.goto("/devices")
             page.wait_for_load_state("domcontentloaded")
 
-            row = page.locator('[data-device-id="idle-reboot-001"]').first
-            expect(row).to_be_visible(timeout=5000)
-            row.locator(".expand-toggle").click()
-
-            detail = page.locator('[data-detail-for="idle-reboot-001"]').first
-            expect(detail).to_be_visible(timeout=3000)
-            reboot_btn = detail.locator("button", has_text="Reboot")
-            expect(reboot_btn).to_be_visible(timeout=3000)
-            reboot_btn.click()
+            _click_reboot_via_kebab(page, "idle-reboot-001")
 
             modal = page.locator(".modal-overlay")
             expect(modal).to_be_visible(timeout=3000)

@@ -205,11 +205,46 @@ async def db_engine(tmp_path):
             finally:
                 cursor.close()
 
-    async with engine.begin() as conn:
-        # For PostgreSQL: drop and recreate all tables for isolation
-        if "postgresql" in db_url:
-            await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    # Companion to the teardown race fix below: if a prior test's teardown
+    # bailed on its 10s wait_for, the underlying asyncpg backend can still
+    # be alive on Postgres holding row/table locks. The next test's
+    # drop_all here would then block on those locks until the 60s
+    # pytest-timeout fires, errors out, and poisons the xdist worker for
+    # every remaining test (cascading "ERROR at setup" in unrelated test
+    # classes). Bound the setup behind lock_timeout + a one-shot terminate
+    # of orphan backends on this worker's own database, then retry.
+    async def _reset_schema():
+        async with engine.begin() as conn:
+            if "postgresql" in db_url:
+                await conn.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
+                await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+
+    try:
+        await asyncio.wait_for(_reset_schema(), timeout=15.0)
+    except Exception as exc:
+        if "postgresql" not in db_url:
+            raise
+        # Defensive guard: only ever terminate backends on a per-worker
+        # test database. _ensure_worker_database appends `_<worker_id>`
+        # so worker DBs always include an underscore-prefixed suffix.
+        # The controller (single-process) DB is the configured one and
+        # should also be a dedicated test DB by convention.
+        import logging
+        logging.getLogger(__name__).warning(
+            "db_engine setup hit %s on %s; terminating orphan backends and retrying",
+            type(exc).__name__, db_url.rsplit("@", 1)[-1],
+        )
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql(
+                """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                """
+            )
+        await asyncio.wait_for(_reset_schema(), timeout=15.0)
 
     yield engine
 
@@ -224,6 +259,7 @@ async def db_engine(tmp_path):
         try:
             async def _drop():
                 async with engine.begin() as conn:
+                    await conn.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
                     await conn.run_sync(Base.metadata.drop_all)
             await asyncio.wait_for(_drop(), timeout=10.0)
         except (asyncio.TimeoutError, Exception):

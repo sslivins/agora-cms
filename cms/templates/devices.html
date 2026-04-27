@@ -17,7 +17,7 @@
         {{ d.name or d.id }}
         {% endif %}
     </td>
-    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}">
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}">
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
         {% elif d.status.value == 'pending' %}
@@ -31,6 +31,7 @@
         {% else %}
         <span class="badge badge-offline">Offline</span>
         {% endif %}
+        {{ macros.device_alert_chips(d) }}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -218,28 +219,6 @@
             </div>
             </div>
         </div>
-        {% if 'devices:manage' in user_perms %}
-        <div class="detail-toolbar" data-live-toolbar="{{ d.id }}" {% if not d.is_online %}style="display:none"{% endif %}>
-            <span class="detail-label">Actions</span>
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')">Change Web Password</button><span class="tooltip">Set the password for this device's local web UI</span></span>
-            <span data-live-ssh-btn="{{ d.id }}">
-            {% if d.ssh_enabled %}
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>
-            {% else %}
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh('{{ d.id }}', true)">Enable SSH</button><span class="tooltip">SSH is currently disabled — click to enable</span></span>
-            {% endif %}
-            </span>
-            <span data-live-localapi-btn="{{ d.id }}">
-            {% if d.local_api_enabled is not none and not d.local_api_enabled %}
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', true)">Enable Local API</button><span class="tooltip">Device REST API is disabled — click to re-enable</span></span>
-            {% else %}
-            <span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi('{{ d.id }}', false)">Disable Local API</button><span class="tooltip">Disable the device's local REST API</span></span>
-            {% endif %}
-            </span>
-            <span class="has-tooltip"><button class="btn btn-danger btn-sm" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')">Reboot</button><span class="tooltip">Restart this device immediately</span></span>
-            <span class="has-tooltip"><button class="btn btn-warn btn-sm" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')">Factory Reset</button><span class="tooltip">Wipe all data and return device to setup mode</span></span>
-        </div>
-        {% endif %}
         </div>
     </td>
 </tr>
@@ -273,7 +252,6 @@
     <div style="display: flex; gap: 0.25rem; align-items: center;">
         <h2 style="margin: 0;">Devices</h2>
         {% if 'devices:manage' in user_perms %}
-        <button class="btn btn-primary" style="margin-left: 0.75rem;" onclick="bootstrapAdoptDevice()" title="Adopt a new device by scanning the QR code on its splash screen or pasting its pairing code">Adopt Device</button>
         <span onclick="event.stopPropagation()">
             {% call macros.kebab_menu() %}
                 <button type="button" role="menuitem" onclick="checkForUpdates(this)" id="check-updates-btn" title="Fetch the latest available device software version. Runs automatically every hour.">Check for updates</button>
@@ -300,7 +278,10 @@
 {# first heading on the page — the e2e page-load test keys off that.   #}
 {% if 'devices:manage' in user_perms %}
 <div class="card" id="pending-devices-card" style="display: none;">
-    <h2 style="margin: 0 0 0.5rem 0;">Pending Devices</h2>
+    <div style="display: flex; gap: 0.75rem; align-items: center; margin: 0 0 0.5rem 0;">
+        <h2 style="margin: 0;">Pending Devices</h2>
+        <button class="btn btn-primary" onclick="bootstrapAdoptDevice()" title="Adopt a new device by scanning the QR code on its splash screen or pasting its pairing code">Adopt Device</button>
+    </div>
     <p class="text-muted" style="margin: 0 0 0.75rem 0;">
         Devices that have registered with the CMS but haven't been adopted yet.
         Unadopted registrations expire after {{ pending_ttl_hours }} hours.
@@ -508,14 +489,73 @@ window._adoptionProfiles = [
              + '<div id="' + mid + '" popover class="kebab-menu" role="menu">' + items + '</div>';
     }
 
-    function buildSshButton(d) {
-        if (d.ssh_enabled) return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh(\'' + d.id + '\', false)">Disable SSH</button><span class="tooltip">SSH is currently enabled — click to disable</span></span>';
-        return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleSsh(\'' + d.id + '\', true)">Enable SSH</button><span class="tooltip">SSH is currently disabled — click to enable</span></span>';
+    function buildAlertChips(d) {
+        // Mirrors the device_alert_chips Jinja macro in _macros.html. Keep
+        // the two in sync — the page renders the macro on first paint and
+        // this builder takes over for live updates.
+        if (d.status === 'pending' || d.status === 'orphaned') return '';
+        const out = [];
+        // Error
+        if (d.is_online && (d.error || d.pipeline_state === 'ERROR')) {
+            const msg = d.error ? String(d.error).replace(/[<>&]/g, '') : 'Player pipeline reported an error';
+            out.push('<span class="has-tooltip"><span class="badge badge-error">Error</span><span class="tooltip">' + msg + '</span></span>');
+        }
+        // Upgrading
+        if (d.is_upgrading) {
+            out.push('<span class="has-tooltip"><span class="badge badge-processing">Upgrading…</span><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>');
+        }
+        // Temp
+        if (d.is_online && d.cpu_temp_c != null) {
+            const t = d.cpu_temp_c.toFixed(1);
+            if (d.cpu_temp_c >= 80) {
+                out.push('<span class="has-tooltip"><span class="badge badge-temp-critical">Temp ' + t + '°C</span><span class="tooltip">CPU temperature is critical — device may throttle or shut down</span></span>');
+            } else if (d.cpu_temp_c >= 70) {
+                out.push('<span class="has-tooltip"><span class="badge badge-temp-warning">Temp ' + t + '°C</span><span class="tooltip">CPU temperature is high — check ventilation</span></span>');
+            }
+        }
+        // Display Off
+        if (d.is_online) {
+            const ports = Array.isArray(d.display_ports) ? d.display_ports : null;
+            const allOff = ports && ports.length > 0 && ports.every(p => !p.connected);
+            const noPortsAndOff = !ports && d.display_connected === false;
+            if (allOff || noPortsAndOff) {
+                out.push('<span class="has-tooltip"><span class="badge badge-offline">Display Off</span><span class="tooltip">No display detected — check HDMI cable</span></span>');
+            }
+        }
+        // Storage
+        if (d.storage_capacity_mb && d.storage_capacity_mb > 0) {
+            const used = d.storage_used_mb != null ? d.storage_used_mb : 0;
+            const freePct = (d.storage_capacity_mb - used) / d.storage_capacity_mb * 100;
+            if (freePct < 5) {
+                out.push('<span class="has-tooltip"><span class="badge badge-temp-critical">Storage ' + Math.round(freePct) + '%</span><span class="tooltip">Less than 5% free — downloads and recordings may fail</span></span>');
+            } else if (freePct < 10) {
+                out.push('<span class="has-tooltip"><span class="badge badge-temp-warning">Storage ' + Math.round(freePct) + '%</span><span class="tooltip">Less than 10% free — consider clearing unused assets</span></span>');
+            }
+        }
+        // Update
+        if (d.update_available && !d.is_upgrading) {
+            out.push('<span class="has-tooltip"><span class="badge badge-update">Update</span><span class="tooltip">A newer firmware version is available — open the row\'s actions menu to update</span></span>');
+        }
+        return out.join('');
     }
 
-    function buildLocalApiButton(d) {
-        if (d.local_api_enabled != null && !d.local_api_enabled) return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi(\'' + d.id + '\', true)">Enable Local API</button><span class="tooltip">Device REST API is disabled — click to re-enable</span></span>';
-        return '<span class="has-tooltip"><button class="btn btn-secondary btn-sm" onclick="toggleLocalApi(\'' + d.id + '\', false)">Disable Local API</button><span class="tooltip">Disable the device\'s local REST API</span></span>';
+    function alertsSig(d) {
+        // Must match the data-alerts-sig attribute computed in
+        // _macros.html / devices.html so the first poll after page load
+        // is a no-op when nothing has changed.
+        const tempBucket = d.cpu_temp_c != null ? Math.round(d.cpu_temp_c) : 'n';
+        const ports = Array.isArray(d.display_ports) ? d.display_ports : null;
+        const allOff = ports && ports.length > 0 && ports.every(p => !p.connected);
+        const noPortsAndOff = !ports && d.display_connected === false;
+        const displayOff = (allOff || noPortsAndOff) ? 1 : 0;
+        const errFlag = (d.error || d.pipeline_state === 'ERROR') ? 1 : 0;
+        const storageBucket = (d.storage_capacity_mb && d.storage_capacity_mb > 0)
+            ? Math.round((d.storage_capacity_mb - (d.storage_used_mb || 0)) / d.storage_capacity_mb * 100)
+            : 'n';
+        return [
+            d.status, d.is_online ? 1 : 0, d.is_upgrading ? 1 : 0,
+            d.update_available ? 1 : 0, errFlag, tempBucket, displayOff, storageBucket
+        ].join('|');
     }
 
     function updateLiveFields(devices) {
@@ -527,9 +567,16 @@ window._adoptionProfiles = [
                 else delete row.dataset.playing;
             }
 
-            // ── Collapsed row: status badge ──
+            // ── Collapsed row: status badge + alert chips ──
+            // Re-render only when a relevant input changed (alerts-sig). The
+            // status badge alone is cheap, but the chips include 6+ inputs
+            // and the user may be hovering a tooltip — gate the swap.
             document.querySelectorAll(`[data-live-status="${d.id}"]`).forEach(el => {
-                el.innerHTML = buildStatusBadge(d);
+                const sig = alertsSig(d);
+                if (el.dataset.alertsSig !== sig) {
+                    el.innerHTML = buildStatusBadge(d) + buildAlertChips(d);
+                    el.dataset.alertsSig = sig;
+                }
             });
 
             // ── Collapsed row: storage percentage ──
@@ -606,14 +653,6 @@ window._adoptionProfiles = [
             // ── Detail panel: online-only sections visibility ──
             const onlineSection = document.querySelector(`[data-live-online-section="${d.id}"]`);
             if (onlineSection) onlineSection.style.display = d.is_online ? '' : 'none';
-            const toolbar = document.querySelector(`[data-live-toolbar="${d.id}"]`);
-            if (toolbar) toolbar.style.display = d.is_online ? '' : 'none';
-
-            // ── Detail panel: SSH / Local API toggle buttons ──
-            const sshBtn = document.querySelector(`[data-live-ssh-btn="${d.id}"]`);
-            if (sshBtn) sshBtn.innerHTML = buildSshButton(d);
-            const apiBtn = document.querySelector(`[data-live-localapi-btn="${d.id}"]`);
-            if (apiBtn) apiBtn.innerHTML = buildLocalApiButton(d);
         }
         requestAnimationFrame(applyAssetTooltips);
     }

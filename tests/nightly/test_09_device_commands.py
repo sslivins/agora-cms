@@ -57,78 +57,34 @@ def _wait_for_online(page: Page, device_id: str, timeout: float = 30.0) -> None:
 
 
 def _expand_device_row(page: Page, device_id: str) -> None:
-    """Click the row to expose the detail toolbar with action buttons.
+    """Ensure the device row is rendered and online before kebab actions.
 
-    The toolbar is rendered with inline ``style="display:none"`` when the
-    device isn't online at template-render time. We must wait for the CMS
-    to observe the live WS state before navigating, otherwise the action
-    buttons stay hidden even after expanding the row.
+    The action items inside the kebab are gated on ``d.is_online`` (server-
+    rendered) and the live-update poll keeps them in sync. The kebab now
+    lives directly on the collapsed row, so we no longer need to expand
+    the detail TR — but we still wait for the row to surface and for the
+    live state to flip online so the action buttons exist when we click.
     """
     _wait_for_online(page, device_id)
     page.goto("/devices")
     page.wait_for_load_state("networkidle")
-    # Expand the full row in the main Devices table via JS toggleDevice()
-    # (bypassing any click-bubbling edge cases) and verify the detail TR
-    # is visible before asserting on the toolbar inside it.
-    expanded = page.evaluate(
-        """(deviceId) => {
-            const row = document.querySelector(
-                `tr.device-row[data-device-id="${deviceId}"][onclick*="toggleDevice"]`
-            );
-            if (!row) return { ok: false, reason: "row-not-found" };
-            if (!row.classList.contains("expanded")) { row.click(); }
-            const detail = document.querySelector(
-                `tr.device-detail[data-detail-for="${deviceId}"]`
-            );
-            const toolbar = document.querySelector(
-                `[data-live-toolbar="${deviceId}"]`
-            );
-            return {
-                ok: true,
-                expanded: row.classList.contains("expanded"),
-                detailDisplay: detail ? detail.style.display : null,
-                toolbarExists: !!toolbar,
-                toolbarInlineDisplay: toolbar ? toolbar.style.display : null,
-            };
-        }""",
-        device_id,
-    )
-    assert expanded.get("ok"), f"could not expand row for {device_id}: {expanded!r}"
-    # Detail TR should now be visible (display != "none").
-    detail_tr = page.locator(
-        f'tr.device-detail[data-detail-for="{device_id}"]'
-    ).first
-    expect(detail_tr).to_be_visible(timeout=10_000)
-    toolbar = page.locator(f'[data-live-toolbar="{device_id}"]').first
-    # Some races: the template rendered is_online=False before our API poll
-    # caught up. The devices-page live updater polls every ~5s and will flip
-    # toolbar.style.display to '' once /api/devices reports online. Wait up
-    # to 15s for that. Use a longer timeout than the 10s live-update cadence.
-    try:
-        expect(toolbar).to_be_visible(timeout=15_000)
-    except AssertionError:
-        diag = page.evaluate(
-            """(deviceId) => {
-                const t = document.querySelector(`[data-live-toolbar="${deviceId}"]`);
-                const d = document.querySelector(`tr.device-detail[data-detail-for="${deviceId}"]`);
-                return {
-                    toolbarInlineDisplay: t ? t.style.display : null,
-                    toolbarComputedDisplay: t ? getComputedStyle(t).display : null,
-                    detailInlineDisplay: d ? d.style.display : null,
-                    detailComputedDisplay: d ? getComputedStyle(d).display : null,
-                };
-            }""",
-            device_id,
-        )
-        raise AssertionError(
-            f"toolbar for {device_id} stayed hidden; expand={expanded!r} diag={diag!r}"
-        )
+    row = page.locator(f'tr.device-row[data-device-id="{device_id}"]').first
+    expect(row).to_be_visible(timeout=10_000)
+    # Wait for the actions cell live-update to settle so the kebab reflects
+    # the current online state (Reboot/Factory Reset only show when online).
+    actions_cell = page.locator(f'[data-live-actions="{device_id}"]').first
+    expect(actions_cell).to_be_visible(timeout=15_000)
 
 
 def _click_action(page: Page, device_id: str, button_text: str) -> None:
-    """Click an action button in the expanded detail toolbar."""
-    toolbar = page.locator(f'[data-live-toolbar="{device_id}"]').first
-    toolbar.locator("button", has_text=re.compile(rf"^{re.escape(button_text)}$")).first.click()
+    """Click an action item in the row's kebab popover menu."""
+    actions_cell = page.locator(f'[data-live-actions="{device_id}"]').first
+    actions_cell.locator("button.btn-kebab").first.click()
+    # Kebab items render in the top-layer popover. Wait briefly then click.
+    page.locator(
+        'div.kebab-menu[popover]:popover-open button',
+        has_text=re.compile(rf"^{re.escape(button_text)}$"),
+    ).first.click(timeout=5_000)
 
 
 def _confirm_modal(page: Page) -> None:

@@ -449,6 +449,68 @@
 
 
 {#
+  Per-device alert chips. Rendered immediately after the connectivity
+  badge in the Status cell of both the main and compact device rows so
+  operators can see "this device needs attention" at a glance without
+  expanding the row. Mirrors the dashboard's issue surfacing.
+
+  Severity order (highest first):
+    Error → Upgrading → Temp Critical → Temp Warning → Display Off
+      → Storage Critical → Storage Low → Update
+
+  Stale-telemetry chips (Error, Temp, Display) are hidden when the
+  device is offline — those signals reflect the last-known live state
+  and would be misleading. Update / Upgrading / Storage are always
+  shown when applicable. Pending and orphaned devices are skipped
+  entirely; their connectivity badge already conveys the relevant
+  state and they have no fleet-style alerts.
+
+  Each chip is wrapped in `has-tooltip` so users can hover for context.
+#}
+{% macro device_alert_chips(d) -%}
+{% if d.status.value not in ('pending', 'orphaned') %}
+{# Error #}
+{% if d.is_online and (d.error or d.pipeline_state == 'ERROR') %}
+<span class="has-tooltip"><span class="badge badge-error">Error</span><span class="tooltip">{% if d.error %}{{ d.error }}{% else %}Player pipeline reported an error{% endif %}</span></span>
+{% endif %}
+{# Upgrading #}
+{% if d.is_upgrading %}
+<span class="has-tooltip"><span class="badge badge-processing">Upgrading…</span><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
+{% endif %}
+{# Temp #}
+{% if d.is_online and d.cpu_temp_c is not none %}
+{% if d.cpu_temp_c >= 80 %}
+<span class="has-tooltip"><span class="badge badge-temp-critical">Temp {{ d.cpu_temp_c | round(1) }}°C</span><span class="tooltip">CPU temperature is critical — device may throttle or shut down</span></span>
+{% elif d.cpu_temp_c >= 70 %}
+<span class="has-tooltip"><span class="badge badge-temp-warning">Temp {{ d.cpu_temp_c | round(1) }}°C</span><span class="tooltip">CPU temperature is high — check ventilation</span></span>
+{% endif %}
+{% endif %}
+{# Display Off #}
+{% if d.is_online %}
+{% if d.display_ports and d.display_ports | length > 0 and (d.display_ports | rejectattr('connected') | list | length == d.display_ports | length) %}
+<span class="has-tooltip"><span class="badge badge-offline">Display Off</span><span class="tooltip">No display detected on any port — check HDMI cable</span></span>
+{% elif (not d.display_ports) and d.display_connected is false %}
+<span class="has-tooltip"><span class="badge badge-offline">Display Off</span><span class="tooltip">Display is disconnected — check HDMI cable</span></span>
+{% endif %}
+{% endif %}
+{# Storage #}
+{% if d.storage_capacity_mb and d.storage_capacity_mb > 0 %}
+{% set _free_pct = ((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) %}
+{% if _free_pct < 5 %}
+<span class="has-tooltip"><span class="badge badge-temp-critical">Storage {{ _free_pct | round(0) | int }}%</span><span class="tooltip">Less than 5% free — downloads and recordings may fail</span></span>
+{% elif _free_pct < 10 %}
+<span class="has-tooltip"><span class="badge badge-temp-warning">Storage {{ _free_pct | round(0) | int }}%</span><span class="tooltip">Less than 10% free — consider clearing unused assets</span></span>
+{% endif %}
+{% endif %}
+{# Update #}
+{% if d.update_available and not d.is_upgrading %}
+<span class="has-tooltip"><span class="badge badge-update">Update</span><span class="tooltip">A newer firmware version is available — open the row's actions menu to update</span></span>
+{% endif %}
+{% endif %}
+{%- endmacro %}
+
+
+{#
   Compact device row — used inside each group panel and the "Ungrouped"
   table. Moved from devices.html so that both the full-page render and
   the GET /api/devices/groups/{id}/panel fragment endpoint can emit
@@ -466,7 +528,7 @@
         {{ d.name or d.id }}
         {% endif %}
     </td>
-    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}">
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}">
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">Re-flashed device — needs re-adoption</span></span>
         {% elif d.status.value == 'pending' %}
@@ -480,6 +542,7 @@
         {% else %}
         <span class="badge badge-offline">Offline</span>
         {% endif %}
+        {{ device_alert_chips(d) }}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
