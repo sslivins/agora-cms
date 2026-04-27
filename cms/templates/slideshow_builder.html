@@ -403,7 +403,7 @@
           title="You have unsaved changes">● unsaved</span>
 </h1>
 <div class="sub-tabs">
-    <a href="/assets" class="sub-tab">← Back to Assets</a>
+    <a href="{% if edit_mode %}/assets{% else %}/assets/new{% endif %}" class="sub-tab">← Back to Assets</a>
 </div>
 
 <div class="card">

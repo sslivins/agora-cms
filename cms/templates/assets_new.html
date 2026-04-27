@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Create Asset — Agora CMS{% endblock %}
+{% block content %}
+<h1>Assets</h1>
+<div class="sub-tabs">
+    <a href="/assets" class="sub-tab">Library</a>
+    <a href="/assets/new" class="sub-tab active">Create</a>
+    <a href="/profiles" class="sub-tab">Playback Profiles</a>
+</div>
+
+<div class="card">
+    <h2 style="margin-top:0;">Build a new asset</h2>
+    <p class="text-muted" style="margin-top:0;">
+        Builders compose a new asset from existing content in your library.
+        For straightforward uploads or live streams, head to the
+        <a href="/assets">Library</a> tab.
+    </p>
+
+    <div class="builder-tiles">
+        <a href="/assets/new/slideshow" class="builder-tile">
+            <div class="builder-tile-icon" aria-hidden="true">🎞️</div>
+            <div class="builder-tile-body">
+                <h3 class="builder-tile-title">Slideshow</h3>
+                <p class="builder-tile-desc">
+                    Sequence images and videos into a single playable asset
+                    with per-slide timing.
+                </p>
+            </div>
+        </a>
+    </div>
+</div>
+
+<style>
+    .builder-tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+    .builder-tile {
+        display: flex;
+        gap: 0.85rem;
+        align-items: flex-start;
+        padding: 1rem;
+        border: 1px solid var(--border-color, #d0d7de);
+        border-radius: 8px;
+        background: var(--card-bg, #fff);
+        text-decoration: none;
+        color: inherit;
+        transition: border-color .12s ease, box-shadow .12s ease,
+                    transform .12s ease;
+    }
+    .builder-tile:hover,
+    .builder-tile:focus-visible {
+        border-color: var(--accent-color, #0969da);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+        transform: translateY(-1px);
+        text-decoration: none;
+    }
+    .builder-tile-icon {
+        font-size: 2rem;
+        line-height: 1;
+        flex: 0 0 auto;
+    }
+    .builder-tile-body { flex: 1 1 auto; min-width: 0; }
+    .builder-tile-title {
+        margin: 0 0 0.25rem;
+        font-size: 1.05rem;
+    }
+    .builder-tile-desc {
+        margin: 0;
+        font-size: 0.9rem;
+        color: var(--text-muted, #57606a);
+    }
+</style>
+{% endblock %}

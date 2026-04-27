@@ -57,6 +57,36 @@ class TestSlideshowBuilderRoutes:
         assert "ss-slides-table" in body
         assert "/api/assets/slideshow" in body  # JS POST endpoint baked in
 
+    async def test_new_page_requires_write_permission(self, app, db_session):
+        """Direct nav to /assets/new/slideshow must be gated on assets:write."""
+        from tests.test_ui_overhaul import _create_user, _login_as
+        await _create_user(db_session, username="ss_viewer", role_name="Viewer")
+        ac = await _login_as(app, "ss_viewer")
+        try:
+            resp = await ac.get("/assets/new/slideshow")
+            assert resp.status_code == 403, resp.text
+        finally:
+            await ac.aclose()
+
+    async def test_hub_renders_for_writer(self, client):
+        resp = await client.get("/assets/new")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Slideshow tile is the only builder today; must link to the
+        # existing builder route.
+        assert 'href="/assets/new/slideshow"' in body
+        assert "Slideshow" in body
+
+    async def test_hub_requires_write_permission(self, app, db_session):
+        from tests.test_ui_overhaul import _create_user, _login_as
+        await _create_user(db_session, username="hub_viewer", role_name="Viewer")
+        ac = await _login_as(app, "hub_viewer")
+        try:
+            resp = await ac.get("/assets/new")
+            assert resp.status_code == 403, resp.text
+        finally:
+            await ac.aclose()
+
     async def test_edit_page_renders_with_existing_slides(self, client, db_session):
         asset = await _seed_slideshow(db_session, name="Editable", slides=3)
         resp = await client.get(f"/assets/{asset.id}/slideshow")
@@ -85,11 +115,15 @@ class TestSlideshowBuilderRoutes:
         resp = await client.get(f"/assets/{bogus}/slideshow", follow_redirects=False)
         assert resp.status_code in (303, 307, 302)
 
-    async def test_assets_page_shows_create_slideshow_link(self, client, db_session):
+    async def test_assets_page_links_to_create_hub(self, client, db_session):
         resp = await client.get("/assets")
         assert resp.status_code == 200
-        assert "/assets/new/slideshow" in resp.text
-        assert "New Slideshow" in resp.text
+        # Library page now links to the Create hub (sub-tab) rather than
+        # to the slideshow builder directly.
+        assert 'href="/assets/new"' in resp.text
+        # The legacy "🎞️ New Slideshow" button on the Library card has
+        # been retired in favour of the Create tab — make sure it is gone.
+        assert "🎞️ New Slideshow" not in resp.text
 
     async def test_assets_page_shows_slide_count_badge(self, client, db_session):
         await _seed_slideshow(db_session, name="Count Show", slides=3)

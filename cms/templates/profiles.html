@@ -5,6 +5,9 @@
 <h1>Assets</h1>
 <div class="sub-tabs">
     <a href="/assets" class="sub-tab">Library</a>
+    {% if 'assets:write' in user_perms %}
+    <a href="/assets/new" class="sub-tab">Create</a>
+    {% endif %}
     <a href="/profiles" class="sub-tab active">Playback Profiles</a>
 </div>
 
