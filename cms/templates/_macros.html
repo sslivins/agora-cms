@@ -667,6 +667,9 @@
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Restart this device immediately">Reboot</button>
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Wipe all data and return device to setup mode">Factory Reset</button>
         {% endif %}
+        {% if d.group_id and 'devices:write' in user_perms %}
+        <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from its group">Remove from group</button>
+        {% endif %}
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')" title="Remove this device from the CMS">Delete</button>
         {% endcall %}
     </td>
