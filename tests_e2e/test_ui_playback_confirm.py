@@ -59,8 +59,11 @@ def _click_reboot_via_kebab(page, device_id, timeout_ms=15000):
     behavior (not kebab gating), call rebootDevice() directly via JS —
     the same handler the menu item invokes.
     """
+    # Fire-and-forget: rebootDevice is async (awaits the confirm modal),
+    # so we MUST NOT return the promise — page.evaluate auto-awaits returned
+    # promises and would hang forever waiting for the modal click.
     page.evaluate(
-        "(id) => window.rebootDevice(id, id)",
+        "(id) => { window.rebootDevice(id, id); }",
         device_id,
     )
 
