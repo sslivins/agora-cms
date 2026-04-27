@@ -1040,8 +1040,15 @@ function editSchedule(s) {
         ]);
     }
 
-    const sigs = new Map();  // id -> signature
-    document.querySelectorAll('tr[data-schedule-id]').forEach(tr => {
+    // Track signatures only for ACTIVE rows. The expired tbody has a
+    // different shape (6 columns, no Enabled cell) and the row fragment
+    // endpoint always emits active-row markup, so a per-row swap there
+    // would push the Actions cell outside the panel and add a phantom
+    // Enabled toggle. Field changes on expired rows are best handled by
+    // a manual refresh; the structural diff below still detects
+    // add/remove across either table.
+    const sigs = new Map();  // active-row id -> signature
+    document.querySelectorAll('#active-schedules-tbody tr[data-schedule-id]').forEach(tr => {
         // Seed from the data-schedule attribute on the desc cell.
         const td = tr.querySelector('td.schedule-desc');
         if (!td) return;
@@ -1074,20 +1081,31 @@ function editSchedule(s) {
             const schedules = await resp.json();
             const nowIds = new Set(schedules.map(s => s.id));
 
-            // 1. Structural change (add/remove) → full reload. Simpler and
-            //    correct: the new row may belong in the active or expired
-            //    table depending on end_date, and a deleted row may have
-            //    been one of several visible today.
+            // 1. Structural change (add/remove) → full reload. Compare
+            //    against ALL known rows (active + expired tables) so we
+            //    catch creates/deletes that land in either bucket.
+            //    Simpler and correct: the new row may belong in the
+            //    active or expired table depending on end_date, and a
+            //    deleted row may have been one of several visible today.
+            const knownIds = new Set();
+            document.querySelectorAll('tr[data-schedule-id]').forEach(tr => {
+                knownIds.add(tr.dataset.scheduleId);
+            });
             const structural =
-                nowIds.size !== sigs.size ||
-                ![...nowIds].every(id => sigs.has(id));
+                nowIds.size !== knownIds.size ||
+                ![...nowIds].every(id => knownIds.has(id));
             if (structural) {
                 location.reload();
                 return;
             }
 
             // 2. Per-row field change → fragment-swap just that row.
+            //    Only active rows are tracked in `sigs`; expired rows
+            //    are intentionally skipped because the fragment endpoint
+            //    emits active-row markup that doesn't fit the expired
+            //    table's column shape.
             for (const s of schedules) {
+                if (!sigs.has(s.id)) continue;
                 const sig = scheduleSig(s);
                 if (sigs.get(s.id) !== sig) {
                     sigs.set(s.id, sig);
