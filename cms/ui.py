@@ -1159,6 +1159,10 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     counts = fleet_counts(devices)
 
+    # Phase C: per-group rollup chips on group panel headers
+    for g in groups:
+        g.rollup = fleet_counts(g.devices)
+
     raw_alert = (request.query_params.get("alert") or "").strip().lower()
     valid_filters = {"all", "needs-attention", "healthy", *SEVERITY_TAGS}
     active_alert = raw_alert if raw_alert in valid_filters else "all"
