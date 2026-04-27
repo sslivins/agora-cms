@@ -27,6 +27,20 @@
                 </p>
             </div>
         </a>
+        <div class="builder-tile builder-tile-disabled" aria-disabled="true"
+             title="Coming soon">
+            <div class="builder-tile-icon" aria-hidden="true">🧩</div>
+            <div class="builder-tile-body">
+                <h3 class="builder-tile-title">
+                    Composed Slide
+                    <span class="builder-tile-badge">Coming soon</span>
+                </h3>
+                <p class="builder-tile-desc">
+                    Layer images, video, and widgets like tickers and clocks
+                    onto a single canvas.
+                </p>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -66,11 +80,43 @@
     .builder-tile-title {
         margin: 0 0 0.25rem;
         font-size: 1.05rem;
+        color: var(--text-color, #1f2328);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .builder-tile:hover .builder-tile-title,
+    .builder-tile:focus-visible .builder-tile-title {
+        color: var(--accent-color, #0969da);
     }
     .builder-tile-desc {
         margin: 0;
         font-size: 0.9rem;
         color: var(--text-muted, #57606a);
+    }
+    .builder-tile-badge {
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 0.1rem 0.45rem;
+        border-radius: 999px;
+        background: var(--badge-bg, #eaeef2);
+        color: var(--text-muted, #57606a);
+    }
+    .builder-tile-disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+    .builder-tile-disabled:hover,
+    .builder-tile-disabled:focus-visible {
+        border-color: var(--border-color, #d0d7de);
+        box-shadow: none;
+        transform: none;
+    }
+    .builder-tile-disabled:hover .builder-tile-title,
+    .builder-tile-disabled:focus-visible .builder-tile-title {
+        color: var(--text-color, #1f2328);
     }
 </style>
 {% endblock %}
