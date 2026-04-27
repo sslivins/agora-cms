@@ -82,6 +82,9 @@ param cmsMemory string = '2Gi'
 @description('Object ID of the Azure AD user/principal for Key Vault admin access')
 param adminPrincipalId string
 
+@description('Email recipient for telemetry alerts (CMS 5xx, latency, dependency failures, exceptions). Empty disables the alerts module entirely (e.g. for dev environments where pages are noise).')
+param alertEmail string = ''
+
 var tags = {
   project: 'agora-cms'
   managedBy: 'bicep'
@@ -243,6 +246,19 @@ resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
     principalId: containerApps.outputs.mcpPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Telemetry: alerts + workbook (Phase 0 / A1.5) ──
+module alerts 'modules/alerts.bicep' = {
+  name: 'alerts'
+  params: {
+    location: location
+    namePrefix: prefix
+    appInsightsId: containerApps.outputs.appInsightsId
+    appInsightsName: containerApps.outputs.appInsightsName
+    alertEmail: alertEmail
+    tags: tags
   }
 }
 
