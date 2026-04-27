@@ -533,7 +533,7 @@
             {% if 'groups:write' in user_perms %}
             <select class="inline-edit inline-edit-sm" onchange="setGroupDefaultAsset('{{ g.id }}', this.value)">
                 <option value="">No default asset</option>
-                {% for a in assets if a.asset_type.value not in ('webpage', 'stream') %}
+                {% for a in assets if a.asset_type.value not in ('webpage', 'stream', 'slideshow') %}
                 <option value="{{ a.id }}" {% if g.default_asset_id == a.id %}selected{% endif %}{% if not a.ready_for_selection %} disabled{% endif %}>{{ a | asset_icon }} {{ a.display_name or a.original_filename or a.filename }}{{ a | asset_label_suffix }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
                 {% endfor %}
             </select>
