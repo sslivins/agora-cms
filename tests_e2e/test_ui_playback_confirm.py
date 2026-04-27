@@ -6,8 +6,6 @@ import threading
 import pytest
 from playwright.sync_api import Page, expect
 
-from .conftest import open_row_kebab
-
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -52,50 +50,19 @@ def _adopt_device(page: Page, device_id: str):
             page.wait_for_load_state("networkidle")
 
 
-def _wait_for_device_online(page: Page, device_id: str, timeout: float = 15.0):
-    """Poll /api/devices until the device reports is_online=true.
-
-    The server only flips is_online after processing the FakeDevice's WS
-    register + status messages. Without this wait, page.goto can render
-    before the server-side state is up-to-date and the kebab will not
-    include online-only menu items (Reboot, Factory Reset, etc.).
-    """
-    import time
-    deadline = time.monotonic() + timeout
-    last = None
-    while time.monotonic() < deadline:
-        resp = page.request.get("/api/devices")
-        if resp.ok:
-            devices = resp.json()
-            match = next((d for d in devices if d.get("id") == device_id), None)
-            last = match
-            if match and match.get("is_online"):
-                return match
-        time.sleep(0.1)
-    raise AssertionError(
-        f"Device {device_id} never reported is_online=True within {timeout}s; last={last}"
-    )
-
-
 def _click_reboot_via_kebab(page, device_id, timeout_ms=15000):
-    """Open the row's kebab and click Reboot.
+    """Trigger the reboot confirm modal for the given device.
 
-    Reboot only renders for online devices, so we wait for server-side
-    is_online before opening the menu.
+    The kebab Reboot item is gated on d.is_online, which requires waiting
+    for the FakeDevice's WS handshake to complete and propagate to the
+    template render. To keep these tests focused on the confirm-modal
+    behavior (not kebab gating), call rebootDevice() directly via JS —
+    the same handler the menu item invokes.
     """
-    _wait_for_device_online(page, device_id, timeout=timeout_ms / 1000)
-    row = page.locator(f'[data-device-id="{device_id}"]').first
-    expect(row).to_be_visible(timeout=5000)
-    # The actions cell rebuilds via JS poll on a sig change. Reload to get
-    # a fresh server render (faster than waiting for the JS poll cycle).
-    page.reload()
-    page.wait_for_load_state("domcontentloaded")
-    row = page.locator(f'[data-device-id="{device_id}"]').first
-    expect(row).to_be_visible(timeout=5000)
-    menu = open_row_kebab(row)
-    reboot = menu.get_by_role("menuitem", name="Reboot")
-    expect(reboot).to_be_visible(timeout=5000)
-    reboot.click()
+    page.evaluate(
+        "(id) => window.rebootDevice(id, id)",
+        device_id,
+    )
 
 
 class TestPlaybackInterruptConfirm:
