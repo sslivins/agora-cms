@@ -102,10 +102,10 @@ class TestDevicesPage:
 
 
 class TestDashboardPendingDeviceName:
-    """Dashboard should show device friendly name, not raw ID, for pending devices."""
+    """The /devices page should show a pending device's friendly name, not raw ID."""
 
     def test_pending_device_shows_friendly_name(self, page: Page, ws_url, e2e_server):
-        """A device registered with a custom name should show that name on the dashboard."""
+        """A device registered with a custom name should show that name on /devices."""
 
         async def register():
             async with FakeDevice("name-test-001", ws_url, device_name="Kitchen Display") as dev:
@@ -113,12 +113,14 @@ class TestDashboardPendingDeviceName:
 
         run_async(register())
 
-        page.goto("/")
+        # Phase D: Pending devices no longer surface on the dashboard; they
+        # render in the Ungrouped section on /devices via the rich device_row.
+        page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        # The friendly name should appear in the Pending Devices section
-        pending_section = page.locator("text=Pending Devices").locator("..")
-        expect(pending_section.locator("text=Kitchen Display")).to_be_visible(timeout=5000)
+        row = page.locator('tr.device-row[data-device-id="name-test-001"]').first
+        expect(row).to_be_visible(timeout=5000)
+        expect(row.locator("text=Kitchen Display")).to_be_visible(timeout=5000)
 
 
 class TestDeleteDeviceWithSchedules:

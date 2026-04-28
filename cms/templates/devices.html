@@ -3,6 +3,8 @@
 {% block title %}Devices — Agora CMS{% endblock %}
 {% block content %}
 
+<h1 class="page-title">Devices</h1>
+
 {# Phase C: rich device_row + th_row + fmt_storage moved to _macros.html
    so the GET /api/devices/groups/{id}/panel fragment endpoint can render
    identical markup. Call sites use ``macros.device_row`` / ``macros.th_row_full``. #}
@@ -115,35 +117,9 @@
 {{ macros.triage_bar(fleet_counts, active_alert, user_perms) }}
 {% endif %}
 
-{# ── Pending Devices (unadopted registrations) ── #}
-{# Rendered after the main Devices card so the Devices <h2> remains the #}
-{# first heading on the page — the e2e page-load test keys off that.   #}
-{% if 'devices:manage' in user_perms %}
-<div class="card" id="pending-devices-card" style="display: none;">
-    <div style="display: flex; gap: 0.75rem; align-items: center; margin: 0 0 0.5rem 0;">
-        <h2 style="margin: 0;">Pending Devices</h2>
-        <button class="btn btn-primary" onclick="bootstrapAdoptDevice()" title="Adopt a new device by scanning the QR code on its splash screen or pasting its pairing code">Adopt Device</button>
-    </div>
-    <p class="text-muted" style="margin: 0 0 0.75rem 0;">
-        Devices that have registered with the CMS but haven't been adopted yet.
-        Unadopted registrations expire after {{ pending_ttl_hours }} hours.
-    </p>
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th>Device ID</th>
-                    <th>Firmware</th>
-                    <th>IP</th>
-                    <th>Registered</th>
-                    <th style="width: 1%; white-space: nowrap;">Actions</th>
-                </tr>
-            </thead>
-            <tbody id="pending-devices-tbody"></tbody>
-        </table>
-    </div>
-</div>
-{% endif %}
+{# Phase D: Pending devices now flow into the Ungrouped Devices section
+   below as full rich device_row rendering (with the Adopt kebab item).
+   The dedicated Pending Devices card has been retired. #}
 
 {# ── Device Groups (expandable) ── #}
 {% if 'groups:read' in user_perms %}
@@ -632,9 +608,11 @@ window._adoptionProfiles = [
     setInterval(pollDevicesOnce, 5000);
     setInterval(pollGroupsOnce, 5000);
     {% if 'devices:manage' in user_perms %}
-    setInterval(pollPendingOnce, 5000);
-    // Kick an immediate fetch on load so the card appears without a 5s wait.
-    pollPendingOnce();
+    // Pending devices now render server-side in the Ungrouped section.
+    // Action handlers reload the page to pick up adoption status changes.
+    window._refreshPending = () => { location.reload(); };
+    {% endif %}
+})();
     {% endif %}
 
     // Keep the /devices Device Groups card in sync across replicas without
@@ -785,12 +763,12 @@ window._adoptionProfiles = [
             const age = _escHtml(_fmtRelativeAge(p.created_at));
             const advisoryJs = (p.device_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
             return (
-                '<tr>' +
+                '<tr class="device-row" data-device-id="' + devId + '">' +
                 '<td>' + devId + '</td>' +
                 '<td>' + fw + '</td>' +
                 '<td>' + ipCell + '</td>' +
                 '<td title="' + _escHtml(p.created_at || '') + '">' + age + '</td>' +
-                '<td style="white-space: nowrap;">' +
+                '<td class="actions" style="white-space: nowrap;">' +
                     '<button type="button" class="btn btn-primary" ' +
                     'onclick="adoptPendingDevice(\'' + p.id + '\', \'' + advisoryJs + '\')">Adopt</button> ' +
                     '<button type="button" class="btn" ' +

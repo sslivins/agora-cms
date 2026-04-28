@@ -1149,7 +1149,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.has_active_schedule = d.id in scheduled_device_ids
 
     # Devices not assigned to any group
-    ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]
+    ungrouped = [d for d in devices if d.group_id is None]
 
     assets = assets_early
 

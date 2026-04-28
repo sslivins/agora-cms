@@ -908,7 +908,7 @@
   `cms.services.device_alerts.group_rollup(g.devices)`.
 #}
 {% macro group_panel(g, user_perms, assets, groups, pending_ttl_hours, profiles, latest_version, timezones) -%}
-<div class="group-panel" data-group-id="{{ g.id }}"
+<div class="group-panel expanded" data-group-id="{{ g.id }}"
      ondragover="event.preventDefault(); this.classList.add('drag-over')"
      ondragleave="this.classList.remove('drag-over')"
      ondrop="dropDevice(event, '{{ g.id }}'); this.classList.remove('drag-over')">
@@ -946,7 +946,7 @@
             {% endif %}
         </span>
     </div>
-    <div class="group-body" style="display: none;">
+    <div class="group-body">
         <div class="table-wrap">
             <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
                 <thead>{{ th_row_full(user_perms) }}</thead>
