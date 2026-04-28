@@ -49,7 +49,11 @@ async def _create_adopted_device(db, device_id: str, last_seen: datetime | None 
 
 @pytest.mark.asyncio
 async def test_pending_device_shows_online_when_connected(client, db_session, app):
-    """A pending device that has a live WebSocket should show as online on dashboard."""
+    """A pending device that has a live WebSocket should show as online on /devices.
+
+    Phase D rework: pending devices now render in the /devices page's
+    Ungrouped Devices section rather than as a top-level dashboard table.
+    """
     from cms.services.device_manager import device_manager
 
     await _create_pending_device(db_session, "dev-online-pending")
@@ -59,7 +63,7 @@ async def test_pending_device_shows_online_when_connected(client, db_session, ap
     await device_presence.mark_online(db_session, "dev-online-pending")
 
     try:
-        resp = await client.get("/")
+        resp = await client.get("/devices")
         assert resp.status_code == 200
         html = resp.text
         # The device should appear with some online/connected indication, not just "Pending"
@@ -73,10 +77,10 @@ async def test_pending_device_shows_online_when_connected(client, db_session, ap
 
 @pytest.mark.asyncio
 async def test_pending_device_shows_offline_when_disconnected(client, db_session):
-    """A pending device with no WebSocket connection should show as offline."""
+    """A pending device with no WebSocket connection should show as offline on /devices."""
     await _create_pending_device(db_session, "dev-offline-pending")
 
-    resp = await client.get("/")
+    resp = await client.get("/devices")
     assert resp.status_code == 200
     html = resp.text
     assert "dev-offline-pending" in html

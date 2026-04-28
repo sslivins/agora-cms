@@ -997,6 +997,7 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
         d.update_available = is_update_available(d.firmware_version)
+        d.is_upgrading = _is_upgrading(d)
         d.has_active_schedule = False  # poller will flip this via updateLiveFields
 
     # Splash-screen dropdown options need the same ready annotations ui.py
@@ -1030,8 +1031,27 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     user_perms = list(user.role.permissions) if user and user.role else []
     pending_ttl_hours = get_settings().pending_device_ttl_hours
 
+    # Phase C: rich device_row needs profiles, latest_version, timezones, and
+    # per-device severity_tags + per-group rollup.
+    from cms.models.device_profile import DeviceProfile
+    from cms.services.version_checker import get_latest_device_version
+    from cms.services.device_alerts import device_severity_tags, fleet_counts
+    from cms.ui import COMMON_TIMEZONES
+
+    profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
+    profiles = profiles_q.scalars().all()
+    latest_version = get_latest_device_version()
+    timezones = COMMON_TIMEZONES
+
+    for d in group.devices:
+        d.severity_tags = device_severity_tags(d, user_perms)
+    group.rollup = fleet_counts(group.devices, user_perms)
+
     macros = templates.env.get_template("_macros.html").module
-    html = macros.group_panel(group, user_perms, assets, visible_groups, pending_ttl_hours)
+    html = macros.group_panel(
+        group, user_perms, assets, visible_groups, pending_ttl_hours,
+        profiles, latest_version, timezones,
+    )
     return HTMLResponse(str(html))
 
 

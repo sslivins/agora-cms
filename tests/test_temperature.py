@@ -82,37 +82,36 @@ class TestDashboardTemperature:
             await _simulate_disconnected(db_session, "dev-normal")
 
     async def test_warning_temp_shows_in_device_status(self, app, db_session, client):
-        """A device at 75°C should appear in the Device Status card with a warning badge."""
+        """A device at 75°C should appear with a warning badge on /devices.
+
+        Phase D rework: the dashboard no longer renders a per-device alert
+        banner — it now shows stat-tile counts that link into /devices.
+        Per-device temperature badges live on /devices via the row macros.
+        """
         await _seed_device(db_session, "dev-warm", "Warm Device")
         await _simulate_connected(db_session, "dev-warm", cpu_temp_c=75.0)
 
         try:
-            resp = await client.get("/")
+            resp = await client.get("/devices")
             assert resp.status_code == 200
             html = resp.text
             assert "badge-temp-warning" in html
             assert "75.0°C" in html or "75.0\u00b0C" in html
-            assert "Temperature warning" in html
-            assert "All devices are online and healthy" not in html
-            # Card should have danger styling
-            assert "card-danger" in html
         finally:
             await _simulate_disconnected(db_session, "dev-warm")
 
     async def test_critical_temp_shows_in_device_status(self, app, db_session, client):
-        """A device at 85°C should appear with a critical badge and throttling message."""
+        """A device at 85°C should appear with a critical badge on /devices."""
         await _seed_device(db_session, "dev-hot", "Hot Device")
         await _simulate_connected(db_session, "dev-hot", cpu_temp_c=85.0)
 
         try:
-            resp = await client.get("/")
+            resp = await client.get("/devices")
             assert resp.status_code == 200
             html = resp.text
             assert "badge-temp-critical" in html
             assert "85.0°C" in html or "85.0\u00b0C" in html
             assert "Critical" in html
-            assert "CPU throttling likely" in html
-            assert "card-danger" in html
         finally:
             await _simulate_disconnected(db_session, "dev-hot")
 
@@ -122,10 +121,9 @@ class TestDashboardTemperature:
         await _simulate_connected(db_session, "dev-70", cpu_temp_c=70.0)
 
         try:
-            resp = await client.get("/")
+            resp = await client.get("/devices")
             html = resp.text
             assert "badge-temp-warning" in html
-            assert "All devices are online and healthy" not in html
         finally:
             await _simulate_disconnected(db_session, "dev-70")
 
@@ -135,10 +133,13 @@ class TestDashboardTemperature:
         await _simulate_connected(db_session, "dev-80", cpu_temp_c=80.0)
 
         try:
-            resp = await client.get("/")
+            resp = await client.get("/devices")
             html = resp.text
             assert "badge-temp-critical" in html
-            assert "badge-temp-warning" not in html  # 80+ is critical, not warning
+            # /devices includes inline JS that references both badge classes
+            # by name. Match a rendered chip body that includes the actual
+            # temperature value to avoid colliding with JS string literals.
+            assert 'badge-temp-warning">Temp 80.0' not in html  # 80+ is critical, not warning
         finally:
             await _simulate_disconnected(db_session, "dev-80")
 

@@ -725,6 +725,29 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             "display_ports": state["display_ports"] if state else None,
         })
 
+    # Phase D: decorate adopted + orphaned devices with the live-state
+    # attributes that ``device_severity_tags`` reads, then compute
+    # fleet_counts for the dashboard's stat-tile grid. Mirrors the
+    # decoration pass in /devices but keeps the set narrow to what
+    # the alert taxonomy needs.
+    from cms.services.device_alerts import fleet_counts as _fleet_counts
+    from cms.services.version_checker import is_update_available as _is_update_available
+    _triage_devices = list(all_devices) + list(orphaned_devices)
+    for d in _triage_devices:
+        try:
+            db.expunge(d)
+        except Exception:
+            pass
+        state = live_states.get(d.id)
+        d.is_online = d.id in _connected_ids
+        d.error = state["error"] if state else None
+        d.pipeline_state = state["pipeline_state"] if state else None
+        d.display_connected = state["display_connected"] if state else None
+        d.display_ports = state["display_ports"] if state else None
+        d.update_available = _is_update_available(d.firmware_version)
+        d.is_upgrading = _devices_is_upgrading(d)
+    fleet_counts_dashboard = _fleet_counts(_triage_devices, user_perms)
+
     # Upcoming schedules (next 24h)
     upcoming_query = (
         select(Schedule)
@@ -815,6 +838,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "recent_activity": recent_activity,
         "adoption_groups": adoption_groups,
         "adoption_profiles": adoption_profiles,
+        "fleet_counts": fleet_counts_dashboard,
     })
 
 
@@ -1125,12 +1149,47 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.has_active_schedule = d.id in scheduled_device_ids
 
     # Devices not assigned to any group
-    ungrouped = [d for d in devices if d.group_id is None and d.status != DeviceStatus.PENDING]
+    ungrouped = [d for d in devices if d.group_id is None]
 
     assets = assets_early
 
     profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
     profiles = profiles_q.scalars().all()
+
+    from cms.services.device_alerts import (
+        device_severity_tags,
+        fleet_counts,
+        SEVERITY_TAGS,
+        NEEDS_ATTENTION_TAGS,
+    )
+
+    # Annotate every decorated device with its severity tag list so
+    # the template emits a `data-severity-tags` attr that drives both
+    # the triage-bar filter and live count recomputation. `devices`
+    # is the authoritative permission-filtered list; group-scoped
+    # `g.devices` references share the same Python objects after the
+    # decoration loop above, so this single pass covers both renders.
+    decorated_ids: set = set()
+    for d in devices:
+        d.severity_tags = device_severity_tags(d, user_perms)
+        decorated_ids.add(id(d))
+    for g in groups:
+        for d in g.devices:
+            if id(d) not in decorated_ids:
+                # Defensive — a group may surface a device the top-level
+                # query filtered out (shouldn't happen given the perm
+                # logic above, but keep us honest).
+                d.severity_tags = device_severity_tags(d, user_perms)
+
+    counts = fleet_counts(devices, user_perms)
+
+    # Phase C: per-group rollup chips on group panel headers
+    for g in groups:
+        g.rollup = fleet_counts(g.devices, user_perms)
+
+    raw_alert = (request.query_params.get("alert") or "").strip().lower()
+    valid_filters = {"all", "needs-attention", "healthy", *SEVERITY_TAGS}
+    active_alert = raw_alert if raw_alert in valid_filters else "all"
 
     return templates.TemplateResponse(request, "devices.html", {
         "active_tab": "devices",
@@ -1142,6 +1201,9 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "timezones": COMMON_TIMEZONES,
         "latest_version": get_latest_device_version(),
         "pending_ttl_hours": get_settings().pending_device_ttl_hours,
+        "fleet_counts": counts,
+        "active_alert": active_alert,
+        "needs_attention_tags": sorted(NEEDS_ATTENTION_TAGS),
     })
 
 

@@ -337,7 +337,49 @@ function editDeviceName(el) {
     input.addEventListener('click', e => e.stopPropagation());
 }
 
-// Find the compact row for a device (the one that lives inside a group/ungrouped
+function editDeviceLocation(el) {
+    const deviceId = el.dataset.deviceId;
+    const placeholder = el.dataset.placeholder || '';
+    const currentText = el.textContent.trim();
+    const isPlaceholder = currentText === 'Click to set location' || currentText === '—';
+    const currentVal = isPlaceholder ? '' : currentText;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentVal;
+    input.placeholder = placeholder;
+    input.className = 'form-control';
+    input.style.cssText = 'font-size:0.85rem; padding:0.15rem 0.35rem; display:inline-block; width:auto; min-width:180px; max-width:300px;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newVal = input.value.trim();
+        if (newVal !== currentVal) {
+            const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { location: newVal });
+            if (resp && resp.ok) {
+                el.textContent = newVal || 'Click to set location';
+                showToast("Location updated");
+            } else {
+                el.textContent = currentText;
+                showToast("Update failed", true);
+            }
+        } else {
+            el.textContent = currentText;
+        }
+        parent.replaceChild(el, input);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); el.textContent = currentText; parent.replaceChild(el, input); }
+    });
+    input.addEventListener('click', e => e.stopPropagation());
+}
 // table — NOT the main "All Devices" row). Returns null if not found.
 function _findCompactRow(deviceId) {
     const rows = document.querySelectorAll(
@@ -555,6 +597,14 @@ function _removeDeviceFromDom(deviceId) {
         .forEach(row => {
             const key = _compactRowGroupKey(row);
             if (key) affectedGroupKeys.add(key);
+            // Also remove the sibling detail row (if any). The detail row
+            // uses data-detail-for="<id>" rather than data-device-id, but
+            // contains nested elements (editable location span, etc.) that
+            // carry data-device-id and would otherwise leak after delete.
+            const detail = row.nextElementSibling;
+            if (detail && detail.dataset && detail.dataset.detailFor === deviceId) {
+                detail.remove();
+            }
             row.remove();
             removed += 1;
         });

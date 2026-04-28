@@ -449,7 +449,50 @@
 
 
 {#
-  Per-device alert chips. Rendered immediately after the connectivity
+  Triage bar — fleet-scale "what's broken right now" summary chips
+  rendered at the top of /devices. Each chip is a button that filters
+  the device tables to the matching subset.
+
+  Counts come from the route via ``cms.services.device_alerts.fleet_counts``;
+  per-row tags come from ``device_severity_tags`` rendered onto each
+  ``<tr data-severity-tags>``. Filtering is purely client-side (see
+  ``triageBarApply`` in devices.html); URL state via
+  ``?alert=<filter>`` is set with ``history.replaceState`` so reloads
+  and shared links land on the right view without a server roundtrip.
+#}
+{% macro triage_bar(counts, active, user_perms=None) -%}
+{% set _can_manage = user_perms is none or 'devices:manage' in user_perms %}
+{% set filters = [
+    ('all',              'All',              counts.get('all', 0),              'sev-all',     'Show every adopted device'),
+    ('needs-attention',  'Needs Attention',  counts.get('needs_attention', 0),  'sev-na',      'Devices in error, offline, with no display, with critical storage, or orphaned'),
+    ('error',            'Errors',           counts.get('error', 0),            'sev-error',   'Player pipeline reported an error'),
+    ('offline',          'Offline',          counts.get('offline', 0),          'sev-offline', 'Device websocket is disconnected'),
+    ('display-off',      'Display Off',      counts.get('display-off', 0),      'sev-display','No display detected on any port'),
+    ('storage-critical', 'Storage Critical', counts.get('storage-critical', 0), 'sev-storage','Less than 5% free disk'),
+    ('orphaned',         'Orphaned',         counts.get('orphaned', 0),         'sev-orphan', 'Re-flashed device — needs re-adoption'),
+] %}
+{% if _can_manage %}
+{% set filters = filters + [('maintenance', 'Maintenance', counts.get('maintenance', 0), 'sev-maint', 'Firmware update available or upgrade in progress')] %}
+{% endif %}
+{% set filters = filters + [('healthy', 'Healthy', counts.get('healthy', 0), 'sev-ok', 'No alerts')] %}
+<div class="triage-bar" id="triage-bar" role="toolbar" aria-label="Filter devices by alert severity">
+    <span class="triage-bar-label">Show:</span>
+    {% for key, label, count, klass, tip in filters %}
+    {# "All" stays clickable even when 0; everything else dims at 0. #}
+    <button type="button"
+            class="triage-chip {{ klass }}{% if active == key %} is-active{% endif %}{% if count == 0 and key != 'all' %} is-empty{% endif %}"
+            data-filter="{{ key }}"
+            aria-pressed="{{ 'true' if active == key else 'false' }}"
+            title="{{ tip }}">
+        <span class="triage-chip-label">{{ label }}</span>
+        <span class="triage-chip-count" data-triage-count="{{ key }}">{{ count }}</span>
+    </button>
+    {% endfor %}
+</div>
+{%- endmacro %}
+
+
+
   badge in the Status cell of both the main and compact device rows so
   operators can see "this device needs attention" at a glance without
   expanding the row. Mirrors the dashboard's issue surfacing.
@@ -467,7 +510,7 @@
 
   Each chip is wrapped in `has-tooltip` so users can hover for context.
 #}
-{% macro device_alert_chips(d) -%}
+{% macro device_alert_chips(d, user_perms=None) -%}
 {% if d.status.value not in ('pending', 'orphaned') %}
 {# Error #}
 {% if d.is_online and (d.error or d.pipeline_state == 'ERROR') %}
@@ -502,25 +545,305 @@
 <span class="has-tooltip"><span class="badge badge-temp-warning">Storage {{ _free_pct | round(0) | int }}%</span><span class="tooltip">Less than 10% free — consider clearing unused assets</span></span>
 {% endif %}
 {% endif %}
-{# Update #}
-{% if d.update_available and not d.is_upgrading %}
+{# Update — only useful to users who can actually trigger the upgrade #}
+{% if d.update_available and not d.is_upgrading and (user_perms is none or 'devices:manage' in user_perms) %}
 <span class="has-tooltip"><span class="badge badge-update">Update</span><span class="tooltip">A newer firmware version is available — open the row's actions menu to update</span></span>
 {% endif %}
 {% endif %}
 {%- endmacro %}
 
 
+{# Human-readable storage formatter shared by device_row's expanded detail. #}
+{% macro fmt_storage(mb) %}{% if mb >= 1024 %}{{ (mb / 1024) | round(1) }} GB{% else %}{{ mb }} MB{% endif %}{%- endmacro %}
+
+
 {#
-  Compact device row — used inside each group panel and the "Ungrouped"
-  table. Moved from devices.html so that both the full-page render and
-  the GET /api/devices/groups/{id}/panel fragment endpoint can emit
-  identical markup. See issue #87.
+  Rich device row — Name | Status+chips | Group | Splash | Profile | Actions
+  with a sibling <tr class="device-detail"> revealing firmware, IP, temp,
+  display ports, storage, etc.
+
+  Phase C made this the canonical row rendered inside group panels and
+  the Ungrouped section, replacing the older `device_row_compact` which
+  lacked expanded detail. `device_row_compact` is kept below for any
+  niche caller but no longer used by the /devices page itself.
+
+  All page-context dependencies (`user_perms`, `pending_ttl_hours`,
+  `latest_version`, `timezones`) are explicit parameters so the macro
+  is callable from the GET /api/devices/groups/{id}/panel fragment
+  endpoint as well as the full-page render.
+#}
+{% macro th_row_full(user_perms) -%}
+<tr>
+    <th style="width: 2rem;"></th>
+    <th>Name</th>
+    <th>Status</th>
+    <th>Group</th>
+    <th>Device Splash Screen</th>
+    {% if 'devices:manage' in user_perms %}<th>Profile</th>{% endif %}
+    {% if 'devices:manage' in user_perms %}<th>Actions</th>{% endif %}
+</tr>
+{%- endmacro %}
+
+
+{% macro device_row(d, groups, assets, profiles, user_perms, pending_ttl_hours, latest_version, timezones, draggable=false) -%}
+<tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}" data-severity-tags="{{ d.severity_tags | join(' ') if d.severity_tags is defined else '' }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
+    <td class="expand-toggle">▶</td>
+    <td>
+        {% if 'devices:write' in user_perms %}
+        <span class="editable-name" onclick="event.stopPropagation(); editDeviceName(this)" data-device-id="{{ d.id }}" data-fallback="{{ d.id }}">{{ d.name or d.id }}</span>
+        {% else %}
+        {{ d.name or d.id }}
+        {% endif %}
+    </td>
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}">
+        {% if d.status.value == 'orphaned' %}
+        <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
+        {% elif d.status.value == 'pending' %}
+        {% if d.is_online %}
+        <span class="badge badge-pending">Pending</span>
+        {% else %}
+        <span class="has-tooltip"><span class="badge badge-offline">Pending (Offline)</span><span class="tooltip">This device registered but hasn't been seen recently. Stale pending devices are automatically removed after {{ pending_ttl_hours }} hours.</span></span>
+        {% endif %}
+        {% elif d.is_online %}
+        <span class="badge badge-online">Online</span>
+        {% else %}
+        <span class="badge badge-offline">Offline</span>
+        {% endif %}
+        {{ device_alert_chips(d, user_perms) }}
+    </td>
+    <td>
+        {% if 'devices:write' in user_perms %}
+        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
+            <option value="">None</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
+            {% endfor %}
+        </select>
+        {% else %}
+        {{ d.group.name if d.group else '—' }}
+        {% endif %}
+    </td>
+    <td>
+        {% if 'devices:write' in user_perms %}
+        <select class="inline-edit" onclick="event.stopPropagation()" onfocus="this.dataset.prev = this.value" onchange="setDefaultAsset('{{ d.id }}', this.value, this)">
+            <option value="">None (use group)</option>
+            {% for a in assets if a.asset_type.value not in ('webpage', 'stream', 'slideshow') %}
+            <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}{% if not a.ready_for_selection %} disabled{% endif %}>{{ a | asset_icon }} {{ a.display_name or a.original_filename or a.filename }}{{ a | asset_label_suffix }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
+            {% endfor %}
+        </select>
+        {% else %}
+        {{ (d.default_asset.display_name or d.default_asset.original_filename or d.default_asset.filename) if d.default_asset else '—' }}
+        {% endif %}
+    </td>
+    {% if 'devices:manage' in user_perms %}
+    <td>
+        <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
+            <option value="">None</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </td>
+    {% endif %}
+    {% if 'devices:manage' in user_perms %}
+    <td class="actions" data-live-actions="{{ d.id }}" data-actions-sig="{{ d.status.value }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.ssh_enabled else 0 }}|{{ 0 if d.local_api_enabled is false else 1 }}" onclick="event.stopPropagation()">
+        {% call kebab_menu() %}
+        {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
+        <button type="button" role="menuitem" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Register this device so it can receive content">Adopt</button>
+        {% elif d.is_upgrading %}
+        <button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>
+        {% elif d.is_online and d.update_available %}
+        <button type="button" role="menuitem" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Update firmware from {{ d.firmware_version }} to {{ latest_version }}">Update</button>
+        {% endif %}
+        {% if d.status.value not in ('pending', 'orphaned') and d.is_online %}
+        <button type="button" role="menuitem" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')" title="Set the password for this device's local web UI">Change Web Password</button>
+        {% if d.ssh_enabled %}
+        <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', false)" title="SSH is currently enabled — click to disable">Disable SSH</button>
+        {% else %}
+        <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', true)" title="SSH is currently disabled — click to enable">Enable SSH</button>
+        {% endif %}
+        {% if d.local_api_enabled is not none and not d.local_api_enabled %}
+        <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', true)" title="Device REST API is disabled — click to re-enable">Enable Local API</button>
+        {% else %}
+        <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', false)" title="Disable the device's local REST API">Disable Local API</button>
+        {% endif %}
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Restart this device immediately">Reboot</button>
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Wipe all data and return device to setup mode">Factory Reset</button>
+        {% endif %}
+        {% if d.group_id and 'devices:write' in user_perms %}
+        <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from its group">Remove from group</button>
+        {% endif %}
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')" title="Remove this device from the CMS">Delete</button>
+        {% endcall %}
+    </td>
+    {% endif %}
+</tr>
+<tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
+    <td></td>
+    <td colspan="{% if 'devices:manage' in user_perms %}7{% else %}5{% endif %}">
+        <div class="detail-grid">
+            <div class="detail-item">
+                <span class="detail-label">Device ID</span>
+                <span class="detail-value monospace">{{ d.id }}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Location</span>
+                <span class="detail-value">
+                    {% if 'devices:write' in user_perms %}
+                    <span class="editable-name" onclick="event.stopPropagation(); editDeviceLocation(this)"
+                          data-device-id="{{ d.id }}"
+                          data-placeholder="e.g. Lobby, Conference Room A"
+                          title="Click to edit location">{{ d.location or 'Click to set location' }}</span>
+                    {% else %}
+                    {{ d.location or '—' }}
+                    {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Device Type</span>
+                <span class="detail-value">{{ d.device_type or '—' }}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Supported Codecs</span>
+                <span class="detail-value">{{ d.supported_codecs.replace(',', ', ') if d.supported_codecs else '—' }}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">IP Address</span>
+                <span class="detail-value monospace" data-live-ip="{{ d.id }}">{{ d.ip_address or '—' }}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Firmware Version</span>
+                <span class="detail-value">{{ d.firmware_version or '—' }}{% if d.update_available and 'devices:manage' in user_perms %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Storage</span>
+                <span class="detail-value" data-live-storage="{{ d.id }}" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ fmt_storage(d.storage_used_mb) }} / {{ fmt_storage(d.storage_capacity_mb) }}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">CPU Temperature</span>
+                <span class="detail-value" data-live-temp="{{ d.id }}">
+                {% if d.cpu_temp_c is not none %}
+                <span class="{% if d.cpu_temp_c >= 80 %}text-danger{% elif d.cpu_temp_c >= 70 %}text-warning{% endif %}">{{ d.cpu_temp_c | round(1) }}°C{% if d.cpu_temp_c >= 80 %} <span class="badge badge-temp-critical">Critical</span>{% elif d.cpu_temp_c >= 70 %} <span class="badge badge-temp-warning">Warning</span>{% endif %}</span>
+                {% else %}
+                <span class="text-muted">—</span>
+                {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Last Seen</span>
+                <span class="detail-value" data-live-lastseen="{{ d.id }}" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
+            </div>
+            {% if 'devices:manage' in user_perms %}
+            <div class="detail-item">
+                <span class="detail-label">Timezone</span>
+                <span class="detail-value">
+                    <select class="inline-edit" onclick="event.stopPropagation()" onchange="setDeviceTimezone('{{ d.id }}', this.value)">
+                        <option value=""{% if not d.timezone %} selected{% endif %}>CMS default</option>
+                        {% for tz in timezones %}
+                        <option value="{{ tz }}"{% if d.timezone == tz %} selected{% endif %}>{{ tz }}</option>
+                        {% endfor %}
+                    </select>
+                </span>
+            </div>
+            {% endif %}
+            <div class="online-detail-fields" data-live-online-section="{{ d.id }}" {% if not d.is_online %}style="display:none"{% endif %}>
+            <div class="detail-item">
+                <span class="detail-label">Asset</span>
+                <span class="detail-value" data-live-asset="{{ d.id }}">
+                    {% if d.playback_asset %}
+                        <span class="asset-name-truncate">{{ d.playback_asset }}</span>
+                    {% elif d.playback_mode == 'splash' %}
+                        <span class="text-muted">Splash screen</span>
+                    {% else %}
+                        <span class="text-muted">—</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Display</span>
+                <span class="detail-value" data-live-display="{{ d.id }}">
+                    {% if d.display_ports and d.display_ports | length > 1 %}
+                        {% for p in d.display_ports %}
+                            <span class="badge {% if p.connected %}badge-online{% else %}badge-offline{% endif %}" title="{{ p.name }}: {{ 'connected' if p.connected else 'disconnected' }}">{{ p.name }}{% if p.connected %} ✓{% else %} ✗{% endif %}</span>
+                        {% endfor %}
+                    {% elif d.display_connected is none %}
+                        <span class="text-muted">—</span>
+                    {% elif d.display_connected %}
+                        <span class="badge badge-online">Connected</span>
+                    {% else %}
+                        <span class="badge badge-offline">Disconnected</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Pipeline State</span>
+                <span class="detail-value" data-live-pipeline="{{ d.id }}">
+                    {% if d.pipeline_state == 'PLAYING' %}
+                        <span class="badge badge-online">Playing</span>
+                    {% elif d.pipeline_state == 'PAUSED' %}
+                        <span class="badge badge-pending">Paused</span>
+                    {% elif d.pipeline_state == 'READY' %}
+                        <span class="badge badge-pending">Ready</span>
+                    {% elif d.pipeline_state == 'NULL' and d.playback_mode == 'splash' %}
+                        <span class="badge badge-pending">Splash</span>
+                    {% elif d.pipeline_state == 'ERROR' %}
+                        <span class="badge badge-offline">Error</span>
+                    {% else %}
+                        <span class="text-muted">{{ d.pipeline_state or '—' }}</span>
+                    {% endif %}
+                </span>
+            </div>
+            </div>
+        </div>
+        </div>
+    </td>
+</tr>
+{%- endmacro %}
+
+
+{#
+  Group rollup line — small severity-coloured count chips that appear
+  on the right side of a group panel header. Visible whether the panel
+  is expanded or collapsed so operators can scan the fleet by group
+  without expanding anything.
+
+  `rollup` is a dict in the same shape as `fleet_counts(devices)` —
+  one key per severity tag plus 'all' / 'needs_attention' / 'healthy'.
+  Healthy groups render only the device count; problem groups also
+  render one chip per non-zero severity.
+#}
+{% macro group_rollup_chips(rollup) -%}
+{% set _entries = [
+    ('error',            rollup.get('error', 0),            'sev-error',   'errors'),
+    ('offline',          rollup.get('offline', 0),          'sev-offline', 'offline'),
+    ('display-off',      rollup.get('display-off', 0),      'sev-display', 'display off'),
+    ('storage-critical', rollup.get('storage-critical', 0), 'sev-storage', 'storage critical'),
+    ('orphaned',         rollup.get('orphaned', 0),         'sev-orphan',  'orphaned'),
+    ('maintenance',      rollup.get('maintenance', 0),      'sev-maint',   'updates'),
+] %}
+<span class="group-rollup">
+    {% for key, count, klass, label in _entries if count > 0 %}
+    <span class="group-rollup-chip {{ klass }}" title="{{ count }} {{ label }} in this group">{{ count }} {{ label }}</span>
+    {% endfor %}
+    {% if rollup.get('needs_attention', 0) == 0 and rollup.get('all', 0) > 0 %}
+    <span class="group-rollup-chip sev-ok" title="No alerts in this group">All healthy</span>
+    {% endif %}
+</span>
+{%- endmacro %}
+
+
+{#
+  Compact device row — preserved for any caller that still wants a
+  no-detail row, but no longer used by the /devices page (Phase C
+  switched group + ungrouped panels to the rich `device_row` above
+  so granularity is preserved). See issue #87 for the original sharing
+  rationale.
 
   `pending_ttl_hours` is passed in explicitly (it lives on the page
   template context, not on `d`) so the macro stays self-contained.
 #}
 {% macro device_row_compact(d, groups, user_perms, pending_ttl_hours, draggable=false) -%}
-<tr class="device-row device-row-compact{% if draggable %} draggable-device{% endif %}" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
+<tr class="device-row device-row-compact{% if draggable %} draggable-device{% endif %}" data-device-id="{{ d.id }}" data-severity-tags="{{ d.severity_tags | join(' ') if d.severity_tags is defined else '' }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td>
         {% if 'devices:write' in user_perms %}
         <span class="editable-name" onclick="event.stopPropagation(); editDeviceName(this)" data-device-id="{{ d.id }}" data-fallback="{{ d.id }}">{{ d.name or d.id }}</span>
@@ -542,7 +865,7 @@
         {% else %}
         <span class="badge badge-offline">Offline</span>
         {% endif %}
-        {{ device_alert_chips(d) }}
+        {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -576,8 +899,16 @@
   GET /api/devices/groups/{id}/panel fragment endpoint so the cross-session
   poller and the createGroup handler insert identical markup. See issue #87.
 #}
-{% macro group_panel(g, user_perms, assets, groups, pending_ttl_hours) -%}
-<div class="group-panel" data-group-id="{{ g.id }}"
+{#
+  Phase C: signature extended to accept the full template context
+  needed by the rich `device_row` (profiles, latest_version,
+  timezones), and emits a per-group rollup line in the header so
+  operators can scan "what's broken in each group" while panels are
+  collapsed. `g.rollup` is computed server-side via
+  `cms.services.device_alerts.group_rollup(g.devices)`.
+#}
+{% macro group_panel(g, user_perms, assets, groups, pending_ttl_hours, profiles, latest_version, timezones) -%}
+<div class="group-panel expanded" data-group-id="{{ g.id }}"
      ondragover="event.preventDefault(); this.classList.add('drag-over')"
      ondragleave="this.classList.remove('drag-over')"
      ondrop="dropDevice(event, '{{ g.id }}'); this.classList.remove('drag-over')">
@@ -591,6 +922,7 @@
         <span class="text-muted">— {{ g.description or 'No description' }}</span>
         {% endif %}
         <span class="badge badge-count" data-group-count="{{ g.id }}">{{ g.device_count }} device{{ 's' if g.device_count != 1 }}</span>
+        {% if g.rollup is defined %}{{ group_rollup_chips(g.rollup) }}{% endif %}
         <span class="group-actions" onclick="event.stopPropagation()">
             <span class="has-tooltip inline-label">Group Splash Screen<span class="tooltip">Default splash screen shown when no schedule is active</span></span>
             {% if 'groups:write' in user_perms %}
@@ -614,13 +946,13 @@
             {% endif %}
         </span>
     </div>
-    <div class="group-body" style="display: none;">
+    <div class="group-body">
         <div class="table-wrap">
             <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
-                <thead>{{ th_row_compact() }}</thead>
+                <thead>{{ th_row_full(user_perms) }}</thead>
                 <tbody data-group-tbody="{{ g.id }}">
                     {% for d in g.devices | sort(attribute='name') %}
-                    {{ device_row_compact(d, groups, user_perms, pending_ttl_hours) }}
+                    {{ device_row(d, groups, assets, profiles, user_perms, pending_ttl_hours, latest_version, timezones) }}
                     {% endfor %}
                 </tbody>
             </table>

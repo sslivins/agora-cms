@@ -3,254 +3,129 @@
 {% block title %}Devices — Agora CMS{% endblock %}
 {% block content %}
 
-{# ── Helper: human-readable storage ── #}
-{% macro fmt_storage(mb) %}{% if mb >= 1024 %}{{ (mb / 1024) | round(1) }} GB{% else %}{{ mb }} MB{% endif %}{% endmacro %}
+<h1 class="page-title">Devices</h1>
 
-{# ── Macro for a device row (reused in main table, groups, ungrouped) ── #}
-{% macro device_row(d, groups, assets, profiles, draggable=false) %}
-<tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
-    <td class="expand-toggle">▶</td>
-    <td>
-        {% if 'devices:write' in user_perms %}
-        <span class="editable-name" onclick="event.stopPropagation(); editDeviceName(this)" data-device-id="{{ d.id }}" data-fallback="{{ d.id }}">{{ d.name or d.id }}</span>
-        {% else %}
-        {{ d.name or d.id }}
-        {% endif %}
-    </td>
-    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}">
-        {% if d.status.value == 'orphaned' %}
-        <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
-        {% elif d.status.value == 'pending' %}
-        {% if d.is_online %}
-        <span class="badge badge-pending">Pending</span>
-        {% else %}
-        <span class="has-tooltip"><span class="badge badge-offline">Pending (Offline)</span><span class="tooltip">This device registered but hasn't been seen recently. Stale pending devices are automatically removed after {{ pending_ttl_hours }} hours.</span></span>
-        {% endif %}
-        {% elif d.is_online %}
-        <span class="badge badge-online">Online</span>
-        {% else %}
-        <span class="badge badge-offline">Offline</span>
-        {% endif %}
-        {{ macros.device_alert_chips(d) }}
-    </td>
-    <td>
-        {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
-            <option value="">None</option>
-            {% for g in groups %}
-            <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
-            {% endfor %}
-        </select>
-        {% else %}
-        {{ d.group.name if d.group else '—' }}
-        {% endif %}
-    </td>
-    <td>
-        {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" onclick="event.stopPropagation()" onfocus="this.dataset.prev = this.value" onchange="setDefaultAsset('{{ d.id }}', this.value, this)">
-            <option value="">None (use group)</option>
-            {% for a in assets if a.asset_type.value not in ('webpage', 'stream', 'slideshow') %}
-            <option value="{{ a.id }}" {% if d.default_asset_id == a.id %}selected{% endif %}{% if not a.ready_for_selection %} disabled{% endif %}>{{ a | asset_icon }} {{ a.display_name or a.original_filename or a.filename }}{{ a | asset_label_suffix }}{% if not a.ready_for_selection %} ({{ a.not_ready_reason }}){% endif %}</option>
-            {% endfor %}
-        </select>
-        {% else %}
-        {{ (d.default_asset.display_name or d.default_asset.original_filename or d.default_asset.filename) if d.default_asset else '—' }}
-        {% endif %}
-    </td>
-    {% if 'devices:manage' in user_perms %}
-    <td>
-        <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
-            <option value="">None</option>
-            {% for p in profiles %}
-            <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
-            {% endfor %}
-        </select>
-    </td>
-    {% endif %}
-    <td data-live-storage-pct="{{ d.id }}" data-storage-pct data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">
-        {% if d.storage_capacity_mb > 0 %}
-        {{ ((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int }}% free
-        {% else %}—{% endif %}
-    </td>
-    {% if 'devices:manage' in user_perms %}
-    <td class="actions" data-live-actions="{{ d.id }}" data-actions-sig="{{ d.status.value }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.ssh_enabled else 0 }}|{{ 0 if d.local_api_enabled is false else 1 }}" onclick="event.stopPropagation()">
-        {% call macros.kebab_menu() %}
-        {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
-        <button type="button" role="menuitem" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Register this device so it can receive content">Adopt</button>
-        {% elif d.is_upgrading %}
-        <button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>
-        {% elif d.is_online and d.update_available %}
-        <button type="button" role="menuitem" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Update firmware from {{ d.firmware_version }} to {{ latest_version }}">Update</button>
-        {% endif %}
-        {% if d.status.value not in ('pending', 'orphaned') and d.is_online %}
-        <button type="button" role="menuitem" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')" title="Set the password for this device's local web UI">Change Web Password</button>
-        {% if d.ssh_enabled %}
-        <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', false)" title="SSH is currently enabled — click to disable">Disable SSH</button>
-        {% else %}
-        <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', true)" title="SSH is currently disabled — click to enable">Enable SSH</button>
-        {% endif %}
-        {% if d.local_api_enabled is not none and not d.local_api_enabled %}
-        <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', true)" title="Device REST API is disabled — click to re-enable">Enable Local API</button>
-        {% else %}
-        <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', false)" title="Disable the device's local REST API">Disable Local API</button>
-        {% endif %}
-        <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Restart this device immediately">Reboot</button>
-        <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Wipe all data and return device to setup mode">Factory Reset</button>
-        {% endif %}
-        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')" title="Remove this device from the CMS">Delete</button>
-        {% endcall %}
-    </td>
-    {% endif %}
-</tr>
-<tr class="device-detail" data-detail-for="{{ d.id }}" style="display: none;">
-    <td></td>
-    <td colspan="{% if 'devices:manage' in user_perms %}7{% else %}5{% endif %}">
-        <div class="detail-grid">
-            <div class="detail-item">
-                <span class="detail-label">Device ID</span>
-                <span class="detail-value monospace">{{ d.id }}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Location</span>
-                <span class="detail-value">
-                    {% if 'devices:write' in user_perms %}
-                    <input type="text" class="inline-edit" value="{{ d.location or '' }}"
-                           placeholder="e.g. Lobby, Conference Room A"
-                           onclick="event.stopPropagation()"
-                           onchange="setDeviceField('{{ d.id }}', 'location', this.value)">
-                    {% else %}
-                    {{ d.location or '—' }}
-                    {% endif %}
-                </span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Device Type</span>
-                <span class="detail-value">{{ d.device_type or '—' }}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Supported Codecs</span>
-                <span class="detail-value">{{ d.supported_codecs.replace(',', ', ') if d.supported_codecs else '—' }}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">IP Address</span>
-                <span class="detail-value monospace" data-live-ip="{{ d.id }}">{{ d.ip_address or '—' }}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Firmware Version</span>
-                <span class="detail-value">{{ d.firmware_version or '—' }}{% if d.update_available and 'devices:manage' in user_perms %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Storage</span>
-                <span class="detail-value" data-live-storage="{{ d.id }}" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ fmt_storage(d.storage_used_mb) }} / {{ fmt_storage(d.storage_capacity_mb) }}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">CPU Temperature</span>
-                <span class="detail-value" data-live-temp="{{ d.id }}">
-                {% if d.cpu_temp_c is not none %}
-                <span class="{% if d.cpu_temp_c >= 80 %}text-danger{% elif d.cpu_temp_c >= 70 %}text-warning{% endif %}">{{ d.cpu_temp_c | round(1) }}°C{% if d.cpu_temp_c >= 80 %} <span class="badge badge-temp-critical">Critical</span>{% elif d.cpu_temp_c >= 70 %} <span class="badge badge-temp-warning">Warning</span>{% endif %}</span>
-                {% else %}
-                <span class="text-muted">—</span>
-                {% endif %}
-                </span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Last Seen</span>
-                <span class="detail-value" data-live-lastseen="{{ d.id }}" {% if d.last_seen %}data-last-seen="{{ d.last_seen.isoformat() }}"{% endif %}>{{ d.last_seen.strftime('%b %d, %Y %I:%M %p') if d.last_seen else '—' }}</span>
-            </div>
-            {% if 'devices:manage' in user_perms %}
-            <div class="detail-item">
-                <span class="detail-label">Timezone</span>
-                <span class="detail-value">
-                    <select class="inline-edit" onclick="event.stopPropagation()" onchange="setDeviceTimezone('{{ d.id }}', this.value)">
-                        <option value=""{% if not d.timezone %} selected{% endif %}>CMS default</option>
-                        {% for tz in timezones %}
-                        <option value="{{ tz }}"{% if d.timezone == tz %} selected{% endif %}>{{ tz }}</option>
-                        {% endfor %}
-                    </select>
-                </span>
-            </div>
-            {% endif %}
-            <div class="online-detail-fields" data-live-online-section="{{ d.id }}" {% if not d.is_online %}style="display:none"{% endif %}>
-            <div class="detail-item">
-                <span class="detail-label">Asset</span>
-                <span class="detail-value" data-live-asset="{{ d.id }}">
-                    {% if d.playback_asset %}
-                        <span class="asset-name-truncate">{{ d.playback_asset }}</span>
-                    {% elif d.playback_mode == 'splash' %}
-                        <span class="text-muted">Splash screen</span>
-                    {% else %}
-                        <span class="text-muted">—</span>
-                    {% endif %}
-                </span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Display</span>
-                <span class="detail-value" data-live-display="{{ d.id }}">
-                    {% if d.display_ports and d.display_ports | length > 1 %}
-                        {% for p in d.display_ports %}
-                            <span class="badge {% if p.connected %}badge-online{% else %}badge-offline{% endif %}" title="{{ p.name }}: {{ 'connected' if p.connected else 'disconnected' }}">{{ p.name }}{% if p.connected %} ✓{% else %} ✗{% endif %}</span>
-                        {% endfor %}
-                    {% elif d.display_connected is none %}
-                        <span class="text-muted">—</span>
-                    {% elif d.display_connected %}
-                        <span class="badge badge-online">Connected</span>
-                    {% else %}
-                        <span class="badge badge-offline">Disconnected</span>
-                    {% endif %}
-                </span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Pipeline State</span>
-                <span class="detail-value" data-live-pipeline="{{ d.id }}">
-                    {% if d.pipeline_state == 'PLAYING' %}
-                        <span class="badge badge-online">Playing</span>
-                    {% elif d.pipeline_state == 'PAUSED' %}
-                        <span class="badge badge-pending">Paused</span>
-                    {% elif d.pipeline_state == 'READY' %}
-                        <span class="badge badge-pending">Ready</span>
-                    {% elif d.pipeline_state == 'NULL' and d.playback_mode == 'splash' %}
-                        <span class="badge badge-pending">Splash</span>
-                    {% elif d.pipeline_state == 'ERROR' %}
-                        <span class="badge badge-offline">Error</span>
-                    {% else %}
-                        <span class="text-muted">{{ d.pipeline_state or '—' }}</span>
-                    {% endif %}
-                </span>
-            </div>
-            </div>
-        </div>
-        </div>
-    </td>
-</tr>
-{% endmacro %}
+{# Phase C: rich device_row + th_row + fmt_storage moved to _macros.html
+   so the GET /api/devices/groups/{id}/panel fragment endpoint can render
+   identical markup. Call sites use ``macros.device_row`` / ``macros.th_row_full``. #}
 
-{# ── Compact device row for grouped/ungrouped tables ── #}
-{# Note: the row's draggable affordance is owned by JS (not the macro) so a
-   row can move between grouped (not draggable) and ungrouped (draggable)
-   sections without re-rendering. assignGroup() / dropDevice() handle this. #}
-{% macro device_row_compact(d, groups, draggable=false) %}
-{{ macros.device_row_compact(d, groups, user_perms, pending_ttl_hours, draggable=draggable) }}
-{% endmacro %}
+{# ── Fleet-wide triage bar (no wrapping card — bare bar above content) #}
+{% if 'devices:read' in user_perms %}
+<style>
+.triage-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    margin: 0.75rem 0 1rem 0;
+    padding: 0.625rem 0.875rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+.triage-bar-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-right: 0.25rem;
+}
+.triage-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-alt);
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, transform 0.06s;
+}
+.triage-chip:hover { border-color: var(--accent); }
+.triage-chip:active { transform: translateY(1px); }
+.triage-chip.is-active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+.triage-chip.is-empty { opacity: 0.5; }
+.triage-chip-count {
+    display: inline-block;
+    min-width: 1.5rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.10);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.78rem;
+}
+.triage-chip.is-active .triage-chip-count { background: rgba(0,0,0,0.25); color: #fff; }
+/* Severity tints — applied to the count pill so the chip stays neutral
+   when not active and visually echoes the per-row badge palette. */
+.triage-chip.sev-na      .triage-chip-count { background: #fee2e2; color: #991b1b; }
+.triage-chip.sev-error   .triage-chip-count { background: #fee2e2; color: #991b1b; }
+.triage-chip.sev-offline .triage-chip-count { background: #f1f5f9; color: #475569; }
+.triage-chip.sev-display .triage-chip-count { background: #fef3c7; color: #92400e; }
+.triage-chip.sev-storage .triage-chip-count { background: #fee2e2; color: #991b1b; }
+.triage-chip.sev-orphan  .triage-chip-count { background: #fef3c7; color: #92400e; }
+.triage-chip.sev-maint   .triage-chip-count { background: #dbeafe; color: #1e40af; }
+.triage-chip.sev-ok      .triage-chip-count { background: #dcfce7; color: #166534; }
+.triage-chip.is-active.sev-na      { background: #b91c1c; border-color: #b91c1c; }
+.triage-chip.is-active.sev-error   { background: #b91c1c; border-color: #b91c1c; }
+.triage-chip.is-active.sev-display { background: #b45309; border-color: #b45309; }
+.triage-chip.is-active.sev-storage { background: #b91c1c; border-color: #b91c1c; }
+.triage-chip.is-active.sev-orphan  { background: #b45309; border-color: #b45309; }
+.triage-chip.is-active.sev-maint   { background: #1d4ed8; border-color: #1d4ed8; }
+.triage-chip.is-active.sev-ok      { background: #15803d; border-color: #15803d; }
+/* Filter mechanics: rows are hidden via [hidden]; group panels stay
+   visible even when filtered to zero matches — an inline empty-state
+   row inside each tbody surfaces "no devices match the current filter". */
+.triage-empty-state td {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 1rem;
+    font-style: italic;
+}
+/* Per-group rollup chips rendered next to the group name (Phase C). */
+.group-rollup {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-left: 0.5rem;
+    align-items: center;
+}
+.group-rollup-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+.group-rollup-chip.sev-error   { background: #fee2e2; color: #991b1b; }
+.group-rollup-chip.sev-offline { background: #f1f5f9; color: #475569; }
+.group-rollup-chip.sev-display { background: #fef3c7; color: #92400e; }
+.group-rollup-chip.sev-storage { background: #fee2e2; color: #991b1b; }
+.group-rollup-chip.sev-orphan  { background: #fef3c7; color: #92400e; }
+.group-rollup-chip.sev-maint   { background: #dbeafe; color: #1e40af; }
+.group-rollup-chip.sev-ok      { background: #dcfce7; color: #166534; }
+</style>
+{{ macros.triage_bar(fleet_counts, active_alert, user_perms) }}
+{% endif %}
 
-{% set th_row %}
-<tr>
-    <th style="width: 2rem;"></th>
-    <th>Name</th>
-    <th>Status</th>
-    <th>Group</th>
-    <th>Device Splash Screen</th>
-    {% if 'devices:manage' in user_perms %}<th>Profile</th>{% endif %}
-    <th>Storage</th>
-    {% if 'devices:manage' in user_perms %}<th>Actions</th>{% endif %}
-</tr>
-{% endset %}
+{# Phase D: Pending devices now flow into the Ungrouped Devices section
+   below as full rich device_row rendering (with the Adopt kebab item).
+   The dedicated Pending Devices card has been retired. #}
 
-{% set th_row_compact %}{{ macros.th_row_compact() }}{% endset %}
-
-{# ── All Devices ── #}
+{# ── Device Groups (expandable) ── #}
+{% if 'groups:read' in user_perms %}
 <div class="card">
-    <div style="display: flex; gap: 0.25rem; align-items: center;">
-        <h2 style="margin: 0;">Devices</h2>
+    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0 0 0.5rem 0;">
+        <h2 style="margin: 0;">Device Groups</h2>
         {% if 'devices:manage' in user_perms %}
         <span onclick="event.stopPropagation()">
             {% call macros.kebab_menu() %}
@@ -259,56 +134,8 @@
         </span>
         {% endif %}
     </div>
-    <div class="table-wrap">
-        <table>
-            <thead>{{ th_row }}</thead>
-            <tbody>
-                {% for d in devices %}
-                {{ device_row(d, groups, assets, profiles) }}
-                {% else %}
-                <tr><td colspan="{% if 'devices:manage' in user_perms %}8{% else %}6{% endif %}" class="empty">No devices registered yet</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-
-{# ── Pending Devices (unadopted registrations) ── #}
-{# Rendered after the main Devices card so the Devices <h2> remains the #}
-{# first heading on the page — the e2e page-load test keys off that.   #}
-{% if 'devices:manage' in user_perms %}
-<div class="card" id="pending-devices-card" style="display: none;">
-    <div style="display: flex; gap: 0.75rem; align-items: center; margin: 0 0 0.5rem 0;">
-        <h2 style="margin: 0;">Pending Devices</h2>
-        <button class="btn btn-primary" onclick="bootstrapAdoptDevice()" title="Adopt a new device by scanning the QR code on its splash screen or pasting its pairing code">Adopt Device</button>
-    </div>
-    <p class="text-muted" style="margin: 0 0 0.75rem 0;">
-        Devices that have registered with the CMS but haven't been adopted yet.
-        Unadopted registrations expire after {{ pending_ttl_hours }} hours.
-    </p>
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th>Device ID</th>
-                    <th>Firmware</th>
-                    <th>IP</th>
-                    <th>Registered</th>
-                    <th style="width: 1%; white-space: nowrap;">Actions</th>
-                </tr>
-            </thead>
-            <tbody id="pending-devices-tbody"></tbody>
-        </table>
-    </div>
-</div>
-{% endif %}
-
-{# ── Device Groups (expandable) ── #}
-{% if 'groups:read' in user_perms %}
-<div class="card">
-    <h2>Device Groups</h2>
     {% for g in groups %}
-    {{ macros.group_panel(g, user_perms, assets, groups, pending_ttl_hours) }}
+    {{ macros.group_panel(g, user_perms, assets, groups, pending_ttl_hours, profiles, latest_version, timezones) }}
     {% else %}
     <p class="text-muted empty-state">No groups created yet.</p>
     {% endfor %}
@@ -333,10 +160,10 @@
     <p class="text-muted" style="margin-bottom: 0.75rem;">Drag a device onto a group above to assign it.</p>
     <div class="table-wrap">
         <table>
-            <thead>{{ th_row_compact }}</thead>
+            <thead>{{ macros.th_row_full(user_perms) }}</thead>
             <tbody data-group-tbody="ungrouped">
                 {% for d in ungrouped %}
-                {{ device_row_compact(d, groups, draggable=true) }}
+                {{ macros.device_row(d, groups, assets, profiles, user_perms, pending_ttl_hours, latest_version, timezones, draggable=true) }}
                 {% endfor %}
             </tbody>
         </table>
@@ -347,6 +174,127 @@
 
 {% block scripts %}
 <script>
+// ── Triage bar (Phase A) ────────────────────────────────────────────
+// Filter the device list by alert severity. Filtering is purely
+// client-side; URL state (?alert=foo) is set with replaceState so a
+// reload lands on the right view but no extra request is made.
+//
+// Source of truth for "which rows match" is the per-row
+// `data-severity-tags` attribute, computed server-side by
+// cms.services.device_alerts.device_severity_tags. Counts are also
+// recomputed from the same attrs after any live status push so the
+// chip badges stay consistent with the table.
+const TRIAGE_NEEDS_ATTENTION = new Set([
+    'error', 'offline', 'display-off', 'storage-critical', 'orphaned'
+]);
+
+function triageGetTags(tr) {
+    const raw = (tr.getAttribute('data-severity-tags') || '').trim();
+    return raw ? raw.split(/\s+/) : [];
+}
+
+function triageRowMatches(tr, filter) {
+    if (filter === 'all') return true;
+    const tags = triageGetTags(tr);
+    if (filter === 'healthy') return tags.length === 0;
+    if (filter === 'needs-attention') {
+        return tags.some(t => TRIAGE_NEEDS_ATTENTION.has(t));
+    }
+    return tags.includes(filter);
+}
+
+function triageBarApply(filter) {
+    // Toggle each device row's [hidden] state. Pending devices have
+    // no severity tags and live in their own card — skip them.
+    document.querySelectorAll('tr.device-row[data-severity-tags]').forEach(tr => {
+        const match = triageRowMatches(tr, filter);
+        if (match) tr.removeAttribute('hidden');
+        else tr.setAttribute('hidden', '');
+    });
+    // Filter-empty panels stay visible — surface an inline empty-state
+    // row inside each tbody when filter excludes every device. Genuinely
+    // empty Ungrouped (zero devices total) keeps its existing hide path.
+    document.querySelectorAll('[data-group-tbody]').forEach(tbody => {
+        const total = tbody.querySelectorAll('tr.device-row').length;
+        const visible = tbody.querySelectorAll('tr.device-row:not([hidden])').length;
+        let emptyRow = tbody.querySelector('tr.triage-empty-state');
+        if (filter !== 'all' && total > 0 && visible === 0) {
+            if (!emptyRow) {
+                emptyRow = document.createElement('tr');
+                emptyRow.className = 'triage-empty-state';
+                const td = document.createElement('td');
+                td.colSpan = 99;
+                td.textContent = 'No devices match the current filter.';
+                emptyRow.appendChild(td);
+                tbody.appendChild(emptyRow);
+            }
+            emptyRow.hidden = false;
+        } else if (emptyRow) {
+            emptyRow.hidden = true;
+        }
+    });
+    // Update active state on the chips.
+    document.querySelectorAll('.triage-chip').forEach(btn => {
+        const active = btn.getAttribute('data-filter') === filter;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    // Persist the filter in the URL.
+    const url = new URL(window.location.href);
+    if (filter === 'all') url.searchParams.delete('alert');
+    else url.searchParams.set('alert', filter);
+    window.history.replaceState({}, '', url.toString());
+}
+
+function triageBarRecomputeCounts() {
+    const counts = {
+        'all': 0, 'needs-attention': 0, 'healthy': 0,
+        'error': 0, 'offline': 0, 'display-off': 0,
+        'storage-critical': 0, 'orphaned': 0, 'maintenance': 0,
+    };
+    // De-dupe by data-device-id — a device may appear in both a
+    // group panel and (theoretically) the ungrouped section.
+    const seen = new Set();
+    document.querySelectorAll('tr.device-row[data-severity-tags]').forEach(tr => {
+        const id = tr.getAttribute('data-device-id');
+        if (id && seen.has(id)) return;
+        if (id) seen.add(id);
+        counts.all += 1;
+        const tags = triageGetTags(tr);
+        if (tags.length === 0) {
+            counts.healthy += 1;
+            return;
+        }
+        let needsAttn = false;
+        tags.forEach(t => {
+            if (counts[t] !== undefined) counts[t] += 1;
+            if (TRIAGE_NEEDS_ATTENTION.has(t)) needsAttn = true;
+        });
+        if (needsAttn) counts['needs-attention'] += 1;
+    });
+    Object.keys(counts).forEach(key => {
+        const el = document.querySelector(`[data-triage-count="${key}"]`);
+        if (el) el.textContent = String(counts[key]);
+        const chip = document.querySelector(`.triage-chip[data-filter="${key}"]`);
+        if (chip) chip.classList.toggle('is-empty', counts[key] === 0 && key !== 'all');
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.triage-chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+            // Toggle: clicking the active chip clears the filter back to 'all'.
+            const target = btn.classList.contains('is-active')
+                ? 'all'
+                : btn.getAttribute('data-filter');
+            triageBarApply(target);
+        });
+    });
+    // Apply initial filter from server-rendered active state.
+    const initial = document.querySelector('.triage-chip.is-active');
+    if (initial) triageBarApply(initial.getAttribute('data-filter'));
+});
+
 function toggleGroup(header) {
     const panel = header.closest('.group-panel');
     const body = panel.querySelector('.group-body');
@@ -532,8 +480,8 @@ window._adoptionProfiles = [
                 out.push('<span class="has-tooltip"><span class="badge badge-temp-warning">Storage ' + Math.round(freePct) + '%</span><span class="tooltip">Less than 10% free — consider clearing unused assets</span></span>');
             }
         }
-        // Update
-        if (d.update_available && !d.is_upgrading) {
+        // Update — only shown to users who can act on it
+        if (d.update_available && !d.is_upgrading && __canManage) {
             out.push('<span class="has-tooltip"><span class="badge badge-update">Update</span><span class="tooltip">A newer firmware version is available — open the row\'s actions menu to update</span></span>');
         }
         return out.join('');
@@ -660,9 +608,9 @@ window._adoptionProfiles = [
     setInterval(pollDevicesOnce, 5000);
     setInterval(pollGroupsOnce, 5000);
     {% if 'devices:manage' in user_perms %}
-    setInterval(pollPendingOnce, 5000);
-    // Kick an immediate fetch on load so the card appears without a 5s wait.
-    pollPendingOnce();
+    // Pending devices now render server-side in the Ungrouped section.
+    // Action handlers reload the page to pick up adoption status changes.
+    window._refreshPending = () => { location.reload(); };
     {% endif %}
 
     // Keep the /devices Device Groups card in sync across replicas without
@@ -692,10 +640,13 @@ window._adoptionProfiles = [
             // Remove panels whose group was deleted on another replica.
             for (const gid of Array.from(knownGroupIds)) {
                 if (!serverIds.has(gid)) {
-                    // Skip if the user is expanded into this panel — they'd
-                    // lose their context. The next poll cycle will retry.
+                    // Skip if the user has expanded a device detail inside
+                    // this panel — they'd lose their context. The next poll
+                    // cycle will retry. (Group panels are expanded by default
+                    // post-Phase D so .group-panel.expanded is no longer a
+                    // useful signal.)
                     const panel = document.querySelector(`.group-panel[data-group-id="${gid}"]`);
-                    if (panel && panel.classList.contains('expanded')) continue;
+                    if (panel && panel.querySelector('.device-row.expanded')) continue;
                     if (typeof _deleteGroupFromDom === 'function') _deleteGroupFromDom(gid);
                     knownGroupIds.delete(gid);
                 }
@@ -743,7 +694,10 @@ window._adoptionProfiles = [
             // Structural reload only when devices are added or removed
             const newIds = new Set(devices.map(d => d.id));
             if (newIds.size !== knownDeviceIds.size || ![...newIds].every(id => knownDeviceIds.has(id))) {
-                if (!document.querySelector(".device-row.expanded") && !document.querySelector(".group-panel.expanded")) {
+                // Skip reload only if the user has expanded a device detail
+                // row — group panels are now expanded by default (Phase D)
+                // so they're no longer a useful "user is interacting" signal.
+                if (!document.querySelector(".device-row.expanded")) {
                     location.reload();
                 } else {
                     knownDeviceIds = newIds;
@@ -813,12 +767,12 @@ window._adoptionProfiles = [
             const age = _escHtml(_fmtRelativeAge(p.created_at));
             const advisoryJs = (p.device_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
             return (
-                '<tr>' +
+                '<tr class="device-row" data-device-id="' + devId + '">' +
                 '<td>' + devId + '</td>' +
                 '<td>' + fw + '</td>' +
                 '<td>' + ipCell + '</td>' +
                 '<td title="' + _escHtml(p.created_at || '') + '">' + age + '</td>' +
-                '<td style="white-space: nowrap;">' +
+                '<td class="actions" style="white-space: nowrap;">' +
                     '<button type="button" class="btn btn-primary" ' +
                     'onclick="adoptPendingDevice(\'' + p.id + '\', \'' + advisoryJs + '\')">Adopt</button> ' +
                     '<button type="button" class="btn" ' +
