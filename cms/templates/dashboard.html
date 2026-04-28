@@ -9,13 +9,13 @@
 <style>
 .stat-tile-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.6rem;
     margin: 0 0 1rem 0;
 }
 .stat-tile {
     display: block;
-    padding: 1rem 1.25rem;
+    padding: 0.7rem 0.9rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-left: 4px solid var(--border);
@@ -31,20 +31,20 @@
 }
 .stat-tile-label {
     display: block;
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    margin: 0 0 0.4rem 0;
+    margin: 0 0 0.3rem 0;
+    white-space: nowrap;
 }
 .stat-tile-value {
     display: block;
-    font-size: 2rem;
+    font-size: 1.6rem;
     font-weight: 600;
     line-height: 1;
 }
 .stat-tile-zero .stat-tile-value { color: var(--text-muted); font-weight: 400; }
-.stat-tile.sev-all       { border-left-color: var(--accent, #2563eb); }
 .stat-tile.sev-attn      { border-left-color: #f59e0b; }
 .stat-tile.sev-error     { border-left-color: #dc2626; }
 .stat-tile.sev-offline   { border-left-color: #6b7280; }
@@ -53,36 +53,32 @@
 .stat-tile.sev-orphan    { border-left-color: #92400e; }
 .stat-tile.sev-maint     { border-left-color: #1e40af; }
 .stat-tile.sev-healthy   { border-left-color: #15803d; }
-.stat-tile.stat-tile-zero.sev-attn,
-.stat-tile.stat-tile-zero.sev-error,
-.stat-tile.stat-tile-zero.sev-offline,
-.stat-tile.stat-tile-zero.sev-display,
-.stat-tile.stat-tile-zero.sev-storage,
-.stat-tile.stat-tile-zero.sev-orphan,
-.stat-tile.stat-tile-zero.sev-maint { border-left-color: var(--border); }
 </style>
 <div class="stat-tile-grid" role="navigation" aria-label="Fleet status">
+    {# Tiles render only when count > 0, except 'healthy' which is always shown
+       so the dashboard has a baseline signal even when nothing's wrong. #}
     {% set _tiles = [
-        ('all',              'Total Devices',     'sev-all'),
-        ('needs_attention',  'Needs Attention',   'sev-attn'),
-        ('error',            'Errors',            'sev-error'),
-        ('offline',          'Offline',           'sev-offline'),
-        ('display-off',      'Display Off',       'sev-display'),
-        ('storage-critical', 'Storage Critical',  'sev-storage'),
-        ('orphaned',         'Orphaned',          'sev-orphan'),
+        ('needs_attention',  'Needs Attention',   'sev-attn',    false),
+        ('error',            'Errors',            'sev-error',   false),
+        ('offline',          'Offline',           'sev-offline', false),
+        ('display-off',      'Display Off',       'sev-display', false),
+        ('storage-critical', 'Storage Critical',  'sev-storage', false),
+        ('orphaned',         'Orphaned',          'sev-orphan',  false),
     ] %}
     {% if 'devices:manage' in user_perms %}
-    {% set _tiles = _tiles + [('maintenance', 'Maintenance', 'sev-maint')] %}
+    {% set _tiles = _tiles + [('maintenance', 'Maintenance', 'sev-maint', false)] %}
     {% endif %}
-    {% set _tiles = _tiles + [('healthy', 'Healthy', 'sev-healthy')] %}
-    {% for key, label, css in _tiles %}
+    {% set _tiles = _tiles + [('healthy', 'Healthy', 'sev-healthy', true)] %}
+    {% for key, label, css, always_show in _tiles %}
     {% set count = fleet_counts.get(key, 0) %}
+    {% if always_show or count > 0 %}
     {% set filter_key = 'needs-attention' if key == 'needs_attention' else key %}
-    {% set href = '/devices' if key == 'all' else '/devices?alert=' + filter_key %}
+    {% set href = '/devices?alert=' + filter_key %}
     <a class="stat-tile {{ css }}{{ ' stat-tile-zero' if count == 0 }}" href="{{ href }}">
         <span class="stat-tile-label">{{ label }}</span>
         <span class="stat-tile-value">{{ count }}</span>
     </a>
+    {% endif %}
     {% endfor %}
 </div>
 {% endif %}
