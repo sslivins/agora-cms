@@ -460,7 +460,8 @@
   ``?alert=<filter>`` is set with ``history.replaceState`` so reloads
   and shared links land on the right view without a server roundtrip.
 #}
-{% macro triage_bar(counts, active) -%}
+{% macro triage_bar(counts, active, user_perms=None) -%}
+{% set _can_manage = user_perms is none or 'devices:manage' in user_perms %}
 {% set filters = [
     ('all',              'All',              counts.get('all', 0),              'sev-all',     'Show every adopted device'),
     ('needs-attention',  'Needs Attention',  counts.get('needs_attention', 0),  'sev-na',      'Devices in error, offline, with no display, with critical storage, or orphaned'),
@@ -469,9 +470,11 @@
     ('display-off',      'Display Off',      counts.get('display-off', 0),      'sev-display','No display detected on any port'),
     ('storage-critical', 'Storage Critical', counts.get('storage-critical', 0), 'sev-storage','Less than 5% free disk'),
     ('orphaned',         'Orphaned',         counts.get('orphaned', 0),         'sev-orphan', 'Re-flashed device — needs re-adoption'),
-    ('maintenance',      'Maintenance',      counts.get('maintenance', 0),      'sev-maint',  'Firmware update available or upgrade in progress'),
-    ('healthy',          'Healthy',          counts.get('healthy', 0),          'sev-ok',     'No alerts'),
 ] %}
+{% if _can_manage %}
+{% set filters = filters + [('maintenance', 'Maintenance', counts.get('maintenance', 0), 'sev-maint', 'Firmware update available or upgrade in progress')] %}
+{% endif %}
+{% set filters = filters + [('healthy', 'Healthy', counts.get('healthy', 0), 'sev-ok', 'No alerts')] %}
 <div class="triage-bar" id="triage-bar" role="toolbar" aria-label="Filter devices by alert severity">
     <span class="triage-bar-label">Show:</span>
     {% for key, label, count, klass, tip in filters %}
@@ -507,7 +510,7 @@
 
   Each chip is wrapped in `has-tooltip` so users can hover for context.
 #}
-{% macro device_alert_chips(d) -%}
+{% macro device_alert_chips(d, user_perms=None) -%}
 {% if d.status.value not in ('pending', 'orphaned') %}
 {# Error #}
 {% if d.is_online and (d.error or d.pipeline_state == 'ERROR') %}
@@ -542,8 +545,8 @@
 <span class="has-tooltip"><span class="badge badge-temp-warning">Storage {{ _free_pct | round(0) | int }}%</span><span class="tooltip">Less than 10% free — consider clearing unused assets</span></span>
 {% endif %}
 {% endif %}
-{# Update #}
-{% if d.update_available and not d.is_upgrading %}
+{# Update — only useful to users who can actually trigger the upgrade #}
+{% if d.update_available and not d.is_upgrading and (user_perms is none or 'devices:manage' in user_perms) %}
 <span class="has-tooltip"><span class="badge badge-update">Update</span><span class="tooltip">A newer firmware version is available — open the row's actions menu to update</span></span>
 {% endif %}
 {% endif %}
@@ -606,7 +609,7 @@
         {% else %}
         <span class="badge badge-offline">Offline</span>
         {% endif %}
-        {{ device_alert_chips(d) }}
+        {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -862,7 +865,7 @@
         {% else %}
         <span class="badge badge-offline">Offline</span>
         {% endif %}
-        {{ device_alert_chips(d) }}
+        {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}

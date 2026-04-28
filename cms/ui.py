@@ -746,7 +746,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         d.display_ports = state["display_ports"] if state else None
         d.update_available = _is_update_available(d.firmware_version)
         d.is_upgrading = _devices_is_upgrading(d)
-    fleet_counts_dashboard = _fleet_counts(_triage_devices)
+    fleet_counts_dashboard = _fleet_counts(_triage_devices, user_perms)
 
     # Upcoming schedules (next 24h)
     upcoming_query = (
@@ -1171,7 +1171,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     # decoration loop above, so this single pass covers both renders.
     decorated_ids: set = set()
     for d in devices:
-        d.severity_tags = device_severity_tags(d)
+        d.severity_tags = device_severity_tags(d, user_perms)
         decorated_ids.add(id(d))
     for g in groups:
         for d in g.devices:
@@ -1179,13 +1179,13 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
                 # Defensive — a group may surface a device the top-level
                 # query filtered out (shouldn't happen given the perm
                 # logic above, but keep us honest).
-                d.severity_tags = device_severity_tags(d)
+                d.severity_tags = device_severity_tags(d, user_perms)
 
-    counts = fleet_counts(devices)
+    counts = fleet_counts(devices, user_perms)
 
     # Phase C: per-group rollup chips on group panel headers
     for g in groups:
-        g.rollup = fleet_counts(g.devices)
+        g.rollup = fleet_counts(g.devices, user_perms)
 
     raw_alert = (request.query_params.get("alert") or "").strip().lower()
     valid_filters = {"all", "needs-attention", "healthy", *SEVERITY_TAGS}

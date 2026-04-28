@@ -112,7 +112,7 @@
 .group-rollup-chip.sev-maint   { background: #dbeafe; color: #1e40af; }
 .group-rollup-chip.sev-ok      { background: #dcfce7; color: #166534; }
 </style>
-{{ macros.triage_bar(fleet_counts, active_alert) }}
+{{ macros.triage_bar(fleet_counts, active_alert, user_perms) }}
 {% endif %}
 
 {# ── Pending Devices (unadopted registrations) ── #}
@@ -504,8 +504,8 @@ window._adoptionProfiles = [
                 out.push('<span class="has-tooltip"><span class="badge badge-temp-warning">Storage ' + Math.round(freePct) + '%</span><span class="tooltip">Less than 10% free — consider clearing unused assets</span></span>');
             }
         }
-        // Update
-        if (d.update_available && !d.is_upgrading) {
+        // Update — only shown to users who can act on it
+        if (d.update_available && !d.is_upgrading && __canManage) {
             out.push('<span class="has-tooltip"><span class="badge badge-update">Update</span><span class="tooltip">A newer firmware version is available — open the row\'s actions menu to update</span></span>');
         }
         return out.join('');

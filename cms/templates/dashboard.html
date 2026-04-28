@@ -70,9 +70,11 @@
         ('display-off',      'Display Off',       'sev-display'),
         ('storage-critical', 'Storage Critical',  'sev-storage'),
         ('orphaned',         'Orphaned',          'sev-orphan'),
-        ('maintenance',      'Maintenance',       'sev-maint'),
-        ('healthy',          'Healthy',           'sev-healthy'),
     ] %}
+    {% if 'devices:manage' in user_perms %}
+    {% set _tiles = _tiles + [('maintenance', 'Maintenance', 'sev-maint')] %}
+    {% endif %}
+    {% set _tiles = _tiles + [('healthy', 'Healthy', 'sev-healthy')] %}
     {% for key, label, css in _tiles %}
     {% set count = fleet_counts.get(key, 0) %}
     {% set filter_key = 'needs-attention' if key == 'needs_attention' else key %}

@@ -75,7 +75,7 @@ def _free_storage_pct(d) -> float | None:
     return (cap - used) / cap * 100.0
 
 
-def device_severity_tags(d) -> list[str]:
+def device_severity_tags(d, user_perms: Iterable[str] | None = None) -> list[str]:
     """Return the severity tags that apply to a single device.
 
     Tags returned (subset of :data:`SEVERITY_TAGS`):
@@ -89,6 +89,12 @@ def device_severity_tags(d) -> list[str]:
 
     Pending devices are intentionally excluded from every tag — they
     aren't operational yet and live in their own card.
+
+    When *user_perms* is provided, the ``maintenance`` tag is omitted
+    for users without ``devices:manage`` since they can't act on it
+    (the kebab Update action and the Update badge tooltip both require
+    that permission). Pass ``None`` (the default) to get the unfiltered
+    tag list — used by tests and any caller that wants the raw view.
     """
     status = getattr(getattr(d, "status", None), "value", None)
     if status == "pending":
@@ -117,7 +123,8 @@ def device_severity_tags(d) -> list[str]:
         tags.append("storage-critical")
 
     if getattr(d, "is_upgrading", False) or getattr(d, "update_available", False):
-        tags.append("maintenance")
+        if user_perms is None or "devices:manage" in user_perms:
+            tags.append("maintenance")
 
     return tags
 
@@ -127,11 +134,16 @@ def is_needs_attention(tags: Iterable[str]) -> bool:
     return any(t in NEEDS_ATTENTION_TAGS for t in tags)
 
 
-def fleet_counts(devices) -> dict[str, int]:
+def fleet_counts(devices, user_perms: Iterable[str] | None = None) -> dict[str, int]:
     """Compute triage-bar counts across a list of decorated devices.
 
     Pending devices are excluded from every count (including ``all``)
     — they don't represent operational fleet capacity.
+
+    *user_perms* is forwarded to :func:`device_severity_tags`; when
+    set, the ``maintenance`` tag is suppressed for users without
+    ``devices:manage`` so the corresponding stat tile / triage chip
+    reads zero rather than pointing them at devices they can't act on.
 
     Returned keys:
 
@@ -151,7 +163,7 @@ def fleet_counts(devices) -> dict[str, int]:
         if status == "pending":
             continue
         counts["all"] += 1
-        tags = device_severity_tags(d)
+        tags = device_severity_tags(d, user_perms)
         if not tags:
             counts["healthy"] += 1
             continue
