@@ -41,6 +41,7 @@ Default alert thresholds (``cms.services.alert_service``):
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -250,16 +251,24 @@ def test_02_simulator_forces_critical_temperature(
 
 
 def test_03_dashboard_shows_critical_row_for_device(authenticated_page: Page) -> None:
-    """The dashboard HTML renders a critical row for a device currently >=80 C."""
+    """The /devices page renders a critical chip for a device currently >=80 C.
+
+    Phase D rework moved the per-device critical badge off the home dashboard
+    (it now shows aggregate stat tiles linking into /devices?alert=temp). The
+    actual rendered chip lives in the /devices row macros.
+    """
     device_id = THERMAL_STATE["device_id"]
     assert device_id
 
-    resp = authenticated_page.request.get("/")
+    resp = authenticated_page.request.get("/devices")
     assert resp.status == 200
     html = resp.text()
-    assert "badge-temp-critical" in html, (
-        "dashboard is not rendering the critical badge even though device is >=80 C; "
-        "check cms/templates/dashboard.html temp_critical filter"
+    # /devices includes inline JS that references badge-temp-critical by name
+    # (for live chip rebuilds). Match a rendered chip body that includes a
+    # numeric temperature so we don't false-positive on the JS source.
+    assert re.search(r'badge-temp-critical">Temp \d', html), (
+        "/devices is not rendering the critical chip even though device is >=80 C; "
+        "check cms/templates/_macros.html device_alert_chips"
     )
     # Device identifier should appear in the rendered banner row. Be lenient --
     # dashboards render name, not id.
@@ -318,12 +327,13 @@ def test_05_operator_in_same_group_sees_notification(
     events = _list_device_events(op_page, device_id=device_id, event_type="temp_high")
     assert events, "Operator A should see the TEMP_HIGH event for their group's device"
 
-    # Dashboard renders the critical banner for them too
-    resp = op_page.request.get("/")
+    # /devices page renders the critical chip for them too (Phase D moved the
+    # per-device badge here from the home dashboard).
+    resp = op_page.request.get("/devices")
     assert resp.status == 200
     html = resp.text()
-    assert "badge-temp-critical" in html, (
-        "Operator A dashboard should render badge-temp-critical for >=80C device"
+    assert re.search(r'badge-temp-critical">Temp \d', html), (
+        "Operator A /devices should render badge-temp-critical for >=80C device"
     )
 
 
@@ -366,14 +376,16 @@ def test_07_operator_in_other_group_does_not_see_notification(
         f"Operator B must not see TEMP_HIGH events for a Group A device; got {events!r}"
     )
 
-    # Dashboard: op_b has no devices >= 80C (their one device is the default
-    # 45C). No critical badge should render for them.
-    resp = op_b_page.request.get("/")
+    # /devices: op_b has no devices >= 80C (their one device is the default
+    # 45C). No critical chip should render for them. Match the rendered chip
+    # body with a numeric temp so we don't false-positive on the inline JS
+    # source which references badge-temp-critical by name.
+    resp = op_b_page.request.get("/devices")
     assert resp.status == 200
     html = resp.text()
-    assert "badge-temp-critical" not in html, (
-        "Operator B dashboard must not show badge-temp-critical — they don't own "
-        "the hot device and Group A is not in their visibility"
+    assert not re.search(r'badge-temp-critical">Temp \d', html), (
+        "Operator B /devices must not show a rendered badge-temp-critical chip — "
+        "they don't own the hot device and Group A is not in their visibility"
     )
 
 
@@ -420,16 +432,15 @@ def test_08_clear_fault_emits_cleared_notification(
     )
     assert op_events, "Operator A should see the TEMP_CLEARED event log row"
 
-    # Dashboard no longer renders badge-temp-critical (no devices >= 80C).
-    # NB: dashboard gates the "issues" banner on ANY device being hot; since
-    # all three test devices are now at or below profile default, the
-    # critical/warning badges should be gone. The inner dashboard still
-    # exists — we only assert the critical badge is absent.
-    resp = authenticated_page.request.get("/")
+    # /devices no longer renders a badge-temp-critical chip (no devices >= 80C).
+    # NB: the inline JS on /devices references the class name by string for
+    # live chip rebuilds, so we match a rendered chip body with a numeric
+    # temperature instead of a bare class-name substring.
+    resp = authenticated_page.request.get("/devices")
     assert resp.status == 200
     html = resp.text()
-    assert "badge-temp-critical" not in html, (
-        "dashboard still rendering badge-temp-critical after temperature cleared"
+    assert not re.search(r'badge-temp-critical">Temp \d', html), (
+        "/devices still rendering a badge-temp-critical chip after temperature cleared"
     )
 
 
