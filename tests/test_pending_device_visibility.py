@@ -99,27 +99,15 @@ class TestDeviceListAPI:
 
 @pytest.mark.asyncio
 class TestDashboardVisibility:
-    """Dashboard should hide pending/orphaned sections from operators."""
+    """Dashboard no longer renders pending/orphaned sections (Phase D moved
+    them to /devices).  Operator vs admin visibility is now asserted at
+    the /devices route below (TestDevicesPageVisibility)."""
 
-    async def test_admin_sees_pending_on_dashboard(self, client, seed_devices):
+    async def test_dashboard_no_pending_section(self, client, seed_devices):
         resp = await client.get("/")
         assert resp.status_code == 200
-        assert "Pending Device" in resp.text
-
-    async def test_admin_sees_orphaned_on_dashboard(self, client, seed_devices):
-        resp = await client.get("/")
-        assert resp.status_code == 200
-        assert "Orphaned Device" in resp.text
-
-    async def test_operator_no_pending_on_dashboard(self, operator_client, seed_devices):
-        resp = await operator_client.get("/")
-        assert resp.status_code == 200
-        assert "Pending Device" not in resp.text
-
-    async def test_operator_no_orphaned_on_dashboard(self, operator_client, seed_devices):
-        resp = await operator_client.get("/")
-        assert resp.status_code == 200
-        assert "Orphaned Device" not in resp.text
+        assert "Pending Devices" not in resp.text
+        assert "Orphaned Devices" not in resp.text
 
 
 # ── Dashboard JSON polling endpoint ──
@@ -221,22 +209,28 @@ class TestDevicesPageColumns:
         assert "<th>Storage</th>" not in resp.text
 
     async def test_operator_column_count_matches(self, operator_client, seed_devices):
-        """Without manage, header should have 5 columns (expand, name, status, group, splash)."""
+        """Without manage, the device-row header should have 5 columns
+        (expand, name, status, group, splash)."""
         import re
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
-        # Find the first thead and count <th> tags in it
-        thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
-        assert thead_match
-        th_count = thead_match.group(1).count("<th")
+        # Pick the device-row thead specifically (contains "<th>Status</th>") —
+        # /devices may render multiple <thead> blocks (pending devices,
+        # group panels, ungrouped) and we want the rich device-row one.
+        theads = re.findall(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
+        device_thead = next((t for t in theads if "<th>Status</th>" in t), None)
+        assert device_thead is not None
+        th_count = device_thead.count("<th")
         assert th_count == 5
 
     async def test_admin_column_count_matches(self, client, seed_devices):
-        """With manage, header should have 7 columns (expand, name, status, group, splash, profile, actions)."""
+        """With manage, the device-row header should have 7 columns
+        (expand, name, status, group, splash, profile, actions)."""
         import re
         resp = await client.get("/devices")
         assert resp.status_code == 200
-        thead_match = re.search(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
-        assert thead_match
-        th_count = thead_match.group(1).count("<th")
+        theads = re.findall(r"<thead>(.*?)</thead>", resp.text, re.DOTALL)
+        device_thead = next((t for t in theads if "<th>Status</th>" in t), None)
+        assert device_thead is not None
+        th_count = device_thead.count("<th")
         assert th_count == 7

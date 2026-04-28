@@ -4,6 +4,7 @@ import uuid
 from datetime import time
 
 import pytest
+import pytest_asyncio
 
 from cms.models.device_profile import DeviceProfile
 
@@ -921,54 +922,6 @@ class TestGroupDefaultAssetSync:
             assert fetch_msg["asset_name"] == "device_level.png"
         finally:
             device_manager.disconnect("grp-override-pi")
-
-
-@pytest.mark.asyncio
-class TestPendingDeviceNameDisplay:
-    """Dashboard should show device friendly name, not raw ID, for pending devices."""
-
-    async def test_dashboard_pending_shows_friendly_name(self, client, db_session):
-        from cms.models.device import Device, DeviceStatus
-
-        device = Device(
-            id="abc123serial", name="Living Room TV",
-            status=DeviceStatus.PENDING,
-        )
-        db_session.add(device)
-        await db_session.commit()
-
-        resp = await client.get("/")
-        assert resp.status_code == 200
-        html = resp.text
-        # The friendly name should appear in the pending devices table
-        assert "Living Room TV" in html
-        # The adopt button should pass the friendly name for display
-        assert "adoptDevice(" in html
-        assert "Living Room TV" in html
-
-    async def test_dashboard_pending_renders_lan_ip_column(self, client, db_session):
-        """Regression for #436: dashboard pending-devices table must show
-        the device's self-reported LAN IP so admins can SSH/browse to it
-        before adopting.  The IP comes from Device.ip_address (populated
-        by ws.py from raw.get('ip_address') on register)."""
-        from cms.models.device import Device, DeviceStatus
-
-        device = Device(
-            id="pi-with-lan-ip",
-            name="Front Desk Pi",
-            status=DeviceStatus.PENDING,
-            ip_address="192.168.1.53",
-        )
-        db_session.add(device)
-        await db_session.commit()
-
-        resp = await client.get("/")
-        assert resp.status_code == 200
-        html = resp.text
-        assert "Front Desk Pi" in html
-        assert "192.168.1.53" in html
-        # Header column added too
-        assert "<th>IP</th>" in html
 
 
 @pytest.mark.asyncio
