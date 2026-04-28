@@ -137,8 +137,11 @@ class TestDevicesLayout:
         page.set_viewport_size({"width": vw, "height": vh})
         _goto_devices(page)
 
-        # The first .card on this page is "Devices" — anchor by the
-        # heading to be explicit.
+        # Phase D: there is no longer a single "Devices" card — devices
+        # render inside Device Groups panels and an Ungrouped section. Scope
+        # the kebab check to the Device Groups card, which is the first
+        # card on the page containing the word "Devices" and holds the
+        # rich device tables.
         devices_card = page.locator(".card", has_text="Devices").first
         expect(devices_card).to_be_visible()
 
@@ -147,7 +150,7 @@ class TestDevicesLayout:
         )
         assert_closed_kebabs_in_cells(
             page,
-            devices_card.locator("table"),
+            devices_card,
             label=f"@{vw}x{vh} devices",
         )
 

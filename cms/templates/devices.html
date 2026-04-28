@@ -640,10 +640,13 @@ window._adoptionProfiles = [
             // Remove panels whose group was deleted on another replica.
             for (const gid of Array.from(knownGroupIds)) {
                 if (!serverIds.has(gid)) {
-                    // Skip if the user is expanded into this panel — they'd
-                    // lose their context. The next poll cycle will retry.
+                    // Skip if the user has expanded a device detail inside
+                    // this panel — they'd lose their context. The next poll
+                    // cycle will retry. (Group panels are expanded by default
+                    // post-Phase D so .group-panel.expanded is no longer a
+                    // useful signal.)
                     const panel = document.querySelector(`.group-panel[data-group-id="${gid}"]`);
-                    if (panel && panel.classList.contains('expanded')) continue;
+                    if (panel && panel.querySelector('.device-row.expanded')) continue;
                     if (typeof _deleteGroupFromDom === 'function') _deleteGroupFromDom(gid);
                     knownGroupIds.delete(gid);
                 }
@@ -691,7 +694,10 @@ window._adoptionProfiles = [
             // Structural reload only when devices are added or removed
             const newIds = new Set(devices.map(d => d.id));
             if (newIds.size !== knownDeviceIds.size || ![...newIds].every(id => knownDeviceIds.has(id))) {
-                if (!document.querySelector(".device-row.expanded") && !document.querySelector(".group-panel.expanded")) {
+                // Skip reload only if the user has expanded a device detail
+                // row — group panels are now expanded by default (Phase D)
+                // so they're no longer a useful "user is interacting" signal.
+                if (!document.querySelector(".device-row.expanded")) {
                     location.reload();
                 } else {
                     knownDeviceIds = newIds;

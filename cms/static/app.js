@@ -597,6 +597,14 @@ function _removeDeviceFromDom(deviceId) {
         .forEach(row => {
             const key = _compactRowGroupKey(row);
             if (key) affectedGroupKeys.add(key);
+            // Also remove the sibling detail row (if any). The detail row
+            // uses data-detail-for="<id>" rather than data-device-id, but
+            // contains nested elements (editable location span, etc.) that
+            // carry data-device-id and would otherwise leak after delete.
+            const detail = row.nextElementSibling;
+            if (detail && detail.dataset && detail.dataset.detailFor === deviceId) {
+                detail.remove();
+            }
             row.remove();
             removed += 1;
         });
