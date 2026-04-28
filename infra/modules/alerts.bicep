@@ -97,7 +97,7 @@ resource alert5xx 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = 
     criteria: {
       allOf: [
         {
-          query: 'AppRequests\n| where Name !contains "/health" and Name !contains "/metrics"\n| where toint(ResultCode) >= 500\n| summarize Errors = count() by bin(TimeGenerated, 5m)'
+          query: 'requests\n| where name !contains "/health" and name !contains "/metrics"\n| where toint(resultCode) >= 500\n| summarize Errors = count() by bin(timestamp, 5m)'
           timeAggregation: 'Total'
           metricMeasureColumn: 'Errors'
           operator: 'GreaterThan'
@@ -135,7 +135,7 @@ resource alertLatency 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview
     criteria: {
       allOf: [
         {
-          query: 'AppRequests\n| where Name !contains "/health" and Name !contains "/metrics"\n| summarize Samples = count(), P95Ms = percentile(DurationMs, 95)\n| where Samples >= 20\n| project P95Ms'
+          query: 'requests\n| where name !contains "/health" and name !contains "/metrics"\n| summarize Samples = count(), P95Ms = percentile(duration, 95)\n| where Samples >= 20\n| project P95Ms'
           timeAggregation: 'Maximum'
           metricMeasureColumn: 'P95Ms'
           operator: 'GreaterThan'
@@ -172,7 +172,7 @@ resource alertDeps 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' =
     criteria: {
       allOf: [
         {
-          query: 'AppDependencies\n| where OperationName !contains "/health" and OperationName !contains "/metrics"\n| where Success == false\n| summarize Failures = count() by bin(TimeGenerated, 5m)'
+          query: 'dependencies\n| where operation_Name !contains "/health" and operation_Name !contains "/metrics"\n| where success == false\n| summarize Failures = count() by bin(timestamp, 5m)'
           timeAggregation: 'Total'
           metricMeasureColumn: 'Failures'
           operator: 'GreaterThan'
@@ -209,7 +209,7 @@ resource alertExceptions 'Microsoft.Insights/scheduledQueryRules@2023-03-15-prev
     criteria: {
       allOf: [
         {
-          query: 'AppExceptions\n| where OperationName !contains "/health" and OperationName !contains "/metrics"\n| summarize Exceptions = count() by bin(TimeGenerated, 5m)'
+          query: 'exceptions\n| where operation_Name !contains "/health" and operation_Name !contains "/metrics"\n| summarize Exceptions = count() by bin(timestamp, 5m)'
           timeAggregation: 'Total'
           metricMeasureColumn: 'Exceptions'
           operator: 'GreaterThan'
@@ -259,7 +259,7 @@ resource alertHeartbeat 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previ
     criteria: {
       allOf: [
         {
-          query: 'AppRequests\n| count'
+          query: 'requests\n| count'
           timeAggregation: 'Total'
           metricMeasureColumn: 'Count'
           operator: 'LessThan'
