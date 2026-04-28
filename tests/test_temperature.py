@@ -136,7 +136,10 @@ class TestDashboardTemperature:
             resp = await client.get("/devices")
             html = resp.text
             assert "badge-temp-critical" in html
-            assert "badge-temp-warning" not in html  # 80+ is critical, not warning
+            # /devices includes inline JS that references both badge classes
+            # by name. Match a rendered chip body that includes the actual
+            # temperature value to avoid colliding with JS string literals.
+            assert 'badge-temp-warning">Temp 80.0' not in html  # 80+ is critical, not warning
         finally:
             await _simulate_disconnected(db_session, "dev-80")
 
