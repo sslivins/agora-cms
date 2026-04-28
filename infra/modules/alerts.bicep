@@ -135,7 +135,7 @@ resource alertLatency 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview
     criteria: {
       allOf: [
         {
-          query: 'requests\n| where name !contains "/health" and name !contains "/metrics"\n| summarize Samples = count(), P95Ms = percentile(duration, 95)\n| where Samples >= 20\n| project P95Ms'
+          query: 'requests\n| where name !contains "/health" and name !contains "/metrics"\n| summarize Samples = count(), P95Ms = percentile(duration, 95) by bin(timestamp, 5m)\n| where Samples >= 20\n| project timestamp, P95Ms'
           timeAggregation: 'Maximum'
           metricMeasureColumn: 'P95Ms'
           operator: 'GreaterThan'
