@@ -4,124 +4,84 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-{# ── Compute device issue flags (used by alert banner below) ── #}
-{% set temp_warning = device_states | selectattr("cpu_temp_c") | selectattr("cpu_temp_c", "ge", 70) | list %}
-{% set temp_critical = temp_warning | selectattr("cpu_temp_c", "ge", 80) | list %}
-{% set error_devices = device_states | selectattr("error") | list %}
-{% set display_disconnected = device_states | selectattr("is_online") | rejectattr("display_connected", "none") | rejectattr("display_connected") | list %}
-{% set has_issues = offline_devices or orphaned_devices or temp_warning or error_devices or display_disconnected %}
-
-{# ── Device Status (alert banner — only shown when something needs attention) ── #}
-{% if has_issues %}
-<div class="card card-danger">
-    <h2>Device Status</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>Group</th>
-                <th>Status</th>
-                <th>Details</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for ds in error_devices %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-error">Error</span></td>
-                <td class="text-danger">{{ ds.error }}</td>
-            </tr>
-            {% endfor %}
-            {% for d in orphaned_devices %}
-            <tr>
-                <td>{{ d.name or d.id }}</td>
-                <td>{{ d.group.name if d.group else '—' }}</td>
-                <td><span class="badge badge-orphaned">Orphaned</span></td>
-                <td>Authentication failed — {% if 'devices:manage' in user_perms %}<button class="btn btn-primary btn-sm" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>{% endif %}</td>
-            </tr>
-            {% endfor %}
-            {% for d in offline_devices %}
-            <tr>
-                <td>{{ d.name or d.id }}</td>
-                <td>{{ d.group.name if d.group else '—' }}</td>
-                <td><span class="badge badge-offline">Offline</span></td>
-                <td class="text-muted">Last seen {{ d.last_seen.astimezone(tz).strftime('%b %d, %Y %I:%M %p') if d.last_seen else 'Never' }}</td>
-            </tr>
-            {% endfor %}
-            {% for ds in temp_warning %}
-            {% if ds.cpu_temp_c >= 80 %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-temp-critical">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
-                <td class="text-danger">Critical — CPU throttling likely</td>
-            </tr>
-            {% else %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-temp-warning">{{ ds.cpu_temp_c | round(1) }}°C</span></td>
-                <td class="text-warning">Temperature warning</td>
-            </tr>
-            {% endif %}
-            {% endfor %}
-            {% for ds in display_disconnected %}
-            <tr>
-                <td>{{ ds.name }}</td>
-                <td>{{ ds.group_name or '—' }}</td>
-                <td><span class="badge badge-offline">No Display</span></td>
-                <td class="text-warning">HDMI display disconnected</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
-
-{# ── Pending Devices ── #}
-{% if pending_devices %}
-<div class="card">
-    <h2>Pending Devices</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>Status</th>
-                <th>Firmware</th>
-                <th>IP</th>
-                <th>Storage</th>
-                <th>First Seen</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for d in pending_devices %}
-            <tr>
-                <td>{{ d.name or d.id }}</td>
-                <td>
-                    {% if d.is_online %}
-                    <span class="badge badge-pending">Pending</span>
-                    {% else %}
-                    <span class="badge badge-offline">Pending (Offline)</span>
-                    {% endif %}
-                </td>
-                <td>{{ d.firmware_version }}</td>
-                <td class="monospace">{{ d.ip_address or '—' }}</td>
-                <td data-storage-mb="{{ d.storage_capacity_mb }}">{{ d.storage_capacity_mb }} MB</td>
-                <td data-utc="{{ d.registered_at.isoformat() }}">{{ d.registered_at.astimezone(tz).strftime('%b %d, %Y %I:%M %p') }}</td>
-                <td class="actions">
-                    {% if 'devices:manage' in user_perms %}
-                    {% call macros.kebab_menu() %}
-                        <button type="button" role="menuitem" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')">Adopt</button>
-                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')">Delete</button>
-                    {% endcall %}
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+{# ── Fleet status (stat tiles, link into filtered /devices) ─────────── #}
+{% if fleet_counts is defined and fleet_counts.all is defined %}
+<style>
+.stat-tile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.75rem;
+    margin: 0 0 1rem 0;
+}
+.stat-tile {
+    display: block;
+    padding: 1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--border);
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--text);
+    transition: transform 0.08s ease, box-shadow 0.08s ease, border-color 0.08s ease;
+}
+.stat-tile:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border-color: var(--border-strong, var(--border));
+}
+.stat-tile-label {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 0.4rem 0;
+}
+.stat-tile-value {
+    display: block;
+    font-size: 2rem;
+    font-weight: 600;
+    line-height: 1;
+}
+.stat-tile-zero .stat-tile-value { color: var(--text-muted); font-weight: 400; }
+.stat-tile.sev-all       { border-left-color: var(--accent, #2563eb); }
+.stat-tile.sev-attn      { border-left-color: #f59e0b; }
+.stat-tile.sev-error     { border-left-color: #dc2626; }
+.stat-tile.sev-offline   { border-left-color: #6b7280; }
+.stat-tile.sev-display   { border-left-color: #f97316; }
+.stat-tile.sev-storage   { border-left-color: #b91c1c; }
+.stat-tile.sev-orphan    { border-left-color: #92400e; }
+.stat-tile.sev-maint     { border-left-color: #1e40af; }
+.stat-tile.sev-healthy   { border-left-color: #15803d; }
+.stat-tile.stat-tile-zero.sev-attn,
+.stat-tile.stat-tile-zero.sev-error,
+.stat-tile.stat-tile-zero.sev-offline,
+.stat-tile.stat-tile-zero.sev-display,
+.stat-tile.stat-tile-zero.sev-storage,
+.stat-tile.stat-tile-zero.sev-orphan,
+.stat-tile.stat-tile-zero.sev-maint { border-left-color: var(--border); }
+</style>
+<div class="stat-tile-grid" role="navigation" aria-label="Fleet status">
+    {% set _tiles = [
+        ('all',              'Total Devices',     'sev-all'),
+        ('needs_attention',  'Needs Attention',   'sev-attn'),
+        ('error',            'Errors',            'sev-error'),
+        ('offline',          'Offline',           'sev-offline'),
+        ('display-off',      'Display Off',       'sev-display'),
+        ('storage-critical', 'Storage Critical',  'sev-storage'),
+        ('orphaned',         'Orphaned',          'sev-orphan'),
+        ('maintenance',      'Maintenance',       'sev-maint'),
+        ('healthy',          'Healthy',           'sev-healthy'),
+    ] %}
+    {% for key, label, css in _tiles %}
+    {% set count = fleet_counts.get(key, 0) %}
+    {% set filter_key = 'needs-attention' if key == 'needs_attention' else key %}
+    {% set href = '/devices' if key == 'all' else '/devices?alert=' + filter_key %}
+    <a class="stat-tile {{ css }}{{ ' stat-tile-zero' if count == 0 }}" href="{{ href }}">
+        <span class="stat-tile-label">{{ label }}</span>
+        <span class="stat-tile-value">{{ count }}</span>
+    </a>
+    {% endfor %}
 </div>
 {% endif %}
 

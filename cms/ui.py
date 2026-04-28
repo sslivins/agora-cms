@@ -725,6 +725,29 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             "display_ports": state["display_ports"] if state else None,
         })
 
+    # Phase D: decorate adopted + orphaned devices with the live-state
+    # attributes that ``device_severity_tags`` reads, then compute
+    # fleet_counts for the dashboard's stat-tile grid. Mirrors the
+    # decoration pass in /devices but keeps the set narrow to what
+    # the alert taxonomy needs.
+    from cms.services.device_alerts import fleet_counts as _fleet_counts
+    from cms.services.version_checker import is_update_available as _is_update_available
+    _triage_devices = list(all_devices) + list(orphaned_devices)
+    for d in _triage_devices:
+        try:
+            db.expunge(d)
+        except Exception:
+            pass
+        state = live_states.get(d.id)
+        d.is_online = d.id in _connected_ids
+        d.error = state["error"] if state else None
+        d.pipeline_state = state["pipeline_state"] if state else None
+        d.display_connected = state["display_connected"] if state else None
+        d.display_ports = state["display_ports"] if state else None
+        d.update_available = _is_update_available(d.firmware_version)
+        d.is_upgrading = _devices_is_upgrading(d)
+    fleet_counts_dashboard = _fleet_counts(_triage_devices)
+
     # Upcoming schedules (next 24h)
     upcoming_query = (
         select(Schedule)
@@ -815,6 +838,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         "recent_activity": recent_activity,
         "adoption_groups": adoption_groups,
         "adoption_profiles": adoption_profiles,
+        "fleet_counts": fleet_counts_dashboard,
     })
 
 
