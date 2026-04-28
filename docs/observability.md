@@ -88,13 +88,13 @@ Driven by env vars on the Container Apps deployment:
 ## Alerts and workbook (A1.5)
 
 Provisioned by `infra/modules/alerts.bicep` and wired in from
-`infra/main.bicep`.  Recipient is set per-environment via the
-`alertEmail` bicepparam; production currently goes to
-`sslivins+agora_alerts@gmail.com`.  Setting `alertEmail` to an empty
-string in a `.bicepparam` disables the action group and all alert
-rules, useful for short-lived dev environments.  The workbook is
-always provisioned regardless of `alertEmail` so dashboards remain
-available even when paging is off.
+`infra/main.bicep`.  Recipient is supplied by the CD pipeline from the
+GitHub repo variable `ALERT_EMAIL` and forwarded to the bicep
+`alertEmail` parameter; the address itself is **not** committed to
+this repo.  Setting `ALERT_EMAIL` to an empty string disables the
+action group and all alert rules, useful for short-lived dev
+environments.  The workbook is always provisioned regardless of
+`alertEmail` so dashboards remain available even when paging is off.
 
 The five alert rules all query the workspace-based App Insights tables
 (`AppRequests`, `AppDependencies`, `AppExceptions`).  Signal-based
