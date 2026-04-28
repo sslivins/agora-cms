@@ -997,6 +997,7 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
         d.update_available = is_update_available(d.firmware_version)
+        d.is_upgrading = _is_upgrading(d)
         d.has_active_schedule = False  # poller will flip this via updateLiveFields
 
     # Splash-screen dropdown options need the same ready annotations ui.py
@@ -1043,8 +1044,8 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     timezones = COMMON_TIMEZONES
 
     for d in group.devices:
-        d.severity_tags = device_severity_tags(d)
-    group.rollup = fleet_counts(group.devices)
+        d.severity_tags = device_severity_tags(d, user_perms)
+    group.rollup = fleet_counts(group.devices, user_perms)
 
     macros = templates.env.get_template("_macros.html").module
     html = macros.group_panel(
