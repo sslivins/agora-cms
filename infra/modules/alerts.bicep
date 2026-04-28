@@ -295,7 +295,7 @@ var workbookContent = {
       type: 3
       content: {
         version: 'KqlItem/1.0'
-        query: 'AppRequests\n| where Name !contains "/health" and Name !contains "/metrics"\n| summarize Total = count(), Errors = countif(toint(ResultCode) >= 500) by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc'
+        query: 'requests\n| where name !contains "/health" and name !contains "/metrics"\n| summarize Total = count(), Errors = countif(toint(resultCode) >= 500) by bin(timestamp, 5m)\n| order by timestamp asc'
         size: 0
         title: 'Request volume & 5xx errors (5-min bins)'
         timeContext: {
@@ -311,7 +311,7 @@ var workbookContent = {
       type: 3
       content: {
         version: 'KqlItem/1.0'
-        query: 'AppRequests\n| where Name !contains "/health" and Name !contains "/metrics"\n| summarize P50 = percentile(DurationMs, 50), P95 = percentile(DurationMs, 95), P99 = percentile(DurationMs, 99) by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc'
+        query: 'requests\n| where name !contains "/health" and name !contains "/metrics"\n| summarize P50 = percentile(duration, 50), P95 = percentile(duration, 95), P99 = percentile(duration, 99) by bin(timestamp, 5m)\n| order by timestamp asc'
         size: 0
         title: 'Request latency p50/p95/p99 (ms)'
         timeContext: {
@@ -327,7 +327,7 @@ var workbookContent = {
       type: 3
       content: {
         version: 'KqlItem/1.0'
-        query: 'AppDependencies\n| where OperationName !contains "/health" and OperationName !contains "/metrics"\n| summarize Total = count(), Failures = countif(Success == false) by bin(TimeGenerated, 5m), Type\n| order by TimeGenerated asc'
+        query: 'dependencies\n| where operation_Name !contains "/health" and operation_Name !contains "/metrics"\n| summarize Total = count(), Failures = countif(success == false) by bin(timestamp, 5m), type\n| order by timestamp asc'
         size: 0
         title: 'Dependency calls & failures by type'
         timeContext: {
@@ -343,7 +343,7 @@ var workbookContent = {
       type: 3
       content: {
         version: 'KqlItem/1.0'
-        query: 'AppExceptions\n| where OperationName !contains "/health" and OperationName !contains "/metrics"\n| summarize Count = count() by bin(TimeGenerated, 5m), ProblemId\n| order by TimeGenerated asc'
+        query: 'exceptions\n| where operation_Name !contains "/health" and operation_Name !contains "/metrics"\n| summarize Count = count() by bin(timestamp, 5m), problemId\n| order by timestamp asc'
         size: 0
         title: 'Exceptions by problem id'
         timeContext: {
