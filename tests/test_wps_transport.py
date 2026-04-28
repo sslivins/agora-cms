@@ -145,6 +145,116 @@ class TestSendToDevice:
         assert ok is False
 
 
+@pytest.mark.asyncio
+class TestSendToDeviceMetrics:
+    """Verify cms.metrics counters are incremented on each branch.
+
+    The metric registry is module-level so we monkeypatch the ``add``
+    method of each counter with a Mock for the duration of the test.
+    """
+
+    @pytest.fixture
+    def counters(self, monkeypatch):
+        from cms import metrics as m
+
+        attempt = MagicMock()
+        success = MagicMock()
+        failed = MagicMock()
+        monkeypatch.setattr(m.wps_send_attempt_total, "add", attempt)
+        monkeypatch.setattr(m.wps_send_success_total, "add", success)
+        monkeypatch.setattr(m.wps_send_failed_total, "add", failed)
+        return SimpleNamespace(
+            attempt=attempt, success=success, failed=failed,
+        )
+
+    async def test_success_increments_attempt_and_success(self, counters):
+        t, c, _ = _make_transport()
+        await t.send_to_device("pi-1", {"type": "ping"})
+        counters.attempt.assert_called_once_with(1)
+        counters.success.assert_called_once_with(1)
+        counters.failed.assert_not_called()
+
+    async def test_404_increments_failure_with_404_reason(
+        self, counters, monkeypatch,
+    ):
+        from azure.core.exceptions import HttpResponseError
+        from cms import metrics as m
+
+        t, c, _ = _make_transport()
+        err = HttpResponseError(message="not connected")
+        err.status_code = 404
+        c.send_to_user.side_effect = err
+
+        # Stub session + offline-alert helper so we don't reach the DB.
+        class _DummySession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def execute(self, _stmt):
+                return SimpleNamespace(scalar_one_or_none=lambda: None)
+            async def commit(self): return None
+
+        monkeypatch.setattr(
+            "cms.services.wps_transport._session", lambda: _DummySession(),
+        )
+
+        async def _noop(*a, **kw):
+            return True
+
+        monkeypatch.setattr(
+            "cms.services.wps_transport.device_presence."
+            "mark_offline_and_alert",
+            _noop,
+        )
+
+        await t.send_to_device("pi-1", {"type": "ping"})
+        counters.attempt.assert_called_once_with(1)
+        counters.success.assert_not_called()
+        counters.failed.assert_called_once_with(
+            1, {m.ATTR_REASON: m.WPS_REASON_404},
+        )
+
+    async def test_429_increments_failure_with_429_reason(self, counters):
+        from azure.core.exceptions import HttpResponseError
+        from cms import metrics as m
+
+        t, c, _ = _make_transport()
+        err = HttpResponseError(message="throttled")
+        err.status_code = 429
+        c.send_to_user.side_effect = err
+
+        await t.send_to_device("pi-1", {"type": "ping"})
+        counters.failed.assert_called_once_with(
+            1, {m.ATTR_REASON: m.WPS_REASON_429},
+        )
+
+    async def test_other_http_error_uses_http_error_reason(self, counters):
+        from azure.core.exceptions import HttpResponseError
+        from cms import metrics as m
+
+        t, c, _ = _make_transport()
+        err = HttpResponseError(message="boom")
+        err.status_code = 500
+        c.send_to_user.side_effect = err
+
+        await t.send_to_device("pi-1", {"type": "ping"})
+        counters.failed.assert_called_once_with(
+            1, {m.ATTR_REASON: m.WPS_REASON_HTTP_ERROR},
+        )
+
+    async def test_unexpected_exception_uses_unexpected_reason(
+        self, counters,
+    ):
+        from cms import metrics as m
+
+        t, c, _ = _make_transport()
+        c.send_to_user.side_effect = RuntimeError("network died")
+
+        await t.send_to_device("pi-1", {"type": "ping"})
+        counters.failed.assert_called_once_with(
+            1, {m.ATTR_REASON: m.WPS_REASON_UNEXPECTED},
+        )
+
+
 class TestPresenceDelegates:
     # Stage 2c: WPS transport presence now reads from the ``devices``
     # table via ``device_presence`` helpers, which require a live session
