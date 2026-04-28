@@ -7,13 +7,7 @@
    so the GET /api/devices/groups/{id}/panel fragment endpoint can render
    identical markup. Call sites use ``macros.device_row`` / ``macros.th_row_full``. #}
 
-{# ── Devices (heading + fleet-wide triage) ────────────────────────── #}
-{# Phase C: the flat "all devices" table that used to live here is    #}
-{# gone. Group panels + Ungrouped panel below show the same devices   #}
-{# with rich expandable rows, so this card is now a header + the      #}
-{# fleet-scale triage bar. The Devices <h2> is preserved here so the  #}
-{# e2e contract that "Devices" is the first heading on the page still #}
-{# holds.                                                              #}
+{# ── Fleet-wide triage bar (no wrapping card — bare bar above content) #}
 {% if 'devices:read' in user_perms %}
 <style>
 .triage-bar {
@@ -82,9 +76,15 @@
 .triage-chip.is-active.sev-orphan  { background: #b45309; border-color: #b45309; }
 .triage-chip.is-active.sev-maint   { background: #1d4ed8; border-color: #1d4ed8; }
 .triage-chip.is-active.sev-ok      { background: #15803d; border-color: #15803d; }
-/* Filter mechanics: rows are hidden via [hidden]; group panels with
-   no visible rows collapse via .triage-empty added by the JS pass. */
-.triage-empty { display: none; }
+/* Filter mechanics: rows are hidden via [hidden]; group panels stay
+   visible even when filtered to zero matches — an inline empty-state
+   row inside each tbody surfaces "no devices match the current filter". */
+.triage-empty-state td {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 1rem;
+    font-style: italic;
+}
 /* Per-group rollup chips rendered next to the group name (Phase C). */
 .group-rollup {
     display: inline-flex;
@@ -112,19 +112,7 @@
 .group-rollup-chip.sev-maint   { background: #dbeafe; color: #1e40af; }
 .group-rollup-chip.sev-ok      { background: #dcfce7; color: #166534; }
 </style>
-<div class="card">
-    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-        <h2 style="margin: 0;">Devices</h2>
-        {% if 'devices:manage' in user_perms %}
-        <span onclick="event.stopPropagation()">
-            {% call macros.kebab_menu() %}
-                <button type="button" role="menuitem" onclick="checkForUpdates(this)" id="check-updates-btn" title="Fetch the latest available device software version. Runs automatically every hour.">Check for updates</button>
-            {% endcall %}
-        </span>
-        {% endif %}
-    </div>
-    {{ macros.triage_bar(fleet_counts, active_alert) }}
-</div>
+{{ macros.triage_bar(fleet_counts, active_alert) }}
 {% endif %}
 
 {# ── Pending Devices (unadopted registrations) ── #}
@@ -160,7 +148,16 @@
 {# ── Device Groups (expandable) ── #}
 {% if 'groups:read' in user_perms %}
 <div class="card">
-    <h2>Device Groups</h2>
+    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0 0 0.5rem 0;">
+        <h2 style="margin: 0;">Device Groups</h2>
+        {% if 'devices:manage' in user_perms %}
+        <span onclick="event.stopPropagation()">
+            {% call macros.kebab_menu() %}
+                <button type="button" role="menuitem" onclick="checkForUpdates(this)" id="check-updates-btn" title="Fetch the latest available device software version. Runs automatically every hour.">Check for updates</button>
+            {% endcall %}
+        </span>
+        {% endif %}
+    </div>
     {% for g in groups %}
     {{ macros.group_panel(g, user_perms, assets, groups, pending_ttl_hours, profiles, latest_version, timezones) }}
     {% else %}
@@ -238,25 +235,28 @@ function triageBarApply(filter) {
         if (match) tr.removeAttribute('hidden');
         else tr.setAttribute('hidden', '');
     });
-    // Collapse group panels with no visible rows (when not "all").
-    document.querySelectorAll('.group-panel').forEach(panel => {
-        if (filter === 'all') {
-            panel.classList.remove('triage-empty');
-            return;
+    // Filter-empty panels stay visible — surface an inline empty-state
+    // row inside each tbody when filter excludes every device. Genuinely
+    // empty Ungrouped (zero devices total) keeps its existing hide path.
+    document.querySelectorAll('[data-group-tbody]').forEach(tbody => {
+        const total = tbody.querySelectorAll('tr.device-row').length;
+        const visible = tbody.querySelectorAll('tr.device-row:not([hidden])').length;
+        let emptyRow = tbody.querySelector('tr.triage-empty-state');
+        if (filter !== 'all' && total > 0 && visible === 0) {
+            if (!emptyRow) {
+                emptyRow = document.createElement('tr');
+                emptyRow.className = 'triage-empty-state';
+                const td = document.createElement('td');
+                td.colSpan = 99;
+                td.textContent = 'No devices match the current filter.';
+                emptyRow.appendChild(td);
+                tbody.appendChild(emptyRow);
+            }
+            emptyRow.hidden = false;
+        } else if (emptyRow) {
+            emptyRow.hidden = true;
         }
-        const visible = panel.querySelectorAll('tr.device-row:not([hidden])').length;
-        panel.classList.toggle('triage-empty', visible === 0);
     });
-    // Also collapse the Ungrouped Devices section when nothing matches.
-    const ungroupedSection = document.getElementById('ungrouped-section');
-    if (ungroupedSection) {
-        if (filter === 'all') {
-            ungroupedSection.classList.remove('triage-empty');
-        } else {
-            const visible = ungroupedSection.querySelectorAll('tr.device-row:not([hidden])').length;
-            ungroupedSection.classList.toggle('triage-empty', visible === 0);
-        }
-    }
     // Update active state on the chips.
     document.querySelectorAll('.triage-chip').forEach(btn => {
         const active = btn.getAttribute('data-filter') === filter;
@@ -306,7 +306,13 @@ function triageBarRecomputeCounts() {
 
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.triage-chip').forEach(btn => {
-        btn.addEventListener('click', () => triageBarApply(btn.getAttribute('data-filter')));
+        btn.addEventListener('click', () => {
+            // Toggle: clicking the active chip clears the filter back to 'all'.
+            const target = btn.classList.contains('is-active')
+                ? 'all'
+                : btn.getAttribute('data-filter');
+            triageBarApply(target);
+        });
     });
     // Apply initial filter from server-rendered active state.
     const initial = document.querySelector('.triage-chip.is-active');
