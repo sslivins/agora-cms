@@ -17,9 +17,9 @@ param cmsAdminUsername = 'admin'
 
 param adminPrincipalId = '224d9903-ad74-4629-982b-1db94580d901'
 
-// Telemetry alert recipient (Phase 0 / A1.5 — issue #474). Same address as
-// prod for now; flip to a dev-only alias if dev starts paging too much.
-param alertEmail = 'sslivins+agora_alerts@gmail.com'
+// Telemetry alert recipient (Phase 0 / A1.5 — issue #474) is supplied by the
+// CD pipeline from the GitHub repo variable ALERT_EMAIL. Leave the default
+// empty here so we don't commit a routable address.
 
 // Use smaller resources for dev
 param cmsCpu = '0.5'

@@ -210,7 +210,8 @@ jobs:
               deployRoleAssignments=false \
               cmsImage="$CMS_REF" \
               mcpImage="$MCP_REF" \
-              workerImage="$WORKER_REF"
+              workerImage="$WORKER_REF" \
+              alertEmail='${{ vars.ALERT_EMAIL }}'
 
       - name: Bind custom domains (if configured)
         if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
