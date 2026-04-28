@@ -26,6 +26,7 @@ from typing import Any
 from azure.core.exceptions import HttpResponseError
 from azure.messaging.webpubsubservice.aio import WebPubSubServiceClient
 
+from cms import metrics
 from cms.services import device_presence
 from cms.services.transport import DeviceTransport, _session
 
@@ -94,12 +95,14 @@ class WPSTransport(DeviceTransport):
                 device_id,
             )
 
+        metrics.wps_send_attempt_total.add(1)
         try:
             await self._client.send_to_user(
                 device_id,
                 json.dumps(message),
                 content_type="application/json",
             )
+            metrics.wps_send_success_total.add(1)
             return True
         except HttpResponseError as e:
             status = getattr(e, "status_code", None)
@@ -117,13 +120,23 @@ class WPSTransport(DeviceTransport):
                         )
                 except Exception:
                     logger.exception("Failed to clear presence after 404 send")
+                metrics.wps_send_failed_total.add(
+                    1, {metrics.ATTR_REASON: metrics.WPS_REASON_404},
+                )
                 return False
             logger.warning(
                 "send_to_device(%s) failed: %s (status=%s)", device_id, e, status,
             )
+            reason = (
+                metrics.WPS_REASON_429 if status == 429 else metrics.WPS_REASON_HTTP_ERROR
+            )
+            metrics.wps_send_failed_total.add(1, {metrics.ATTR_REASON: reason})
             return False
         except Exception:
             logger.exception("send_to_device(%s) unexpected error", device_id)
+            metrics.wps_send_failed_total.add(
+                1, {metrics.ATTR_REASON: metrics.WPS_REASON_UNEXPECTED},
+            )
             return False
 
     # ---- presence (DB-backed) -----------------------------------------
