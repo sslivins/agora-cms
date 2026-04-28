@@ -687,10 +687,10 @@
                 <span class="detail-label">Location</span>
                 <span class="detail-value">
                     {% if 'devices:write' in user_perms %}
-                    <input type="text" class="inline-edit" value="{{ d.location or '' }}"
-                           placeholder="e.g. Lobby, Conference Room A"
-                           onclick="event.stopPropagation()"
-                           onchange="setDeviceField('{{ d.id }}', 'location', this.value)">
+                    <span class="editable-name" onclick="event.stopPropagation(); editDeviceLocation(this)"
+                          data-device-id="{{ d.id }}"
+                          data-placeholder="e.g. Lobby, Conference Room A"
+                          title="Click to edit location">{{ d.location or 'Click to set location' }}</span>
                     {% else %}
                     {{ d.location or '—' }}
                     {% endif %}
