@@ -1470,6 +1470,7 @@ async function deleteGroup(groupId) {
 
 // ── Asset actions ──
 function previewAsset(assetId, filename, assetType) {
+    _closeOpenPopovers();
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     const box = document.createElement("div");
@@ -1508,6 +1509,7 @@ function previewAsset(assetId, filename, assetType) {
 }
 
 function previewVariant(variantId, filename, assetType, profileName) {
+    _closeOpenPopovers();
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     const box = document.createElement("div");
