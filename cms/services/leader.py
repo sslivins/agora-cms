@@ -44,6 +44,13 @@ from typing import AsyncIterator, Optional
 
 from sqlalchemy import text
 
+from cms.metrics import (
+    ATTR_LOOP_NAME,
+    presence_claim_lost_total,
+    presence_claim_total,
+    presence_heartbeat_late_total,
+)
+
 log = logging.getLogger("agora.leader")
 
 
@@ -158,6 +165,13 @@ class LeaderLease:
                 "LeaderLease[%s] start: is_leader=%s holder=%s",
                 self.loop_name, self._is_leader, self.holder_id,
             )
+            if self._is_leader:
+                # First acquire won — count this as a state flip into
+                # leader.  Initial state was implicitly False before
+                # ``start()`` was called.
+                presence_claim_total.add(
+                    1, {ATTR_LOOP_NAME: self.loop_name}
+                )
         except Exception as e:
             log.warning(
                 "LeaderLease[%s] initial acquire failed: %s (will retry)",
@@ -199,12 +213,28 @@ class LeaderLease:
                         "LeaderLease[%s] heartbeat failed: %s",
                         self.loop_name, e,
                     )
+                    presence_heartbeat_late_total.add(
+                        1, {ATTR_LOOP_NAME: self.loop_name}
+                    )
                     new_state = False
                 if new_state != self._is_leader:
                     log.info(
                         "LeaderLease[%s] state change: is_leader=%s",
                         self.loop_name, new_state,
                     )
+                    if new_state:
+                        presence_claim_total.add(
+                            1, {ATTR_LOOP_NAME: self.loop_name}
+                        )
+                    else:
+                        # Involuntary loss — graceful shutdown goes
+                        # through stop()/_release() which sets
+                        # _is_leader=False without going through this
+                        # heartbeat loop, so anything we see here is a
+                        # genuine takeover or backend hiccup.
+                        presence_claim_lost_total.add(
+                            1, {ATTR_LOOP_NAME: self.loop_name}
+                        )
                 self._is_leader = new_state
         except asyncio.CancelledError:
             raise

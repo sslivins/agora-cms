@@ -139,3 +139,35 @@ def test_scheduler_missed_emitted_add_is_safe():
     from cms import metrics
 
     metrics.scheduler_missed_emitted_total.add(3)
+
+
+def test_presence_counter_handles_exposed():
+    from cms import metrics
+
+    for name in (
+        "presence_claim_total",
+        "presence_claim_lost_total",
+        "presence_heartbeat_late_total",
+    ):
+        handle = getattr(metrics, name)
+        assert hasattr(handle, "add"), (
+            f"{name} should expose an OTel-style .add() method"
+        )
+
+
+def test_presence_loop_name_attribute_constant():
+    from cms import metrics
+
+    assert metrics.ATTR_LOOP_NAME == "loop_name"
+
+
+def test_presence_add_with_loop_name_is_safe():
+    from cms import metrics
+
+    for handle_name in (
+        "presence_claim_total",
+        "presence_claim_lost_total",
+        "presence_heartbeat_late_total",
+    ):
+        handle = getattr(metrics, handle_name)
+        handle.add(1, {metrics.ATTR_LOOP_NAME: "scheduler"})
