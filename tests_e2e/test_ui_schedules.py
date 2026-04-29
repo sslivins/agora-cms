@@ -336,7 +336,10 @@ class TestScheduleEditModal:
         modal.locator("#edit-name").fill("Changed Name")
         modal.locator("#edit-cancel").click()
 
-        expect(modal).not_to_be_visible()
+        # A discard-changes confirmation now appears; accept it
+        page.get_by_role("button", name="Confirm").click()
+
+        expect(page.locator(".modal-overlay")).to_have_count(0)
         # Original name should still be there
         expect(page.locator("td", has_text="Dont Change Me")).to_be_visible()
 
