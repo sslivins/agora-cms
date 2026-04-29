@@ -92,3 +92,50 @@ def test_failure_add_with_reason_attribute_is_safe():
     metrics.wps_send_failed_total.add(
         1, {metrics.ATTR_REASON: metrics.WPS_REASON_UNEXPECTED},
     )
+
+
+def test_scheduler_counter_handles_exposed():
+    from cms import metrics
+
+    for name in (
+        "scheduler_tick_total",
+        "scheduler_missed_emitted_total",
+    ):
+        handle = getattr(metrics, name)
+        assert hasattr(handle, "add"), (
+            f"{name} should expose an OTel-style .add() method"
+        )
+
+
+def test_scheduler_outcome_constants_are_bounded():
+    from cms import metrics
+
+    # Bounded value set for the ``outcome`` attribute on the scheduler
+    # tick counter.  Pin this so a future PR adding a new outcome has
+    # to update this test (and any KQL workbook tile that filters on
+    # outcome) alongside.
+    assert metrics.ATTR_OUTCOME == "outcome"
+    assert {
+        metrics.SCHEDULER_OUTCOME_EVALUATED,
+        metrics.SCHEDULER_OUTCOME_SKIPPED_NOT_LEADER,
+        metrics.SCHEDULER_OUTCOME_ERROR,
+    } == {"evaluated", "skipped_not_leader", "error"}
+
+
+def test_scheduler_tick_add_with_outcome_is_safe():
+    from cms import metrics
+
+    for outcome in (
+        metrics.SCHEDULER_OUTCOME_EVALUATED,
+        metrics.SCHEDULER_OUTCOME_SKIPPED_NOT_LEADER,
+        metrics.SCHEDULER_OUTCOME_ERROR,
+    ):
+        metrics.scheduler_tick_total.add(
+            1, {metrics.ATTR_OUTCOME: outcome},
+        )
+
+
+def test_scheduler_missed_emitted_add_is_safe():
+    from cms import metrics
+
+    metrics.scheduler_missed_emitted_total.add(3)

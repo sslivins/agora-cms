@@ -96,3 +96,60 @@ WPS_REASON_404: Final[str] = "404"
 WPS_REASON_429: Final[str] = "429"
 WPS_REASON_HTTP_ERROR: Final[str] = "http_error"
 WPS_REASON_UNEXPECTED: Final[str] = "unexpected"
+
+
+# ----------------------------------------------------------------------
+# Scheduler (cms/services/scheduler.py)
+# ----------------------------------------------------------------------
+#
+# Two counters cover the operational questions operators actually ask
+# about the scheduler:
+#
+# 1. "Is the scheduler running?"  ``agora.scheduler.tick`` with
+#    ``outcome`` ∈ {evaluated, skipped_not_leader, error} answers this.
+#    Under N replicas, total tick rate scales with replica count, but
+#    ``outcome=evaluated`` count ≈ global tick rate (one leader at a
+#    time).  ``outcome=skipped_not_leader`` is a positive liveness
+#    signal for follower replicas and verifies the leader lease is
+#    gating correctly.
+# 2. "Are devices missing scheduled playback?"
+#    ``agora.scheduler.missed_emitted`` increments once per MISSED
+#    ScheduleLog row that is durably committed.  We deliberately do
+#    NOT increment for CAS-claim losses (normal under multi-replica
+#    dedup) or for log-write failures (the CAS claim is reverted so
+#    the next tick retries).  The increment happens AFTER the outer
+#    ``db.commit()`` succeeds so a commit failure cannot produce
+#    false-positive telemetry.
+
+scheduler_tick_total: Final = _meter.create_counter(
+    "agora.scheduler.tick",
+    description=(
+        "Scheduler loop iterations, attributed by ``outcome``: "
+        "``evaluated`` (leader ran ``evaluate_schedules`` to "
+        "completion), ``skipped_not_leader`` (replica without the "
+        "scheduler lease), or ``error`` (unexpected exception in the "
+        "loop body — does NOT include task cancellation)."
+    ),
+)
+
+scheduler_missed_emitted_total: Final = _meter.create_counter(
+    "agora.scheduler.missed_emitted",
+    description=(
+        "MISSED schedule events that were durably committed to "
+        "``schedule_logs`` in the current tick.  Increments only "
+        "after ``db.commit()`` succeeds and only for events whose "
+        "ScheduleLog row was actually written (CAS-claim losses and "
+        "log-write failures are not counted)."
+    ),
+)
+
+
+# Bounded value set for the ``outcome`` attribute on
+# ``agora.scheduler.tick``.  Keep this list short — every distinct
+# value is a separate series in App Insights.
+
+ATTR_OUTCOME: Final[str] = "outcome"
+
+SCHEDULER_OUTCOME_EVALUATED: Final[str] = "evaluated"
+SCHEDULER_OUTCOME_SKIPPED_NOT_LEADER: Final[str] = "skipped_not_leader"
+SCHEDULER_OUTCOME_ERROR: Final[str] = "error"

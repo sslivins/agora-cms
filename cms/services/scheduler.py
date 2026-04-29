@@ -22,6 +22,7 @@ from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
 from cms.schemas.protocol import ScheduleEntry, SyncMessage
 from cms.services.transport import get_transport
+from cms import metrics as _metrics
 
 logger = logging.getLogger("agora.cms.scheduler")
 
@@ -1282,6 +1283,13 @@ async def evaluate_schedules() -> None:
         from sqlalchemy.exc import IntegrityError
 
         grace_cutoff = utc_now - timedelta(seconds=MISSED_GRACE_SECONDS)
+        # Accumulator for ``agora.scheduler.missed_emitted``.  We only
+        # increment the counter AFTER the outer ``db.commit()`` below
+        # succeeds, so a commit failure cannot produce false-positive
+        # telemetry.  Per-event ``log_written=True`` is necessary but
+        # not sufficient — the commit at line ~1383 is the durability
+        # boundary.
+        missed_emitted_count = 0
         for (_sid_str, did), ctx in active_offline_context.items():
             # CAS claim.
             claim_result = await db.execute(
@@ -1375,11 +1383,20 @@ async def evaluate_schedules() -> None:
                     )
                     .values(emitted_at=None)
                 )
+            else:
+                missed_emitted_count += 1
 
         # Commit the claim + log (or revert) as a single atomic unit per
         # tick.  If this commit itself fails the whole batch rolls back
         # and the next tick will retry every claim it attempted here.
         await db.commit()
+
+        # Telemetry: only after the commit above has durably persisted
+        # the claim+log rows do we record the MISSED counter.  If the
+        # commit raised, this line is unreachable and the metric is
+        # not incremented — matching the on-disk reality.
+        if missed_emitted_count:
+            _metrics.scheduler_missed_emitted_total.add(missed_emitted_count)
 
         # Cleanup: drop dedup rows whose (schedule, device) combo is no
         # longer in the active-offline set for today (device reconnected
@@ -1480,15 +1497,32 @@ async def scheduler_loop() -> None:
     try:
         await lease.start()
         while True:
+            outcome: str | None = None
             try:
                 if lease.is_leader:
                     await evaluate_schedules()
+                    outcome = _metrics.SCHEDULER_OUTCOME_EVALUATED
                 else:
+                    outcome = _metrics.SCHEDULER_OUTCOME_SKIPPED_NOT_LEADER
                     logger.debug("scheduler_loop: not leader, skipping tick")
             except asyncio.CancelledError:
+                # Cancellation is the normal shutdown path — leave
+                # ``outcome`` as ``None`` and re-raise straight away so
+                # the ``finally`` block deliberately skips recording.
                 raise
             except Exception:
                 logger.exception("Scheduler evaluation error")
+                outcome = _metrics.SCHEDULER_OUTCOME_ERROR
+            finally:
+                # ``outcome is None`` only on cancellation; in every
+                # other path one of the three constants has been
+                # assigned above.  Per-replica: total tick rate ≈
+                # replica count × (1 / EVAL_INTERVAL_SECONDS).  Filter
+                # by ``outcome=evaluated`` for the global eval rate.
+                if outcome is not None:
+                    _metrics.scheduler_tick_total.add(
+                        1, {_metrics.ATTR_OUTCOME: outcome},
+                    )
             try:
                 await asyncio.sleep(EVAL_INTERVAL_SECONDS)
             except asyncio.CancelledError:
