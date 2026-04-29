@@ -32,23 +32,56 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-test.txt
 
-      - name: Run full multi-replica integration suite
+      - name: Run full multi-replica integration suite (direct-WS)
         env:
           AGORA_RUN_INTEGRATION: "1"
         run: |
+          # Default direct-WS harness. ``smoke_wps`` tests are auto-
+          # skipped by ``tests/integration/conftest.py`` because the
+          # ``/internal/wps/events`` route only exists when the CMS is
+          # booted with ``AGORA_CMS_DEVICE_TRANSPORT=wps``; the
+          # explicit ``-m "not smoke_wps"`` filter makes the intent
+          # visible in the workflow rather than relying on the
+          # conftest skip alone.
           pytest tests/integration/ \
             --run-integration \
+            -m "not smoke_wps" \
+            -p no:xdist -p no:timeout \
+            -v --tb=short
+
+      - name: Tear down direct-WS stack
+        if: always()
+        run: |
+          docker compose -f tests/integration/docker-compose.integration.yml \
+            down -v --remove-orphans || true
+
+      - name: Run full multi-replica integration suite (WPS transport)
+        env:
+          AGORA_RUN_INTEGRATION: "1"
+          # Layer the WPS overlay on top of the base compose. Mirrors
+          # the per-PR ``multireplica-wps-smoke`` job but runs nightly
+          # so prod's N>=2 + WPS configuration gets the full smoke
+          # surface every night, not just on PRs that touch code.
+          AGORA_INTEGRATION_TRANSPORT: "wps"
+        run: |
+          pytest tests/integration/ \
+            --run-integration \
+            -m "smoke or smoke_wps" \
             -p no:xdist -p no:timeout \
             -v --tb=short
 
       - name: Dump compose logs on failure
         if: failure()
         run: |
-          docker compose -f tests/integration/docker-compose.integration.yml logs \
-            --no-color --tail=500 || true
+          docker compose \
+            -f tests/integration/docker-compose.integration.yml \
+            -f tests/integration/docker-compose.integration.wps.yml \
+            logs --no-color --tail=500 || true
 
       - name: Tear down
         if: always()
         run: |
-          docker compose -f tests/integration/docker-compose.integration.yml \
+          docker compose \
+            -f tests/integration/docker-compose.integration.yml \
+            -f tests/integration/docker-compose.integration.wps.yml \
             down -v --remove-orphans || true
