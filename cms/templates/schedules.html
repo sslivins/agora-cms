@@ -841,8 +841,16 @@ function editSchedule(s) {
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
-    box.querySelector("#edit-cancel").onclick = () => overlay.remove();
+    const _closeEditModal = async (force) => {
+        if (!force && _isEditModalDirty()) {
+            const ok = await showConfirm("\u26a0\ufe0f You have unsaved changes to this schedule. Discard them and close?");
+            if (!ok) return;
+        }
+        _editModalDirtyTracker = null;
+        overlay.remove();
+    };
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) _closeEditModal(false); });
+    box.querySelector("#edit-cancel").onclick = () => _closeEditModal(false);
 
     // Edit modal summary helper
     const editSummaryEl = box.querySelector("#edit-schedule-summary");
@@ -945,6 +953,9 @@ function editSchedule(s) {
     // Show initial summary
     updateEditSummary();
 
+    // Snapshot for unsaved-changes detection (after population, before user interaction)
+    _editModalDirtyTracker = { box, snapshot: _serializeFormInputs(box) };
+
     box.querySelector("#edit-save").onclick = async () => {
         const startTime = box.querySelector("#edit-start-time").value;
         const endTime = box.querySelector("#edit-end-time").value;
@@ -1002,6 +1013,7 @@ function editSchedule(s) {
         body.loop_count = hasLoopCount ? parseInt(editLoopCount) : null;
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
         if (resp && resp.ok) {
+            _editModalDirtyTracker = null;
             overlay.remove();
             if (typeof _replaceScheduleRow === 'function') {
                 await _replaceScheduleRow(s.id);
@@ -1016,6 +1028,70 @@ function editSchedule(s) {
         }
     };
 }
+
+// ── Unsaved-changes warning ──
+// Warns the user before navigating away (nav-tab click, refresh, close, back)
+// or closing the edit modal when they have in-progress edits. The create form
+// uses the browser's native beforeunload prompt; the edit modal uses showConfirm.
+let _createFormSnapshot = null;
+let _editModalDirtyTracker = null;
+
+function _serializeFormInputs(root) {
+    if (!root) return "";
+    const parts = [];
+    root.querySelectorAll('input, select, textarea').forEach(el => {
+        if (el.type === 'hidden') return;
+        const key = el.name || el.id || '';
+        if (el.type === 'checkbox' || el.type === 'radio') {
+            parts.push(`${key}=${el.checked ? 1 : 0}`);
+        } else {
+            parts.push(`${key}=${el.value}`);
+        }
+    });
+    return parts.join('&');
+}
+
+function _getCreateForm() {
+    return document.querySelector('form[onsubmit*="createSchedule"]');
+}
+
+function _resetCreateFormSnapshot() {
+    _createFormSnapshot = _serializeFormInputs(_getCreateForm());
+}
+
+function _isCreateFormDirty() {
+    if (_createFormSnapshot === null) return false;
+    const form = _getCreateForm();
+    if (!form) return false;
+    return _serializeFormInputs(form) !== _createFormSnapshot;
+}
+
+function _isEditModalDirty() {
+    if (!_editModalDirtyTracker) return false;
+    const box = _editModalDirtyTracker.box;
+    if (!box || !document.body.contains(box)) return false;
+    return _serializeFormInputs(box) !== _editModalDirtyTracker.snapshot;
+}
+
+window.addEventListener('beforeunload', (e) => {
+    if (_isCreateFormDirty() || _isEditModalDirty()) {
+        e.preventDefault();
+        // Modern browsers ignore custom text; setting returnValue triggers the prompt.
+        e.returnValue = '';
+        return '';
+    }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    _resetCreateFormSnapshot();
+    const form = _getCreateForm();
+    if (form) {
+        // form.reset() fires the 'reset' event; re-snapshot once defaults are restored.
+        form.addEventListener('reset', () => {
+            setTimeout(_resetCreateFormSnapshot, 0);
+        });
+    }
+});
 
 // ── Schedules poller ──
 // Picks up schedules created, edited, toggled, or deleted by other
