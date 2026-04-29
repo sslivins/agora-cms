@@ -153,3 +153,73 @@ ATTR_OUTCOME: Final[str] = "outcome"
 SCHEDULER_OUTCOME_EVALUATED: Final[str] = "evaluated"
 SCHEDULER_OUTCOME_SKIPPED_NOT_LEADER: Final[str] = "skipped_not_leader"
 SCHEDULER_OUTCOME_ERROR: Final[str] = "error"
+
+
+# ----------------------------------------------------------------------
+# Presence / leader-lease (cms/services/leader.py)
+# ----------------------------------------------------------------------
+#
+# The ``LeaderLease`` heartbeat task drives a small state machine for
+# each loop (scheduler, alert_sweep, …).  Three counters expose the
+# state-change events we care about during incidents:
+#
+# * ``agora.presence.claim`` — this replica's lease state flipped to
+#   leader.  Sums to roughly N over the cluster's lifetime where N is
+#   the number of leadership transitions; under steady state with no
+#   restarts you should see one increment per replica per
+#   ``(loop_name)`` cluster-wide.  A sustained spike means leadership
+#   is flapping.
+# * ``agora.presence.claim_lost`` — this replica observed that it lost
+#   the lease (heartbeat returned False after previously being True).
+#   Graceful shutdown (``stop()``) is intentionally NOT counted — only
+#   involuntary loss (lease takeover, heartbeat exception, etc.).  The
+#   delta between ``claim`` and ``claim_lost`` cluster-wide should
+#   stay near zero in steady state.
+# * ``agora.presence.heartbeat_late`` — the heartbeat raised an
+#   exception (DB unreachable, transient network issue, …).  Treated
+#   as a missed renewal in the lease state machine; the loop will
+#   recover on the next heartbeat.  Frequent ticks here are an early
+#   warning that the lease is at risk of TTL'ing out.
+#
+# Dimension: ``loop_name`` (bounded enum — currently "scheduler"; will
+# expand as alert_sweep / log_drainer / rollout adopt the lease).  We
+# deliberately do NOT use ``replica_id`` / ``holder_id`` as a
+# dimension — the holder UUID rotates every process restart and would
+# produce unbounded series in App Insights.
+#
+# Non-Postgres backends (SQLite tests, local dev with no DB) bypass
+# the heartbeat entirely and report ``is_leader=True`` unconditionally.
+# In that mode no presence counters are emitted — there is no real
+# state machine to instrument and any signal would be noise.
+
+presence_claim_total: Final = _meter.create_counter(
+    "agora.presence.claim",
+    description=(
+        "Leader lease state flipped to leader on this replica "
+        "(state True after previously being False, or won on first "
+        "acquire).  Dimension: ``loop_name``."
+    ),
+)
+
+presence_claim_lost_total: Final = _meter.create_counter(
+    "agora.presence.claim_lost",
+    description=(
+        "Leader lease state flipped to non-leader on this replica "
+        "(heartbeat returned False after previously being True). "
+        "Graceful shutdown via ``stop()`` is not counted.  "
+        "Dimension: ``loop_name``."
+    ),
+)
+
+presence_heartbeat_late_total: Final = _meter.create_counter(
+    "agora.presence.heartbeat_late",
+    description=(
+        "Leader lease heartbeat raised an exception (treated as a "
+        "missed renewal).  Dimension: ``loop_name``."
+    ),
+)
+
+
+# Attribute key for the lease-loop name on presence counters.
+
+ATTR_LOOP_NAME: Final[str] = "loop_name"
