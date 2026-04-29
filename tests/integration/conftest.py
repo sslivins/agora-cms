@@ -37,6 +37,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ``multireplica-smoke`` job leaves it unset (direct-WS path).
 INTEGRATION_TRANSPORT = os.environ.get("AGORA_INTEGRATION_TRANSPORT", "local").strip().lower()
 
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-skip ``smoke_wps``-marked tests when the harness isn't WPS.
+
+    The ``smoke_wps`` tests POST to ``/internal/wps/events``, which the
+    CMS only registers when ``AGORA_CMS_DEVICE_TRANSPORT=wps``. Running
+    them under the direct-WS harness is guaranteed to 404. Any caller
+    that forgets ``AGORA_INTEGRATION_TRANSPORT=wps`` (e.g. the nightly
+    full-integration workflow before this fix) would otherwise see
+    those tests as real failures rather than out-of-scope. Skipping
+    here is belt-and-braces; the workflows are also updated to set the
+    env var explicitly.
+    """
+    if INTEGRATION_TRANSPORT == "wps":
+        return
+    skip_marker = pytest.mark.skip(
+        reason="smoke_wps requires AGORA_INTEGRATION_TRANSPORT=wps",
+    )
+    for item in items:
+        if "smoke_wps" in item.keywords:
+            item.add_marker(skip_marker)
+
 CMS_A_URL = "http://127.0.0.1:8080"
 CMS_B_URL = "http://127.0.0.1:8081"
 # The test process talks to Postgres on the host-exposed port; the CMS
