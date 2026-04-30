@@ -259,6 +259,37 @@ class TestHistoryUI:
         assert resp.status_code == 200
         assert "Dashboard Schedule" in resp.text
 
+    async def test_dashboard_recent_activity_excludes_cms_lifecycle(self, client, db_session):
+        """CMS started/stopped lifecycle events should NOT appear in the
+        dashboard's Recent Activity panel — they are noise for end users.
+        They remain visible in the full event log page."""
+        from cms.models.device_event import DeviceEvent
+
+        db_session.add(DeviceEvent(
+            device_id=None,
+            device_name="",
+            event_type="cms_started",
+        ))
+        db_session.add(DeviceEvent(
+            device_id=None,
+            device_name="",
+            event_type="cms_stopped",
+        ))
+        # A non-lifecycle event should still render so we can confirm
+        # the panel itself is being populated.
+        db_session.add(DeviceEvent(
+            device_id=None,
+            device_name="Sentinel Device",
+            event_type="online",
+        ))
+        await db_session.commit()
+
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        assert "Sentinel Device" in resp.text
+        assert "CMS Started" not in resp.text
+        assert "CMS Stopped" not in resp.text
+
     async def test_dashboard_json_activity_count(self, client, db_session):
         db_session.add(ScheduleLog(
             schedule_name="Count Test",

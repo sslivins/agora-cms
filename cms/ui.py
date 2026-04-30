@@ -806,6 +806,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     dev_q = await db.execute(
         select(DeviceEvent)
         .where(DeviceEvent.created_at >= cutoff_24h)
+        .where(DeviceEvent.event_type.notin_(["cms_started", "cms_stopped"]))
         .order_by(DeviceEvent.created_at.desc())
         .limit(20)
     )
