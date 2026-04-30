@@ -206,6 +206,7 @@ jobs:
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
               wpsConnectionString='${{ secrets.WPS_CONNECTION_STRING }}' \
               fleetRegisterSecrets='${{ steps.fleet_secrets.outputs.map }}' \
+              githubIssuesToken='${{ secrets.AGORA_CMS_ISSUES_TOKEN }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=false \
               cmsImage="$CMS_REF" \

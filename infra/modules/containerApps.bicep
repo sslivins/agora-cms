@@ -66,6 +66,10 @@ param deviceTransport string = 'wps'
 @secure()
 param fleetRegisterSecrets string = ''
 
+@description('GitHub personal access token used by the CMS "Report an issue" feature. When empty, the report-issue button is hidden.')
+@secure()
+param githubIssuesToken string = ''
+
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${environmentName}-logs'
@@ -190,6 +194,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           value: fleetRegisterSecrets
         }
         {
+          name: 'github-issues-token'
+          value: githubIssuesToken
+        }
+        {
           name: 'app-insights-connection-string'
           value: appInsights.properties.ConnectionString
         }
@@ -264,6 +272,10 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AGORA_CMS_FLEET_REGISTER_SECRETS'
               secretRef: 'fleet-register-secrets'
+            }
+            {
+              name: 'AGORA_CMS_GITHUB_ISSUES_TOKEN'
+              secretRef: 'github-issues-token'
             }
             {
               // Picked up by azure-monitor-opentelemetry's
