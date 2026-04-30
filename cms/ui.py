@@ -791,34 +791,24 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     upcoming_today = [u for u in upcoming if u["day_label"] == "today"]
     upcoming_tomorrow = [u for u in upcoming if u["day_label"] == "tomorrow"]
 
-    # Recent activity (last 24h) — merges schedule history with device events
-    # (online/offline, display connect/disconnect, temp, error transitions).
+    # Recent activity (last 24h) — playback events only (started / ended /
+    # skipped / missed). Device state changes (online/offline, display,
+    # temp, errors, CMS lifecycle) are surfaced live via the dashboard
+    # tiles and have a dedicated home in the full event log.
     from datetime import timedelta
-    from cms.models.device_event import DeviceEvent
     cutoff_24h = now - timedelta(hours=24)
     recent_q = await db.execute(
         select(ScheduleLog)
         .where(ScheduleLog.timestamp >= cutoff_24h)
         .order_by(ScheduleLog.timestamp.desc())
-        .limit(20)
+        .limit(10)
     )
     sched_entries = recent_q.scalars().all()
-    dev_q = await db.execute(
-        select(DeviceEvent)
-        .where(DeviceEvent.created_at >= cutoff_24h)
-        .where(DeviceEvent.event_type.notin_(["cms_started", "cms_stopped"]))
-        .order_by(DeviceEvent.created_at.desc())
-        .limit(20)
-    )
-    dev_entries = dev_q.scalars().all()
 
-    def _merged_ts(obj):
-        return getattr(obj, "timestamp", None) or getattr(obj, "created_at", None)
-
-    recent_activity = [{"kind": "schedule", "log": s, "timestamp": _merged_ts(s)} for s in sched_entries]
-    recent_activity += [{"kind": "device", "log": d, "timestamp": _merged_ts(d)} for d in dev_entries]
-    recent_activity.sort(key=lambda e: e["timestamp"], reverse=True)
-    recent_activity = recent_activity[:10]
+    recent_activity = [
+        {"kind": "schedule", "log": s, "timestamp": s.timestamp}
+        for s in sched_entries
+    ]
 
     # Groups for the adoption modal dropdown
     # Admins see all groups; scoped users see only their assigned groups.
