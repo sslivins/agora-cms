@@ -111,3 +111,13 @@ class Settings(SharedSettings):
     bootstrap_nonce_ttl_seconds: int = 600
     # WPS JWT lifetime for tokens issued via /connect-token and /adopt.
     bootstrap_wps_jwt_minutes: int = 60
+
+    # "Report an issue" feature.  When ``github_issues_token`` is set,
+    # the topbar exposes a button that opens a modal letting the signed-
+    # in user file a GitHub issue against ``github_issues_repo`` with
+    # the supplied title + description plus auto-captured context (page
+    # URL, user agent, app version, user, timestamp).  When the token
+    # is unset (e.g. dev/local without a PAT), the button is hidden.
+    github_issues_token: str | None = None
+    github_issues_repo: str = "sslivins/agora-cms"
+    github_issues_label: str = "user-reported"

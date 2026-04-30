@@ -46,6 +46,10 @@ param cmsAdminPassword string
 @secure()
 param wpsConnectionString string = ''
 
+@description('GitHub personal access token used by the "Report an issue" feature to file issues against the configured repo. When empty, the report-issue button is hidden.')
+@secure()
+param githubIssuesToken string = ''
+
 @description('Device transport mode: "wps" (multi-replica safe, routes via Azure Web PubSub) or "local" (direct CMS→device websockets, single-replica only).')
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
@@ -216,6 +220,9 @@ module containerApps 'modules/containerApps.bicep' = {
     // Device transport (Azure Web PubSub)
     wpsConnectionString: wpsConnectionString
     deviceTransport: deviceTransport
+
+    // Report-issue feature (GitHub)
+    githubIssuesToken: githubIssuesToken
 
     // Bootstrap v2 fleet secrets (JSON map)
     fleetRegisterSecrets: fleetRegisterSecrets

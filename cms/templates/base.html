@@ -59,6 +59,9 @@
             {% if 'settings:write' in user_perms %}
             <a href="/settings" class="header-icon has-tooltip" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="tooltip">Settings</span></a>
             {% endif %}
+            {% if request.state.user is defined and request.state.user and report_issue_enabled() %}
+            <button type="button" class="header-icon has-tooltip" id="report-issue-btn" aria-label="Report an issue" onclick="openReportIssueModal()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span class="tooltip">Report an issue</span></button>
+            {% endif %}
             <a href="/logout" class="header-icon has-tooltip" aria-label="Logout"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 17.5H4.17a1.67 1.67 0 0 1-1.67-1.67V4.17A1.67 1.67 0 0 1 4.17 2.5H7.5M13.33 14.17 17.5 10l-4.17-4.17M17.5 10H7.5"/></svg><span class="tooltip">Logout</span></a>
         </div>
     </header>
@@ -262,6 +265,89 @@
     }
     pollSystemHealth();
     setInterval(pollSystemHealth, 30000);
+
+    /* ── Report an issue modal ── */
+    function openReportIssueModal() {
+        if (typeof _closeOpenPopovers === 'function') _closeOpenPopovers();
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal-box" style="max-width:560px;width:100%;">
+                <h3 style="margin-top:0;">Report an issue</h3>
+                <p class="text-muted" style="margin-top:0;font-size:.9em;">
+                    Filed as a GitHub issue. Page URL, browser, app version, and your account
+                    info are included automatically.
+                </p>
+                <label style="display:block;margin-top:.75rem;font-weight:600;">Title</label>
+                <input type="text" id="report-issue-title" class="modal-input" maxlength="200"
+                       placeholder="Brief summary" style="width:100%;">
+                <label style="display:block;margin-top:.75rem;font-weight:600;">Description</label>
+                <textarea id="report-issue-body" class="modal-input" rows="6" maxlength="8000"
+                          placeholder="What happened? Steps to reproduce, what you expected, what you saw."
+                          style="width:100%;resize:vertical;font-family:inherit;"></textarea>
+                <div id="report-issue-error" style="display:none;color:var(--color-danger,#c22);margin-top:.5rem;font-size:.9em;"></div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" id="report-issue-cancel">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="report-issue-submit">Submit</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        const titleEl = overlay.querySelector('#report-issue-title');
+        const bodyEl = overlay.querySelector('#report-issue-body');
+        const errEl = overlay.querySelector('#report-issue-error');
+        const cancelBtn = overlay.querySelector('#report-issue-cancel');
+        const submitBtn = overlay.querySelector('#report-issue-submit');
+        const close = () => overlay.remove();
+        cancelBtn.onclick = close;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        document.addEventListener('keydown', function onKey(e) {
+            if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); close(); }
+        });
+        titleEl.focus();
+
+        submitBtn.onclick = async () => {
+            const title = (titleEl.value || '').trim();
+            const description = (bodyEl.value || '').trim();
+            errEl.style.display = 'none';
+            errEl.textContent = '';
+            if (!title) { errEl.textContent = 'Title is required'; errEl.style.display = 'block'; titleEl.focus(); return; }
+            if (!description) { errEl.textContent = 'Description is required'; errEl.style.display = 'block'; bodyEl.focus(); return; }
+            submitBtn.disabled = true;
+            cancelBtn.disabled = true;
+            submitBtn.textContent = 'Submitting…';
+            try {
+                const resp = await fetch('/api/issues/report', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title,
+                        description,
+                        page_url: window.location.href,
+                        user_agent: navigator.userAgent,
+                    }),
+                });
+                if (resp.ok) {
+                    close();
+                    showToast('Thanks for your feedback!');
+                } else {
+                    let detail = `Failed (${resp.status})`;
+                    try { const d = await resp.json(); if (d && d.detail) detail = d.detail; } catch {}
+                    errEl.textContent = detail;
+                    errEl.style.display = 'block';
+                    submitBtn.disabled = false;
+                    cancelBtn.disabled = false;
+                    submitBtn.textContent = 'Submit';
+                }
+            } catch (e) {
+                errEl.textContent = 'Network error — please try again';
+                errEl.style.display = 'block';
+                submitBtn.disabled = false;
+                cancelBtn.disabled = false;
+                submitBtn.textContent = 'Submit';
+            }
+        };
+    }
     </script>
     {% block scripts %}{% endblock %}
 </body>

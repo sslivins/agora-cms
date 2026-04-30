@@ -162,6 +162,15 @@ templates.env.globals["static_version"] = _static_version
 from cms import __version__ as _cms_version
 templates.env.globals["cms_version"] = _cms_version
 
+# Expose the report-issue feature flag to templates so the topbar
+# button is only rendered when a GitHub PAT is configured.
+def _report_issue_enabled() -> bool:
+    try:
+        return bool(get_settings().github_issues_token)
+    except Exception:
+        return False
+templates.env.globals["report_issue_enabled"] = _report_issue_enabled
+
 router = APIRouter()
 
 

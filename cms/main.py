@@ -825,6 +825,7 @@ from cms.routers.roles import router as roles_router  # noqa: E402
 from cms.routers.stream_probe import router as stream_probe_router  # noqa: E402
 from cms.routers.users import router as users_router  # noqa: E402
 from cms.routers.bootstrap import router as bootstrap_router  # noqa: E402
+from cms.routers.issue_report import router as issue_report_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
 
 app.include_router(bootstrap_router)
@@ -847,6 +848,7 @@ app.include_router(device_events_router)
 app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(stream_probe_router)
+app.include_router(issue_report_router)
 # /ws/device is only mounted in local transport mode. In WPS mode, devices
 # reach the CMS via Azure Web PubSub, and exposing a direct websocket is a
 # security/confusion risk (devices that connect there appear "online" but
