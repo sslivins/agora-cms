@@ -1188,7 +1188,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         g.rollup = fleet_counts(g.devices, user_perms)
 
     raw_alert = (request.query_params.get("alert") or "").strip().lower()
-    valid_filters = {"all", "needs-attention", "healthy", *SEVERITY_TAGS}
+    valid_filters = {"all", "needs-attention", "critical", "warning", "healthy", *SEVERITY_TAGS}
     active_alert = raw_alert if raw_alert in valid_filters else "all"
 
     return templates.TemplateResponse(request, "devices.html", {

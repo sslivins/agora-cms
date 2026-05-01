@@ -4,30 +4,54 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-{# ── Fleet status (stat tiles, link into filtered /devices) ─────────── #}
+{# ── Device Health (consolidated severity tiles) ─────────────────────── #}
 {% if fleet_counts is defined and fleet_counts.all is defined %}
 <style>
-.stat-tile-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 0.6rem;
+.device-health-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
     margin: 0 0 1rem 0;
 }
+.device-health-card h2 {
+    margin: 0 0 0.15rem 0;
+    font-size: 1.05rem;
+}
+.device-health-subtitle {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin: 0 0 0.8rem 0;
+}
+.stat-tile-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.6rem;
+}
+@media (max-width: 720px) {
+    .stat-tile-grid { grid-template-columns: repeat(2, 1fr); }
+}
 .stat-tile {
-    display: block;
-    padding: 0.7rem 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.75rem 0.9rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-left: 4px solid var(--border);
     border-radius: 8px;
     text-decoration: none;
     color: var(--text);
-    transition: transform 0.08s ease, box-shadow 0.08s ease, border-color 0.08s ease;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
 }
 .stat-tile:hover {
     transform: translateY(-1px);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    border-color: var(--border-strong, var(--border));
+}
+.stat-tile-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 4.5rem;
 }
 .stat-tile-label {
     display: block;
@@ -35,7 +59,7 @@
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    margin: 0 0 0.3rem 0;
+    margin: 0 0 0.25rem 0;
     white-space: nowrap;
 }
 .stat-tile-value {
@@ -44,42 +68,107 @@
     font-weight: 600;
     line-height: 1;
 }
+.stat-tile-detail {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 0.8rem;
+    border-left: 1px solid var(--border);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.55;
+    flex: 1;
+    min-width: 0;
+}
+.stat-tile-detail li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat-tile-zero .stat-tile-value { color: var(--text-muted); font-weight: 400; }
-.stat-tile.sev-attn      { border-left-color: #f59e0b; }
-.stat-tile.sev-error     { border-left-color: #dc2626; }
-.stat-tile.sev-offline   { border-left-color: #6b7280; }
-.stat-tile.sev-display   { border-left-color: #f97316; }
-.stat-tile.sev-storage   { border-left-color: #b91c1c; }
-.stat-tile.sev-orphan    { border-left-color: #92400e; }
-.stat-tile.sev-maint     { border-left-color: #1e40af; }
-.stat-tile.sev-healthy   { border-left-color: #15803d; }
+.stat-tile.sev-critical { border-left-color: #dc2626; background: #fef2f2; }
+.stat-tile.sev-warning  { border-left-color: #f59e0b; background: #fffbeb; }
+.stat-tile.sev-action   { border-left-color: #2563eb; background: #eff6ff; }
+.stat-tile.sev-good     { border-left-color: #15803d; background: #f0fdf4; }
+.stat-tile.sev-critical:hover { background: #fee2e2; }
+.stat-tile.sev-warning:hover  { background: #fef3c7; }
+.stat-tile.sev-action:hover   { background: #dbeafe; }
+.stat-tile.sev-good:hover     { background: #dcfce7; }
+.stat-tile.stat-tile-zero { background: var(--surface); }
 </style>
-<div class="stat-tile-grid" role="navigation" aria-label="Fleet status">
-    {# Tiles render only when count > 0, except 'healthy' which is always shown
-       so the dashboard has a baseline signal even when nothing's wrong. #}
-    {% set _tiles = [
-        ('needs_attention',  'Needs Attention',   'sev-attn',    false),
-        ('error',            'Errors',            'sev-error',   false),
-        ('offline',          'Offline',           'sev-offline', false),
-        ('display-off',      'Display Off',       'sev-display', false),
-        ('storage-critical', 'Storage Critical',  'sev-storage', false),
-        ('orphaned',         'Orphaned',          'sev-orphan',  false),
-    ] %}
-    {% if 'devices:manage' in user_perms %}
-    {% set _tiles = _tiles + [('maintenance', 'Maintenance', 'sev-maint', false)] %}
-    {% endif %}
-    {% set _tiles = _tiles + [('healthy', 'Healthy', 'sev-healthy', true)] %}
-    {% for key, label, css, always_show in _tiles %}
-    {% set count = fleet_counts.get(key, 0) %}
-    {% if always_show or count > 0 %}
-    {% set filter_key = 'needs-attention' if key == 'needs_attention' else key %}
-    {% set href = '/devices?alert=' + filter_key %}
-    <a class="stat-tile {{ css }}{{ ' stat-tile-zero' if count == 0 }}" href="{{ href }}">
-        <span class="stat-tile-label">{{ label }}</span>
-        <span class="stat-tile-value">{{ count }}</span>
-    </a>
-    {% endif %}
-    {% endfor %}
+<div class="device-health-card">
+    <h2>Device Health</h2>
+    <div class="device-health-subtitle">{{ fleet_counts.all }} device{{ '' if fleet_counts.all == 1 else 's' }} total</div>
+    <div class="stat-tile-grid" role="navigation" aria-label="Device health summary">
+        {% set _critical_count = fleet_counts.get('critical', 0) %}
+        {% set _warning_count = fleet_counts.get('warning', 0) %}
+        {% set _maint_count = fleet_counts.get('maintenance', 0) %}
+        {% set _healthy_count = fleet_counts.get('healthy', 0) %}
+
+        {# ── Critical ── #}
+        <a class="stat-tile sev-critical{{ ' stat-tile-zero' if _critical_count == 0 }}"
+           href="/devices?alert=critical">
+            <div class="stat-tile-main">
+                <span class="stat-tile-label">Critical</span>
+                <span class="stat-tile-value">{{ _critical_count }}</span>
+            </div>
+            <ul class="stat-tile-detail">
+                {% if _critical_count == 0 %}
+                <li>No critical issues</li>
+                {% else %}
+                {% if fleet_counts.get('error', 0) > 0 %}<li>{{ fleet_counts['error'] }} error{{ '' if fleet_counts['error'] == 1 else 's' }}</li>{% endif %}
+                {% if fleet_counts.get('offline', 0) > 0 %}<li>{{ fleet_counts['offline'] }} offline</li>{% endif %}
+                {% if fleet_counts.get('storage-critical', 0) > 0 %}<li>{{ fleet_counts['storage-critical'] }} storage critical</li>{% endif %}
+                {% endif %}
+            </ul>
+        </a>
+
+        {# ── Warning ── #}
+        <a class="stat-tile sev-warning{{ ' stat-tile-zero' if _warning_count == 0 }}"
+           href="/devices?alert=warning">
+            <div class="stat-tile-main">
+                <span class="stat-tile-label">Warning</span>
+                <span class="stat-tile-value">{{ _warning_count }}</span>
+            </div>
+            <ul class="stat-tile-detail">
+                {% if _warning_count == 0 %}
+                <li>No warnings</li>
+                {% else %}
+                {% if fleet_counts.get('display-off', 0) > 0 %}<li>{{ fleet_counts['display-off'] }} display off</li>{% endif %}
+                {% if fleet_counts.get('orphaned', 0) > 0 %}<li>{{ fleet_counts['orphaned'] }} orphaned</li>{% endif %}
+                {% endif %}
+            </ul>
+        </a>
+
+        {# ── Updates Available (admins only) ── #}
+        {% if 'devices:manage' in user_perms %}
+        <a class="stat-tile sev-action{{ ' stat-tile-zero' if _maint_count == 0 }}"
+           href="/devices?alert=maintenance">
+            <div class="stat-tile-main">
+                <span class="stat-tile-label">Updates Available</span>
+                <span class="stat-tile-value">{{ _maint_count }}</span>
+            </div>
+            <ul class="stat-tile-detail">
+                {% if _maint_count == 0 %}
+                <li>All devices up to date</li>
+                {% else %}
+                <li>{{ _maint_count }} device{{ '' if _maint_count == 1 else 's' }} ready to update</li>
+                {% endif %}
+            </ul>
+        </a>
+        {% endif %}
+
+        {# ── Healthy ── #}
+        <a class="stat-tile sev-good{{ ' stat-tile-zero' if _healthy_count == 0 }}"
+           href="/devices?alert=healthy">
+            <div class="stat-tile-main">
+                <span class="stat-tile-label">Healthy</span>
+                <span class="stat-tile-value">{{ _healthy_count }}</span>
+            </div>
+            <ul class="stat-tile-detail">
+                {% if _healthy_count == 0 %}
+                <li>No healthy devices</li>
+                {% else %}
+                <li>Running normally</li>
+                {% endif %}
+            </ul>
+        </a>
+    </div>
 </div>
 {% endif %}
 

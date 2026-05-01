@@ -49,6 +49,23 @@ NEEDS_ATTENTION_TAGS: frozenset[str] = frozenset({
 })
 
 
+# Severity buckets surfaced on the dashboard's Device Health tile grid.
+# These are a coarser view of NEEDS_ATTENTION_TAGS — Critical is the
+# "device is broken" subset (errors, offline, out of disk) and Warning
+# is the "needs eyes but still working" remainder. Maintenance and
+# Healthy are tracked separately.
+CRITICAL_TAGS: frozenset[str] = frozenset({
+    "error",
+    "offline",
+    "storage-critical",
+})
+
+WARNING_TAGS: frozenset[str] = frozenset({
+    "display-off",
+    "orphaned",
+})
+
+
 def _is_display_off(d) -> bool:
     """Mirror the macro logic for "no display detected".
 
@@ -134,6 +151,21 @@ def is_needs_attention(tags: Iterable[str]) -> bool:
     return any(t in NEEDS_ATTENTION_TAGS for t in tags)
 
 
+def is_critical(tags: Iterable[str]) -> bool:
+    """True if any tag in *tags* is in the Critical bucket."""
+    return any(t in CRITICAL_TAGS for t in tags)
+
+
+def is_warning(tags: Iterable[str]) -> bool:
+    """True if any tag in *tags* is in the Warning bucket and none in Critical.
+
+    A device with both critical and warning tags is counted Critical
+    only — buckets are mutually exclusive on the dashboard.
+    """
+    t = set(tags)
+    return not (t & CRITICAL_TAGS) and bool(t & WARNING_TAGS)
+
+
 def fleet_counts(devices, user_perms: Iterable[str] | None = None) -> dict[str, int]:
     """Compute triage-bar counts across a list of decorated devices.
 
@@ -150,11 +182,23 @@ def fleet_counts(devices, user_perms: Iterable[str] | None = None) -> dict[str, 
     - ``all`` — total adopted/orphaned devices
     - ``needs_attention`` — devices with at least one tag in
       :data:`NEEDS_ATTENTION_TAGS`
+    - ``critical`` — devices with at least one tag in
+      :data:`CRITICAL_TAGS` (dashboard bucket)
+    - ``warning`` — devices in the Warning bucket: at least one tag in
+      :data:`WARNING_TAGS` and no tags in :data:`CRITICAL_TAGS`. Buckets
+      are mutually exclusive on the dashboard so a device with both an
+      error and a display-off only counts as Critical.
     - one key per tag in :data:`SEVERITY_TAGS` (with hyphens kept;
       the template references them as ``counts['display-off']`` etc.)
     - ``healthy`` — devices with zero tags
     """
-    counts: dict[str, int] = {"all": 0, "needs_attention": 0, "healthy": 0}
+    counts: dict[str, int] = {
+        "all": 0,
+        "needs_attention": 0,
+        "critical": 0,
+        "warning": 0,
+        "healthy": 0,
+    }
     for tag in SEVERITY_TAGS:
         counts[tag] = 0
 
@@ -169,6 +213,10 @@ def fleet_counts(devices, user_perms: Iterable[str] | None = None) -> dict[str, 
             continue
         if is_needs_attention(tags):
             counts["needs_attention"] += 1
+        if is_critical(tags):
+            counts["critical"] += 1
+        elif is_warning(tags):
+            counts["warning"] += 1
         for t in tags:
             counts[t] = counts.get(t, 0) + 1
 
