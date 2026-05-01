@@ -355,6 +355,132 @@ var workbookContent = {
       }
       name: 'exceptions'
     }
+    // ── CMS internals (Pillar B counters) ─────────────────────────
+    // Surfaces the OpenTelemetry counters emitted from
+    // ``cms/metrics.py``: WPS send health (B1), scheduler tick health
+    // (B2), and leader-lease state changes (B-presence).  All
+    // counters land in the App Insights resource-scoped
+    // ``customMetrics`` table; ``sum(value)`` aggregates the
+    // exported delta points back into per-bin totals.
+    {
+      type: 1
+      content: {
+        json: '## CMS internals — Pillar B counters\nWPS send health, scheduler tick health, and leader-lease state changes emitted from ``cms.metrics``. Empty series labelled ``unknown`` indicate an instrumentation regression (counter incremented without the expected attribute).'
+      }
+      name: 'b-counters-header'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name in ("agora.wps.send.attempt","agora.wps.send.success","agora.wps.send.failure")\n| extend outcome = case(\n    name == "agora.wps.send.attempt", "attempt",\n    name == "agora.wps.send.success", "success",\n    name == "agora.wps.send.failure", "failure",\n    name)\n| summarize Count = sum(value) by bin(timestamp, 5m), outcome\n| order by timestamp asc'
+        size: 0
+        title: 'WPS send rate by outcome (attempt / success / failure)'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'wps-rate'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name in ("agora.wps.send.success","agora.wps.send.failure")\n| summarize\n    Success = sumif(value, name == "agora.wps.send.success"),\n    Failure = sumif(value, name == "agora.wps.send.failure")\n  by bin(timestamp, 5m)\n| extend Total = Success + Failure\n| extend FailurePct = iff(Total > 0, 100.0 * Failure / Total, real(null))\n| project timestamp, FailurePct\n| order by timestamp asc'
+        size: 0
+        title: 'WPS failure % (failure / (success + failure))'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'wps-failure-pct'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name == "agora.wps.send.failure"\n| extend reason = tostring(customDimensions.reason)\n| extend reason = iff(isempty(reason), "unknown", reason)\n| summarize Count = sum(value) by bin(timestamp, 5m), reason\n| order by timestamp asc'
+        size: 0
+        title: 'WPS failures by reason (404 / 429 / http_error / unexpected)'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'wps-failures-by-reason'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name == "agora.scheduler.tick"\n| extend outcome = tostring(customDimensions.outcome)\n| extend outcome = iff(isempty(outcome), "unknown", outcome)\n| summarize Count = sum(value) by bin(timestamp, 5m), outcome\n| order by timestamp asc'
+        size: 0
+        title: 'Scheduler tick by outcome (evaluated / skipped_not_leader / error)'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'scheduler-tick'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name == "agora.scheduler.missed_emitted"\n| summarize Count = sum(value) by bin(timestamp, 5m)\n| order by timestamp asc'
+        size: 0
+        title: 'Scheduler MISSED schedules emitted'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'scheduler-missed'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name in ("agora.presence.claim","agora.presence.claim_lost")\n| extend loop = tostring(customDimensions.loop_name)\n| extend loop = iff(isempty(loop), "unknown", loop)\n| extend event = case(\n    name == "agora.presence.claim", "claim",\n    name == "agora.presence.claim_lost", "claim_lost",\n    name)\n| summarize Count = sum(value) by bin(timestamp, 5m), event, loop\n| order by timestamp asc'
+        size: 0
+        title: 'Leader lease state changes (claim / claim_lost) by loop'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'presence-lease'
+    }
+    {
+      type: 3
+      content: {
+        version: 'KqlItem/1.0'
+        query: 'customMetrics\n| where name == "agora.presence.heartbeat_late"\n| extend loop = tostring(customDimensions.loop_name)\n| extend loop = iff(isempty(loop), "unknown", loop)\n| summarize Count = sum(value) by bin(timestamp, 5m), loop\n| order by timestamp asc'
+        size: 0
+        title: 'Leader lease heartbeat_late by loop (renewal exceptions)'
+        timeContext: {
+          durationMs: 86400000
+        }
+        queryType: 0
+        resourceType: 'microsoft.insights/components'
+        visualization: 'timechart'
+      }
+      name: 'presence-heartbeat-late'
+    }
   ]
   styleSettings: {}
   '$schema': 'https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json'
@@ -368,7 +494,7 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
   properties: {
     displayName: 'Agora CMS — Telemetry triage'
     serializedData: string(workbookContent)
-    version: '1.0'
+    version: '1.1'
     sourceId: appInsightsId
     category: 'workbook'
   }
