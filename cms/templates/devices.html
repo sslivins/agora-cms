@@ -87,6 +87,33 @@
     padding: 1rem;
     font-style: italic;
 }
+/* Row flash: when arriving from a Device Health tile on the dashboard,
+   matching rows pulse a tinted background for ~1.5s so the user can
+   see at a glance which rows triggered the count. The keyframe ramps
+   the row td backgrounds (table rows ignore `background` directly in
+   most browsers when border-collapse: collapse is in effect). */
+@keyframes row-flash-critical {
+    0%   { background-color: #5a1d24; }
+    60%  { background-color: #5a1d24; }
+    100% { background-color: transparent; }
+}
+@keyframes row-flash-warning {
+    0%   { background-color: #4d3d14; }
+    60%  { background-color: #4d3d14; }
+    100% { background-color: transparent; }
+}
+@keyframes row-flash-maintenance {
+    0%   { background-color: #1e3a6e; }
+    60%  { background-color: #1e3a6e; }
+    100% { background-color: transparent; }
+}
+tr.row-flash > td { animation-duration: 1.6s; animation-timing-function: ease-out; animation-fill-mode: forwards; }
+tr.row-flash.row-flash-critical    > td { animation-name: row-flash-critical; }
+tr.row-flash.row-flash-warning     > td { animation-name: row-flash-warning; }
+tr.row-flash.row-flash-maintenance > td { animation-name: row-flash-maintenance; }
+@media (prefers-reduced-motion: reduce) {
+    tr.row-flash > td { animation: none; }
+}
 /* Per-group rollup chips rendered next to the group name (Phase C). */
 .group-rollup {
     display: inline-flex;
@@ -187,6 +214,8 @@
 const TRIAGE_NEEDS_ATTENTION = new Set([
     'error', 'offline', 'display-off', 'storage-critical', 'orphaned'
 ]);
+const TRIAGE_CRITICAL = new Set(['error', 'offline', 'storage-critical']);
+const TRIAGE_WARNING = new Set(['display-off', 'orphaned']);
 
 function triageGetTags(tr) {
     const raw = (tr.getAttribute('data-severity-tags') || '').trim();
@@ -199,6 +228,15 @@ function triageRowMatches(tr, filter) {
     if (filter === 'healthy') return tags.length === 0;
     if (filter === 'needs-attention') {
         return tags.some(t => TRIAGE_NEEDS_ATTENTION.has(t));
+    }
+    if (filter === 'critical') {
+        return tags.some(t => TRIAGE_CRITICAL.has(t));
+    }
+    if (filter === 'warning') {
+        // Mutually exclusive with critical: a device with both shows
+        // only under Critical, matching the dashboard tile semantics.
+        if (tags.some(t => TRIAGE_CRITICAL.has(t))) return false;
+        return tags.some(t => TRIAGE_WARNING.has(t));
     }
     return tags.includes(filter);
 }
@@ -248,7 +286,7 @@ function triageBarApply(filter) {
 
 function triageBarRecomputeCounts() {
     const counts = {
-        'all': 0, 'needs-attention': 0, 'healthy': 0,
+        'all': 0, 'needs-attention': 0, 'critical': 0, 'warning': 0, 'healthy': 0,
         'error': 0, 'offline': 0, 'display-off': 0,
         'storage-critical': 0, 'orphaned': 0, 'maintenance': 0,
     };
@@ -266,11 +304,17 @@ function triageBarRecomputeCounts() {
             return;
         }
         let needsAttn = false;
+        let isCritical = false;
+        let isWarning = false;
         tags.forEach(t => {
             if (counts[t] !== undefined) counts[t] += 1;
             if (TRIAGE_NEEDS_ATTENTION.has(t)) needsAttn = true;
+            if (TRIAGE_CRITICAL.has(t)) isCritical = true;
+            if (TRIAGE_WARNING.has(t)) isWarning = true;
         });
         if (needsAttn) counts['needs-attention'] += 1;
+        if (isCritical) counts['critical'] += 1;
+        else if (isWarning) counts['warning'] += 1;
     });
     Object.keys(counts).forEach(key => {
         const el = document.querySelector(`[data-triage-count="${key}"]`);
@@ -293,7 +337,28 @@ document.addEventListener('DOMContentLoaded', () => {
     // Apply initial filter from server-rendered active state.
     const initial = document.querySelector('.triage-chip.is-active');
     if (initial) triageBarApply(initial.getAttribute('data-filter'));
+    // Flash matching rows when arriving from a dashboard tile so the
+    // user can see at a glance which rows triggered the count.
+    triageFlashFromUrl();
 });
+
+function triageFlashFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const alert = (params.get('alert') || '').toLowerCase();
+    const flashable = new Set(['critical', 'warning', 'maintenance']);
+    if (!flashable.has(alert)) return;
+    const flashClass = `row-flash-${alert}`;
+    document.querySelectorAll('tr.device-row[data-severity-tags]').forEach(tr => {
+        if (!triageRowMatches(tr, alert)) return;
+        // Stagger via reflow + class add so the animation fires.
+        tr.classList.add('row-flash', flashClass);
+        // Auto-remove after the keyframe finishes so the row settles
+        // back to its normal background.
+        window.setTimeout(() => {
+            tr.classList.remove('row-flash', flashClass);
+        }, 1800);
+    });
+}
 
 function toggleGroup(header) {
     const panel = header.closest('.group-panel');

@@ -9,11 +9,15 @@ from types import SimpleNamespace
 import pytest
 
 from cms.services.device_alerts import (
+    CRITICAL_TAGS,
     NEEDS_ATTENTION_TAGS,
     SEVERITY_TAGS,
+    WARNING_TAGS,
     device_severity_tags,
     fleet_counts,
+    is_critical,
     is_needs_attention,
+    is_warning,
 )
 
 
@@ -185,6 +189,15 @@ def test_fleet_counts_aggregate():
     # needs_attention = error + offline + display-off + storage-crit + orphaned,
     # de-duplicated per device. 2 error + 1 offline + 1 orphaned + 1 storage = 5.
     assert counts["needs_attention"] == 5
+    # Critical bucket = error + offline + storage-critical, de-duped per
+    # device. 2 error + 1 offline + 1 storage = 4. (The orphaned device,
+    # though is_online=False, only gets the 'orphaned' tag because
+    # orphaned subsumes other tags.)
+    assert counts["critical"] == 4
+    # Warning bucket = display-off + orphaned, mutually exclusive with
+    # critical. The single orphaned device has only that tag, so it
+    # lands in Warning.
+    assert counts["warning"] == 1
 
 
 def test_fleet_counts_keys_present():
@@ -192,6 +205,8 @@ def test_fleet_counts_keys_present():
     assert counts["all"] == 0
     assert counts["healthy"] == 0
     assert counts["needs_attention"] == 0
+    assert counts["critical"] == 0
+    assert counts["warning"] == 0
     for tag in SEVERITY_TAGS:
         assert tag in counts
 
@@ -199,3 +214,51 @@ def test_fleet_counts_keys_present():
 def test_needs_attention_set_is_a_subset_of_severity_tags():
     # Sanity guard against typos in the constants.
     assert NEEDS_ATTENTION_TAGS <= set(SEVERITY_TAGS)
+
+
+def test_critical_and_warning_are_disjoint_subsets_of_needs_attention():
+    # Buckets are surfaced on the dashboard as mutually exclusive
+    # severity tiles; their union must equal NEEDS_ATTENTION_TAGS.
+    assert CRITICAL_TAGS.isdisjoint(WARNING_TAGS)
+    assert CRITICAL_TAGS | WARNING_TAGS == NEEDS_ATTENTION_TAGS
+
+
+def test_is_critical_and_is_warning_predicates():
+    assert is_critical(["error"])
+    assert is_critical(["offline", "display-off"])
+    assert not is_critical(["display-off"])
+    assert not is_critical([])
+    # Warning is exclusive of critical: a row with both tags is NOT a
+    # warning (it's critical).
+    assert is_warning(["display-off"])
+    assert is_warning(["orphaned"])
+    assert not is_warning(["error", "display-off"])
+    assert not is_warning([])
+    assert not is_warning(["maintenance"])
+
+
+def test_fleet_counts_warning_only_device():
+    # Warning-only device (display-off, no critical tags) lands in
+    # the Warning bucket but not Critical.
+    fleet = [
+        _device(display_ports=[{"connected": False}, {"connected": False}]),
+    ]
+    counts = fleet_counts(fleet)
+    assert counts["all"] == 1
+    assert counts["display-off"] == 1
+    assert counts["critical"] == 0
+    assert counts["warning"] == 1
+
+
+def test_fleet_counts_critical_warning_mutually_exclusive():
+    # A device with both a critical tag (error) and a warning tag
+    # (display-off) counts as Critical only — Warning bucket stays 0.
+    fleet = [
+        _device(error="boom", display_ports=[{"connected": False}, {"connected": False}]),
+    ]
+    counts = fleet_counts(fleet)
+    assert counts["all"] == 1
+    assert counts["error"] == 1
+    assert counts["display-off"] == 1
+    assert counts["critical"] == 1
+    assert counts["warning"] == 0
