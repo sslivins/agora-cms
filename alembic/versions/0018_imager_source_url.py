@@ -41,5 +41,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("base_images", "expected_sha256")
-    op.drop_column("base_images", "source_url")
+    raise NotImplementedError(
+        "downgrade not implemented; restore from backup if rollback required"
+    )
