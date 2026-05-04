@@ -27,11 +27,34 @@ def test_module_imports_without_telemetry_configured():
     # Smoke test.  ``cms.metrics`` is imported at module-load by every
     # subsystem that emits a counter; if it ever throws on import we
     # break all of them at once.
-    import importlib
+    #
+    # Run in a subprocess so we exercise the cold-import path without
+    # polluting the parent test process's module cache.  Importantly,
+    # we MUST NOT call ``importlib.reload(cms.metrics)`` here:
+    # consumer modules (e.g. ``cms.services.leader``) bind the counter
+    # handles via ``from cms.metrics import presence_claim_total``,
+    # which captures object identity.  Reloading rebinds the names in
+    # ``cms.metrics`` to brand-new counter objects but leaves the
+    # consumer-cached references pointing at the originals.  Tests
+    # that monkey-patch ``cms.metrics.<handle>.add`` then silently
+    # fail to intercept calls leader.py makes through its cached
+    # reference.  The bug surfaces non-deterministically depending on
+    # xdist's per-file distribution; see the four-test failure cluster
+    # in ``tests/test_presence_metrics.py`` exposed when other test
+    # files were added.
+    import subprocess
+    import sys
 
-    import cms.metrics as m
-
-    importlib.reload(m)
+    result = subprocess.run(
+        [sys.executable, "-c", "import cms.metrics"],
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"cold-import of cms.metrics failed:\n"
+        f"stdout={result.stdout.decode()!r}\n"
+        f"stderr={result.stderr.decode()!r}"
+    )
 
 
 def test_wps_counter_handles_exposed():
