@@ -66,6 +66,11 @@ GROUPS_VIEW_ALL = "groups:view_all"
 # ── System health permissions ──
 SYSTEM_HEALTH = "system:health"
 
+# ── Imager (browser-driven Pi image provisioning, Option E) ──
+IMAGER_READ = "imager:read"      # List fleets, base images, view jobs
+IMAGER_BUILD = "imager:build"    # Build provisioned images, download
+IMAGER_MANAGE = "imager:manage"  # Catalog refresh, base-image import/delete
+
 
 ALL_PERMISSIONS: list[str] = [
     DEVICES_READ, DEVICES_WRITE, DEVICES_MANAGE,
@@ -84,6 +89,7 @@ ALL_PERMISSIONS: list[str] = [
     NOTIFICATIONS_SYSTEM,
     GROUPS_VIEW_ALL,
     SYSTEM_HEALTH,
+    IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE,
 ]
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -115,6 +121,9 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     NOTIFICATIONS_SYSTEM: "View system-level notifications (SMTP failures, errors)",
     GROUPS_VIEW_ALL: "View all groups and their resources regardless of group assignment",
     SYSTEM_HEALTH: "View system health indicators",
+    IMAGER_READ: "View configured fleets, cached base images, and imager jobs",
+    IMAGER_BUILD: "Build provisioned Pi images and download outputs",
+    IMAGER_MANAGE: "Refresh the upstream catalog and import or delete cached base images",
 }
 
 # ── Predefined role templates ──
@@ -129,6 +138,7 @@ OPERATOR_PERMISSIONS: list[str] = [
     PROFILES_READ,
     LOGS_READ,
     MCP_KEYS_SELF,
+    IMAGER_READ, IMAGER_BUILD,
 ]
 
 VIEWER_PERMISSIONS: list[str] = [

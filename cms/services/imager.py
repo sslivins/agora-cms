@@ -42,6 +42,11 @@ FLEET_ENV_MAX_BYTES = 64 * 1024
 _SAFE_OUTPUT_RE = re.compile(r"^[A-Za-z0-9._-]+\.img\.xz$")
 
 
+def is_valid_output_name(name: str) -> bool:
+    """Return ``True`` iff ``name`` is a safe ``.img.xz`` basename."""
+    return bool(_SAFE_OUTPUT_RE.match(name or ""))
+
+
 class ImagerError(RuntimeError):
     """Image build pipeline failure (parted/mtools/xz)."""
 

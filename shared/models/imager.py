@@ -190,14 +190,24 @@ class ProvisionedImage(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # Encrypted at the application layer (PR 4 picks the cipher and
-    # key source).  Opaque ciphertext at this level — never log this
-    # column, never serialize it through the API.
+    # Audit-only: the fleet_id the operator selected at build time.
+    # Populated by PR 4's API on insert; left null on legacy rows.
+    # Useful after terminal success when ``fleet_env_payload`` is cleared.
+    fleet_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Plaintext ``agora-fleet.env`` body — UTF-8 bytes of
+    # ``AGORA_CMS_URL=...\nAGORA_FLEET_ID=...\nAGORA_FLEET_SECRET=...\n``.
+    # Plaintext is intentional: the same secret already lives in clear
+    # in the operator's CMS env config (``fleet_register_secrets``) and
+    # ends up plaintext on the SD card itself, so encrypting the brief
+    # DB copy adds minimal defense-in-depth without a separate key
+    # store.  Worker clears this column to NULL on terminal success so
+    # the secret does not linger longer than necessary.  Never log
+    # this column, never serialize it through the API.
     fleet_env_payload: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True,
     )
     # Caller-supplied output filename.  Validated against
-    # ``imager.is_valid_output_name`` before use.
+    # ``imager._SAFE_OUTPUT_RE`` before use.
     output_name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         Text, nullable=False,
