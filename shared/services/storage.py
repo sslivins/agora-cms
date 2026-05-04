@@ -91,6 +91,51 @@ class StorageBackend(ABC):
         Azure: returns a time-limited SAS URL for Blob Storage.
         """
 
+    # ── Explicit-container primitives (imager / Option E) ────────────
+    #
+    # The asset-mirroring methods above route through ``_blob_location``
+    # which only knows about the ``originals`` and ``variants`` containers.
+    # The imager pipeline writes to ``base-images`` and ``provisioned``
+    # containers and downloads images from blob to a scratch path that
+    # is not under ``asset_storage_path``.  These four methods give the
+    # worker handlers an explicit ``(container, blob_name)`` surface
+    # without entangling the asset routing.
+
+    @abstractmethod
+    async def upload_local_file(
+        self, container: str, blob_name: str, local_path: Path,
+        overwrite: bool = False,
+    ) -> None:
+        """Upload an on-disk file to ``container/blob_name``.
+
+        Local: copies the file to ``<base_path>/<container>/<blob_name>``.
+        Azure: streams the file to Blob Storage.
+        """
+
+    @abstractmethod
+    async def download_to_file(
+        self, container: str, blob_name: str, local_path: Path,
+    ) -> None:
+        """Download ``container/blob_name`` to a local on-disk path.
+
+        ``local_path``'s parent directory must already exist.
+        Raises ``FileNotFoundError`` if the blob does not exist.
+        """
+
+    @abstractmethod
+    async def blob_exists(self, container: str, blob_name: str) -> bool:
+        """Return True if ``container/blob_name`` exists."""
+
+    @abstractmethod
+    def generate_blob_sas_url(
+        self, container: str, blob_name: str, ttl_hours: int,
+    ) -> str:
+        """Return a time-limited download URL for ``container/blob_name``.
+
+        Local backend returns a synthetic ``file://`` URL — admins
+        running locally fetch through the CMS proxy instead.
+        """
+
 
 # ── Local filesystem backend ────────────────────────────────────
 
@@ -124,6 +169,52 @@ class LocalStorageBackend(StorageBackend):
         self, relative_path: str, fallback_api_url: str,
     ) -> str:
         return fallback_api_url
+
+    # ── Imager primitives ───────────────────────────────────────────
+    #
+    # Files live at ``<base_path>/<container>/<blob_name>``.  This is
+    # not "real" blob storage — it's just a directory layout chosen so
+    # tests and local-dev environments can exercise the same code
+    # paths the Azure backend uses in production.
+
+    def _container_path(self, container: str, blob_name: str) -> Path:
+        # Defence in depth: refuse path-traversal in either component.
+        # Azure rejects ``..`` in blob names too; this preserves
+        # symmetry rather than silently normalising on disk.
+        if ".." in Path(container).parts or ".." in Path(blob_name).parts:
+            raise ValueError("Path traversal in container or blob name")
+        return self._base_path / container / blob_name
+
+    async def upload_local_file(
+        self, container: str, blob_name: str, local_path: Path,
+        overwrite: bool = False,
+    ) -> None:
+        import shutil
+        dst = self._container_path(container, blob_name)
+        if dst.exists() and not overwrite:
+            raise FileExistsError(f"{container}/{blob_name} already exists")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(local_path, dst)
+
+    async def download_to_file(
+        self, container: str, blob_name: str, local_path: Path,
+    ) -> None:
+        import shutil
+        src = self._container_path(container, blob_name)
+        if not src.is_file():
+            raise FileNotFoundError(f"{container}/{blob_name}")
+        shutil.copyfile(src, local_path)
+
+    async def blob_exists(self, container: str, blob_name: str) -> bool:
+        return self._container_path(container, blob_name).is_file()
+
+    def generate_blob_sas_url(
+        self, container: str, blob_name: str, ttl_hours: int,
+    ) -> str:
+        # Local backend has no real signing.  Hand back a path the
+        # CMS can reverse-proxy through its own auth.  Real download
+        # flow in dev goes through ``get_download_response``.
+        return f"file://{self._container_path(container, blob_name)}"
 
 
 # ── Azure Blob Storage backend ──────────────────────────────────
@@ -244,6 +335,63 @@ class AzureStorageBackend(StorageBackend):
         """Return a SAS URL for device downloads (bypasses CMS proxy)."""
         container, blob_name = self._blob_location(relative_path)
         return self._generate_sas_url(container, blob_name)
+
+    # ── Imager primitives ───────────────────────────────────────────
+
+    async def upload_local_file(
+        self, container: str, blob_name: str, local_path: Path,
+        overwrite: bool = False,
+    ) -> None:
+        container_client = self._service_client.get_container_client(container)
+        # Lazily create the container; idempotent if it already exists.
+        try:
+            await container_client.create_container()
+        except Exception:
+            pass  # already exists
+        blob_client = container_client.get_blob_client(blob_name)
+        with open(local_path, "rb") as f:
+            await blob_client.upload_blob(f, overwrite=overwrite)
+        logger.info(
+            "Uploaded blob: %s/%s (%d bytes)",
+            container, blob_name, local_path.stat().st_size,
+        )
+
+    async def download_to_file(
+        self, container: str, blob_name: str, local_path: Path,
+    ) -> None:
+        from azure.core.exceptions import ResourceNotFoundError
+        container_client = self._service_client.get_container_client(container)
+        blob_client = container_client.get_blob_client(blob_name)
+        try:
+            stream = await blob_client.download_blob()
+            with open(local_path, "wb") as f:
+                async for chunk in stream.chunks():
+                    f.write(chunk)
+        except ResourceNotFoundError as e:
+            raise FileNotFoundError(f"{container}/{blob_name}") from e
+
+    async def blob_exists(self, container: str, blob_name: str) -> bool:
+        container_client = self._service_client.get_container_client(container)
+        blob_client = container_client.get_blob_client(blob_name)
+        return await blob_client.exists()
+
+    def generate_blob_sas_url(
+        self, container: str, blob_name: str, ttl_hours: int,
+    ) -> str:
+        from azure.storage.blob import BlobSasPermissions, generate_blob_sas
+
+        sas_token = generate_blob_sas(
+            account_name=self._account_name,
+            account_key=self._account_key,
+            container_name=container,
+            blob_name=blob_name,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.now(timezone.utc) + timedelta(hours=ttl_hours),
+        )
+        return (
+            f"https://{self._account_name}.blob.core.windows.net"
+            f"/{container}/{blob_name}?{sas_token}"
+        )
 
     async def close(self) -> None:
         """Close the async blob service client."""

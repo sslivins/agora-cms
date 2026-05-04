@@ -516,6 +516,15 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             success = await transcode_variant_by_id(session_factory, asset_dir, job.target_id)
         elif job.type == JobType.STREAM_CAPTURE:
             success = await capture_stream_by_id(session_factory, asset_dir, job.target_id)
+        elif job.type in (JobType.IMAGE_IMPORT, JobType.IMAGE_PROVISION):
+            # Imager schema lands in PR 2; handlers land in PR 3.  Until
+            # the handlers ship we surface a clear error so tests + ops
+            # see exactly what is missing instead of falling through to
+            # the "Unknown job type" branch (which would falsely imply
+            # an unrecognised enum value).
+            raise NotImplementedError(
+                f"Imager handlers ship in PR 3 (got {job.type.value})"
+            )
         else:
             error_message = f"Unknown job type: {job.type}"
             logger.error(error_message)

@@ -26,6 +26,11 @@ class JobType(str, PyEnum):
     """What kind of work a job represents."""
     VARIANT_TRANSCODE = "variant_transcode"  # target_id → asset_variants.id
     STREAM_CAPTURE = "stream_capture"        # target_id → assets.id (SAVED_STREAM)
+    # Imager flows (Option E).  Schema/dispatch are wired in PR 2;
+    # the actual handlers land in PR 3.  Both target a UUID PK on the
+    # corresponding imager table.
+    IMAGE_IMPORT = "image_import"            # target_id → base_images.id
+    IMAGE_PROVISION = "image_provision"      # target_id → provisioned_images.id
 
 
 class JobStatus(str, PyEnum):
