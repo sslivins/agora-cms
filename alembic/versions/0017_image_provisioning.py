@@ -99,7 +99,6 @@ def upgrade() -> None:
             "created_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.ForeignKeyConstraint(
             ["imported_by"], ["users.id"], ondelete="SET NULL"
@@ -144,7 +143,6 @@ def upgrade() -> None:
             "created_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.ForeignKeyConstraint(
             ["base_image_id"], ["base_images.id"], ondelete="RESTRICT"
