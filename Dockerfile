@@ -8,14 +8,18 @@ WORKDIR /app
 ARG TARGETARCH
 
 # libheif-examples for HEIC grid assembly, curl + xz-utils to fetch FFmpeg
+# (xz-utils, mtools, parted are also kept at runtime for the imager
+# build pipeline; see cms/services/imager.py.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif-examples \
     curl \
     xz-utils \
+    mtools \
+    parted \
     && ARCH=$(case "$TARGETARCH" in arm64) echo linuxarm64;; *) echo linux64;; esac) \
     && curl -fsSL "https://github.com/sslivins/agora-cms/releases/download/ffmpeg-8.1/ffmpeg-${ARCH}.tar.xz" \
        | tar -xJ --strip-components=1 -C /usr/local \
-    && apt-get purge -y curl xz-utils && apt-get autoremove -y \
+    && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-shared.txt requirements.txt requirements-test.txt ./
