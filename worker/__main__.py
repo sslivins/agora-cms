@@ -267,6 +267,11 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         recover_interrupted,
         transcode_variant_by_id,
     )
+    from worker.imager_handlers import (
+        TerminalImagerError,
+        import_base_image_by_id,
+        provision_image_by_id,
+    )
     from sqlalchemy import select
 
     session_factory = get_session_factory()
@@ -507,6 +512,7 @@ async def _queue_mode(settings: WorkerSettings) -> None:
 
     success = False
     error_message: str | None = None
+    terminal_failure = False
     try:
         logger.info(
             "Processing job %s type=%s target=%s (attempt %d)",
@@ -516,20 +522,24 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             success = await transcode_variant_by_id(session_factory, asset_dir, job.target_id)
         elif job.type == JobType.STREAM_CAPTURE:
             success = await capture_stream_by_id(session_factory, asset_dir, job.target_id)
-        elif job.type in (JobType.IMAGE_IMPORT, JobType.IMAGE_PROVISION):
-            # Imager schema lands in PR 2; handlers land in PR 3.  Until
-            # the handlers ship we surface a clear error so tests + ops
-            # see exactly what is missing instead of falling through to
-            # the "Unknown job type" branch (which would falsely imply
-            # an unrecognised enum value).
-            raise NotImplementedError(
-                f"Imager handlers ship in PR 3 (got {job.type.value})"
-            )
+        elif job.type == JobType.IMAGE_IMPORT:
+            success = await import_base_image_by_id(session_factory, settings, job.target_id)
+        elif job.type == JobType.IMAGE_PROVISION:
+            success = await provision_image_by_id(session_factory, settings, job.target_id)
         else:
             error_message = f"Unknown job type: {job.type}"
             logger.error(error_message)
     except asyncio.CancelledError:
         raise
+    except TerminalImagerError as e:
+        # Deterministic failure -- the imager handler has already
+        # marked the BaseImage / ProvisionedImage row FAILED.  Mark
+        # the Job FAILED + delete the queue message so we don't burn
+        # MAX_JOB_RETRIES on something that will always fail.
+        error_message = f"{type(e).__name__}: {e}"
+        logger.error("Job %s terminal imager failure: %s", job_id, e)
+        terminal_failure = True
+        success = False
     except Exception as e:
         error_message = f"{type(e).__name__}: {e}"
         logger.exception("Job %s raised an exception", job_id)
@@ -616,6 +626,21 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         except Exception:
             logger.warning("Job %s cancelled but queue delete failed", job_id, exc_info=True)
         logger.info("Job %s cancelled mid-transcode", job_id)
+    elif terminal_failure:
+        # Imager-handler raised TerminalImagerError -- the row has
+        # already been flipped to FAILED by the handler.  Mark the
+        # Job FAILED + delete the queue message so the dispatcher
+        # does not burn MAX_JOB_RETRIES on a deterministic failure.
+        async with session_factory() as db:
+            await mark_failed(db, job_id, (error_message or "terminal")[:2000])
+        try:
+            queue.delete_message(msg, pop_receipt=current_popreceipt)
+        except Exception:
+            logger.warning(
+                "Job %s terminal-failed but queue delete failed",
+                job_id, exc_info=True,
+            )
+        logger.info("Job %s terminal failure: %s", job_id, error_message)
     elif success:
         async with session_factory() as db:
             await mark_done(db, job_id)

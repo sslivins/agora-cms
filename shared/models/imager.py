@@ -92,8 +92,20 @@ class BaseImage(Base):
     # of the on-disk ``.img.xz`` payload, copied from the catalog
     # after verification.
     sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # ``base-images/<variant>/<version>/base.img.xz`` in the
-    # ``base-images`` container.  Null until import success.
+    # Upstream catalog URL the API resolved at enqueue time.  Immutable
+    # for the lifetime of the row -- the worker downloads from this URL
+    # rather than re-resolving the (mutable) catalog, eliminating the
+    # TOCTOU window between admin click and worker pickup.  Nullable so
+    # PR 3 tests can run before PR 4's API populates it.
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Expected SHA256 stamped at enqueue time from the catalog entry.
+    # The worker compares against this; on mismatch the import is a
+    # terminal failure (tampering signal).  Nullable for the same
+    # backfill reason as ``source_url``.
+    expected_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Container-relative blob name within
+    # ``settings.base_image_cache_container``: ``<variant>/<version>/base.img.xz``.
+    # Null until import success.
     blob_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     imported_at: Mapped[datetime | None] = mapped_column(
