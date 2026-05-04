@@ -159,11 +159,12 @@ async def test_provisioned_image_round_trip(db_session) -> None:
 
 
 def test_worker_dispatcher_routes_imager_types() -> None:
-    """The PR 2 stub must raise NotImplementedError for IMAGE_*.
+    """Dispatcher routes IMAGE_IMPORT/IMAGE_PROVISION to PR 3 handlers.
 
-    PR 3 replaces this branch with real handler calls.  The branch's
-    presence is what guarantees an unhandled enum value can't sneak
-    through to ``Unknown job type`` and look like a typo.
+    Source-inspects ``worker/__main__.py`` to assert both enum
+    branches exist and call into the imager handler module.  Cheap,
+    deterministic, and pinned to the import path so a refactor of
+    handler internals doesn't make this test stale.
     """
     import inspect as _inspect
     import worker.__main__ as worker_main
@@ -171,7 +172,11 @@ def test_worker_dispatcher_routes_imager_types() -> None:
     src = _inspect.getsource(worker_main)
     assert "JobType.IMAGE_IMPORT" in src
     assert "JobType.IMAGE_PROVISION" in src
-    assert "PR 3" in src  # tombstone for the followup
+    assert "import_base_image_by_id" in src
+    assert "provision_image_by_id" in src
+    assert "TerminalImagerError" in src
+    # The PR 2 tombstone is gone now that real handlers ship.
+    assert "Imager handlers ship in PR 3" not in src
 
 
 # ── LocalStorageBackend imager primitives ───────────────────────
