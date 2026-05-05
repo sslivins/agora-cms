@@ -63,10 +63,9 @@ def _make_settings(tmp_path: Path, **overrides: Any) -> SimpleNamespace:
         imager_scratch_path=str(tmp_path / "scratch"),
         imager_min_free_bytes=1,  # tests run in tmpdirs with plenty of room
         base_image_allowed_hosts="github.com,objects.githubusercontent.com",
-        base_image_catalog_url=(
-            "https://github.com/sslivins/agora/releases/download/"
-            "stable/catalog.json"
-        ),
+        # PR 7: catalog URL is no longer on Settings.  Tests that
+        # exercise the worker fallback path seed a row in
+        # ``cms_settings`` via ``set_catalog_url`` instead.
         base_image_cache_container="base-images",
         provisioned_container="provisioned",
         provisioned_retention_hours=24,
@@ -310,6 +309,8 @@ async def test_import_catalog_fallback(
     db_session, session_factory, storage_backend, tmp_path, monkeypatch
 ):
     """No stamped URL -> resolve via catalog.json, then download."""
+    from cms.services.imager_settings import set_catalog_url
+
     settings = _make_settings(tmp_path)
     payload = b"image-bytes-via-catalog-fallback" * 16
     expected_sha = hashlib.sha256(payload).hexdigest()
@@ -326,6 +327,12 @@ async def test_import_catalog_fallback(
         },
     }
 
+    # PR 7: catalog URL lives in cms_settings now.
+    await set_catalog_url(
+        db_session,
+        "https://github.com/sslivins/agora/releases/download/"
+        "stable/catalog.json",
+    )
     bi = BaseImage(variant="pi5", version="v1.11.28")  # no source_url
     db_session.add(bi)
     await db_session.commit()

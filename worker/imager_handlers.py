@@ -57,6 +57,7 @@ import httpx
 from sqlalchemy import select
 
 from cms.services.imager import ImagerError, build_provisioned
+from cms.services.imager_settings import get_catalog_url
 from shared.models.imager import (
     BaseImage,
     BaseImageStatus,
@@ -318,6 +319,9 @@ async def import_base_image_by_id(
             version = row.version
             source_url = row.source_url
             expected_sha256 = row.expected_sha256
+            # PR 7: catalog URL moved from env var to DB setting.
+            # Read it in the same session so the fallback below has it.
+            catalog_url = await get_catalog_url(db)
 
         # Per-attempt scratch directory.
         scratch = _scratch_dir(settings, "import", base_image_id)
@@ -337,10 +341,9 @@ async def import_base_image_by_id(
             # expected_sha256 at enqueue time.  PR 4 will populate both
             # at insert time, eliminating this fallback.
             if not source_url or not expected_sha256:
-                catalog_url = settings.base_image_catalog_url
                 if not catalog_url:
                     raise TerminalImagerError(
-                        "BASE_IMAGE_CATALOG_URL not configured and row has "
+                        "imager catalog URL is not configured and row has "
                         "no stamped source_url/expected_sha256"
                     )
                 catalog = await _fetch_catalog(catalog_url, allowlist, client)

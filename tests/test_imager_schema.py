@@ -256,7 +256,9 @@ def test_shared_settings_imager_defaults() -> None:
     try:
         from shared.config import SharedSettings
         s = SharedSettings()
-        assert s.base_image_catalog_url == ""  # no upstream set
+        # PR 7 removed base_image_catalog_url from Settings; it's now a
+        # runtime DB-backed setting.
+        assert not hasattr(s, "base_image_catalog_url")
         assert s.base_image_cache_container == "base-images"
         assert s.provisioned_container == "provisioned"
         assert s.provisioned_retention_hours == 24

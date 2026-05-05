@@ -22,10 +22,11 @@ class SharedSettings(BaseSettings):
     azure_sas_expiry_hours: int = 1
 
     # ── Imager (browser-driven Pi image provisioning, Option E) ────
-    # Optional.  Only required when an admin actually triggers a
-    # catalog import or a provisioning build.  Empty default keeps
-    # existing deployments boot-clean until the imager UI ships.
-    base_image_catalog_url: str = ""
+    # NOTE (PR 7): the catalog URL was previously a deploy-time env var
+    # (``base_image_catalog_url``) but is now stored as a runtime setting
+    # in the ``cms_settings`` table (key ``imager.catalog_url``) and
+    # edited via ``PUT /api/imager/settings``.  See
+    # :mod:`cms.services.imager_settings`.
     # Hostname allowlist for upstream catalog + image fetches.  The
     # worker refuses fetches whose URL host is not in this list.
     # Default covers GitHub Releases (the only host upstream uses).
