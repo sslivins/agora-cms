@@ -29,8 +29,13 @@ class SharedSettings(BaseSettings):
     # :mod:`cms.services.imager_settings`.
     # Hostname allowlist for upstream catalog + image fetches.  The
     # worker refuses fetches whose URL host is not in this list.
-    # Default covers GitHub Releases (the only host upstream uses).
-    base_image_allowed_hosts: str = "github.com,objects.githubusercontent.com"
+    # Default covers GitHub Releases:
+    #   - github.com  (the user-facing release page + redirect origin)
+    #   - objects.githubusercontent.com  (legacy release-asset CDN)
+    #   - release-assets.githubusercontent.com  (current release-asset CDN)
+    base_image_allowed_hosts: str = (
+        "github.com,objects.githubusercontent.com,release-assets.githubusercontent.com"
+    )
     # Tenant blob containers for the imager pipeline.
     base_image_cache_container: str = "base-images"
     provisioned_container: str = "provisioned"
