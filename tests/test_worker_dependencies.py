@@ -23,6 +23,7 @@ the worker image needs ``foo`` too.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -185,6 +186,78 @@ def test_dockerfile_worker_copies_every_top_level_package_imported_by_worker() -
         f"ModuleNotFoundError on boot.  Either add ``COPY {{pkg}}/ "
         f"{{pkg}}/`` to Dockerfile.worker, or move the imported "
         f"symbol into ``shared/``."
+    )
+
+
+def test_dockerfile_worker_keeps_imager_runtime_tools() -> None:
+    """``cms.services.imager`` shells out to ``parted``, ``mcopy``, and
+    ``xz`` at runtime via ``_Tools.discover()`` (which uses
+    ``shutil.which``).  The packages providing them must be installed
+    in ``Dockerfile.worker`` AND must NOT be removed by a subsequent
+    ``apt-get purge``/``apt-get remove``.
+
+    Background: the original ``Dockerfile.worker`` installed
+    ``xz-utils`` only to unpack the ffmpeg tarball, then purged it in
+    the same RUN step.  ``mtools`` and ``parted`` were never installed
+    at all.  The Python import smoke at deploy time passes (no Python
+    import requires those binaries), but the first time an
+    ``IMAGE_IMPORT`` or ``IMAGE_PROVISION`` job actually runs the
+    handler, ``_Tools.discover()`` raises::
+
+        ImagerError: required tools not on PATH: parted, mcopy, xz
+
+    There is also a deploy-time gate
+    (``.github/workflows/publish-image.yml`` "Smoke-test worker image
+    runtime tools") that runs ``_Tools.discover()`` against the built
+    image.  This static test catches the same regression at PR time
+    so a broken Dockerfile cannot reach the publish stage.
+    """
+    dockerfile = REPO_ROOT / "Dockerfile.worker"
+    assert dockerfile.is_file(), dockerfile
+    text = dockerfile.read_text(encoding="utf-8")
+
+    # Required apt packages → import-name they provide
+    required_pkgs = {
+        "parted": "parted",
+        "mtools": "mcopy",
+        "xz-utils": "xz",
+    }
+
+    # Find every ``apt-get install ...`` and ``apt-get purge|remove ...``
+    # line.  Continuation lines end with ``\``; collapse them so we
+    # don't miss a package on a wrapped line.
+    collapsed = re.sub(r"\\\s*\n\s*", " ", text)
+
+    install_pkgs: set[str] = set()
+    purged_pkgs: set[str] = set()
+    for m in re.finditer(
+        r"apt-get\s+install[^\n&|;]*", collapsed
+    ):
+        for tok in m.group(0).split():
+            install_pkgs.add(tok)
+    for m in re.finditer(
+        r"apt-get\s+(?:purge|remove)[^\n&|;]*", collapsed
+    ):
+        for tok in m.group(0).split():
+            purged_pkgs.add(tok)
+
+    missing_install = sorted(p for p in required_pkgs if p not in install_pkgs)
+    purged_after = sorted(p for p in required_pkgs if p in purged_pkgs)
+
+    assert not missing_install, (
+        f"Dockerfile.worker is missing apt package(s) {missing_install} "
+        f"in its ``apt-get install`` line.  ``cms.services.imager`` "
+        f"requires {sorted(required_pkgs.values())} on PATH at runtime; "
+        f"without them every IMAGE_IMPORT / IMAGE_PROVISION job will "
+        f"fail with ``required tools not on PATH``.  Add the missing "
+        f"package(s) to the install line."
+    )
+    assert not purged_after, (
+        f"Dockerfile.worker installs but then purges/removes "
+        f"{purged_after}.  These packages must remain in the final "
+        f"image so ``cms.services.imager._Tools.discover()`` can find "
+        f"the binaries at runtime.  Remove the package(s) from the "
+        f"``apt-get purge`` line."
     )
 
 
