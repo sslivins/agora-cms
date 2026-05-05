@@ -13,14 +13,29 @@ a) **Skip-state is DB-backed, not cached per-replica.**  A user POSTs
    A's *scheduler tick* actually honors the skip is deferred to
    scenario 12b; here we lock in the data-plane coherence half.
 
-b) **Concurrent upgrade CAS is atomic across replicas.**  Two clients
-   fire ``POST /api/devices/{id}/upgrade`` simultaneously at replica
-   A and replica B.  The atomic UPDATE on ``Device.upgrade_started_at``
-   guarantees exactly one wins the claim.  Neither replica has a live
-   device socket, so the winner's transport send fails and it returns
-   502 (compare-and-clear path) — but the loser's 409 is the bit
-   under test.  A ``threading.Barrier`` forces the two POSTs to hit
-   Postgres concurrently so the test actually exercises the CAS race.
+b) **An active upgrade claim is visible across replicas.**  An
+   ``upgrade_started_at`` timestamp written into the shared DB is
+   honored by *both* replicas — concurrent POSTs to either replica
+   are rejected with 409 while the claim is within TTL.  This is the
+   multi-replica invariant: replicas don't have a per-instance "is
+   upgrading" cache; they consult the DB column on every request.
+
+c) **The CAS UPDATE is atomic at the DB layer.**  Two concurrent
+   ``UPDATE devices SET upgrade_started_at=:ts WHERE id=:id AND
+   upgrade_started_at IS NULL RETURNING ...`` statements against the
+   same row produce exactly one winner under Postgres MVCC — proves
+   the underlying claim primitive is race-safe without going through
+   HTTP, the transport layer, or any replica-specific code path.
+
+   Earlier revisions of this file shipped a flaky integration test
+   ("exactly one 409 from two concurrent /upgrade POSTs") that
+   conflated "CAS is atomic" with "one HTTP response is 409".  In
+   reality the endpoint immediately *clears* the claim on transport
+   send failure, so the loser's CAS often arrives after the winner's
+   compare-and-clear has already released the row — yielding
+   ``[502, 502]`` rather than ``[409, 502]``.  The two tests above
+   replace it: (b) covers cross-replica visibility deterministically;
+   (c) covers DB-level atomicity directly.
 """
 
 from __future__ import annotations
@@ -186,17 +201,34 @@ async def test_skip_on_b_visible_via_a(
         await _cleanup(engine, device_id, schedule_id, group_id, asset_id)
 
 
-async def test_concurrent_upgrade_exactly_one_409(
+async def test_active_upgrade_claim_visible_across_replicas(
     engine: AsyncEngine, client_a: httpx.Client, client_b: httpx.Client
 ) -> None:
-    """Concurrent POST ``/upgrade`` on both replicas — exactly one 409."""
+    """A non-expired ``upgrade_started_at`` claim is honored by both replicas.
+
+    Plants an active claim directly via SQL (within TTL), then fires
+    POSTs at *both* replicas.  Both must reject with 409 because the
+    DB row says an upgrade is in flight — neither replica caches the
+    "upgrading" bit per-instance, so this test fails cleanly if a
+    future change ever introduces such a cache.
+
+    Deterministic: no race window, no transport latency dependence.
+    The earlier ``test_concurrent_upgrade_exactly_one_409`` relied on
+    A's compare-and-clear taking longer than B's CAS arrival, which
+    isn't an invariant the implementation guarantees — see the
+    module docstring for the full story.
+    """
     device_id, group_id, asset_id, schedule_id = await _seed_device_and_schedule(engine)
     try:
-        # httpx.Client is sync; run both POSTs in threads so they
-        # actually overlap at the Postgres level. A Barrier pins the
-        # two POSTs to fire only once both threads are ready, so the
-        # test exercises the CAS race rather than whichever POST won
-        # the scheduling lottery.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE devices SET upgrade_started_at = :ts WHERE id = :id"),
+                {"ts": datetime.now(timezone.utc), "id": device_id},
+            )
+
+        # Use threads + a Barrier as belt-and-braces: even when the
+        # invariant is purely DB-visibility, exercising both replicas
+        # concurrently is what the multireplica suite is for.
         barrier = threading.Barrier(2)
 
         def _post(client: httpx.Client) -> int:
@@ -209,15 +241,57 @@ async def test_concurrent_upgrade_exactly_one_409(
             asyncio.to_thread(_post, client_b),
         )
 
-        # Exactly one 409 — the other is a 502 (winner can't reach a
-        # real device so ``send_to_device`` fails and returns the
-        # compare-and-clear 502) or 2xx if the test env ever grows a
-        # live socket.  The *only* invariant we care about is that both
-        # POSTs are not accepted.
-        assert results.count(409) == 1, (
-            f"expected exactly one 409 from concurrent upgrade POSTs, got {results}"
+        assert results == [409, 409], (
+            f"both replicas should reject with 409 while a claim is held; got {results}"
         )
-        # Neither replica should have 500'd on the CAS path.
-        assert all(r in (200, 202, 409, 502) for r in results), results
+    finally:
+        await _cleanup(engine, device_id, schedule_id, group_id, asset_id)
+
+
+async def test_upgrade_cas_atomic_one_winner(engine: AsyncEngine) -> None:
+    """Two concurrent CAS UPDATEs on the same row produce exactly one winner.
+
+    Bypasses HTTP and the transport layer entirely — directly fires
+    the same atomic ``UPDATE ... WHERE upgrade_started_at IS NULL
+    RETURNING`` from two coroutines on two pool connections.  Under
+    Postgres MVCC + row-level locks the second UPDATE blocks until
+    the first commits, then sees the row as already claimed and
+    returns no rows.
+
+    This is the DB-level invariant that the (former)
+    ``test_concurrent_upgrade_exactly_one_409`` was trying to
+    exercise via HTTP — but doing it here makes the assertion
+    deterministic and decoupled from endpoint failure handling.
+    """
+    device_id, group_id, asset_id, schedule_id = await _seed_device_and_schedule(engine)
+    try:
+        # Seeded as ``upgrade_started_at=NULL`` already, but make it
+        # explicit so a future change to the seeder doesn't silently
+        # invalidate this test.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE devices SET upgrade_started_at = NULL WHERE id = :id"),
+                {"id": device_id},
+            )
+
+        async def _try_claim(claim_ts: datetime) -> bool:
+            async with engine.begin() as conn:
+                row = (await conn.execute(
+                    text(
+                        "UPDATE devices SET upgrade_started_at = :ts "
+                        "WHERE id = :id AND upgrade_started_at IS NULL "
+                        "RETURNING upgrade_started_at"
+                    ),
+                    {"ts": claim_ts, "id": device_id},
+                )).first()
+                return row is not None
+
+        ts_a = datetime.now(timezone.utc)
+        ts_b = ts_a + timedelta(microseconds=1)
+        results = await asyncio.gather(_try_claim(ts_a), _try_claim(ts_b))
+
+        assert results.count(True) == 1, (
+            f"expected exactly one CAS winner; got {results}"
+        )
     finally:
         await _cleanup(engine, device_id, schedule_id, group_id, asset_id)
