@@ -456,6 +456,22 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     if job.status == JobStatus.FAILED:
         # claim_job flipped us to FAILED because retry_count exceeded MAX.
         logger.error("Job %s exhausted retries — deleting poison message", job_id)
+        # Mirror the terminal state onto the imager target row so the
+        # UI sees FAILED instead of a stuck IMPORTING/PROVISIONING zombie.
+        # If this raises (e.g. transient DB error), DO NOT delete the
+        # queue message: let it redeliver so we get another shot at
+        # mirroring the failure.  Better to send the user a duplicate
+        # "import failed" log line than leave a row stuck forever.
+        try:
+            from worker.imager_handlers import mark_target_failed_on_exhaustion
+            await mark_target_failed_on_exhaustion(session_factory, job)
+        except Exception:
+            logger.exception(
+                "Failed to mirror poison-job %s onto target row -- "
+                "leaving queue message for redelivery", job_id,
+            )
+            await _stop_heartbeat()
+            return
         await _stop_heartbeat()
         try:
             queue.delete_message(msg, pop_receipt=current_popreceipt)

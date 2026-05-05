@@ -64,6 +64,7 @@ from shared.models.imager import (
     ProvisionedImage,
     ProvisionedImageStatus,
 )
+from shared.models.job import Job, JobType
 from shared.services.imager_catalog import (
     HTTP_TIMEOUT as _HTTP_TIMEOUT,
     MAX_REDIRECTS as _MAX_REDIRECTS,
@@ -192,6 +193,108 @@ async def _set_provisioned_terminal(
         # failures leave it in place because the next attempt needs it.
         row.fleet_env_payload = None
         await db.commit()
+
+
+# Return values for ``mark_target_failed_on_exhaustion``.  The dispatcher
+# uses these to decide whether to delete the poison queue message.
+#
+# * ``"updated"``      — target row was flipped to FAILED.  Safe to delete.
+# * ``"missing"``      — target row no longer exists (deleted).  Safe to delete.
+# * ``"skipped_newer_job"`` — a newer job exists for the same target; the
+#   target is being handled by that newer job.  Safe to delete the poison
+#   message; do not stomp the target row.
+# * ``"skipped_status"``    — target row is in a non-IMPORTING / non-PROVISIONING
+#   state (READY, FAILED, EXPIRED, ...).  Safe to delete the poison message;
+#   the row is not stuck.
+# * ``"not_imager"``        — job type is not an imager job; nothing to do.
+#   Safe to delete (existing behavior preserved for other job types).
+#
+# If the helper raises an exception, the dispatcher MUST NOT delete the
+# queue message — leaving it to redeliver gives us another shot at
+# mirroring the failure onto the target row.
+async def mark_target_failed_on_exhaustion(
+    session_factory: Any, job: Job
+) -> str:
+    """Mirror a poison-killed job's terminal state onto its imager
+    target row so the UI sees FAILED instead of a stuck IMPORTING /
+    PROVISIONING zombie.
+
+    Called by ``worker/__main__.py`` after ``claim_job`` has already
+    flipped the job to FAILED due to retry exhaustion.
+
+    Guarded so we never clobber:
+
+    * a row that has already moved past the in-flight state (e.g. the
+      user re-imported and the row is now IMPORTING again under a new
+      job, or the row was successfully imported under a previous attempt
+      and is READY).
+    * a row whose newest job is not the one that exhausted -- that
+      newer job is responsible for the target row's state.
+
+    See module docstring for the wider lifecycle.
+    """
+    if job.type not in (JobType.IMAGE_IMPORT, JobType.IMAGE_PROVISION):
+        return "not_imager"
+
+    msg = (
+        f"job exceeded retry limit ({job.retry_count} attempts): "
+        f"{(job.error_message or 'unknown failure')[:200]}"
+    )
+
+    async with session_factory() as db:
+        # Stale-job guard: if a newer job exists for the same target,
+        # leave the target row alone -- the newer job owns it now.
+        latest_id = (await db.execute(
+            select(Job.id)
+            .where(Job.type == job.type, Job.target_id == job.target_id)
+            .order_by(Job.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if latest_id is not None and latest_id != job.id:
+            logger.info(
+                "Poison job %s for target %s is stale -- newer job %s "
+                "owns the target row; not flipping",
+                job.id, job.target_id, latest_id,
+            )
+            return "skipped_newer_job"
+
+        if job.type == JobType.IMAGE_IMPORT:
+            row = (await db.execute(
+                select(BaseImage).where(BaseImage.id == job.target_id)
+            )).scalar_one_or_none()
+            if row is None:
+                return "missing"
+            if row.status != BaseImageStatus.IMPORTING.value:
+                logger.info(
+                    "BaseImage %s status is %s (not IMPORTING) -- not "
+                    "clobbering on poison kill of job %s",
+                    row.id, row.status, job.id,
+                )
+                return "skipped_status"
+            row.status = BaseImageStatus.FAILED.value
+            row.error_message = msg[:2000]
+            await db.commit()
+            return "updated"
+
+        # IMAGE_PROVISION
+        row = (await db.execute(
+            select(ProvisionedImage).where(ProvisionedImage.id == job.target_id)
+        )).scalar_one_or_none()
+        if row is None:
+            return "missing"
+        if row.status != ProvisionedImageStatus.PROVISIONING.value:
+            logger.info(
+                "ProvisionedImage %s status is %s (not PROVISIONING) -- "
+                "not clobbering on poison kill of job %s",
+                row.id, row.status, job.id,
+            )
+            return "skipped_status"
+        row.status = ProvisionedImageStatus.FAILED.value
+        row.error_message = msg[:2000]
+        # Secret hygiene: terminal failures clear the payload.
+        row.fleet_env_payload = None
+        await db.commit()
+        return "updated"
 
 
 async def _fetch_catalog(
@@ -327,6 +430,7 @@ async def import_base_image_by_id(
             version = row.version
             source_url = row.source_url
             expected_sha256 = row.expected_sha256
+            expected_size = row.size_bytes
             # PR 7: catalog URL moved from env var to DB setting.
             # Read it in the same session so the fallback below has it.
             catalog_url = await get_catalog_url(db)
@@ -336,11 +440,24 @@ async def import_base_image_by_id(
         scratch.mkdir(parents=True, exist_ok=True)
 
         # Free-space pre-flight (retryable -- another job may free disk soon).
+        # Import is download->upload only: we stage the .img.xz on scratch,
+        # SHA-stream-verify it (no extra copy), and stream-upload to blob.
+        # Peak scratch usage is essentially one file, so 2x source size +
+        # 256 MiB headroom is plenty.  Provision (decompress->mutate->
+        # recompress) uses the much larger ``imager_min_free_bytes``.
+        if expected_size and expected_size > 0:
+            needed = max(int(expected_size) * 2 + 256 * 1024 * 1024,
+                         512 * 1024 * 1024)
+        else:
+            # Unknown source size: fall back to the conservative provision-
+            # sized threshold rather than guess low and risk filling disk.
+            needed = settings.imager_min_free_bytes
         free = await _free_bytes(scratch)
-        if free < settings.imager_min_free_bytes:
+        if free < needed:
             logger.warning(
-                "BaseImage %s import: free space %d below threshold %d -- retry",
-                base_image_id, free, settings.imager_min_free_bytes,
+                "BaseImage %s import: free space %d below import threshold "
+                "%d (expected_size=%s) -- retry",
+                base_image_id, free, needed, expected_size,
             )
             return False
 
