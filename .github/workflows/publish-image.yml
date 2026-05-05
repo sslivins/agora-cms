@@ -129,6 +129,23 @@ jobs:
             ${{ env.ACR_REGISTRY }}/agora-worker:latest
             ${{ env.ACR_REGISTRY }}/agora-worker:${{ steps.version.outputs.version }}
 
+      # Deploy-gate the worker image by exercising every top-level
+      # import the queue dispatcher pulls in.  worker/__main__.py
+      # imports worker.imager_handlers lazily inside _queue_mode so a
+      # plain "python -m worker --help" wouldn't catch a missing dep
+      # in shared/ or worker/ -- production has already paid the cost
+      # of finding such gaps the hard way (see hotfix/worker-httpx-
+      # missing).  Force the imports here.
+      - name: Smoke-test worker image imports
+        run: |
+          set -euo pipefail
+          docker pull ${{ env.ACR_REGISTRY }}/agora-worker:${{ steps.version.outputs.version }}
+          docker run --rm --entrypoint python \
+            ${{ env.ACR_REGISTRY }}/agora-worker:${{ steps.version.outputs.version }} \
+            -c "import worker.__main__, worker.imager_handlers, worker.transcoder; \
+                from worker.imager_handlers import import_base_image_by_id, provision_image_by_id; \
+                print('worker image imports OK')"
+
       - name: Record image digests
         run: |
           echo "CMS digest:    ${{ steps.acr_cms.outputs.digest }}"
