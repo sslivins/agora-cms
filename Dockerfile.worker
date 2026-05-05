@@ -7,14 +7,27 @@ WORKDIR /app
 # FFmpeg 8.1 static build + libheif for HEIC image conversion
 ARG TARGETARCH
 
+#
+# Runtime tools required by ``cms.services.imager``:
+#   - ``parted``      partition table inspection (parted, libparted)
+#   - ``mtools``      ``mcopy``/``mdir`` for FAT writes without root/loopback
+#   - ``xz-utils``    base ``.img.xz`` decompress/recompress; also used here
+#                     to unpack the ffmpeg tarball below
+#
+# These packages MUST be kept in the final image -- the deploy-time
+# smoke test (.github/workflows/publish-image.yml) verifies their
+# presence by running ``cms.services.imager._Tools.discover()`` against
+# the built image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif-examples \
     curl \
     xz-utils \
+    mtools \
+    parted \
     && ARCH=$(case "$TARGETARCH" in arm64) echo linuxarm64;; *) echo linux64;; esac) \
     && curl -fsSL "https://github.com/sslivins/agora-cms/releases/download/ffmpeg-8.1/ffmpeg-${ARCH}.tar.xz" \
        | tar -xJ --strip-components=1 -C /usr/local \
-    && apt-get purge -y curl xz-utils && apt-get autoremove -y \
+    && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-shared.txt ./

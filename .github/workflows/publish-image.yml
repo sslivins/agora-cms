@@ -146,6 +146,21 @@ jobs:
                 from worker.imager_handlers import import_base_image_by_id, provision_image_by_id; \
                 print('worker image imports OK')"
 
+      # Verify OS-level tools required by ``cms.services.imager`` are
+      # present in the final worker image.  The Python import smoke
+      # above will not catch a missing ``parted``/``mcopy``/``xz`` --
+      # those are discovered at runtime via ``shutil.which`` the first
+      # time an imager job runs.  Without this gate we ship workers
+      # that import cleanly but blow up on every IMAGE_IMPORT /
+      # IMAGE_PROVISION job (see hotfix/worker-imager-scratch-path).
+      - name: Smoke-test worker image runtime tools
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python \
+            ${{ env.ACR_REGISTRY }}/agora-worker:${{ steps.version.outputs.version }} \
+            -c "from cms.services.imager import _Tools; t = _Tools.discover(); \
+                print(f'worker image imager tools OK: parted={t.parted} mcopy={t.mcopy} xz={t.xz}')"
+
       - name: Record image digests
         run: |
           echo "CMS digest:    ${{ steps.acr_cms.outputs.digest }}"
