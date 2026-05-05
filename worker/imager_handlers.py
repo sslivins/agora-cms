@@ -146,14 +146,12 @@ def _scratch_dir(settings: Any, prefix: str, target_id: uuid.UUID) -> Path:
     cannot rmtree another worker's in-flight files.
 
     When ``settings.imager_scratch_path`` is unset (the default in
-    deployments without a dedicated scratch volume), fall back to
-    a subdirectory under ``asset_storage_path`` per the config
-    docstring contract.
+    deployments without a dedicated scratch volume), the path falls
+    back to a subdirectory under ``asset_storage_path``.  The fallback
+    lives on :attr:`SharedSettings.resolved_imager_scratch_path` so
+    every consumer agrees on the resolved location.
     """
-    scratch_root = settings.imager_scratch_path
-    if scratch_root is None:
-        scratch_root = Path(settings.asset_storage_path) / "imager-scratch"
-    root = Path(scratch_root)
+    root = settings.resolved_imager_scratch_path
     return root / f"{prefix}-{target_id}-{uuid.uuid4().hex[:8]}"
 
 

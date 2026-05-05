@@ -60,10 +60,15 @@ from worker.imager_handlers import (
 # Default settings sufficient for handler tests; per-test overrides
 # happen via ``dataclasses.replace``-style ``SimpleNamespace`` updates.
 def _make_settings(tmp_path: Path, **overrides: Any) -> SimpleNamespace:
+    scratch_path = tmp_path / "scratch"
     base = dict(
-        imager_scratch_path=str(tmp_path / "scratch"),
+        imager_scratch_path=str(scratch_path),
+        resolved_imager_scratch_path=scratch_path,
         imager_min_free_bytes=1,  # tests run in tmpdirs with plenty of room
-        base_image_allowed_hosts="github.com,objects.githubusercontent.com",
+        base_image_allowed_hosts=(
+            "github.com,objects.githubusercontent.com,"
+            "release-assets.githubusercontent.com"
+        ),
         # PR 7: catalog URL is no longer on Settings.  Tests that
         # exercise the worker fallback path seed a row in
         # ``cms_settings`` via ``set_catalog_url`` instead.
@@ -124,6 +129,7 @@ def test_scratch_dir_falls_back_to_asset_storage_when_unset(tmp_path: Path) -> N
     settings = SimpleNamespace(
         imager_scratch_path=None,
         asset_storage_path=tmp_path / "assets",
+        resolved_imager_scratch_path=tmp_path / "assets" / "imager-scratch",
     )
     target = uuid.uuid4()
     scratch = imager_handlers._scratch_dir(settings, "import", target)
@@ -139,6 +145,7 @@ def test_scratch_dir_honors_explicit_imager_scratch_path(tmp_path: Path) -> None
     settings = SimpleNamespace(
         imager_scratch_path=explicit,
         asset_storage_path=tmp_path / "assets",
+        resolved_imager_scratch_path=explicit,
     )
     target = uuid.uuid4()
     scratch = imager_handlers._scratch_dir(settings, "build", target)
@@ -283,6 +290,47 @@ async def test_import_redirect_to_disallowed_host_terminal(
 
     with pytest.raises(TerminalImagerError, match="not in base_image_allowed_hosts"):
         await import_base_image_by_id(session_factory, settings, bi.id)
+
+
+@pytest.mark.asyncio
+async def test_import_redirect_to_release_assets_cdn_succeeds(
+    db_session, session_factory, storage_backend, tmp_path, monkeypatch
+):
+    """github.com -> release-assets.githubusercontent.com is the real-world
+    redirect path; the allowlist must permit it end-to-end."""
+    payload = b"release-assets-cdn-payload" * 64
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    settings = _make_settings(tmp_path)
+    bi = BaseImage(
+        variant="pi5", version="v1.11.28",
+        source_url=("https://github.com/sslivins/agora/releases/"
+                    "download/v1.11.28/agora-pi5.img.xz"),
+        expected_sha256=expected_sha,
+    )
+    db_session.add(bi)
+    await db_session.commit()
+    await db_session.refresh(bi)
+
+    cdn_url = ("https://release-assets.githubusercontent.com/"
+               "github-production-release-asset/abc/agora-pi5.img.xz")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "github.com":
+            return httpx.Response(302, headers={"location": cdn_url})
+        if request.url.host == "release-assets.githubusercontent.com":
+            return httpx.Response(200, content=payload)
+        return httpx.Response(404)
+    _patch_httpx(monkeypatch, handle)
+
+    ok = await import_base_image_by_id(session_factory, settings, bi.id)
+    assert ok is True
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(BaseImage).where(BaseImage.id == bi.id)
+        )).scalar_one()
+    assert fresh.status == BaseImageStatus.READY.value
+    assert fresh.sha256 == expected_sha
 
 
 @pytest.mark.asyncio
