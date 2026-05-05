@@ -195,8 +195,9 @@
         }
         return body;
     }
+    function statusUp(s) { return String(s || '').toUpperCase(); }
     function statusBadgeClass(status) {
-        var s = String(status || '').toUpperCase();
+        var s = statusUp(status);
         if (s === 'DONE' || s === 'READY') return 'badge badge-success';
         if (s === 'FAILED') return 'badge badge-failed';
         if (s === 'CANCELLED') return 'badge badge-cancelled';
@@ -223,7 +224,7 @@
                 jsonFetch('/api/imager/base-images'),
             ]);
             fleetsCache = fleets || [];
-            basesCache = (bases || []).filter(function(b) { return b.status === 'READY'; });
+            basesCache = (bases || []).filter(function(b) { return statusUp(b.status) === 'READY'; });
 
             fleetSel.innerHTML = '';
             if (fleetsCache.length === 0) {
@@ -237,7 +238,7 @@
 
             baseSel.innerHTML = '';
             if (basesCache.length === 0) {
-                baseSel.innerHTML = '<option value="">No ready base images</option>';
+                baseSel.innerHTML = '<option value="">No base images ready</option>';
             } else {
                 baseSel.innerHTML = '<option value="">Select base image…</option>' +
                     basesCache.map(function(b) {
@@ -308,23 +309,25 @@
         if (job.output_name) metaParts.push(escHtml(job.output_name));
         if (job.created_at) metaParts.push('started ' + fmtDate(job.created_at));
         meta.innerHTML = metaParts.join(' · ');
-        if (job.status === 'DONE') {
+        if (statusUp(job.status) === 'DONE') {
             dl.style.display = '';
             dl.href = '/api/imager/download/' + encodeURIComponent(job.job_id);
             errBox.style.display = 'none';
         } else {
             dl.style.display = 'none';
         }
-        if (job.status === 'FAILED' || job.status === 'CANCELLED') {
+        var js = statusUp(job.status);
+        if (js === 'FAILED' || js === 'CANCELLED') {
             errBox.style.display = '';
             errBox.textContent = job.error_message || 'Build did not complete.';
-        } else if (job.status !== 'DONE') {
+        } else if (js !== 'DONE') {
             errBox.style.display = 'none';
         }
     }
 
     function isTerminal(status) {
-        return status === 'DONE' || status === 'FAILED' || status === 'CANCELLED';
+        var s = statusUp(status);
+        return s === 'DONE' || s === 'FAILED' || s === 'CANCELLED';
     }
 
     async function pollOnce(jobId) {
@@ -333,7 +336,7 @@
             renderJobCard(job);
             if (isTerminal(job.status)) {
                 stopPolling();
-                if (job.status === 'DONE') {
+                if (statusUp(job.status) === 'DONE') {
                     toast('Image build complete', 'success');
                 }
             }
@@ -427,7 +430,7 @@
                     renderImportProgress();
                     loadBaseImages();
                     if (buildSection) loadFleetsAndBases();
-                    if (job.status === 'DONE') {
+                    if (statusUp(job.status) === 'DONE') {
                         toast('Imported ' + info.variant + ' / ' + info.version, 'success');
                     } else {
                         toast('Import failed: ' + (job.error_message || job.status), 'error');
@@ -464,17 +467,18 @@
     function notifyBaseTransitions(bases) {
         bases.forEach(function(b) {
             var prev = basesLastStatus[b.id];
-            if (prev === 'IMPORTING' && b.status !== 'IMPORTING') {
-                if (b.status === 'READY') {
+            var cur = statusUp(b.status);
+            if (prev === 'IMPORTING' && cur !== 'IMPORTING') {
+                if (cur === 'READY') {
                     toast('Import complete: ' + b.variant + ' / ' + b.version, 'success');
-                } else if (b.status === 'FAILED') {
+                } else if (cur === 'FAILED') {
                     var msg = b.error_message ? (': ' + b.error_message) : '';
                     toast('Import failed: ' + b.variant + ' / ' + b.version + msg, 'error');
                 }
             }
         });
         var next = {};
-        bases.forEach(function(b) { next[b.id] = b.status; });
+        bases.forEach(function(b) { next[b.id] = statusUp(b.status); });
         basesLastStatus = next;
     }
 
@@ -492,7 +496,8 @@
             notifyBaseTransitions(bases);
             tbody.innerHTML = bases.map(function(b) {
                 var sha = b.sha256 ? b.sha256.slice(0, 12) + '…' : '—';
-                var del = b.status === 'IMPORTING' ? '' :
+                var shaTitle = b.sha256 ? ' title="' + escHtml(b.sha256) + '"' : '';
+                var del = statusUp(b.status) === 'IMPORTING' ? '' :
                     '<button type="button" class="btn btn-sm btn-danger-subtle" data-delete-base="' + escHtml(b.id) + '">Delete</button>';
                 return '<tr>' +
                     '<td>' + escHtml(b.variant) + '</td>' +
@@ -500,14 +505,14 @@
                     '<td><span class="' + statusBadgeClass(b.status) + '">' + escHtml(b.status) + '</span></td>' +
                     '<td>' + fmtBytes(b.size_bytes) + '</td>' +
                     '<td title="' + escHtml(b.imported_at || '') + '">' + fmtDate(b.imported_at) + '</td>' +
-                    '<td><code style="font-size:0.75rem;">' + escHtml(sha) + '</code></td>' +
+                    '<td><code style="font-size:0.75rem;"' + shaTitle + '>' + escHtml(sha) + '</code></td>' +
                     '<td style="text-align:right;">' + del + '</td>' +
                     '</tr>';
             }).join('');
             tbody.querySelectorAll('[data-delete-base]').forEach(function(btn) {
                 btn.addEventListener('click', function() { deleteBase(btn.getAttribute('data-delete-base')); });
             });
-            var anyImporting = bases.some(function(b) { return b.status === 'IMPORTING'; });
+            var anyImporting = bases.some(function(b) { return statusUp(b.status) === 'IMPORTING'; });
             if (anyImporting) scheduleBasesPoll();
         } catch (e) {
             tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">Failed to load: ' + escHtml(e.message || e) + '</td></tr>';

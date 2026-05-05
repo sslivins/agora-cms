@@ -48,8 +48,22 @@ class SharedSettings(BaseSettings):
     # Defaults to a subdirectory under ``asset_storage_path`` so the
     # worker doesn't need extra mounts in the simple case; production
     # deployments should override with a path on a dedicated volume.
+    # Use ``resolved_imager_scratch_path`` to read with the fallback
+    # applied — never branch on ``imager_scratch_path`` directly.
     imager_scratch_path: Path | None = None
     # Minimum free bytes the worker requires on the scratch volume
     # before starting an imager job.  ~10 GiB headroom over the
     # ~6 GiB worst-case peak (decompress + recompress in parallel).
     imager_min_free_bytes: int = 10 * 1024 * 1024 * 1024
+
+    @property
+    def resolved_imager_scratch_path(self) -> Path:
+        """Return the effective imager scratch directory.
+
+        Centralises the ``imager_scratch_path`` ⇒ ``asset_storage_path /
+        'imager-scratch'`` fallback so every consumer (worker handler,
+        diagnostic tools, future tests) agrees on the resolved location.
+        """
+        if self.imager_scratch_path is not None:
+            return Path(self.imager_scratch_path)
+        return Path(self.asset_storage_path) / "imager-scratch"

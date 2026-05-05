@@ -365,6 +365,11 @@ async def test_list_base_images(client, db_session, imager_settings):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
+    # API contract: status field is lowercase on the wire. The frontend
+    # normalizes via statusUp(); breaking this contract silently breaks
+    # auto-refresh, transition toasts, dropdown filters, etc.
+    statuses = sorted(b["status"] for b in data)
+    assert statuses == ["importing", "ready"]
 
 
 # ── Base-image delete ──────────────────────────────────────────────
@@ -536,6 +541,8 @@ async def test_get_job_returns_status(client, db_session, imager_settings):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == JobStatus.PENDING.value
+    # API contract: lowercase on the wire. Frontend depends on this.
+    assert body["status"] == "pending"
     assert body["type"] == JobType.IMAGE_IMPORT.value
     assert body["download_url"] is None
 

@@ -87,3 +87,34 @@ async def test_nav_link_absent_for_viewer(app, db_session):
         assert 'href="/imager"' not in resp.text
     finally:
         await ac.aclose()
+
+
+# ── Status casing regression guard ─────────────────────────────────
+
+
+def test_imager_html_no_raw_uppercase_status_compare():
+    """Guard against the case-bug class that silently broke PR C.
+
+    The API emits status enums lowercase ("ready", "done", "importing", ...).
+    The frontend must normalize via ``statusUp(...)`` before comparing to
+    uppercase literals; comparing the raw API field directly to an
+    uppercase string never matches and silently breaks auto-refresh,
+    transition toasts, dropdown filters, and terminal-state detection.
+
+    This guard catches the bad pattern (``foo.status === 'UPPERCASE'``)
+    while allowing the good one (``statusUp(foo.status) === 'UPPERCASE'``).
+    """
+    import re
+    from pathlib import Path
+
+    template = Path(__file__).resolve().parents[1] / "cms" / "templates" / "imager.html"
+    text = template.read_text(encoding="utf-8")
+    # Match `<word>.status === 'UPPERCASE'` (or !==). Won't match
+    # `statusUp(foo.status) === 'UP'` because `)` sits between
+    # `.status` and the operator.
+    bad = re.findall(r"\b\w+\.status\s*[!=]==\s*['\"][A-Z_]+['\"]", text)
+    assert not bad, (
+        "Raw uppercase status comparison(s) found in imager.html — "
+        "API emits lowercase, must normalize via statusUp(). "
+        f"Offending sites: {bad}"
+    )
