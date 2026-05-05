@@ -83,17 +83,22 @@
         {% endif %}
     </div>
 
-    {# Catalog URL configuration row.  PR 7 made this a runtime DB
-       setting so an admin can flip it from the UI. #}
+    {# Catalog URL — inline-editable. Click the pencil to swap the line
+       into an input + Save/Cancel; saved URL is rendered as a plain link. #}
     <div id="imagerCatalogUrlRow"
-         style="margin-top:0.75rem; padding:0.5rem 0.75rem; border:1px solid #e5e7eb; border-radius:4px; background:#f9fafb; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
-        <span class="text-muted" style="font-weight:600;">Catalog URL:</span>
-        {% if imager_catalog_url %}
-        <code id="imagerCatalogUrlText" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ imager_catalog_url }}</code>
-        {% else %}
-        <span id="imagerCatalogUrlText" class="text-muted" style="flex:1; font-style:italic;">not configured</span>
-        {% endif %}
-        <button id="imagerCatalogUrlEditBtn" type="button" class="btn btn-sm btn-secondary">Edit…</button>
+         style="margin-top:0.5rem; display:flex; align-items:baseline; gap:0.5rem; flex-wrap:wrap; font-size:0.9rem;">
+        <span class="text-muted">Catalog URL:</span>
+        <span id="imagerCatalogUrlDisplay" style="flex:1; min-width:0; display:flex; align-items:baseline; gap:0.4rem;">
+            {% if imager_catalog_url %}
+            <a id="imagerCatalogUrlLink" href="{{ imager_catalog_url }}" target="_blank" rel="noopener"
+               style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">{{ imager_catalog_url }}</a>
+            {% else %}
+            <span id="imagerCatalogUrlLink" class="text-muted" style="font-style:italic;">not configured</span>
+            {% endif %}
+            <a href="#" id="imagerCatalogUrlEditBtn" title="Edit catalog URL"
+               style="text-decoration:none; flex:none;"
+               onclick="event.preventDefault(); imagerStartCatalogUrlEdit();">✎</a>
+        </span>
     </div>
 
     <p class="text-muted" style="margin-top:0.5rem;">
@@ -123,26 +128,7 @@
     </div>
 </div>
 
-{# ── Catalog URL edit modal ─────────────────────────────────────── #}
-<div id="imagerCatalogUrlModal" class="modal-overlay" style="display:none;">
-    <div class="modal-box" style="max-width:560px;">
-        <h3 style="margin-top:0;">Catalog URL</h3>
-        <p class="text-muted" style="margin-top:0;">
-            URL of the upstream <code>catalog.json</code> manifest. Must be
-            <code>https://</code> on an allow-listed host.
-        </p>
-        <form id="imagerCatalogUrlForm" onsubmit="return false;">
-            <input type="url" id="imagerCatalogUrlInput" class="form-control"
-                   placeholder="https://github.com/&hellip;/catalog.json"
-                   style="width:100%;" required>
-            <p id="imagerCatalogUrlError" class="text-danger" style="display:none; margin:0.5rem 0 0;"></p>
-            <div class="modal-actions">
-                <button type="button" class="btn btn-secondary" onclick="imagerCloseCatalogUrl()">Cancel</button>
-                <button type="submit" id="imagerCatalogUrlSave" class="btn btn-primary">Save</button>
-            </div>
-        </form>
-    </div>
-</div>
+
 
 {# ── Catalog modal ──────────────────────────────────────────────── #}
 <div id="imagerCatalogModal" class="modal-overlay" style="display:none;">
@@ -552,52 +538,105 @@
         if (modal) modal.style.display = 'none';
     };
 
-    // ── Catalog URL settings modal ────────────────────────────
-    function openCatalogUrl() {
-        var modal = $('#imagerCatalogUrlModal');
-        var input = $('#imagerCatalogUrlInput');
-        var err = $('#imagerCatalogUrlError');
-        if (!modal || !input) return;
-        err.style.display = 'none';
-        input.value = '';
-        // Pre-populate with the current value if any.
-        jsonFetch('/api/imager/settings').then(function(data) {
-            if (data && data.catalog_url) input.value = data.catalog_url;
-        }).catch(function() { /* leave blank on error */ });
-        modal.style.display = '';
-        setTimeout(function() { input.focus(); }, 0);
-    }
-
-    window.imagerCloseCatalogUrl = function() {
-        var modal = $('#imagerCatalogUrlModal');
-        if (modal) modal.style.display = 'none';
-    };
-
-    async function submitCatalogUrl(ev) {
-        ev.preventDefault();
-        var input = $('#imagerCatalogUrlInput');
-        var saveBtn = $('#imagerCatalogUrlSave');
-        var err = $('#imagerCatalogUrlError');
-        if (!input) return;
-        var url = (input.value || '').trim();
-        err.style.display = 'none';
-        saveBtn.disabled = true;
+    // ── Catalog URL inline editor ─────────────────────────────
+    // Replace the URL line with <input> + Save/Cancel. Save PUTs to
+    // /api/imager/settings; on success we re-render the line with the
+    // new value (and unhide the "Import from catalog…" button without a
+    // full page reload).
+    window.imagerStartCatalogUrlEdit = async function() {
+        var row = $('#imagerCatalogUrlDisplay');
+        if (!row) return;
+        var current = '';
         try {
-            var data = await jsonFetch('/api/imager/settings', {
-                method: 'PUT',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ catalog_url: url }),
-            });
-            toast('Catalog URL saved', 'success');
-            // Reload the page so the disabled-state of the import button
-            // and the visible URL row update from server-rendered state.
-            window.location.reload();
-        } catch (e) {
-            err.textContent = e.message || String(e);
-            err.style.display = '';
-            saveBtn.disabled = false;
-        }
-    }
+            var data = await jsonFetch('/api/imager/settings');
+            current = (data && data.catalog_url) || '';
+        } catch (e) { /* fall through with blank */ }
+
+        var savedHtml = row.innerHTML;
+        row.innerHTML = '';
+        var input = document.createElement('input');
+        input.type = 'url';
+        input.id = 'imagerCatalogUrlInput';
+        input.className = 'form-control';
+        input.placeholder = 'https://github.com/.../catalog.json';
+        input.value = current;
+        input.style.flex = '1';
+        input.style.minWidth = '0';
+        var save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'btn btn-sm btn-primary';
+        save.textContent = 'Save';
+        var cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'btn btn-sm btn-secondary';
+        cancel.textContent = 'Cancel';
+        var err = document.createElement('span');
+        err.className = 'text-danger';
+        err.style.fontSize = '0.85rem';
+        err.style.flexBasis = '100%';
+        err.style.display = 'none';
+        row.appendChild(input);
+        row.appendChild(save);
+        row.appendChild(cancel);
+        row.appendChild(err);
+        setTimeout(function() { input.focus(); input.select(); }, 0);
+
+        function restore() { row.innerHTML = savedHtml; }
+        cancel.addEventListener('click', restore);
+        input.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Escape') { ev.preventDefault(); restore(); }
+            else if (ev.key === 'Enter') { ev.preventDefault(); save.click(); }
+        });
+        save.addEventListener('click', async function() {
+            var url = (input.value || '').trim();
+            err.style.display = 'none';
+            save.disabled = true;
+            cancel.disabled = true;
+            try {
+                await jsonFetch('/api/imager/settings', {
+                    method: 'PUT',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ catalog_url: url }),
+                });
+                toast('Catalog URL saved', 'success');
+                // Re-render the display line with the new URL.
+                row.innerHTML = '';
+                var link = document.createElement('a');
+                link.id = 'imagerCatalogUrlLink';
+                link.href = url;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = url;
+                link.style.overflow = 'hidden';
+                link.style.textOverflow = 'ellipsis';
+                link.style.whiteSpace = 'nowrap';
+                link.style.minWidth = '0';
+                var pencil = document.createElement('a');
+                pencil.href = '#';
+                pencil.id = 'imagerCatalogUrlEditBtn';
+                pencil.title = 'Edit catalog URL';
+                pencil.style.textDecoration = 'none';
+                pencil.style.flex = 'none';
+                pencil.textContent = '✎';
+                pencil.addEventListener('click', function(ev) {
+                    ev.preventDefault(); imagerStartCatalogUrlEdit();
+                });
+                row.appendChild(link);
+                row.appendChild(pencil);
+                // Enable the import button if it was disabled.
+                var importBtn = $('#imagerCatalogBtn');
+                if (importBtn && importBtn.disabled && url) {
+                    importBtn.disabled = false;
+                    importBtn.removeAttribute('title');
+                }
+            } catch (e) {
+                err.textContent = e.message || String(e);
+                err.style.display = '';
+                save.disabled = false;
+                cancel.disabled = false;
+            }
+        });
+    };
 
     async function importBase(variant, version, btn) {
         btn.disabled = true;
@@ -639,10 +678,6 @@
     if (manageSection) {
         var catBtn = $('#imagerCatalogBtn', manageSection);
         if (catBtn) catBtn.addEventListener('click', openCatalog);
-        var urlEditBtn = $('#imagerCatalogUrlEditBtn', manageSection);
-        if (urlEditBtn) urlEditBtn.addEventListener('click', openCatalogUrl);
-        var urlForm = $('#imagerCatalogUrlForm');
-        if (urlForm) urlForm.addEventListener('submit', submitCatalogUrl);
         loadBaseImages();
     }
 
