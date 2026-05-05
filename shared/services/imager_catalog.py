@@ -101,6 +101,61 @@ async def fetch_catalog(
         )
     resp.raise_for_status()
     try:
-        return resp.json()
+        doc = resp.json()
     except json.JSONDecodeError as e:
         raise CatalogError(f"catalog is not valid json: {e}") from e
+    return _normalize_catalog(doc)
+
+
+def _normalize_catalog(doc: Any) -> dict[str, Any]:
+    """Normalize the on-disk catalog schema produced by agora's
+    ``build-image.yml`` into the dict-keyed shape callers expect.
+
+    The agora release pipeline emits::
+
+        {
+          "schemaVersion": 1, "generatedAt": "...", "version": "v1.11.34",
+          "variants": [
+            {"variant": "pi5", "version": "v1.11.34",
+             "filename": "...", "url": "...", "sha256": "...",
+             "compressedBytes": ..., "uncompressedBytes": ...},
+            ...
+          ]
+        }
+
+    Older fixtures and the imager API/worker code path expect::
+
+        {"ref": "v...", "variants": {"pi5": {"url": ..., "sha256": ...,
+                                             "size_bytes": ...}, ...}}
+
+    We canonicalize on read so every caller sees the dict shape with
+    a top-level ``ref``.  ``compressedBytes`` is preserved verbatim and
+    also surfaced as ``size_bytes`` for backward compat with
+    :class:`CatalogEntryOut`.
+    """
+    if not isinstance(doc, dict):
+        raise CatalogError("catalog root is not a json object")
+    out = dict(doc)
+    if "ref" not in out and isinstance(out.get("version"), str):
+        out["ref"] = out["version"]
+    variants = out.get("variants")
+    if isinstance(variants, list):
+        keyed: dict[str, Any] = {}
+        for entry in variants:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("variant")
+            if not isinstance(name, str) or not name:
+                continue
+            keyed[name] = entry
+        variants = keyed
+        out["variants"] = variants
+    if isinstance(variants, dict):
+        for entry in variants.values():
+            if not isinstance(entry, dict):
+                continue
+            if "size_bytes" not in entry and isinstance(
+                entry.get("compressedBytes"), int
+            ):
+                entry["size_bytes"] = entry["compressedBytes"]
+    return out
