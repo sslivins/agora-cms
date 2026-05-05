@@ -177,6 +177,14 @@
     }
     async function jsonFetch(url, opts) {
         var resp = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts || {}));
+        if (resp.status === 204) {
+            if (!resp.ok) {
+                var err204 = new Error('HTTP 204');
+                err204.status = resp.status;
+                throw err204;
+            }
+            return null;
+        }
         var ct = resp.headers.get('content-type') || '';
         var body = ct.indexOf('application/json') >= 0 ? await resp.json() : await resp.text();
         if (!resp.ok) {
@@ -467,7 +475,7 @@
     }
 
     async function deleteBase(id) {
-        if (!confirm('Delete this cached base image? Provisioning jobs that already used it will keep their audit record.')) return;
+        if (!await showConfirm('Delete this cached base image? Provisioning jobs that already used it will keep their audit record.')) return;
         try {
             await jsonFetch('/api/imager/base-images/' + encodeURIComponent(id), { method: 'DELETE' });
             toast('Base image deleted', 'success');
