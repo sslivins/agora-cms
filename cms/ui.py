@@ -41,7 +41,7 @@ from cms.database import get_db
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, has_permission
+from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE, has_permission
 from cms.auth import get_user_group_ids
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
@@ -2529,4 +2529,30 @@ async def audit_page(
         "filter_until": until.strip(),
         "available_actions": available_actions,
         "audit_users": audit_users,
+    })
+
+
+@router.get("/imager", response_class=HTMLResponse)
+async def imager_page(
+    request: Request,
+    _user: User = Depends(require_permission(IMAGER_READ)),
+    settings: Settings = Depends(get_settings),
+):
+    """Browser-driven Pi image provisioning page.
+
+    Single page with two permission-gated sections:
+
+    - "Build Image" — visible to users with ``imager:build`` (Admin + Operator).
+    - "Base Images" — visible to users with ``imager:manage`` (Admin only).
+
+    The page itself is gated by ``imager:read``; users with read-only
+    access see explanatory empty state.  All data is loaded client-side
+    via the ``/api/imager/*`` endpoints.
+    """
+    perms = _user.role.permissions if _user.role else []
+    return templates.TemplateResponse(request, "imager.html", {
+        "active_tab": "imager",
+        "imager_can_build": has_permission(perms, IMAGER_BUILD),
+        "imager_can_manage": has_permission(perms, IMAGER_MANAGE),
+        "provisioned_retention_hours": settings.provisioned_retention_hours,
     })

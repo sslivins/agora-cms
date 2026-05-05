@@ -1,0 +1,565 @@
+{% extends "base.html" %}
+{% block title %}Imager — Agora CMS{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>Pi Image Provisioning</h2>
+    <span class="text-muted">Build pre-provisioned Raspberry Pi <code>.img.xz</code> files for fleet enrollment.</span>
+</div>
+
+{% if not imager_can_build and not imager_can_manage %}
+<div class="card">
+    <p class="empty-state text-muted">
+        You don't have permission to build or manage images.
+    </p>
+</div>
+{% endif %}
+
+{% if imager_can_build %}
+{# ── Build section ─────────────────────────────────────────────── #}
+<div class="card" data-imager-build style="margin-bottom:1rem;">
+    <h3 style="margin-top:0;">Build Image</h3>
+    <p class="text-muted" style="margin-top:0;">
+        Choose a fleet and base image, then build a pre-provisioned <code>.img.xz</code>
+        ready to flash to an SD card. The output is available for download for
+        {{ provisioned_retention_hours }} hours.
+    </p>
+
+    <form id="imagerBuildForm" autocomplete="off">
+        <div class="form-row" style="gap:0.75rem; flex-wrap:wrap;">
+            <div class="form-group" style="flex:1; min-width:180px;">
+                <label for="imagerFleetSelect">Fleet</label>
+                <select id="imagerFleetSelect" name="fleet_id" required>
+                    <option value="">Loading…</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:240px;">
+                <label for="imagerBaseSelect">Base image</label>
+                <select id="imagerBaseSelect" name="base_image_id" required>
+                    <option value="">Loading…</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:2; min-width:240px;">
+                <label for="imagerOutputName">Output filename</label>
+                <input id="imagerOutputName" name="output_name" type="text" required
+                       placeholder="agora-pi5-fleet-2026.img.xz"
+                       pattern=".+\.img\.xz$"
+                       title="Must end in .img.xz; slashes are not allowed.">
+                <small class="text-muted">Must end in <code>.img.xz</code>. No slashes.</small>
+            </div>
+        </div>
+        <div style="margin-top:0.75rem; display:flex; gap:0.5rem; align-items:center;">
+            <button type="submit" id="imagerBuildBtn" class="btn btn-primary">Build image</button>
+            <span id="imagerBuildHint" class="text-muted" style="font-size:0.85rem;"></span>
+        </div>
+    </form>
+
+    <div id="imagerJobCard" class="card card-highlight" style="margin-top:1rem; display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">
+            <div>
+                <strong>Current build (this tab)</strong>
+                <span id="imagerJobStatusBadge" class="badge"></span>
+                <div id="imagerJobMeta" class="text-muted" style="font-size:0.8rem; margin-top:0.25rem;"></div>
+            </div>
+            <div style="display:flex; gap:0.5rem;">
+                <a id="imagerJobDownload" class="btn btn-primary" style="display:none;" download>Download .img.xz</a>
+                <button id="imagerJobDismiss" type="button" class="btn btn-secondary btn-sm">Dismiss</button>
+            </div>
+        </div>
+        <div id="imagerJobError" class="text-muted" style="margin-top:0.5rem; display:none;"></div>
+    </div>
+</div>
+{% endif %}
+
+{% if imager_can_manage %}
+{# ── Base image management section ─────────────────────────────── #}
+<div class="card" data-imager-manage>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+        <h3 style="margin:0;">Base Images</h3>
+        <button id="imagerCatalogBtn" type="button" class="btn btn-secondary">Import from catalog…</button>
+    </div>
+    <p class="text-muted" style="margin-top:0.25rem;">
+        Cached upstream Raspberry Pi base images. Each version is downloaded once
+        per CMS instance and reused for every build.
+    </p>
+
+    <div id="imagerImportProgress" style="display:none; margin:0.75rem 0;"></div>
+
+    <div class="table-wrap">
+        <table id="imagerBaseTable" style="width:100%;">
+            <thead>
+                <tr>
+                    <th>Variant</th>
+                    <th>Version</th>
+                    <th>Status</th>
+                    <th>Size</th>
+                    <th>Imported</th>
+                    <th>SHA-256</th>
+                    <th style="width:6rem; text-align:right;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="imagerBaseTbody">
+                <tr><td colspan="7" class="empty-state text-muted">Loading…</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{# ── Catalog modal ──────────────────────────────────────────────── #}
+<div id="imagerCatalogModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="max-width:680px;">
+        <h3 style="margin-top:0;">Upstream Catalog</h3>
+        <p class="text-muted" style="margin-top:0;">
+            Select a variant/version to import into this CMS. Already-cached
+            entries are marked.
+        </p>
+        <div id="imagerCatalogBody" style="max-height:60vh; overflow:auto;">
+            <p class="empty-state text-muted">Loading catalog…</p>
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick="imagerCloseCatalog()">Close</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    // ── Helpers ────────────────────────────────────────────────
+    function $(sel, root) { return (root || document).querySelector(sel); }
+    function escHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function fmtBytes(n) {
+        if (n == null) return '—';
+        var u = ['B', 'KiB', 'MiB', 'GiB']; var i = 0; var v = Number(n);
+        while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+        return v.toFixed(v < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
+    }
+    function fmtDate(iso) {
+        if (!iso) return '—';
+        try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+    }
+    function toast(msg, variant) {
+        if (window.showToast) window.showToast(msg, variant); else console.log(msg);
+    }
+    async function jsonFetch(url, opts) {
+        var resp = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts || {}));
+        var ct = resp.headers.get('content-type') || '';
+        var body = ct.indexOf('application/json') >= 0 ? await resp.json() : await resp.text();
+        if (!resp.ok) {
+            var msg = (body && body.detail) || (typeof body === 'string' ? body : resp.statusText);
+            var err = new Error(msg || ('HTTP ' + resp.status));
+            err.status = resp.status; err.body = body;
+            throw err;
+        }
+        return body;
+    }
+    function statusBadgeClass(status) {
+        var s = String(status || '').toUpperCase();
+        if (s === 'DONE' || s === 'READY') return 'badge badge-success';
+        if (s === 'FAILED') return 'badge badge-failed';
+        if (s === 'CANCELLED') return 'badge badge-cancelled';
+        if (s === 'PROCESSING' || s === 'IMPORTING') return 'badge badge-processing';
+        return 'badge badge-pending';
+    }
+
+    // ── Build section ─────────────────────────────────────────
+    var buildSection = $('[data-imager-build]');
+    var manageSection = $('[data-imager-manage]');
+
+    var fleetsCache = [];
+    var basesCache = [];
+
+    async function loadFleetsAndBases() {
+        if (!buildSection) return;
+        var fleetSel = $('#imagerFleetSelect', buildSection);
+        var baseSel = $('#imagerBaseSelect', buildSection);
+        var hint = $('#imagerBuildHint', buildSection);
+        var submit = $('#imagerBuildBtn', buildSection);
+        try {
+            var [fleets, bases] = await Promise.all([
+                jsonFetch('/api/imager/fleets'),
+                jsonFetch('/api/imager/base-images'),
+            ]);
+            fleetsCache = fleets || [];
+            basesCache = (bases || []).filter(function(b) { return b.status === 'READY'; });
+
+            fleetSel.innerHTML = '';
+            if (fleetsCache.length === 0) {
+                fleetSel.innerHTML = '<option value="">No fleets configured</option>';
+            } else {
+                fleetSel.innerHTML = '<option value="">Select fleet…</option>' +
+                    fleetsCache.map(function(f) {
+                        return '<option value="' + escHtml(f.fleet_id) + '">' + escHtml(f.fleet_id) + '</option>';
+                    }).join('');
+            }
+
+            baseSel.innerHTML = '';
+            if (basesCache.length === 0) {
+                baseSel.innerHTML = '<option value="">No ready base images</option>';
+            } else {
+                baseSel.innerHTML = '<option value="">Select base image…</option>' +
+                    basesCache.map(function(b) {
+                        var label = b.variant + ' / ' + b.version + (b.is_default ? ' (default)' : '');
+                        return '<option value="' + escHtml(b.id) + '" data-variant="' + escHtml(b.variant) +
+                               '" data-version="' + escHtml(b.version) + '">' + escHtml(label) + '</option>';
+                    }).join('');
+            }
+
+            var disable = fleetsCache.length === 0 || basesCache.length === 0;
+            submit.disabled = disable;
+            if (fleetsCache.length === 0) {
+                hint.textContent = 'No fleets are configured for this CMS.';
+            } else if (basesCache.length === 0) {
+                hint.textContent = 'No base images are ready. Import one from the catalog first.';
+            } else {
+                hint.textContent = '';
+            }
+        } catch (e) {
+            fleetSel.innerHTML = '<option value="">Error loading</option>';
+            baseSel.innerHTML = '<option value="">Error loading</option>';
+            hint.textContent = 'Failed to load fleets/base images: ' + (e.message || e);
+            submit.disabled = true;
+        }
+    }
+
+    function autoFillName() {
+        if (!buildSection) return;
+        var input = $('#imagerOutputName', buildSection);
+        if (!input || input.dataset.userEdited === '1') return;
+        var fleet = $('#imagerFleetSelect', buildSection).value;
+        var baseSel = $('#imagerBaseSelect', buildSection);
+        var opt = baseSel.options[baseSel.selectedIndex];
+        if (!fleet || !opt || !opt.value) { input.value = ''; return; }
+        var variant = (opt.dataset.variant || '').replace(/[^a-z0-9]/gi, '');
+        var safeFleet = String(fleet).replace(/[^a-z0-9-]/gi, '');
+        var d = new Date();
+        var yyyymmdd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') +
+                       String(d.getDate()).padStart(2, '0');
+        input.value = 'agora-' + variant + '-' + safeFleet + '-' + yyyymmdd + '.img.xz';
+    }
+
+    // ── Job polling (build) ────────────────────────────────────
+    var SS_KEY = 'imagerCurrentJob';
+    var pollTimer = null;
+
+    function saveActiveJob(jobId) {
+        try { sessionStorage.setItem(SS_KEY, jobId); } catch (e) {}
+    }
+    function clearActiveJob() {
+        try { sessionStorage.removeItem(SS_KEY); } catch (e) {}
+    }
+    function loadActiveJob() {
+        try { return sessionStorage.getItem(SS_KEY); } catch (e) { return null; }
+    }
+
+    function renderJobCard(job) {
+        if (!buildSection) return;
+        var card = $('#imagerJobCard', buildSection);
+        var badge = $('#imagerJobStatusBadge', buildSection);
+        var meta = $('#imagerJobMeta', buildSection);
+        var dl = $('#imagerJobDownload', buildSection);
+        var errBox = $('#imagerJobError', buildSection);
+        card.style.display = '';
+        badge.className = statusBadgeClass(job.status);
+        badge.textContent = job.status;
+        var metaParts = ['Job ' + job.job_id.slice(0, 8)];
+        if (job.output_name) metaParts.push(escHtml(job.output_name));
+        if (job.created_at) metaParts.push('started ' + fmtDate(job.created_at));
+        meta.innerHTML = metaParts.join(' · ');
+        if (job.status === 'DONE') {
+            dl.style.display = '';
+            dl.href = '/api/imager/download/' + encodeURIComponent(job.job_id);
+            errBox.style.display = 'none';
+        } else {
+            dl.style.display = 'none';
+        }
+        if (job.status === 'FAILED' || job.status === 'CANCELLED') {
+            errBox.style.display = '';
+            errBox.textContent = job.error_message || 'Build did not complete.';
+        } else if (job.status !== 'DONE') {
+            errBox.style.display = 'none';
+        }
+    }
+
+    function isTerminal(status) {
+        return status === 'DONE' || status === 'FAILED' || status === 'CANCELLED';
+    }
+
+    async function pollOnce(jobId) {
+        try {
+            var job = await jsonFetch('/api/imager/jobs/' + encodeURIComponent(jobId));
+            renderJobCard(job);
+            if (isTerminal(job.status)) {
+                stopPolling();
+                if (job.status === 'DONE') {
+                    toast('Image build complete', 'success');
+                }
+            }
+        } catch (e) {
+            if (e.status === 404) {
+                stopPolling();
+                clearActiveJob();
+                $('#imagerJobCard', buildSection).style.display = 'none';
+                toast('Build job not found', 'error');
+            }
+            // Other errors: keep polling; treat as transient.
+        }
+    }
+
+    function startPolling(jobId) {
+        stopPolling();
+        saveActiveJob(jobId);
+        pollOnce(jobId);
+        pollTimer = setInterval(function() {
+            if (document.hidden) return;
+            pollOnce(jobId);
+        }, 3000);
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function dismissJobCard() {
+        stopPolling();
+        clearActiveJob();
+        if (buildSection) $('#imagerJobCard', buildSection).style.display = 'none';
+    }
+
+    async function submitBuild(ev) {
+        ev.preventDefault();
+        if (!buildSection) return;
+        var btn = $('#imagerBuildBtn', buildSection);
+        var fleetId = $('#imagerFleetSelect', buildSection).value;
+        var baseId = $('#imagerBaseSelect', buildSection).value;
+        var name = $('#imagerOutputName', buildSection).value.trim();
+        if (!fleetId || !baseId || !name) { toast('Please complete all fields', 'error'); return; }
+        if (!/\.img\.xz$/.test(name)) { toast('Output must end in .img.xz', 'error'); return; }
+        btn.disabled = true;
+        try {
+            var job = await jsonFetch('/api/imager/build', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fleet_id: fleetId, base_image_id: baseId, output_name: name }),
+            });
+            renderJobCard(job);
+            startPolling(job.job_id);
+        } catch (e) {
+            toast('Build failed to start: ' + (e.message || e), 'error');
+            // Refresh in case base list changed (e.g. deleted in another tab).
+            loadFleetsAndBases();
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // ── Manage section: base image list ───────────────────────
+    var importJobsCache = {}; // job_id -> { variant, version }
+
+    function renderImportProgress() {
+        if (!manageSection) return;
+        var box = $('#imagerImportProgress', manageSection);
+        var ids = Object.keys(importJobsCache);
+        if (ids.length === 0) { box.style.display = 'none'; box.innerHTML = ''; return; }
+        box.style.display = '';
+        box.innerHTML = ids.map(function(id) {
+            var info = importJobsCache[id];
+            return '<div class="card-highlight" style="padding:0.5rem 0.75rem; margin-bottom:0.25rem;">' +
+                '<span class="badge badge-processing">IMPORTING</span> ' +
+                escHtml(info.variant) + ' / ' + escHtml(info.version) +
+                ' <span class="text-muted" style="font-size:0.8rem;">(job ' + id.slice(0, 8) + ')</span>' +
+                '</div>';
+        }).join('');
+    }
+
+    function pollImportJob(jobId, info) {
+        importJobsCache[jobId] = info;
+        renderImportProgress();
+        var t = setInterval(async function() {
+            if (document.hidden) return;
+            try {
+                var job = await jsonFetch('/api/imager/jobs/' + encodeURIComponent(jobId));
+                if (isTerminal(job.status)) {
+                    clearInterval(t);
+                    delete importJobsCache[jobId];
+                    renderImportProgress();
+                    loadBaseImages();
+                    if (buildSection) loadFleetsAndBases();
+                    if (job.status === 'DONE') {
+                        toast('Imported ' + info.variant + ' / ' + info.version, 'success');
+                    } else {
+                        toast('Import failed: ' + (job.error_message || job.status), 'error');
+                    }
+                }
+            } catch (e) {
+                if (e.status === 404) {
+                    clearInterval(t);
+                    delete importJobsCache[jobId];
+                    renderImportProgress();
+                }
+            }
+        }, 3000);
+    }
+
+    async function loadBaseImages() {
+        if (!manageSection) return;
+        var tbody = $('#imagerBaseTbody', manageSection);
+        try {
+            var bases = await jsonFetch('/api/imager/base-images');
+            if (!bases || bases.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No base images cached. Click "Import from catalog…" to add one.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = bases.map(function(b) {
+                var sha = b.sha256 ? b.sha256.slice(0, 12) + '…' : '—';
+                var del = b.status === 'IMPORTING' ? '' :
+                    '<button type="button" class="btn btn-sm btn-danger-subtle" data-delete-base="' + escHtml(b.id) + '">Delete</button>';
+                return '<tr>' +
+                    '<td>' + escHtml(b.variant) + '</td>' +
+                    '<td>' + escHtml(b.version) + (b.is_default ? ' <span class="badge badge-builtin">default</span>' : '') + '</td>' +
+                    '<td><span class="' + statusBadgeClass(b.status) + '">' + escHtml(b.status) + '</span></td>' +
+                    '<td>' + fmtBytes(b.size_bytes) + '</td>' +
+                    '<td title="' + escHtml(b.imported_at || '') + '">' + fmtDate(b.imported_at) + '</td>' +
+                    '<td><code style="font-size:0.75rem;">' + escHtml(sha) + '</code></td>' +
+                    '<td style="text-align:right;">' + del + '</td>' +
+                    '</tr>';
+            }).join('');
+            tbody.querySelectorAll('[data-delete-base]').forEach(function(btn) {
+                btn.addEventListener('click', function() { deleteBase(btn.getAttribute('data-delete-base')); });
+            });
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">Failed to load: ' + escHtml(e.message || e) + '</td></tr>';
+        }
+    }
+
+    async function deleteBase(id) {
+        if (!confirm('Delete this cached base image? Provisioning jobs that already used it will keep their audit record.')) return;
+        try {
+            await jsonFetch('/api/imager/base-images/' + encodeURIComponent(id), { method: 'DELETE' });
+            toast('Base image deleted', 'success');
+            loadBaseImages();
+            if (buildSection) loadFleetsAndBases();
+        } catch (e) {
+            if (e.status === 409) {
+                toast('Cannot delete: base image is in use.', 'error');
+            } else {
+                toast('Delete failed: ' + (e.message || e), 'error');
+            }
+        }
+    }
+
+    // ── Catalog modal ─────────────────────────────────────────
+    function openCatalog() {
+        if (!manageSection) return;
+        var modal = $('#imagerCatalogModal', manageSection);
+        var body = $('#imagerCatalogBody', manageSection);
+        body.innerHTML = '<p class="empty-state text-muted">Loading catalog…</p>';
+        modal.style.display = '';
+        jsonFetch('/api/imager/catalog').then(function(cat) {
+            var entries = (cat && cat.entries) || [];
+            if (entries.length === 0) {
+                body.innerHTML = '<p class="empty-state text-muted">Catalog is empty.</p>';
+                return;
+            }
+            var ref = cat.ref ? '<p class="text-muted">Catalog ref: <code>' + escHtml(cat.ref) + '</code></p>' : '';
+            var cachedKey = {};
+            basesCache.forEach(function(b) { cachedKey[b.variant + '|' + b.version] = true; });
+            // Note: basesCache only has READY ones; fetch full list for accurate "cached" detection.
+            jsonFetch('/api/imager/base-images').then(function(all) {
+                (all || []).forEach(function(b) { cachedKey[b.variant + '|' + b.version] = true; });
+                renderCatalog();
+            }).catch(renderCatalog);
+            function renderCatalog() {
+                var rows = entries.map(function(e) {
+                    var version = cat.ref || '';
+                    var key = e.variant + '|' + version;
+                    var cached = cachedKey[key];
+                    var btn = cached
+                        ? '<span class="badge badge-success">cached</span>'
+                        : '<button type="button" class="btn btn-sm btn-primary" data-import-variant="' + escHtml(e.variant) + '" data-import-version="' + escHtml(version) + '">Import</button>';
+                    return '<tr>' +
+                        '<td>' + escHtml(e.variant) + '</td>' +
+                        '<td>' + escHtml(version) + '</td>' +
+                        '<td>' + fmtBytes(e.size_bytes) + '</td>' +
+                        '<td><code style="font-size:0.75rem;">' + escHtml((e.sha256 || '').slice(0, 12) + '…') + '</code></td>' +
+                        '<td style="text-align:right;">' + btn + '</td>' +
+                        '</tr>';
+                }).join('');
+                body.innerHTML = ref +
+                    '<table style="width:100%;"><thead><tr><th>Variant</th><th>Version</th><th>Size</th><th>SHA-256</th><th></th></tr></thead>' +
+                    '<tbody>' + rows + '</tbody></table>';
+                body.querySelectorAll('[data-import-variant]').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        importBase(btn.getAttribute('data-import-variant'), btn.getAttribute('data-import-version'), btn);
+                    });
+                });
+            }
+        }).catch(function(e) {
+            body.innerHTML = '<p class="empty-state text-muted">Failed to load catalog: ' + escHtml(e.message || e) + '</p>';
+        });
+    }
+
+    window.imagerCloseCatalog = function() {
+        if (!manageSection) return;
+        $('#imagerCatalogModal', manageSection).style.display = 'none';
+    };
+
+    async function importBase(variant, version, btn) {
+        btn.disabled = true;
+        try {
+            var bi = await jsonFetch('/api/imager/base-images', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ variant: variant, version: version }),
+            });
+            // The POST returns the BaseImage row; the import job runs separately.
+            // Refresh table; row will appear with IMPORTING status.
+            // Find the most-recent import job for this base by polling base-images
+            // and refreshing — but the API returns only the BaseImage; we don't
+            // have job_id directly. So just refresh and let row status show.
+            toast('Import started for ' + variant + ' / ' + version, 'success');
+            window.imagerCloseCatalog();
+            loadBaseImages();
+        } catch (e) {
+            toast('Import failed: ' + (e.message || e), 'error');
+            btn.disabled = false;
+        }
+    }
+
+    // ── Wire-up ───────────────────────────────────────────────
+    if (buildSection) {
+        var form = $('#imagerBuildForm', buildSection);
+        form.addEventListener('submit', submitBuild);
+        var nameInput = $('#imagerOutputName', buildSection);
+        nameInput.addEventListener('input', function() { nameInput.dataset.userEdited = '1'; });
+        $('#imagerFleetSelect', buildSection).addEventListener('change', autoFillName);
+        $('#imagerBaseSelect', buildSection).addEventListener('change', autoFillName);
+        $('#imagerJobDismiss', buildSection).addEventListener('click', dismissJobCard);
+        loadFleetsAndBases();
+        // Resume any in-flight job from a prior page load.
+        var resumeId = loadActiveJob();
+        if (resumeId) startPolling(resumeId);
+    }
+
+    if (manageSection) {
+        $('#imagerCatalogBtn', manageSection).addEventListener('click', openCatalog);
+        loadBaseImages();
+    }
+
+    // Re-poll immediately when the tab becomes visible.
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) return;
+        var jid = loadActiveJob();
+        if (jid && pollTimer) pollOnce(jid);
+    });
+})();
+</script>
+{% endblock %}
