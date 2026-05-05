@@ -111,6 +111,41 @@ def test_terminal_imager_error_is_exception() -> None:
     assert issubclass(TerminalImagerError, Exception)
 
 
+def test_scratch_dir_falls_back_to_asset_storage_when_unset(tmp_path: Path) -> None:
+    """Default ``imager_scratch_path=None`` must not crash.
+
+    In prod the worker's container app does NOT set IMAGER_SCRATCH_PATH;
+    ``shared.config.Settings.imager_scratch_path`` defaults to ``None``.
+    The docstring promises a fallback to a subdirectory under
+    ``asset_storage_path``; this test pins that contract so we don't
+    regress to ``Path(None)`` which TypeErrors the worker.
+    """
+    settings = SimpleNamespace(
+        imager_scratch_path=None,
+        asset_storage_path=tmp_path / "assets",
+    )
+    target = uuid.uuid4()
+    scratch = imager_handlers._scratch_dir(settings, "import", target)
+
+    assert scratch.is_relative_to(tmp_path / "assets")
+    assert "imager-scratch" in scratch.parts
+    assert f"import-{target}-" in scratch.name
+
+
+def test_scratch_dir_honors_explicit_imager_scratch_path(tmp_path: Path) -> None:
+    """When operators set IMAGER_SCRATCH_PATH, fallback is skipped."""
+    explicit = tmp_path / "dedicated-scratch"
+    settings = SimpleNamespace(
+        imager_scratch_path=explicit,
+        asset_storage_path=tmp_path / "assets",
+    )
+    target = uuid.uuid4()
+    scratch = imager_handlers._scratch_dir(settings, "build", target)
+
+    assert scratch.is_relative_to(explicit)
+    assert "imager-scratch" not in scratch.parts
+
+
 # ── Import handler ─────────────────────────────────────────────────
 
 
