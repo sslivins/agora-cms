@@ -19,8 +19,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-from alembic import command as alembic_command
-from alembic.config import Config as AlembicConfig
 from sqlalchemy import inspect as sa_inspect
 
 from shared.database import Base, init_db, get_db, dispose_db, create_tables  # noqa: F401
@@ -36,13 +34,20 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 
 
-def _alembic_config() -> AlembicConfig:
+def _alembic_config():
     """Build an Alembic Config pointed at this repo's alembic.ini.
 
     We don't override ``sqlalchemy.url`` here — ``alembic/env.py`` resolves
     the URL from ``SharedSettings`` (the same source the running app uses),
     which keeps the CLI and the startup path on exactly one code path.
+
+    ``alembic`` is imported lazily here so non-CMS images (e.g. the worker
+    image, which imports CMS ORM models via ``cms.models`` to share
+    ``Base.metadata`` but never runs migrations) don't have to pip-install
+    alembic just to keep this module importable.
     """
+    from alembic.config import Config as AlembicConfig  # local import
+
     return AlembicConfig(str(_ALEMBIC_INI))
 
 
@@ -80,6 +85,8 @@ async def run_migrations() -> None:
     # internally call ``asyncio.run()``.  We can't call asyncio.run from
     # inside a running event loop, so we hand off to a worker thread,
     # which gets its own loop.
+    from alembic import command as alembic_command  # lazy: see _alembic_config
+
     cfg = _alembic_config()
 
     if not has_alembic and has_legacy_assets:
