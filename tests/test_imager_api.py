@@ -45,10 +45,13 @@ def imager_settings(app):
 
     Mutates the singleton settings instance the app fixture installed
     via ``dependency_overrides``.  Restores defaults on teardown.
+
+    NOTE: PR 7 moved the catalog URL out of ``Settings`` and into the
+    ``cms_settings`` table.  Tests that need a URL configured should
+    use the :func:`imager_catalog_url` fixture as well.
     """
     settings = app.dependency_overrides[get_settings]()
     saved = {
-        "base_image_catalog_url": settings.base_image_catalog_url,
         "base_image_allowed_hosts": settings.base_image_allowed_hosts,
         "base_image_cache_container": settings.base_image_cache_container,
         "provisioned_container": settings.provisioned_container,
@@ -56,9 +59,6 @@ def imager_settings(app):
         "fleet_register_secrets": dict(settings.fleet_register_secrets or {}),
         "base_url": settings.base_url,
     }
-    settings.base_image_catalog_url = (
-        "https://github.com/sslivins/agora/releases/download/v1.11.28/catalog.json"
-    )
     settings.base_image_allowed_hosts = "github.com,objects.githubusercontent.com"
     settings.base_image_cache_container = "base-images"
     settings.provisioned_container = "provisioned"
@@ -68,6 +68,24 @@ def imager_settings(app):
     yield settings
     for k, v in saved.items():
         setattr(settings, k, v)
+
+
+@pytest_asyncio.fixture
+async def imager_catalog_url(db_session):
+    """Seed the imager catalog URL setting in the DB.
+
+    PR 7 moved the URL out of ``Settings``.  Tests that exercise the
+    catalog or base-image-import endpoints need this fixture; tests
+    that exercise the unset/503 path should NOT request it.
+    """
+    from cms.services.imager_settings import set_catalog_url
+
+    url = (
+        "https://github.com/sslivins/agora/releases/download/v1.11.28/catalog.json"
+    )
+    await set_catalog_url(db_session, url)
+    await db_session.commit()
+    return url
 
 
 def _catalog_doc(ref: str = "v1.11.28") -> dict[str, Any]:
@@ -91,7 +109,7 @@ def _catalog_doc(ref: str = "v1.11.28") -> dict[str, Any]:
 
 
 @pytest.fixture
-def patch_catalog_ok(monkeypatch, imager_settings):
+def patch_catalog_ok(monkeypatch, imager_settings, imager_catalog_url):
     """Make every httpx call from the imager router return the canned catalog."""
     body = json.dumps(_catalog_doc()).encode("utf-8")
 
@@ -109,7 +127,7 @@ def patch_catalog_ok(monkeypatch, imager_settings):
 
 
 @pytest.fixture
-def patch_catalog_error(monkeypatch, imager_settings):
+def patch_catalog_error(monkeypatch, imager_settings, imager_catalog_url):
     """Make catalog fetches fail with a network error."""
     def _handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("test simulated network error")
@@ -200,7 +218,7 @@ async def test_list_fleets_returns_configured_ids_no_secrets(client, imager_sett
 
 @pytest.mark.asyncio
 async def test_catalog_503_when_url_unconfigured(client, imager_settings):
-    imager_settings.base_image_catalog_url = ""
+    # Default DB state: no imager.catalog_url row set.
     resp = await client.get("/api/imager/catalog")
     assert resp.status_code == 503
 
@@ -326,7 +344,7 @@ async def test_import_404_on_unknown_variant(client, patch_catalog_ok):
 
 @pytest.mark.asyncio
 async def test_import_503_when_catalog_url_unconfigured(client, imager_settings):
-    imager_settings.base_image_catalog_url = ""
+    # Default DB state: no imager.catalog_url row set.
     resp = await client.post(
         "/api/imager/base-images",
         json={"variant": "pi5", "version": "v1.11.28"},

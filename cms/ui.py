@@ -2537,6 +2537,7 @@ async def imager_page(
     request: Request,
     _user: User = Depends(require_permission(IMAGER_READ)),
     settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
 ):
     """Browser-driven Pi image provisioning page.
 
@@ -2549,10 +2550,14 @@ async def imager_page(
     access see explanatory empty state.  All data is loaded client-side
     via the ``/api/imager/*`` endpoints.
     """
+    from cms.services.imager_settings import get_catalog_url
+
     perms = _user.role.permissions if _user.role else []
+    catalog_url = await get_catalog_url(db)
     return templates.TemplateResponse(request, "imager.html", {
         "active_tab": "imager",
         "imager_can_build": has_permission(perms, IMAGER_BUILD),
         "imager_can_manage": has_permission(perms, IMAGER_MANAGE),
+        "imager_catalog_url": catalog_url,
         "provisioned_retention_hours": settings.provisioned_retention_hours,
     })

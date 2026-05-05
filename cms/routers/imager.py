@@ -56,6 +56,12 @@ from cms.models.user import User
 from cms.permissions import IMAGER_BUILD, IMAGER_MANAGE, IMAGER_READ
 from cms.services.audit_service import audit_log
 from cms.services.imager import is_valid_output_name
+from cms.services.imager_settings import (
+    CatalogUrlValidationError,
+    get_catalog_url,
+    set_catalog_url,
+    validate_catalog_url,
+)
 from shared.models.imager import (
     BaseImage,
     BaseImageStatus,
@@ -127,6 +133,21 @@ class BuildBody(BaseModel):
     output_name: str = Field(..., min_length=1, max_length=255)
 
 
+class ImagerSettingsOut(BaseModel):
+    """Imager runtime settings exposed over the API.
+
+    ``catalog_url`` is ``None`` when no catalog URL has been
+    configured -- the UI uses this to disable the "Import from
+    catalog" button and show an admin-targeted prompt to configure it.
+    """
+
+    catalog_url: str | None = None
+
+
+class ImagerSettingsUpdateBody(BaseModel):
+    catalog_url: str = Field(..., min_length=1, max_length=2048)
+
+
 class JobStatusOut(BaseModel):
     job_id: uuid.UUID
     type: str
@@ -144,12 +165,23 @@ class JobStatusOut(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-def _ensure_catalog_url(settings: Settings) -> str:
-    url = (settings.base_image_catalog_url or "").strip()
+async def _resolve_catalog_url_or_503(db: AsyncSession) -> str:
+    """Return the DB-configured catalog URL or raise 503.
+
+    PR 7 moved the catalog URL from a deploy-time env var to a runtime
+    setting an admin can edit at ``PUT /api/imager/settings``.  All
+    callers that previously read ``settings.base_image_catalog_url``
+    use this helper so a missing setting renders a helpful 503 instead
+    of failing later inside the catalog fetch.
+    """
+    url = await get_catalog_url(db)
     if not url:
         raise HTTPException(
             status_code=503,
-            detail="BASE_IMAGE_CATALOG_URL is not configured",
+            detail=(
+                "imager catalog URL is not configured; "
+                "set it via PUT /api/imager/settings"
+            ),
         )
     return url
 
@@ -224,9 +256,57 @@ async def list_fleets(
     return [FleetOut(fleet_id=f) for f in fleets]
 
 
+@router.get("/settings", response_model=ImagerSettingsOut)
+async def get_imager_settings(
+    user: User = Depends(require_permission(IMAGER_READ)),
+    db: AsyncSession = Depends(get_db),
+) -> ImagerSettingsOut:
+    """Return the current imager runtime settings.
+
+    Always 200; ``catalog_url`` may be ``None`` when unset, which the
+    UI uses to disable the "Import from catalog" button.
+    """
+    url = await get_catalog_url(db)
+    return ImagerSettingsOut(catalog_url=url)
+
+
+@router.put("/settings", response_model=ImagerSettingsOut)
+async def update_imager_settings(
+    body: ImagerSettingsUpdateBody,
+    request: Request,
+    user: User = Depends(require_permission(IMAGER_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ImagerSettingsOut:
+    """Set the imager catalog URL.
+
+    Validates that the URL is https and the host is in
+    ``BASE_IMAGE_ALLOWED_HOSTS``.  Audited.
+    """
+    try:
+        cleaned = validate_catalog_url(
+            body.catalog_url, settings.base_image_allowed_hosts
+        )
+    except CatalogUrlValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    stored = await set_catalog_url(db, cleaned)
+    await audit_log(
+        db,
+        user=user,
+        action="imager.settings.update",
+        resource_type="imager_settings",
+        resource_id="catalog_url",
+        details={"catalog_url": stored},
+        request=request,
+    )
+    await db.commit()
+    return ImagerSettingsOut(catalog_url=stored)
+
+
 @router.get("/catalog", response_model=CatalogOut)
 async def get_catalog(
     user: User = Depends(require_permission(IMAGER_MANAGE)),
+    db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> CatalogOut:
     """Live-fetch and parse the upstream catalog manifest.
@@ -234,7 +314,7 @@ async def get_catalog(
     Side-effect-free; intended for the UI to populate the
     "import a new base image" picker without writing anything to DB.
     """
-    catalog_url = _ensure_catalog_url(settings)
+    catalog_url = await _resolve_catalog_url_or_503(db)
     allowlist = _allowlist(settings)
     if not allowlist:
         raise HTTPException(
@@ -305,7 +385,7 @@ async def import_base_image(
     # at enqueue time.  This eliminates the TOCTOU window between admin
     # click and worker pickup (worker uses the stamped values, not the
     # mutable catalog).
-    catalog_url = _ensure_catalog_url(settings)
+    catalog_url = await _resolve_catalog_url_or_503(db)
     allowlist = _allowlist(settings)
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
