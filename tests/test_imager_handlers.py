@@ -47,6 +47,7 @@ from shared.models.imager import (
     ProvisionedImage,
     ProvisionedImageStatus,
 )
+from shared.models.job import Job, JobType
 from shared.services.storage import LocalStorageBackend, init_storage
 from worker import imager_handlers
 from worker.imager_handlers import (
@@ -686,3 +687,336 @@ async def test_provision_missing_row_returns_false(
         session_factory, settings, uuid.uuid4()
     )
     assert ok is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Import threshold (size-aware) tests
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_import_size_aware_threshold_passes_when_free_space_enough(
+    db_session, session_factory, storage_backend, tmp_path, monkeypatch
+):
+    """expected_size known + free space ample -> threshold check passes
+    (test stops at SHA mismatch from a tiny canned response)."""
+    settings = _make_settings(tmp_path, imager_min_free_bytes=10 * 1024**3)
+    bi = BaseImage(
+        variant="pi5", version="v1",
+        source_url="https://github.com/x.img.xz",
+        expected_sha256="0" * 64,
+        size_bytes=1_500_000_000,  # 1.5 GB
+    )
+    db_session.add(bi)
+    await db_session.commit()
+    await db_session.refresh(bi)
+
+    # 4 GiB free is plenty for a 1.5 GB import (needs 2*1.5 + 256 MiB).
+    monkeypatch.setattr(
+        imager_handlers, "_free_bytes",
+        lambda *_: _async_return(4 * 1024**3),
+    )
+    _patch_httpx(monkeypatch, lambda r: httpx.Response(200, content=b"hi"))
+
+    # The handler will pass the threshold check, download "hi", and fail
+    # SHA verify (terminal).  We just want to confirm the threshold
+    # check did not bail out early as retryable False.
+    with pytest.raises(TerminalImagerError, match="sha256 mismatch"):
+        await import_base_image_by_id(session_factory, settings, bi.id)
+
+
+@pytest.mark.asyncio
+async def test_import_size_aware_threshold_fails_when_free_space_low(
+    db_session, session_factory, storage_backend, tmp_path, monkeypatch
+):
+    """expected_size known + free space tight -> retryable False without
+    touching the network."""
+    # Set imager_min_free_bytes deliberately tiny: prove the import path
+    # is using the size-derived threshold, not the env knob.
+    settings = _make_settings(tmp_path, imager_min_free_bytes=1)
+    bi = BaseImage(
+        variant="pi5", version="v1",
+        source_url="https://github.com/x.img.xz",
+        expected_sha256="0" * 64,
+        size_bytes=1_500_000_000,  # 1.5 GB -> needs ~3.25 GiB
+    )
+    db_session.add(bi)
+    await db_session.commit()
+    await db_session.refresh(bi)
+
+    # 1 GiB free is below the size-derived threshold.
+    monkeypatch.setattr(
+        imager_handlers, "_free_bytes",
+        lambda *_: _async_return(1 * 1024**3),
+    )
+
+    def fail(request):
+        raise AssertionError("must not reach network when low on disk")
+    _patch_httpx(monkeypatch, fail)
+
+    ok = await import_base_image_by_id(session_factory, settings, bi.id)
+    assert ok is False
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(BaseImage).where(BaseImage.id == bi.id)
+        )).scalar_one()
+    assert fresh.status == BaseImageStatus.IMPORTING.value
+
+
+@pytest.mark.asyncio
+async def test_import_unknown_size_uses_conservative_fallback(
+    db_session, session_factory, storage_backend, tmp_path, monkeypatch
+):
+    """When size_bytes is None, fall back to imager_min_free_bytes (10 GiB)
+    rather than a tiny default that could let downloads fill the disk."""
+    settings = _make_settings(tmp_path, imager_min_free_bytes=10 * 1024**3)
+    bi = BaseImage(
+        variant="pi5", version="v1",
+        source_url="https://github.com/x.img.xz",
+        expected_sha256="0" * 64,
+        size_bytes=None,
+    )
+    db_session.add(bi)
+    await db_session.commit()
+    await db_session.refresh(bi)
+
+    # 5 GiB free: above any size-derived guess (would have passed at 2 GiB),
+    # below the 10 GiB conservative fallback.
+    monkeypatch.setattr(
+        imager_handlers, "_free_bytes",
+        lambda *_: _async_return(5 * 1024**3),
+    )
+
+    def fail(request):
+        raise AssertionError("must not reach network with unknown size + low disk")
+    _patch_httpx(monkeypatch, fail)
+
+    ok = await import_base_image_by_id(session_factory, settings, bi.id)
+    assert ok is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# mark_target_failed_on_exhaustion tests
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_exhausted_job(target_id: uuid.UUID, job_type, *, retry_count=4,
+                        error_message="last attempt: connection reset"):
+    """Build a Job-shaped object with the fields the helper consumes.
+    We don't need the row to be in DB -- the helper takes the job by
+    value (it was just claimed, on its way to the dispatcher)."""
+    from shared.models.job import Job, JobStatus
+    j = Job(
+        type=job_type,
+        target_id=target_id,
+        status=JobStatus.FAILED,
+        retry_count=retry_count,
+        error_message=error_message,
+    )
+    j.id = uuid.uuid4()
+    return j
+
+
+async def _async_return(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_poison_helper_flips_importing_base_image(
+    db_session, session_factory, tmp_path
+):
+    """IMPORTING BaseImage + exhausted IMAGE_IMPORT job -> FAILED with
+    descriptive error_message."""
+    from shared.services.jobs import enqueue_job
+
+    bi = BaseImage(
+        variant="pi5", version="v1",
+        source_url="https://x/y.img.xz",
+        expected_sha256="0" * 64,
+        status=BaseImageStatus.IMPORTING.value,
+    )
+    db_session.add(bi)
+    await db_session.commit()
+    await db_session.refresh(bi)
+
+    # Persist a job with this target_id so the latest-job guard finds
+    # exactly one match.  enqueue_job uses target_id consistently.
+    from shared.models.job import JobStatus
+    job_id = await enqueue_job(db_session, JobType.IMAGE_IMPORT, bi.id)
+    async with session_factory() as db:
+        j = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        j.retry_count = 4
+        j.error_message = "transient network failure"
+        j.status = JobStatus.FAILED
+        await db.commit()
+        job_row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+
+    result = await imager_handlers.mark_target_failed_on_exhaustion(
+        session_factory, job_row,
+    )
+    assert result == "updated"
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(BaseImage).where(BaseImage.id == bi.id)
+        )).scalar_one()
+    assert fresh.status == BaseImageStatus.FAILED.value
+    assert "exceeded retry limit" in (fresh.error_message or "")
+    assert "4 attempts" in (fresh.error_message or "")
+    assert "transient network failure" in (fresh.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_poison_helper_flips_provisioning_provisioned_image(
+    db_session, session_factory, tmp_path
+):
+    """PROVISIONING ProvisionedImage + exhausted IMAGE_PROVISION job ->
+    FAILED with descriptive error AND fleet_env_payload cleared."""
+    from shared.services.jobs import enqueue_job
+    from shared.models.job import Job, JobStatus
+
+    bi = await _make_ready_base(db_session, sha="a" * 64)
+    pi = ProvisionedImage(
+        base_image_id=bi.id, output_name="x.img.xz",
+        fleet_env_payload=b"AGORA_FLEET_SECRET=topsecret\n",
+        status=ProvisionedImageStatus.PROVISIONING.value,
+    )
+    db_session.add(pi)
+    await db_session.commit()
+    await db_session.refresh(pi)
+
+    job_id = await enqueue_job(db_session, JobType.IMAGE_PROVISION, pi.id)
+    async with session_factory() as db:
+        j = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        j.retry_count = 4
+        j.status = JobStatus.FAILED
+        j.error_message = "build_provisioned subprocess crashed"
+        await db.commit()
+        job_row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+
+    result = await imager_handlers.mark_target_failed_on_exhaustion(
+        session_factory, job_row,
+    )
+    assert result == "updated"
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(ProvisionedImage).where(ProvisionedImage.id == pi.id)
+        )).scalar_one()
+    assert fresh.status == ProvisionedImageStatus.FAILED.value
+    assert fresh.fleet_env_payload is None
+    assert "exceeded retry limit" in (fresh.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_poison_helper_skips_non_imager_job(session_factory):
+    """VARIANT_TRANSCODE jobs are owned by the transcoder flow; the
+    helper must no-op safely."""
+    job = _make_exhausted_job(uuid.uuid4(), JobType.VARIANT_TRANSCODE)
+    result = await imager_handlers.mark_target_failed_on_exhaustion(
+        session_factory, job,
+    )
+    assert result == "not_imager"
+
+
+@pytest.mark.asyncio
+async def test_poison_helper_skips_when_target_row_missing(
+    session_factory, tmp_path
+):
+    """Poison message arrives after the user deleted the BaseImage -> no-op."""
+    job = _make_exhausted_job(uuid.uuid4(), JobType.IMAGE_IMPORT)
+    result = await imager_handlers.mark_target_failed_on_exhaustion(
+        session_factory, job,
+    )
+    assert result == "missing"
+
+
+@pytest.mark.asyncio
+async def test_poison_helper_does_not_clobber_ready_base_image(
+    db_session, session_factory, tmp_path
+):
+    """Re-import after a previous FAILED reuses the same row UUID; if
+    the new attempt has already succeeded (READY), a stale poison
+    message from an OLDER attempt must NOT flip it back to FAILED."""
+    from shared.services.jobs import enqueue_job
+    from shared.models.job import Job, JobStatus
+
+    bi = await _make_ready_base(db_session, sha="b" * 64)
+
+    # Old job for this same target -- this is the one that "exhausted".
+    old_id = await enqueue_job(db_session, JobType.IMAGE_IMPORT, bi.id)
+    async with session_factory() as db:
+        j = (await db.execute(select(Job).where(Job.id == old_id))).scalar_one()
+        j.retry_count = 4
+        j.status = JobStatus.FAILED
+        j.error_message = "stale failure"
+        await db.commit()
+
+    # Newer job for the same target (the user re-imported).  Latest-job
+    # guard should kick in.  Tiny sleep so created_at orders correctly
+    # on filesystems where the resolution is coarse.
+    import asyncio as _aio
+    await _aio.sleep(0.01)
+    new_id = await enqueue_job(db_session, JobType.IMAGE_IMPORT, bi.id)
+    assert new_id != old_id
+
+    async with session_factory() as db:
+        old_row = (await db.execute(
+            select(Job).where(Job.id == old_id)
+        )).scalar_one()
+
+    result = await imager_handlers.mark_target_failed_on_exhaustion(
+        session_factory, old_row,
+    )
+    # Either skipped_newer_job (stale-job guard) or skipped_status
+    # (status guard) -- both are correct outcomes.  We must not flip.
+    assert result in ("skipped_newer_job", "skipped_status")
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(BaseImage).where(BaseImage.id == bi.id)
+        )).scalar_one()
+    assert fresh.status == BaseImageStatus.READY.value
+
+
+@pytest.mark.asyncio
+async def test_poison_helper_skips_when_status_is_not_in_flight(
+    db_session, session_factory, tmp_path
+):
+    """If somehow the row has already moved past IMPORTING (e.g. another
+    job concurrently set it READY), the status guard prevents clobber."""
+    from shared.services.jobs import enqueue_job
+    from shared.models.job import Job, JobStatus
+
+    bi = BaseImage(
+        variant="pi5", version="v1",
+        source_url="https://x/y.img.xz",
+        expected_sha256="0" * 64,
+        # Already READY despite the job being the latest.
+        status=BaseImageStatus.READY.value,
+        sha256="c" * 64, blob_path="pi5/v1/base.img.xz", size_bytes=1,
+    )
+    db_session.add(bi)
+    await db_session.commit()
+    await db_session.refresh(bi)
+
+    job_id = await enqueue_job(db_session, JobType.IMAGE_IMPORT, bi.id)
+    async with session_factory() as db:
+        j = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        j.retry_count = 4
+        j.status = JobStatus.FAILED
+        await db.commit()
+        job_row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one()
+
+    result = await imager_handlers.mark_target_failed_on_exhaustion(
+        session_factory, job_row,
+    )
+    assert result == "skipped_status"
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(BaseImage).where(BaseImage.id == bi.id)
+        )).scalar_one()
+    assert fresh.status == BaseImageStatus.READY.value
+
