@@ -32,7 +32,9 @@ from playwright.sync_api import Page
 from tests.nightly.helpers.simulator import SimulatorClient
 
 
-LOGS_POLL_TIMEOUT_S = 60.0
+# Generous to absorb scheduling pauses under full nightly E2E load (one sim
+# stack handles ~88 tests). Small-payload completion is normally sub-second.
+LOGS_POLL_TIMEOUT_S = 120.0
 COUNTER_POLL_TIMEOUT_S = 30.0
 
 # Stay comfortably under the firmware ``LOGS_JSON_MAX_BYTES`` (900_000) on the
@@ -68,7 +70,14 @@ def _wait_for_online(page: Page, device_id: str, timeout: float):
     raise AssertionError(f"device {device_id} did not come online in {timeout}s")
 
 
-def _poll_log_request_ready(page: Page, request_id: str, *, timeout: float) -> dict:
+def _poll_log_request_ready(
+    page: Page,
+    request_id: str,
+    *,
+    timeout: float,
+    sim: SimulatorClient | None = None,
+    serial: str | None = None,
+) -> dict:
     deadline = time.monotonic() + timeout
     last: dict = {}
     while time.monotonic() < deadline:
@@ -84,8 +93,17 @@ def _poll_log_request_ready(page: Page, request_id: str, *, timeout: float) -> d
                 f"log request {request_id} failed: {last!r}"
             )
         time.sleep(1.0)
+    # Timeout — pull sim-side counters so the failure message tells us whether
+    # the device actually received the WS request or if the hop was lost.
+    extra = ""
+    if sim is not None and serial is not None:
+        try:
+            rec = sim.get_recording(serial)
+            extra = f"; sim recording on {serial}: {rec!r}"
+        except Exception as e:  # noqa: BLE001 — diagnostic best-effort
+            extra = f"; sim get_recording({serial}) raised: {e!r}"
     raise AssertionError(
-        f"log request {request_id} did not reach ready in {timeout}s: {last!r}"
+        f"log request {request_id} did not reach ready in {timeout}s: {last!r}{extra}"
     )
 
 
@@ -177,7 +195,10 @@ def test_request_logs_small_payload_takes_ws_json_branch(
     )
     request_id = resp.json()["request_id"]
 
-    final = _poll_log_request_ready(page, request_id, timeout=LOGS_POLL_TIMEOUT_S)
+    final = _poll_log_request_ready(
+        page, request_id, timeout=LOGS_POLL_TIMEOUT_S,
+        sim=simulator, serial=device_id,
+    )
     assert final.get("status") == "ready"
 
     # Branch proof: the firmware took the JSON-over-WS path.
@@ -226,7 +247,10 @@ def test_request_logs_large_payload_takes_http_upload_branch(
     )
     request_id = resp.json()["request_id"]
 
-    final = _poll_log_request_ready(page, request_id, timeout=LOGS_POLL_TIMEOUT_S)
+    final = _poll_log_request_ready(
+        page, request_id, timeout=LOGS_POLL_TIMEOUT_S,
+        sim=simulator, serial=device_id,
+    )
     assert final.get("status") == "ready"
 
     # Branch proof: the firmware took the HTTP-upload path.
