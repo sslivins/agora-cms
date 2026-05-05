@@ -89,6 +89,9 @@ param adminPrincipalId string
 @description('Email recipient for telemetry alerts (CMS 5xx, latency, dependency failures, exceptions). Empty disables the alerts module entirely (e.g. for dev environments where pages are noise).')
 param alertEmail string = ''
 
+@description('Upstream URL of the base-image catalog manifest (catalog.json) used by the Imager feature. Empty disables catalog import (POST /api/imager/base-images and GET /api/imager/catalog return 503). Default points at the rolling stable from sslivins/agora.')
+param baseImageCatalogUrl string = 'https://github.com/sslivins/agora/releases/latest/download/catalog.json'
+
 var tags = {
   project: 'agora-cms'
   managedBy: 'bicep'
@@ -226,6 +229,9 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Bootstrap v2 fleet secrets (JSON map)
     fleetRegisterSecrets: fleetRegisterSecrets
+
+    // Imager — upstream catalog manifest URL
+    baseImageCatalogUrl: baseImageCatalogUrl
   }
 }
 

@@ -9,6 +9,10 @@ param containerAppsSubnetId string
 param containerAppsSubnetCidr string
 param tags object = {}
 
+// ── Imager (browser-driven Pi image provisioning) ──
+@description('Upstream URL of the base-image catalog manifest. Empty disables catalog import.')
+param baseImageCatalogUrl string = ''
+
 // ── CMS App config ──
 param cmsAppName string
 param cmsImage string
@@ -291,6 +295,14 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'OTEL_RESOURCE_ATTRIBUTES'
               value: 'service.name=agora-cms,service.namespace=agora,deployment.environment=${environmentName}'
             }
+            {
+              // Imager: upstream catalog manifest. Empty → /api/imager/catalog
+              // and POST /api/imager/base-images return 503. The CMS only
+              // needs this for the UI list + import-time SHA pinning; the
+              // actual base-image download happens in the worker.
+              name: 'AGORA_CMS_BASE_IMAGE_CATALOG_URL'
+              value: baseImageCatalogUrl
+            }
           ]
           volumeMounts: [
             {
@@ -473,6 +485,13 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'AZURE_STORAGE_CONNECTION_STRING'
               secretRef: 'storage-connection-string'
+            }
+            {
+              // Imager: catalog URL is read by the worker fallback path
+              // (worker/imager_handlers.py) when a BaseImage row lacks a
+              // stamped source_url — defensive, normally unused.
+              name: 'AGORA_CMS_BASE_IMAGE_CATALOG_URL'
+              value: baseImageCatalogUrl
             }
           ]
           volumeMounts: [
