@@ -130,6 +130,18 @@ ENDPOINTS: list[EP] = [
     # ── Logs ──
     EP("GET", "/api/cms/logs", (ADMIN, OPERATOR, VIEWER)),
 
+    # ── Imager (browser-driven Pi image provisioning) ──
+    EP("GET", "/api/imager/fleets", (ADMIN, OPERATOR)),
+    EP("GET", "/api/imager/base-images", (ADMIN, OPERATOR)),
+    EP("GET", "/api/imager/catalog", (ADMIN,)),
+    EP("POST", "/api/imager/base-images", (ADMIN,),
+       json_body={"variant": "pi5", "version": "v1.0"}),
+    EP("DELETE", f"/api/imager/base-images/{_FAKE_ID}", (ADMIN,)),
+    EP("POST", "/api/imager/build", (ADMIN, OPERATOR),
+       json_body={"base_image_id": _FAKE_ID, "fleet_id": "x", "output_name": "x.img.xz"}),
+    EP("GET", f"/api/imager/jobs/{_FAKE_ID}", (ADMIN, OPERATOR)),
+    EP("GET", f"/api/imager/download/{_FAKE_ID}", (ADMIN, OPERATOR)),
+
     # ── Admin-managed API keys ──
     EP("GET", "/api/keys", (ADMIN,)),
     EP("POST", "/api/keys", (ADMIN,), json_body={}),

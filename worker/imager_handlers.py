@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import re
 import shutil
@@ -53,7 +52,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -64,6 +62,14 @@ from shared.models.imager import (
     BaseImageStatus,
     ProvisionedImage,
     ProvisionedImageStatus,
+)
+from shared.services.imager_catalog import (
+    HTTP_TIMEOUT as _HTTP_TIMEOUT,
+    MAX_REDIRECTS as _MAX_REDIRECTS,
+    CatalogError,
+    fetch_catalog as _fetch_catalog_shared,
+    parse_allowed_hosts,
+    validate_url as _validate_url_shared,
 )
 from shared.services.storage import get_storage
 
@@ -106,40 +112,21 @@ _BASE_BLOB_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/base\.img\.xz
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # Bound the chunked download buffer.
 _DOWNLOAD_CHUNK_BYTES = 1 << 20  # 1 MiB
-# Hard ceiling on how many redirect hops we will walk while validating
-# every Location against the allowlist.  GitHub-Releases->blob normally
-# resolves in <=2 hops.
-_MAX_REDIRECTS = 5
-# Default per-handler total HTTP timeout (catalog + download both).
-_HTTP_TIMEOUT = httpx.Timeout(connect=15.0, read=120.0, write=120.0, pool=15.0)
 
 
 # ── Internal helpers ──────────────────────────────────────────────
 
 
 def _allowed_hosts(settings: Any) -> set[str]:
-    raw = getattr(settings, "base_image_allowed_hosts", "") or ""
-    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+    return parse_allowed_hosts(getattr(settings, "base_image_allowed_hosts", ""))
 
 
 def _validate_url(url: str, allowlist: set[str]) -> str:
-    """Return ``url`` iff its scheme is https and host is allowlisted.
-
-    Raises ``TerminalImagerError`` otherwise.  Centralised so the
-    same rule applies to the catalog URL **and** every redirect
-    target while streaming the image.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise TerminalImagerError(
-            f"refusing non-https url for imager fetch: scheme={parsed.scheme!r}"
-        )
-    host = (parsed.hostname or "").lower()
-    if host not in allowlist:
-        raise TerminalImagerError(
-            f"host {host!r} not in base_image_allowed_hosts ({sorted(allowlist)})"
-        )
-    return url
+    """Wrap the shared validator and surface failures as terminal."""
+    try:
+        return _validate_url_shared(url, allowlist)
+    except CatalogError as e:
+        raise TerminalImagerError(str(e)) from e
 
 
 async def _free_bytes(path: Path) -> int:
@@ -201,32 +188,11 @@ async def _set_provisioned_terminal(
 async def _fetch_catalog(
     catalog_url: str, allowlist: set[str], client: httpx.AsyncClient
 ) -> dict[str, Any]:
-    """Resolve + parse the upstream catalog.json.
-
-    Returns the parsed JSON.  Raises ``TerminalImagerError`` on
-    allowlist violation or non-JSON; raises generic exceptions
-    (caught + retried by the dispatcher) on transient network errors.
-    """
-    _validate_url(catalog_url, allowlist)
-    resp = await client.get(catalog_url, follow_redirects=False)
-    # Walk redirect chain manually so every Location is allowlisted.
-    hops = 0
-    while resp.is_redirect and hops < _MAX_REDIRECTS:
-        loc = resp.headers.get("location")
-        if not loc:
-            raise httpx.RemoteProtocolError("redirect without Location")
-        _validate_url(loc, allowlist)
-        resp = await client.get(loc, follow_redirects=False)
-        hops += 1
-    if resp.is_redirect:
-        raise TerminalImagerError(
-            f"too many redirects ({_MAX_REDIRECTS}) fetching catalog"
-        )
-    resp.raise_for_status()
+    """Wrap the shared catalog fetcher; surface CatalogError as terminal."""
     try:
-        return resp.json()
-    except json.JSONDecodeError as e:
-        raise TerminalImagerError(f"catalog is not valid json: {e}") from e
+        return await _fetch_catalog_shared(catalog_url, allowlist, client)
+    except CatalogError as e:
+        raise TerminalImagerError(str(e)) from e
 
 
 async def _download_with_sha(
