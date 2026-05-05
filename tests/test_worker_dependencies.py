@@ -200,44 +200,55 @@ def test_worker_imports_do_not_pull_in_alembic() -> None:
     transitively imported it via ``cms.models.api_key`` →
     ``cms.database`` (because ``cms/models/__init__.py`` aggregates
     every model when *any* ``cms.models.*`` is imported).
+
+    Runs in a subprocess so the import-tracking shim and module-cache
+    wipes can't pollute other tests sharing the xdist worker (e.g.
+    ``test_logs_response_shim`` relies on ``shared.database`` module
+    state that this check would otherwise reset).
     """
-    import importlib
+    import subprocess
     import sys
+    import textwrap
 
-    # If alembic is already loaded in this interpreter, drop it so the
-    # check is meaningful.  Test runs that hit cms startup paths will
-    # have loaded it; here we want to observe what worker imports
-    # alone require.
-    for mod in [m for m in list(sys.modules) if m == "alembic" or m.startswith("alembic.")]:
-        del sys.modules[mod]
-    # Wipe cached worker / cms / shared modules too so the import
-    # actually runs and the trace is honest.
-    for prefix in ("worker", "cms", "shared"):
-        for mod in [m for m in list(sys.modules) if m == prefix or m.startswith(prefix + ".")]:
-            del sys.modules[mod]
+    script = textwrap.dedent(
+        """
+        import builtins
+        import importlib
+        import sys
 
-    triggered: list[str] = []
-    real_import = importlib.__import__
+        triggered = []
+        real_import = builtins.__import__
 
-    def tracking_import(name: str, *args, **kwargs):
-        top = name.split(".")[0]
-        if top == "alembic":
-            triggered.append(name)
-        return real_import(name, *args, **kwargs)
+        def tracking_import(name, *args, **kwargs):
+            if name == "alembic" or name.startswith("alembic."):
+                triggered.append(name)
+            return real_import(name, *args, **kwargs)
 
-    import builtins
-    saved = builtins.__import__
-    builtins.__import__ = tracking_import
-    try:
-        importlib.import_module("worker.imager_handlers")
-        importlib.import_module("worker.transcoder")
-        importlib.import_module("worker.__main__")
-    finally:
-        builtins.__import__ = saved
+        builtins.__import__ = tracking_import
+        try:
+            importlib.import_module("worker.imager_handlers")
+            importlib.import_module("worker.transcoder")
+            importlib.import_module("worker.__main__")
+        finally:
+            builtins.__import__ = real_import
 
-    assert not triggered, (
-        f"Worker top-level imports pulled in alembic ({triggered[:3]}); "
-        f"the worker image does not install alembic and will crash on "
-        f"boot.  Move alembic imports inside the migration functions "
-        f"(see ``cms/database.py``) or otherwise break the chain."
+        if triggered:
+            print("ALEMBIC_IMPORTED:" + ",".join(triggered[:5]))
+            sys.exit(2)
+        sys.exit(0)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        f"Worker top-level imports pulled in alembic; the worker image "
+        f"does not install alembic and will crash on boot.  Move alembic "
+        f"imports inside migration functions (see ``cms/database.py``) "
+        f"or otherwise break the chain.\n"
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
     )
