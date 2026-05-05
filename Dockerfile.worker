@@ -23,6 +23,7 @@ RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 pip install --no-cache-dir --progress-bar off \
     -r worker/requirements.txt
 
 COPY shared/ shared/
+COPY cms/ cms/
 COPY worker/ worker/
 
 CMD ["python", "-m", "worker"]

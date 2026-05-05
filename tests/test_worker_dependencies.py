@@ -145,3 +145,110 @@ def test_worker_can_import_imager_handlers() -> None:
     mod = importlib.import_module("worker.imager_handlers")
     # Sanity: handler entrypoints exposed.
     assert hasattr(mod, "import_base_image_by_id")
+
+
+def test_dockerfile_worker_copies_every_top_level_package_imported_by_worker() -> None:
+    """Every first-party top-level package that ``worker/`` imports at
+    module-level must be COPY'd into Dockerfile.worker.
+
+    Background: PR #515-era ``worker/imager_handlers.py`` grew
+    ``from cms.services.imager import ...`` at module top, but
+    Dockerfile.worker only copied ``shared/`` and ``worker/``.  The
+    worker image therefore raised ``ModuleNotFoundError: No module
+    named 'cms'`` the first time its handlers were imported.  The
+    deploy-time docker import smoke caught it; this test catches it
+    at PR time.
+    """
+    worker_dir = REPO_ROOT / "worker"
+    dockerfile = REPO_ROOT / "Dockerfile.worker"
+    assert worker_dir.is_dir(), worker_dir
+    assert dockerfile.is_file(), dockerfile
+
+    imports = _walk_imports(worker_dir)
+    first_party_imported = imports & _first_party_top_levels()
+
+    dockerfile_text = dockerfile.read_text(encoding="utf-8")
+    missing: set[str] = set()
+    for pkg in first_party_imported:
+        # Test packages and alembic are repo-only paths workers never need.
+        if pkg in {"tests", "alembic"}:
+            continue
+        # Look for a COPY line that brings the package directory into the image.
+        # Match either "COPY pkg/ pkg/" or "COPY pkg/ <dest>/".
+        if f"COPY {pkg}/" not in dockerfile_text:
+            missing.add(pkg)
+
+    assert not missing, (
+        f"worker/ imports first-party packages {sorted(missing)} at "
+        f"module top-level but Dockerfile.worker does not COPY them "
+        f"into the image.  The worker container will raise "
+        f"ModuleNotFoundError on boot.  Either add ``COPY {{pkg}}/ "
+        f"{{pkg}}/`` to Dockerfile.worker, or move the imported "
+        f"symbol into ``shared/``."
+    )
+
+
+def test_worker_imports_do_not_pull_in_alembic() -> None:
+    """The worker image installs only ``requirements-shared.txt`` and
+    ``worker/requirements.txt`` — neither lists ``alembic``.  If any
+    module reachable from worker top-level imports does
+    ``from alembic import ...`` (or ``import alembic``) at module top,
+    the worker container will ``ModuleNotFoundError`` on first use.
+
+    This caught a regression where ``cms/database.py`` used
+    ``from alembic import command`` at module top, and the worker
+    transitively imported it via ``cms.models.api_key`` →
+    ``cms.database`` (because ``cms/models/__init__.py`` aggregates
+    every model when *any* ``cms.models.*`` is imported).
+
+    Runs in a subprocess so the import-tracking shim and module-cache
+    wipes can't pollute other tests sharing the xdist worker (e.g.
+    ``test_logs_response_shim`` relies on ``shared.database`` module
+    state that this check would otherwise reset).
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import builtins
+        import importlib
+        import sys
+
+        triggered = []
+        real_import = builtins.__import__
+
+        def tracking_import(name, *args, **kwargs):
+            if name == "alembic" or name.startswith("alembic."):
+                triggered.append(name)
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = tracking_import
+        try:
+            importlib.import_module("worker.imager_handlers")
+            importlib.import_module("worker.transcoder")
+            importlib.import_module("worker.__main__")
+        finally:
+            builtins.__import__ = real_import
+
+        if triggered:
+            print("ALEMBIC_IMPORTED:" + ",".join(triggered[:5]))
+            sys.exit(2)
+        sys.exit(0)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        f"Worker top-level imports pulled in alembic; the worker image "
+        f"does not install alembic and will crash on boot.  Move alembic "
+        f"imports inside migration functions (see ``cms/database.py``) "
+        f"or otherwise break the chain.\n"
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    )
