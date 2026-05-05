@@ -78,6 +78,9 @@
         {% if 'audit:read' in user_perms %}
         <a href="/audit" class="nav-tab {% if active_tab == 'audit' %}active{% endif %}">Audit Log</a>
         {% endif %}
+        {% if 'imager:read' in user_perms %}
+        <a href="/imager" class="nav-tab {% if active_tab == 'imager' %}active{% endif %}">Imager</a>
+        {% endif %}
         {% if 'users:read' in user_perms %}
         <a href="/users" class="nav-tab {% if active_tab == 'users' %}active{% endif %}">Users</a>
         {% endif %}
