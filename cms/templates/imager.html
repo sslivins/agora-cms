@@ -443,15 +443,53 @@
         }, 3000);
     }
 
+    // Auto-refresh state for in-flight imports.
+    var basesPollTimer = null;
+    var basesLastStatus = {};
+    var BASES_POLL_MS = 4000;
+
+    function clearBasesPollTimer() {
+        if (basesPollTimer) { clearTimeout(basesPollTimer); basesPollTimer = null; }
+    }
+
+    function scheduleBasesPoll() {
+        clearBasesPollTimer();
+        if (document.hidden) return;
+        basesPollTimer = setTimeout(function() {
+            basesPollTimer = null;
+            loadBaseImages();
+        }, BASES_POLL_MS);
+    }
+
+    function notifyBaseTransitions(bases) {
+        bases.forEach(function(b) {
+            var prev = basesLastStatus[b.id];
+            if (prev === 'IMPORTING' && b.status !== 'IMPORTING') {
+                if (b.status === 'READY') {
+                    toast('Import complete: ' + b.variant + ' / ' + b.version, 'success');
+                } else if (b.status === 'FAILED') {
+                    var msg = b.error_message ? (': ' + b.error_message) : '';
+                    toast('Import failed: ' + b.variant + ' / ' + b.version + msg, 'error');
+                }
+            }
+        });
+        var next = {};
+        bases.forEach(function(b) { next[b.id] = b.status; });
+        basesLastStatus = next;
+    }
+
     async function loadBaseImages() {
         if (!manageSection) return;
+        clearBasesPollTimer();
         var tbody = $('#imagerBaseTbody', manageSection);
         try {
             var bases = await jsonFetch('/api/imager/base-images');
             if (!bases || bases.length === 0) {
+                basesLastStatus = {};
                 tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No base images cached. Click "Import from catalog…" to add one.</td></tr>';
                 return;
             }
+            notifyBaseTransitions(bases);
             tbody.innerHTML = bases.map(function(b) {
                 var sha = b.sha256 ? b.sha256.slice(0, 12) + '…' : '—';
                 var del = b.status === 'IMPORTING' ? '' :
@@ -469,8 +507,12 @@
             tbody.querySelectorAll('[data-delete-base]').forEach(function(btn) {
                 btn.addEventListener('click', function() { deleteBase(btn.getAttribute('data-delete-base')); });
             });
+            var anyImporting = bases.some(function(b) { return b.status === 'IMPORTING'; });
+            if (anyImporting) scheduleBasesPoll();
         } catch (e) {
             tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">Failed to load: ' + escHtml(e.message || e) + '</td></tr>';
+            // Retry on transient failures so the UI recovers without a manual refresh.
+            scheduleBasesPoll();
         }
     }
 
@@ -691,9 +733,19 @@
 
     // Re-poll immediately when the tab becomes visible.
     document.addEventListener('visibilitychange', function() {
-        if (document.hidden) return;
+        if (document.hidden) {
+            clearBasesPollTimer();
+            return;
+        }
         var jid = loadActiveJob();
         if (jid && pollTimer) pollOnce(jid);
+        // Resume base-images polling if there are in-flight imports.
+        if (manageSection) {
+            var hasImporting = Object.keys(basesLastStatus).some(function(k) {
+                return basesLastStatus[k] === 'IMPORTING';
+            });
+            if (hasImporting) loadBaseImages();
+        }
     });
 })();
 </script>
