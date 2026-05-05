@@ -143,8 +143,16 @@ def _scratch_dir(settings: Any, prefix: str, target_id: uuid.UUID) -> Path:
     Includes a fresh ``uuid4`` suffix so a duplicate pickup of the
     same queue message (lease loss) lands in its own directory and
     cannot rmtree another worker's in-flight files.
+
+    When ``settings.imager_scratch_path`` is unset (the default in
+    deployments without a dedicated scratch volume), fall back to
+    a subdirectory under ``asset_storage_path`` per the config
+    docstring contract.
     """
-    root = Path(settings.imager_scratch_path)
+    scratch_root = settings.imager_scratch_path
+    if scratch_root is None:
+        scratch_root = Path(settings.asset_storage_path) / "imager-scratch"
+    root = Path(scratch_root)
     return root / f"{prefix}-{target_id}-{uuid.uuid4().hex[:8]}"
 
 
