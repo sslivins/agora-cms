@@ -171,6 +171,12 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      revision_suffix: ${{ steps.revisions.outputs.revision_suffix }}
+      previous_cms_revision: ${{ steps.revisions.outputs.previous_cms_revision }}
+      previous_mcp_revision: ${{ steps.revisions.outputs.previous_mcp_revision }}
+      new_cms_revision: ${{ steps.revisions.outputs.new_cms_revision }}
+      new_mcp_revision: ${{ steps.revisions.outputs.new_mcp_revision }}
     steps:
       - uses: actions/checkout@v4
 
@@ -219,6 +225,47 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
           echo "Assembled fleetRegisterSecrets with $COUNT fleet(s)"
 
+      # Blue/green: capture the currently-serving revisions before we deploy.
+      # Bicep pins traffic 100% to these names so the brand-new revision lands
+      # at 0% and is only reached via its per-revision FQDN until verify
+      # passes. On bootstrap (apps don't exist yet, or first deploy in
+      # multi-revision mode) the names come back empty and Bicep falls back
+      # to "100% latest" so the very first revision can serve traffic.
+      - name: Capture pre-deploy revision state
+        id: revisions
+        run: |
+          set -euo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+
+          fetch_prev() {
+            local app="$1"
+            # latestReadyRevisionName is the one currently serving traffic in
+            # single-revision mode and the most recent successful deploy in
+            # multi-revision mode. Either way it's the revision we want to
+            # keep traffic on while the new one warms up.
+            az containerapp show --name "$app" --resource-group "$RG" \
+              --query "properties.latestReadyRevisionName" -o tsv 2>/dev/null || true
+          }
+
+          PREV_CMS=$(fetch_prev "$CMS_APP")
+          PREV_MCP=$(fetch_prev "$MCP_APP")
+          echo "previous_cms_revision=${PREV_CMS}" >> "$GITHUB_OUTPUT"
+          echo "previous_mcp_revision=${PREV_MCP}" >> "$GITHUB_OUTPUT"
+          echo "  cms previous: ${PREV_CMS:-<bootstrap>}"
+          echo "  mcp previous: ${PREV_MCP:-<bootstrap>}"
+
+          # ACA revision suffixes must be lowercase alphanumeric with dashes,
+          # max 64 chars. Versions look like "1.12.34" -> "v1-12-34".
+          SUFFIX="v$(echo '${{ needs.publish.outputs.version }}' | tr '.' '-')"
+          echo "revision_suffix=${SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "  new revision suffix: ${SUFFIX}"
+
+          # Compute the new revision names for the verify step.
+          echo "new_cms_revision=${CMS_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "new_mcp_revision=${MCP_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy infrastructure
         run: |
           CMS_REF='${{ env.ACR_REGISTRY }}/agora-cms@${{ needs.publish.outputs.cms_digest }}'
@@ -244,6 +291,10 @@ jobs:
               cmsImage="$CMS_REF" \
               mcpImage="$MCP_REF" \
               workerImage="$WORKER_REF" \
+              cmsRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
+              previousCmsRevisionName='${{ steps.revisions.outputs.previous_cms_revision }}' \
+              mcpRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
+              previousMcpRevisionName='${{ steps.revisions.outputs.previous_mcp_revision }}' \
               alertEmail='${{ vars.ALERT_EMAIL }}'
 
       - name: Bind custom domains (if configured)
@@ -288,6 +339,8 @@ jobs:
     needs: [publish, deploy]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Log in to Azure
         uses: azure/login@v2
         with:
@@ -295,14 +348,45 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Wait for CMS to become healthy
+      # Blue/green: probe the *new* revision via its per-revision FQDN
+      # while the previous revision keeps serving 100% of real traffic.
+      # Only flip traffic if the smoke probes pass; otherwise deactivate
+      # the bad revision so the previous one keeps serving forever.
+      - name: Resolve new-revision FQDNs
+        id: fqdn
+        run: |
+          set -euo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+
+          # The per-revision FQDN is the canonical way to reach a 0%-traffic
+          # revision. Format: <app>--<suffix>.<env-default-domain>.
+          CMS_FQDN=$(az containerapp revision show \
+            --name "$CMS_APP" --resource-group "$RG" \
+            --revision "$NEW_CMS_REV" \
+            --query "properties.fqdn" -o tsv 2>/dev/null || echo "")
+          MCP_FQDN=$(az containerapp revision show \
+            --name "$MCP_APP" --resource-group "$RG" \
+            --revision "$NEW_MCP_REV" \
+            --query "properties.fqdn" -o tsv 2>/dev/null || echo "")
+
+          if [ -z "$CMS_FQDN" ]; then
+            echo "::error::could not resolve per-revision FQDN for $NEW_CMS_REV"
+            exit 1
+          fi
+          echo "  cms new revision: $NEW_CMS_REV @ $CMS_FQDN"
+          echo "  mcp new revision: $NEW_MCP_REV @ ${MCP_FQDN:-<none>}"
+          echo "cms_fqdn=$CMS_FQDN" >> "$GITHUB_OUTPUT"
+          echo "mcp_fqdn=$MCP_FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for new CMS revision to become healthy
         id: health
         run: |
           EXPECTED="${{ needs.publish.outputs.version }}"
-          FQDN=$(az containerapp show \
-            --name ${{ vars.INFRA_PREFIX }}-cms \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --query "properties.configuration.ingress.fqdn" -o tsv)
+          FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
           URL="https://${FQDN}/healthz"
           echo "Polling $URL — expecting version $EXPECTED ..."
           LAST_VERSION=""
@@ -323,48 +407,18 @@ jobs:
           done
           echo "status=failed" >> "$GITHUB_OUTPUT"
           echo "last_version=$LAST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "❌ CMS did not reach expected version $EXPECTED within 5 minutes (last: ${LAST_VERSION:-no response})"
+          echo "::error::New CMS revision did not reach expected version $EXPECTED within 5 minutes (last: ${LAST_VERSION:-no response})"
 
-      - name: Fetch container logs on failure
-        if: steps.health.outputs.status == 'failed'
+      - name: Post-deploy smoke probes (against new revision)
+        id: smoke
+        if: steps.health.outputs.status == 'ok'
         run: |
-          echo "──── Console logs (last 150 lines) ────"
-          az containerapp logs show \
-            --name agoracms-cms \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --type console --tail 150 2>&1 || echo "(failed to fetch console logs)"
-
-          echo ""
-          echo "──── System logs (last 50 lines) ────"
-          az containerapp logs show \
-            --name agoracms-cms \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --type system --tail 50 2>&1 || echo "(failed to fetch system logs)"
-
-          echo ""
-          echo "──── Active revisions ────"
-          az containerapp revision list \
-            --name agoracms-cms \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            -o table 2>&1 || echo "(failed to list revisions)"
-
-      - name: Fail if version mismatch
-        if: steps.health.outputs.status == 'failed'
-        run: |
-          echo "::error::Deployment verification failed — expected version ${{ needs.publish.outputs.version }} but got ${{ steps.health.outputs.last_version }}"
-          exit 1
-
-      - name: Post-deploy smoke probes
-        run: |
-          FQDN=$(az containerapp show \
-            --name ${{ vars.INFRA_PREFIX }}-cms \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --query "properties.configuration.ingress.fqdn" -o tsv)
-
+          FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
           fail=0
 
           # Unauthenticated aggregated health endpoint — exercises the
-          # CMS↔MCP service-key trust chain without needing a session.
+          # CMS↔MCP service-key trust chain plus the deploy-shape config
+          # check without needing a session.
           echo "── GET /healthz/system ──"
           CODE=$(curl -s -o /tmp/sys.json -w '%{http_code}' "https://${FQDN}/healthz/system" --max-time 10 || echo "000")
           echo "  HTTP $CODE"
@@ -374,11 +428,6 @@ jobs:
             echo "::error::/healthz/system returned HTTP $CODE"
             fail=1
           else
-            # Parse the JSON and fail on any degraded subsystem.  The
-            # helper script surfaces which subsystem(s) caused the
-            # degradation so the operator doesn't need to dig through
-            # container logs.  Lives in scripts/ to keep the workflow
-            # YAML free of heredocs (which break run: | indentation).
             STATUS=$(python3 -c "import json; d=json.load(open('/tmp/sys.json')); print(d.get('status','?'))")
             if [ "$STATUS" != "ok" ]; then
               echo "::error::/healthz/system reported status=$STATUS"
@@ -388,9 +437,99 @@ jobs:
           fi
 
           if [ "$fail" -ne 0 ]; then
+            echo "smoke=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          echo "✅ All post-deploy smoke probes passed"
+          echo "smoke=ok" >> "$GITHUB_OUTPUT"
+          echo "✅ All post-deploy smoke probes passed against new revision"
+
+      # Happy path: shift 100% traffic to the new revisions of both apps.
+      - name: Flip traffic to new revisions
+        if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
+        run: |
+          set -euo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+          PREV_CMS='${{ needs.deploy.outputs.previous_cms_revision }}'
+          PREV_MCP='${{ needs.deploy.outputs.previous_mcp_revision }}'
+
+          flip() {
+            local app="$1" new="$2" prev="$3"
+            echo "── flipping $app traffic to $new ──"
+            if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
+              # 100% to new, 0% to old. Listing old at weight 0 keeps it
+              # active and reachable via its own per-revision FQDN for a
+              # quick rollback ("az containerapp ingress traffic set
+              # --revision-weight $prev=100").
+              az containerapp ingress traffic set \
+                --name "$app" --resource-group "$RG" \
+                --revision-weight "$new=100" "$prev=0"
+            else
+              az containerapp ingress traffic set \
+                --name "$app" --resource-group "$RG" \
+                --revision-weight "$new=100"
+            fi
+          }
+
+          flip "$CMS_APP" "$NEW_CMS_REV" "$PREV_CMS"
+          flip "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
+          echo "✅ Traffic flipped — $NEW_CMS_REV is now serving production"
+
+      # Sad path: deactivate the new revisions so the previous ones keep
+      # serving 100% of traffic.
+      - name: Deactivate new revisions on failure
+        if: failure() && (steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed')
+        run: |
+          set +e
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+
+          echo "── Smoke or health failed — deactivating new revisions; previous revision keeps serving ──"
+          az containerapp revision deactivate \
+            --name "$CMS_APP" --resource-group "$RG" \
+            --revision "$NEW_CMS_REV" 2>&1 || echo "(failed to deactivate $NEW_CMS_REV)"
+          az containerapp revision deactivate \
+            --name "$MCP_APP" --resource-group "$RG" \
+            --revision "$NEW_MCP_REV" 2>&1 || echo "(failed to deactivate $NEW_MCP_REV)"
+
+      - name: Fetch container logs on failure
+        if: failure() && (steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed')
+        run: |
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          echo "──── Console logs (last 150 lines) ────"
+          az containerapp logs show \
+            --name "$CMS_APP" \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --revision "$NEW_CMS_REV" \
+            --type console --tail 150 2>&1 || echo "(failed to fetch console logs)"
+
+          echo ""
+          echo "──── System logs (last 50 lines) ────"
+          az containerapp logs show \
+            --name "$CMS_APP" \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --revision "$NEW_CMS_REV" \
+            --type system --tail 50 2>&1 || echo "(failed to fetch system logs)"
+
+          echo ""
+          echo "──── Active revisions ────"
+          az containerapp revision list \
+            --name "$CMS_APP" \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            -o table 2>&1 || echo "(failed to list revisions)"
+
+      - name: Fail the job on health/smoke failure
+        if: steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed'
+        run: |
+          echo "::error::Deployment verification failed — new revision deactivated; previous revision continues to serve traffic"
+          exit 1
 
   # Commit the auto-incremented version back to main so the next deploy
   # starts from the newly-released version.  Runs only after verify passes,

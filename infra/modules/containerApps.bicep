@@ -70,6 +70,19 @@ param fleetRegisterSecrets string = ''
 @secure()
 param githubIssuesToken string = ''
 
+// ── Blue/green deploy controls (Multiple revision mode) ──
+@description('Revision suffix for the CMS Container App. Each deploy MUST pass a unique value (e.g. "v1-12-34") so a brand-new revision is created at 0% traffic. The workflow flips traffic to it after smoke probes pass.')
+param cmsRevisionSuffix string = ''
+
+@description('Name of the existing CMS revision that should keep 100% traffic during this deploy. The new revision lands at 0% traffic; the workflow flips traffic post-verify. Empty for bootstrap/first-deploy.')
+param previousCmsRevisionName string = ''
+
+@description('Revision suffix for the MCP Container App. See cmsRevisionSuffix for semantics.')
+param mcpRevisionSuffix string = ''
+
+@description('Name of the existing MCP revision that should keep 100% traffic during this deploy. See previousCmsRevisionName for semantics.')
+param previousMcpRevisionName string = ''
+
 // ── Container Apps Environment ──
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${environmentName}-logs'
@@ -147,11 +160,32 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: containerAppsEnv.id
     configuration: {
+      // Blue/green: every deploy creates a new revision at 0% traffic; the
+      // workflow flips traffic to it only after smoke probes pass against
+      // its per-revision FQDN. A failed deploy never reaches users because
+      // the previous revision keeps serving until traffic is flipped.
+      activeRevisionsMode: 'Multiple'
       ingress: {
         external: true
         targetPort: 8080
         transport: 'auto' // supports both HTTP and WebSocket
         allowInsecure: false
+        // When previousCmsRevisionName is supplied (the common case after the
+        // first blue/green deploy), pin 100% traffic to that named revision so
+        // the new one lands silent. Bootstrap (no previous revision known)
+        // falls back to "100% to latest" so the very first multi-mode deploy
+        // still serves traffic.
+        traffic: !empty(previousCmsRevisionName) ? [
+          {
+            revisionName: previousCmsRevisionName
+            weight: 100
+          }
+        ] : [
+          {
+            latestRevision: true
+            weight: 100
+          }
+        ]
       }
       registries: [
         {
@@ -204,6 +238,11 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
       ]
     }
     template: {
+      // Unique per-deploy suffix so a brand-new revision is created (and
+      // reachable via its own per-revision FQDN) even when nothing else in
+      // the template changed. Empty string is treated as "auto-generate" by
+      // ACA, which is the right behaviour for local Bicep what-if runs.
+      revisionSuffix: cmsRevisionSuffix
       containers: [
         {
           name: 'cms'
@@ -345,11 +384,24 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: containerAppsEnv.id
     configuration: {
+      // Blue/green: see cmsApp comment above.
+      activeRevisionsMode: 'Multiple'
       ingress: {
         external: true
         targetPort: 8000
         transport: 'auto'
         allowInsecure: false
+        traffic: !empty(previousMcpRevisionName) ? [
+          {
+            revisionName: previousMcpRevisionName
+            weight: 100
+          }
+        ] : [
+          {
+            latestRevision: true
+            weight: 100
+          }
+        ]
       }
       registries: [
         {
@@ -366,6 +418,7 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
       ]
     }
     template: {
+      revisionSuffix: mcpRevisionSuffix
       containers: [
         {
           name: 'mcp'
@@ -508,6 +561,9 @@ output cmsAppFqdn string = cmsApp.properties.configuration.ingress.fqdn
 output cmsAppUrl string = 'https://${cmsApp.properties.configuration.ingress.fqdn}'
 output mcpAppFqdn string = mcpApp.properties.configuration.ingress.fqdn
 output mcpAppUrl string = 'https://${mcpApp.properties.configuration.ingress.fqdn}'
+output environmentDefaultDomain string = containerAppsEnv.properties.defaultDomain
+output cmsLatestRevisionName string = cmsApp.properties.latestRevisionName
+output mcpLatestRevisionName string = mcpApp.properties.latestRevisionName
 output environmentId string = containerAppsEnv.id
 output cmsPrincipalId string = cmsApp.identity.principalId
 output mcpPrincipalId string = mcpApp.identity.principalId
