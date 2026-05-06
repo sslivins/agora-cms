@@ -112,7 +112,8 @@ def register_pending_device(
         "Content-Type": "application/json",
     }
     resp = request.post("/api/devices/register", data=body, headers=headers)
-    assert resp.status == 200, (
+    # Router returns 202 Accepted -- the registration is now pending operator review.
+    assert resp.status == 202, (
         f"POST /api/devices/register -> {resp.status}: {resp.text()[:500]}"
     )
     return RegisteredDevice(
