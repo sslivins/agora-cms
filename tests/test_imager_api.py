@@ -572,13 +572,64 @@ async def test_build_creates_provisioned_row_with_payload(
     assert "AGORA_CMS_URL=wss://cms.example.com/ws/device" in payload
     assert "AGORA_CMS_TRANSPORT=direct" in payload
     assert "AGORA_FLEET_ID=fleet-test" in payload
-    assert "AGORA_FLEET_SECRET=c2VjcmV0LWJhc2U2NA==" in payload  # gitleaks:allow
+    # Firmware (agora-fleet-provision.sh) allow-lists AGORA_FLEET_SECRET_HEX
+    # only and hex-decodes the value.  Stored secret is base64 of raw bytes
+    # (b"secret-base64") -> hex below.
+    assert "AGORA_FLEET_SECRET_HEX=7365637265742d626173653634" in payload
+    assert "AGORA_FLEET_SECRET=" not in payload.replace(
+        "AGORA_FLEET_SECRET_HEX=", ""
+    )
 
     # And a Job row was enqueued.
     job = (await db_session.execute(
         select(Job).where(Job.target_id == pi.id, Job.type == JobType.IMAGE_PROVISION)
     )).scalar_one()
     assert job.status == JobStatus.PENDING
+
+
+def test_fleet_env_payload_matches_firmware_allowlist():
+    """Regression for the 2026-05-06 ``test-fleet-1`` outage.
+
+    The firmware-side ``agora-fleet-provision.sh`` allow-lists exactly
+    three keys: ``AGORA_FLEET_ID``, ``AGORA_FLEET_SECRET_HEX``,
+    ``AGORA_BOOTSTRAP_V2``.  Anything else is dropped silently.  The
+    secret value is hex-decoded.
+
+    Pin the imager output so we can never again ship images where the
+    firmware silently drops the credential.
+    """
+    import base64
+
+    from cms.routers.imager import _fleet_env_payload
+
+    raw = b"\x00\x01\x02\x03decafbad" + b"x" * 20
+    secret_b64 = base64.b64encode(raw).decode()
+
+    out = _fleet_env_payload(
+        "wss://cms.example.com/ws/device", "fleet-x", secret_b64, "wps"
+    ).decode("utf-8")
+
+    # Key name must be the firmware-expected ``_HEX`` form.
+    assert "AGORA_FLEET_SECRET_HEX=" in out
+    # Pre-fix imager wrote ``AGORA_FLEET_SECRET=<base64>``.  Make sure
+    # neither the bad key NOR the base64 value leaks into the file.
+    lines = [ln for ln in out.splitlines() if "=" in ln]
+    keys = {ln.split("=", 1)[0] for ln in lines}
+    assert "AGORA_FLEET_SECRET" not in keys
+    assert secret_b64 not in out
+
+    # Value is hex(raw_bytes).
+    hex_line = next(ln for ln in lines if ln.startswith("AGORA_FLEET_SECRET_HEX="))
+    assert hex_line.split("=", 1)[1] == raw.hex()
+
+
+def test_fleet_env_payload_rejects_non_base64_secret():
+    from cms.routers.imager import _fleet_env_payload
+
+    with pytest.raises(ValueError, match="base64"):
+        _fleet_env_payload(
+            "wss://cms.example.com/ws/device", "fleet-x", "not!valid!b64", "wps"
+        )
 
 
 # ── Jobs / download ────────────────────────────────────────────────
