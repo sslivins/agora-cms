@@ -34,6 +34,11 @@ services:
       # is set on the command below so each process produces its own data
       # file under /coverage for post-run combining on the host.
       - COVERAGE_RCFILE=/app/.coveragerc.nightly
+      # Fleet HMAC secret for the bootstrap /register flow so nightly
+      # tests can drive pending_registrations end-to-end.  Secret is
+      # base64("nightly-fleet-secret-32bytes!!!!" padded to 32 bytes);
+      # the nightly bootstrap helper imports the same constant.
+      - 'AGORA_CMS_FLEET_REGISTER_SECRETS={"nightly-fleet":"bmlnaHRseS1mbGVldC1zZWNyZXQtMzJieXRlcyEhISE="}'
     # Run uvicorn under `coverage` so we get line coverage of whatever the
     # E2E suite exercises. Exec-form so coverage is PID 1 and can forward
     # SIGTERM into uvicorn's graceful shutdown (which triggers coverage's
