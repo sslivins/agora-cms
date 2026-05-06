@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import get_current_user, hash_password, require_permission, verify_password
+from cms.auth import get_current_user, get_settings, hash_password, require_permission, verify_password
 from cms.database import get_db
 from cms.models.user import Role, User, UserGroup
 from cms.permissions import USERS_READ, USERS_WRITE
@@ -186,7 +186,7 @@ async def create_user(
 
     # Send welcome email in background — failures create a notification
     from cms.services.email_service import send_welcome_email_background
-    base = request.base_url._url.rstrip("/")
+    base = (get_settings().base_url or request.base_url._url).rstrip("/")
     setup_url = f"{base}/setup-account?token={setup_token}"
     background_tasks.add_task(
         send_welcome_email_background,
@@ -329,7 +329,7 @@ async def resend_invite(
     user.setup_token = new_token
     await db.commit()
 
-    base = request.base_url._url.rstrip("/")
+    base = (get_settings().base_url or request.base_url._url).rstrip("/")
     setup_url = f"{base}/setup-account?token={new_token}"
     background_tasks.add_task(
         send_welcome_email_background,

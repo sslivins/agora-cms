@@ -278,6 +278,16 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               secretRef: 'github-issues-token'
             }
             {
+              // Public URL of the CMS — derived from the container app name +
+              // the managed environment's default domain so we have a single
+              // source of truth. The imager router and fleet env payload read
+              // this to build wss://host/ws/device for provisioned Pis. If you
+              // ever front the app with a custom domain (e.g. agora.example.com)
+              // this is the one place to override it.
+              name: 'AGORA_CMS_BASE_URL'
+              value: 'https://${cmsAppName}.${containerAppsEnv.properties.defaultDomain}'
+            }
+            {
               // Picked up by azure-monitor-opentelemetry's
               // configure_azure_monitor() at process start (see
               // cms/observability.py).  When unset (e.g. local dev,
