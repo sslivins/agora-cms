@@ -48,6 +48,7 @@ import hashlib
 import logging
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -142,6 +143,94 @@ async def _free_bytes(path: Path) -> int:
     can block on networked filesystems (Azure Files mount in prod).
     """
     return await asyncio.to_thread(lambda: shutil.disk_usage(path).free)
+
+
+# Scratch directories created by ``_scratch_dir`` follow the pattern
+# ``{prefix}-{target_uuid}-{8hex}``.  We use this regex to recognise our
+# own dirs in the scratch root when sweeping leftovers, so we never
+# rmtree something an operator dropped there by hand.
+_SCRATCH_DIR_RE = re.compile(
+    r"^(import|build)-[0-9a-fA-F-]{36}-[0-9a-fA-F]{8}$"
+)
+
+# A scratch dir whose mtime is older than this is considered abandoned
+# and safe to sweep.  Worker pods get killed at ``replicaTimeout`` (2h
+# in prod) and any in-flight build refreshes mtime within a few minutes
+# (downloads + extract steps both write).  One hour is well outside
+# that envelope.
+_SCRATCH_STALE_AGE_SECONDS = 60 * 60
+
+
+def _purge_stale_scratch_sync(
+    scratch_root: Path, exclude_name: str | None = None
+) -> tuple[int, int]:
+    """Remove abandoned per-attempt scratch directories.
+
+    Walks ``scratch_root`` and rmtree's each child directory whose
+    name matches the per-attempt scratch pattern AND whose mtime is
+    older than ``_SCRATCH_STALE_AGE_SECONDS``.  ``exclude_name`` (if
+    given) is never touched, so a worker can sweep around its own
+    in-flight scratch dir.
+
+    Best-effort: errors are logged at WARNING and never raised so a
+    permission glitch on a single dir doesn't kill the job.
+
+    Returns ``(num_removed, bytes_freed_estimate)``.  The byte count
+    is best-effort (we sum file sizes before rmtree); a partial
+    rmtree may report bytes that weren't actually freed.
+    """
+    if not scratch_root.exists():
+        return 0, 0
+    cutoff = time.time() - _SCRATCH_STALE_AGE_SECONDS
+    removed = 0
+    bytes_freed = 0
+    try:
+        children = list(scratch_root.iterdir())
+    except OSError as e:
+        logger.warning("Cannot iterate scratch root %s: %s", scratch_root, e)
+        return 0, 0
+    for child in children:
+        if not child.is_dir():
+            continue
+        if exclude_name is not None and child.name == exclude_name:
+            continue
+        if not _SCRATCH_DIR_RE.match(child.name):
+            continue
+        try:
+            mtime = child.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > cutoff:
+            continue
+        size = 0
+        try:
+            for f in child.rglob("*"):
+                if f.is_file():
+                    try:
+                        size += f.stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        shutil.rmtree(child, ignore_errors=True)
+        removed += 1
+        bytes_freed += size
+        logger.info(
+            "Swept stale imager scratch %s (mtime=%s, ~%d bytes)",
+            child.name,
+            datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+            size,
+        )
+    return removed, bytes_freed
+
+
+async def _purge_stale_scratch(
+    scratch_root: Path, exclude_name: str | None = None
+) -> tuple[int, int]:
+    """Async wrapper around :func:`_purge_stale_scratch_sync`."""
+    return await asyncio.to_thread(
+        _purge_stale_scratch_sync, scratch_root, exclude_name
+    )
 
 
 def _scratch_dir(settings: Any, prefix: str, target_id: uuid.UUID) -> Path:
@@ -517,12 +606,30 @@ async def import_base_image_by_id(
             needed = settings.imager_min_free_bytes
         free = await _free_bytes(scratch)
         if free < needed:
-            logger.warning(
-                "BaseImage %s import: free space %d below import threshold "
-                "%d (expected_size=%s) -- retry",
-                base_image_id, free, needed, expected_size,
+            # Grace path: try sweeping abandoned per-attempt scratch
+            # dirs from prior worker invocations and re-check.  Only
+            # return False (which burns one of the 3 retry attempts)
+            # if free space is still below the threshold after the
+            # sweep.  See ``_purge_stale_scratch`` for the safety
+            # heuristic (named pattern + stale mtime + exclude self).
+            removed, bytes_freed = await _purge_stale_scratch(
+                settings.resolved_imager_scratch_path,
+                exclude_name=scratch.name,
             )
-            return False
+            if removed:
+                logger.info(
+                    "BaseImage %s import: swept %d stale scratch dir(s) "
+                    "(~%d bytes freed) before re-checking disk gate",
+                    base_image_id, removed, bytes_freed,
+                )
+                free = await _free_bytes(scratch)
+            if free < needed:
+                logger.warning(
+                    "BaseImage %s import: free space %d below import threshold "
+                    "%d (expected_size=%s) -- retry",
+                    base_image_id, free, needed, expected_size,
+                )
+                return False
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             # Resolve the catalog if the API didn't stamp source_url +
@@ -722,11 +829,26 @@ async def provision_image_by_id(
         # Provisioning needs ~10 GiB headroom (xz + raw + output).
         free = await _free_bytes(scratch)
         if free < settings.imager_min_free_bytes:
-            logger.warning(
-                "ProvisionedImage %s: free space %d below threshold %d -- retry",
-                provisioned_id, free, settings.imager_min_free_bytes,
+            # Grace path: see ``import_base_image_by_id`` -- sweep stale
+            # abandoned scratch dirs and re-check before counting this
+            # as a failed attempt.
+            removed, bytes_freed = await _purge_stale_scratch(
+                settings.resolved_imager_scratch_path,
+                exclude_name=scratch.name,
             )
-            return False
+            if removed:
+                logger.info(
+                    "ProvisionedImage %s: swept %d stale scratch dir(s) "
+                    "(~%d bytes freed) before re-checking disk gate",
+                    provisioned_id, removed, bytes_freed,
+                )
+                free = await _free_bytes(scratch)
+            if free < settings.imager_min_free_bytes:
+                logger.warning(
+                    "ProvisionedImage %s: free space %d below threshold %d -- retry",
+                    provisioned_id, free, settings.imager_min_free_bytes,
+                )
+                return False
 
         # Stage the base image locally.
         staged_base = scratch / "base.img.xz"
