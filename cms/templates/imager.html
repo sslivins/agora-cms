@@ -62,11 +62,41 @@
                 <div id="imagerJobProgress" class="text-muted" style="font-size:0.8rem; margin-top:0.25rem; display:none;"></div>
             </div>
             <div style="display:flex; gap:0.5rem;">
-                <a id="imagerJobDownload" class="btn btn-primary" style="display:none;" download>Download .img.xz</a>
                 <button id="imagerJobDismiss" type="button" class="btn btn-secondary btn-sm">Dismiss</button>
             </div>
         </div>
         <div id="imagerJobError" class="text-muted" style="margin-top:0.5rem; display:none;"></div>
+    </div>
+</div>
+
+{# ── Built images list ─────────────────────────────────────────── #}
+<div class="card" data-imager-built style="margin-bottom:1rem;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+        <h3 style="margin:0;">Built Images</h3>
+        <button id="imagerBuiltRefreshBtn" type="button" class="btn btn-secondary btn-sm">Refresh</button>
+    </div>
+    <p class="text-muted" style="margin-top:0.5rem;">
+        Previously built <code>.img.xz</code> artifacts. The Download button mints a
+        fresh, short-lived link on every click — links never expire from your
+        browser's perspective.
+    </p>
+    <div class="table-wrap">
+        <table id="imagerBuiltTable" style="width:100%;">
+            <thead>
+                <tr>
+                    <th>Output filename</th>
+                    <th>Fleet</th>
+                    <th>Base</th>
+                    <th>Status</th>
+                    <th>Size</th>
+                    <th>Built</th>
+                    <th style="width:9rem; text-align:right;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="imagerBuiltTbody">
+                <tr><td colspan="7" class="empty-state text-muted">Loading…</td></tr>
+            </tbody>
+        </table>
     </div>
 </div>
 {% endif %}
@@ -311,13 +341,74 @@
         return pct + '%';
     }
 
+    // ── Built section ─────────────────────────────────────────
+    var builtSection = $('[data-imager-built]');
+    var canManage = {{ 'true' if imager_can_manage else 'false' }};
+
+    async function loadBuiltImages() {
+        if (!builtSection) return;
+        var tbody = $('#imagerBuiltTbody', builtSection);
+        try {
+            var rows = await jsonFetch('/api/imager/provisioned-images');
+            if (!rows || rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No built images yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(function(r) {
+                var status = statusUp(r.status);
+                var dlEnabled = (status === 'READY') && r.download_job_id;
+                var dlBtn = dlEnabled
+                    ? '<a class="btn btn-primary btn-sm" href="/api/imager/download/' +
+                      encodeURIComponent(r.download_job_id) + '" download>Download</a>'
+                    : '<span class="text-muted" style="font-size:0.8rem;">unavailable</span>';
+                var delBtn = canManage
+                    ? '<button class="btn btn-secondary btn-sm" data-built-delete="' +
+                      escHtml(r.id) + '" data-built-name="' + escHtml(r.output_name) + '">Delete</button>'
+                    : '';
+                var base = (r.base_variant || r.base_version)
+                    ? escHtml((r.base_variant || '?') + ' / ' + (r.base_version || '?'))
+                    : '<span class="text-muted">deleted</span>';
+                return '<tr>' +
+                    '<td><code>' + escHtml(r.output_name) + '</code></td>' +
+                    '<td>' + escHtml(r.fleet_id || '—') + '</td>' +
+                    '<td>' + base + '</td>' +
+                    '<td><span class="' + statusBadgeClass(r.status) + '">' + escHtml(r.status) + '</span></td>' +
+                    '<td>' + fmtBytes(r.output_size) + '</td>' +
+                    '<td>' + fmtDate(r.built_at || r.created_at) + '</td>' +
+                    '<td style="text-align:right;">' + dlBtn + ' ' + delBtn + '</td>' +
+                    '</tr>';
+            }).join('');
+            // Wire up delete buttons (admin only).
+            tbody.querySelectorAll('button[data-built-delete]').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    deleteBuiltImage(btn.dataset.builtDelete, btn.dataset.builtName);
+                });
+            });
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">' +
+                escHtml('Failed to load built images: ' + (e.message || e)) + '</td></tr>';
+        }
+    }
+
+    async function deleteBuiltImage(id, name) {
+        if (!confirm('Delete built image "' + name + '"?\nThis removes the file from blob storage.')) return;
+        try {
+            await jsonFetch('/api/imager/provisioned-images/' + encodeURIComponent(id), {
+                method: 'DELETE',
+            });
+            toast('Deleted ' + name, 'success');
+            loadBuiltImages();
+        } catch (e) {
+            toast('Delete failed: ' + (e.message || e), 'error');
+        }
+    }
+
     function renderJobCard(job) {
         if (!buildSection) return;
         var card = $('#imagerJobCard', buildSection);
         var badge = $('#imagerJobStatusBadge', buildSection);
         var meta = $('#imagerJobMeta', buildSection);
         var prog = $('#imagerJobProgress', buildSection);
-        var dl = $('#imagerJobDownload', buildSection);
         var errBox = $('#imagerJobError', buildSection);
         card.style.display = '';
         badge.className = statusBadgeClass(job.status);
@@ -335,11 +426,7 @@
             prog.textContent = '';
         }
         if (statusUp(job.status) === 'DONE') {
-            dl.style.display = '';
-            dl.href = '/api/imager/download/' + encodeURIComponent(job.job_id);
             errBox.style.display = 'none';
-        } else {
-            dl.style.display = 'none';
         }
         var js = statusUp(job.status);
         if (js === 'FAILED' || js === 'CANCELLED') {
@@ -363,6 +450,7 @@
                 stopPolling();
                 if (statusUp(job.status) === 'DONE') {
                     toast('Image build complete', 'success');
+                    loadBuiltImages();
                 }
             }
         } catch (e) {
@@ -773,6 +861,12 @@
         var catBtn = $('#imagerCatalogBtn', manageSection);
         if (catBtn) catBtn.addEventListener('click', openCatalog);
         loadBaseImages();
+    }
+
+    if (builtSection) {
+        var refreshBtn = $('#imagerBuiltRefreshBtn', builtSection);
+        if (refreshBtn) refreshBtn.addEventListener('click', loadBuiltImages);
+        loadBuiltImages();
     }
 
     // Re-poll immediately when the tab becomes visible.

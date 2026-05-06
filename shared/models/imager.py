@@ -158,14 +158,33 @@ class ProvisionedImage(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
     )
-    base_image_id: Mapped[uuid.UUID] = mapped_column(
+    # ``SET NULL`` so admins can delete a cached base image without
+    # cascade-destroying the audit trail of past builds. Built
+    # ``.img.xz`` artifacts are fully self-contained (the imager
+    # pipeline embeds the OS into a fresh blob), so the base image
+    # has no runtime relationship to the artifact once a build is
+    # done. The denormalized ``base_variant`` / ``base_version``
+    # snapshot fields below preserve "which base did this build
+    # come from?" after the FK target vanishes.
+    base_image_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        # ``RESTRICT`` not ``CASCADE``: a ``BaseImage`` with extant
-        # ``ProvisionedImage`` audit rows must not vanish silently.
-        # Admins delete the base image only after confirming there
-        # are no live builds; the API does that check explicitly.
-        ForeignKey("base_images.id", ondelete="RESTRICT"),
-        nullable=False,
+        ForeignKey("base_images.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Audit-only snapshot of the base image's identity at build time.
+    # Populated by the build API on insert. Survives base-image
+    # deletion (FK above goes to NULL).
+    base_variant: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # FK to the ``IMAGE_PROVISION`` job that produced this row,
+    # populated at insert. Lets the list endpoint expose the job_id
+    # the existing ``/download/{job_id}`` redirect requires without
+    # an extra join. ``SET NULL`` so a job-table cleanup sweep
+    # doesn't cascade-destroy audit rows.
+    provisioning_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        nullable=True,
     )
     # Pi serial / ``String(64)`` — matches ``devices.id``.  Nullable
     # for "preview"/"bulk" builds that aren't bound to a registered
