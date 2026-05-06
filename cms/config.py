@@ -17,8 +17,11 @@ class Settings(SharedSettings):
     # MCP Server
     mcp_server_url: str = "http://mcp:8000"  # Docker default; override for Azure
 
-    # Asset downloads
-    asset_base_url: str | None = None  # override base URL for device asset downloads
+    # Optional override for asset download URLs (e.g., a CDN edge in front
+    # of this CMS).  When unset, asset URLs use ``base_url`` (the canonical
+    # public CMS URL) — see :pyattr:`base_url` and
+    # :pyattr:`effective_asset_base_url` below.
+    asset_base_url: str | None = None
 
     # Device defaults
     default_device_storage_mb: int = 500  # assumed device flash budget for assets
@@ -46,8 +49,29 @@ class Settings(SharedSettings):
     # If unset, the receiver echoes back whatever Azure sent (dev-friendly).
     wps_webhook_allowed_origin: str | None = None
 
-    # SMTP is configured via the web UI settings page (stored in DB)
-    base_url: str | None = None  # public URL for login links in emails
+    # Canonical public URL of this CMS (env: ``AGORA_CMS_BASE_URL``).
+    # Single source of truth for every place we need an absolute URL
+    # pointing at this deployment:
+    #   * Login / password-reset / invite links emailed to operators.
+    #   * Default base for device asset download URLs (overridable via
+    #     :pyattr:`asset_base_url` for CDN edge cases).
+    #   * Embedded into provisioned Pi images by the imager build —
+    #     transformed to ``wss://<host>/ws/device`` before being baked
+    #     into ``agora-fleet.env`` as ``AGORA_CMS_URL``.
+    # Format: scheme + host (no path, no trailing slash), e.g.
+    # ``https://agora.example.com``.  Required for image builds.
+    base_url: str | None = None
+
+    @property
+    def effective_asset_base_url(self) -> str | None:
+        """Return the override URL if set, else the canonical base URL.
+
+        Used by the WS / WPS asset-URL resolvers and any other code
+        that wants the public download base without caring whether
+        this deployment fronts a CDN.  Returns ``None`` only when
+        neither knob is configured.
+        """
+        return self.asset_base_url or self.base_url
 
     # Log-request drainer (issue #345 Stage 3d).  Self-healing loop for
     # the ``log_requests`` outbox: retries stuck ``pending`` rows with

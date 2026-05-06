@@ -68,8 +68,12 @@ def _extract_access_keys(connection_string: str | None) -> list[str]:
 
 def _get_asset_base_url(request: Request, settings: Settings) -> str:
     """Base URL for asset download links — mirrors ws.get_asset_base_url."""
-    if settings.asset_base_url:
-        return settings.asset_base_url.rstrip("/")
+    asset_base_url = getattr(settings, "asset_base_url", None)
+    if asset_base_url:
+        return asset_base_url.rstrip("/")
+    base_url = getattr(settings, "base_url", None)
+    if base_url:
+        return base_url.rstrip("/")
     host = request.headers.get("host")
     if host:
         scheme = "https" if request.url.scheme in ("https", "wss") else "http"

@@ -40,6 +40,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -223,6 +224,41 @@ def _resolve_catalog_entry(
             detail=f"catalog entry for {variant!r} missing url or sha256",
         )
     return entry
+
+
+def _derive_device_ws_url(base_url: str) -> str:
+    """Derive the device WebSocket URL the firmware connects to.
+
+    Maps ``https://host[:port]`` → ``wss://host[:port]/ws/device``
+    (and ``http://`` → ``ws://`` for local dev).  This is the value
+    baked into ``agora-fleet.env`` as ``AGORA_CMS_URL``; the firmware
+    passes it directly to ``websockets.connect()`` and derives the
+    HTTPS API base by swapping the scheme back.
+
+    The input must be a clean origin URL (scheme + host[:port], no
+    path/query/fragment) — anything else is rejected so we never
+    silently bake a half-correct URL into a Pi image.
+
+    Raises :class:`ValueError` on empty input, missing host, an
+    unsupported scheme, or any path/query/fragment.
+    """
+    if not base_url:
+        raise ValueError("base_url is empty")
+    parsed = urlparse(base_url.rstrip("/"))
+    if parsed.scheme not in ("http", "https", "ws", "wss"):
+        raise ValueError(
+            f"base_url {base_url!r} has unsupported scheme {parsed.scheme!r}; "
+            "expected http(s) or ws(s)"
+        )
+    if not parsed.netloc:
+        raise ValueError(f"base_url {base_url!r} has no host component")
+    if parsed.path or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError(
+            f"base_url {base_url!r} must be origin only "
+            "(scheme + host[:port], no path/query/fragment)"
+        )
+    ws_scheme = "wss" if parsed.scheme in ("https", "wss") else "ws"
+    return urlunparse((ws_scheme, parsed.netloc, "/ws/device", "", "", ""))
 
 
 def _fleet_env_payload(cms_url: str, fleet_id: str, fleet_secret: str) -> bytes:
@@ -554,11 +590,35 @@ async def build_provisioned_image(
             detail=f"fleet_id {body.fleet_id!r} is not configured on this CMS",
         )
 
-    cms_url = (settings.base_url or "").rstrip("/")
-    if not cms_url:
+    if settings.device_transport != "local":
         raise HTTPException(
             status_code=503,
-            detail="AGORA_BASE_URL is not configured; the image needs an absolute CMS URL",
+            detail=(
+                f"Image builds require AGORA_CMS_DEVICE_TRANSPORT='local'; "
+                f"this CMS is configured for {settings.device_transport!r} "
+                "and does not expose /ws/device. Provisioned images embed "
+                "a wss:// URL pointing at /ws/device, which would not work "
+                "in this transport mode."
+            ),
+        )
+
+    cms_base = (settings.base_url or "").rstrip("/")
+    if not cms_base:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AGORA_CMS_BASE_URL is not configured. Set it to the public URL "
+                "of this CMS (e.g. https://agora.example.com) — image builds "
+                "embed it in the Pi's fleet env so the device can reach "
+                "/ws/device and /api/devices/register."
+            ),
+        )
+    try:
+        cms_url = _derive_device_ws_url(cms_base)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"AGORA_CMS_BASE_URL is invalid ({exc}); expected an absolute URL like https://agora.example.com",
         )
 
     bi = await db.get(BaseImage, body.base_image_id)
