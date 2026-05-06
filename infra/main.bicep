@@ -64,6 +64,19 @@ param cmsImage string = ''
 @description('MCP server container image (e.g., agoracr.azurecr.io/agora-cms-mcp:latest)')
 param mcpImage string = ''
 
+// ── Blue/green deploy controls ──
+@description('Per-deploy revision suffix for the CMS Container App (e.g. "v1-12-34"). The CD workflow generates this from the version. New revision lands at 0% traffic; workflow flips traffic post-verify.')
+param cmsRevisionSuffix string = ''
+
+@description('Name of the existing CMS revision that should keep 100% traffic during this deploy. CD workflow queries Azure for the current latestReadyRevisionName. Empty for bootstrap.')
+param previousCmsRevisionName string = ''
+
+@description('Per-deploy revision suffix for the MCP Container App. See cmsRevisionSuffix.')
+param mcpRevisionSuffix string = ''
+
+@description('Name of the existing MCP revision that should keep 100% traffic during this deploy. See previousCmsRevisionName.')
+param previousMcpRevisionName string = ''
+
 @description('Worker container image (e.g., agoracr.azurecr.io/agora-worker:latest)')
 param workerImage string = ''
 
@@ -208,6 +221,12 @@ module containerApps 'modules/containerApps.bicep' = {
     mcpAppName: mcpAppName
     mcpImage: resolvedMcpImage
 
+    // Blue/green revision controls
+    cmsRevisionSuffix: cmsRevisionSuffix
+    previousCmsRevisionName: previousCmsRevisionName
+    mcpRevisionSuffix: mcpRevisionSuffix
+    previousMcpRevisionName: previousMcpRevisionName
+
     // Worker Job
     workerJobName: workerJobName
     workerImage: resolvedWorkerImage
@@ -272,6 +291,9 @@ module alerts 'modules/alerts.bicep' = {
 // ── Outputs ──
 output cmsUrl string = containerApps.outputs.cmsAppFqdn
 output mcpUrl string = containerApps.outputs.mcpAppFqdn
+output environmentDefaultDomain string = containerApps.outputs.environmentDefaultDomain
+output cmsLatestRevisionName string = containerApps.outputs.cmsLatestRevisionName
+output mcpLatestRevisionName string = containerApps.outputs.mcpLatestRevisionName
 output acrLoginServer string = acr.outputs.acrLoginServer
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output keyVaultUri string = keyVault.outputs.keyVaultUri
