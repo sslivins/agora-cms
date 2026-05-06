@@ -378,3 +378,70 @@ class TestWebSocket:
                     ws.close()
         finally:
             settings.asset_base_url = original_value
+
+
+# ── get_asset_base_url priority unit tests ────────────────────────────
+
+
+from cms.auth import get_settings as _get_settings_for_unit_tests
+
+
+class _StubReq:
+    def __init__(self, host: str | None = "localhost:8000", scheme: str = "http"):
+        self.headers = {"host": host} if host else {}
+
+        class _U:
+            pass
+
+        u = _U()
+        u.scheme = scheme
+        self.url = u
+        self.base_url = f"{scheme}://{host or 'unknown'}/"
+
+
+def test_get_asset_base_url_override_wins_over_base_url():
+    from cms.routers.ws import get_asset_base_url
+
+    settings = _get_settings_for_unit_tests()
+    saved_override = settings.asset_base_url
+    saved_base = settings.base_url
+    try:
+        settings.asset_base_url = "https://cdn.example.com"
+        settings.base_url = "https://agora.example.com"
+        assert get_asset_base_url(_StubReq()) == "https://cdn.example.com"
+    finally:
+        settings.asset_base_url = saved_override
+        settings.base_url = saved_base
+
+
+def test_get_asset_base_url_falls_back_to_base_url():
+    from cms.routers.ws import get_asset_base_url
+
+    settings = _get_settings_for_unit_tests()
+    saved_override = settings.asset_base_url
+    saved_base = settings.base_url
+    try:
+        settings.asset_base_url = None
+        settings.base_url = "https://agora.example.com"
+        assert get_asset_base_url(_StubReq(host="upstream:8000")) == "https://agora.example.com"
+    finally:
+        settings.asset_base_url = saved_override
+        settings.base_url = saved_base
+
+
+def test_get_asset_base_url_falls_back_to_host_header():
+    from cms.routers.ws import get_asset_base_url
+
+    settings = _get_settings_for_unit_tests()
+    saved_override = settings.asset_base_url
+    saved_base = settings.base_url
+    try:
+        settings.asset_base_url = None
+        settings.base_url = None
+        assert (
+            get_asset_base_url(_StubReq(host="cms.local:8000", scheme="http"))
+            == "http://cms.local:8000"
+        )
+    finally:
+        settings.asset_base_url = saved_override
+        settings.base_url = saved_base

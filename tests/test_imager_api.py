@@ -461,6 +461,34 @@ async def test_build_503_when_base_url_missing(client, db_session, imager_settin
         },
     )
     assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert "AGORA_CMS_BASE_URL" in detail
+    assert "/ws/device" in detail or "register" in detail
+
+
+@pytest.mark.asyncio
+async def test_build_503_when_device_transport_wps(client, db_session, imager_settings):
+    """WPS-mode CMS does not mount /ws/device, so image builds must refuse."""
+    saved_transport = imager_settings.device_transport
+    try:
+        imager_settings.device_transport = "wps"
+        bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+        db_session.add(bi)
+        await db_session.commit()
+        resp = await client.post(
+            "/api/imager/build",
+            json={
+                "base_image_id": str(bi.id),
+                "fleet_id": "fleet-test",
+                "output_name": "x.img.xz",
+            },
+        )
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert "transport" in detail.lower()
+        assert "wps" in detail.lower()
+    finally:
+        imager_settings.device_transport = saved_transport
 
 
 @pytest.mark.asyncio
@@ -508,7 +536,10 @@ async def test_build_creates_provisioned_row_with_payload(
     assert pi.fleet_id == "fleet-test"
     assert pi.output_name == "kitchen.img.xz"
     payload = pi.fleet_env_payload.decode("utf-8")
-    assert "AGORA_CMS_URL=https://cms.example.com" in payload
+    # AGORA_CMS_BASE_URL=https://cms.example.com → wss://cms.example.com/ws/device
+    # The firmware passes this directly to websockets.connect() and derives
+    # the HTTPS API base by swapping the scheme back.
+    assert "AGORA_CMS_URL=wss://cms.example.com/ws/device" in payload
     assert "AGORA_FLEET_ID=fleet-test" in payload
     assert "AGORA_FLEET_SECRET=c2VjcmV0LWJhc2U2NA==" in payload  # gitleaks:allow
 
@@ -689,3 +720,68 @@ async def test_import_writes_audit_row(client, db_session, patch_catalog_ok):
         select(AuditLog).where(AuditLog.action == "imager.base_image.import")
     )).scalars().all()
     assert len(rows) == 1
+
+
+# ── _derive_device_ws_url unit tests ──────────────────────────────
+
+
+def test_derive_device_ws_url_https_to_wss():
+    from cms.routers.imager import _derive_device_ws_url
+
+    assert _derive_device_ws_url("https://agora.example.com") == "wss://agora.example.com/ws/device"
+
+
+def test_derive_device_ws_url_http_to_ws():
+    from cms.routers.imager import _derive_device_ws_url
+
+    assert _derive_device_ws_url("http://192.168.1.10:8080") == "ws://192.168.1.10:8080/ws/device"
+
+
+def test_derive_device_ws_url_strips_trailing_slash():
+    from cms.routers.imager import _derive_device_ws_url
+
+    assert _derive_device_ws_url("https://agora.example.com/") == "wss://agora.example.com/ws/device"
+
+
+def test_derive_device_ws_url_preserves_port():
+    from cms.routers.imager import _derive_device_ws_url
+
+    assert (
+        _derive_device_ws_url("https://cms.example.com:8443")
+        == "wss://cms.example.com:8443/ws/device"
+    )
+
+
+def test_derive_device_ws_url_rejects_empty():
+    from cms.routers.imager import _derive_device_ws_url
+
+    with pytest.raises(ValueError):
+        _derive_device_ws_url("")
+
+
+def test_derive_device_ws_url_rejects_no_host():
+    from cms.routers.imager import _derive_device_ws_url
+
+    with pytest.raises(ValueError):
+        _derive_device_ws_url("not-a-url")
+
+
+def test_derive_device_ws_url_rejects_path():
+    from cms.routers.imager import _derive_device_ws_url
+
+    with pytest.raises(ValueError):
+        _derive_device_ws_url("https://agora.example.com/some/path")
+
+
+def test_derive_device_ws_url_rejects_query():
+    from cms.routers.imager import _derive_device_ws_url
+
+    with pytest.raises(ValueError):
+        _derive_device_ws_url("https://agora.example.com?x=1")
+
+
+def test_derive_device_ws_url_rejects_unsupported_scheme():
+    from cms.routers.imager import _derive_device_ws_url
+
+    with pytest.raises(ValueError):
+        _derive_device_ws_url("ftp://agora.example.com")

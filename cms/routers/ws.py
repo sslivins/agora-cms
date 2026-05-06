@@ -51,13 +51,18 @@ def get_asset_base_url(request=None) -> str:
     """Return the base URL for asset download links.
 
     Priority:
-    1. AGORA_CMS_ASSET_BASE_URL config override
-    2. Request Host header (what the client actually connected to)
-    3. Request base_url (server-side view — last resort)
+    1. ``asset_base_url`` (explicit override — typically a CDN edge
+       fronting this CMS).
+    2. ``base_url`` (canonical public CMS URL — single source of
+       truth set per deployment).
+    3. Request Host header (what the client actually connected to).
+    4. Request base_url (server-side view — last resort).
     """
     settings = get_settings()
     if settings.asset_base_url:
         return settings.asset_base_url.rstrip("/")
+    if settings.base_url:
+        return settings.base_url.rstrip("/")
     if request is not None:
         host = request.headers.get("host")
         if host:
