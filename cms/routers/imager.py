@@ -18,7 +18,7 @@ pipeline shipped in PRs 1–3:
   ``ProvisionedImage`` references it (FK is RESTRICT).
 * :http:post:`/api/imager/build` — enqueue an ``IMAGE_PROVISION``
   job that produces a generic enrollment image carrying
-  ``(AGORA_CMS_URL, AGORA_FLEET_ID, AGORA_FLEET_SECRET)``.  No
+  ``(AGORA_CMS_URL, AGORA_FLEET_ID, AGORA_FLEET_SECRET_HEX)``.  No
   per-device API key minting.
 * :http:get:`/api/imager/jobs/{job_id}` — poll job status.  Filtered
   to imager job types so non-imager jobs cannot be peeked through
@@ -36,6 +36,8 @@ re-flashes (Model A) are tracked as a future feature.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 import uuid
 from datetime import datetime, timezone
@@ -283,13 +285,32 @@ def _fleet_env_payload(
     ``cms_url`` (only its scheme+netloc) to derive the API base for
     ``/api/devices/.../connect-token``; the ``/ws/device`` path is
     ignored, so the same URL form works for both modes.
+
+    ``fleet_secret`` is the **base64**-encoded secret as stored in
+    ``Settings.fleet_register_secrets[fleet_id]`` (see
+    ``cms/routers/bootstrap.py`` which does ``base64.b64decode`` to
+    recover the raw bytes).  The firmware-side
+    ``agora-fleet-provision.sh`` allow-lists the key
+    ``AGORA_FLEET_SECRET_HEX`` and hex-decodes the value, so we
+    re-encode here.  The 2026-05-06 incident on Pi 192.168.1.100
+    was caused by writing the key as ``AGORA_FLEET_SECRET=<b64>``,
+    which the firmware silently dropped (wrong key name, wrong
+    encoding) leaving the device unable to authenticate.
     """
     fw_transport = "direct" if device_transport == "local" else device_transport
+    try:
+        raw = base64.b64decode(fleet_secret, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(
+            "fleet_secret is not valid base64; "
+            "FLEET_REGISTER_SECRETS[<fleet_id>] must be base64-encoded raw bytes"
+        ) from exc
+    secret_hex = raw.hex()
     return (
         f"AGORA_CMS_URL={cms_url}\n"
         f"AGORA_CMS_TRANSPORT={fw_transport}\n"
         f"AGORA_FLEET_ID={fleet_id}\n"
-        f"AGORA_FLEET_SECRET={fleet_secret}\n"
+        f"AGORA_FLEET_SECRET_HEX={secret_hex}\n"
     ).encode("utf-8")
 
 
@@ -646,9 +667,18 @@ async def build_provisioned_image(
             detail=f"base image is not ready (status={bi.status})",
         )
 
-    payload = _fleet_env_payload(
-        cms_url, body.fleet_id, secret, settings.device_transport
-    )
+    try:
+        payload = _fleet_env_payload(
+            cms_url, body.fleet_id, secret, settings.device_transport
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"FLEET_REGISTER_SECRETS[{body.fleet_id!r}] is misconfigured: "
+                f"{exc}"
+            ),
+        ) from exc
 
     pi = ProvisionedImage(
         base_image_id=bi.id,
