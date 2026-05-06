@@ -87,7 +87,7 @@ def upgrade() -> None:
         FROM (
             SELECT DISTINCT ON (target_id) id, target_id
             FROM jobs
-            WHERE type = 'IMAGE_PROVISION'
+            WHERE type::text = 'IMAGE_PROVISION'
             ORDER BY target_id, created_at DESC
         ) j
         WHERE j.target_id = pi.id
