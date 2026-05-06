@@ -60,19 +60,13 @@ resource sslConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@202
   }
 }
 
-// Raise max_connections from the B1ms default (50) to its supported ceiling.
-// 2 CMS replicas (5+5 pool each) + worker LISTEN + concurrent imager jobs
-// can transiently exceed 50 under load. 85 is the documented maximum for
-// the Burstable B1ms SKU and gives generous headroom for CI seed scripts
-// and ad-hoc admin connections. See incident at 2026-05-06T13-14Z.
-resource maxConnectionsConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
-  parent: postgresServer
-  name: 'max_connections'
-  properties: {
-    value: '85'
-    source: 'user-override'
-  }
-}
+// max_connections is intentionally left at the B1ms default (50). The
+// 2026-05-06T13-14Z Sev2 was caused by stacked active Container App
+// revisions (each pinned to minReplicas=2) blowing past the 50-slot
+// ceiling, not by genuine load. The structural fix is in publish-image.yml
+// (auto-deactivate stale revisions after promote) plus the 5+5 SQLAlchemy
+// pool cap in shared/database.py — together they bound steady-state at
+// ~30 connections.
 
 output serverFqdn string = postgresServer.properties.fullyQualifiedDomainName
 output serverName string = postgresServer.name

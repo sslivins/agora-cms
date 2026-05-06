@@ -37,8 +37,10 @@ def init_db(settings: SharedSettings):
     # (pool_size=5, max_overflow=10 = 15/replica) was tripping the
     # "remaining connection slots are reserved for roles with the
     # SUPERUSER attribute" error against the B1ms Postgres' 50-slot
-    # ceiling. 5+5=10/replica leaves comfortable headroom even with
-    # max_connections raised to 85. See incident at 2026-05-06T13-14Z.
+    # ceiling. 5+5=10/replica keeps steady-state well under 50 once
+    # publish-image.yml's auto-deactivate-stale-revisions step prevents
+    # idle revision pods from accumulating. See incident at
+    # 2026-05-06T13-14Z.
     _engine = create_async_engine(
         settings.database_url,
         echo=False,
