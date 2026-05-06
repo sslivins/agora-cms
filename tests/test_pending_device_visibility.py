@@ -234,3 +234,108 @@ class TestDevicesPageColumns:
         assert device_thead is not None
         th_count = device_thead.count("<th")
         assert th_count == 7
+
+
+# ── Bootstrap-v2 pending registrations card ──
+
+
+@pytest.mark.asyncio
+class TestPendingRegistrationsCard:
+    """Bootstrap-v2 stores un-adopted device registrations in the
+    `pending_registrations` table (not in `devices` with status=PENDING).
+    The /devices page must render the dedicated #pending-devices-card so
+    the JS poller can populate it from /api/devices/pending. PR #478
+    ("Phase D") accidentally removed this card while only intending to
+    consolidate dashboard duplicates; without it, every newly-flashed
+    device is invisible to operators until manually adopted by ID.
+    """
+
+    async def test_admin_sees_pending_devices_card(self, client):
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert 'id="pending-devices-card"' in resp.text, (
+            "Pending Devices card markup is missing from /devices. The "
+            "polling JS at the bottom of devices.html targets this DOM "
+            "id; without it, bootstrap-v2 pending registrations are "
+            "invisible in the UI."
+        )
+        assert 'id="pending-devices-tbody"' in resp.text
+
+    async def test_operator_does_not_see_pending_devices_card(self, operator_client):
+        resp = await operator_client.get("/devices")
+        assert resp.status_code == 200
+        assert 'id="pending-devices-card"' not in resp.text
+
+
+@pytest_asyncio.fixture
+async def seed_pending_registration(app):
+    """Insert a pending_registrations row (bootstrap-v2 un-adopted device).
+
+    Returns the device_id so tests can assert it shows up in API/UI flows.
+    """
+    from cms.database import get_db
+    from cms.models.pending_registration import PendingRegistration
+
+    factory = app.dependency_overrides[get_db]
+    device_id = "vis-test-pending-reg-001"
+    async for db in factory():
+        db.add(
+            PendingRegistration(
+                device_id=device_id,
+                pubkey="dGVzdC1wdWJrZXktYmFzZTY0",
+                pairing_secret_hash="a" * 64,
+                connection_metadata={"firmware_version": "1.11.35"},
+                ip_address="192.168.1.100",
+            )
+        )
+        await db.commit()
+        break
+    return device_id
+
+
+@pytest.mark.asyncio
+class TestPendingRegistrationsVisible:
+    """End-to-end check that a row in `pending_registrations` actually
+    surfaces in the UI flow. Regression guard for PR #478 ("Phase D"),
+    which retired the dedicated Pending Devices card without wiring its
+    data source (`pending_registrations`) into the Ungrouped Devices
+    list -- making every newly-flashed bootstrap-v2 device invisible.
+    """
+
+    async def test_pending_registration_appears_in_api_response(
+        self, client, seed_pending_registration
+    ):
+        """The /api/devices/pending endpoint that the card's JS polls
+        must return the row so the front-end can render it."""
+        resp = await client.get("/api/devices/pending")
+        assert resp.status_code == 200
+        items = resp.json().get("items", [])
+        device_ids = {item.get("device_id") for item in items}
+        assert seed_pending_registration in device_ids, (
+            f"Pending registration {seed_pending_registration!r} not "
+            f"returned by /api/devices/pending. Response items: {items!r}. "
+            "The Pending Devices card cannot render rows the API does "
+            "not return."
+        )
+
+    async def test_pending_registration_card_target_present_for_admin(
+        self, client, seed_pending_registration
+    ):
+        """Even when there are pending rows, the static template must
+        render the card markup (it starts hidden and is shown by JS).
+        Without this, the JS poller has no DOM to mount into and the
+        device is invisible regardless of what the API returns."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert 'id="pending-devices-card"' in resp.text
+        assert 'id="pending-devices-tbody"' in resp.text
+
+    async def test_operator_cannot_see_pending_registrations_api(
+        self, operator_client, seed_pending_registration
+    ):
+        """Bootstrap-v2 adoption is gated on devices:manage; operators
+        without it must get 403 from the API the card polls."""
+        resp = await operator_client.get("/api/devices/pending")
+        assert resp.status_code == 403
+
+
