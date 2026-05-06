@@ -378,6 +378,25 @@ jobs:
             STATUS=$(python3 -c "import json; d=json.load(open('/tmp/sys.json')); print(d.get('status','?'))")
             if [ "$STATUS" != "ok" ]; then
               echo "::error::/healthz/system reported status=$STATUS"
+              # Surface which subsystem(s) failed so the operator
+              # doesn't need to dig through container logs to find
+              # out *what* is degraded.  Keeps blast-radius small
+              # for future degradation modes.
+              python3 - <<'PY' /tmp/sys.json
+import json, sys
+d = json.load(open(sys.argv[1]))
+db = d.get("db", {})
+mcp = d.get("mcp", {})
+smtp = d.get("smtp", {})
+cfg = d.get("config", {})
+if not db.get("ok", True):
+    print("::error::  db: not OK")
+if mcp.get("enabled") and not mcp.get("ok", True):
+    print("::error::  mcp: enabled but not reachable")
+if not cfg.get("ok", True):
+    for m in cfg.get("missing", []):
+        print(f"::error::  config: {m.get('env_var','?')} -- {m.get('message','?')}")
+PY
               fail=1
             fi
           fi

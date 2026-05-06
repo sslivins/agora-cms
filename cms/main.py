@@ -393,6 +393,8 @@ async def lifespan(app: FastAPI):
     # operators will actually see it. See cms/security.py for the list.
     from cms.security import warn_on_default_secrets
     warn_on_default_secrets(settings, logger)
+    from cms.deploy_config import warn_on_missing_deploy_config
+    warn_on_missing_deploy_config(settings, logger)
     init_db(settings)
     await wait_for_db()
     await run_migrations()
@@ -916,10 +918,27 @@ async def healthz_system(db: AsyncSession = Depends(get_db)):
             mcp_online = False
 
     overall_ok = db_ok and (not mcp_enabled or mcp_online)
+
+    # Deploy-shape config check.  Catches "container booted but a
+    # required-for-this-deployment-shape env var is missing", which
+    # otherwise only surfaces when a real user hits the affected code
+    # path.  See cms/deploy_config.py for the registry.
+    from cms.deploy_config import detect_missing_deploy_config
+    config_findings = detect_missing_deploy_config(get_settings())
+    config_ok = not config_findings
+    overall_ok = overall_ok and config_ok
+
     return {
         "status": "ok" if overall_ok else "degraded",
         "version": __version__,
         "db": {"ok": db_ok},
         "mcp": {"enabled": mcp_enabled, "ok": mcp_online},
         "smtp": {"configured": smtp_configured},
+        "config": {
+            "ok": config_ok,
+            "missing": [
+                {"setting": f.setting, "env_var": f.env_var, "message": f.message}
+                for f in config_findings
+            ],
+        },
     }
