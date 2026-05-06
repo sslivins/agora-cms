@@ -467,8 +467,10 @@ async def test_build_503_when_base_url_missing(client, db_session, imager_settin
 
 
 @pytest.mark.asyncio
-async def test_build_503_when_device_transport_wps(client, db_session, imager_settings):
-    """WPS-mode CMS does not mount /ws/device, so image builds must refuse."""
+async def test_build_succeeds_in_wps_mode_with_transport_baked(
+    client, db_session, imager_settings
+):
+    """WPS-mode CMS bakes AGORA_CMS_TRANSPORT=wps into the fleet env."""
     saved_transport = imager_settings.device_transport
     try:
         imager_settings.device_transport = "wps"
@@ -483,10 +485,38 @@ async def test_build_503_when_device_transport_wps(client, db_session, imager_se
                 "output_name": "x.img.xz",
             },
         )
+        assert resp.status_code == 200, resp.text
+        pi = (await db_session.execute(
+            select(ProvisionedImage).where(ProvisionedImage.base_image_id == bi.id)
+        )).scalar_one()
+        payload = pi.fleet_env_payload.decode("utf-8")
+        assert "AGORA_CMS_URL=wss://cms.example.com/ws/device" in payload
+        assert "AGORA_CMS_TRANSPORT=wps" in payload
+    finally:
+        imager_settings.device_transport = saved_transport
+
+
+@pytest.mark.asyncio
+async def test_build_503_when_device_transport_invalid(
+    client, db_session, imager_settings
+):
+    """Anything other than local/wps should refuse cleanly."""
+    saved_transport = imager_settings.device_transport
+    try:
+        imager_settings.device_transport = "carrier-pigeon"
+        bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+        db_session.add(bi)
+        await db_session.commit()
+        resp = await client.post(
+            "/api/imager/build",
+            json={
+                "base_image_id": str(bi.id),
+                "fleet_id": "fleet-test",
+                "output_name": "x.img.xz",
+            },
+        )
         assert resp.status_code == 503
-        detail = resp.json()["detail"]
-        assert "transport" in detail.lower()
-        assert "wps" in detail.lower()
+        assert "carrier-pigeon" in resp.json()["detail"]
     finally:
         imager_settings.device_transport = saved_transport
 
@@ -540,6 +570,7 @@ async def test_build_creates_provisioned_row_with_payload(
     # The firmware passes this directly to websockets.connect() and derives
     # the HTTPS API base by swapping the scheme back.
     assert "AGORA_CMS_URL=wss://cms.example.com/ws/device" in payload
+    assert "AGORA_CMS_TRANSPORT=direct" in payload
     assert "AGORA_FLEET_ID=fleet-test" in payload
     assert "AGORA_FLEET_SECRET=c2VjcmV0LWJhc2U2NA==" in payload  # gitleaks:allow
 

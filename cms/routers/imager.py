@@ -261,15 +261,27 @@ def _derive_device_ws_url(base_url: str) -> str:
     return urlunparse((ws_scheme, parsed.netloc, "/ws/device", "", "", ""))
 
 
-def _fleet_env_payload(cms_url: str, fleet_id: str, fleet_secret: str) -> bytes:
+def _fleet_env_payload(
+    cms_url: str, fleet_id: str, fleet_secret: str, device_transport: str
+) -> bytes:
     """Render the ``agora-fleet.env`` body the worker will inject.
 
     Plaintext on purpose -- see model docstring for rationale.  Order
     matters only for human readability; the firmware reads via
     standard ``KEY=VALUE`` env parsing.
+
+    ``device_transport`` is the CMS-side mode (``local`` or ``wps``).
+    It is mapped to the firmware-side value (``direct`` or ``wps``)
+    and emitted as ``AGORA_CMS_TRANSPORT`` so the Pi opens the right
+    transport at boot.  In ``wps`` mode the firmware reuses the same
+    ``cms_url`` (only its scheme+netloc) to derive the API base for
+    ``/api/devices/.../connect-token``; the ``/ws/device`` path is
+    ignored, so the same URL form works for both modes.
     """
+    fw_transport = "direct" if device_transport == "local" else device_transport
     return (
         f"AGORA_CMS_URL={cms_url}\n"
+        f"AGORA_CMS_TRANSPORT={fw_transport}\n"
         f"AGORA_FLEET_ID={fleet_id}\n"
         f"AGORA_FLEET_SECRET={fleet_secret}\n"
     ).encode("utf-8")
@@ -590,15 +602,13 @@ async def build_provisioned_image(
             detail=f"fleet_id {body.fleet_id!r} is not configured on this CMS",
         )
 
-    if settings.device_transport != "local":
+    if settings.device_transport not in ("local", "wps"):
         raise HTTPException(
             status_code=503,
             detail=(
-                f"Image builds require AGORA_CMS_DEVICE_TRANSPORT='local'; "
-                f"this CMS is configured for {settings.device_transport!r} "
-                "and does not expose /ws/device. Provisioned images embed "
-                "a wss:// URL pointing at /ws/device, which would not work "
-                "in this transport mode."
+                f"Image builds require AGORA_CMS_DEVICE_TRANSPORT to be "
+                f"'local' or 'wps'; this CMS is configured for "
+                f"{settings.device_transport!r}."
             ),
         )
 
@@ -630,7 +640,9 @@ async def build_provisioned_image(
             detail=f"base image is not ready (status={bi.status})",
         )
 
-    payload = _fleet_env_payload(cms_url, body.fleet_id, secret)
+    payload = _fleet_env_payload(
+        cms_url, body.fleet_id, secret, settings.device_transport
+    )
 
     pi = ProvisionedImage(
         base_image_id=bi.id,
