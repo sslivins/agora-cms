@@ -60,6 +60,20 @@ resource sslConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@202
   }
 }
 
+// Raise max_connections from the B1ms default (50) to its supported ceiling.
+// 2 CMS replicas (5+5 pool each) + worker LISTEN + concurrent imager jobs
+// can transiently exceed 50 under load. 85 is the documented maximum for
+// the Burstable B1ms SKU and gives generous headroom for CI seed scripts
+// and ad-hoc admin connections. See incident at 2026-05-06T13-14Z.
+resource maxConnectionsConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
+  parent: postgresServer
+  name: 'max_connections'
+  properties: {
+    value: '85'
+    source: 'user-override'
+  }
+}
+
 output serverFqdn string = postgresServer.properties.fullyQualifiedDomainName
 output serverName string = postgresServer.name
 output databaseName string = database.name

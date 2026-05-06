@@ -61,6 +61,53 @@ def test_init_db_enables_pool_pre_ping_and_recycle():
     )
 
 
+def test_init_db_caps_pool_size_and_overflow():
+    """``init_db`` must pass an explicit pool_size + max_overflow.
+
+    Without these the SQLAlchemy default (pool_size=5, max_overflow=10 =
+    15 connections/replica) blew past Postgres' 50-slot ceiling on the
+    B1ms server when 2 CMS replicas + worker + concurrent imager jobs
+    were active, surfacing as
+    ``asyncpg.exceptions.TooManyConnectionsError``. See incident at
+    2026-05-06T13-14Z.
+
+    Pinning these here so a future refactor can't silently regress to
+    the default.
+    """
+    from shared import database as shared_db
+    from unittest.mock import MagicMock, patch
+
+    captured = {}
+
+    def _spy_create_async_engine(url, **kwargs):
+        captured["kwargs"] = kwargs
+        return MagicMock()
+
+    settings = MagicMock()
+    settings.database_url = "postgresql+asyncpg://u:p@host/db"
+
+    with patch.object(shared_db, "create_async_engine", side_effect=_spy_create_async_engine), \
+         patch.object(shared_db, "async_sessionmaker", return_value=MagicMock()):
+        shared_db.init_db(settings)
+
+    kwargs = captured["kwargs"]
+    pool_size = kwargs.get("pool_size")
+    max_overflow = kwargs.get("max_overflow")
+    assert isinstance(pool_size, int) and pool_size > 0, (
+        "init_db must pass an explicit positive pool_size; the default "
+        "of 5 + 10-overflow = 15/replica overruns Postgres B1ms's 50-slot "
+        "ceiling under load."
+    )
+    assert isinstance(max_overflow, int) and max_overflow >= 0, (
+        "init_db must pass an explicit max_overflow."
+    )
+    assert pool_size + max_overflow <= 10, (
+        f"pool_size+max_overflow={pool_size + max_overflow} is too large; "
+        f"with 2 CMS replicas + worker + concurrent imager jobs this "
+        f"trips Postgres' max_connections under load. Keep total <= 10."
+    )
+
+
 # ── Compose hardening ────────────────────────────────────────────────────
 
 

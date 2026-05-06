@@ -31,11 +31,21 @@ def init_db(settings: SharedSettings):
     # accompanying PR. ``pool_recycle`` proactively retires connections older
     # than 5 minutes so we don't accumulate ones the server has already
     # closed silently.
+    # Cap the connection pool so we don't exhaust Postgres' max_connections
+    # under bursty load. With 2 CMS replicas + worker LISTEN connection +
+    # imager Container-App-Job invocations, the SQLAlchemy default
+    # (pool_size=5, max_overflow=10 = 15/replica) was tripping the
+    # "remaining connection slots are reserved for roles with the
+    # SUPERUSER attribute" error against the B1ms Postgres' 50-slot
+    # ceiling. 5+5=10/replica leaves comfortable headroom even with
+    # max_connections raised to 85. See incident at 2026-05-06T13-14Z.
     _engine = create_async_engine(
         settings.database_url,
         echo=False,
         pool_pre_ping=True,
         pool_recycle=300,
+        pool_size=5,
+        max_overflow=5,
     )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
