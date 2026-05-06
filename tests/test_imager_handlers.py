@@ -1068,3 +1068,98 @@ async def test_poison_helper_skips_when_status_is_not_in_flight(
         )).scalar_one()
     assert fresh.status == BaseImageStatus.READY.value
 
+
+
+# == Stale-scratch sweep (imager-disk-overflow-grace) ==
+
+
+def _seed_scratch_dir(
+    root: Path,
+    prefix: str,
+    target_id: uuid.UUID,
+    *,
+    age_seconds: float,
+    size_bytes: int = 0,
+) -> Path:
+    name = f"{prefix}-{target_id}-{uuid.uuid4().hex[:8]}"
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    if size_bytes:
+        (d / "leftover.bin").write_bytes(b"x" * size_bytes)
+    import os
+    st = d.stat()
+    os.utime(d, (st.st_atime - age_seconds, st.st_mtime - age_seconds))
+    return d
+
+
+def test_purge_sweeps_only_old_pattern_matching_dirs(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    stale1 = _seed_scratch_dir(root, "import", uuid.uuid4(), age_seconds=90 * 60, size_bytes=128)
+    stale2 = _seed_scratch_dir(root, "build", uuid.uuid4(), age_seconds=120 * 60, size_bytes=64)
+    fresh = _seed_scratch_dir(root, "import", uuid.uuid4(), age_seconds=0)
+    operator = root / "manual-debug-stuff"
+    operator.mkdir()
+    (operator / "notes.txt").write_bytes(b"hi")
+    (root / "stray.tmp").write_bytes(b"x")
+
+    removed, freed = imager_handlers._purge_stale_scratch_sync(root)
+    assert removed == 2
+    assert freed >= 128 + 64
+    assert not stale1.exists()
+    assert not stale2.exists()
+    assert fresh.exists()
+    assert operator.exists()
+    assert (operator / "notes.txt").exists()
+    assert (root / "stray.tmp").exists()
+
+
+def test_purge_excludes_named_self(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    self_dir = _seed_scratch_dir(root, "build", uuid.uuid4(), age_seconds=24 * 3600)
+    removed, _ = imager_handlers._purge_stale_scratch_sync(root, exclude_name=self_dir.name)
+    assert removed == 0
+    assert self_dir.exists()
+
+
+def test_purge_handles_missing_root(tmp_path: Path) -> None:
+    removed, freed = imager_handlers._purge_stale_scratch_sync(tmp_path / "nope")
+    assert removed == 0
+    assert freed == 0
+
+
+def test_purge_skips_recent_named_dir(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    fresh = _seed_scratch_dir(root, "import", uuid.uuid4(), age_seconds=10 * 60)
+    removed, _ = imager_handlers._purge_stale_scratch_sync(root)
+    assert removed == 0
+    assert fresh.exists()
+
+
+@pytest.mark.asyncio
+async def test_provision_low_disk_grace_still_fails_when_nothing_to_sweep(
+    db_session, session_factory, storage_backend, tmp_path
+):
+    """Sweep finds nothing and the original disk-gate behaviour holds:
+    return False (retryable), preserve PROVISIONING status + payload."""
+    settings = _make_settings(tmp_path, imager_min_free_bytes=10**18)
+    bi = await _make_ready_base(db_session, sha="a" * 64)
+    pi = ProvisionedImage(
+        base_image_id=bi.id, output_name="x.img.xz",
+        fleet_env_payload=b"k=v",
+    )
+    db_session.add(pi)
+    await db_session.commit()
+    await db_session.refresh(pi)
+
+    ok = await provision_image_by_id(session_factory, settings, pi.id)
+    assert ok is False
+
+    async with session_factory() as db:
+        fresh = (await db.execute(
+            select(ProvisionedImage).where(ProvisionedImage.id == pi.id)
+        )).scalar_one()
+    assert fresh.status == ProvisionedImageStatus.PROVISIONING.value
+    assert fresh.fleet_env_payload == b"k=v"
