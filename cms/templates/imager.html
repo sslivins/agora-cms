@@ -59,6 +59,7 @@
                 <strong>Current build (this tab)</strong>
                 <span id="imagerJobStatusBadge" class="badge"></span>
                 <div id="imagerJobMeta" class="text-muted" style="font-size:0.8rem; margin-top:0.25rem;"></div>
+                <div id="imagerJobProgress" class="text-muted" style="font-size:0.8rem; margin-top:0.25rem; display:none;"></div>
             </div>
             <div style="display:flex; gap:0.5rem;">
                 <a id="imagerJobDownload" class="btn btn-primary" style="display:none;" download>Download .img.xz</a>
@@ -295,11 +296,27 @@
         try { return sessionStorage.getItem(SS_KEY); } catch (e) { return null; }
     }
 
+    function formatJobProgress(job) {
+        // Returns a short human-readable line, or '' to hide the
+        // progress sub-line entirely.  We only show it while the job
+        // is in flight (PENDING / PROCESSING) -- once it lands, the
+        // status badge tells the whole story.
+        var s = statusUp(job.status);
+        if (s !== 'PENDING' && s !== 'PROCESSING') return '';
+        var stage = (job.progress_stage || '').replace(/_/g, ' ');
+        var pct = (job.progress_pct == null) ? null : Math.max(0, Math.min(100, job.progress_pct));
+        if (!stage && pct == null) return '';
+        if (stage && pct != null) return stage + ' \u00b7 ' + pct + '%';
+        if (stage) return stage;
+        return pct + '%';
+    }
+
     function renderJobCard(job) {
         if (!buildSection) return;
         var card = $('#imagerJobCard', buildSection);
         var badge = $('#imagerJobStatusBadge', buildSection);
         var meta = $('#imagerJobMeta', buildSection);
+        var prog = $('#imagerJobProgress', buildSection);
         var dl = $('#imagerJobDownload', buildSection);
         var errBox = $('#imagerJobError', buildSection);
         card.style.display = '';
@@ -308,7 +325,15 @@
         var metaParts = ['Job ' + job.job_id.slice(0, 8)];
         if (job.output_name) metaParts.push(escHtml(job.output_name));
         if (job.created_at) metaParts.push('started ' + fmtDate(job.created_at));
-        meta.innerHTML = metaParts.join(' · ');
+        meta.innerHTML = metaParts.join(' \u00b7 ');
+        var progLine = formatJobProgress(job);
+        if (progLine) {
+            prog.style.display = '';
+            prog.textContent = progLine;
+        } else {
+            prog.style.display = 'none';
+            prog.textContent = '';
+        }
         if (statusUp(job.status) === 'DONE') {
             dl.style.display = '';
             dl.href = '/api/imager/download/' + encodeURIComponent(job.job_id);
@@ -409,10 +434,17 @@
         box.style.display = '';
         box.innerHTML = ids.map(function(id) {
             var info = importJobsCache[id];
+            var sub = '';
+            var stage = (info.progress_stage || '').replace(/_/g, ' ');
+            var pct = (info.progress_pct == null) ? null : Math.max(0, Math.min(100, info.progress_pct));
+            if (stage && pct != null) sub = stage + ' \u00b7 ' + pct + '%';
+            else if (stage) sub = stage;
+            else if (pct != null) sub = pct + '%';
             return '<div class="card-highlight" style="padding:0.5rem 0.75rem; margin-bottom:0.25rem;">' +
                 '<span class="badge badge-processing">IMPORTING</span> ' +
                 escHtml(info.variant) + ' / ' + escHtml(info.version) +
                 ' <span class="text-muted" style="font-size:0.8rem;">(job ' + id.slice(0, 8) + ')</span>' +
+                (sub ? '<div class="text-muted" style="font-size:0.8rem; margin-top:0.2rem;">' + escHtml(sub) + '</div>' : '') +
                 '</div>';
         }).join('');
     }
@@ -424,6 +456,13 @@
             if (document.hidden) return;
             try {
                 var job = await jsonFetch('/api/imager/jobs/' + encodeURIComponent(jobId));
+                // Refresh progress for the in-flight card.
+                var cur = importJobsCache[jobId];
+                if (cur) {
+                    cur.progress_stage = job.progress_stage || '';
+                    cur.progress_pct = job.progress_pct;
+                    renderImportProgress();
+                }
                 if (isTerminal(job.status)) {
                     clearInterval(t);
                     delete importJobsCache[jobId];
