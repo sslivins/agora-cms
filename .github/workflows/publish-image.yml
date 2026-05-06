@@ -478,6 +478,51 @@ jobs:
           flip "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
           echo "✅ Traffic flipped — $NEW_CMS_REV is now serving production"
 
+      # Container Apps "Active" revisions keep their minReplicas pods running
+      # regardless of traffic weight. Without this step, every deploy adds
+      # 2 idle CMS pods (and 1 idle MCP pod) that still hold open Postgres
+      # connections — the structural cause of the 2026-05-06T13-14Z Sev2
+      # (4 stacked active revisions × 2 replicas exhausted PG max_connections=50).
+      # Keep the new revision (currently serving) and the immediate previous
+      # one (one-click rollback target via "az containerapp ingress traffic
+      # set --revision-weight $prev=100"); deactivate everything else.
+      - name: Deactivate stale revisions
+        if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
+        run: |
+          set -uo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+          PREV_CMS='${{ needs.deploy.outputs.previous_cms_revision }}'
+          PREV_MCP='${{ needs.deploy.outputs.previous_mcp_revision }}'
+
+          deactivate_stale() {
+            local app="$1" keep_new="$2" keep_prev="$3"
+            echo "── deactivating stale revisions for $app (keeping $keep_new + $keep_prev) ──"
+            local stale
+            stale=$(az containerapp revision list \
+              --name "$app" --resource-group "$RG" \
+              --query "[?properties.active && name!='$keep_new' && name!='$keep_prev'].name" \
+              -o tsv 2>/dev/null || echo "")
+            if [ -z "$stale" ]; then
+              echo "  (none)"
+              return 0
+            fi
+            for rev in $stale; do
+              echo "  deactivating $rev"
+              az containerapp revision deactivate \
+                --name "$app" --resource-group "$RG" \
+                --revision "$rev" 2>&1 \
+                || echo "  (failed to deactivate $rev — continuing)"
+            done
+          }
+
+          deactivate_stale "$CMS_APP" "$NEW_CMS_REV" "$PREV_CMS"
+          deactivate_stale "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
+          echo "✅ Stale revisions deactivated — only current + previous remain warm"
+
       # Sad path: deactivate the new revisions so the previous ones keep
       # serving 100% of traffic.
       - name: Deactivate new revisions on failure
