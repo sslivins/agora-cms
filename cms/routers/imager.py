@@ -157,6 +157,12 @@ class JobStatusOut(BaseModel):
     error_message: str
     created_at: datetime
     completed_at: datetime | None
+    # Coarse progress fields populated by the imager worker handlers.
+    # ``progress_stage`` is a short label ("downloading", "building",
+    # "uploading", ...).  ``progress_pct`` is an optional 0-100
+    # estimate; ``None`` means "unknown -- show indeterminate UI".
+    progress_stage: str = ""
+    progress_pct: int | None = None
     # Populated only for terminal-success IMAGE_PROVISION jobs.
     download_url: str | None = None
     output_name: str | None = None
@@ -682,6 +688,8 @@ async def build_provisioned_image(
         error_message=job.error_message,
         created_at=job.created_at,
         completed_at=job.completed_at,
+        progress_stage=job.progress_stage or "",
+        progress_pct=job.progress_pct,
         output_name=pi.output_name,
     )
 
@@ -713,6 +721,8 @@ async def get_job_status(
         error_message=job.error_message,
         created_at=job.created_at,
         completed_at=job.completed_at,
+        progress_stage=job.progress_stage or "",
+        progress_pct=job.progress_pct,
     )
 
     if job.type == JobType.IMAGE_PROVISION and job.status == JobStatus.DONE:

@@ -114,6 +114,12 @@ _BASE_BLOB_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/base\.img\.xz
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # Bound the chunked download buffer.
 _DOWNLOAD_CHUNK_BYTES = 1 << 20  # 1 MiB
+# Emit a progress-callback tick at most every N bytes during long
+# downloads.  Coarse on purpose: we update the DB row only when the
+# tick fires, not on every 1 MiB chunk.  64 MiB ~= a tick every few
+# seconds on a 100 Mb/s link, which gives the UI a fluid pct without
+# DB write amplification.
+_DOWNLOAD_PROGRESS_TICK_BYTES = 64 << 20  # 64 MiB
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -191,6 +197,46 @@ async def _set_provisioned_terminal(
         # failures leave it in place because the next attempt needs it.
         row.fleet_env_payload = None
         await db.commit()
+
+
+async def _set_progress(
+    session_factory: Any,
+    target_id: uuid.UUID,
+    job_type: JobType,
+    stage: str,
+    pct: int | None = None,
+) -> None:
+    """Update progress fields on the latest job for ``target_id``.
+
+    Best-effort: if the job row can't be found (e.g. tests that don't
+    create a Job alongside the imager target row) or the DB call
+    fails, we swallow the error so a progress hiccup never breaks the
+    actual import / provision pipeline.
+
+    ``pct`` is clamped to 0..100; ``None`` leaves the column NULL.
+    The UI uses NULL to mean "unknown -- show indeterminate spinner",
+    distinct from 0% which means "just started".
+    """
+    try:
+        async with session_factory() as db:
+            job = (await db.execute(
+                select(Job)
+                .where(Job.target_id == target_id, Job.type == job_type)
+                .order_by(Job.created_at.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            if job is None:
+                return
+            job.progress_stage = stage[:64]
+            if pct is not None:
+                job.progress_pct = max(0, min(100, int(pct)))
+            await db.commit()
+    except Exception as e:
+        # Progress is observability, not correctness.  Log and move on.
+        logger.debug(
+            "progress update for %s/%s -> %r/%s ignored: %s",
+            target_id, job_type, stage, pct, e,
+        )
 
 
 # Return values for ``mark_target_failed_on_exhaustion``.  The dispatcher
@@ -312,6 +358,7 @@ async def _download_with_sha(
     expected_size_bytes: int | None,
     allowlist: set[str],
     client: httpx.AsyncClient,
+    progress_cb: Any = None,
 ) -> tuple[str, int]:
     """Stream ``url`` to ``dest`` while hashing.
 
@@ -319,6 +366,11 @@ async def _download_with_sha(
     early if the running byte count exceeds ``expected_size_bytes``
     (avoids filling the disk on a malicious catalog).  Returns
     ``(actual_sha256_hex, actual_bytes)``.
+
+    ``progress_cb`` (optional): an awaitable ``async def cb(written,
+    total)`` invoked at most ~every ``_DOWNLOAD_PROGRESS_TICK_BYTES``
+    so the UI can show a percent estimate without us hammering the
+    DB on every 1 MiB chunk.
 
     Raises ``TerminalImagerError`` on hash mismatch / size mismatch /
     allowlist redirect violation.  Raises generic httpx errors on
@@ -350,6 +402,7 @@ async def _download_with_sha(
 
             hasher = hashlib.sha256()
             written = 0
+            next_progress_tick = _DOWNLOAD_PROGRESS_TICK_BYTES
             with dest.open("wb") as fh:
                 async for chunk in resp.aiter_bytes(_DOWNLOAD_CHUNK_BYTES):
                     if not chunk:
@@ -365,6 +418,14 @@ async def _download_with_sha(
                         )
                     hasher.update(chunk)
                     fh.write(chunk)
+                    if progress_cb is not None and written >= next_progress_tick:
+                        try:
+                            await progress_cb(written, expected_size_bytes)
+                        except Exception:
+                            pass
+                        next_progress_tick = (
+                            written + _DOWNLOAD_PROGRESS_TICK_BYTES
+                        )
             actual_sha = hasher.hexdigest()
             if actual_sha.lower() != expected_sha256.lower():
                 raise TerminalImagerError(
@@ -437,6 +498,10 @@ async def import_base_image_by_id(
         scratch = _scratch_dir(settings, "import", base_image_id)
         scratch.mkdir(parents=True, exist_ok=True)
 
+        await _set_progress(
+            session_factory, base_image_id, JobType.IMAGE_IMPORT, "preflight", 5
+        )
+
         # Free-space pre-flight (retryable -- another job may free disk soon).
         # Import is download->upload only: we stage the .img.xz on scratch,
         # SHA-stream-verify it (no extra copy), and stream-upload to blob.
@@ -491,9 +556,25 @@ async def import_base_image_by_id(
                 expected_size = None  # PR 4 may add expected_size_bytes col
 
             staged = scratch / "base.img.xz"
+
+            async def _import_dl_progress(written: int, total: int | None) -> None:
+                # Map bytes-downloaded to 10..85% of the overall job.
+                # Leaves headroom at the top for the upload step.
+                if total and total > 0:
+                    pct = 10 + int((written / total) * 75)
+                    await _set_progress(
+                        session_factory, base_image_id,
+                        JobType.IMAGE_IMPORT, "downloading", pct,
+                    )
+
+            await _set_progress(
+                session_factory, base_image_id,
+                JobType.IMAGE_IMPORT, "downloading", 10,
+            )
             actual_sha, actual_size = await _download_with_sha(
                 source_url, staged, expected_sha256, expected_size,
                 allowlist, client,
+                progress_cb=_import_dl_progress,
             )
 
         blob_path = f"{variant}/{version}/base.img.xz"
@@ -505,6 +586,10 @@ async def import_base_image_by_id(
                 f"contain disallowed characters)"
             )
 
+        await _set_progress(
+            session_factory, base_image_id,
+            JobType.IMAGE_IMPORT, "uploading", 90,
+        )
         await storage.upload_local_file(
             settings.base_image_cache_container,
             blob_path,
@@ -629,6 +714,11 @@ async def provision_image_by_id(
         scratch = _scratch_dir(settings, "build", provisioned_id)
         scratch.mkdir(parents=True, exist_ok=True)
 
+        await _set_progress(
+            session_factory, provisioned_id,
+            JobType.IMAGE_PROVISION, "preflight", 5,
+        )
+
         # Provisioning needs ~10 GiB headroom (xz + raw + output).
         free = await _free_bytes(scratch)
         if free < settings.imager_min_free_bytes:
@@ -640,6 +730,10 @@ async def provision_image_by_id(
 
         # Stage the base image locally.
         staged_base = scratch / "base.img.xz"
+        await _set_progress(
+            session_factory, provisioned_id,
+            JobType.IMAGE_PROVISION, "downloading_base", 10,
+        )
         await storage.download_to_file(
             settings.base_image_cache_container,
             base_blob_path,
@@ -647,6 +741,10 @@ async def provision_image_by_id(
         )
 
         # Defence in depth: blob bytes' SHA256 must still match the row.
+        await _set_progress(
+            session_factory, provisioned_id,
+            JobType.IMAGE_PROVISION, "verifying_base", 25,
+        )
         actual_base_sha = await _hash_file(staged_base)
         if actual_base_sha.lower() != base_sha256.lower():
             raise TerminalImagerError(
@@ -658,6 +756,10 @@ async def provision_image_by_id(
         # event loop so the dispatcher heartbeat keeps renewing the
         # queue lease.  build_provisioned validates output_name itself
         # and raises ImagerError on bad input or subprocess failure.
+        await _set_progress(
+            session_factory, provisioned_id,
+            JobType.IMAGE_PROVISION, "building", 35,
+        )
         try:
             output_path: Path = await asyncio.to_thread(
                 build_provisioned,
@@ -680,6 +782,10 @@ async def provision_image_by_id(
         actual_size = output_path.stat().st_size
 
         blob_path = f"{provisioned_id}/{output_name}"
+        await _set_progress(
+            session_factory, provisioned_id,
+            JobType.IMAGE_PROVISION, "uploading", 85,
+        )
         await storage.upload_local_file(
             settings.provisioned_container,
             blob_path,

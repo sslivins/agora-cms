@@ -74,7 +74,19 @@ class Job(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Cooperative cancellation flag.  Set by CMS when the target asset is
+    # Coarse-grained progress for UI polling.  ``progress_stage`` is a
+    # short worker-defined label (e.g. ``downloading``, ``building``,
+    # ``uploading``).  ``progress_pct`` is an optional 0-100 estimate;
+    # NULL means "unknown / no estimate yet" (distinct from 0%).
+    # Used by the imager build + import flows so the UI is not silent
+    # for several minutes between PROCESSING and DONE.  Other job
+    # types may leave these at their defaults.
+    progress_stage: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    progress_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Cooperative cancellation flag.Set by CMS when the target asset is
     # soft-deleted; the worker heartbeat loop reads this and aborts ffmpeg
     # within one heartbeat cycle.  Jobs that have not yet started see it in
     # the pre-transcode guard and no-op.
