@@ -266,6 +266,25 @@ class TestPendingRegistrationsCard:
         assert resp.status_code == 200
         assert 'id="pending-devices-card"' not in resp.text
 
+    async def test_pending_poller_is_scheduled(self, client):
+        """The card markup is useless without the JS poller actually
+        running on a timer. PR #478 also gutted the scheduler; the
+        function was left defined but never invoked, so the card stayed
+        permanently hidden even when /api/devices/pending returned rows.
+        """
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "function pollPendingOnce" in body
+        assert "setInterval(pollPendingOnce" in body, (
+            "pollPendingOnce is defined but never scheduled on a timer; "
+            "the Pending Devices card will never populate."
+        )
+        # Initial kickoff so the card appears on first load, not 5s later.
+        # Match either bare call or as part of an arrow function ΓÇö the
+        # important thing is *something* invokes it at startup.
+        assert "pollPendingOnce()" in body
+
 
 @pytest_asyncio.fixture
 async def seed_pending_registration(app):
