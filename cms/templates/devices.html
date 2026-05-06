@@ -706,11 +706,6 @@ window._adoptionProfiles = [
 
     setInterval(pollDevicesOnce, 5000);
     setInterval(pollGroupsOnce, 5000);
-    {% if 'devices:manage' in user_perms %}
-    // Pending devices now render server-side in the Ungrouped section.
-    // Action handlers reload the page to pick up adoption status changes.
-    window._refreshPending = () => { location.reload(); };
-    {% endif %}
 
     // Keep the /devices Device Groups card in sync across replicas without
     // a full page reload. Added as part of #87: when session A creates or
@@ -885,6 +880,11 @@ window._adoptionProfiles = [
     // Expose for action handlers (adopt/reject) to request an immediate
     // repopulate instead of waiting up to 5s for the next poll cycle.
     window._refreshPending = () => pollPendingOnce();
+    // Kick off the polling cycle. PR #478 deleted the scheduler when it
+    // retired the card; this restores it alongside the card markup so
+    // unadopted bootstrap-v2 registrations actually appear in the UI.
+    pollPendingOnce();
+    setInterval(pollPendingOnce, 5000);
     {% endif %}
 })();
 
