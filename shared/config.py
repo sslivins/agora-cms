@@ -52,9 +52,10 @@ class SharedSettings(BaseSettings):
     # applied — never branch on ``imager_scratch_path`` directly.
     imager_scratch_path: Path | None = None
     # Minimum free bytes the worker requires on the scratch volume
-    # before starting an imager job.  ~10 GiB headroom over the
-    # ~6 GiB worst-case peak (decompress + recompress in parallel).
-    imager_min_free_bytes: int = 10 * 1024 * 1024 * 1024
+    # before starting an imager job.  ~6 GiB matches the worst-case
+    # peak (decompress + recompress in parallel); operators wanting
+    # more headroom can override via AGORA_CMS_IMAGER_MIN_FREE_BYTES.
+    imager_min_free_bytes: int = 6 * 1024 * 1024 * 1024
 
     @property
     def resolved_imager_scratch_path(self) -> Path:

@@ -664,7 +664,7 @@ async def provision_image_by_id(
                 staged_base,
                 fleet_env_text,
                 scratch,
-                output_name,
+                output_name=output_name,
             )
         except ImagerError as e:
             # ImagerError covers (a) input validation (output_name,
