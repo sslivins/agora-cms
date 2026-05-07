@@ -479,7 +479,7 @@ const rolesData = {
 {% endif %}
 
 async function resendInvite(userId, email) {
-    if (!confirm(`Resend activation email to ${email}? This will invalidate any previous setup link.`)) return;
+    if (!await showConfirm(`Resend activation email to ${email}? This will invalidate any previous setup link.`)) return;
     try {
         const resp = await fetch(`/api/users/${userId}/resend-invite`, { method: 'POST' });
         const data = await resp.json();

@@ -391,7 +391,7 @@
     }
 
     async function deleteBuiltImage(id, name) {
-        if (!confirm('Delete built image "' + name + '"?\nThis removes the file from blob storage.')) return;
+        if (!await showConfirm('Delete built image "' + name + '"?\nThis removes the file from blob storage.')) return;
         try {
             await jsonFetch('/api/imager/provisioned-images/' + encodeURIComponent(id), {
                 method: 'DELETE',
