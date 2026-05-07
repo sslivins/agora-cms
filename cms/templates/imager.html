@@ -29,37 +29,26 @@
         {{ provisioned_retention_hours }} hours.
     </p>
 
-    <form id="imagerBuildForm" autocomplete="off">
+    <form id="imagerBuildForm" autocomplete="off" data-cms-version="{{ cms_version }}">
+        {# Top row: fleet/base on the left, Wi-Fi (deliberately narrower) on
+           the right.  Wi-Fi credentials are optional -- both fields must be
+           filled or both empty (enforced client-side and server-side).
+           Devices without a wifi module silently no-op the credentials, so
+           it's safe to leave them set even for wired-only fleets. #}
         <div class="form-row" style="gap:0.75rem; flex-wrap:wrap; align-items:flex-end;">
-            <div class="form-group" style="flex:1; min-width:180px; margin-bottom:0;">
+            <div class="form-group" style="flex:1.4 1 220px; min-width:0; margin-bottom:0;">
                 <label for="imagerFleetSelect">Fleet</label>
                 <select id="imagerFleetSelect" name="fleet_id" required>
                     <option value="">Loading…</option>
                 </select>
             </div>
-            <div class="form-group" style="flex:1; min-width:200px; margin-bottom:0;">
+            <div class="form-group" style="flex:1.4 1 220px; min-width:0; margin-bottom:0;">
                 <label for="imagerBaseSelect">Base image</label>
                 <select id="imagerBaseSelect" name="base_image_id" required>
                     <option value="">Loading…</option>
                 </select>
             </div>
-            <div class="form-group" style="flex:1; min-width:200px; margin-bottom:0;">
-                <label for="imagerOutputName">Output filename</label>
-                <input id="imagerOutputName" name="output_name" type="text" required
-                       placeholder="agora-pi5-fleet-2026.img.xz"
-                       pattern=".+\.img\.xz$"
-                       title="Must end in .img.xz; slashes are not allowed.">
-            </div>
-            <div style="flex:0 0 auto;">
-                <button type="submit" id="imagerBuildBtn" class="btn btn-primary">Build image</button>
-            </div>
-        </div>
-        {# Optional Wi-Fi credentials. Both fields must be filled or both
-           empty -- enforced client-side and on the server.  Devices
-           without a wifi module silently no-op the credentials, so it's
-           safe to leave them set even for wired-only fleets. #}
-        <div class="form-row" style="gap:0.75rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.5rem;">
-            <div class="form-group" style="flex:1; min-width:180px; margin-bottom:0;">
+            <div class="form-group" style="flex:1 1 140px; min-width:0; margin-bottom:0;">
                 <label for="imagerWifiSsid">
                     Wi-Fi SSID <span class="text-muted" style="font-weight:normal;">(optional)</span>
                 </label>
@@ -67,7 +56,7 @@
                        maxlength="32" autocomplete="off"
                        placeholder="MyNetwork">
             </div>
-            <div class="form-group" style="flex:1; min-width:200px; margin-bottom:0;">
+            <div class="form-group" style="flex:1 1 160px; min-width:0; margin-bottom:0;">
                 <label for="imagerWifiPsk">
                     Wi-Fi password <span class="text-muted" style="font-weight:normal;">(optional)</span>
                 </label>
@@ -75,11 +64,32 @@
                     <input id="imagerWifiPsk" name="wifi_psk" type="password"
                            minlength="8" maxlength="64" autocomplete="new-password"
                            placeholder="passphrase or 64-hex PSK"
-                           style="flex:1;">
+                           style="flex:1; min-width:0;">
                     <button type="button" id="imagerWifiPskToggle" class="btn btn-secondary btn-sm"
                             title="Show/hide password" aria-label="Show/hide password"
                             style="flex:0 0 auto;">👁</button>
                 </div>
+            </div>
+        </div>
+        {# Bottom row: auto-suggested output filename + the Build button
+           sitting inline at the right-hand edge.  Auto-fill uses
+           agora-{variant}-{cms_version}[-{ssid_slug}].img.xz and stops
+           overwriting the field once the user types into it (resumes if
+           they blank the field). #}
+        <div class="form-row" style="gap:0.5rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.75rem;">
+            <div class="form-group" style="flex:1; min-width:240px; margin-bottom:0;">
+                <label for="imagerOutputName">
+                    Output filename
+                    <span class="text-muted" style="font-weight:normal;">(auto-generated, editable)</span>
+                </label>
+                <input id="imagerOutputName" name="output_name" type="text" required
+                       placeholder="agora-pi5-1.0.0.img.xz"
+                       pattern=".+\.img\.xz$"
+                       style="font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size:0.85rem;"
+                       title="Must end in .img.xz; slashes are not allowed.">
+            </div>
+            <div style="flex:0 0 auto;">
+                <button type="submit" id="imagerBuildBtn" class="btn btn-primary">Build image</button>
             </div>
         </div>
         <div style="margin-top:0.5rem; display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap;">
@@ -359,6 +369,14 @@
         }
     }
 
+    function ssidSlug(s) {
+        if (!s) return '';
+        return String(s).toLowerCase()
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-+|-+$/g, '')
+                        .slice(0, 24);
+    }
+
     function autoFillName() {
         if (!buildSection) return;
         var input = $('#imagerOutputName', buildSection);
@@ -367,12 +385,14 @@
         var baseSel = $('#imagerBaseSelect', buildSection);
         var opt = baseSel.options[baseSel.selectedIndex];
         if (!fleet || !opt || !opt.value) { input.value = ''; return; }
-        var variant = (opt.dataset.variant || '').replace(/[^a-z0-9]/gi, '');
-        var safeFleet = String(fleet).replace(/[^a-z0-9-]/gi, '');
-        var d = new Date();
-        var yyyymmdd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') +
-                       String(d.getDate()).padStart(2, '0');
-        input.value = 'agora-' + variant + '-' + safeFleet + '-' + yyyymmdd + '.img.xz';
+        var variant = (opt.dataset.variant || '').replace(/[^a-z0-9]/gi, '') || 'pi';
+        var form = $('#imagerBuildForm', buildSection);
+        var version = (form && form.dataset.cmsVersion) || '0.0.0';
+        var ssidEl = $('#imagerWifiSsid', buildSection);
+        var slug = ssidSlug(ssidEl ? ssidEl.value.trim() : '');
+        var name = 'agora-' + variant + '-' + version;
+        if (slug) name += '-' + slug;
+        input.value = name + '.img.xz';
     }
 
     // ── Job polling (build) ────────────────────────────────────
@@ -1087,7 +1107,11 @@
         var form = $('#imagerBuildForm', buildSection);
         form.addEventListener('submit', submitBuild);
         var nameInput = $('#imagerOutputName', buildSection);
-        nameInput.addEventListener('input', function() { nameInput.dataset.userEdited = '1'; });
+        nameInput.addEventListener('input', function() {
+            // User typed -- stop auto-overwriting until they blank the field again.
+            nameInput.dataset.userEdited = nameInput.value.trim() ? '1' : '0';
+            if (!nameInput.value.trim()) autoFillName();
+        });
         var fleetSelEl = $('#imagerFleetSelect', buildSection);
         fleetSelEl.addEventListener('change', function() {
             // Intercept the "+ Create new fleet…" sentinel before
@@ -1101,6 +1125,8 @@
             autoFillName();
         });
         $('#imagerBaseSelect', buildSection).addEventListener('change', autoFillName);
+        var ssidElForFill = $('#imagerWifiSsid', buildSection);
+        if (ssidElForFill) ssidElForFill.addEventListener('input', autoFillName);
         $('#imagerJobDismiss', buildSection).addEventListener('click', dismissJobCard);
 
         // Wi-Fi password show/hide toggle.
