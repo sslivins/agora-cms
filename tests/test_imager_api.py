@@ -640,6 +640,109 @@ async def test_build_creates_provisioned_row_with_payload(
     assert pi.provisioning_job_id == job.id
 
 
+@pytest.mark.asyncio
+async def test_build_persists_wifi_columns_when_supplied(
+    client, db_session, imager_settings
+):
+    """End-to-end: wifi values flow from request -> payload -> row.
+
+    Pin the contract so a regression in the schema, the helper, or the
+    persistence step is caught immediately.  The columns are NOT
+    cleared on terminal success (unlike fleet_env_payload), so the
+    Built-Images Wi-Fi tooltip can keep showing them for the lifetime
+    of the row.
+    """
+    bi = BaseImage(variant="pi5", version="v1.11.35", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/imager/build",
+        json={
+            "base_image_id": str(bi.id),
+            "fleet_id": "fleet-test",
+            "output_name": "kitchen-wifi.img.xz",
+            "wifi_ssid": "kitchen-net",
+            "wifi_psk": "hunter22hunter22",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    pi = (await db_session.execute(
+        select(ProvisionedImage).where(ProvisionedImage.base_image_id == bi.id)
+    )).scalar_one()
+    assert pi.wifi_ssid == "kitchen-net"
+    assert pi.wifi_psk == "hunter22hunter22"
+    payload = pi.fleet_env_payload.decode("utf-8")
+    assert "AGORA_WIFI_SSID=kitchen-net" in payload
+    assert "AGORA_WIFI_PASS=hunter22hunter22" in payload
+
+
+@pytest.mark.asyncio
+async def test_build_no_wifi_keeps_columns_null(client, db_session, imager_settings):
+    """Default path: omitting wifi leaves both columns NULL.
+
+    Distinguishes "no wifi requested" from "" -- empty strings would
+    confuse the Built-Images tooltip's truthy-check renderer.
+    """
+    bi = BaseImage(variant="pi5", version="v1.11.35", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/imager/build",
+        json={
+            "base_image_id": str(bi.id),
+            "fleet_id": "fleet-test",
+            "output_name": "wired.img.xz",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    pi = (await db_session.execute(
+        select(ProvisionedImage).where(ProvisionedImage.base_image_id == bi.id)
+    )).scalar_one()
+    assert pi.wifi_ssid is None
+    assert pi.wifi_psk is None
+    assert b"AGORA_WIFI_" not in pi.fleet_env_payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload,reason",
+    [
+        ({"wifi_ssid": "net", "wifi_psk": None}, "ssid without psk"),
+        ({"wifi_ssid": None, "wifi_psk": "hunter22hunter22"}, "psk without ssid"),
+        ({"wifi_ssid": "net", "wifi_psk": ""}, "empty psk"),
+        ({"wifi_ssid": "", "wifi_psk": "hunter22hunter22"}, "empty ssid"),
+        ({"wifi_ssid": "net", "wifi_psk": "short"}, "psk under 8 chars"),
+        ({"wifi_ssid": "x" * 33, "wifi_psk": "hunter22hunter22"}, "ssid over 32 chars"),
+    ],
+)
+async def test_build_422_on_wifi_pair_mismatch(
+    client, db_session, imager_settings, payload, reason
+):
+    """Schema rejects half-set / out-of-range wifi pairs at the door.
+
+    Pushes the both-or-neither / length validation into pydantic so the
+    build endpoint can assume the values are coherent.  Without this,
+    a half-set pair would silently emit a payload the firmware refuses,
+    and the Pi would brick its first-boot wifi join.
+    """
+    bi = BaseImage(variant="pi5", version="v1.11.35", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.commit()
+
+    body = {
+        "base_image_id": str(bi.id),
+        "fleet_id": "fleet-test",
+        "output_name": "bad-wifi.img.xz",
+        **payload,
+    }
+    resp = await client.post("/api/imager/build", json=body)
+    assert resp.status_code == 422, f"{reason}: {resp.status_code} / {resp.text}"
+
+
 def test_fleet_env_payload_matches_firmware_allowlist():
     """Regression for the 2026-05-06 ``test-fleet-1`` outage.
 
@@ -670,6 +773,60 @@ def test_fleet_env_payload_matches_firmware_allowlist():
     # Value is hex(raw_bytes).
     hex_line = next(ln for ln in lines if ln.startswith("AGORA_FLEET_SECRET_HEX="))
     assert hex_line.split("=", 1)[1] == raw.hex()
+
+
+def test_fleet_env_payload_emits_wifi_when_provided():
+    """Wi-Fi env keys must match the firmware allow-list exactly.
+
+    Firmware (agora v1.11.35+) added ``AGORA_WIFI_SSID`` /
+    ``AGORA_WIFI_PASS`` to the agora-fleet-provision.sh allow-list.
+    Earlier design docs called the password key
+    ``AGORA_WIFI_PASSPHRASE`` -- the firmware spec is authoritative.
+
+    Pin the keys so the next person who edits the design doc can't
+    silently drift the wire format.
+    """
+    from cms.routers.imager import _fleet_env_payload
+
+    out = _fleet_env_payload(
+        "wss://cms.example.com/ws/device",
+        "fleet-x",
+        b"x" * 32,
+        "wps",
+        wifi_ssid="my-net",
+        wifi_psk="hunter22hunter22",
+    ).decode("utf-8")
+
+    assert "AGORA_WIFI_SSID=my-net" in out
+    assert "AGORA_WIFI_PASS=hunter22hunter22" in out
+    # Legacy mis-naming MUST NOT leak in.
+    assert "AGORA_WIFI_PASSPHRASE" not in out
+
+
+def test_fleet_env_payload_omits_wifi_when_unset():
+    """No wifi keys when neither / only one is provided.
+
+    Build endpoint enforces both-or-neither at the schema layer, but
+    pin the helper's behaviour too -- the helper is reachable directly
+    from worker / tests and must default to a clean payload.
+    """
+    from cms.routers.imager import _fleet_env_payload
+
+    base = _fleet_env_payload(
+        "wss://cms/ws/device", "f", b"x" * 32, "wps"
+    ).decode("utf-8")
+    assert "AGORA_WIFI_" not in base
+
+    # Only ssid -> still no wifi (defensive: should not happen via API).
+    only_ssid = _fleet_env_payload(
+        "wss://cms/ws/device", "f", b"x" * 32, "wps", wifi_ssid="net",
+    ).decode("utf-8")
+    assert "AGORA_WIFI_" not in only_ssid
+
+    only_psk = _fleet_env_payload(
+        "wss://cms/ws/device", "f", b"x" * 32, "wps", wifi_psk="hunter22hunter22",
+    ).decode("utf-8")
+    assert "AGORA_WIFI_" not in only_psk
 
 
 # ── Jobs / download ────────────────────────────────────────────────

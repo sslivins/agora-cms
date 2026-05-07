@@ -225,6 +225,21 @@ class ProvisionedImage(Base):
     fleet_env_payload: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True,
     )
+    # Optional WiFi credentials baked into the image. ``wifi_ssid`` is
+    # the network name; ``wifi_psk`` is the WPA passphrase (8-63 ASCII
+    # chars) or 64-hex pre-shared key. Both NULL means the image carries
+    # no wifi creds and the device falls back to Ethernet / OOBE captive
+    # portal.  Either both columns are populated or both are NULL --
+    # enforced by the build endpoint.  Unlike ``fleet_env_payload``,
+    # these columns are NOT cleared on terminal success: the operator
+    # explicitly asked to be able to view the SSID/PSK from the Built
+    # Images list (tooltip) long after the build, which means we keep
+    # them around until row retention deletes the whole row.  Wifi
+    # creds are lower-value than the fleet HMAC (only let an attacker
+    # onto the local wifi, not impersonate Pis to the CMS), so the
+    # tradeoff is acceptable.  Never log either column.
+    wifi_ssid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wifi_psk: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Caller-supplied output filename.  Validated against
     # ``imager._SAFE_OUTPUT_RE`` before use.
     output_name: Mapped[str] = mapped_column(Text, nullable=False)

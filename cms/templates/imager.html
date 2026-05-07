@@ -17,7 +17,12 @@
 {% if imager_can_build %}
 {# ── Build section ─────────────────────────────────────────────── #}
 <div class="card" data-imager-build style="margin-bottom:1rem;">
-    <h3 style="margin-top:0;">Build Image</h3>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+        <h3 style="margin-top:0;">Build Image</h3>
+        {% if imager_can_manage %}
+        <button id="imagerManageFleetsBtn" type="button" class="btn btn-secondary btn-sm">Manage fleets…</button>
+        {% endif %}
+    </div>
     <p class="text-muted" style="margin-top:0;">
         Choose a fleet and base image, then build a pre-provisioned <code>.img.xz</code>
         ready to flash to an SD card. The output is available for download for
@@ -49,8 +54,40 @@
                 <button type="submit" id="imagerBuildBtn" class="btn btn-primary">Build image</button>
             </div>
         </div>
+        {# Optional Wi-Fi credentials. Both fields must be filled or both
+           empty -- enforced client-side and on the server.  Devices
+           without a wifi module silently no-op the credentials, so it's
+           safe to leave them set even for wired-only fleets. #}
+        <div class="form-row" style="gap:0.75rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.5rem;">
+            <div class="form-group" style="flex:1; min-width:180px; margin-bottom:0;">
+                <label for="imagerWifiSsid">
+                    Wi-Fi SSID <span class="text-muted" style="font-weight:normal;">(optional)</span>
+                </label>
+                <input id="imagerWifiSsid" name="wifi_ssid" type="text"
+                       maxlength="32" autocomplete="off"
+                       placeholder="MyNetwork">
+            </div>
+            <div class="form-group" style="flex:1; min-width:200px; margin-bottom:0;">
+                <label for="imagerWifiPsk">
+                    Wi-Fi password <span class="text-muted" style="font-weight:normal;">(optional)</span>
+                </label>
+                <div style="display:flex; gap:0.25rem; align-items:stretch;">
+                    <input id="imagerWifiPsk" name="wifi_psk" type="password"
+                           minlength="8" maxlength="64" autocomplete="new-password"
+                           placeholder="passphrase or 64-hex PSK"
+                           style="flex:1;">
+                    <button type="button" id="imagerWifiPskToggle" class="btn btn-secondary btn-sm"
+                            title="Show/hide password" aria-label="Show/hide password"
+                            style="flex:0 0 auto;">👁</button>
+                </div>
+            </div>
+        </div>
         <div style="margin-top:0.5rem; display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap;">
             <small class="text-muted">Filename must end in <code>.img.xz</code>. No slashes.</small>
+            <small class="text-muted">
+                Wi-Fi: leave both blank to skip; otherwise both fields are required.
+                Devices with no wifi hardware ignore these credentials.
+            </small>
             <span id="imagerBuildHint" class="text-muted" style="font-size:0.85rem;"></span>
         </div>
     </form>
@@ -86,6 +123,7 @@
                     <th>Output filename</th>
                     <th>Fleet</th>
                     <th>Base</th>
+                    <th>Wi-Fi</th>
                     <th>Status</th>
                     <th>Size</th>
                     <th>Built</th>
@@ -93,7 +131,7 @@
                 </tr>
             </thead>
             <tbody id="imagerBuiltTbody">
-                <tr><td colspan="7" class="empty-state text-muted">Loading…</td></tr>
+                <tr><td colspan="8" class="empty-state text-muted">Loading…</td></tr>
             </tbody>
         </table>
     </div>
@@ -173,6 +211,25 @@
         </div>
         <div class="modal-actions">
             <button type="button" class="btn btn-secondary" onclick="imagerCloseCatalog()">Close</button>
+        </div>
+    </div>
+</div>
+
+{# ── Manage fleets modal ───────────────────────────────────────── #}
+<div id="imagerFleetsModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="max-width:560px;">
+        <h3 style="margin-top:0;">Manage Fleets</h3>
+        <p class="text-muted" style="margin-top:0;">
+            Each fleet has its own HMAC secret. The secret is generated on
+            create and never displayed -- it is only baked into freshly-built
+            images. Deleting a fleet revokes the credential for any Pi that
+            hasn't yet completed first-boot registration.
+        </p>
+        <div id="imagerFleetsBody" style="max-height:60vh; overflow:auto;">
+            <p class="empty-state text-muted">Loading…</p>
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="imagerFleetsCloseBtn">Close</button>
         </div>
     </div>
 </div>
@@ -264,6 +321,13 @@
                     fleetsCache.map(function(f) {
                         return '<option value="' + escHtml(f.fleet_id) + '">' + escHtml(f.fleet_id) + '</option>';
                     }).join('');
+            }
+            // "+ Create new fleet…" sentinel option (admins only). The
+            // change handler below intercepts this value, opens the
+            // create flow, and resets the select to its previous value
+            // -- the sentinel is never submitted.
+            if (canManage) {
+                fleetSel.innerHTML += '<option value="__create__">+ Create new fleet…</option>';
             }
 
             baseSel.innerHTML = '';
@@ -368,12 +432,13 @@
             var rows = await jsonFetch('/api/imager/provisioned-images');
             var list = rows || [];
             var sig = list.map(function(r) {
-                return [r.id, r.status, r.expires_at, r.output_size, r.download_job_id].join('|');
+                return [r.id, r.status, r.expires_at, r.output_size, r.download_job_id,
+                        r.wifi_ssid || '', r.wifi_psk || ''].join('|');
             }).join(',');
             if (sig === lastBuiltSig) return;
             lastBuiltSig = sig;
             if (list.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No built images yet.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-state text-muted">No built images yet.</td></tr>';
                 return;
             }
             tbody.innerHTML = list.map(function(r) {
@@ -390,10 +455,24 @@
                 var base = (r.base_variant || r.base_version)
                     ? escHtml((r.base_variant || '?') + ' / ' + (r.base_version || '?'))
                     : '<span class="text-muted">deleted</span>';
+                // Wi-Fi cell: tooltip exposes the cleartext SSID + PSK so
+                // an operator can recover them after the build.  We
+                // intentionally do NOT show the PSK on screen by default
+                // -- it's a low-value secret but still a secret.
+                var wifiCell;
+                if (r.wifi_ssid) {
+                    var tip = 'SSID: ' + r.wifi_ssid + '\nPassword: ' + (r.wifi_psk || '');
+                    wifiCell = '<span title="' + escHtml(tip) + '" ' +
+                               'style="cursor:help; border-bottom:1px dotted currentColor;">' +
+                               escHtml(r.wifi_ssid) + '</span>';
+                } else {
+                    wifiCell = '<span class="text-muted">—</span>';
+                }
                 return '<tr>' +
                     '<td><code>' + escHtml(r.output_name) + '</code></td>' +
                     '<td>' + escHtml(r.fleet_id || '—') + '</td>' +
                     '<td>' + base + '</td>' +
+                    '<td>' + wifiCell + '</td>' +
                     '<td><span class="' + statusBadgeClass(r.status) + '">' + escHtml(r.status) + '</span></td>' +
                     '<td>' + fmtBytes(r.output_size) + '</td>' +
                     '<td>' + fmtDate(r.built_at || r.created_at) + '</td>' +
@@ -408,7 +487,7 @@
             });
         } catch (e) {
             lastBuiltSig = '';
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">' +
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-state text-muted">' +
                 escHtml('Failed to load built images: ' + (e.message || e)) + '</td></tr>';
         }
     }
@@ -515,14 +594,37 @@
         var fleetId = $('#imagerFleetSelect', buildSection).value;
         var baseId = $('#imagerBaseSelect', buildSection).value;
         var name = $('#imagerOutputName', buildSection).value.trim();
+        var ssidEl = $('#imagerWifiSsid', buildSection);
+        var pskEl = $('#imagerWifiPsk', buildSection);
+        var ssid = ssidEl ? ssidEl.value.trim() : '';
+        var psk = pskEl ? pskEl.value : '';
         if (!fleetId || !baseId || !name) { toast('Please complete all fields', 'error'); return; }
+        if (fleetId === '__create__') {
+            // Sanity: shouldn't happen because the change handler resets
+            // the value before submission, but belt-and-suspenders.
+            toast('Pick a fleet (or create one first)', 'error');
+            return;
+        }
         if (!/\.img\.xz$/.test(name)) { toast('Output must end in .img.xz', 'error'); return; }
+        if (!!ssid !== !!psk) {
+            toast('Wi-Fi: provide both SSID and password, or leave both blank', 'error');
+            return;
+        }
+        if (psk && (psk.length < 8 || psk.length > 64)) {
+            toast('Wi-Fi password must be 8-63 chars (or a 64-char hex PSK)', 'error');
+            return;
+        }
         btn.disabled = true;
         try {
+            var body = { fleet_id: fleetId, base_image_id: baseId, output_name: name };
+            if (ssid && psk) {
+                body.wifi_ssid = ssid;
+                body.wifi_psk = psk;
+            }
             var job = await jsonFetch('/api/imager/build', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ fleet_id: fleetId, base_image_id: baseId, output_name: name }),
+                body: JSON.stringify(body),
             });
             renderJobCard(job);
             startPolling(job.job_id);
@@ -532,6 +634,120 @@
             loadFleetsAndBases();
         } finally {
             btn.disabled = false;
+        }
+    }
+
+    // ── Fleet create / manage modals ───────────────────────────
+    var lastFleetSelectValue = '';
+
+    async function handleFleetCreateSentinel(sel) {
+        // Triggered when the operator picks "+ Create new fleet…" in
+        // the build form's fleet select. Prompts for an id, POSTs to
+        // /api/imager/fleets, then refreshes the dropdown and
+        // re-selects the new id.  Falls back to the previously-selected
+        // value on cancel/error so the form isn't stuck on the sentinel.
+        var newId = await showPrompt(
+            'Enter a fleet ID (letters, digits, dot, underscore, dash; 1-64 chars).',
+            ''
+        );
+        // Always restore the previous value first; we'll overwrite if create succeeds.
+        sel.value = lastFleetSelectValue || '';
+        if (newId === null) return;
+        var trimmed = String(newId).trim();
+        if (!trimmed) { toast('Fleet ID cannot be empty', 'error'); return; }
+        if (!/^[A-Za-z0-9._-]{1,64}$/.test(trimmed)) {
+            toast('Invalid fleet ID -- use letters, digits, dot, underscore, dash', 'error');
+            return;
+        }
+        try {
+            await jsonFetch('/api/imager/fleets', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fleet_id: trimmed }),
+            });
+            toast('Fleet "' + trimmed + '" created', 'success');
+            await loadFleetsAndBases();
+            // Re-select the freshly-created fleet so the form is ready.
+            var sel2 = $('#imagerFleetSelect', buildSection);
+            if (sel2) {
+                sel2.value = trimmed;
+                lastFleetSelectValue = trimmed;
+                autoFillName();
+            }
+        } catch (e) {
+            if (e.status === 409) {
+                toast('Fleet "' + trimmed + '" already exists', 'error');
+            } else {
+                toast('Create failed: ' + (e.message || e), 'error');
+            }
+        }
+    }
+
+    async function openManageFleetsModal() {
+        var modal = $('#imagerFleetsModal');
+        var body = $('#imagerFleetsBody');
+        if (!modal || !body) return;
+        body.innerHTML = '<p class="empty-state text-muted">Loading…</p>';
+        modal.style.display = '';
+        try {
+            var fleets = await jsonFetch('/api/imager/fleets');
+            renderFleetsModalBody(fleets || []);
+        } catch (e) {
+            body.innerHTML = '<p class="empty-state text-muted">Failed to load: ' +
+                escHtml(e.message || e) + '</p>';
+        }
+    }
+
+    function closeManageFleetsModal() {
+        var modal = $('#imagerFleetsModal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    function renderFleetsModalBody(fleets) {
+        var body = $('#imagerFleetsBody');
+        if (!body) return;
+        if (fleets.length === 0) {
+            body.innerHTML = '<p class="empty-state text-muted">No fleets configured. ' +
+                'Pick "+ Create new fleet…" in the Build form to add one.</p>';
+            return;
+        }
+        body.innerHTML = '<table style="width:100%;">' +
+            '<thead><tr><th>Fleet ID</th><th style="width:7rem; text-align:right;">Actions</th></tr></thead>' +
+            '<tbody>' +
+            fleets.map(function(f) {
+                return '<tr>' +
+                    '<td><code>' + escHtml(f.fleet_id) + '</code></td>' +
+                    '<td style="text-align:right;">' +
+                    '<button type="button" class="btn btn-sm btn-danger-subtle" data-fleet-delete="' +
+                    escHtml(f.fleet_id) + '">Delete</button>' +
+                    '</td></tr>';
+            }).join('') +
+            '</tbody></table>';
+        body.querySelectorAll('[data-fleet-delete]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                deleteFleet(btn.getAttribute('data-fleet-delete'));
+            });
+        });
+    }
+
+    async function deleteFleet(fleetId) {
+        var ok = await showConfirm(
+            'Delete fleet "' + fleetId + '"?\n\n' +
+            'This revokes the HMAC secret. Pis already flashed with this ' +
+            "fleet that haven't yet completed first-boot registration will " +
+            'fail to register. Already-registered Pis are unaffected.'
+        );
+        if (!ok) return;
+        try {
+            await jsonFetch('/api/imager/fleets/' + encodeURIComponent(fleetId), {
+                method: 'DELETE',
+            });
+            toast('Deleted fleet "' + fleetId + '"', 'success');
+            // Refresh modal AND build form fleet dropdown.
+            await openManageFleetsModal();
+            loadFleetsAndBases();
+        } catch (e) {
+            toast('Delete failed: ' + (e.message || e), 'error');
         }
     }
 
@@ -872,9 +1088,42 @@
         form.addEventListener('submit', submitBuild);
         var nameInput = $('#imagerOutputName', buildSection);
         nameInput.addEventListener('input', function() { nameInput.dataset.userEdited = '1'; });
-        $('#imagerFleetSelect', buildSection).addEventListener('change', autoFillName);
+        var fleetSelEl = $('#imagerFleetSelect', buildSection);
+        fleetSelEl.addEventListener('change', function() {
+            // Intercept the "+ Create new fleet…" sentinel before
+            // running the auto-fill / form-state logic, so the form
+            // never carries the placeholder value forward.
+            if (fleetSelEl.value === '__create__') {
+                handleFleetCreateSentinel(fleetSelEl);
+                return;
+            }
+            lastFleetSelectValue = fleetSelEl.value;
+            autoFillName();
+        });
         $('#imagerBaseSelect', buildSection).addEventListener('change', autoFillName);
         $('#imagerJobDismiss', buildSection).addEventListener('click', dismissJobCard);
+
+        // Wi-Fi password show/hide toggle.
+        var pskToggle = $('#imagerWifiPskToggle', buildSection);
+        var pskInput = $('#imagerWifiPsk', buildSection);
+        if (pskToggle && pskInput) {
+            pskToggle.addEventListener('click', function() {
+                pskInput.type = (pskInput.type === 'password') ? 'text' : 'password';
+            });
+        }
+
+        // Manage Fleets modal (admin only).
+        var mgrBtn = $('#imagerManageFleetsBtn');
+        if (mgrBtn) mgrBtn.addEventListener('click', openManageFleetsModal);
+        var mgrClose = $('#imagerFleetsCloseBtn');
+        if (mgrClose) mgrClose.addEventListener('click', closeManageFleetsModal);
+        var mgrModal = $('#imagerFleetsModal');
+        if (mgrModal) {
+            mgrModal.addEventListener('click', function(e) {
+                if (e.target === mgrModal) closeManageFleetsModal();
+            });
+        }
+
         loadFleetsAndBases();
         // Resume any in-flight job from a prior page load.
         var resumeId = loadActiveJob();
