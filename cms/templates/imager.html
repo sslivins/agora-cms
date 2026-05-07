@@ -25,30 +25,32 @@
     </p>
 
     <form id="imagerBuildForm" autocomplete="off">
-        <div class="form-row" style="gap:0.75rem; flex-wrap:wrap;">
-            <div class="form-group" style="flex:1; min-width:180px;">
+        <div class="form-row" style="gap:0.75rem; flex-wrap:wrap; align-items:flex-end;">
+            <div class="form-group" style="flex:1; min-width:180px; margin-bottom:0;">
                 <label for="imagerFleetSelect">Fleet</label>
                 <select id="imagerFleetSelect" name="fleet_id" required>
                     <option value="">Loading…</option>
                 </select>
             </div>
-            <div class="form-group" style="flex:1; min-width:240px;">
+            <div class="form-group" style="flex:1; min-width:200px; margin-bottom:0;">
                 <label for="imagerBaseSelect">Base image</label>
                 <select id="imagerBaseSelect" name="base_image_id" required>
                     <option value="">Loading…</option>
                 </select>
             </div>
-            <div class="form-group" style="flex:2; min-width:240px;">
+            <div class="form-group" style="flex:1; min-width:200px; margin-bottom:0;">
                 <label for="imagerOutputName">Output filename</label>
                 <input id="imagerOutputName" name="output_name" type="text" required
                        placeholder="agora-pi5-fleet-2026.img.xz"
                        pattern=".+\.img\.xz$"
                        title="Must end in .img.xz; slashes are not allowed.">
-                <small class="text-muted">Must end in <code>.img.xz</code>. No slashes.</small>
+            </div>
+            <div style="flex:0 0 auto;">
+                <button type="submit" id="imagerBuildBtn" class="btn btn-primary">Build image</button>
             </div>
         </div>
-        <div style="margin-top:0.75rem; display:flex; gap:0.5rem; align-items:center;">
-            <button type="submit" id="imagerBuildBtn" class="btn btn-primary">Build image</button>
+        <div style="margin-top:0.5rem; display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap;">
+            <small class="text-muted">Filename must end in <code>.img.xz</code>. No slashes.</small>
             <span id="imagerBuildHint" class="text-muted" style="font-size:0.85rem;"></span>
         </div>
     </form>
@@ -71,10 +73,7 @@
 
 {# ── Built images list ─────────────────────────────────────────── #}
 <div class="card" data-imager-built style="margin-bottom:1rem;">
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
-        <h3 style="margin:0;">Built Images</h3>
-        <button id="imagerBuiltRefreshBtn" type="button" class="btn btn-secondary btn-sm">Refresh</button>
-    </div>
+    <h3 style="margin:0 0 0.5rem 0;">Built Images</h3>
     <p class="text-muted" style="margin-top:0.5rem;">
         Previously built <code>.img.xz</code> artifacts. The Download button mints a
         fresh, short-lived link on every click — links never expire from your
@@ -345,16 +344,39 @@
     var builtSection = $('[data-imager-built]');
     var canManage = {{ 'true' if imager_can_manage else 'false' }};
 
+    var BUILT_AUTO_REFRESH_MS = 15000;
+    var lastBuiltSig = '';
+    var builtAutoRefreshTimer = null;
+
+    function clearBuiltAutoRefreshTimer() {
+        if (builtAutoRefreshTimer) {
+            clearInterval(builtAutoRefreshTimer);
+            builtAutoRefreshTimer = null;
+        }
+    }
+
+    function startBuiltAutoRefreshTimer() {
+        if (!builtSection) return;
+        clearBuiltAutoRefreshTimer();
+        builtAutoRefreshTimer = setInterval(loadBuiltImages, BUILT_AUTO_REFRESH_MS);
+    }
+
     async function loadBuiltImages() {
         if (!builtSection) return;
         var tbody = $('#imagerBuiltTbody', builtSection);
         try {
             var rows = await jsonFetch('/api/imager/provisioned-images');
-            if (!rows || rows.length === 0) {
+            var list = rows || [];
+            var sig = list.map(function(r) {
+                return [r.id, r.status, r.expires_at, r.output_size, r.download_job_id].join('|');
+            }).join(',');
+            if (sig === lastBuiltSig) return;
+            lastBuiltSig = sig;
+            if (list.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No built images yet.</td></tr>';
                 return;
             }
-            tbody.innerHTML = rows.map(function(r) {
+            tbody.innerHTML = list.map(function(r) {
                 var status = statusUp(r.status);
                 var dlEnabled = (status === 'READY') && r.download_job_id;
                 var dlBtn = dlEnabled
@@ -385,6 +407,7 @@
                 });
             });
         } catch (e) {
+            lastBuiltSig = '';
             tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">' +
                 escHtml('Failed to load built images: ' + (e.message || e)) + '</td></tr>';
         }
@@ -397,6 +420,7 @@
                 method: 'DELETE',
             });
             toast('Deleted ' + name, 'success');
+            lastBuiltSig = '';
             loadBuiltImages();
         } catch (e) {
             toast('Delete failed: ' + (e.message || e), 'error');
@@ -864,19 +888,23 @@
     }
 
     if (builtSection) {
-        var refreshBtn = $('#imagerBuiltRefreshBtn', builtSection);
-        if (refreshBtn) refreshBtn.addEventListener('click', loadBuiltImages);
         loadBuiltImages();
+        startBuiltAutoRefreshTimer();
     }
 
     // Re-poll immediately when the tab becomes visible.
     document.addEventListener('visibilitychange', function() {
         if (document.hidden) {
             clearBasesPollTimer();
+            clearBuiltAutoRefreshTimer();
             return;
         }
         var jid = loadActiveJob();
         if (jid && pollTimer) pollOnce(jid);
+        if (builtSection) {
+            loadBuiltImages();
+            startBuiltAutoRefreshTimer();
+        }
         // Resume base-images polling if there are in-flight imports.
         if (manageSection) {
             var hasImporting = Object.keys(basesLastStatus).some(function(k) {
