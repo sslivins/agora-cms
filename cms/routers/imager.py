@@ -47,7 +47,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -148,6 +148,11 @@ class ProvisionedImageOut(BaseModel):
     SAS URL on each click -- the SAS embedded at build time is not
     used).  ``None`` only for legacy rows pre-dating the
     ``provisioning_job_id`` column; UI should disable Download.
+
+    ``wifi_ssid`` / ``wifi_psk`` are the cleartext WiFi creds baked
+    into the image, surfaced so the operator can recover them via the
+    Built Images tooltip.  Both ``None`` means the image carries no
+    wifi creds.
     """
 
     id: uuid.UUID
@@ -163,6 +168,8 @@ class ProvisionedImageOut(BaseModel):
     created_at: datetime
     built_at: datetime | None
     expires_at: datetime | None
+    wifi_ssid: str | None = None
+    wifi_psk: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -171,6 +178,26 @@ class BuildBody(BaseModel):
     base_image_id: uuid.UUID
     fleet_id: str = Field(..., min_length=1, max_length=64)
     output_name: str = Field(..., min_length=1, max_length=255)
+    # Optional WiFi credentials. Both must be provided or both omitted
+    # (validated below). SSID limit per IEEE 802.11; PSK limit per WPA
+    # passphrase (8-63 ASCII) or 64-hex pre-shared key. We don't
+    # enforce 8-63 for passphrase here because NetworkManager accepts
+    # both forms transparently and we'd rather not reject the 64-hex
+    # form for users who paste a pre-computed PSK.
+    wifi_ssid: str | None = Field(default=None, min_length=1, max_length=32)
+    wifi_psk: str | None = Field(default=None, min_length=8, max_length=64)
+
+    @model_validator(mode="after")
+    def _check_wifi_pair(self) -> "BuildBody":
+        # Both-or-neither: pre-validate at the schema layer so the
+        # build endpoint can assume a coherent pair.  Using
+        # @model_validator (vs model_post_init) so pydantic surfaces
+        # the failure as 422 instead of a generic 500.
+        if (self.wifi_ssid is None) != (self.wifi_psk is None):
+            raise ValueError(
+                "wifi_ssid and wifi_psk must be provided together or both omitted"
+            )
+        return self
 
 
 class ImagerSettingsOut(BaseModel):
@@ -307,7 +334,13 @@ def _derive_device_ws_url(base_url: str) -> str:
 
 
 def _fleet_env_payload(
-    cms_url: str, fleet_id: str, fleet_secret: bytes, device_transport: str
+    cms_url: str,
+    fleet_id: str,
+    fleet_secret: bytes,
+    device_transport: str,
+    *,
+    wifi_ssid: str | None = None,
+    wifi_psk: str | None = None,
 ) -> bytes:
     """Render the ``agora-fleet.env`` body the worker will inject.
 
@@ -331,15 +364,30 @@ def _fleet_env_payload(
     was caused by writing the key as ``AGORA_FLEET_SECRET=<b64>``,
     which the firmware silently dropped (wrong key name, wrong
     encoding) leaving the device unable to authenticate.
+
+    When ``wifi_ssid`` and ``wifi_psk`` are both provided, additional
+    ``AGORA_WIFI_SSID`` / ``AGORA_WIFI_PASS`` lines are appended.  The
+    firmware-side allow-list pins these exact key names (NOT
+    ``AGORA_WIFI_PASSPHRASE``) and the provisioner script writes a
+    NetworkManager ``.nmconnection`` file from them on first boot.
+    Either both must be set or both must be omitted; the build endpoint
+    enforces this before calling.  Devices that have no wifi hardware
+    silently no-op the connection file (firmware probes
+    ``/sys/class/ieee80211``), so leftover wifi env on a wired-only Pi
+    is harmless.
     """
     fw_transport = "direct" if device_transport == "local" else device_transport
     secret_hex = fleet_secret.hex()
-    return (
+    out = (
         f"AGORA_CMS_URL={cms_url}\n"
         f"AGORA_CMS_TRANSPORT={fw_transport}\n"
         f"AGORA_FLEET_ID={fleet_id}\n"
         f"AGORA_FLEET_SECRET_HEX={secret_hex}\n"
-    ).encode("utf-8")
+    )
+    if wifi_ssid and wifi_psk:
+        out += f"AGORA_WIFI_SSID={wifi_ssid}\n"
+        out += f"AGORA_WIFI_PASS={wifi_psk}\n"
+    return out.encode("utf-8")
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -777,7 +825,12 @@ async def build_provisioned_image(
 
     try:
         payload = _fleet_env_payload(
-            cms_url, body.fleet_id, secret, settings.device_transport
+            cms_url,
+            body.fleet_id,
+            secret,
+            settings.device_transport,
+            wifi_ssid=body.wifi_ssid,
+            wifi_psk=body.wifi_psk,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -797,6 +850,11 @@ async def build_provisioned_image(
         output_name=body.output_name,
         fleet_env_payload=payload,
         fleet_id=body.fleet_id,
+        # Persist wifi creds so the Built Images tooltip can show them
+        # after the build completes (these survive the
+        # ``fleet_env_payload`` clear on terminal success).
+        wifi_ssid=body.wifi_ssid,
+        wifi_psk=body.wifi_psk,
         built_by=user.id,
         status=ProvisionedImageStatus.PROVISIONING.value,
     )
@@ -806,13 +864,15 @@ async def build_provisioned_image(
     await audit_log(
         db, user=user, action="imager.build",
         resource_type="provisioned_image", resource_id=str(pi.id),
-        # NEVER include the secret here.
+        # NEVER include the secret here. Also intentionally omit wifi_psk;
+        # the SSID alone is fine to include for trace usefulness.
         details={
             "base_image_id": str(bi.id),
             "variant": bi.variant,
             "version": bi.version,
             "fleet_id": body.fleet_id,
             "output_name": body.output_name,
+            "wifi_ssid": body.wifi_ssid,
         },
         request=request,
     )
