@@ -57,6 +57,7 @@ from cms.config import Settings
 from cms.database import get_db
 from cms.models.user import User
 from cms.permissions import IMAGER_BUILD, IMAGER_MANAGE, IMAGER_READ
+from cms.services import fleet_registry
 from cms.services.audit_service import audit_log
 from cms.services.imager import is_valid_output_name
 from cms.services.imager_settings import (
@@ -95,6 +96,11 @@ _FLEET_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 class FleetOut(BaseModel):
     fleet_id: str
+
+
+class FleetCreateBody(BaseModel):
+    fleet_id: str = Field(..., min_length=1, max_length=64)
+    description: str | None = Field(default=None, max_length=255)
 
 
 class CatalogEntryOut(BaseModel):
@@ -301,7 +307,7 @@ def _derive_device_ws_url(base_url: str) -> str:
 
 
 def _fleet_env_payload(
-    cms_url: str, fleet_id: str, fleet_secret: str, device_transport: str
+    cms_url: str, fleet_id: str, fleet_secret: bytes, device_transport: str
 ) -> bytes:
     """Render the ``agora-fleet.env`` body the worker will inject.
 
@@ -317,26 +323,17 @@ def _fleet_env_payload(
     ``/api/devices/.../connect-token``; the ``/ws/device`` path is
     ignored, so the same URL form works for both modes.
 
-    ``fleet_secret`` is the **base64**-encoded secret as stored in
-    ``Settings.fleet_register_secrets[fleet_id]`` (see
-    ``cms/routers/bootstrap.py`` which does ``base64.b64decode`` to
-    recover the raw bytes).  The firmware-side
+    ``fleet_secret`` is the **raw HMAC bytes** (typically 32 bytes
+    from ``secrets.token_bytes``).  The firmware-side
     ``agora-fleet-provision.sh`` allow-lists the key
     ``AGORA_FLEET_SECRET_HEX`` and hex-decodes the value, so we
-    re-encode here.  The 2026-05-06 incident on Pi 192.168.1.100
+    hex-encode here.  The 2026-05-06 incident on Pi 192.168.1.100
     was caused by writing the key as ``AGORA_FLEET_SECRET=<b64>``,
     which the firmware silently dropped (wrong key name, wrong
     encoding) leaving the device unable to authenticate.
     """
     fw_transport = "direct" if device_transport == "local" else device_transport
-    try:
-        raw = base64.b64decode(fleet_secret, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError(
-            "fleet_secret is not valid base64; "
-            "FLEET_REGISTER_SECRETS[<fleet_id>] must be base64-encoded raw bytes"
-        ) from exc
-    secret_hex = raw.hex()
+    secret_hex = fleet_secret.hex()
     return (
         f"AGORA_CMS_URL={cms_url}\n"
         f"AGORA_CMS_TRANSPORT={fw_transport}\n"
@@ -351,15 +348,95 @@ def _fleet_env_payload(
 @router.get("/fleets", response_model=list[FleetOut])
 async def list_fleets(
     user: User = Depends(require_permission(IMAGER_READ)),
-    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
 ) -> list[FleetOut]:
     """Return the fleet IDs this CMS can register devices for.
 
-    Source of truth is :attr:`Settings.fleet_register_secrets`
-    (env-configured).  Secrets themselves are never returned.
+    Source of truth is the ``fleets`` table (see
+    :mod:`cms.services.fleet_registry`). Secrets themselves are
+    never returned.
     """
-    fleets = sorted((settings.fleet_register_secrets or {}).keys())
-    return [FleetOut(fleet_id=f) for f in fleets]
+    rows = await fleet_registry.list_active_fleets(db)
+    return [FleetOut(fleet_id=f.fleet_id) for f in rows]
+
+
+@router.post(
+    "/fleets",
+    response_model=FleetOut,
+    status_code=201,
+)
+async def create_fleet_endpoint(
+    body: FleetCreateBody,
+    user: User = Depends(require_permission(IMAGER_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+) -> FleetOut:
+    """Create a new fleet.
+
+    The HMAC secret is server-generated (32 bytes from
+    ``secrets.token_bytes``) and is **never** returned by this or
+    any other endpoint -- once the row is written, only freshly-built
+    images carry it. To replace the secret, delete the fleet and
+    re-create it.
+
+    Returns 409 if an active fleet with the given ``fleet_id``
+    already exists.
+    """
+    if not _FLEET_ID_RE.match(body.fleet_id):
+        raise HTTPException(status_code=422, detail="invalid fleet_id")
+    try:
+        row = await fleet_registry.create_fleet(
+            db,
+            fleet_id=body.fleet_id,
+            description=body.description,
+            created_by=user.id,
+        )
+    except fleet_registry.FleetAlreadyExists as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"fleet_id {body.fleet_id!r} already exists",
+        ) from exc
+    await audit_log(
+        db,
+        user=user,
+        action="imager.fleet.create",
+        resource_type="fleet",
+        resource_id=str(row.id),
+        details={"fleet_id": row.fleet_id},
+    )
+    await db.commit()
+    return FleetOut(fleet_id=row.fleet_id)
+
+
+@router.delete("/fleets/{fleet_id}", status_code=204)
+async def delete_fleet_endpoint(
+    fleet_id: str,
+    user: User = Depends(require_permission(IMAGER_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Soft-delete a fleet.
+
+    Idempotent: returns 204 even if the fleet was already gone (the
+    UI's "Delete" button shouldn't 404 on a stale list view).
+
+    The row is soft-deleted (``deleted_at`` set) so existing
+    ``provisioned_images.fleet_id`` audit values still resolve to a
+    name in history views. Already-flashed Pis using this fleet's
+    HMAC will be rejected with 401 from /register on next attempt.
+    """
+    if not _FLEET_ID_RE.match(fleet_id):
+        raise HTTPException(status_code=422, detail="invalid fleet_id")
+    deleted = await fleet_registry.delete_fleet(db, fleet_id)
+    if deleted:
+        await audit_log(
+            db,
+            user=user,
+            action="imager.fleet.delete",
+            resource_type="fleet",
+            resource_id=fleet_id,
+            details={"fleet_id": fleet_id},
+        )
+    await db.commit()
+    return None
 
 
 @router.get("/settings", response_model=ImagerSettingsOut)
@@ -642,12 +719,23 @@ async def build_provisioned_image(
     if not _FLEET_ID_RE.match(body.fleet_id):
         raise HTTPException(status_code=422, detail="invalid fleet_id")
 
-    secret = (settings.fleet_register_secrets or {}).get(body.fleet_id)
-    if not secret:
+    # FOR SHARE lock — serialises against a concurrent
+    # ``DELETE /api/imager/fleets/{id}`` (which takes FOR UPDATE on
+    # the same row). See ``cms.services.fleet_registry`` module
+    # docstring for the full locking convention.
+    fleet = await fleet_registry.get_fleet_for_build(db, body.fleet_id)
+    if fleet is None:
         raise HTTPException(
             status_code=404,
             detail=f"fleet_id {body.fleet_id!r} is not configured on this CMS",
         )
+    try:
+        secret = base64.b64decode(fleet.secret_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"fleet {body.fleet_id!r} has a misconfigured secret",
+        ) from exc
 
     if settings.device_transport not in ("local", "wps"):
         raise HTTPException(
@@ -695,7 +783,7 @@ async def build_provisioned_image(
         raise HTTPException(
             status_code=503,
             detail=(
-                f"FLEET_REGISTER_SECRETS[{body.fleet_id!r}] is misconfigured: "
+                f"fleet {body.fleet_id!r} payload could not be rendered: "
                 f"{exc}"
             ),
         ) from exc

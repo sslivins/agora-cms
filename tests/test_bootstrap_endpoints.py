@@ -26,6 +26,7 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -98,17 +99,26 @@ def _pairing_pair() -> tuple[str, str]:
     return secret, hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
-@pytest.fixture
-def fleet_secret_enabled(monkeypatch, app):
-    """Inject ``FLEET_REGISTER_SECRETS`` into the app's overridden settings."""
+@pytest_asyncio.fixture
+async def fleet_secret_enabled(app, db_session):
+    """Insert a Fleet row in the test DB and enable bootstrap v2."""
     from cms.auth import get_settings
+    from shared.models.fleet import Fleet
 
     override = app.dependency_overrides[get_settings]
     real_settings = override()
-    real_settings.fleet_register_secrets = {FLEET_ID: FLEET_SECRET_B64}
     real_settings.pending_registrations_max = 10_000
+
+    fleet = Fleet(
+        fleet_id=FLEET_ID,
+        secret_b64=FLEET_SECRET_B64,
+        description="test fixture fleet",
+    )
+    db_session.add(fleet)
+    await db_session.commit()
     yield real_settings
-    real_settings.fleet_register_secrets = {}
+    await db_session.delete(fleet)
+    await db_session.commit()
 
 
 @pytest.fixture(autouse=True)

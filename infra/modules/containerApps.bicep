@@ -62,10 +62,6 @@ param wpsConnectionString string = ''
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
 
-@description('Bootstrap v2 fleet HMAC secrets - JSON map of {fleet_id: base64_secret} used to gate POST /api/devices/register. Empty (default) disables v2 registration end-to-end (secure by default).')
-@secure()
-param fleetRegisterSecrets string = ''
-
 @description('GitHub personal access token used by the CMS "Report an issue" feature. When empty, the report-issue button is hidden.')
 @secure()
 param githubIssuesToken string = ''
@@ -224,10 +220,6 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           value: wpsConnectionString
         }
         {
-          name: 'fleet-register-secrets'
-          value: fleetRegisterSecrets
-        }
-        {
           name: 'github-issues-token'
           value: githubIssuesToken
         }
@@ -307,10 +299,6 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AGORA_CMS_WPS_CONNECTION_STRING'
               secretRef: 'wps-connection-string'
-            }
-            {
-              name: 'AGORA_CMS_FLEET_REGISTER_SECRETS'
-              secretRef: 'fleet-register-secrets'
             }
             {
               name: 'AGORA_CMS_GITHUB_ISSUES_TOKEN'

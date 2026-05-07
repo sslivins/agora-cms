@@ -15,6 +15,7 @@ Table("device_groups", Base.metadata, Column("id", UUID(as_uuid=True), primary_k
 
 from shared.models.asset import Asset, AssetType, AssetVariant, DeviceAsset, VariantStatus  # noqa: F401
 from shared.models.device_profile import DeviceProfile  # noqa: F401
+from shared.models.fleet import Fleet  # noqa: F401
 from shared.models.group_asset import GroupAsset  # noqa: F401
 from shared.models.imager import (  # noqa: F401
     BaseImage,

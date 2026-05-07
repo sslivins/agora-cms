@@ -25,10 +25,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from playwright.sync_api import APIRequestContext
 
 
-# Must match docker-compose.nightly.yml AGORA_CMS_FLEET_REGISTER_SECRETS.
-# Computed at import-time from a plain-ASCII source string so this test
-# fixture isn't flagged as a high-entropy secret literal -- there's nothing
-# to leak; the value is a fixed test-only token used inside the nightly stack.
+# The nightly conftest seeds this fleet row in the ``fleets`` table
+# during stack startup (see ``_seed_nightly_fleet``).  The constants
+# below are the source of truth used both for that insert and the
+# /register HMAC computation.
 NIGHTLY_FLEET_ID = "nightly-fleet"
 _NIGHTLY_FLEET_SECRET_RAW = b"nightly-fleet-secret-32bytes!!!!"
 NIGHTLY_FLEET_SECRET_B64 = base64.b64encode(_NIGHTLY_FLEET_SECRET_RAW).decode("ascii")

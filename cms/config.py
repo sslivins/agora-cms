@@ -102,11 +102,6 @@ class Settings(SharedSettings):
 
     # Bootstrap redesign (umbrella issue #420), Stage A.3.
     # ------------------------------------------------------------------
-    # FLEET_REGISTER_SECRETS is a JSON map of ``fleet_id -> base64 secret``
-    # used to validate the HMAC on the anonymous ``POST /api/devices/register``
-    # endpoint.  Empty map = reject all /register calls (secure by default
-    # until the operator provisions at least one fleet secret).
-    fleet_register_secrets: dict[str, str] = Field(default_factory=dict)
     # Hard cap on unadopted ``pending_registrations`` rows — /register
     # returns 503 once the cap is reached to protect the DB from
     # registration spam.

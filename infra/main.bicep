@@ -54,10 +54,6 @@ param githubIssuesToken string = ''
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
 
-@description('Bootstrap v2 fleet HMAC secrets - JSON map of {fleet_id: base64_secret} used to gate the anonymous POST /api/devices/register endpoint. Empty map (default) rejects all /register calls (secure by default, v2 bootstrap disabled).')
-@secure()
-param fleetRegisterSecrets string = ''
-
 @description('CMS container image (e.g., agoracr.azurecr.io/agora-cms:latest)')
 param cmsImage string = ''
 
@@ -242,9 +238,6 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Report-issue feature (GitHub)
     githubIssuesToken: githubIssuesToken
-
-    // Bootstrap v2 fleet secrets (JSON map)
-    fleetRegisterSecrets: fleetRegisterSecrets
   }
 }
 
