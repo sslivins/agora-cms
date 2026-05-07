@@ -70,5 +70,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("uq_fleets_fleet_id_active", table_name="fleets")
-    op.drop_table("fleets")
+    raise NotImplementedError(
+        "0022_fleets is forward-only. Fleet identities are migrated from "
+        "the env-only AGORA_CMS_FLEET_REGISTER_SECRETS map into the "
+        "fleets table; a downgrade would silently lose any fleet rows "
+        "created via the imager API after upgrade. Restore from a "
+        "pre-upgrade DB backup if you need to roll back."
+    )
