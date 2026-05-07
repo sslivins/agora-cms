@@ -155,6 +155,8 @@ async def test_endpoints_require_auth(unauthed_client):
         ("POST", "/api/imager/base-images"),
         ("DELETE", f"/api/imager/base-images/{uuid.uuid4()}"),
         ("POST", "/api/imager/build"),
+        ("GET", "/api/imager/provisioned-images"),
+        ("DELETE", f"/api/imager/provisioned-images/{uuid.uuid4()}"),
         ("GET", f"/api/imager/jobs/{uuid.uuid4()}"),
         ("GET", f"/api/imager/download/{uuid.uuid4()}"),
     ]
@@ -382,21 +384,46 @@ async def test_delete_404_when_missing(client, imager_settings):
 
 
 @pytest.mark.asyncio
-async def test_delete_409_when_referenced(client, db_session, imager_settings):
+async def test_delete_base_image_succeeds_when_referenced_nulls_fk(
+    client, db_session, imager_settings,
+):
+    """Deleting a base referenced by built images succeeds.
+
+    Built ``.img.xz`` artifacts are fully self-contained, so a base
+    deletion only nulls the audit FK on the dependent
+    ``ProvisionedImage`` rows -- the ``base_variant`` /
+    ``base_version`` snapshot columns preserve identity.
+    """
     bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
     db_session.add(bi)
     await db_session.flush()
     pi = ProvisionedImage(
         base_image_id=bi.id,
+        base_variant=bi.variant,
+        base_version=bi.version,
         output_name="x.img.xz",
         fleet_env_payload=b"AGORA_CMS_URL=https://x\nAGORA_FLEET_ID=f\nAGORA_FLEET_SECRET=s\n",
         status=ProvisionedImageStatus.READY.value,
     )
     db_session.add(pi)
     await db_session.commit()
+    pi_id = pi.id
+    bi_id = bi.id
 
-    resp = await client.delete(f"/api/imager/base-images/{bi.id}")
-    assert resp.status_code == 409
+    resp = await client.delete(f"/api/imager/base-images/{bi_id}")
+    assert resp.status_code == 204
+
+    # Base row is gone; audit row survives with nulled FK + snapshot.
+    db_session.expire_all()
+    assert (
+        await db_session.execute(select(BaseImage).where(BaseImage.id == bi_id))
+    ).scalar_one_or_none() is None
+    pi_after = (
+        await db_session.execute(select(ProvisionedImage).where(ProvisionedImage.id == pi_id))
+    ).scalar_one()
+    assert pi_after.base_image_id is None
+    assert pi_after.base_variant == "pi5"
+    assert pi_after.base_version == "v1"
 
 
 @pytest.mark.asyncio
@@ -565,6 +592,10 @@ async def test_build_creates_provisioned_row_with_payload(
     )).scalar_one()
     assert pi.fleet_id == "fleet-test"
     assert pi.output_name == "kitchen.img.xz"
+    # Audit snapshot of the base image is populated at build time so
+    # the row survives an admin deleting the base image later.
+    assert pi.base_variant == "pi5"
+    assert pi.base_version == "v1.11.28"
     payload = pi.fleet_env_payload.decode("utf-8")
     # AGORA_CMS_BASE_URL=https://cms.example.com → wss://cms.example.com/ws/device
     # The firmware passes this directly to websockets.connect() and derives
@@ -585,6 +616,11 @@ async def test_build_creates_provisioned_row_with_payload(
         select(Job).where(Job.target_id == pi.id, Job.type == JobType.IMAGE_PROVISION)
     )).scalar_one()
     assert job.status == JobStatus.PENDING
+    # And the producing job is denormalized onto the row so the
+    # built-images list endpoint can surface it for the Download
+    # button without a reverse join.
+    await db_session.refresh(pi)
+    assert pi.provisioning_job_id == job.id
 
 
 def test_fleet_env_payload_matches_firmware_allowlist():
@@ -867,3 +903,134 @@ def test_derive_device_ws_url_rejects_unsupported_scheme():
 
     with pytest.raises(ValueError):
         _derive_device_ws_url("ftp://agora.example.com")
+
+
+# ── Built-images list & delete ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_provisioned_images_returns_rows_newest_first(
+    client, db_session, imager_settings,
+):
+    bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.flush()
+
+    older = ProvisionedImage(
+        base_image_id=bi.id,
+        base_variant="pi5",
+        base_version="v1",
+        output_name="older.img.xz",
+        fleet_id="fleet-test",
+        status=ProvisionedImageStatus.READY.value,
+        blob_path="provisioned/older.img.xz",
+        output_size=12345,
+    )
+    newer = ProvisionedImage(
+        base_image_id=bi.id,
+        base_variant="pi5",
+        base_version="v1",
+        output_name="newer.img.xz",
+        fleet_id="fleet-test",
+        status=ProvisionedImageStatus.READY.value,
+        blob_path="provisioned/newer.img.xz",
+        output_size=23456,
+    )
+    db_session.add_all([older, newer])
+    await db_session.flush()
+    # Force created_at ordering deterministically.
+    older.created_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    newer.created_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    resp = await client.get("/api/imager/provisioned-images")
+    assert resp.status_code == 200
+    rows = resp.json()
+    names = [r["output_name"] for r in rows]
+    assert names.index("newer.img.xz") < names.index("older.img.xz")
+
+    # Schema sanity.
+    row = next(r for r in rows if r["output_name"] == "newer.img.xz")
+    assert row["base_variant"] == "pi5"
+    assert row["base_version"] == "v1"
+    assert row["fleet_id"] == "fleet-test"
+    assert row["output_size"] == 23456
+    assert row["status"] == ProvisionedImageStatus.READY.value
+
+
+@pytest.mark.asyncio
+async def test_list_provisioned_images_403_for_viewer(app, db_session):
+    """IMAGER_BUILD permission is required to list built images."""
+    await _create_user(db_session, email="viewer-pi@test.com", role_name="Viewer")
+    ac = await _login_as(app, "viewer-pi@test.com")
+    try:
+        resp = await ac.get("/api/imager/provisioned-images")
+        assert resp.status_code == 403
+    finally:
+        await ac.aclose()
+
+
+@pytest.mark.asyncio
+async def test_delete_provisioned_image_admin_succeeds(
+    client, db_session, imager_settings,
+):
+    bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.flush()
+    pi = ProvisionedImage(
+        base_image_id=bi.id,
+        base_variant="pi5",
+        base_version="v1",
+        output_name="todelete.img.xz",
+        fleet_id="fleet-test",
+        status=ProvisionedImageStatus.READY.value,
+        blob_path="provisioned/todelete.img.xz",
+    )
+    db_session.add(pi)
+    await db_session.commit()
+    pi_id = pi.id
+
+    resp = await client.delete(f"/api/imager/provisioned-images/{pi_id}")
+    assert resp.status_code == 204
+
+    db_session.expire_all()
+    assert (
+        await db_session.execute(
+            select(ProvisionedImage).where(ProvisionedImage.id == pi_id)
+        )
+    ).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_delete_provisioned_image_404_when_missing(client, imager_settings):
+    resp = await client.delete(f"/api/imager/provisioned-images/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_provisioned_image_403_for_operator(
+    app, db_session, imager_settings,
+):
+    """Operator (IMAGER_BUILD only) cannot delete built images."""
+    bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.flush()
+    pi = ProvisionedImage(
+        base_image_id=bi.id,
+        base_variant="pi5",
+        base_version="v1",
+        output_name="forbidden.img.xz",
+        fleet_id="fleet-test",
+        status=ProvisionedImageStatus.READY.value,
+    )
+    db_session.add(pi)
+    await db_session.commit()
+
+    await _create_user(db_session, email="op-del@test.com", role_name="Operator")
+    ac = await _login_as(app, "op-del@test.com")
+    try:
+        resp = await ac.delete(f"/api/imager/provisioned-images/{pi.id}")
+        assert resp.status_code == 403
+    finally:
+        await ac.aclose()
+

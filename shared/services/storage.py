@@ -136,6 +136,15 @@ class StorageBackend(ABC):
         running locally fetch through the CMS proxy instead.
         """
 
+    @abstractmethod
+    async def delete_blob(self, container: str, blob_name: str) -> None:
+        """Delete ``container/blob_name``.
+
+        Idempotent: a missing blob is a no-op. Used by the imager
+        UI's "delete built image" path so admins can reclaim storage
+        for `.img.xz` artifacts they no longer need.
+        """
+
 
 # ── Local filesystem backend ────────────────────────────────────
 
@@ -215,6 +224,13 @@ class LocalStorageBackend(StorageBackend):
         # CMS can reverse-proxy through its own auth.  Real download
         # flow in dev goes through ``get_download_response``.
         return f"file://{self._container_path(container, blob_name)}"
+
+    async def delete_blob(self, container: str, blob_name: str) -> None:
+        path = self._container_path(container, blob_name)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # ── Azure Blob Storage backend ──────────────────────────────────
@@ -392,6 +408,17 @@ class AzureStorageBackend(StorageBackend):
             f"https://{self._account_name}.blob.core.windows.net"
             f"/{container}/{blob_name}?{sas_token}"
         )
+
+    async def delete_blob(self, container: str, blob_name: str) -> None:
+        from azure.core.exceptions import ResourceNotFoundError
+        container_client = self._service_client.get_container_client(container)
+        blob_client = container_client.get_blob_client(blob_name)
+        try:
+            await blob_client.delete_blob(delete_snapshots="include")
+        except ResourceNotFoundError:
+            # Idempotent: blob already gone (lifecycle policy, prior
+            # delete, etc.) is success from the caller's POV.
+            return
 
     async def close(self) -> None:
         """Close the async blob service client."""

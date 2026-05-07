@@ -96,9 +96,10 @@ async def test_provisioned_image_nullable_until_ready(db_engine) -> None:
     for f in (
         "device_id", "output_sha256", "output_size", "blob_path",
         "expires_at", "built_at", "built_by", "fleet_env_payload",
+        "base_image_id",
     ):
         assert cols[f]["nullable"], f"{f} must be nullable until status=ready"
-    for f in ("base_image_id", "output_name", "status"):
+    for f in ("output_name", "status"):
         assert not cols[f]["nullable"], f"{f} must be NOT NULL"
 
 

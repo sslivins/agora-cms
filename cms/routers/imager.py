@@ -130,6 +130,37 @@ class BaseImageImportBody(BaseModel):
     version: str = Field(..., min_length=1, max_length=64)
 
 
+class ProvisionedImageOut(BaseModel):
+    """Read model for the built-images list view.
+
+    ``base_image_id`` may be ``None`` if the cached base was deleted
+    after this build was produced -- the denormalized ``base_variant``
+    and ``base_version`` snapshot columns preserve the audit trail.
+
+    ``download_job_id`` lets the UI build the link to
+    ``/api/imager/download/{job_id}`` (which 302s to a freshly-minted
+    SAS URL on each click -- the SAS embedded at build time is not
+    used).  ``None`` only for legacy rows pre-dating the
+    ``provisioning_job_id`` column; UI should disable Download.
+    """
+
+    id: uuid.UUID
+    output_name: str
+    fleet_id: str | None
+    base_image_id: uuid.UUID | None
+    base_variant: str | None
+    base_version: str | None
+    status: str
+    blob_path: str | None
+    output_size: int | None
+    download_job_id: uuid.UUID | None
+    created_at: datetime
+    built_at: datetime | None
+    expires_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class BuildBody(BaseModel):
     base_image_id: uuid.UUID
     fleet_id: str = Field(..., min_length=1, max_length=64)
@@ -548,28 +579,17 @@ async def delete_base_image(
 ) -> None:
     """Delete a cached base image (DB row + tenant blob).
 
-    Refuses with 409 if any ``ProvisionedImage`` row references this
-    base image.  The DB FK is ``RESTRICT`` so a relaxed implementation
-    would still surface that error -- we check eagerly for a clearer
-    message.
+    Built ``.img.xz`` artifacts are fully self-contained -- the imager
+    pipeline embeds the OS into a fresh blob -- so removing a cached
+    base image cannot break any existing build.  The
+    ``provisioned_images.base_image_id`` FK is ``ON DELETE SET NULL``
+    (with denormalized ``base_variant`` / ``base_version`` snapshot
+    columns preserving the audit trail), so we can drop the row
+    unconditionally here.
     """
     bi = await db.get(BaseImage, base_image_id)
     if bi is None:
         raise HTTPException(status_code=404, detail="base image not found")
-
-    ref_count = await db.scalar(
-        select(func.count()).select_from(ProvisionedImage).where(
-            ProvisionedImage.base_image_id == base_image_id
-        )
-    )
-    if ref_count and int(ref_count) > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"cannot delete: {int(ref_count)} provisioned image(s) "
-                "reference this base image"
-            ),
-        )
 
     blob_path = bi.blob_path
     container = settings.base_image_cache_container
@@ -682,6 +702,10 @@ async def build_provisioned_image(
 
     pi = ProvisionedImage(
         base_image_id=bi.id,
+        # Audit-only snapshot: preserves "which base did this build
+        # come from?" if the base image is deleted later.
+        base_variant=bi.variant,
+        base_version=bi.version,
         output_name=body.output_name,
         fleet_env_payload=payload,
         fleet_id=body.fleet_id,
@@ -706,6 +730,13 @@ async def build_provisioned_image(
     )
 
     job_id = await enqueue_job(db, JobType.IMAGE_PROVISION, pi.id)
+    # Denormalize the producing job onto the row so the list
+    # endpoint can surface ``download_job_id`` without a reverse
+    # join through ``jobs.target_id`` on every list call.  Note:
+    # ``enqueue_job`` already committed the surrounding transaction,
+    # so we need our own commit to persist this update.
+    pi.provisioning_job_id = job_id
+    await db.commit()
     await db.refresh(pi)
 
     job = await db.get(Job, job_id)
@@ -722,6 +753,93 @@ async def build_provisioned_image(
         progress_pct=job.progress_pct,
         output_name=pi.output_name,
     )
+
+
+@router.get("/provisioned-images", response_model=list[ProvisionedImageOut])
+async def list_provisioned_images(
+    user: User = Depends(require_permission(IMAGER_BUILD)),
+    db: AsyncSession = Depends(get_db),
+) -> list[ProvisionedImageOut]:
+    """List built ``.img.xz`` artifacts (newest first, capped at 200).
+
+    The UI surfaces this as the "Built images" section on the Imager
+    tab so admins can re-download or clean up artifacts long after
+    the build job poller has exited.  ``download_job_id`` is the FK
+    the existing ``/api/imager/download/{job_id}`` redirect needs --
+    it mints a fresh SAS on every hit so SAS lifetime is never an
+    operator-visible concern.
+    """
+    rows = (
+        await db.execute(
+            select(ProvisionedImage)
+            .order_by(ProvisionedImage.created_at.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+    return [
+        ProvisionedImageOut(
+            id=pi.id,
+            output_name=pi.output_name,
+            fleet_id=pi.fleet_id,
+            base_image_id=pi.base_image_id,
+            base_variant=pi.base_variant,
+            base_version=pi.base_version,
+            status=pi.status,
+            blob_path=pi.blob_path,
+            output_size=pi.output_size,
+            download_job_id=pi.provisioning_job_id,
+            created_at=pi.created_at,
+            built_at=pi.built_at,
+            expires_at=pi.expires_at,
+        )
+        for pi in rows
+    ]
+
+
+@router.delete("/provisioned-images/{provisioned_image_id}", status_code=204)
+async def delete_provisioned_image(
+    provisioned_image_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(IMAGER_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Delete a built image (DB row + blob).
+
+    Audited.  Idempotent against blob storage: a missing blob is a
+    no-op (the lifecycle policy or a prior delete may have already
+    cleaned it up).
+    """
+    pi = await db.get(ProvisionedImage, provisioned_image_id)
+    if pi is None:
+        raise HTTPException(status_code=404, detail="provisioned image not found")
+
+    blob_path = pi.blob_path
+    container = settings.provisioned_container
+
+    await db.delete(pi)
+    await audit_log(
+        db, user=user, action="imager.provisioned_image.delete",
+        resource_type="provisioned_image", resource_id=str(provisioned_image_id),
+        details={
+            "output_name": pi.output_name,
+            "fleet_id": pi.fleet_id,
+            "base_variant": pi.base_variant,
+            "base_version": pi.base_version,
+            "blob_path": blob_path,
+        },
+        request=request,
+    )
+    await db.commit()
+
+    if blob_path:
+        try:
+            storage = get_storage()
+            await storage.delete_blob(container, blob_path)
+        except Exception:
+            # Audit log already records the row delete; best-effort
+            # blob cleanup is fine to swallow on failure.
+            pass
 
 
 _IMAGER_JOB_TYPES = (JobType.IMAGE_IMPORT, JobType.IMAGE_PROVISION)
@@ -820,7 +938,13 @@ async def download_provisioned(
         resource_type="provisioned_image", resource_id=str(pi.id),
         details={
             "job_id": str(job.id),
-            "base_image_id": str(pi.base_image_id),
+            # base_image_id may be NULL if the cached base was
+            # deleted after this build was produced (audit FK is
+            # SET NULL).  base_variant / base_version snapshot
+            # columns preserve identity in that case.
+            "base_image_id": str(pi.base_image_id) if pi.base_image_id else None,
+            "base_variant": pi.base_variant,
+            "base_version": pi.base_version,
             "fleet_id": pi.fleet_id,
             "output_name": pi.output_name,
         },
