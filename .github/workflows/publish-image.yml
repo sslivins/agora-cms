@@ -197,33 +197,6 @@ jobs:
       #     (no more "same tag, stale revision" failures).
       #   * A mutated/overwritten tag can never cause an unexpected image
       #     to be deployed.
-      # Assemble FLEET_REGISTER_SECRETS from zero-or-more GH Actions secrets
-      # named FLEET_REGISTER_SECRET_<FLEET_ID> (fleet-id uppercased, '-' -> '_').
-      # Adding a new fleet is: add one repo secret; no YAML edit needed.
-      - name: Build fleetRegisterSecrets JSON from per-fleet secrets
-        id: fleet_secrets
-        env:
-          ALL_SECRETS_JSON: ${{ toJSON(secrets) }}
-        run: |
-          MAP=$(printf '%s' "$ALL_SECRETS_JSON" | jq -c '
-            to_entries
-            | map(select(.key | startswith("FLEET_REGISTER_SECRET_")))
-            | map({
-                key: (.key | sub("^FLEET_REGISTER_SECRET_"; "") | ascii_downcase | gsub("_"; "-")),
-                value: .value
-              })
-            | from_entries
-          ')
-          if [ -z "$MAP" ] || [ "$MAP" = "null" ]; then MAP='{}'; fi
-          # Count without exposing values.
-          COUNT=$(printf '%s' "$MAP" | jq 'length')
-          echo "fleet-count=$COUNT" >> "$GITHUB_OUTPUT"
-          # Mask before writing to the step output so logs never echo the value.
-          echo "::add-mask::$MAP"
-          echo "map<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$MAP" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "Assembled fleetRegisterSecrets with $COUNT fleet(s)"
 
       # Blue/green: capture the currently-serving revisions before we deploy.
       # Bicep pins traffic 100% to these names so the brand-new revision lands
@@ -284,7 +257,6 @@ jobs:
               cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
               wpsConnectionString='${{ secrets.WPS_CONNECTION_STRING }}' \
-              fleetRegisterSecrets='${{ steps.fleet_secrets.outputs.map }}' \
               githubIssuesToken='${{ secrets.AGORA_CMS_ISSUES_TOKEN }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=false \

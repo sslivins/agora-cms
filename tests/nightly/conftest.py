@@ -153,6 +153,50 @@ def _wait_for_service(name: str, probe, timeout: float) -> None:
     )
 
 
+def _seed_nightly_fleet(dsn: str) -> None:
+    """Idempotently insert the nightly fleet row.
+
+    The CMS lifespan runs alembic on startup, so by the time
+    ``/healthz`` returns 200 the ``fleets`` table exists.  We then
+    insert (or upsert) the nightly fleet so the bootstrap-register
+    helper can drive /register end-to-end.
+
+    Shells out to ``docker compose exec db psql`` so we don't need a
+    Python Postgres driver in the test runner image — the postgres
+    container already has psql.
+    """
+    from tests.nightly.helpers.bootstrap_register import (
+        NIGHTLY_FLEET_ID,
+        NIGHTLY_FLEET_SECRET_B64,
+    )
+
+    # Single statement -- use uuid_generate_v4() since pgcrypto isn't
+    # guaranteed; "uuid-ossp" extension is installed by the postgres
+    # base image. Fall back to gen_random_uuid() if needed (PG 13+).
+    sql = (
+        "INSERT INTO fleets (id, fleet_id, secret_b64, description) "
+        "SELECT gen_random_uuid(), %(fid)s, %(sec)s, 'nightly E2E fleet' "
+        "WHERE NOT EXISTS ("
+        "  SELECT 1 FROM fleets WHERE fleet_id = %(fid)s AND deleted_at IS NULL"
+        ");"
+    ).replace("%(fid)s", f"'{NIGHTLY_FLEET_ID}'") \
+     .replace("%(sec)s", f"'{NIGHTLY_FLEET_SECRET_B64}'")
+
+    # `_compose("exec", ...)` — run psql inside the running db container.
+    proc = _compose(
+        "exec", "-T", "db",
+        "psql", "-U", "agora", "-d", "agora_cms", "-v", "ON_ERROR_STOP=1",
+        "-c", sql,
+        check=False, capture=True,
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"Failed to seed nightly fleet via psql:\n"
+            f"--- stdout ---\n{proc.stdout}\n"
+            f"--- stderr ---\n{proc.stderr}"
+        )
+
+
 @pytest.fixture(scope="session")
 def stack(request: pytest.FixtureRequest) -> Iterator[StackHandle]:
     if not _nightly_enabled(request.config):
@@ -181,6 +225,11 @@ def stack(request: pytest.FixtureRequest) -> Iterator[StackHandle]:
             lambda: httpx.get(f"{handle.cms_url}/healthz", timeout=2.0).status_code == 200,
             STARTUP_TIMEOUT,
         )
+        # Seed the nightly fleet row.  PR <feat-fleets-db> moved fleet
+        # secrets out of env into the ``fleets`` table; the bootstrap
+        # /register flow now reads from there.  Done as a one-shot SQL
+        # insert against the postgres exposed on 5433.
+        _seed_nightly_fleet(handle.postgres_dsn)
         _wait_for_service(
             "mailpit",
             lambda: MailpitClient(handle.mailpit_url).is_ready(),

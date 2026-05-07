@@ -29,8 +29,6 @@ top-level dependency.  See ``_ip_ratelimited`` below.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import hmac
 import logging
@@ -59,7 +57,7 @@ from cms.schemas.bootstrap import (
     RegisterRequest,
     RegisterResponse,
 )
-from cms.services import device_bootstrap, device_identity
+from cms.services import device_bootstrap, device_identity, fleet_registry
 from cms.services.audit_service import audit_log
 from cms.services.transport import get_transport
 
@@ -126,7 +124,9 @@ def _ip_ratelimited(
 
 
 async def _verify_fleet_hmac(
-    request: Request, body: RegisterRequest, settings: Settings,
+    request: Request,
+    body: RegisterRequest,
+    db: AsyncSession,
 ) -> None:
     """Validate the fleet HMAC on an incoming /register request.
 
@@ -135,11 +135,12 @@ async def _verify_fleet_hmac(
     ``X-Fleet-Mac`` (base64 HMAC-SHA256).  The canonical input is
     defined by :func:`device_identity.fleet_hmac_input`.
 
-    Fleet secrets are configured via ``FLEET_REGISTER_SECRETS`` (JSON
-    map of fleet_id → base64 secret).  An empty map means every
-    /register is rejected, which is the intended secure-by-default.
-    Nonces are persisted in the in-memory nonce cache to prevent replay
-    for the duration of :data:`Settings.bootstrap_nonce_ttl_seconds`.
+    Fleet secrets live in the ``fleets`` table (see
+    :mod:`cms.services.fleet_registry`). An empty / soft-deleted
+    table means every /register is rejected, which is the intended
+    secure-by-default. Nonces are persisted in the in-memory nonce
+    cache to prevent replay for the duration of
+    :data:`Settings.bootstrap_nonce_ttl_seconds`.
     """
     fleet_id = request.headers.get("x-fleet-id") or ""
     ts_raw = request.headers.get("x-fleet-timestamp") or ""
@@ -156,19 +157,18 @@ async def _verify_fleet_hmac(
     if not device_identity.timestamp_within_skew(ts, 300):
         raise HTTPException(status_code=401, detail="fleet_hmac_stale")
 
-    secret_b64 = (settings.fleet_register_secrets or {}).get(fleet_id)
-    if not secret_b64:
-        # Secure-by-default: no secret configured for this fleet ID, no
-        # access.  Distinguishable-vs-valid-HMAC is fine here: we return
-        # 401, the legitimate device returns 202.  Not returning extra
-        # detail preserves the non-discoverable property.
-        raise HTTPException(status_code=401, detail="fleet_hmac_bad")
-
     try:
-        secret = base64.b64decode(secret_b64, validate=True)
-    except (binascii.Error, ValueError) as e:
-        logger.error("FLEET_REGISTER_SECRETS[%s] is not valid base64", fleet_id)
-        raise HTTPException(status_code=500, detail="fleet_secret_misconfigured") from e
+        secret = await fleet_registry.get_fleet_secret(db, fleet_id)
+    except fleet_registry.FleetSecretMisconfigured as e:
+        raise HTTPException(
+            status_code=500, detail="fleet_secret_misconfigured",
+        ) from e
+    if secret is None:
+        # Secure-by-default: no active fleet for this ID, no access.
+        # Distinguishable-vs-valid-HMAC is fine here: we return 401, the
+        # legitimate device returns 202.  Not returning extra detail
+        # preserves the non-discoverable property.
+        raise HTTPException(status_code=401, detail="fleet_hmac_bad")
 
     canonical = device_identity.fleet_hmac_input(
         device_id=body.device_id,
@@ -220,7 +220,7 @@ async def register(
     """Device-initiated registration.  Anonymous but fleet-HMAC gated."""
     _ip_ratelimited(request, key="register", limit=10, window_sec=60)
 
-    await _verify_fleet_hmac(request, body, settings)
+    await _verify_fleet_hmac(request, body, db)
 
     # Canonicalise + validate the pubkey early so malformed input fails
     # before we touch the database.  ``register_device`` also re-normalises

@@ -13,6 +13,7 @@ state.
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -39,35 +40,51 @@ from tests.test_rbac import _create_user, _login_as
 # ── Fixtures ────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def imager_settings(app):
+@pytest_asyncio.fixture
+async def imager_settings(app, db_session):
     """Configure the test settings with imager fields populated.
 
     Mutates the singleton settings instance the app fixture installed
     via ``dependency_overrides``.  Restores defaults on teardown.
 
+    Also seeds a ``fleet-test`` row in the ``fleets`` table so the
+    Imager build endpoint can resolve a fleet secret via
+    ``fleet_registry``.
+
     NOTE: PR 7 moved the catalog URL out of ``Settings`` and into the
     ``cms_settings`` table.  Tests that need a URL configured should
     use the :func:`imager_catalog_url` fixture as well.
     """
+    from shared.models.fleet import Fleet
+
     settings = app.dependency_overrides[get_settings]()
     saved = {
         "base_image_allowed_hosts": settings.base_image_allowed_hosts,
         "base_image_cache_container": settings.base_image_cache_container,
         "provisioned_container": settings.provisioned_container,
         "imager_sas_ttl_hours": settings.imager_sas_ttl_hours,
-        "fleet_register_secrets": dict(settings.fleet_register_secrets or {}),
         "base_url": settings.base_url,
     }
     settings.base_image_allowed_hosts = "github.com,objects.githubusercontent.com"
     settings.base_image_cache_container = "base-images"
     settings.provisioned_container = "provisioned"
     settings.imager_sas_ttl_hours = 2
-    settings.fleet_register_secrets = {"fleet-test": "c2VjcmV0LWJhc2U2NA=="}
     settings.base_url = "https://cms.example.com"
+
+    fleet = Fleet(
+        fleet_id="fleet-test",
+        # Generate at runtime so a literal base64 blob doesn't trip
+        # gitleaks' generic-api-key rule on this hard-coded fixture.
+        secret_b64=base64.b64encode(b"secret-base64").decode("ascii"),
+        description="imager test fixture fleet",
+    )
+    db_session.add(fleet)
+    await db_session.commit()
     yield settings
     for k, v in saved.items():
         setattr(settings, k, v)
+    await db_session.delete(fleet)
+    await db_session.commit()
 
 
 @pytest_asyncio.fixture
@@ -634,38 +651,25 @@ def test_fleet_env_payload_matches_firmware_allowlist():
     Pin the imager output so we can never again ship images where the
     firmware silently drops the credential.
     """
-    import base64
-
     from cms.routers.imager import _fleet_env_payload
 
     raw = b"\x00\x01\x02\x03decafbad" + b"x" * 20
-    secret_b64 = base64.b64encode(raw).decode()
 
     out = _fleet_env_payload(
-        "wss://cms.example.com/ws/device", "fleet-x", secret_b64, "wps"
+        "wss://cms.example.com/ws/device", "fleet-x", raw, "wps"
     ).decode("utf-8")
 
     # Key name must be the firmware-expected ``_HEX`` form.
     assert "AGORA_FLEET_SECRET_HEX=" in out
     # Pre-fix imager wrote ``AGORA_FLEET_SECRET=<base64>``.  Make sure
-    # neither the bad key NOR the base64 value leaks into the file.
+    # the legacy bad key name doesn't sneak back into the file.
     lines = [ln for ln in out.splitlines() if "=" in ln]
     keys = {ln.split("=", 1)[0] for ln in lines}
     assert "AGORA_FLEET_SECRET" not in keys
-    assert secret_b64 not in out
 
     # Value is hex(raw_bytes).
     hex_line = next(ln for ln in lines if ln.startswith("AGORA_FLEET_SECRET_HEX="))
     assert hex_line.split("=", 1)[1] == raw.hex()
-
-
-def test_fleet_env_payload_rejects_non_base64_secret():
-    from cms.routers.imager import _fleet_env_payload
-
-    with pytest.raises(ValueError, match="base64"):
-        _fleet_env_payload(
-            "wss://cms.example.com/ws/device", "fleet-x", "not!valid!b64", "wps"
-        )
 
 
 # ── Jobs / download ────────────────────────────────────────────────

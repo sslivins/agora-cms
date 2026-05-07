@@ -216,12 +216,12 @@ class ProvisionedImage(Base):
     # Plaintext ``agora-fleet.env`` body — UTF-8 bytes of
     # ``AGORA_CMS_URL=...\nAGORA_FLEET_ID=...\nAGORA_FLEET_SECRET=...\n``.
     # Plaintext is intentional: the same secret already lives in clear
-    # in the operator's CMS env config (``fleet_register_secrets``) and
-    # ends up plaintext on the SD card itself, so encrypting the brief
-    # DB copy adds minimal defense-in-depth without a separate key
-    # store.  Worker clears this column to NULL on terminal success so
-    # the secret does not linger longer than necessary.  Never log
-    # this column, never serialize it through the API.
+    # in the operator's ``fleets`` table and ends up plaintext on the
+    # SD card itself, so encrypting the brief DB copy adds minimal
+    # defense-in-depth without a separate key store.  Worker clears
+    # this column to NULL on terminal success so the secret does not
+    # linger longer than necessary.  Never log this column, never
+    # serialize it through the API.
     fleet_env_payload: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True,
     )
