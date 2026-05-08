@@ -475,6 +475,10 @@
         try {
             var rows = await jsonFetch('/api/imager/provisioned-images');
             if (myReq !== loadBuiltImagesReq) return;  // superseded by a newer call
+            // Don't trample an open kebab popover -- the user is mid-
+            // interaction with it.  Sig isn't updated, so the next
+            // auto-refresh tick re-evaluates once the popover is closed.
+            if (tbody.querySelector('.kebab-menu:popover-open')) return;
             var list = rows || [];
             var sig = list.map(function(r) {
                 return [r.id, r.status, r.expires_at, r.output_size, r.download_job_id,
@@ -494,10 +498,21 @@
                     ? '<a class="btn btn-primary btn-sm" href="/api/imager/download/' +
                       encodeURIComponent(r.download_job_id) + '" download>Download</a>'
                     : '<span class="text-muted" style="font-size:0.8rem;">unavailable</span>';
-                var delBtn = canManage
-                    ? '<button class="btn btn-secondary btn-sm" data-built-delete="' +
-                      escHtml(r.id) + '" data-built-name="' + escHtml(r.output_name) + '">Delete</button>'
-                    : '';
+                // Kebab (Delete only for now) -- matches the shared
+                // pattern from _macros.html / .btn-kebab CSS / the
+                // global popover positioning in app.js.
+                var actions = dlBtn;
+                if (canManage) {
+                    var kid = 'kebab-built-' + Math.floor(Math.random() * 1e12);
+                    actions += ' ' +
+                        '<button type="button" class="btn-kebab" popovertarget="' + kid +
+                            '" aria-haspopup="menu" aria-label="Actions">\u22ee</button>' +
+                        '<div id="' + kid + '" popover class="kebab-menu" role="menu">' +
+                            '<button type="button" role="menuitem" class="kebab-item-danger" ' +
+                                'data-built-delete="' + escHtml(r.id) +
+                                '" data-built-name="' + escHtml(r.output_name) + '">Delete</button>' +
+                        '</div>';
+                }
                 var base = (r.base_variant || r.base_version)
                     ? escHtml((r.base_variant || '?') + ' / ' + (r.base_version || '?'))
                     : '<span class="text-muted">deleted</span>';
@@ -528,7 +543,7 @@
                     '<td>' + statusCell + '</td>' +
                     '<td>' + fmtBytes(r.output_size) + '</td>' +
                     '<td>' + fmtDate(r.built_at || r.created_at) + '</td>' +
-                    '<td style="text-align:right;">' + dlBtn + ' ' + delBtn + '</td>' +
+                    '<td style="text-align:right;">' + actions + '</td>' +
                     '</tr>';
             }).join('');
             // Wire up delete buttons (admin only).
@@ -900,6 +915,14 @@
         try {
             var bases = await jsonFetch('/api/imager/base-images');
             if (myReq !== loadBaseImagesReq) return;  // superseded
+            // Don't trample an open kebab popover -- the user is mid-
+            // interaction with it.  Reschedule a poll so progress on
+            // any IMPORTING row keeps moving once the popover closes.
+            if (tbody.querySelector('.kebab-menu:popover-open')) {
+                var anyImportingNow = (bases || []).some(function(b) { return statusUp(b.status) === 'IMPORTING'; });
+                if (anyImportingNow) scheduleBasesPoll();
+                return;
+            }
             if (!bases || bases.length === 0) {
                 basesLastStatus = {};
                 tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No base images cached. Click "Import from catalog…" to add one.</td></tr>';
@@ -909,8 +932,20 @@
             tbody.innerHTML = bases.map(function(b) {
                 var sha = b.sha256 ? b.sha256.slice(0, 12) + '…' : '—';
                 var shaTitle = b.sha256 ? ' title="' + escHtml(b.sha256) + '"' : '';
-                var del = statusUp(b.status) === 'IMPORTING' ? '' :
-                    '<button type="button" class="btn btn-sm btn-danger-subtle" data-delete-base="' + escHtml(b.id) + '">Delete</button>';
+                // No actions while IMPORTING: matches the prior
+                // hide-Delete behaviour and keeps an empty kebab from
+                // appearing.
+                var del = '';
+                if (statusUp(b.status) !== 'IMPORTING') {
+                    var kid = 'kebab-base-' + Math.floor(Math.random() * 1e12);
+                    del =
+                        '<button type="button" class="btn-kebab" popovertarget="' + kid +
+                            '" aria-haspopup="menu" aria-label="Actions">\u22ee</button>' +
+                        '<div id="' + kid + '" popover class="kebab-menu" role="menu">' +
+                            '<button type="button" role="menuitem" class="kebab-item-danger" ' +
+                                'data-delete-base="' + escHtml(b.id) + '">Delete</button>' +
+                        '</div>';
+                }
                 var statusCell;
                 if (statusUp(b.status) === 'IMPORTING') {
                     statusCell = progressBadgeHtml('IMPORTING', b.progress_stage, b.progress_pct);
