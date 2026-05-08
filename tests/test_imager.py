@@ -310,6 +310,96 @@ def test_build_provisioned_end_to_end(tmp_path: Path):
 
 
 @needs_imager_tools
+def test_build_provisioned_emits_progress(tmp_path: Path):
+    """Watcher threads emit monotonic, in-bounds progress for both xz stages.
+
+    Pins the wire contract that ``worker.imager_handlers`` and the
+    ``imager.html`` UI rely on:
+
+    * Both ``decompressing`` and ``compressing`` stages fire at least
+      once -- the imager-progress revamp explicitly exists to
+      eliminate the multi-minute black-hole at 35%.
+    * Pct values are non-decreasing within each stage and never spill
+      past their stage's end constant before the next stage starts.
+    """
+    base_img = _make_partitioned_fat_image(tmp_path / "agora-base-v1.img")
+    subprocess.run(
+        ["xz", "-z", "-1", "--keep", str(base_img)],
+        check=True,
+        capture_output=True,
+    )
+    base_xz = tmp_path / "agora-base-v1.img.xz"
+    assert base_xz.exists()
+
+    events: list[tuple[str, int]] = []
+
+    def cb(stage: str, pct: int) -> None:
+        events.append((stage, pct))
+
+    out = build_provisioned(
+        base_xz,
+        "AGORA_FLEET_ID=p\nAGORA_FLEET_SECRET=q\n",
+        tmp_path / "scratch",
+        progress_cb=cb,
+    )
+    assert out.is_file()
+
+    stages_seen = {stage for stage, _ in events}
+    assert "decompressing" in stages_seen
+    assert "compressing" in stages_seen
+
+    decompress_pcts = [p for s, p in events if s == "decompressing"]
+    compress_pcts = [p for s, p in events if s == "compressing"]
+
+    # Watcher floor + final tick exist for each stage.
+    assert decompress_pcts, "expected at least one decompressing tick"
+    assert compress_pcts, "expected at least one compressing tick"
+
+    # Monotonic non-decreasing within each stage.
+    assert decompress_pcts == sorted(decompress_pcts)
+    assert compress_pcts == sorted(compress_pcts)
+
+    # In-bounds: decompress stays within 35..55, compress within 58..82
+    # (matches the constants in ``cms/services/imager.py``).
+    assert all(35 <= p <= 55 for p in decompress_pcts)
+    assert all(58 <= p <= 82 for p in compress_pcts)
+
+    # Compress stage starts after decompress finishes (callback ordering).
+    decompress_idx = max(i for i, (s, _) in enumerate(events) if s == "decompressing")
+    compress_idx = min(i for i, (s, _) in enumerate(events) if s == "compressing")
+    assert decompress_idx < compress_idx
+
+
+@needs_imager_tools
+def test_build_provisioned_swallows_progress_callback_errors(tmp_path: Path):
+    """A throwing progress callback never propagates into the build path.
+
+    Progress is observability, not correctness -- a bad callback (e.g.
+    a transient DB failure inside ``_set_progress``) must not crash
+    the multi-minute imager pipeline and leave a half-built file.
+    """
+    base_img = _make_partitioned_fat_image(tmp_path / "agora-base-v1.img")
+    subprocess.run(
+        ["xz", "-z", "-1", "--keep", str(base_img)],
+        check=True,
+        capture_output=True,
+    )
+    base_xz = tmp_path / "agora-base-v1.img.xz"
+
+    def boom(stage: str, pct: int) -> None:
+        raise RuntimeError("simulated DB failure")
+
+    out = build_provisioned(
+        base_xz,
+        "AGORA_FLEET_ID=p\nAGORA_FLEET_SECRET=q\n",
+        tmp_path / "scratch",
+        progress_cb=boom,
+    )
+    assert out.is_file()
+    assert out.stat().st_size > 0
+
+
+@needs_imager_tools
 def test_build_provisioned_missing_base_raises(tmp_path: Path):
     with pytest.raises(ImagerError, match="base image not found"):
         build_provisioned(

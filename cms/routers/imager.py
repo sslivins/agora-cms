@@ -127,6 +127,11 @@ class BaseImageOut(BaseModel):
     is_default: bool
     imported_at: datetime | None
     created_at: datetime
+    # In-flight progress, populated for ``IMPORTING`` rows from the
+    # latest in-flight :class:`Job` of type ``IMAGE_IMPORT``.  Both
+    # default to "no progress yet" so READY / FAILED rows are unaffected.
+    progress_stage: str = ""
+    progress_pct: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -170,6 +175,11 @@ class ProvisionedImageOut(BaseModel):
     expires_at: datetime | None
     wifi_ssid: str | None = None
     wifi_psk: str | None = None
+    # In-flight progress, populated for ``PROVISIONING`` rows from the
+    # latest in-flight :class:`Job` of type ``IMAGE_PROVISION``.  Both
+    # default to "no progress yet" so READY / FAILED rows are unaffected.
+    progress_stage: str = ""
+    progress_pct: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -265,6 +275,44 @@ def _allowlist(settings: Settings) -> set[str]:
 
 def _base_image_to_out(bi: BaseImage) -> BaseImageOut:
     return BaseImageOut.model_validate(bi)
+
+
+_IN_FLIGHT_JOB_STATUSES = (JobStatus.PENDING, JobStatus.PROCESSING)
+
+
+async def _latest_in_flight_progress(
+    db: AsyncSession,
+    job_type: JobType,
+    target_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[str, int | None]]:
+    """Return ``{target_id: (progress_stage, progress_pct)}`` for in-flight jobs.
+
+    One DB round-trip regardless of how many target IDs are passed.
+    For each target, the *latest-by-created_at* in-flight job (PENDING
+    or PROCESSING) wins -- a finished previous attempt does not bleed
+    its stage into the surface.  Targets without an in-flight job are
+    omitted from the result entirely.
+    """
+    if not target_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Job.target_id, Job.progress_stage, Job.progress_pct, Job.created_at)
+            .where(
+                Job.type == job_type,
+                Job.status.in_(_IN_FLIGHT_JOB_STATUSES),
+                Job.target_id.in_(target_ids),
+            )
+            .order_by(Job.target_id, Job.created_at.desc())
+        )
+    ).all()
+    out: dict[uuid.UUID, tuple[str, int | None]] = {}
+    for target_id, stage, pct, _created_at in rows:
+        # Sorted target_id ASC, created_at DESC -- first row per target
+        # is the latest in-flight job.
+        if target_id not in out:
+            out[target_id] = (stage or "", pct)
+    return out
 
 
 def _resolve_catalog_entry(
@@ -586,7 +634,22 @@ async def list_base_images(
     result = await db.execute(
         select(BaseImage).order_by(BaseImage.created_at.desc())
     )
-    return [_base_image_to_out(bi) for bi in result.scalars().all()]
+    bases = list(result.scalars().all())
+    importing_ids = [
+        bi.id for bi in bases if bi.status == BaseImageStatus.IMPORTING.value
+    ]
+    progress = await _latest_in_flight_progress(
+        db, JobType.IMAGE_IMPORT, importing_ids
+    )
+    out: list[BaseImageOut] = []
+    for bi in bases:
+        item = _base_image_to_out(bi)
+        info = progress.get(bi.id)
+        if info is not None:
+            item.progress_stage = info[0]
+            item.progress_pct = info[1]
+        out.append(item)
+    return out
 
 
 @router.post("/base-images", response_model=BaseImageOut)
@@ -924,24 +987,36 @@ async def list_provisioned_images(
             .limit(200)
         )
     ).scalars().all()
-    return [
-        ProvisionedImageOut(
-            id=pi.id,
-            output_name=pi.output_name,
-            fleet_id=pi.fleet_id,
-            base_image_id=pi.base_image_id,
-            base_variant=pi.base_variant,
-            base_version=pi.base_version,
-            status=pi.status,
-            blob_path=pi.blob_path,
-            output_size=pi.output_size,
-            download_job_id=pi.provisioning_job_id,
-            created_at=pi.created_at,
-            built_at=pi.built_at,
-            expires_at=pi.expires_at,
-        )
-        for pi in rows
+    rows = list(rows)
+    provisioning_ids = [
+        pi.id for pi in rows if pi.status == ProvisionedImageStatus.PROVISIONING.value
     ]
+    progress = await _latest_in_flight_progress(
+        db, JobType.IMAGE_PROVISION, provisioning_ids
+    )
+    out: list[ProvisionedImageOut] = []
+    for pi in rows:
+        info = progress.get(pi.id)
+        out.append(
+            ProvisionedImageOut(
+                id=pi.id,
+                output_name=pi.output_name,
+                fleet_id=pi.fleet_id,
+                base_image_id=pi.base_image_id,
+                base_variant=pi.base_variant,
+                base_version=pi.base_version,
+                status=pi.status,
+                blob_path=pi.blob_path,
+                output_size=pi.output_size,
+                download_job_id=pi.provisioning_job_id,
+                created_at=pi.created_at,
+                built_at=pi.built_at,
+                expires_at=pi.expires_at,
+                progress_stage=(info[0] if info is not None else ""),
+                progress_pct=(info[1] if info is not None else None),
+            )
+        )
+    return out
 
 
 @router.delete("/provisioned-images/{provisioned_image_id}", status_code=204)
