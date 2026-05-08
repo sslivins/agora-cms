@@ -882,6 +882,24 @@ async def provision_image_by_id(
             session_factory, provisioned_id,
             JobType.IMAGE_PROVISION, "building", 35,
         )
+
+        # Bridge the synchronous progress callback (called from a
+        # daemon thread inside build_provisioned) to the asyncio
+        # progress writer.  ``run_coroutine_threadsafe`` is the
+        # canonical way to schedule a coroutine on a foreign loop --
+        # we don't await the future because progress is fire-and-
+        # forget; ``_set_progress`` swallows DB errors itself.
+        loop = asyncio.get_running_loop()
+
+        def progress_cb(stage: str, pct: int) -> None:
+            asyncio.run_coroutine_threadsafe(
+                _set_progress(
+                    session_factory, provisioned_id,
+                    JobType.IMAGE_PROVISION, stage, pct,
+                ),
+                loop,
+            )
+
         try:
             output_path: Path = await asyncio.to_thread(
                 build_provisioned,
@@ -889,6 +907,7 @@ async def provision_image_by_id(
                 fleet_env_text,
                 scratch,
                 output_name=output_name,
+                progress_cb=progress_cb,
             )
         except ImagerError as e:
             # ImagerError covers (a) input validation (output_name,

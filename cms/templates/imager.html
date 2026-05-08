@@ -184,8 +184,6 @@
         per CMS instance and reused for every build.
     </p>
 
-    <div id="imagerImportProgress" style="display:none; margin:0.75rem 0;"></div>
-
     <div class="table-wrap">
         <table id="imagerBaseTable" style="width:100%;">
             <thead>
@@ -300,6 +298,25 @@
         if (s === 'CANCELLED') return 'badge badge-cancelled';
         if (s === 'PROCESSING' || s === 'IMPORTING') return 'badge badge-processing';
         return 'badge badge-pending';
+    }
+
+    // Render a status cell for an in-flight imager row.  When ``pct``
+    // is null, fall back to the plain processing badge (no motion);
+    // otherwise emit the same gradient-fill ``badge-progress`` markup
+    // that assets.html / _macros.html use for Transcoding / Capturing,
+    // so all in-flight UIs share one motion language.
+    function progressBadgeHtml(label, stage, pct) {
+        var safeLabel = escHtml(label);
+        if (pct == null) {
+            var stageTip = stage ? ' title="' + escHtml(stage.replace(/_/g, ' ')) + '"' : '';
+            return '<span class="badge badge-processing"' + stageTip + '>' + safeLabel + '</span>';
+        }
+        var clamped = Math.max(0, Math.min(100, Math.round(pct)));
+        var tip = stage
+            ? ' title="' + escHtml(stage.replace(/_/g, ' ') + ' ' + clamped + '%') + '"'
+            : ' title="' + clamped + '%"';
+        return '<span class="badge badge-progress" style="--pct: ' + clamped + '%"' + tip + '>' +
+            safeLabel + ' ' + clamped + '%</span>';
     }
 
     // ── Build section ─────────────────────────────────────────
@@ -430,6 +447,12 @@
 
     var BUILT_AUTO_REFRESH_MS = 15000;
     var lastBuiltSig = '';
+    // Monotonic request token: each call to ``loadBuiltImages`` bumps
+    // this; on resolve, if its token is no longer current, the result
+    // is dropped.  Prevents a slow auto-refresh GET from overwriting
+    // the post-delete render with stale data (which made deletes
+    // appear to "not stick" until the user refreshed manually).
+    var loadBuiltImagesReq = 0;
     var builtAutoRefreshTimer = null;
 
     function clearBuiltAutoRefreshTimer() {
@@ -448,12 +471,15 @@
     async function loadBuiltImages() {
         if (!builtSection) return;
         var tbody = $('#imagerBuiltTbody', builtSection);
+        var myReq = ++loadBuiltImagesReq;
         try {
             var rows = await jsonFetch('/api/imager/provisioned-images');
+            if (myReq !== loadBuiltImagesReq) return;  // superseded by a newer call
             var list = rows || [];
             var sig = list.map(function(r) {
                 return [r.id, r.status, r.expires_at, r.output_size, r.download_job_id,
-                        r.wifi_ssid || '', r.wifi_psk || ''].join('|');
+                        r.wifi_ssid || '', r.wifi_psk || '',
+                        r.progress_stage || '', r.progress_pct == null ? '' : r.progress_pct].join('|');
             }).join(',');
             if (sig === lastBuiltSig) return;
             lastBuiltSig = sig;
@@ -488,12 +514,18 @@
                 } else {
                     wifiCell = '<span class="text-muted">—</span>';
                 }
-                return '<tr>' +
+                var statusCell;
+                if (status === 'PROVISIONING') {
+                    statusCell = progressBadgeHtml('PROVISIONING', r.progress_stage, r.progress_pct);
+                } else {
+                    statusCell = '<span class="' + statusBadgeClass(r.status) + '">' + escHtml(r.status) + '</span>';
+                }
+                return '<tr data-built-row="' + escHtml(r.id) + '">' +
                     '<td><code>' + escHtml(r.output_name) + '</code></td>' +
                     '<td>' + escHtml(r.fleet_id || '—') + '</td>' +
                     '<td>' + base + '</td>' +
                     '<td>' + wifiCell + '</td>' +
-                    '<td><span class="' + statusBadgeClass(r.status) + '">' + escHtml(r.status) + '</span></td>' +
+                    '<td>' + statusCell + '</td>' +
                     '<td>' + fmtBytes(r.output_size) + '</td>' +
                     '<td>' + fmtDate(r.built_at || r.created_at) + '</td>' +
                     '<td style="text-align:right;">' + dlBtn + ' ' + delBtn + '</td>' +
@@ -506,6 +538,7 @@
                 });
             });
         } catch (e) {
+            if (myReq !== loadBuiltImagesReq) return;
             lastBuiltSig = '';
             tbody.innerHTML = '<tr><td colspan="8" class="empty-state text-muted">' +
                 escHtml('Failed to load built images: ' + (e.message || e)) + '</td></tr>';
@@ -519,6 +552,21 @@
                 method: 'DELETE',
             });
             toast('Deleted ' + name, 'success');
+            // Optimistic DOM removal: the API confirmed the delete
+            // (204), so drop the row immediately.  This keeps the UI
+            // correct even if the post-delete refresh GET later fails
+            // or is preempted; the request-token guard in
+            // ``loadBuiltImages`` handles the parallel-GET race that
+            // was causing deletes to occasionally appear to "not
+            // stick".
+            if (builtSection) {
+                var tr = builtSection.querySelector('tr[data-built-row="' + CSS.escape(id) + '"]');
+                if (tr) tr.remove();
+                var tbody = $('#imagerBuiltTbody', builtSection);
+                if (tbody && tbody.children.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="empty-state text-muted">No built images yet.</td></tr>';
+                }
+            }
             lastBuiltSig = '';
             loadBuiltImages();
         } catch (e) {
@@ -534,28 +582,55 @@
         var prog = $('#imagerJobProgress', buildSection);
         var errBox = $('#imagerJobError', buildSection);
         card.style.display = '';
-        badge.className = statusBadgeClass(job.status);
-        badge.textContent = job.status;
+        var jobS = statusUp(job.status);
+        var inFlight = (jobS === 'PENDING' || jobS === 'PROCESSING');
+        // Replace the badge element each render so we can swap to/from
+        // ``badge-progress`` (a gradient fill) cleanly.  We re-use the
+        // original element id so the rest of the wiring still works.
+        var newBadge;
+        if (inFlight && job.progress_pct != null) {
+            // Job card label is the upper-cased status so the user
+            // doesn't lose the "PROCESSING" word; the progress fills
+            // the badge with a 0..100 gradient.
+            var pct = Math.max(0, Math.min(100, Math.round(job.progress_pct)));
+            var stage = (job.progress_stage || '').replace(/_/g, ' ');
+            var tip = stage ? (stage + ' ' + pct + '%') : (pct + '%');
+            newBadge = document.createElement('span');
+            newBadge.id = 'imagerJobStatusBadge';
+            newBadge.className = 'badge badge-progress';
+            newBadge.style.setProperty('--pct', pct + '%');
+            newBadge.title = tip;
+            newBadge.textContent = job.status + ' ' + pct + '%';
+        } else {
+            newBadge = document.createElement('span');
+            newBadge.id = 'imagerJobStatusBadge';
+            newBadge.className = statusBadgeClass(job.status);
+            newBadge.textContent = job.status;
+        }
+        badge.parentNode.replaceChild(newBadge, badge);
         var metaParts = ['Job ' + job.job_id.slice(0, 8)];
         if (job.output_name) metaParts.push(escHtml(job.output_name));
         if (job.created_at) metaParts.push('started ' + fmtDate(job.created_at));
         meta.innerHTML = metaParts.join(' \u00b7 ');
         var progLine = formatJobProgress(job);
-        if (progLine) {
+        // The badge already shows pct + stage when we have a number, so
+        // hide the redundant sub-line in that case.  Fall back to the
+        // text line only when pct is unknown (e.g. before the worker
+        // emits its first tick).
+        if (progLine && job.progress_pct == null) {
             prog.style.display = '';
             prog.textContent = progLine;
         } else {
             prog.style.display = 'none';
             prog.textContent = '';
         }
-        if (statusUp(job.status) === 'DONE') {
+        if (jobS === 'DONE') {
             errBox.style.display = 'none';
         }
-        var js = statusUp(job.status);
-        if (js === 'FAILED' || js === 'CANCELLED') {
+        if (jobS === 'FAILED' || jobS === 'CANCELLED') {
             errBox.style.display = '';
             errBox.textContent = job.error_message || 'Build did not complete.';
-        } else if (js !== 'DONE') {
+        } else if (jobS !== 'DONE') {
             errBox.style.display = 'none';
         }
     }
@@ -772,71 +847,19 @@
     }
 
     // ── Manage section: base image list ───────────────────────
-    var importJobsCache = {}; // job_id -> { variant, version }
-
-    function renderImportProgress() {
-        if (!manageSection) return;
-        var box = $('#imagerImportProgress', manageSection);
-        var ids = Object.keys(importJobsCache);
-        if (ids.length === 0) { box.style.display = 'none'; box.innerHTML = ''; return; }
-        box.style.display = '';
-        box.innerHTML = ids.map(function(id) {
-            var info = importJobsCache[id];
-            var sub = '';
-            var stage = (info.progress_stage || '').replace(/_/g, ' ');
-            var pct = (info.progress_pct == null) ? null : Math.max(0, Math.min(100, info.progress_pct));
-            if (stage && pct != null) sub = stage + ' \u00b7 ' + pct + '%';
-            else if (stage) sub = stage;
-            else if (pct != null) sub = pct + '%';
-            return '<div class="card-highlight" style="padding:0.5rem 0.75rem; margin-bottom:0.25rem;">' +
-                '<span class="badge badge-processing">IMPORTING</span> ' +
-                escHtml(info.variant) + ' / ' + escHtml(info.version) +
-                ' <span class="text-muted" style="font-size:0.8rem;">(job ' + id.slice(0, 8) + ')</span>' +
-                (sub ? '<div class="text-muted" style="font-size:0.8rem; margin-top:0.2rem;">' + escHtml(sub) + '</div>' : '') +
-                '</div>';
-        }).join('');
-    }
-
-    function pollImportJob(jobId, info) {
-        importJobsCache[jobId] = info;
-        renderImportProgress();
-        var t = setInterval(async function() {
-            if (document.hidden) return;
-            try {
-                var job = await jsonFetch('/api/imager/jobs/' + encodeURIComponent(jobId));
-                // Refresh progress for the in-flight card.
-                var cur = importJobsCache[jobId];
-                if (cur) {
-                    cur.progress_stage = job.progress_stage || '';
-                    cur.progress_pct = job.progress_pct;
-                    renderImportProgress();
-                }
-                if (isTerminal(job.status)) {
-                    clearInterval(t);
-                    delete importJobsCache[jobId];
-                    renderImportProgress();
-                    loadBaseImages();
-                    if (buildSection) loadFleetsAndBases();
-                    if (statusUp(job.status) === 'DONE') {
-                        toast('Imported ' + info.variant + ' / ' + info.version, 'success');
-                    } else {
-                        toast('Import failed: ' + (job.error_message || job.status), 'error');
-                    }
-                }
-            } catch (e) {
-                if (e.status === 404) {
-                    clearInterval(t);
-                    delete importJobsCache[jobId];
-                    renderImportProgress();
-                }
-            }
-        }, 3000);
-    }
+    // (Per-import "card" tracker was retired in the imager-progress
+    // revamp; the IMPORTING row in the base-image table now carries
+    // its own gradient-fill badge fed by ``progress_pct`` /
+    // ``progress_stage`` straight off the API row.)
 
     // Auto-refresh state for in-flight imports.
     var basesPollTimer = null;
     var basesLastStatus = {};
     var BASES_POLL_MS = 4000;
+    // Monotonic request token — see ``loadBuiltImagesReq`` for the
+    // full rationale.  Prevents an in-flight auto-refresh GET from
+    // overwriting the table state right after a delete.
+    var loadBaseImagesReq = 0;
 
     function clearBasesPollTimer() {
         if (basesPollTimer) { clearTimeout(basesPollTimer); basesPollTimer = null; }
@@ -873,8 +896,10 @@
         if (!manageSection) return;
         clearBasesPollTimer();
         var tbody = $('#imagerBaseTbody', manageSection);
+        var myReq = ++loadBaseImagesReq;
         try {
             var bases = await jsonFetch('/api/imager/base-images');
+            if (myReq !== loadBaseImagesReq) return;  // superseded
             if (!bases || bases.length === 0) {
                 basesLastStatus = {};
                 tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No base images cached. Click "Import from catalog…" to add one.</td></tr>';
@@ -886,10 +911,16 @@
                 var shaTitle = b.sha256 ? ' title="' + escHtml(b.sha256) + '"' : '';
                 var del = statusUp(b.status) === 'IMPORTING' ? '' :
                     '<button type="button" class="btn btn-sm btn-danger-subtle" data-delete-base="' + escHtml(b.id) + '">Delete</button>';
-                return '<tr>' +
+                var statusCell;
+                if (statusUp(b.status) === 'IMPORTING') {
+                    statusCell = progressBadgeHtml('IMPORTING', b.progress_stage, b.progress_pct);
+                } else {
+                    statusCell = '<span class="' + statusBadgeClass(b.status) + '">' + escHtml(b.status) + '</span>';
+                }
+                return '<tr data-base-row="' + escHtml(b.id) + '">' +
                     '<td>' + escHtml(b.variant) + '</td>' +
                     '<td>' + escHtml(b.version) + (b.is_default ? ' <span class="badge badge-builtin">default</span>' : '') + '</td>' +
-                    '<td><span class="' + statusBadgeClass(b.status) + '">' + escHtml(b.status) + '</span></td>' +
+                    '<td>' + statusCell + '</td>' +
                     '<td>' + fmtBytes(b.size_bytes) + '</td>' +
                     '<td title="' + escHtml(b.imported_at || '') + '">' + fmtDate(b.imported_at) + '</td>' +
                     '<td><code style="font-size:0.75rem;"' + shaTitle + '>' + escHtml(sha) + '</code></td>' +
@@ -902,6 +933,7 @@
             var anyImporting = bases.some(function(b) { return statusUp(b.status) === 'IMPORTING'; });
             if (anyImporting) scheduleBasesPoll();
         } catch (e) {
+            if (myReq !== loadBaseImagesReq) return;
             tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">Failed to load: ' + escHtml(e.message || e) + '</td></tr>';
             // Retry on transient failures so the UI recovers without a manual refresh.
             scheduleBasesPoll();
@@ -913,6 +945,19 @@
         try {
             await jsonFetch('/api/imager/base-images/' + encodeURIComponent(id), { method: 'DELETE' });
             toast('Base image deleted', 'success');
+            // Optimistic DOM removal — see deleteBuiltImage for the
+            // full rationale.  The 204 response means the row is gone
+            // server-side; drop it from the table immediately so the
+            // user sees the delete take effect even if the post-
+            // delete refresh loses the race.
+            if (manageSection) {
+                var tr = manageSection.querySelector('tr[data-base-row="' + CSS.escape(id) + '"]');
+                if (tr) tr.remove();
+                var tbody = $('#imagerBaseTbody', manageSection);
+                if (tbody && tbody.children.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No base images cached. Click "Import from catalog…" to add one.</td></tr>';
+                }
+            }
             loadBaseImages();
             if (buildSection) loadFleetsAndBases();
         } catch (e) {

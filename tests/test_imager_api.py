@@ -389,6 +389,55 @@ async def test_list_base_images(client, db_session, imager_settings):
     # auto-refresh, transition toasts, dropdown filters, etc.
     statuses = sorted(b["status"] for b in data)
     assert statuses == ["importing", "ready"]
+    # Progress fields default to empty stage / null pct when no
+    # in-flight job is present.
+    for row in data:
+        assert row["progress_stage"] == ""
+        assert row["progress_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_base_images_surfaces_in_flight_progress(
+    client, db_session, imager_settings,
+):
+    """IMPORTING rows expose the latest in-flight import job's progress.
+
+    The ``imager.html`` table renders a ``badge-progress`` cell when
+    ``progress_pct`` is non-null; this test pins the wire contract so
+    UI-side renderers can rely on the field always being there for
+    in-flight rows.
+    """
+    importing = BaseImage(variant="pi5", version="v9", status=BaseImageStatus.IMPORTING.value)
+    ready = BaseImage(variant="pi4", version="v9", status=BaseImageStatus.READY.value)
+    db_session.add_all([importing, ready])
+    await db_session.flush()
+    # In-flight job for the importing row.
+    db_session.add(Job(
+        type=JobType.IMAGE_IMPORT,
+        target_id=importing.id,
+        status=JobStatus.PROCESSING,
+        progress_stage="downloading",
+        progress_pct=42,
+    ))
+    # Old, terminal job for the same row -- must not be picked up.
+    db_session.add(Job(
+        type=JobType.IMAGE_IMPORT,
+        target_id=importing.id,
+        status=JobStatus.FAILED,
+        progress_stage="aborted",
+        progress_pct=99,
+    ))
+    await db_session.commit()
+
+    resp = await client.get("/api/imager/base-images")
+    assert resp.status_code == 200
+    rows = {r["variant"]: r for r in resp.json()}
+    # In-flight row exposes the live job's progress.
+    assert rows["pi5"]["progress_stage"] == "downloading"
+    assert rows["pi5"]["progress_pct"] == 42
+    # Terminal/READY rows do not surface stale progress.
+    assert rows["pi4"]["progress_stage"] == ""
+    assert rows["pi4"]["progress_pct"] is None
 
 
 # ── Base-image delete ──────────────────────────────────────────────
@@ -1117,6 +1166,68 @@ async def test_list_provisioned_images_returns_rows_newest_first(
     assert row["fleet_id"] == "fleet-test"
     assert row["output_size"] == 23456
     assert row["status"] == ProvisionedImageStatus.READY.value
+
+
+@pytest.mark.asyncio
+async def test_list_provisioned_images_surfaces_in_flight_progress(
+    client, db_session, imager_settings,
+):
+    """PROVISIONING rows expose the latest in-flight provision job's progress.
+
+    Mirrors the base-image test: drives the ``badge-progress`` render
+    on the built-images panel.  Pins both the field shape and the
+    "ignore terminal jobs" behavior of ``_latest_in_flight_progress``.
+    """
+    bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.flush()
+
+    building = ProvisionedImage(
+        base_image_id=bi.id,
+        base_variant="pi5",
+        base_version="v1",
+        output_name="building.img.xz",
+        fleet_id="fleet-test",
+        status=ProvisionedImageStatus.PROVISIONING.value,
+    )
+    ready = ProvisionedImage(
+        base_image_id=bi.id,
+        base_variant="pi5",
+        base_version="v1",
+        output_name="ready.img.xz",
+        fleet_id="fleet-test",
+        status=ProvisionedImageStatus.READY.value,
+        blob_path="provisioned/ready.img.xz",
+        output_size=23456,
+    )
+    db_session.add_all([building, ready])
+    await db_session.flush()
+    # Live PROCESSING job for the in-flight row.
+    db_session.add(Job(
+        type=JobType.IMAGE_PROVISION,
+        target_id=building.id,
+        status=JobStatus.PROCESSING,
+        progress_stage="compressing",
+        progress_pct=72,
+    ))
+    # Older terminal job for the same target -- must not be picked.
+    db_session.add(Job(
+        type=JobType.IMAGE_PROVISION,
+        target_id=building.id,
+        status=JobStatus.DONE,
+        progress_stage="archived",
+        progress_pct=100,
+    ))
+    await db_session.commit()
+
+    resp = await client.get("/api/imager/provisioned-images")
+    assert resp.status_code == 200
+    rows = {r["output_name"]: r for r in resp.json()}
+    # In-flight row exposes live progress; terminal row does not.
+    assert rows["building.img.xz"]["progress_stage"] == "compressing"
+    assert rows["building.img.xz"]["progress_pct"] == 72
+    assert rows["ready.img.xz"]["progress_stage"] == ""
+    assert rows["ready.img.xz"]["progress_pct"] is None
 
 
 @pytest.mark.asyncio

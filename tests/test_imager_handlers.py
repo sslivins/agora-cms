@@ -486,11 +486,17 @@ async def test_provision_happy_path(
     await db_session.commit()
     await db_session.refresh(pi)
 
-    def fake_build_provisioned(base_xz_path, fleet_env_text, scratch_dir, output_name):
+    def fake_build_provisioned(base_xz_path, fleet_env_text, scratch_dir, output_name, progress_cb=None):
         # Verify handler passed the right things
         assert Path(base_xz_path).read_bytes() == base_bytes
         assert "AGORA_DEVICE_API_KEY" in fleet_env_text
         assert output_name == "agora-pi5-fleet42.img.xz"
+        # Handler must wire a progress callback so the UI can render
+        # gradient-fill badges during the multi-minute xz pipeline;
+        # ``test_imager.py::test_build_provisioned_emits_progress``
+        # pins the callback's wire contract end-to-end.
+        assert callable(progress_cb)
+        progress_cb("decompressing", 40)  # exercise the bridge
         out = Path(scratch_dir) / output_name
         out.write_bytes(b"final-image-payload")
         return out

@@ -21,11 +21,17 @@ the unit tests that touch them skip via :func:`shutil.which`.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 # Name of the env file dropped onto the boot partition. Matches the
 # path the firmware reads at first boot
@@ -225,6 +231,92 @@ def read_fleet_env(
     return result.stdout.decode("utf-8")
 
 
+def _xz_uncompressed_size(xz_bin: str, xz_path: Path) -> int | None:
+    """Return the uncompressed size of ``xz_path`` in bytes, or ``None``.
+
+    Uses ``xz --robot -l`` whose machine-readable ``totals`` line has
+    the uncompressed-size in the 5th tab-separated field (1-indexed).
+    Returns ``None`` on any failure -- callers fall back to no-progress
+    mode which just shows the stage name without a percentage.
+    """
+    try:
+        result = subprocess.run(
+            [xz_bin, "--robot", "-l", str(xz_path)],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    text = result.stdout.decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        if line.startswith("totals\t"):
+            parts = line.split("\t")
+            if len(parts) >= 5:
+                try:
+                    return int(parts[4])
+                except ValueError:
+                    return None
+    return None
+
+
+_ProgressCb = Callable[[str, int], None]
+
+
+def _start_size_watcher(
+    target_path: Path,
+    expected_size: int,
+    *,
+    base_pct: int,
+    end_pct: int,
+    stage: str,
+    progress_cb: _ProgressCb,
+) -> tuple[threading.Thread, threading.Event]:
+    """Spawn a daemon thread that polls ``target_path`` size at 1 Hz.
+
+    Emits ``progress_cb(stage, pct)`` whenever the projected pct
+    advances by at least 1.  Pct is clamped to ``[base_pct, end_pct - 1]``
+    while the operation is running so we never report 100% before the
+    underlying subprocess actually exits.
+
+    The caller is responsible for setting the returned ``threading.Event``
+    once the subprocess has finished; the thread will exit on the next
+    tick (within 1 s).
+    """
+    stop = threading.Event()
+
+    def _watch() -> None:
+        last_pct = -1
+        # Call once with the floor so the UI flips to the new stage
+        # immediately, before the first second of polling has elapsed.
+        try:
+            progress_cb(stage, base_pct)
+        except Exception:
+            logger.debug("progress_cb floor emit raised", exc_info=True)
+        last_pct = base_pct
+        while not stop.is_set():
+            try:
+                cur = target_path.stat().st_size if target_path.exists() else 0
+            except OSError:
+                cur = 0
+            span = end_pct - base_pct
+            denom = max(1, expected_size)
+            projected = base_pct + int(cur * span / denom)
+            projected = max(base_pct, min(end_pct - 1, projected))
+            if projected != last_pct:
+                try:
+                    progress_cb(stage, projected)
+                except Exception:
+                    logger.debug("progress_cb raised", exc_info=True)
+                last_pct = projected
+            if stop.wait(timeout=1.0):
+                break
+
+    t = threading.Thread(target=_watch, name=f"xz-progress-{stage}", daemon=True)
+    t.start()
+    return t, stop
+
+
 def build_provisioned(
     base_xz_path: Path,
     fleet_env_text: str,
@@ -232,6 +324,7 @@ def build_provisioned(
     *,
     output_name: str | None = None,
     tools: _Tools | None = None,
+    progress_cb: _ProgressCb | None = None,
 ) -> Path:
     """Decompress, inject, recompress.
 
@@ -242,8 +335,20 @@ def build_provisioned(
     function returns or raises, so a crashed build does not leave
     unprotected secrets on disk.
 
-    ``output_name`` must be a plain ``foo.img.xz`` basename — no path
+    ``output_name`` must be a plain ``foo.img.xz`` basename -- no path
     separators, no ``..``. Path traversal is rejected.
+
+    ``progress_cb`` is an optional ``(stage: str, pct: int) -> None``
+    callback invoked from a background thread roughly once per second
+    during the long-running xz decompress / compress phases.  Stages:
+
+    * ``decompressing`` -- pct ramps 35..54 as the raw ``.img`` grows.
+    * ``injecting``     -- single tick at 56 (mcopy is sub-second).
+    * ``compressing``   -- pct ramps 58..81 as the recompressed
+      ``.img.xz`` grows.
+
+    Exceptions raised by ``progress_cb`` are swallowed -- progress is
+    observability, not correctness.
     """
     if output_name is not None and not _SAFE_OUTPUT_RE.fullmatch(output_name):
         raise ImagerError(
@@ -267,25 +372,73 @@ def build_provisioned(
     final_xz = scratch_dir / (output_name or f"{stem}.provisioned.img.xz")
     produced_xz = work_img.with_suffix(work_img.suffix + ".xz")
 
+    # ----- progress configuration -----
+    # The worker emits 35 ("building") and 85 ("uploading") around our
+    # call site, so the xz stages live inside (35, 85).  Splitting it
+    # 35..55 / 56 / 58..82 leaves a few points before the "uploading"
+    # tick so the UI motion is always monotonic.
+    DECOMPRESS_BASE = 35
+    DECOMPRESS_END = 55
+    INJECT_PCT = 56
+    COMPRESS_BASE = 58
+    COMPRESS_END = 82
+
+    def _emit(stage: str, pct: int) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(stage, pct)
+        except Exception:
+            logger.debug("progress_cb raised", exc_info=True)
+
+    expected_uncompressed = (
+        _xz_uncompressed_size(tools.xz, base_xz_path) if progress_cb else None
+    )
+    expected_recompressed = base_xz_path.stat().st_size if progress_cb else 0
+
     try:
-        # 1. Decompress base.xz → work.img
-        with work_img.open("wb") as out_fh:
-            try:
-                subprocess.run(
+        # 1. Decompress base.xz -> work.img
+        watcher_t: threading.Thread | None = None
+        watcher_stop: threading.Event | None = None
+        if progress_cb is not None and expected_uncompressed:
+            watcher_t, watcher_stop = _start_size_watcher(
+                work_img,
+                expected_uncompressed,
+                base_pct=DECOMPRESS_BASE,
+                end_pct=DECOMPRESS_END,
+                stage="decompressing",
+                progress_cb=_emit,
+            )
+        else:
+            _emit("decompressing", DECOMPRESS_BASE)
+
+        try:
+            with work_img.open("wb") as out_fh:
+                proc = subprocess.Popen(
                     [tools.xz, "-d", "-c", "--threads=0", str(base_xz_path)],
                     stdout=out_fh,
                     stderr=subprocess.PIPE,
-                    check=True,
-                    timeout=1200,
                 )
-            except subprocess.CalledProcessError as exc:
+                try:
+                    _stdout, stderr = proc.communicate(timeout=1200)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                    raise ImagerError("xz decompress timed out")
+            if proc.returncode != 0:
                 raise ImagerError(
-                    f"xz decompress failed: {_stderr_text(exc.stderr)}"
-                ) from exc
-            except subprocess.TimeoutExpired as exc:
-                raise ImagerError("xz decompress timed out") from exc
+                    f"xz decompress failed: {_stderr_text(stderr)}"
+                )
+        finally:
+            if watcher_stop is not None:
+                watcher_stop.set()
+            if watcher_t is not None:
+                watcher_t.join(timeout=2)
 
-        # 2. Inject fleet env
+        _emit("decompressing", DECOMPRESS_END)
+
+        # 2. Inject fleet env (sub-second, no watcher).
+        _emit("injecting", INJECT_PCT)
         inject_fleet_env(work_img, fleet_env_text, tools=tools)
 
         # 3. Recompress at -1 (fastest reasonable) with all CPUs.
@@ -294,23 +447,48 @@ def build_provisioned(
         for stale in {produced_xz, final_xz}:
             if stale.exists():
                 stale.unlink()
-        try:
-            subprocess.run(
-                [tools.xz, "-z", "-1", "--threads=0", "--keep", str(work_img)],
-                check=True,
-                capture_output=True,
-                timeout=1800,
+
+        watcher_t = None
+        watcher_stop = None
+        if progress_cb is not None and expected_recompressed > 0:
+            watcher_t, watcher_stop = _start_size_watcher(
+                produced_xz,
+                expected_recompressed,
+                base_pct=COMPRESS_BASE,
+                end_pct=COMPRESS_END,
+                stage="compressing",
+                progress_cb=_emit,
             )
-        except subprocess.CalledProcessError as exc:
-            raise ImagerError(
-                f"xz compress failed: {_stderr_text(exc.stderr)}"
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ImagerError("xz compress timed out") from exc
+        else:
+            _emit("compressing", COMPRESS_BASE)
+
+        try:
+            proc = subprocess.Popen(
+                [tools.xz, "-z", "-1", "--threads=0", "--keep", str(work_img)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                _stdout, stderr = proc.communicate(timeout=1800)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise ImagerError("xz compress timed out")
+            if proc.returncode != 0:
+                raise ImagerError(
+                    f"xz compress failed: {_stderr_text(stderr)}"
+                )
+        finally:
+            if watcher_stop is not None:
+                watcher_stop.set()
+            if watcher_t is not None:
+                watcher_t.join(timeout=2)
+
+        _emit("compressing", COMPRESS_END)
 
         if produced_xz != final_xz:
             produced_xz.replace(final_xz)
         return final_xz
     finally:
-        # The raw image carries fleet secrets — never leave it behind.
+        # The raw image carries fleet secrets -- never leave it behind.
         work_img.unlink(missing_ok=True)
