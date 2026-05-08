@@ -890,21 +890,49 @@
     }
 
     function notifyBaseTransitions(bases) {
+        // Track whether the *set of READY bases* changed, so we can
+        // refresh the build form's base-image dropdown.  Without this,
+        // a freshly-imported variant doesn't appear in the dropdown
+        // until the user manually refreshes the page.
+        var readySetChanged = false;
         bases.forEach(function(b) {
             var prev = basesLastStatus[b.id];
             var cur = statusUp(b.status);
             if (prev === 'IMPORTING' && cur !== 'IMPORTING') {
                 if (cur === 'READY') {
                     toast('Import complete: ' + b.variant + ' / ' + b.version, 'success');
+                    readySetChanged = true;
                 } else if (cur === 'FAILED') {
                     var msg = b.error_message ? (': ' + b.error_message) : '';
                     toast('Import failed: ' + b.variant + ' / ' + b.version + msg, 'error');
                 }
             }
+            // Brand-new row that's already READY (e.g. imported in
+            // another tab while we were watching, or a sync-import
+            // that landed before our first poll).  Treat as a set
+            // change so the dropdown picks it up.
+            if (prev === undefined && cur === 'READY') {
+                readySetChanged = true;
+            }
+        });
+        // READY rows that disappeared (deleted in another tab).
+        var nextIds = {};
+        bases.forEach(function(b) { nextIds[b.id] = true; });
+        Object.keys(basesLastStatus).forEach(function(id) {
+            if (basesLastStatus[id] === 'READY' && !nextIds[id]) {
+                readySetChanged = true;
+            }
         });
         var next = {};
         bases.forEach(function(b) { next[b.id] = statusUp(b.status); });
         basesLastStatus = next;
+        if (readySetChanged && buildSection) {
+            // Refresh the build form's base-image dropdown so the new
+            // (or removed) variant shows up without a manual page
+            // refresh.  Fire-and-forget -- ``loadFleetsAndBases`` has
+            // its own error handling.
+            loadFleetsAndBases();
+        }
     }
 
     async function loadBaseImages() {
@@ -924,7 +952,10 @@
                 return;
             }
             if (!bases || bases.length === 0) {
-                basesLastStatus = {};
+                // Run the transition detector even on empty -- it'll
+                // notice that any previously-known READY rows are now
+                // gone and refresh the build form's dropdown.
+                notifyBaseTransitions([]);
                 tbody.innerHTML = '<tr><td colspan="7" class="empty-state text-muted">No base images cached. Click "Import from catalog…" to add one.</td></tr>';
                 return;
             }
