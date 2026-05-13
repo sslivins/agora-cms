@@ -171,12 +171,22 @@ jobs:
 
           fetch_prev() {
             local app="$1"
-            # latestReadyRevisionName is the one currently serving traffic in
-            # single-revision mode and the most recent successful deploy in
-            # multi-revision mode. Either way it's the revision we want to
-            # keep traffic on while the new one warms up.
-            az containerapp show --name "$app" --resource-group "$RG" \
-              --query "properties.latestReadyRevisionName" -o tsv 2>/dev/null || true
+            # The previous revision we want to keep traffic on while the new
+            # one warms up. We can't use latestReadyRevisionName because it
+            # can point at a deactivated revision; bicep would then pin
+            # traffic at that name and ACA will eventually GC it, leaving
+            # ingress pointed at a phantom (this bit us on the 1.37.188
+            # deploy — `mcp--v1-37-187` had been deactivated as part of
+            # an earlier recovery, but `latestReadyRevisionName` still
+            # reported it, so bicep set traffic = 187:100 / 189:0 and
+            # 189 was later GC'd because it had 0% traffic).
+            #
+            # Instead, list revisions and pick the most recently created
+            # one that is still active and healthy. Falls back to empty
+            # (bootstrap) when nothing qualifies, e.g. on a fresh app.
+            az containerapp revision list --name "$app" --resource-group "$RG" \
+              --query "reverse(sort_by([?properties.active && properties.healthState=='Healthy'], &properties.createdTime))[0].name" \
+              -o tsv 2>/dev/null || true
           }
 
           PREV_CMS=$(fetch_prev "$CMS_APP")
