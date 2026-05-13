@@ -128,6 +128,31 @@ async def _wait_for_scheduler_lease_async(engine: AsyncEngine, deadline: float) 
     raise RuntimeError(f"scheduler lease never acquired: {last_err}")
 
 
+async def _mark_setup_completed_async(engine: AsyncEngine) -> None:
+    """Write ``cms_settings.setup_completed='true'`` so the OOBE wizard
+    is skipped for the integration tests.
+
+    Historically these tests piggybacked on the upgrade-detection
+    heuristic in ``cms/main.py`` to auto-skip the wizard: boot 1 of
+    the CMS container seeded the admin without writing
+    ``setup_completed``, then boot 2 of the heuristic saw "admin exists
+    + flag is None" and marked it true. That behaviour was a real bug
+    in production (it slammed the wizard shut on every fresh deploy)
+    and was fixed by ``ensure_admin_credentials`` now pinning the flag
+    to ``'false'`` at seed time. With the bug fixed we have to mark
+    OOBE complete ourselves; ``compose --wait`` only blocks on
+    ``/healthz``, not on a usable wizard, and we don't want every test
+    to pre-walk the multi-step setup flow.
+    """
+    upsert = text(
+        "INSERT INTO cms_settings (key, value) "
+        "VALUES ('setup_completed', 'true') "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    )
+    async with engine.begin() as conn:
+        await conn.execute(upsert)
+
+
 def _wait_for_scheduler_lease_sync(deadline: float) -> None:
     """Session-scoped leader-ready check on its own transient engine.
 
@@ -136,10 +161,15 @@ def _wait_for_scheduler_lease_sync(deadline: float) -> None:
     owns it — pytest-asyncio gives each test its own loop, and a
     session-scoped asyncpg engine would otherwise yield
     'attached to a different loop' failures on teardown.
+
+    The OOBE complete-flag is upserted before we wait for the
+    scheduler lease so the moment the lease drops, ``/api/*`` is
+    already unlocked for the test clients.
     """
     async def _run() -> None:
         eng = create_async_engine(HOST_DB_URL, pool_pre_ping=True)
         try:
+            await _mark_setup_completed_async(eng)
             await _wait_for_scheduler_lease_async(eng, deadline)
         finally:
             await eng.dispose()
