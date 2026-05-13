@@ -3,8 +3,8 @@
 Deploy Agora CMS infrastructure to Azure.
 
 One-command deployment: creates the resource group, deploys all Bicep
-modules, builds/pushes container images to ACR, configures MCP, and
-prints connection info.
+modules, configures MCP, and prints connection info. Container images
+are pulled from public GHCR (ghcr.io/sslivins/agora-*).
 
 Prerequisites:
   - Python 3.9+
@@ -183,7 +183,6 @@ def main() -> int:
     parser.add_argument("--cms-memory", default="2Gi",
                         choices=["0.5Gi", "1Gi", "1.5Gi", "2Gi", "2.5Gi", "3Gi", "3.5Gi", "4Gi"],
                         help="CMS container memory (default: 2Gi, must be 2× CPU)")
-    parser.add_argument("--skip-image-push", action="store_true", help="Skip building/pushing container images")
     args = parser.parse_args()
 
     # Validate prefix
@@ -270,29 +269,6 @@ def main() -> int:
         return 1
 
     repo_root = script_dir.parent
-    acr_name = args.prefix.replace("-", "") + "acr"
-
-    # ── Pre-create ACR & push images ──
-    if not args.skip_image_push:
-        step(f"Creating container registry ({acr_name})")
-        az("acr", "create", "--name", acr_name, "--resource-group", resource_group,
-           "--sku", "Basic", "--location", args.location, "--admin-enabled", "true",
-           "--tags", "project=agora-cms", "managedBy=bicep", "-o", "none", quiet=True)
-        ok("ACR ready")
-
-        step(f"Building container images in ACR ({acr_name})")
-
-        info("Building CMS image...")
-        az("acr", "build", "--registry", acr_name, "--image", "agora-cms:latest",
-           "--file", str(repo_root / "Dockerfile"), str(repo_root), "--no-logs", quiet=True)
-        ok("CMS image built & pushed")
-
-        info("Building MCP image...")
-        az("acr", "build", "--registry", acr_name, "--image", "agora-cms-mcp:latest",
-           "--file", str(repo_root / "mcp" / "Dockerfile"), str(repo_root / "mcp"), "--no-logs", quiet=True)
-        ok("MCP image built & pushed")
-    else:
-        warn("Skipping image build (--skip-image-push)")
 
     # ── Deploy Bicep ──
     step("Deploying infrastructure (this takes 5-10 minutes)...")
@@ -322,7 +298,6 @@ def main() -> int:
     outputs = json.loads(deploy_output)
     cms_url = outputs["cmsUrl"]["value"]
     mcp_url = outputs["mcpUrl"]["value"]
-    acr_login = outputs["acrLoginServer"]["value"]
     pg_fqdn = outputs["postgresServerFqdn"]["value"]
     kv_uri = outputs["keyVaultUri"]["value"]
     storage_name = outputs["storageAccountName"]["value"]
@@ -409,7 +384,6 @@ def main() -> int:
     print()
     print(f"  CMS URL:          https://{cms_url}")
     print(f"  MCP URL:          https://{mcp_url}")
-    print(f"  ACR:              {acr_login}")
     print(f"  PostgreSQL:       {pg_fqdn}")
     print(f"  Key Vault:        {kv_uri}")
     print(f"  Storage Account:  {storage_name}")
@@ -432,7 +406,6 @@ def main() -> int:
         "mcpUrl": f"https://{mcp_url}",
         "mcpSseUrl": f"https://{mcp_url}/sse",
         "mcpSseKey": mcp_sse_key,
-        "acrLoginServer": acr_login,
         "postgresServerFqdn": pg_fqdn,
         "keyVaultUri": kv_uri,
         "storageAccountName": storage_name,

@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     One-command deployment: creates the resource group, deploys all Bicep
-    modules, pushes container images to ACR, and prints connection info.
+    modules, and prints connection info. Container images are pulled from
+    public GHCR (ghcr.io/sslivins/agora-*).
 
     Prerequisites:
       - Azure CLI (az) installed and on PATH
@@ -20,9 +21,6 @@
 
 .PARAMETER ResourceGroup
     Resource-group name. Defaults to "<Prefix>-cms-rg".
-
-.PARAMETER SkipImagePush
-    Skip building/pushing container images to ACR.
 
 .EXAMPLE
     .\infra\deploy.ps1 -Subscription "My Azure Sub"
@@ -61,9 +59,7 @@ param(
 
     [Parameter(HelpMessage = "CMS container memory (2× CPU: 0.5Gi–4Gi)")]
     [ValidateSet("0.5Gi", "1Gi", "1.5Gi", "2Gi", "2.5Gi", "3Gi", "3.5Gi", "4Gi")]
-    [string]$CmsMemory = "2Gi",
-
-    [switch]$SkipImagePush
+    [string]$CmsMemory = "2Gi"
 )
 
 Set-StrictMode -Version Latest
@@ -205,45 +201,6 @@ if (-not (Test-Path $templateFile)) {
 }
 
 $repoRoot = Split-Path $scriptDir -Parent
-$acrName = ($Prefix -replace '-','') + "acr"
-
-# ── Pre-create ACR & push images ─────────────────────────────────
-# Container Apps need images to exist in ACR before Bicep can
-# provision them, so we create ACR and push images first.
-
-if (-not $SkipImagePush) {
-    Write-Step "Creating container registry ($acrName)"
-    az acr create --name $acrName --resource-group $ResourceGroup `
-        --sku Basic --location $Location --admin-enabled true `
-        --tags project=agora-cms managedBy=bicep -o none 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "Could not create ACR '$acrName'"
-        exit 1
-    }
-    Write-Ok "ACR ready"
-
-    Write-Step "Building container images in ACR ($acrName)"
-
-    Write-Host "  Building CMS image..." -ForegroundColor Yellow
-    az acr build --registry $acrName --image agora-cms:latest `
-        --file "$repoRoot\Dockerfile" $repoRoot --no-logs 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "CMS image build failed"
-        exit 1
-    }
-    Write-Ok "CMS image built & pushed"
-
-    Write-Host "  Building MCP image..." -ForegroundColor Yellow
-    az acr build --registry $acrName --image agora-cms-mcp:latest `
-        --file "$repoRoot\mcp\Dockerfile" "$repoRoot\mcp" --no-logs 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "MCP image build failed"
-        exit 1
-    }
-    Write-Ok "MCP image built & pushed"
-} else {
-    Write-Warn "Skipping image build (-SkipImagePush)"
-}
 
 # ── Deploy Bicep templates ───────────────────────────────────────
 
@@ -276,7 +233,6 @@ $outputs = $jsonLines | ConvertFrom-Json
 
 $cmsUrl          = $outputs.cmsUrl.value
 $mcpUrl          = $outputs.mcpUrl.value
-$acrLoginServer  = $outputs.acrLoginServer.value
 $pgFqdn          = $outputs.postgresServerFqdn.value
 $kvUri           = $outputs.keyVaultUri.value
 $storageName     = $outputs.storageAccountName.value
@@ -363,7 +319,6 @@ Write-Host "══════════════════════�
 Write-Host ""
 Write-Host "  CMS URL:          https://$cmsUrl" -ForegroundColor White
 Write-Host "  MCP URL:          https://$mcpUrl" -ForegroundColor White
-Write-Host "  ACR:              $acrLoginServer" -ForegroundColor White
 Write-Host "  PostgreSQL:       $pgFqdn" -ForegroundColor White
 Write-Host "  Key Vault:        $kvUri" -ForegroundColor White
 Write-Host "  Storage Account:  $storageName" -ForegroundColor White
@@ -388,7 +343,6 @@ $outputObj = @{
     mcpUrl             = "https://$mcpUrl"
     mcpSseUrl          = "https://$mcpUrl/sse"
     mcpSseKey          = if ($mcpSseKey) { $mcpSseKey } else { "" }
-    acrLoginServer     = $acrLoginServer
     postgresServerFqdn = $pgFqdn
     keyVaultUri        = $kvUri
     storageAccountName = $storageName

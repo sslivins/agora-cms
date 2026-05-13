@@ -115,10 +115,9 @@ python infra/deploy.py --subscription "My Subscription" --location westus3 --pre
 The script will:
 
 1. Create the resource group and recover any soft-deleted Key Vault
-2. Create a Container Registry and build/push the CMS + MCP images
-3. Deploy all infrastructure via Bicep (VNet, PostgreSQL, Storage, Key Vault, Container Apps)
-4. Wait for CMS startup, then auto-configure MCP API keys and enable MCP
-5. Print all URLs, credentials, and MCP SSE connection details
+2. Deploy all infrastructure via Bicep (VNet, PostgreSQL, Storage, Key Vault, Container Apps) pulling images from GHCR
+3. Wait for CMS startup, then auto-configure MCP API keys and enable MCP
+4. Print all URLs, credentials, and MCP SSE connection details
 
 ### Multiple Environments
 
@@ -134,15 +133,11 @@ python infra/deploy.py --subscription "..." --prefix agoradev --resource-group a
 
 ### Redeployment
 
-The script is idempotent. Re-running it updates existing resources. Use `-SkipImagePush` to skip rebuilding container images:
-
-```bash
-python infra/deploy.py --subscription "..." --prefix agoracms --resource-group agora-cms-rg --skip-image-push
-```
+The script is idempotent. Re-running it updates existing resources.
 
 ### CI/CD
 
-The included GitHub Actions workflow (`.github/workflows/publish-image.yml`) automatically builds, pushes to ACR, and deploys to Container Apps on every push to `main`. Set these GitHub secrets:
+The included GitHub Actions workflow (`.github/workflows/publish-image.yml`) automatically builds and pushes images to GHCR, then deploys to Container Apps on every push to `main`. Set these GitHub secrets:
 
 | Secret | Value |
 |--------|-------|

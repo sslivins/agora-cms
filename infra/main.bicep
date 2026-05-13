@@ -54,11 +54,11 @@ param githubIssuesToken string = ''
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
 
-@description('CMS container image (e.g., agoracr.azurecr.io/agora-cms:latest)')
-param cmsImage string = ''
+@description('CMS container image (e.g., ghcr.io/sslivins/agora-cms:1.12.34). Defaults to the latest GHCR tag.')
+param cmsImage string = 'ghcr.io/sslivins/agora-cms:latest'
 
-@description('MCP server container image (e.g., agoracr.azurecr.io/agora-cms-mcp:latest)')
-param mcpImage string = ''
+@description('MCP server container image (e.g., ghcr.io/sslivins/agora-cms-mcp:1.12.34). Defaults to the latest GHCR tag.')
+param mcpImage string = 'ghcr.io/sslivins/agora-cms-mcp:latest'
 
 // ── Blue/green deploy controls ──
 @description('Per-deploy revision suffix for the CMS Container App (e.g. "v1-12-34"). The CD workflow generates this from the version. New revision lands at 0% traffic; workflow flips traffic post-verify.')
@@ -73,8 +73,8 @@ param mcpRevisionSuffix string = ''
 @description('Name of the existing MCP revision that should keep 100% traffic during this deploy. See previousCmsRevisionName.')
 param previousMcpRevisionName string = ''
 
-@description('Worker container image (e.g., agoracr.azurecr.io/agora-worker:latest)')
-param workerImage string = ''
+@description('Worker container image (e.g., ghcr.io/sslivins/agora-worker:1.12.34). Defaults to the latest GHCR tag.')
+param workerImage string = 'ghcr.io/sslivins/agora-worker:latest'
 
 @description('Worker container CPU cores (Container Apps Job: up to 4.0)')
 param workerCpu string = '4.0'
@@ -107,7 +107,6 @@ var tags = {
 var vnetName = '${prefix}-vnet'
 var postgresServerName = '${prefix}-pg'
 var storageAccountName = take(replace('${prefix}stg${uniqueString(resourceGroup().id)}', '-', ''), 24)
-var acrName = replace('${prefix}acr', '-', '')
 var keyVaultName = '${prefix}-vault'
 var containerAppsEnvName = '${prefix}-env'
 var cmsAppName = '${prefix}-cms'
@@ -148,16 +147,6 @@ module storage 'modules/storage.bicep' = {
   }
 }
 
-// ── Container Registry ──
-module acr 'modules/acr.bicep' = {
-  name: 'acr'
-  params: {
-    location: location
-    acrName: acrName
-    tags: tags
-  }
-}
-
 // ── Key Vault ──
 module keyVault 'modules/keyVault.bicep' = {
   name: 'keyVault'
@@ -175,12 +164,6 @@ module keyVault 'modules/keyVault.bicep' = {
 var encodedPassword = replace(postgresAdminPassword, '@', '%40')
 var databaseUrl = 'postgresql+asyncpg://${postgresAdminLogin}:${encodedPassword}@${postgres.outputs.serverFqdn}:5432/${postgres.outputs.databaseName}?ssl=require'
 
-// ── Determine container images ──
-// Use provided images or default to ACR-based names
-var resolvedCmsImage = !empty(cmsImage) ? cmsImage : '${acr.outputs.acrLoginServer}/agora-cms:latest'
-var resolvedMcpImage = !empty(mcpImage) ? mcpImage : '${acr.outputs.acrLoginServer}/agora-cms-mcp:latest'
-var resolvedWorkerImage = !empty(workerImage) ? workerImage : '${acr.outputs.acrLoginServer}/agora-worker:latest'
-
 // ── Container Apps (CMS + MCP) ──
 module containerApps 'modules/containerApps.bicep' = {
   name: 'containerApps'
@@ -193,7 +176,7 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // CMS
     cmsAppName: cmsAppName
-    cmsImage: resolvedCmsImage
+    cmsImage: cmsImage
     cmsCpu: cmsCpu
     cmsMemory: cmsMemory
     cmsDatabaseUrl: databaseUrl
@@ -208,14 +191,9 @@ module containerApps 'modules/containerApps.bicep' = {
     storageAccountKey: storage.outputs.storageAccountKey
     transcodeShareName: storage.outputs.transcodeShareName
 
-    // ACR
-    acrLoginServer: acr.outputs.acrLoginServer
-    acrUsername: acr.outputs.acrUsername
-    acrPassword: acr.outputs.acrPassword
-
     // MCP
     mcpAppName: mcpAppName
-    mcpImage: resolvedMcpImage
+    mcpImage: mcpImage
 
     // Blue/green revision controls
     cmsRevisionSuffix: cmsRevisionSuffix
@@ -225,7 +203,7 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Worker Job
     workerJobName: workerJobName
-    workerImage: resolvedWorkerImage
+    workerImage: workerImage
     workerCpu: workerCpu
     workerMemory: workerMemory
 
@@ -287,7 +265,6 @@ output mcpUrl string = containerApps.outputs.mcpAppFqdn
 output environmentDefaultDomain string = containerApps.outputs.environmentDefaultDomain
 output cmsLatestRevisionName string = containerApps.outputs.cmsLatestRevisionName
 output mcpLatestRevisionName string = containerApps.outputs.mcpLatestRevisionName
-output acrLoginServer string = acr.outputs.acrLoginServer
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output keyVaultUri string = keyVault.outputs.keyVaultUri
 output storageAccountName string = storage.outputs.storageAccountName
