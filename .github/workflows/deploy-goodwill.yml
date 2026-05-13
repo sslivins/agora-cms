@@ -7,7 +7,7 @@ name: Deploy Goodwill
 # with the same blue/green pattern as prod.
 #
 # Required manual setup (one-time, per repo settings):
-#   * `Seattle Goodwill` GitHub environment with required-reviewer protection.
+#   * `seattle-goodwill` GitHub environment with required-reviewer protection.
 #   * Environment secrets:
 #       AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
 #       POSTGRES_ADMIN_PASSWORD, CMS_SECRET_KEY, CMS_ADMIN_PASSWORD,
@@ -18,7 +18,7 @@ name: Deploy Goodwill
 #       ALERT_EMAIL (optional), CMS_CUSTOM_DOMAIN (optional),
 #       MCP_CUSTOM_DOMAIN (optional)
 #   * OIDC federated credential on the Goodwill app registration:
-#       repo:sslivins/agora-cms:environment:Seattle Goodwill
+#       repo:sslivins/agora-cms:environment:seattle-goodwill
 #   * Pre-create the resource group in the Goodwill tenant:
 #       az group create -n agoragw-cms-rg -l westus2
 
@@ -49,7 +49,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: Seattle Goodwill
+    environment: seattle-goodwill
     outputs:
       revision_suffix: ${{ steps.revisions.outputs.revision_suffix }}
       previous_cms_revision: ${{ steps.revisions.outputs.previous_cms_revision }}
@@ -172,7 +172,7 @@ jobs:
   verify:
     needs: [deploy]
     runs-on: ubuntu-latest
-    environment: Seattle Goodwill
+    environment: seattle-goodwill
     steps:
       - uses: actions/checkout@v4
 
