@@ -122,7 +122,6 @@ jobs:
           az deployment group create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
-            --parameters infra/parameters/goodwill.bicepparam \
             --parameters \
               prefix='${{ vars.INFRA_PREFIX }}' \
               postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
