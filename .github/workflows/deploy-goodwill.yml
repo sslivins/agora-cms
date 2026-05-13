@@ -172,6 +172,7 @@ jobs:
   verify:
     needs: [deploy]
     runs-on: ubuntu-latest
+    environment: goodwill
     steps:
       - uses: actions/checkout@v4
 
