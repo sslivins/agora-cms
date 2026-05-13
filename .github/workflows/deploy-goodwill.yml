@@ -1,133 +1,55 @@
-name: Publish & Deploy
+name: Deploy Goodwill
+
+# Manual cross-tenant deploy for the Goodwill subscription.
+#
+# Pulls a pre-published image version from GHCR (built and tagged by
+# publish-image.yml on main) and rolls it out to the goodwill ACA env
+# with the same blue/green pattern as prod.
+#
+# Required manual setup (one-time, per repo settings):
+#   * `goodwill` GitHub environment with required-reviewer protection.
+#   * Environment secrets:
+#       AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#       POSTGRES_ADMIN_PASSWORD, CMS_SECRET_KEY, CMS_ADMIN_PASSWORD,
+#       WPS_CONNECTION_STRING, ADMIN_PRINCIPAL_ID,
+#       AGORA_CMS_ISSUES_TOKEN (optional)
+#   * Environment variables:
+#       INFRA_PREFIX=agoragw, AZURE_RESOURCE_GROUP=agoragw-cms-rg,
+#       ALERT_EMAIL (optional), CMS_CUSTOM_DOMAIN (optional),
+#       MCP_CUSTOM_DOMAIN (optional)
+#   * OIDC federated credential on the Goodwill app registration:
+#       repo:sslivins/agora-cms:environment:goodwill
+#   * Pre-create the resource group in the Goodwill tenant:
+#       az group create -n agoragw-cms-rg -l westus2
 
 on:
-  workflow_run:
-    workflows: [Smoke Test]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "CMS image version to deploy (e.g. 1.12.34 — must already exist as a tag on ghcr.io/sslivins/agora-cms)"
+        required: true
+        type: string
+      deployRoleAssignments:
+        description: "Run role assignment module (only needed on first bootstrap or when adminPrincipalId changes)"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
-  group: publish-deploy
+  group: deploy-goodwill
   cancel-in-progress: false
 
 permissions:
-  contents: write          # needed to push the auto-bump commit back to main
-  packages: write
-  id-token: write  # OIDC token for Azure login
+  contents: read
+  id-token: write   # OIDC token for Azure login
 
 env:
   AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      cms_digest: ${{ steps.ghcr_cms.outputs.digest }}
-      mcp_digest: ${{ steps.ghcr_mcp.outputs.digest }}
-      worker_digest: ${{ steps.ghcr_worker.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Compute next version
-        id: version
-        run: |
-          # Read current version from main…
-          current=$(python3 -c "exec(open('cms/__init__.py').read()); print(__version__)")
-          # …and bump the patch component.
-          IFS=. read -r major minor patch <<< "$current"
-          next="${major}.${minor}.$((patch + 1))"
-          echo "current=$current"
-          echo "next=$next"
-          echo "version=$next" >> "$GITHUB_OUTPUT"
-          # Write the bumped version into the working tree so the Docker
-          # images bake it in (/healthz will report $next).  The commit
-          # back to main happens in the bump-main job after verify succeeds.
-          sed -i "s/^__version__ = .*/__version__ = \"$next\"/" cms/__init__.py
-          grep __version__ cms/__init__.py
-
-      # ── GHCR (public images) ──
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push CMS to GHCR
-        id: ghcr_cms
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/sslivins/agora-cms:latest
-            ghcr.io/sslivins/agora-cms:${{ steps.version.outputs.version }}
-
-      - name: Build and push MCP to GHCR
-        id: ghcr_mcp
-        uses: docker/build-push-action@v6
-        with:
-          context: ./mcp
-          push: true
-          tags: |
-            ghcr.io/sslivins/agora-cms-mcp:latest
-            ghcr.io/sslivins/agora-cms-mcp:${{ steps.version.outputs.version }}
-
-      - name: Build and push Worker to GHCR
-        id: ghcr_worker
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.worker
-          push: true
-          tags: |
-            ghcr.io/sslivins/agora-worker:latest
-            ghcr.io/sslivins/agora-worker:${{ steps.version.outputs.version }}
-
-      # Deploy-gate the worker image by exercising every top-level
-      # import the queue dispatcher pulls in.  worker/__main__.py
-      # imports worker.imager_handlers lazily inside _queue_mode so a
-      # plain "python -m worker --help" wouldn't catch a missing dep
-      # in shared/ or worker/ -- production has already paid the cost
-      # of finding such gaps the hard way (see hotfix/worker-httpx-
-      # missing).  Force the imports here.
-      - name: Smoke-test worker image imports
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/sslivins/agora-worker:${{ steps.version.outputs.version }}
-          docker run --rm --entrypoint python \
-            ghcr.io/sslivins/agora-worker:${{ steps.version.outputs.version }} \
-            -c "import worker.__main__, worker.imager_handlers, worker.transcoder; \
-                from worker.imager_handlers import import_base_image_by_id, provision_image_by_id; \
-                print('worker image imports OK')"
-
-      # Verify OS-level tools required by ``cms.services.imager`` are
-      # present in the final worker image.  The Python import smoke
-      # above will not catch a missing ``parted``/``mcopy``/``xz`` --
-      # those are discovered at runtime via ``shutil.which`` the first
-      # time an imager job runs.  Without this gate we ship workers
-      # that import cleanly but blow up on every IMAGE_IMPORT /
-      # IMAGE_PROVISION job (see hotfix/worker-imager-scratch-path).
-      - name: Smoke-test worker image runtime tools
-        run: |
-          set -euo pipefail
-          docker run --rm --entrypoint python \
-            ghcr.io/sslivins/agora-worker:${{ steps.version.outputs.version }} \
-            -c "from cms.services.imager import _Tools; t = _Tools.discover(); \
-                print(f'worker image imager tools OK: parted={t.parted} mcopy={t.mcopy} xz={t.xz}')"
-
-      - name: Record image digests
-        run: |
-          echo "CMS digest:    ${{ steps.ghcr_cms.outputs.digest }}"
-          echo "MCP digest:    ${{ steps.ghcr_mcp.outputs.digest }}"
-          echo "Worker digest: ${{ steps.ghcr_worker.outputs.digest }}"
-
   deploy:
-    needs: publish
     runs-on: ubuntu-latest
-    environment: production
+    environment: goodwill
     outputs:
       revision_suffix: ${{ steps.revisions.outputs.revision_suffix }}
       previous_cms_revision: ${{ steps.revisions.outputs.previous_cms_revision }}
@@ -144,23 +66,12 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Idempotent infrastructure deploy — creates new resources (queues,
-      # worker jobs, etc.) and updates existing ones to match Bicep definitions.
-      # Safe to run on every deploy; Bicep only changes what's different.
-      #
-      # Images are pinned by immutable content digest (registry@sha256:...)
-      # rather than by tag.  This guarantees that:
-      #   * ACA always sees a new image reference and rolls a fresh revision
-      #     (no more "same tag, stale revision" failures).
-      #   * A mutated/overwritten tag can never cause an unexpected image
-      #     to be deployed.
-
       # Blue/green: capture the currently-serving revisions before we deploy.
       # Bicep pins traffic 100% to these names so the brand-new revision lands
       # at 0% and is only reached via its per-revision FQDN until verify
-      # passes. On bootstrap (apps don't exist yet, or first deploy in
-      # multi-revision mode) the names come back empty and Bicep falls back
-      # to "100% latest" so the very first revision can serve traffic.
+      # passes. On bootstrap (apps don't exist yet) the names come back empty
+      # and Bicep falls back to "100% latest" so the very first revision can
+      # serve traffic.
       - name: Capture pre-deploy revision state
         id: revisions
         run: |
@@ -171,10 +82,6 @@ jobs:
 
           fetch_prev() {
             local app="$1"
-            # latestReadyRevisionName is the one currently serving traffic in
-            # single-revision mode and the most recent successful deploy in
-            # multi-revision mode. Either way it's the revision we want to
-            # keep traffic on while the new one warms up.
             az containerapp show --name "$app" --resource-group "$RG" \
               --query "properties.latestReadyRevisionName" -o tsv 2>/dev/null || true
           }
@@ -188,7 +95,7 @@ jobs:
 
           # ACA revision suffixes must be lowercase alphanumeric with dashes,
           # max 64 chars. Versions look like "1.12.34" -> "v1-12-34".
-          SUFFIX="v$(echo '${{ needs.publish.outputs.version }}' | tr '.' '-')"
+          SUFFIX="v$(echo '${{ inputs.version }}' | tr '.' '-')"
           echo "revision_suffix=${SUFFIX}" >> "$GITHUB_OUTPUT"
           echo "  new revision suffix: ${SUFFIX}"
 
@@ -198,9 +105,9 @@ jobs:
 
       - name: Deploy infrastructure
         run: |
-          CMS_REF='ghcr.io/sslivins/agora-cms@${{ needs.publish.outputs.cms_digest }}'
-          MCP_REF='ghcr.io/sslivins/agora-cms-mcp@${{ needs.publish.outputs.mcp_digest }}'
-          WORKER_REF='ghcr.io/sslivins/agora-worker@${{ needs.publish.outputs.worker_digest }}'
+          CMS_REF='ghcr.io/sslivins/agora-cms:${{ inputs.version }}'
+          MCP_REF='ghcr.io/sslivins/agora-cms-mcp:${{ inputs.version }}'
+          WORKER_REF='ghcr.io/sslivins/agora-worker:${{ inputs.version }}'
           echo "Deploying:"
           echo "  cms:    $CMS_REF"
           echo "  mcp:    $MCP_REF"
@@ -208,6 +115,7 @@ jobs:
           az deployment group create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
+            --parameters infra/parameters/goodwill.bicepparam \
             --parameters \
               prefix='${{ vars.INFRA_PREFIX }}' \
               postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
@@ -216,7 +124,7 @@ jobs:
               wpsConnectionString='${{ secrets.WPS_CONNECTION_STRING }}' \
               githubIssuesToken='${{ secrets.AGORA_CMS_ISSUES_TOKEN }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
-              deployRoleAssignments=false \
+              deployRoleAssignments=${{ inputs.deployRoleAssignments }} \
               cmsImage="$CMS_REF" \
               mcpImage="$MCP_REF" \
               workerImage="$WORKER_REF" \
@@ -236,7 +144,6 @@ jobs:
             local APP_NAME="$1" DOMAIN="$2"
             [ -z "$DOMAIN" ] && return 0
 
-            # Check if already bound with cert
             BINDING=$(az containerapp hostname list --name "$APP_NAME" --resource-group "$RG" \
               --query "[?name=='$DOMAIN'].bindingType" -o tsv 2>/dev/null)
             if [ "$BINDING" = "SniEnabled" ]; then
@@ -244,14 +151,12 @@ jobs:
               return 0
             fi
 
-            # Step 1: Add hostname to app (creates unbound entry)
             echo "Adding hostname $DOMAIN to $APP_NAME..."
             az containerapp hostname add \
               --name "$APP_NAME" \
               --resource-group "$RG" \
               --hostname "$DOMAIN" 2>/dev/null || true
 
-            # Step 2: Bind with managed certificate
             echo "Binding managed certificate for $DOMAIN..."
             az containerapp hostname bind \
               --name "$APP_NAME" \
@@ -265,7 +170,7 @@ jobs:
           bind_domain "${{ vars.INFRA_PREFIX }}-mcp" "${{ vars.MCP_CUSTOM_DOMAIN }}"
 
   verify:
-    needs: [publish, deploy]
+    needs: [deploy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -277,10 +182,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Blue/green: probe the *new* revision via its per-revision FQDN
-      # while the previous revision keeps serving 100% of real traffic.
-      # Only flip traffic if the smoke probes pass; otherwise deactivate
-      # the bad revision so the previous one keeps serving forever.
       - name: Resolve new-revision FQDNs
         id: fqdn
         run: |
@@ -291,8 +192,6 @@ jobs:
           NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
           NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
 
-          # The per-revision FQDN is the canonical way to reach a 0%-traffic
-          # revision. Format: <app>--<suffix>.<env-default-domain>.
           CMS_FQDN=$(az containerapp revision show \
             --name "$CMS_APP" --resource-group "$RG" \
             --revision "$NEW_CMS_REV" \
@@ -314,7 +213,7 @@ jobs:
       - name: Wait for new CMS revision to become healthy
         id: health
         run: |
-          EXPECTED="${{ needs.publish.outputs.version }}"
+          EXPECTED="${{ inputs.version }}"
           FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
           URL="https://${FQDN}/healthz"
           echo "Polling $URL — expecting version $EXPECTED ..."
@@ -345,9 +244,6 @@ jobs:
           FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
           fail=0
 
-          # Unauthenticated aggregated health endpoint — exercises the
-          # CMS↔MCP service-key trust chain plus the deploy-shape config
-          # check without needing a session.
           echo "── GET /healthz/system ──"
           CODE=$(curl -s -o /tmp/sys.json -w '%{http_code}' "https://${FQDN}/healthz/system" --max-time 10 || echo "000")
           echo "  HTTP $CODE"
@@ -372,7 +268,6 @@ jobs:
           echo "smoke=ok" >> "$GITHUB_OUTPUT"
           echo "✅ All post-deploy smoke probes passed against new revision"
 
-      # Happy path: shift 100% traffic to the new revisions of both apps.
       - name: Flip traffic to new revisions
         if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
         run: |
@@ -389,10 +284,6 @@ jobs:
             local app="$1" new="$2" prev="$3"
             echo "── flipping $app traffic to $new ──"
             if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
-              # 100% to new, 0% to old. Listing old at weight 0 keeps it
-              # active and reachable via its own per-revision FQDN for a
-              # quick rollback ("az containerapp ingress traffic set
-              # --revision-weight $prev=100").
               az containerapp ingress traffic set \
                 --name "$app" --resource-group "$RG" \
                 --revision-weight "$new=100" "$prev=0"
@@ -405,16 +296,8 @@ jobs:
 
           flip "$CMS_APP" "$NEW_CMS_REV" "$PREV_CMS"
           flip "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
-          echo "✅ Traffic flipped — $NEW_CMS_REV is now serving production"
+          echo "✅ Traffic flipped — $NEW_CMS_REV is now serving Goodwill traffic"
 
-      # Container Apps "Active" revisions keep their minReplicas pods running
-      # regardless of traffic weight. Without this step, every deploy adds
-      # 2 idle CMS pods (and 1 idle MCP pod) that still hold open Postgres
-      # connections — the structural cause of the 2026-05-06T13-14Z Sev2
-      # (4 stacked active revisions × 2 replicas exhausted PG max_connections=50).
-      # Keep the new revision (currently serving) and the immediate previous
-      # one (one-click rollback target via "az containerapp ingress traffic
-      # set --revision-weight $prev=100"); deactivate everything else.
       - name: Deactivate stale revisions
         if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
         run: |
@@ -452,8 +335,6 @@ jobs:
           deactivate_stale "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
           echo "✅ Stale revisions deactivated — only current + previous remain warm"
 
-      # Sad path: deactivate the new revisions so the previous ones keep
-      # serving 100% of traffic.
       - name: Deactivate new revisions on failure
         if: failure() && (steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed')
         run: |
@@ -504,40 +385,3 @@ jobs:
         run: |
           echo "::error::Deployment verification failed — new revision deactivated; previous revision continues to serve traffic"
           exit 1
-
-  # Commit the auto-incremented version back to main so the next deploy
-  # starts from the newly-released version.  Runs only after verify passes,
-  # so a failed deploy does not advance the version on main.  The commit
-  # uses "[skip ci]" to avoid re-triggering Tests/publish on the bump itself.
-  bump-main:
-    needs: [publish, deploy, verify]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          # GITHUB_TOKEN works if main is unprotected, or if
-          # github-actions[bot] is on the branch-protection bypass list.
-          # If main is PR-protected and the bot can't bypass, create a
-          # repo secret VERSION_BUMP_TOKEN with a PAT (contents: write)
-          # and it will be used instead.
-          token: ${{ secrets.VERSION_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Bump version and push
-        env:
-          NEW_VERSION: ${{ needs.publish.outputs.version }}
-        run: |
-          set -euo pipefail
-          current=$(python3 -c "exec(open('cms/__init__.py').read()); print(__version__)")
-          if [ "$current" = "$NEW_VERSION" ]; then
-            echo "cms/__init__.py is already at $NEW_VERSION — nothing to commit."
-            exit 0
-          fi
-          sed -i "s/^__version__ = .*/__version__ = \"$NEW_VERSION\"/" cms/__init__.py
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cms/__init__.py
-          git commit -m "chore: bump version to $NEW_VERSION [skip ci]" \
-                     -m "Auto-bumped by publish-image.yml after successful deploy." \
-                     -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
-          git push origin HEAD:main

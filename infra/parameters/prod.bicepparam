@@ -26,14 +26,20 @@ param cmsAdminUsername = 'admin'
 // param postgresAdminPassword = '<set-via-cli>'
 // param cmsSecretKey = '<set-via-cli>'
 // param cmsAdminPassword = '<set-via-cli>'
+// param adminPrincipalId    = '<set-via-cli>'   # the CD pipeline supplies this
+//                                                # from secrets.ADMIN_PRINCIPAL_ID.
+//                                                # Do NOT hardcode an Entra OID
+//                                                # here — a stale value would
+//                                                # silently roll the wrong tenant
+//                                                # on a manual `az deployment
+//                                                # group create` without the
+//                                                # workflow's override.
 
-param adminPrincipalId = '224d9903-ad74-4629-982b-1db94580d901'
-
-// Telemetry alert recipient (Phase 0 / A1.5 — issue #474) is supplied by the
+// Telemetry alert recipient(Phase 0 / A1.5 — issue #474) is supplied by the
 // CD pipeline from the GitHub repo variable ALERT_EMAIL. Leave the default
 // empty here so we don't commit a routable address.
 
 // Container images — set by CD pipeline via --parameters override:
-// param cmsImage = 'agoracmsacr.azurecr.io/agora-cms:latest'
-// param mcpImage = 'agoracmsacr.azurecr.io/agora-cms-mcp:latest'
-// param workerImage = 'agoracmsacr.azurecr.io/agora-worker:latest'
+// param cmsImage = 'ghcr.io/sslivins/agora-cms@<digest>'
+// param mcpImage = 'ghcr.io/sslivins/agora-cms-mcp@<digest>'
+// param workerImage = 'ghcr.io/sslivins/agora-worker@<digest>'

@@ -27,13 +27,6 @@ param cmsApiKeyRotationHours string = '24'
 param storageConnectionString string
 param storageBlobEndpoint string
 
-// ── ACR credentials ──
-param acrLoginServer string
-@secure()
-param acrUsername string
-@secure()
-param acrPassword string
-
 // ── Azure Files mount ──
 param storageAccountName string
 param transcodeShareName string
@@ -183,18 +176,7 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
         ]
       }
-      registries: [
-        {
-          server: acrLoginServer
-          username: acrUsername
-          passwordSecretRef: 'acr-password'
-        }
-      ]
       secrets: [
-        {
-          name: 'acr-password'
-          value: acrPassword
-        }
         {
           name: 'cms-database-url'
           value: cmsDatabaseUrl
@@ -391,19 +373,7 @@ resource mcpApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
         ]
       }
-      registries: [
-        {
-          server: acrLoginServer
-          username: acrUsername
-          passwordSecretRef: 'acr-password'
-        }
-      ]
-      secrets: [
-        {
-          name: 'acr-password'
-          value: acrPassword
-        }
-      ]
+      secrets: []
     }
     template: {
       revisionSuffix: mcpRevisionSuffix
@@ -473,18 +443,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
           ]
         }
       }
-      registries: [
-        {
-          server: acrLoginServer
-          username: acrUsername
-          passwordSecretRef: 'acr-password'
-        }
-      ]
       secrets: [
-        {
-          name: 'acr-password'
-          value: acrPassword
-        }
         {
           name: 'worker-database-url'
           value: cmsDatabaseUrl
