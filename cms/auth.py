@@ -431,6 +431,9 @@ async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None
     Migration path:
     1. If a User with the admin username already exists, optionally reset password.
     2. If no User exists yet, create one with the Admin role and env-var credentials.
+       Also explicitly mark cms_settings.setup_completed='false' so subsequent
+       boots cannot trip the upgrade-detection heuristic in cms/main.py — see the
+       block-comment on the seed below.
     3. Keep cms_settings in sync for any legacy code that still reads them.
     """
     # Ensure built-in Admin role exists (should be seeded by _seed_roles first)
@@ -462,6 +465,23 @@ async def ensure_admin_credentials(db: AsyncSession, settings: Settings) -> None
         db.add(admin_user)
         await db.commit()
         _log.info("Created admin user: %s", settings.admin_username)
+
+        # Lock the OOBE wizard open. The upgrade-detection heuristic in
+        # cms/main.py treats "admin user exists AND setup_completed is None"
+        # as proof that this is a deployment upgrading from a pre-wizard
+        # version, and auto-marks setup_completed=true. That heuristic
+        # works fine on a single boot, but on boot 2 of any *fresh* deploy
+        # both conditions are trivially true (we just seeded the admin on
+        # boot 1 and the operator hasn't reached the wizard yet), so the
+        # wizard gets auto-skipped forever. Pinning setup_completed='false'
+        # at seed-time means subsequent boots see a non-None value and
+        # the heuristic correctly does nothing.
+        if await get_setting(db, SETTING_SETUP_COMPLETED) is None:
+            await set_setting(db, SETTING_SETUP_COMPLETED, "false")
+            await db.commit()
+            _log.info(
+                "Marked setup_completed=false; OOBE wizard will run on next login"
+            )
     else:
         # Ensure email is set (migration for existing admin users)
         if not admin_user.email:

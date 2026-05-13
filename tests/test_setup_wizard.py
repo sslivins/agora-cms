@@ -450,3 +450,148 @@ async def test_fresh_install_does_not_set_flag(db_engine):
     # Verify: flag is still NOT set
     async with factory() as db:
         assert await get_setting(db, SETTING_SETUP_COMPLETED) is None
+
+
+# ── Regression: heuristic must not auto-skip OOBE on a fresh deploy ──
+#
+# The original bug: ``ensure_admin_credentials`` seeded an admin on boot 1
+# of a fresh deploy and left ``setup_completed`` as ``None``. On boot 2,
+# the upgrade-detection heuristic in ``cms/main.py`` saw "admin exists AND
+# setup_completed is None" and concluded this was a pre-wizard upgrade,
+# auto-marking ``setup_completed='true'`` and skipping OOBE forever.
+#
+# Fix: ``ensure_admin_credentials`` now writes ``setup_completed='false'``
+# whenever it creates the admin from scratch, locking the wizard open so
+# the heuristic on subsequent boots correctly does nothing.
+
+
+@pytest.mark.asyncio
+async def test_fresh_install_locks_setup_completed_false(db_engine, tmp_path):
+    """``ensure_admin_credentials`` must explicitly set
+    ``setup_completed='false'`` on a fresh deploy so the upgrade heuristic
+    can't trip on subsequent boots."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from cms.auth import (
+        ensure_admin_credentials,
+        get_setting,
+        SETTING_SETUP_COMPLETED,
+    )
+    from cms.config import Settings
+    from cms.models.user import Role
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    settings = Settings(
+        database_url=str(db_engine.url),
+        secret_key="test-secret",
+        admin_username="admin",
+        admin_password="testpass",
+    )
+
+    # Pre-seed the Admin role (normally done by ``_seed_roles`` before
+    # ``ensure_admin_credentials`` runs in the lifespan).
+    async with factory() as db:
+        db.add(Role(
+            name="Admin", description="admin",
+            permissions=["*"], is_builtin=True,
+        ))
+        await db.commit()
+
+    # Fresh install: no admin user, no setup_completed flag.
+    async with factory() as db:
+        assert await get_setting(db, SETTING_SETUP_COMPLETED) is None
+
+    # Run ``ensure_admin_credentials`` (boot 1 of a fresh deploy).
+    async with factory() as db:
+        await ensure_admin_credentials(db, settings)
+
+    # Flag must now be 'false', not None — this is what blocks the
+    # upgrade heuristic on subsequent boots.
+    async with factory() as db:
+        assert await get_setting(db, SETTING_SETUP_COMPLETED) == "false"
+
+
+@pytest.mark.asyncio
+async def test_admin_seed_does_not_overwrite_completed_setup(db_engine, tmp_path):
+    """If ``setup_completed`` is already set, ``ensure_admin_credentials``
+    must not clobber it. Protects operators who completed OOBE then
+    triggered an admin re-seed (e.g. via ``AGORA_CMS_RESET_PASSWORD``)."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from cms.auth import (
+        ensure_admin_credentials,
+        get_setting,
+        set_setting,
+        SETTING_SETUP_COMPLETED,
+    )
+    from cms.config import Settings
+    from cms.models.user import Role
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    settings = Settings(
+        database_url=str(db_engine.url),
+        secret_key="test-secret",
+        admin_username="admin",
+        admin_password="testpass",
+    )
+
+    async with factory() as db:
+        db.add(Role(
+            name="Admin", description="admin",
+            permissions=["*"], is_builtin=True,
+        ))
+        await set_setting(db, SETTING_SETUP_COMPLETED, "true")
+        await db.commit()
+
+    async with factory() as db:
+        await ensure_admin_credentials(db, settings)
+
+    async with factory() as db:
+        assert await get_setting(db, SETTING_SETUP_COMPLETED) == "true"
+
+
+@pytest.mark.asyncio
+async def test_legacy_upgrade_path_unaffected(db_engine, tmp_path):
+    """The pre-existing legacy-upgrade path (admin already in DB before
+    ``ensure_admin_credentials`` runs, no ``setup_completed`` flag) must
+    continue to work — that's what the heuristic in cms/main.py is for.
+    The fix above only writes the flag when admin is *created*; if admin
+    already exists, the flag stays ``None`` so the heuristic can fire."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from cms.auth import (
+        ensure_admin_credentials,
+        get_setting,
+        hash_password,
+        SETTING_SETUP_COMPLETED,
+    )
+    from cms.config import Settings
+    from cms.models.user import Role, User
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    settings = Settings(
+        database_url=str(db_engine.url),
+        secret_key="test-secret",
+        admin_username="admin",
+        admin_password="testpass",
+    )
+
+    # Simulate a legacy DB: admin already exists, no setup_completed.
+    async with factory() as db:
+        role = Role(
+            name="Admin", description="admin",
+            permissions=["*"], is_builtin=True,
+        )
+        db.add(role)
+        await db.flush()
+        db.add(User(
+            username="admin", email="legacy@example.com",
+            display_name="Legacy Admin", password_hash=hash_password("pw"),
+            role_id=role.id, is_active=True, must_change_password=False,
+        ))
+        await db.commit()
+
+    async with factory() as db:
+        await ensure_admin_credentials(db, settings)
+
+    # Flag must still be None so the upgrade heuristic in cms/main.py
+    # can run and mark it 'true'.
+    async with factory() as db:
+        assert await get_setting(db, SETTING_SETUP_COMPLETED) is None
