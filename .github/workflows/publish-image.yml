@@ -383,7 +383,22 @@ jobs:
           echo "✅ All post-deploy smoke probes passed against new revision"
 
       # Happy path: shift 100% traffic to the new revisions of both apps.
+      #
+      # Retries: `az containerapp ingress traffic set` has been observed
+      # to fail ~20s after issue with
+      #   ERROR: The containerapp '$app' does not exist in group '$RG'
+      # despite the container app demonstrably existing (the previous
+      # smoke step in the same job successfully called
+      # `az containerapp revision show` against the same --name/--resource-group
+      # pair, and curl against the per-revision FQDN returned 200 with
+      # the right version). The 20s wall-clock + the immediate-prior
+      # successful read against the same resource point at ARM
+      # read-after-write consistency on the Microsoft.App PATCH path
+      # rather than RBAC/ResourceNotFound. Three attempts with 30s
+      # backoff rides out the observed window without masking real
+      # failures (a true ResourceNotFound returns sub-1s).
       - name: Flip traffic to new revisions
+        id: flip
         if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
         run: |
           set -euo pipefail
@@ -396,21 +411,34 @@ jobs:
           PREV_MCP='${{ needs.deploy.outputs.previous_mcp_revision }}'
 
           flip() {
-            local app="$1" new="$2" prev="$3"
+            local app="$1" new="$2" prev="$3" attempt
             echo "── flipping $app traffic to $new ──"
-            if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
-              # 100% to new, 0% to old. Listing old at weight 0 keeps it
-              # active and reachable via its own per-revision FQDN for a
-              # quick rollback ("az containerapp ingress traffic set
-              # --revision-weight $prev=100").
-              az containerapp ingress traffic set \
-                --name "$app" --resource-group "$RG" \
-                --revision-weight "$new=100" "$prev=0"
-            else
-              az containerapp ingress traffic set \
-                --name "$app" --resource-group "$RG" \
-                --revision-weight "$new=100"
-            fi
+            for attempt in 1 2 3; do
+              echo "  attempt $attempt/3"
+              if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
+                # 100% to new, 0% to old. Listing old at weight 0 keeps it
+                # active and reachable via its own per-revision FQDN for a
+                # quick rollback ("az containerapp ingress traffic set
+                # --revision-weight $prev=100").
+                if az containerapp ingress traffic set \
+                    --name "$app" --resource-group "$RG" \
+                    --revision-weight "$new=100" "$prev=0"; then
+                  return 0
+                fi
+              else
+                if az containerapp ingress traffic set \
+                    --name "$app" --resource-group "$RG" \
+                    --revision-weight "$new=100"; then
+                  return 0
+                fi
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "  flip attempt $attempt failed — sleeping 30s before retry"
+                sleep 30
+              fi
+            done
+            echo "::error::traffic flip for $app failed after 3 attempts"
+            return 1
           }
 
           flip "$CMS_APP" "$NEW_CMS_REV" "$PREV_CMS"
@@ -508,6 +536,52 @@ jobs:
             --name "$CMS_APP" \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             -o table 2>&1 || echo "(failed to list revisions)"
+
+      # Sad path #2: traffic flip itself failed (after smoke + health
+      # passed). We intentionally do NOT auto-deactivate the new revisions
+      # here because the flip could be partially complete (e.g. CMS
+      # flipped successfully but MCP did not), and deactivating a revision
+      # that has traffic weight assigned would 503 prod. Surface enough
+      # state for an operator to remediate by hand.
+      - name: Diagnose flip failure
+        if: failure() && steps.flip.outcome == 'failure'
+        run: |
+          set +e
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+          PREV_CMS='${{ needs.deploy.outputs.previous_cms_revision }}'
+          PREV_MCP='${{ needs.deploy.outputs.previous_mcp_revision }}'
+
+          echo "::error::Traffic flip step failed after retries — manual remediation required"
+          echo ""
+          echo "──── Current CMS ingress traffic ────"
+          az containerapp ingress traffic show \
+            --name "$CMS_APP" --resource-group "$RG" -o table 2>&1 \
+            || echo "(failed to show CMS traffic)"
+          echo ""
+          echo "──── Current MCP ingress traffic ────"
+          az containerapp ingress traffic show \
+            --name "$MCP_APP" --resource-group "$RG" -o table 2>&1 \
+            || echo "(failed to show MCP traffic)"
+          echo ""
+          echo "──── Active revisions ────"
+          az containerapp revision list \
+            --name "$CMS_APP" --resource-group "$RG" -o table 2>&1 \
+            || echo "(failed to list CMS revisions)"
+          az containerapp revision list \
+            --name "$MCP_APP" --resource-group "$RG" -o table 2>&1 \
+            || echo "(failed to list MCP revisions)"
+          echo ""
+          echo "To complete the flip manually (recommended — new revision is healthy):"
+          echo "  az containerapp ingress traffic set --name $CMS_APP -g $RG --revision-weight $NEW_CMS_REV=100 $PREV_CMS=0"
+          echo "  az containerapp ingress traffic set --name $MCP_APP -g $RG --revision-weight $NEW_MCP_REV=100 $PREV_MCP=0"
+          echo ""
+          echo "To roll back instead:"
+          echo "  az containerapp ingress traffic set --name $CMS_APP -g $RG --revision-weight $PREV_CMS=100"
+          echo "  az containerapp ingress traffic set --name $MCP_APP -g $RG --revision-weight $PREV_MCP=100"
 
       - name: Fail the job on health/smoke failure
         if: steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed'
