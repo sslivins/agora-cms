@@ -11,8 +11,11 @@ name: Deploy Goodwill
 #   * Environment secrets:
 #       AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
 #       POSTGRES_ADMIN_PASSWORD, CMS_SECRET_KEY, CMS_ADMIN_PASSWORD,
-#       WPS_CONNECTION_STRING, ADMIN_PRINCIPAL_ID,
+#       ADMIN_PRINCIPAL_ID,
 #       AGORA_CMS_ISSUES_TOKEN (optional)
+#     The Web PubSub resource and "agora" hub are provisioned by
+#     main.bicep — its connection string is read from listKeys() at
+#     deploy time, so no WPS_CONNECTION_STRING secret is needed.
 #   * Environment variables:
 #       INFRA_PREFIX=agoragw, AZURE_RESOURCE_GROUP=agoragw-cms-rg,
 #       ALERT_EMAIL (optional), CMS_CUSTOM_DOMAIN (optional),
@@ -127,7 +130,6 @@ jobs:
               postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
               cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
               cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
-              wpsConnectionString='${{ secrets.WPS_CONNECTION_STRING }}' \
               githubIssuesToken='${{ secrets.AGORA_CMS_ISSUES_TOKEN }}' \
               adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
               deployRoleAssignments=${{ inputs.deployRoleAssignments }} \
