@@ -42,17 +42,17 @@ param cmsAdminUsername string = 'admin'
 @secure()
 param cmsAdminPassword string
 
-@description('Azure Web PubSub connection string for device transport (required in prod). When empty, CMS falls back to direct websocket mode.')
-@secure()
-param wpsConnectionString string = ''
-
 @description('GitHub personal access token used by the "Report an issue" feature to file issues against the configured repo. When empty, the report-issue button is hidden.')
 @secure()
 param githubIssuesToken string = ''
 
-@description('Device transport mode: "wps" (multi-replica safe, routes via Azure Web PubSub) or "local" (direct CMS→device websockets, single-replica only).')
+@description('Device transport mode: "wps" (multi-replica safe, routes via Azure Web PubSub — provisioned and wired by this template) or "local" (direct CMS→device websockets, single-replica only — skips the WPS resource entirely).')
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
+
+@description('Web PubSub SKU when deviceTransport=wps. Free_F1 covers hundreds of concurrent devices; bump to Standard_S1 for >1k connections, custom domains, or revenue-bearing prod.')
+@allowed(['Free_F1', 'Standard_S1'])
+param webPubSubSku string = 'Free_F1'
 
 @description('CMS container image (e.g., ghcr.io/sslivins/agora-cms:1.12.34). Defaults to the latest GHCR tag.')
 param cmsImage string = 'ghcr.io/sslivins/agora-cms:latest'
@@ -112,6 +112,7 @@ var containerAppsEnvName = '${prefix}-env'
 var cmsAppName = '${prefix}-cms'
 var mcpAppName = '${prefix}-mcp'
 var workerJobName = '${prefix}-worker'
+var webPubSubName = '${prefix}-cms-wps'
 
 // ── Networking ──
 module networking 'modules/networking.bicep' = {
@@ -155,6 +156,22 @@ module keyVault 'modules/keyVault.bicep' = {
     keyVaultName: keyVaultName
     adminPrincipalId: adminPrincipalId
     deployRoleAssignments: deployRoleAssignments
+    tags: tags
+  }
+}
+
+// ── Web PubSub (device transport) ──
+// Provisioned only in WPS mode. The hub itself is created below,
+// AFTER containerApps, so its event-handler URL can reference the
+// env's generated defaultDomain. Splitting resource and hub into
+// two modules keeps a clean single-pass deploy with no manual
+// `az webpubsub` steps.
+module webPubSub 'modules/webPubSub.bicep' = if (deviceTransport == 'wps') {
+  name: 'webPubSub'
+  params: {
+    location: location
+    webPubSubName: webPubSubName
+    skuName: webPubSubSku
     tags: tags
   }
 }
@@ -211,7 +228,10 @@ module containerApps 'modules/containerApps.bicep' = {
     keyVaultUri: keyVault.outputs.keyVaultUri
 
     // Device transport (Azure Web PubSub)
-    wpsConnectionString: wpsConnectionString
+    // Connection string flows directly from the WPS module's listKeys()
+    // output — no GH secret, no manual key plumbing. Empty string in
+    // local mode (containerApps tolerates an empty value).
+    wpsConnectionString: deviceTransport == 'wps' ? webPubSub.outputs.connectionString : ''
     deviceTransport: deviceTransport
 
     // Report-issue feature (GitHub)
@@ -243,6 +263,21 @@ resource mcpKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
     principalId: containerApps.outputs.mcpPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Web PubSub hub ("agora") ──
+// Deployed AFTER containerApps so the event-handler URL can use the
+// CMS's actual FQDN (built from cmsAppName + the env's generated
+// defaultDomain). Without this hub, Azure accepts device WSS but
+// never POSTs sys.connected to the CMS webhook, so every device
+// shows offline forever.
+module webPubSubHub 'modules/webPubSubHub.bicep' = if (deviceTransport == 'wps') {
+  name: 'webPubSubHub'
+  params: {
+    webPubSubName: webPubSub.outputs.name
+    hubName: 'agora'
+    cmsFqdn: '${cmsAppName}.${containerApps.outputs.environmentDefaultDomain}'
   }
 }
 
