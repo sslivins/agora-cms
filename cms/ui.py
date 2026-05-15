@@ -753,7 +753,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         d.pipeline_state = state["pipeline_state"] if state else None
         d.display_connected = state["display_connected"] if state else None
         d.display_ports = state["display_ports"] if state else None
-        d.update_available = _is_update_available(d.firmware_version)
+        d.update_available = _is_update_available(d.os_version)
         d.is_upgrading = _devices_is_upgrading(d)
     fleet_counts_dashboard = _fleet_counts(_triage_devices, user_perms)
 
@@ -1092,7 +1092,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.update_available = is_os_update_available(d.firmware_version)
+        d.update_available = is_os_update_available(d.os_version)
         d.is_upgrading = _devices_is_upgrading(d)
         d.has_active_schedule = d.id in scheduled_device_ids
 
@@ -1144,7 +1144,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.ssh_enabled = state["ssh_enabled"] if state else None
             d.local_api_enabled = state["local_api_enabled"] if state else None
-            d.update_available = is_os_update_available(d.firmware_version)
+            d.update_available = is_os_update_available(d.os_version)
             d.is_upgrading = _devices_is_upgrading(d)
             d.has_active_schedule = d.id in scheduled_device_ids
 

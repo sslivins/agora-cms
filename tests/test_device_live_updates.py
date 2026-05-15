@@ -464,6 +464,7 @@ class TestFirmwareBadgePermission:
                 status=DeviceStatus.ADOPTED,
                 name="Firmware Test",
                 firmware_version="1.0.0",
+                os_version="1.0.0",  # M6: badge is driven by os_version, not firmware_version
             )
             db.add(device)
             await db.commit()
@@ -502,6 +503,7 @@ class TestFirmwareBadgePermission:
                 status=DeviceStatus.ADOPTED,
                 name="Firmware Test Op",
                 firmware_version="1.0.0",
+                os_version="1.0.0",  # M6: badge driven by os_version; operator still shouldn't see it
             )
             db.add(device)
             await db.commit()
