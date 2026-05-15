@@ -7,9 +7,10 @@ Any changes to this file MUST be mirrored in the device-side implementation.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+import re
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Protocol versioning
 #
@@ -63,6 +64,7 @@ class MessageType(str, Enum):
     AUTH_ASSIGNED = "auth_assigned"
     REBOOT = "reboot"
     UPGRADE = "upgrade"
+    OS_UPDATE_DISPATCH = "os_update_dispatch"
     FACTORY_RESET = "factory_reset"
     WIPE_ASSETS = "wipe_assets"
     REQUEST_LOGS = "request_logs"
@@ -294,6 +296,67 @@ class WipeAssetsMessage(BaseMessage):
 
 class UpgradeMessage(BaseMessage):
     type: MessageType = MessageType.UPGRADE
+
+
+# ── os_update_dispatch (CMS → Device, agora-os bundle OTA) ──
+#
+# Wire schema is mirrored from sslivins/agora at ``os_updater/dispatch.py``;
+# the device-side ``DispatchPayload`` is vendored in this repo at
+# ``tests/contract/device_dispatch_validator.py`` and the contract test in
+# ``tests/test_schemas.py`` round-trips a CMS-built message through it to catch
+# drift. The two regex strings below MUST match the device-side strings
+# byte-for-byte. See plan.md §"Phase M3" for context.
+
+_OS_UPDATE_DISPATCH_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?$")
+_OS_UPDATE_DISPATCH_RELEASE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+class OSUpdateDispatchMessage(BaseMessage):
+    """OS-bundle dispatch (CMS → Device).
+
+    Sent from the CMS Upgrade button to a device's WPS connection. Consumed
+    by ``agora-os-updater`` on-device, which strips ``type`` + ``protocol_version``
+    before validating the payload against its own ``DispatchPayload`` schema
+    (see ``tests/contract/device_dispatch_validator.py`` for the vendored copy).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: MessageType = MessageType.OS_UPDATE_DISPATCH
+
+    release_id: str
+    target_version: str
+    min_from_version: str
+    bundle_url: str
+    signature_url: str
+    force_now: bool = False
+    force_downgrade: bool = False
+    not_before: Optional[str] = None
+
+    @field_validator("release_id")
+    @classmethod
+    def _check_release_id(cls, value: str) -> str:
+        if not _OS_UPDATE_DISPATCH_RELEASE_ID_RE.match(value):
+            raise ValueError(
+                "release_id must match [A-Za-z0-9._-]{1,128}"
+            )
+        return value
+
+    @field_validator("target_version", "min_from_version")
+    @classmethod
+    def _check_version(cls, value: str) -> str:
+        if not _OS_UPDATE_DISPATCH_VERSION_RE.match(value):
+            raise ValueError(
+                "version must be major.minor.patch (with optional -prerelease)"
+            )
+        return value
+
+    @field_validator("bundle_url", "signature_url")
+    @classmethod
+    def _check_url(cls, value: str) -> str:
+        if not (value.startswith("https://") or value.startswith("http://")):
+            raise ValueError("url must use http(s) scheme")
+        return value
 
 
 class RequestLogsMessage(BaseMessage):
