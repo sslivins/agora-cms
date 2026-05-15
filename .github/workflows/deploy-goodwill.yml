@@ -29,9 +29,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "CMS image version to deploy (e.g. 1.12.34 — must already exist as a tag on ghcr.io/sslivins/agora-cms)"
+        description: "Image version to deploy (e.g. 1.12.34) — must already be tagged on all three GHCR repos (agora-cms, agora-cms-mcp, agora-worker). Leave as 'auto' to resolve the highest co-versioned tag automatically."
         required: true
         type: string
+        default: auto
       deployRoleAssignments:
         description: "Run role assignment module (only needed on first bootstrap or when adminPrincipalId changes)"
         required: false
@@ -54,6 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: seattle-goodwill
     outputs:
+      resolved_version: ${{ steps.resolve.outputs.resolved_version }}
       revision_suffix: ${{ steps.revisions.outputs.revision_suffix }}
       previous_cms_revision: ${{ steps.revisions.outputs.previous_cms_revision }}
       previous_mcp_revision: ${{ steps.revisions.outputs.previous_mcp_revision }}
@@ -61,6 +63,18 @@ jobs:
       new_mcp_revision: ${{ steps.revisions.outputs.new_mcp_revision }}
     steps:
       - uses: actions/checkout@v4
+
+      # Resolve "auto" -> latest co-versioned semver across all three GHCR
+      # repos (agora-cms, agora-cms-mcp, agora-worker), or accept a literal
+      # pin. Either way, HEAD every manifest before we touch Azure so a
+      # missing tag fails in ~5 seconds with a helpful hint instead of
+      # 4 minutes into Bicep with MANIFEST_UNKNOWN. Runs before azure/login
+      # because it only needs GHCR — no Azure credentials required.
+      - name: Resolve and verify image version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: python3 scripts/resolve_deploy_version.py
 
       - name: Log in to Azure
         uses: azure/login@v2
@@ -105,7 +119,7 @@ jobs:
 
           # ACA revision suffixes must be lowercase alphanumeric with dashes,
           # max 64 chars. Versions look like "1.12.34" -> "v1-12-34".
-          SUFFIX="v$(echo '${{ inputs.version }}' | tr '.' '-')"
+          SUFFIX="v$(echo '${{ steps.resolve.outputs.resolved_version }}' | tr '.' '-')"
           echo "revision_suffix=${SUFFIX}" >> "$GITHUB_OUTPUT"
           echo "  new revision suffix: ${SUFFIX}"
 
@@ -115,9 +129,10 @@ jobs:
 
       - name: Deploy infrastructure
         run: |
-          CMS_REF='ghcr.io/sslivins/agora-cms:${{ inputs.version }}'
-          MCP_REF='ghcr.io/sslivins/agora-cms-mcp:${{ inputs.version }}'
-          WORKER_REF='ghcr.io/sslivins/agora-worker:${{ inputs.version }}'
+          VERSION='${{ steps.resolve.outputs.resolved_version }}'
+          CMS_REF="ghcr.io/sslivins/agora-cms:${VERSION}"
+          MCP_REF="ghcr.io/sslivins/agora-cms-mcp:${VERSION}"
+          WORKER_REF="ghcr.io/sslivins/agora-worker:${VERSION}"
           echo "Deploying:"
           echo "  cms:    $CMS_REF"
           echo "  mcp:    $MCP_REF"
@@ -222,7 +237,7 @@ jobs:
       - name: Wait for new CMS revision to become healthy
         id: health
         run: |
-          EXPECTED="${{ inputs.version }}"
+          EXPECTED="${{ needs.deploy.outputs.resolved_version }}"
           FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
           URL="https://${FQDN}/healthz"
           echo "Polling $URL — expecting version $EXPECTED ..."
