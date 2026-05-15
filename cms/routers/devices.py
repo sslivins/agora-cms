@@ -453,33 +453,18 @@ async def upgrade_device(
     if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
-    # M5: read the cached agora-os bundle metadata. The bundle_checker
-    # poller refreshes this every 30 min; on a cold CMS start it may
-    # still be None for up to one poll interval. Surface that as a
-    # retryable 503 rather than dispatching a malformed message.
-    latest_bundle = get_latest_bundle()
-    if latest_bundle is None:
-        raise HTTPException(
-            status_code=503,
-            detail="bundle_not_yet_cached",
-        )
-
-    # M5: idempotency guard. If the device is already reporting the
-    # target version, don't churn a dispatch — the device would just
-    # no-op it after download/signature work. This relies on the
-    # device having registered with ``os_version`` populated (M4); a
-    # device that never reported one (NULL os_version) falls through
-    # to dispatch.
-    if device.os_version and device.os_version == latest_bundle.target_version:
-        raise HTTPException(
-            status_code=409,
-            detail="already_on_target_version",
-        )
-
     # Stage 4: atomic claim — set ``upgrade_started_at`` iff it's NULL
     # or older than the TTL.  The timestamp we just wrote is captured
     # via RETURNING so a later failure can compare-and-clear without
     # stomping a successor's claim.
+    #
+    # IMPORTANT: claim BEFORE bundle/version checks so that a held claim
+    # always returns 409 ``upgrade_in_progress`` rather than 503
+    # ``bundle_not_yet_cached`` or 409 ``already_on_target_version``.
+    # The multireplica claim-visibility invariant
+    # (test_active_upgrade_claim_visible_across_replicas) depends on
+    # this ordering: when a claim is held, both replicas must reject
+    # with 409, regardless of bundle cache state.
     claim_ts = datetime.now(timezone.utc)
     ttl_cutoff = claim_ts - UPGRADE_TTL
     result = await db.execute(
@@ -504,6 +489,45 @@ async def upgrade_device(
             detail="Upgrade already in progress for this device",
         )
 
+    async def _release_claim() -> None:
+        """Release the claim we just took. Compare-and-clear uses the
+        captured ``claimed`` timestamp as the claim token so we don't
+        stomp a successor's claim if anyone reclaimed after TTL.
+        """
+        await db.execute(
+            update(Device)
+            .where(Device.id == device_id)
+            .where(Device.upgrade_started_at == claimed)
+            .values(upgrade_started_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+
+    # M5: read the cached agora-os bundle metadata. The bundle_checker
+    # poller refreshes this every 30 min; on a cold CMS start it may
+    # still be None for up to one poll interval. Surface that as a
+    # retryable 503 rather than dispatching a malformed message.
+    latest_bundle = get_latest_bundle()
+    if latest_bundle is None:
+        await _release_claim()
+        raise HTTPException(
+            status_code=503,
+            detail="bundle_not_yet_cached",
+        )
+
+    # M5: idempotency guard. If the device is already reporting the
+    # target version, don't churn a dispatch — the device would just
+    # no-op it after download/signature work. This relies on the
+    # device having registered with ``os_version`` populated (M4); a
+    # device that never reported one (NULL os_version) falls through
+    # to dispatch.
+    if device.os_version and device.os_version == latest_bundle.target_version:
+        await _release_claim()
+        raise HTTPException(
+            status_code=409,
+            detail="already_on_target_version",
+        )
+
     upgrade_msg = OSUpdateDispatchMessage(
         release_id=latest_bundle.release_id,
         target_version=latest_bundle.target_version,
@@ -513,17 +537,7 @@ async def upgrade_device(
     )
     sent = await get_transport().send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
     if not sent:
-        # Compare-and-clear using the claimed timestamp as the claim
-        # token — if another request reclaimed the slot after TTL
-        # expired (or we somehow raced), this leaves their claim alone.
-        await db.execute(
-            update(Device)
-            .where(Device.id == device_id)
-            .where(Device.upgrade_started_at == claimed)
-            .values(upgrade_started_at=None)
-            .execution_options(synchronize_session=False)
-        )
-        await db.commit()
+        await _release_claim()
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     await audit_log(

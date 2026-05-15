@@ -532,11 +532,15 @@ class TestUpgradeGuard:
     async def test_upgrade_concurrent_blocked(self, client, db_session):
         """Second upgrade to the same device returns 409 (DB-backed CAS claim).
 
-        M5: the upgrade endpoint reads ``get_latest_bundle()`` before the
-        atomic claim, so this test seeds a stub bundle to get past the
-        503 ``bundle_not_yet_cached`` gate.  The 409 still fires from
-        the CAS step because the device row already has a live
-        ``upgrade_started_at``.
+        M5 ordering: the atomic CAS claim runs BEFORE the bundle and
+        version checks so that a held claim always returns 409
+        ``upgrade_in_progress`` rather than being preempted by 503
+        ``bundle_not_yet_cached`` or 409 ``already_on_target_version``
+        (see the integration test
+        ``test_active_upgrade_claim_visible_across_replicas``).  This
+        test still seeds a stub bundle so the bundle path is exercised
+        for completeness, but the 409 fires from the CAS step before
+        ``get_latest_bundle()`` is consulted.
         """
         from datetime import datetime, timezone
         from cms.models.device import Device, DeviceStatus
