@@ -161,6 +161,7 @@ async def register_known_device(
 
     # Refresh metadata from the register payload.
     device.firmware_version = raw.get("firmware_version", device.firmware_version)
+    device.os_version = raw.get("os_version", device.os_version)
     device.device_type = raw.get("device_type", device.device_type)
     reg_codecs = raw.get("supported_codecs")
     if reg_codecs is not None:

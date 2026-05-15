@@ -94,9 +94,9 @@ async def _seed_device_and_schedule(
                 "INSERT INTO devices "
                 "(id, name, location, status, firmware_version, "
                 " storage_capacity_mb, storage_used_mb, device_type, "
-                " supported_codecs, registered_at, online, group_id, "
+                " supported_codecs, os_version, registered_at, online, group_id, "
                 " upgrade_started_at) "
-                "VALUES (:id, :name, '', 'ADOPTED', '', 0, 0, '', '', "
+                "VALUES (:id, :name, '', 'ADOPTED', '', 0, 0, '', '', '', "
                 "        :now, TRUE, :gid, NULL)"
             ),
             {"id": device_id, "name": "int-dev", "now": now, "gid": group_id},

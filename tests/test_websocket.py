@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 @pytest.mark.asyncio
 class TestWebSocket:
-    async def test_register_new_device(self, app):
+    async def test_register_new_device(self, app, db_session):
         from starlette.testclient import TestClient
 
         with TestClient(app) as tc:
@@ -22,6 +22,7 @@ class TestWebSocket:
                     "device_id": "ws-test-001",
                     "auth_token": "",
                     "firmware_version": "1.0.0",
+                    "os_version": "0.0.16-test",
                     "storage_capacity_mb": 500,
                     "storage_used_mb": 100,
                 })
@@ -35,6 +36,15 @@ class TestWebSocket:
                 time.sleep(0.5)  # Allow server to finish before disconnect
 
                 ws.close()
+
+        # Verify os_version was persisted on the new device row.
+        from cms.models.device import Device
+        from sqlalchemy import select
+
+        row = await db_session.execute(select(Device).where(Device.id == "ws-test-001"))
+        dev = row.scalar_one()
+        assert dev.firmware_version == "1.0.0"
+        assert dev.os_version == "0.0.16-test"
 
     async def test_register_known_device_valid_token(self, app, db_session):
         from cms.models.device import Device, DeviceStatus

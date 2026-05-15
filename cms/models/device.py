@@ -64,6 +64,7 @@ class Device(Base):
         UUID(as_uuid=True), ForeignKey("device_groups.id"), nullable=True
     )
     firmware_version: Mapped[str] = mapped_column(String(32), default="")
+    os_version: Mapped[str] = mapped_column(String(32), default="", index=True)
     storage_capacity_mb: Mapped[int] = mapped_column(Integer, default=0)
     storage_used_mb: Mapped[int] = mapped_column(Integer, default=0)
     device_type: Mapped[str] = mapped_column(String(100), default="")

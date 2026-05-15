@@ -21,6 +21,7 @@ class DeviceOut(BaseModel):
     default_asset_id: Optional[uuid.UUID] = None
     timezone: Optional[str] = None
     firmware_version: str
+    os_version: str = ""
     device_type: str = ""
     supported_codecs: str = ""
     storage_capacity_mb: int
