@@ -120,7 +120,7 @@ async def test_real_lifespan_logs_cms_started_event(app, db_session, monkeypatch
             await asyncio.sleep(3600)
 
     monkeypatch.setattr(main_mod, "scheduler_loop", _idle)
-    monkeypatch.setattr(main_mod, "version_check_loop", _idle)
+    monkeypatch.setattr(main_mod, "bundle_check_loop", _idle)
     monkeypatch.setattr(main_mod, "device_purge_loop", _idle)
     monkeypatch.setattr(main_mod, "service_key_rotation_loop", _idle)
     monkeypatch.setattr(main_mod, "_alert_settings_refresh_loop", _idle)

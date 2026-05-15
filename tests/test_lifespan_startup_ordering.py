@@ -95,7 +95,7 @@ async def _run_lifespan_and_capture_order(
     # at shutdown is clean and nothing real fires during the test.
     for name in (
         "scheduler_loop",
-        "version_check_loop",
+        "bundle_check_loop",
         "device_purge_loop",
         "service_key_rotation_loop",
         "_alert_settings_refresh_loop",
