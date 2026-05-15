@@ -198,3 +198,152 @@ class TestGetLatestOsVersion:
             assert bundle_checker.get_latest_os_version() == "0.0.17-test"
         finally:
             bundle_checker._latest_bundle = original
+
+
+@pytest.mark.asyncio
+class TestFetchLatestBundleFollowsRedirects:
+    """Regression tests for the GitHub-asset 302 redirect bug.
+
+    GitHub's release-asset ``browser_download_url`` endpoints always
+    302 to a one-time-signed URL on ``objects.githubusercontent.com``.
+    httpx defaults to **not** following redirects (unlike ``requests``),
+    so without ``follow_redirects=True`` every meta.json fetch silently
+    failed and the UI's "Check for updates" toast read
+    ``"Latest version: unknown"`` with no diagnostic.
+    """
+
+    async def test_meta_json_302_is_followed(self):
+        import json
+        import httpx
+        from cms.services import bundle_checker
+
+        releases_url = bundle_checker.AGORA_OS_RELEASES_URL
+        meta_redirect_url = "https://github.com/sslivins/agora-os/releases/download/v0.0.21-test/meta.json"
+        meta_blob_url = "https://objects.githubusercontent.com/blob/meta.json?token=stub"
+
+        meta_body = {
+            "version": "0.0.21-test",
+            "min_from_version": "0.0.0",
+            "sha256": "deadbeef",
+            "size_bytes": 12345,
+        }
+        release_body = [
+            {
+                "id": 999,
+                "tag_name": "v0.0.21-test",
+                "draft": False,
+                "prerelease": True,
+                "published_at": "2026-05-15T12:00:00Z",
+                "assets": [
+                    {
+                        "name": "agora-bundle-0.0.21-test.tar.zst",
+                        "browser_download_url": "https://github.com/sslivins/agora-os/releases/download/v0.0.21-test/agora-bundle-0.0.21-test.tar.zst",
+                        "size": 12345,
+                    },
+                    {
+                        "name": "agora-bundle-0.0.21-test.tar.zst.minisig",
+                        "browser_download_url": "https://github.com/sslivins/agora-os/releases/download/v0.0.21-test/agora-bundle-0.0.21-test.tar.zst.minisig",
+                        "size": 100,
+                    },
+                    {
+                        "name": "agora-bundle-0.0.21-test.tar.zst.sha256",
+                        "browser_download_url": "https://github.com/sslivins/agora-os/releases/download/v0.0.21-test/agora-bundle-0.0.21-test.tar.zst.sha256",
+                        "size": 80,
+                    },
+                    {
+                        "name": "agora-bundle-0.0.21-test.meta.json",
+                        "browser_download_url": meta_redirect_url,
+                        "size": 200,
+                    },
+                ],
+            }
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url).startswith(releases_url):
+                return httpx.Response(200, json=release_body)
+            if str(request.url) == meta_redirect_url:
+                # Simulate GitHub's behaviour: 302 to a signed blob URL.
+                return httpx.Response(302, headers={"location": meta_blob_url})
+            if str(request.url) == meta_blob_url:
+                return httpx.Response(200, json=meta_body)
+            return httpx.Response(404, text=f"unexpected URL {request.url}")
+
+        transport = httpx.MockTransport(handler)
+
+        # Monkey-patch httpx.AsyncClient so the production code path uses
+        # the mock transport, but otherwise runs unmodified -- crucially
+        # this exercises the real ``follow_redirects`` argument.
+        real_async_client = httpx.AsyncClient
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        # Reset module state so we can assert _last_error.
+        original_last_error = bundle_checker._last_error
+        bundle_checker._last_error = None
+        try:
+            with patch.object(bundle_checker.httpx, "AsyncClient", side_effect=factory):
+                result = await bundle_checker._fetch_latest_bundle()
+            assert result is not None, (
+                f"expected fetcher to follow the meta.json 302; got None. "
+                f"_last_error={bundle_checker._last_error!r}"
+            )
+            assert result.target_version == "0.0.21-test"
+            assert result.min_from_version == "0.0.0"
+            assert bundle_checker._last_error is None
+        finally:
+            bundle_checker._last_error = original_last_error
+
+    async def test_meta_json_non_200_sets_last_error(self):
+        """Defensive: when meta.json returns a real non-200 (after any
+        redirects), _last_error must be populated so get_status() can
+        surface it via the debug endpoint. Previously this path only
+        emitted a logger.warning and left _last_error=None, which made
+        the failure invisible to operators."""
+        import httpx
+        from cms.services import bundle_checker
+
+        releases_url = bundle_checker.AGORA_OS_RELEASES_URL
+        meta_url = "https://github.com/sslivins/agora-os/releases/download/v0.0.21-test/meta.json"
+
+        release_body = [
+            {
+                "id": 999,
+                "tag_name": "v0.0.21-test",
+                "draft": False,
+                "prerelease": True,
+                "published_at": "2026-05-15T12:00:00Z",
+                "assets": [
+                    {"name": "agora-bundle-0.0.21-test.tar.zst", "browser_download_url": "https://x/a.tar.zst", "size": 1},
+                    {"name": "agora-bundle-0.0.21-test.tar.zst.minisig", "browser_download_url": "https://x/a.minisig", "size": 1},
+                    {"name": "agora-bundle-0.0.21-test.meta.json", "browser_download_url": meta_url, "size": 1},
+                ],
+            }
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url).startswith(releases_url):
+                return httpx.Response(200, json=release_body)
+            if str(request.url) == meta_url:
+                return httpx.Response(500, text="boom")
+            return httpx.Response(404)
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        original_last_error = bundle_checker._last_error
+        bundle_checker._last_error = None
+        try:
+            with patch.object(bundle_checker.httpx, "AsyncClient", side_effect=factory):
+                result = await bundle_checker._fetch_latest_bundle()
+            assert result is None
+            assert bundle_checker._last_error is not None
+            assert "500" in bundle_checker._last_error
+        finally:
+            bundle_checker._last_error = original_last_error
