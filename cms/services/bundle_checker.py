@@ -177,21 +177,32 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
     meta.json).  Caller decides whether to keep the prior cache value
     or treat as unknown.
     """
+    global _last_error
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        # follow_redirects=True is REQUIRED: GitHub release-asset
+        # browser_download_url endpoints always 302 to the actual blob
+        # storage URL on objects.githubusercontent.com.  Without this
+        # flag every meta.json fetch returns HTTP 302 and check_now()
+        # silently returns None -- the UI then shows "latest version:
+        # unknown" with no clue why.
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(
                 AGORA_OS_RELEASES_URL,
                 params={"per_page": 10},
                 headers=_gh_headers(),
             )
             if resp.status_code != 200:
-                logger.warning("GitHub API /releases returned %d", resp.status_code)
+                msg = f"GitHub API /releases returned {resp.status_code}"
+                logger.warning(msg)
+                _last_error = msg
                 return None
             releases = resp.json()
 
             non_draft = [r for r in releases if not r.get("draft")]
             if not non_draft:
-                logger.debug("No non-draft agora-os releases found")
+                msg = "No non-draft agora-os releases found"
+                logger.debug(msg)
+                _last_error = msg
                 return None
             non_draft.sort(key=lambda r: r.get("published_at") or "", reverse=True)
             release = non_draft[0]
@@ -203,33 +214,35 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
             meta_asset = next((a for a in assets if _BUNDLE_META_RE.match(a["name"])), None)
 
             if not bundle_asset or not sig_asset or not meta_asset:
-                logger.warning(
-                    "Release %s missing required assets (bundle=%s sig=%s meta=%s)",
-                    release.get("tag_name"),
-                    bool(bundle_asset),
-                    bool(sig_asset),
-                    bool(meta_asset),
+                msg = (
+                    f"Release {release.get('tag_name')!r} missing required assets "
+                    f"(bundle={bool(bundle_asset)} sig={bool(sig_asset)} meta={bool(meta_asset)})"
                 )
+                logger.warning(msg)
+                _last_error = msg
                 return None
 
             meta_resp = await client.get(meta_asset["browser_download_url"], headers=_gh_headers())
             if meta_resp.status_code != 200:
-                logger.warning(
-                    "Failed to fetch meta.json for %s: HTTP %d",
-                    release.get("tag_name"),
-                    meta_resp.status_code,
+                msg = (
+                    f"Failed to fetch meta.json for {release.get('tag_name')!r}: "
+                    f"HTTP {meta_resp.status_code}"
                 )
+                logger.warning(msg)
+                _last_error = msg
                 return None
             meta = meta_resp.json()
 
             target_version = meta.get("version") or (release.get("tag_name") or "").lstrip("v")
             min_from_version = meta.get("min_from_version")
             if not target_version or not min_from_version:
-                logger.warning(
-                    "Release %s meta.json missing version/min_from_version: %r",
-                    release.get("tag_name"),
-                    {k: meta.get(k) for k in ("version", "min_from_version")},
+                meta_subset = {k: meta.get(k) for k in ("version", "min_from_version")}
+                msg = (
+                    f"Release {release.get('tag_name')!r} meta.json missing version/"
+                    f"min_from_version: {meta_subset!r}"
                 )
+                logger.warning(msg)
+                _last_error = msg
                 return None
 
             return BundleInfo(
@@ -245,7 +258,6 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
     except Exception as exc:
         logger.debug("Failed to fetch latest agora-os bundle", exc_info=True)
         # Preserve last_error so the debug endpoint surfaces stale polls.
-        global _last_error
         _last_error = f"{type(exc).__name__}: {exc}"
         return None
 
