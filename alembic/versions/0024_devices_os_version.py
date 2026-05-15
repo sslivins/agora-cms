@@ -27,6 +27,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # server_default="" backfills existing rows so NOT NULL is legal,
+    # but we drop the DB-side default immediately afterwards to match
+    # this table's convention (sibling string columns like
+    # firmware_version, device_type, supported_codecs all use Python
+    # default="" with no server_default). Leaving server_default in
+    # place would cause alembic autogenerate to flag drift against
+    # the ORM model on every subsequent check run.
     op.add_column(
         "devices",
         sa.Column(
@@ -36,6 +43,7 @@ def upgrade() -> None:
             server_default="",
         ),
     )
+    op.alter_column("devices", "os_version", server_default=None)
     op.create_index("ix_devices_os_version", "devices", ["os_version"])
 
 
