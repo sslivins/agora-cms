@@ -122,9 +122,9 @@ async def _seed_minimal_device(engine: AsyncEngine) -> str:
                 "INSERT INTO devices "
                 "(id, name, location, status, firmware_version, "
                 " storage_capacity_mb, storage_used_mb, device_type, "
-                " supported_codecs, registered_at, online, "
+                " supported_codecs, os_version, registered_at, online, "
                 " upgrade_started_at) "
-                "VALUES (:id, :name, '', 'ADOPTED', '', 0, 0, '', '', "
+                "VALUES (:id, :name, '', 'ADOPTED', '', 0, 0, '', '', '', "
                 "        :now, FALSE, NULL)"
             ),
             {"id": device_id, "name": "wps-int-dev", "now": now},
