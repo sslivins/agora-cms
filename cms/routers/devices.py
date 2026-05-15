@@ -228,7 +228,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             local_api_enabled=live_states[d.id]["local_api_enabled"] if d.id in live_states else None,
             error=live_states[d.id]["error"] if d.id in live_states else None,
             uptime_seconds=live_states[d.id]["uptime_seconds"] if d.id in live_states else 0,
-            update_available=is_os_update_available(d.firmware_version),
+            update_available=is_os_update_available(d.os_version),
             has_active_schedule=d.id in scheduled_device_ids,
         )
         for d in devices
@@ -286,7 +286,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         local_api_enabled=live_states[device.id]["local_api_enabled"] if device.id in live_states else None,
         error=live_states[device.id]["error"] if device.id in live_states else None,
         uptime_seconds=live_states[device.id]["uptime_seconds"] if device.id in live_states else 0,
-        update_available=is_os_update_available(device.firmware_version),
+        update_available=is_os_update_available(device.os_version),
         has_active_schedule=device.id in scheduled_device_ids,
     )
 
@@ -1044,7 +1044,7 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.update_available = is_os_update_available(d.firmware_version)
+        d.update_available = is_os_update_available(d.os_version)
         d.is_upgrading = _is_upgrading(d)
         d.has_active_schedule = False  # poller will flip this via updateLiveFields
 

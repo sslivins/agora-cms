@@ -139,10 +139,13 @@ def is_os_update_available(current_os_version: Optional[str], latest: Optional[s
     and comparison falls back to the cached ``get_latest_os_version()``
     when ``latest`` is omitted.
 
-    During the M2→M6 transition the device's ``os_version`` field is
-    not yet populated, so callers in M2 still pass
-    ``device.firmware_version`` here — see plan §M2 "badge goes dark"
-    note.  This is intentional; M6 flips the call sites.
+    As of M6, all callers pass ``device.os_version`` (populated by the
+    M4-device register message, sslivins/agora#205, first shipped in
+    agora.deb v1.11.61 and bundled into agora-os v0.0.18-test).  Devices
+    on older OS bundles still report a NULL ``os_version`` and will
+    short-circuit to False below — i.e. their Update button stays
+    dark, which is the correct behaviour (their firmware_version namespace
+    is no longer comparable to bundle target_version).
     """
     if latest is None:
         latest = get_latest_os_version()

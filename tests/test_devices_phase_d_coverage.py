@@ -90,7 +90,8 @@ async def grouped_update_device(app):
             id="phase-d-update-device",
             name="Phase D Device",
             status=DeviceStatus.ADOPTED,
-            firmware_version="0.0.1",   # ancient → update_available=True
+            firmware_version="0.0.1",   # ancient (audit only post-M6)
+            os_version="0.0.1",         # M6: badge driven by os_version → update_available=True
             group_id=group.id,
         )
         db.add(device)
