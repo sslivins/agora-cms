@@ -441,10 +441,19 @@ class TestFirmwareBadgePermission:
         """Admin should see firmware update badge when update is available."""
         from cms.database import get_db
         from cms.models.device import Device, DeviceStatus
-        from cms.services import version_checker
+        from cms.services import bundle_checker
 
         # Set a known latest version
-        version_checker._latest_version = "99.0.0"
+        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
+            target_version="99.0.0",
+            release_id="stub",
+            min_from_version="0.0.0",
+            bundle_url="https://example.com/x.tar.zst",
+            signature_url="https://example.com/x.tar.zst.minisig",
+            sha256_url=None,
+            size_bytes=0,
+            created_at="2026-05-15T00:00:00Z",
+        )
 
         factory = app.dependency_overrides[get_db]
         device_id = "firmware-test-001"
@@ -465,15 +474,24 @@ class TestFirmwareBadgePermission:
         assert "99.0.0 available" in resp.text
 
         # Cleanup
-        version_checker._latest_version = None
+        bundle_checker._latest_bundle = None
 
     async def test_operator_no_firmware_badge(self, operator_client, app):
         """Operator should NOT see firmware update badge."""
         from cms.database import get_db
         from cms.models.device import Device, DeviceStatus
-        from cms.services import version_checker
+        from cms.services import bundle_checker
 
-        version_checker._latest_version = "99.0.0"
+        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
+            target_version="99.0.0",
+            release_id="stub",
+            min_from_version="0.0.0",
+            bundle_url="https://example.com/x.tar.zst",
+            signature_url="https://example.com/x.tar.zst.minisig",
+            sha256_url=None,
+            size_bytes=0,
+            created_at="2026-05-15T00:00:00Z",
+        )
 
         factory = app.dependency_overrides[get_db]
         device_id = "firmware-test-002"
@@ -493,7 +511,7 @@ class TestFirmwareBadgePermission:
         assert resp.status_code == 200
         assert "99.0.0 available" not in resp.text
 
-        version_checker._latest_version = None
+        bundle_checker._latest_bundle = None
 
 
 @pytest.mark.asyncio

@@ -301,7 +301,7 @@ cms/
     scheduler.py           # Schedule evaluation, sync pushing
     transcoder.py          # Video transcoding, media probing
     device_manager.py      # Connection registry, state tracking
-    version_checker.py     # Firmware version polling
+    bundle_checker.py      # agora-os bundle discovery (GitHub Releases poller)
     device_purge.py        # Stale pending device cleanup
   static/                  # CSS, JS
   templates/               # Jinja2 admin UI templates

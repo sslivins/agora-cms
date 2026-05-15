@@ -76,7 +76,7 @@ async def grouped_update_device(app):
     from cms.database import get_db
     from cms.models.device import Device, DeviceGroup, DeviceStatus
     from cms.models.user import Role, User, UserGroup
-    from cms.services import version_checker
+    from cms.services import bundle_checker
 
     factory = app.dependency_overrides[get_db]
     group_id = device_id = None
@@ -110,12 +110,21 @@ async def grouped_update_device(app):
         device_id = device.id
         break
 
-    saved = version_checker._latest_version
-    version_checker._latest_version = "9.9.9"
+    saved = bundle_checker._latest_bundle
+    bundle_checker._latest_bundle = bundle_checker.BundleInfo(
+        target_version="9.9.9",
+        release_id="stub",
+        min_from_version="0.0.0",
+        bundle_url="https://example.com/x.tar.zst",
+        signature_url="https://example.com/x.tar.zst.minisig",
+        sha256_url=None,
+        size_bytes=0,
+        created_at="2026-05-15T00:00:00Z",
+    )
     try:
         yield {"group_id": group_id, "device_id": device_id}
     finally:
-        version_checker._latest_version = saved
+        bundle_checker._latest_bundle = saved
 
 
 # ── /api/devices/groups/{id}/panel — permission gating ──────────────

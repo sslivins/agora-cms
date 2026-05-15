@@ -76,7 +76,7 @@ from cms.services.storage import (
     init_storage,
 )
 from cms.services.log_blob import init_log_storage
-from cms.services.version_checker import version_check_loop
+from cms.services.bundle_checker import bundle_check_loop
 from cms.services.device_purge import device_purge_loop
 from cms.services.pending_registration_reaper import (
     pending_registration_reaper_loop,
@@ -516,7 +516,7 @@ async def lifespan(app: FastAPI):
     # | device_purge_loop             | session_advisory_lock | idempotent DELETEs |
     # | stream_capture_monitor_loop   | session_advisory_lock | creates variant rows; needs real lock |
     # | deleted_asset_reaper_loop     | session_advisory_lock | wasteful external blob-delete calls |
-    # | version_check_loop            | replicated           | per-process cache warmer |
+    # | bundle_check_loop             | replicated           | per-process cache warmer |
     # | _alert_settings_refresh_loop  | replicated           | per-process settings cache |
     # | outbox_drain_loop             | replicated (safe)    | already uses SKIP LOCKED |
     # | log_*_loop                    | replicated (safe)    | use SKIP LOCKED on Postgres |
@@ -525,7 +525,7 @@ async def lifespan(app: FastAPI):
     # "always leader" / "always got lock" so the loops run identically.
     scheduler_task = asyncio.create_task(scheduler_loop())
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
-    version_check_task = asyncio.create_task(version_check_loop())
+    bundle_check_task = asyncio.create_task(bundle_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
     pending_reg_reaper_task = asyncio.create_task(
         pending_registration_reaper_loop()
@@ -644,7 +644,7 @@ async def lifespan(app: FastAPI):
 
     scheduler_task.cancel()
     backfill_task.cancel()
-    version_check_task.cancel()
+    bundle_check_task.cancel()
     device_purge_task.cancel()
     pending_reg_reaper_task.cancel()
     key_rotation_task.cancel()
@@ -665,7 +665,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     try:
-        await version_check_task
+        await bundle_check_task
     except asyncio.CancelledError:
         pass
     try:
