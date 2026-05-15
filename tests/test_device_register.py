@@ -44,6 +44,7 @@ def _make_device(
     status: DeviceStatus = DeviceStatus.ADOPTED,
     device_type: str = "",
     firmware_version: str = "1.0.0",
+    os_version: str = "",
     supported_codecs: str = "",
     storage_capacity_mb: int = 0,
     storage_used_mb: int = 0,
@@ -58,6 +59,7 @@ def _make_device(
     d.status = status
     d.device_type = device_type
     d.firmware_version = firmware_version
+    d.os_version = os_version
     d.supported_codecs = supported_codecs
     d.storage_capacity_mb = storage_capacity_mb
     d.storage_used_mb = storage_used_mb
@@ -175,6 +177,7 @@ class TestRegisterKnownDevice:
                 "device_id": "pi-1",
                 "auth_token": "t",
                 "firmware_version": "1.12.0",
+                "os_version": "0.0.16-test",
                 "device_type": "Raspberry Pi 5",
                 "supported_codecs": ["h264", "vp8"],
                 "storage_capacity_mb": 32768,
@@ -184,6 +187,7 @@ class TestRegisterKnownDevice:
         )
 
         assert device.firmware_version == "1.12.0"
+        assert device.os_version == "0.0.16-test"
         assert device.device_type == "Raspberry Pi 5"
         assert device.supported_codecs == "h264,vp8"
         assert device.storage_capacity_mb == 32768

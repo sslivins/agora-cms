@@ -716,6 +716,10 @@
                 <span class="detail-value">{{ d.firmware_version or '—' }}{% if d.update_available and 'devices:manage' in user_perms %} <span class="badge badge-update">{{ latest_version }} available</span>{% endif %}</span>
             </div>
             <div class="detail-item">
+                <span class="detail-label">OS Version</span>
+                <span class="detail-value">{{ d.os_version or '—' }}</span>
+            </div>
+            <div class="detail-item">
                 <span class="detail-label">Storage</span>
                 <span class="detail-value" data-live-storage="{{ d.id }}" data-storage-detail data-storage-mb="{{ d.storage_capacity_mb }}" data-used-mb="{{ d.storage_used_mb }}">{{ fmt_storage(d.storage_used_mb) }} / {{ fmt_storage(d.storage_capacity_mb) }}</span>
             </div>
