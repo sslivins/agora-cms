@@ -679,6 +679,7 @@ class TestUserEvents:
             id="pi-wps", name="Kiosk", group_id=None,
             status=MagicMock(value="adopted"),
             firmware_version="1.11.7",
+            os_version="0.0.16-test",
             upgrade_started_at=prior_claim,
         )
         session.device_row = device
@@ -702,6 +703,7 @@ class TestUserEvents:
                     "type": "register", "device_id": "pi-wps",
                     "auth_token": "valid-token",
                     "firmware_version": "1.11.20",
+                    "os_version": "0.0.16-test",
                 }).encode(),
                 headers={
                     "content-type": "application/json",
@@ -723,14 +725,15 @@ class TestUserEvents:
             f"got {[str(s) for s in session.executed]}"
         )
 
-    async def test_register_over_wps_keeps_upgrade_claim_on_same_fw(
+    async def test_register_over_wps_clears_upgrade_claim_on_os_change(
         self, client, app_and_session,
     ):
-        """Reconnect during an in-flight upgrade (same firmware as
-        before) must NOT clear ``upgrade_started_at`` — the upgrade
-        hasn't actually completed yet.  The upgrade-endpoint TTL is
-        the safety net that releases the claim if the device never
-        boots into the new version.
+        """M5: an OS-version bump on register (firmware unchanged) must
+        also clear ``upgrade_started_at``.  This is the post-OS-OTA
+        success path — the device just rebooted onto the new slot, the
+        OS bundle version moved, the agora-app version did not, and
+        the operator must be able to trigger a follow-up upgrade
+        without waiting 15 min for the TTL to expire.
         """
         from datetime import datetime, timezone
 
@@ -740,6 +743,69 @@ class TestUserEvents:
             id="pi-wps", name="Kiosk", group_id=None,
             status=MagicMock(value="adopted"),
             firmware_version="1.11.20",
+            os_version="0.0.16-test",
+            upgrade_started_at=prior_claim,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-oschg"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.11.20",
+                    "os_version": "0.0.17-test",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        update_stmts = [
+            str(s) for s in session.executed
+            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+        ]
+        assert update_stmts, (
+            f"Expected CAS UPDATE clearing upgrade_started_at on os_version "
+            f"bump, got {[str(s) for s in session.executed]}"
+        )
+
+    async def test_register_over_wps_keeps_upgrade_claim_on_same_fw(
+        self, client, app_and_session,
+    ):
+        """Reconnect during an in-flight upgrade (same firmware AND same
+        os version as before) must NOT clear ``upgrade_started_at`` —
+        the upgrade hasn't actually completed yet.  The
+        upgrade-endpoint TTL is the safety net that releases the
+        claim if the device never boots into the new version.
+        """
+        from datetime import datetime, timezone
+
+        app, session = app_and_session
+        prior_claim = datetime.now(timezone.utc)
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.20",
+            os_version="0.0.16-test",
             upgrade_started_at=prior_claim,
         )
         session.device_row = device
@@ -763,6 +829,7 @@ class TestUserEvents:
                     "type": "register", "device_id": "pi-wps",
                     "auth_token": "valid-token",
                     "firmware_version": "1.11.20",
+                    "os_version": "0.0.16-test",
                 }).encode(),
                 headers={
                     "content-type": "application/json",
@@ -781,6 +848,67 @@ class TestUserEvents:
         assert not update_stmts, (
             f"Did not expect upgrade_started_at UPDATE for same-fw register, "
             f"got {update_stmts}"
+        )
+
+    async def test_register_over_wps_keeps_upgrade_claim_when_register_omits_versions(
+        self, client, app_and_session,
+    ):
+        """Defensive: an older device firmware that registers without
+        sending either ``firmware_version`` or ``os_version`` must NOT
+        trigger the claim-clear path.  An empty incoming-tuple ≠
+        whatever the DB holds, which would otherwise spuriously clear
+        an in-flight claim.  The ``any(incoming_versions)`` guard in
+        wps_webhook.py prevents that.
+        """
+        from datetime import datetime, timezone
+
+        app, session = app_and_session
+        prior_claim = datetime.now(timezone.utc)
+        device = MagicMock(
+            id="pi-wps", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.20",
+            os_version="0.0.16-test",
+            upgrade_started_at=prior_claim,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-reg-noversions"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-wps",
+                    "auth_token": "valid-token",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-wps",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        update_stmts = [
+            str(s) for s in session.executed
+            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+        ]
+        assert not update_stmts, (
+            f"Did not expect upgrade_started_at UPDATE when register "
+            f"omitted both version fields, got {update_stmts}"
         )
 
     async def test_register_over_wps_orphaned_device(self, client, app_and_session):

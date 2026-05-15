@@ -333,7 +333,10 @@ async def dispatch_device_message(
             and settings.api_key_rotation_hours > 0
             and device.api_key_rotated_at
         ):
-            age = datetime.now(timezone.utc) - device.api_key_rotated_at
+            rotated_at = device.api_key_rotated_at
+            if rotated_at.tzinfo is None:
+                rotated_at = rotated_at.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - rotated_at
             if age > timedelta(hours=settings.api_key_rotation_hours):
                 await rotate_api_key(device=device, db=db, send=send)
 
