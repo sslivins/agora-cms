@@ -286,16 +286,26 @@ class TestDeviceCRUD:
 class TestCheckUpdates:
     async def test_check_updates_endpoint(self, client):
         from unittest.mock import AsyncMock, patch
-        from cms.services import version_checker
+        from cms.services import bundle_checker
 
-        original = version_checker._latest_version
+        original = bundle_checker._latest_bundle
+        stub = bundle_checker.BundleInfo(
+            target_version="9.9.9",
+            release_id="stub",
+            min_from_version="0.0.0",
+            bundle_url="https://example.com/x.tar.zst",
+            signature_url="https://example.com/x.tar.zst.minisig",
+            sha256_url=None,
+            size_bytes=0,
+            created_at="2026-05-15T00:00:00Z",
+        )
         try:
-            with patch.object(version_checker, "_fetch_latest_version", new_callable=AsyncMock, return_value="9.9.9"):
+            with patch.object(bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub):
                 resp = await client.post("/api/devices/check-updates")
             assert resp.status_code == 200
             assert resp.json()["latest_version"] == "9.9.9"
         finally:
-            version_checker._latest_version = original
+            bundle_checker._latest_bundle = original
 
 
 @pytest.mark.asyncio
