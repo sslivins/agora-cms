@@ -209,6 +209,7 @@ async def events_receiver(
             # below to gate (and CAS-protect) clearing the
             # upgrade-in-progress claim on a real firmware-change.
             pre_register_fw = device.firmware_version or ""
+            pre_register_os = device.os_version or ""
             pre_register_upgrade_claim = device.upgrade_started_at
             reg_result = await register_known_device(device, msg, db)
             # Persist the device's LAN IP from the register payload.
@@ -252,19 +253,33 @@ async def events_receiver(
             # upgrade (mirrors ``ws.py`` Stage-4 logic):
             #   - there was a claim at register time
             #     (``pre_register_upgrade_claim``),
-            #   - both prior and reported firmware are non-empty, and
-            #   - they differ (so the device booted into a new version).
+            #   - the incoming register reports at least one
+            #     non-empty version field, and
+            #   - the (os_version, firmware_version) tuple differs
+            #     from the pre-register snapshot.
+            # M5: comparing the tuple instead of firmware_version
+            # alone is what makes the post-OS-OTA path actually
+            # release the claim: a pure-OS bundle bumps os_version
+            # only, leaving firmware_version untouched, which under
+            # the old fw-only check would leave the device locked
+            # out for the full UPGRADE_TTL after every successful OS
+            # upgrade.
             # The UPDATE uses compare-and-swap on
             # ``upgrade_started_at`` equal to the pre-register value,
             # so a successor upgrade claim written between our SELECT
             # and our clear isn't wiped.  Transient reconnects during
-            # an upgrade (same firmware) leave the claim in place;
-            # the upgrade-endpoint TTL is the safety net that releases
-            # the claim if no firmware change is ever reported.
+            # an upgrade (neither field bumps) leave the claim in
+            # place; the upgrade-endpoint TTL is the safety net that
+            # releases the claim if no version change is ever
+            # reported.
             if pre_register_upgrade_claim is not None:
                 reported_fw = (msg.get("firmware_version") or "").strip()
+                reported_os = (msg.get("os_version") or "").strip()
                 prior_fw = (pre_register_fw or "").strip()
-                if reported_fw and prior_fw and reported_fw != prior_fw:
+                prior_os = (pre_register_os or "").strip()
+                prior_versions = (prior_os, prior_fw)
+                incoming_versions = (reported_os, reported_fw)
+                if any(incoming_versions) and prior_versions != incoming_versions:
                     await db.execute(
                         update(Device)
                         .where(

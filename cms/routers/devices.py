@@ -30,12 +30,12 @@ from cms.schemas.device import (
     SetPasswordRequest,
     ToggleRequest,
 )
-from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, RebootMessage, SyncMessage, UpgradeMessage, WipeAssetsMessage
+from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, OSUpdateDispatchMessage, RebootMessage, SyncMessage, WipeAssetsMessage
 from cms.services.transport import get_transport
 from cms.services.scheduler import push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
-from cms.services.bundle_checker import check_now
+from cms.services.bundle_checker import check_now, get_latest_bundle
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 
@@ -453,6 +453,29 @@ async def upgrade_device(
     if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
 
+    # M5: read the cached agora-os bundle metadata. The bundle_checker
+    # poller refreshes this every 30 min; on a cold CMS start it may
+    # still be None for up to one poll interval. Surface that as a
+    # retryable 503 rather than dispatching a malformed message.
+    latest_bundle = get_latest_bundle()
+    if latest_bundle is None:
+        raise HTTPException(
+            status_code=503,
+            detail="bundle_not_yet_cached",
+        )
+
+    # M5: idempotency guard. If the device is already reporting the
+    # target version, don't churn a dispatch — the device would just
+    # no-op it after download/signature work. This relies on the
+    # device having registered with ``os_version`` populated (M4); a
+    # device that never reported one (NULL os_version) falls through
+    # to dispatch.
+    if device.os_version and device.os_version == latest_bundle.target_version:
+        raise HTTPException(
+            status_code=409,
+            detail="already_on_target_version",
+        )
+
     # Stage 4: atomic claim — set ``upgrade_started_at`` iff it's NULL
     # or older than the TTL.  The timestamp we just wrote is captured
     # via RETURNING so a later failure can compare-and-clear without
@@ -481,7 +504,13 @@ async def upgrade_device(
             detail="Upgrade already in progress for this device",
         )
 
-    upgrade_msg = UpgradeMessage()
+    upgrade_msg = OSUpdateDispatchMessage(
+        release_id=latest_bundle.release_id,
+        target_version=latest_bundle.target_version,
+        min_from_version=latest_bundle.min_from_version,
+        bundle_url=latest_bundle.bundle_url,
+        signature_url=latest_bundle.signature_url,
+    )
     sent = await get_transport().send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
     if not sent:
         # Compare-and-clear using the claimed timestamp as the claim
@@ -501,7 +530,12 @@ async def upgrade_device(
         db, user=getattr(request.state, "user", None),
         action="device.upgrade", resource_type="device",
         resource_id=str(device_id),
-        description=f"Triggered firmware upgrade on device '{device.name or device_id}'",
+        description=(
+            f"Dispatched os_update_dispatch to device "
+            f"'{device.name or device_id}' "
+            f"(release_id={latest_bundle.release_id}, "
+            f"target_version={latest_bundle.target_version})"
+        ),
         request=request,
     )
     await db.commit()

@@ -530,10 +530,18 @@ class TestUpgradeGuard:
         assert "not connected" in resp.json()["detail"]
 
     async def test_upgrade_concurrent_blocked(self, client, db_session):
-        """Second upgrade to the same device returns 409 (DB-backed CAS claim)."""
+        """Second upgrade to the same device returns 409 (DB-backed CAS claim).
+
+        M5: the upgrade endpoint reads ``get_latest_bundle()`` before the
+        atomic claim, so this test seeds a stub bundle to get past the
+        503 ``bundle_not_yet_cached`` gate.  The 409 still fires from
+        the CAS step because the device row already has a live
+        ``upgrade_started_at``.
+        """
         from datetime import datetime, timezone
         from cms.models.device import Device, DeviceStatus
         from cms.services.device_manager import device_manager
+        from cms.services import bundle_checker
 
         device = Device(
             id="up-pi-002",
@@ -551,12 +559,167 @@ class TestUpgradeGuard:
         from cms.services import device_presence
         await device_presence.mark_online(db_session, "up-pi-002")
 
+        prior_bundle = bundle_checker._latest_bundle
+        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
+            target_version="0.0.17-test",
+            release_id="rel-up-002",
+            min_from_version="0.0.0",
+            bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
+            signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
+            sha256_url=None,
+            size_bytes=1,
+            created_at="2026-05-15T00:00:00Z",
+        )
         try:
             resp = await client.post("/api/devices/up-pi-002/upgrade")
             assert resp.status_code == 409
             assert "already in progress" in resp.json()["detail"]
         finally:
+            bundle_checker._latest_bundle = prior_bundle
             device_manager.disconnect("up-pi-002")
+
+    async def test_upgrade_no_bundle_cached(self, client, db_session):
+        """Cold-CMS state (bundle_checker hasn't polled yet) returns 503.
+
+        Reasoning: dispatching a malformed ``os_update_dispatch`` (or
+        worse, a real message with default-empty URLs) would have the
+        device emit ``failed:signature_invalid`` and tie up its WPS
+        channel for nothing.  503 ``bundle_not_yet_cached`` is the
+        retryable signal that the CMS hasn't yet picked up an
+        agora-os release.
+        """
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+        from cms.services import bundle_checker, device_presence
+
+        device = Device(id="up-pi-503", name="up-pi-503", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("up-pi-503", FakeWS())
+        await device_presence.mark_online(db_session, "up-pi-503")
+
+        prior_bundle = bundle_checker._latest_bundle
+        bundle_checker._latest_bundle = None
+        try:
+            resp = await client.post("/api/devices/up-pi-503/upgrade")
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == "bundle_not_yet_cached"
+        finally:
+            bundle_checker._latest_bundle = prior_bundle
+            device_manager.disconnect("up-pi-503")
+
+    async def test_upgrade_already_on_target_version(self, client, db_session):
+        """Device already running the bundle's target version: 409.
+
+        Idempotency guard — clicking Upgrade on a device that's already
+        on the latest OS release no-ops with a precise reason code
+        instead of triggering a download that the device will discard
+        anyway.  Relies on M4-persisted ``os_version``.
+        """
+        from cms.models.device import Device, DeviceStatus
+        from cms.services.device_manager import device_manager
+        from cms.services import bundle_checker, device_presence
+
+        device = Device(
+            id="up-pi-409a",
+            name="up-pi-409a",
+            status=DeviceStatus.ADOPTED,
+            os_version="0.0.17-test",
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("up-pi-409a", FakeWS())
+        await device_presence.mark_online(db_session, "up-pi-409a")
+
+        prior_bundle = bundle_checker._latest_bundle
+        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
+            target_version="0.0.17-test",
+            release_id="rel-up-409a",
+            min_from_version="0.0.0",
+            bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
+            signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
+            sha256_url=None,
+            size_bytes=1,
+            created_at="2026-05-15T00:00:00Z",
+        )
+        try:
+            resp = await client.post("/api/devices/up-pi-409a/upgrade")
+            assert resp.status_code == 409
+            assert resp.json()["detail"] == "already_on_target_version"
+        finally:
+            bundle_checker._latest_bundle = prior_bundle
+            device_manager.disconnect("up-pi-409a")
+
+    async def test_upgrade_sends_os_update_dispatch(self, client, db_session):
+        """Happy path: outbound WPS payload is ``os_update_dispatch`` with
+        all five bundle fields populated.
+
+        Captures the message via a fake transport so the test asserts
+        the shape of what would actually go on the wire, not just that
+        the endpoint returned 200.
+        """
+        from cms.models.device import Device, DeviceStatus
+        from cms.services import bundle_checker, device_presence
+        from cms.services.transport import set_transport, reset_transport_to_local
+
+        device = Device(
+            id="up-pi-ok",
+            name="up-pi-ok",
+            status=DeviceStatus.ADOPTED,
+            os_version="0.0.16-test",
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await device_presence.mark_online(db_session, "up-pi-ok")
+
+        sent_messages: list = []
+
+        class CapturingTransport:
+            async def is_connected(self, device_id):
+                return True
+
+            async def send_to_device(self, device_id, msg):
+                sent_messages.append((device_id, msg))
+                return True
+
+        prior_bundle = bundle_checker._latest_bundle
+        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
+            target_version="0.0.17-test",
+            release_id="rel-up-ok",
+            min_from_version="0.0.0",
+            bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
+            signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
+            sha256_url=None,
+            size_bytes=12345,
+            created_at="2026-05-15T00:00:00Z",
+        )
+
+        set_transport(CapturingTransport())
+        try:
+            resp = await client.post("/api/devices/up-pi-ok/upgrade")
+            assert resp.status_code == 200, resp.text
+            assert len(sent_messages) == 1
+            device_id, msg = sent_messages[0]
+            assert device_id == "up-pi-ok"
+            assert msg["type"] == "os_update_dispatch"
+            assert msg["release_id"] == "rel-up-ok"
+            assert msg["target_version"] == "0.0.17-test"
+            assert msg["min_from_version"] == "0.0.0"
+            assert msg["bundle_url"] == (
+                "https://example.invalid/agora-bundle-0.0.17-test.tar.zst"
+            )
+            assert msg["signature_url"] == (
+                "https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig"
+            )
+        finally:
+            bundle_checker._latest_bundle = prior_bundle
+            reset_transport_to_local()
 
     async def test_upgrade_clears_flag_on_disconnect(self, client, db_session):
         """Upgrading flag is cleared via DB column on disconnect."""

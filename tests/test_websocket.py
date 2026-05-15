@@ -233,6 +233,77 @@ class TestWebSocket:
 
                 ws.close()
 
+    async def test_register_clears_upgrade_claim_on_os_change(self, app, db_session):
+        """M5: on the direct-WS register path, the claim-clear logic must
+        compare (os_version, firmware_version) tuples — not firmware_version
+        alone — so that a pure-OS bundle upgrade releases the
+        ``upgrade_started_at`` claim on next register. The wps_webhook path
+        has full guard-matrix coverage in test_wps_webhook.py; this test
+        locks down that the duplicate code block in ws.py also fires.
+        """
+        from datetime import datetime, timezone
+        import hashlib
+
+        from cms.models.device import Device, DeviceStatus
+
+        token = "ws-claim-clear-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        claim_at = datetime.now(timezone.utc)
+
+        device = Device(
+            id="ws-test-claim-clear",
+            name="ws-test-claim-clear",
+            status=DeviceStatus.ADOPTED,
+            device_auth_token_hash=token_hash,
+            firmware_version="1.11.20",
+            os_version="0.0.16-test",
+            upgrade_started_at=claim_at,
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await db_session.close()
+
+        from starlette.testclient import TestClient
+        with TestClient(app) as tc:
+            with tc.websocket_connect("/ws/device") as ws:
+                ws.send_json({
+                    "type": "register",
+                    "protocol_version": 1,
+                    "device_id": "ws-test-claim-clear",
+                    "auth_token": token,
+                    "firmware_version": "1.11.20",
+                    "os_version": "0.0.17-test",
+                    "storage_capacity_mb": 500,
+                })
+
+                msg = ws.receive_json()
+                assert msg["type"] == "sync"
+                msg = ws.receive_json()
+                assert msg["type"] == "config"
+
+                # Poll until the M5 claim-clear lands.
+                from sqlalchemy import select
+                from cms.models.device import Device as _Device
+                from shared.database import get_session_factory
+                factory = get_session_factory()
+                deadline = time.time() + 5.0
+                cleared = False
+                while time.time() < deadline:
+                    async with factory() as probe_db:
+                        result = (await probe_db.execute(
+                            select(_Device.upgrade_started_at, _Device.os_version)
+                            .where(_Device.id == "ws-test-claim-clear")
+                        )).first()
+                        if result is not None and result.upgrade_started_at is None:
+                            assert result.os_version == "0.0.17-test"
+                            cleared = True
+                            break
+                    time.sleep(0.05)
+
+                assert cleared, "upgrade_started_at should have been cleared by ws.py M5 path"
+
+                ws.close()
+
     async def test_known_device_wrong_nonmempty_token_rejected(self, app, db_session):
         """A known device that sends a WRONG (non-empty) token should still
         be rejected as orphaned — this is a security measure."""

@@ -118,6 +118,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         device = result.scalar_one_or_none()
         is_new_device = device is None
         pre_register_fw: str = ""
+        pre_register_os: str = ""
         pre_register_upgrade_claim = None  # datetime or None
 
         if device is None:
@@ -164,6 +165,7 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             # claim (written between our SELECT and our CLEAR) isn't
             # wiped by this register path.
             pre_register_fw = device.firmware_version or ""
+            pre_register_os = device.os_version or ""
             pre_register_upgrade_claim = device.upgrade_started_at
             reg_result = await register_known_device(device, raw, db)
             if reg_result.orphaned:
@@ -194,24 +196,35 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             db, device_id, connection_id=conn_id, ip_address=client_ip,
         )
         # Stage 4: clear any stale upgrade-in-progress claim so the
-        # Stage 4: clear any stale upgrade-in-progress claim so the
         # device can be upgraded again on a future request — but only
         # when this register represents an actual completed upgrade:
         #   - there was a claim at register time (``pre_register_upgrade_claim``),
-        #   - both the prior and reported firmware are non-empty, and
-        #   - they differ (so the device booted into a new version).
+        #   - the incoming register reports at least one non-empty
+        #     version field, and
+        #   - the (os_version, firmware_version) tuple differs from
+        #     the pre-register snapshot.
+        # M5: comparing the tuple instead of firmware_version alone
+        # is what makes the post-OS-OTA path actually release the
+        # claim: a pure-OS bundle bumps os_version only, leaving
+        # firmware_version untouched, which under the old fw-only
+        # check would leave the device locked out for the full
+        # UPGRADE_TTL after every successful OS upgrade.
         # The UPDATE uses compare-and-swap on ``upgrade_started_at``
         # equal to the pre-register value, so a successor upgrade
         # claim written between our SELECT and our clear isn't wiped.
         # Under N>1 with rolling restarts, transient reconnects during
-        # an upgrade (same firmware) leave the claim in place; the
-        # TTL on the column (see upgrade endpoint) is the safety net
-        # that releases the claim if no firmware change is ever
+        # an upgrade (neither field bumps) leave the claim in place;
+        # the TTL on the column (see upgrade endpoint) is the safety
+        # net that releases the claim if no version change is ever
         # reported.  For brand-new devices there's no claim to clear.
         if not is_new_device and pre_register_upgrade_claim is not None:
             reported_fw = (raw.get("firmware_version") or "").strip()
+            reported_os = (raw.get("os_version") or "").strip()
             prior_fw = (pre_register_fw or "").strip()
-            if reported_fw and prior_fw and reported_fw != prior_fw:
+            prior_os = (pre_register_os or "").strip()
+            prior_versions = (prior_os, prior_fw)
+            incoming_versions = (reported_os, reported_fw)
+            if any(incoming_versions) and prior_versions != incoming_versions:
                 await db.execute(
                     update(Device)
                     .where(

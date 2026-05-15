@@ -362,6 +362,7 @@ async def update_status(
             | (Device.last_status_ts < ts)
         )
         .values(**values)
+        .execution_options(synchronize_session=False)
     )
     rowcount = result.rowcount or 0
 
