@@ -110,6 +110,37 @@ async def get_user(
     return _user_to_read(user, gids)
 
 
+@router.get("/{user_id}/row", dependencies=[Depends(require_permission(USERS_READ))])
+async def get_user_row(
+    user_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the rendered <tr> HTML for a single user.
+
+    Used by the no-reload flows on the /users page (create, update,
+    toggle-active, and the cross-session poller) so the client never
+    has to synthesize row markup in JS. See issue #87.
+    """
+    from fastapi.responses import HTMLResponse
+    from cms.ui import templates
+
+    result = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    actor = getattr(request.state, "user", None)
+    can_write = bool(actor and actor.role and USERS_WRITE in actor.role.permissions)
+    current_user_id = str(actor.id) if actor else ""
+
+    macros = templates.env.get_template("_macros.html").module
+    html = macros.user_row(user, current_user_id, can_write)
+    return HTMLResponse(str(html))
+
+
 @router.post("", response_model=UserRead, status_code=201)
 async def create_user(
     data: UserCreate,
