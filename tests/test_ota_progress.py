@@ -108,7 +108,7 @@ def test_stage_progress_unknown_sub_phase_falls_back_to_generic_label():
 def test_extract_progress_computes_pct_with_sub_phase_label():
     d = _DeviceStub()
     ota_progress.handle_event(d, "ota_extract_progress",
-                              {"phase": "rootfs",
+                              {"phase": "extracting_rootfs",
                                "bytes_done": 500_000_000,
                                "bytes_total": 1_000_000_000})
     assert d.ota_phase == "ota_extract_progress"
