@@ -547,8 +547,17 @@ window._adoptionProfiles = [
             const msg = d.error ? String(d.error).replace(/[<>&]/g, '') : 'Player pipeline reported an error';
             out.push('<span class="has-tooltip"><span class="badge badge-error">Error</span><span class="tooltip">' + msg + '</span></span>');
         }
-        // Upgrading
-        if (d.is_upgrading) {
+        // Upgrading — live OTA progress bar if available, else legacy chip.
+        if (d.is_upgrading && d.ota_phase && d.ota_pct != null) {
+            const pct = Math.round(d.ota_pct);
+            const label = (d.ota_label || 'Upgrading').replace(/[<>&]/g, '');
+            const tooltip = label + ' — device will reboot when done';
+            out.push('<span class="has-tooltip"><span class="badge badge-progress" style="--pct: ' + d.ota_pct.toFixed(1) + '%">' + label + ' ' + pct + '%</span><span class="tooltip">' + tooltip + '</span></span>');
+        } else if (d.is_upgrading && d.ota_phase) {
+            const label = (d.ota_label || 'Upgrading…').replace(/[<>&]/g, '');
+            const tooltip = (d.ota_label || 'Upgrading').replace(/[<>&]/g, '') + ' — device will reboot when done';
+            out.push('<span class="has-tooltip"><span class="badge badge-processing">' + label + '</span><span class="tooltip">' + tooltip + '</span></span>');
+        } else if (d.is_upgrading) {
             out.push('<span class="has-tooltip"><span class="badge badge-processing">Upgrading…</span><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>');
         }
         // Temp
@@ -599,9 +608,17 @@ window._adoptionProfiles = [
         const storageBucket = (d.storage_capacity_mb && d.storage_capacity_mb > 0)
             ? Math.round((d.storage_capacity_mb - (d.storage_used_mb || 0)) / d.storage_capacity_mb * 100)
             : 'n';
+        // OTA progress signal — phase token + rounded pct bucket.  Both
+        // tokens must match the Jinja side at _macros.html (see the
+        // ``data-alerts-sig`` attribute on the live-status <td>) so the
+        // very first poll after page load doesn't trigger a redundant
+        // re-render when the OTA badge is unchanged.
+        const otaPhase = d.ota_phase || 'n';
+        const otaPctBucket = d.ota_pct != null ? Math.round(d.ota_pct) : 'n';
         return [
             d.status, d.is_online ? 1 : 0, d.is_upgrading ? 1 : 0,
-            d.update_available ? 1 : 0, errFlag, tempBucket, displayOff, storageBucket
+            d.update_available ? 1 : 0, errFlag, tempBucket, displayOff, storageBucket,
+            otaPhase, otaPctBucket
         ].join('|');
     }
 

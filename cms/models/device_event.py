@@ -22,6 +22,23 @@ class DeviceEventType(str, PyEnum):
     ERROR_CLEARED = "error_cleared"
     CMS_STARTED = "cms_started"
     CMS_STOPPED = "cms_stopped"
+    # OTA lifecycle events — one per device-side FSM transition.
+    # Persisted to ``device_events`` for the audit/event-log surface;
+    # also drive the UI badge via ``cms.services.ota_progress``.  See
+    # ``WIRE_TO_CMS_EVENT`` in ``cms.services.device_inbound`` for the
+    # wire-format → enum mapping.
+    OTA_DOWNLOAD_STARTED = "ota_download_started"
+    OTA_DOWNLOAD_PROGRESS = "ota_download_progress"
+    OTA_SIGNATURE_VERIFIED = "ota_signature_verified"
+    OTA_STAGED = "ota_staged"
+    OTA_STAGE_PROGRESS = "ota_stage_progress"
+    OTA_EXTRACT_PROGRESS = "ota_extract_progress"
+    OTA_TRYBOOT_INITIATED = "ota_tryboot_initiated"
+    OTA_SLOT_CONFIRMED = "ota_slot_confirmed"
+    OTA_PROMOTED = "ota_promoted"
+    OTA_MIGRATION_COMPLETE = "ota_migration_complete"
+    OTA_FAILED = "ota_failed"
+    OTA_DECLINED = "ota_declined"
 
 
 class DeviceEvent(Base):
@@ -50,7 +67,7 @@ class DeviceEvent(Base):
         doc="Denormalized snapshot of group name at event time",
     )
     event_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, index=True,
+        String(40), nullable=False, index=True,
     )
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

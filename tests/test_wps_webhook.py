@@ -718,7 +718,7 @@ class TestUserEvents:
         # Confirm an UPDATE statement was issued targeting upgrade_started_at.
         update_stmts = [
             str(s) for s in session.executed
-            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+            if str(s).strip().upper().startswith("UPDATE ") and "upgrade_started_at" in str(s)
         ]
         assert update_stmts, (
             f"Expected CAS UPDATE clearing upgrade_started_at, "
@@ -781,7 +781,7 @@ class TestUserEvents:
         assert r.status_code == 204
         update_stmts = [
             str(s) for s in session.executed
-            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+            if str(s).strip().upper().startswith("UPDATE ") and "upgrade_started_at" in str(s)
         ]
         assert update_stmts, (
             f"Expected CAS UPDATE clearing upgrade_started_at on os_version "
@@ -843,7 +843,7 @@ class TestUserEvents:
         assert r.status_code == 204
         update_stmts = [
             str(s) for s in session.executed
-            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+            if str(s).strip().upper().startswith("UPDATE ") and "upgrade_started_at" in str(s)
         ]
         assert not update_stmts, (
             f"Did not expect upgrade_started_at UPDATE for same-fw register, "
@@ -904,7 +904,7 @@ class TestUserEvents:
         assert r.status_code == 204
         update_stmts = [
             str(s) for s in session.executed
-            if "UPDATE" in str(s).upper() and "upgrade_started_at" in str(s)
+            if str(s).strip().upper().startswith("UPDATE ") and "upgrade_started_at" in str(s)
         ]
         assert not update_stmts, (
             f"Did not expect upgrade_started_at UPDATE when register "
