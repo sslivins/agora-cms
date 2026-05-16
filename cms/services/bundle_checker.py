@@ -23,6 +23,28 @@ are made authenticated (5000 calls/hr instead of 60/hr). The CMS does
 not require auth at the current poll cadence — one cycle uses ~2 calls
 — but if the workspace is restart-y, auth keeps us comfortably under
 the limit.
+
+Shared state across replicas (issue agora-cms#578)
+----------------------------------------------------
+The "latest bundle" used to live in module-level globals
+(``_latest_bundle``, ``_last_success_at``).  In a multi-replica deploy
+each worker had its own copy, so a successful ``POST /api/devices/
+check-updates`` only refreshed the cache of the replica it happened to
+land on; the others kept their stale view until their own 30-min cron
+tick fired, and the UI's ``update_available`` badge flickered on/off
+as the load balancer round-robined requests.
+
+The bundle and the last-success timestamp now live in the
+``agora_os_latest_bundle`` single-row table (migration 0026).  All
+readers go through :func:`get_latest_bundle` / :func:`get_latest_os_version`,
+which read this row.  All writers go through :func:`set_latest_bundle`,
+which UPSERTs the row.  Multiple replicas writing the same content is
+fine — last-write-wins on identical payloads is idempotent.
+
+``_last_error`` deliberately stays as a module global — it's per-replica
+debug state and it's *more* useful that way (lets ops see whether one
+replica's network egress is partially broken vs. all of them failing).
+It's surfaced via :func:`get_status` for the debug endpoint.
 """
 
 from __future__ import annotations
@@ -36,6 +58,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from cms.models.agora_os_latest_bundle import AgoraOsLatestBundle
 
 logger = logging.getLogger("agora.cms.bundle_checker")
 
@@ -72,33 +98,66 @@ class BundleInfo:
     created_at: str  # release.published_at, ISO-8601
 
 
-# ── Module-level cache ──────────────────────────────────────────────
-# Reset by check_now() and bundle_check_loop().  Tests poke these
-# directly to stand up a deterministic state for is_os_update_available
-# / get_latest_os_version assertions.
-_latest_bundle: Optional[BundleInfo] = None
-_last_success_at: Optional[datetime] = None
+# ── Module-level state ──────────────────────────────────────────────
+# ``_last_error`` is intentionally per-replica: it's debug state for
+# ``get_status()`` and exists so an operator can tell whether a single
+# replica's poll is failing or whether they all are.  The actual bundle
+# and last-success timestamp live in the shared ``agora_os_latest_bundle``
+# row instead (see :func:`get_latest_bundle`).
 _last_error: Optional[str] = None
 
 
-def get_latest_bundle() -> Optional[BundleInfo]:
-    """Return the cached BundleInfo for the newest agora-os release, or None."""
-    return _latest_bundle
+def _bundle_from_row(row: AgoraOsLatestBundle) -> BundleInfo:
+    return BundleInfo(
+        target_version=row.target_version,
+        release_id=row.release_id,
+        min_from_version=row.min_from_version,
+        bundle_url=row.bundle_url,
+        signature_url=row.signature_url,
+        sha256_url=row.sha256_url,
+        size_bytes=row.size_bytes,
+        created_at=row.created_at,
+    )
 
 
-def get_latest_os_version() -> Optional[str]:
-    """Return the cached newest agora-os version, or None if unknown.
+async def get_latest_bundle(db: AsyncSession) -> Optional[BundleInfo]:
+    """Return the latest known BundleInfo (shared across replicas), or None.
+
+    Reads from the ``agora_os_latest_bundle`` single-row table.  Returns
+    ``None`` only when no poll has ever succeeded for this CMS deployment
+    (cold start before the first ``bundle_check_loop`` iteration writes
+    the row).
+    """
+    row = await db.scalar(
+        select(AgoraOsLatestBundle).where(AgoraOsLatestBundle.id == 1)
+    )
+    if row is None:
+        return None
+    return _bundle_from_row(row)
+
+
+async def get_latest_os_version(db: AsyncSession) -> Optional[str]:
+    """Return the latest known agora-os version, or None if no successful poll yet.
 
     This is the v-stripped semver string (e.g. ``"0.0.17-test"``).
     """
-    return _latest_bundle.target_version if _latest_bundle else None
+    bundle = await get_latest_bundle(db)
+    return bundle.target_version if bundle else None
 
 
-def get_status() -> dict:
-    """Return checker health snapshot for debug endpoints (P1-4)."""
+async def get_status(db: AsyncSession) -> dict:
+    """Return checker health snapshot for debug endpoints (P1-4).
+
+    ``last_error`` is per-replica (this process's last failed poll, if
+    any).  ``latest_version`` and ``last_success_at`` are read from the
+    shared DB row so all replicas report the same value for these.
+    """
+    row = await db.scalar(
+        select(AgoraOsLatestBundle).where(AgoraOsLatestBundle.id == 1)
+    )
     return {
-        "latest_version": get_latest_os_version(),
-        "last_success_at": _last_success_at.isoformat() if _last_success_at else None,
+        "latest_version": row.target_version if row else None,
+        "last_success_at": row.last_success_at.isoformat() if row else None,
         "last_error": _last_error,
     }
 
@@ -131,24 +190,26 @@ def _parse_version(v: str) -> tuple:
     return tuple(out)
 
 
-def is_os_update_available(current_os_version: Optional[str], latest: Optional[str] = None) -> bool:
-    """Return True iff the device is running an older OS version than the latest.
+def is_os_update_available(
+    current_os_version: Optional[str],
+    latest: Optional[str],
+) -> bool:
+    """Return True iff the device is running an older OS version than ``latest``.
 
-    Mirrors ``version_checker.is_update_available`` semantics:
-    ``current_os_version`` and ``latest`` may be None (returns False),
-    and comparison falls back to the cached ``get_latest_os_version()``
-    when ``latest`` is omitted.
+    Pure function — does NOT consult any cache or DB.  Callers must pass
+    ``latest`` explicitly (typically obtained once per HTTP request via
+    ``await get_latest_os_version(db)``).  Issue #578: this is deliberate
+    — the old implicit-fallback behaviour was the source of the per-replica
+    cache drift.
 
-    As of M6, all callers pass ``device.os_version`` (populated by the
-    M4-device register message, sslivins/agora#205, first shipped in
-    agora.deb v1.11.61 and bundled into agora-os v0.0.18-test).  Devices
-    on older OS bundles still report a NULL ``os_version`` and will
-    short-circuit to False below — i.e. their Update button stays
-    dark, which is the correct behaviour (their firmware_version namespace
-    is no longer comparable to bundle target_version).
+    Either argument may be ``None`` (returns ``False``).  As of M6, all
+    callers pass ``device.os_version`` (populated by the M4-device register
+    message, sslivins/agora#205).  Devices on older OS bundles still report
+    a NULL ``os_version`` and short-circuit to ``False`` below — i.e. their
+    Update button stays dark, which is the correct behaviour (their
+    firmware_version namespace is no longer comparable to bundle
+    target_version).
     """
-    if latest is None:
-        latest = get_latest_os_version()
     if not latest or not current_os_version:
         return False
     return _parse_version(current_os_version) < _parse_version(latest)
@@ -174,8 +235,9 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
       2. Fetch that release's meta.json asset for min_from_version.
 
     Returns None on any failure (network, missing asset, malformed
-    meta.json).  Caller decides whether to keep the prior cache value
-    or treat as unknown.
+    meta.json).  Side-effects: updates the module-local ``_last_error``
+    (per-replica debug state surfaced via :func:`get_status`).  Caller
+    decides whether to keep the prior DB row or treat as unknown.
     """
     global _last_error
     try:
@@ -262,25 +324,79 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
         return None
 
 
-async def check_now() -> Optional[BundleInfo]:
-    """Trigger an immediate poll and update the cache.
+# ── DB persistence ──────────────────────────────────────────────────
 
-    Returns the new BundleInfo on success or the previously-cached
-    value on failure (so callers can rely on ``get_latest_bundle()``
+
+async def set_latest_bundle(db: AsyncSession, bundle: BundleInfo) -> None:
+    """UPSERT the shared single-row ``agora_os_latest_bundle`` table.
+
+    Caller is responsible for committing the session.  Stamps
+    ``last_success_at`` to ``datetime.now(UTC)``.  Public so tests
+    (which previously poked ``_latest_bundle`` directly) can seed
+    state in a multi-replica-correct way.
+    """
+    now = datetime.now(timezone.utc)
+    row = await db.scalar(
+        select(AgoraOsLatestBundle).where(AgoraOsLatestBundle.id == 1)
+    )
+    if row is None:
+        db.add(
+            AgoraOsLatestBundle(
+                id=1,
+                target_version=bundle.target_version,
+                release_id=bundle.release_id,
+                min_from_version=bundle.min_from_version,
+                bundle_url=bundle.bundle_url,
+                signature_url=bundle.signature_url,
+                sha256_url=bundle.sha256_url,
+                size_bytes=bundle.size_bytes,
+                created_at=bundle.created_at,
+                last_success_at=now,
+            )
+        )
+    else:
+        row.target_version = bundle.target_version
+        row.release_id = bundle.release_id
+        row.min_from_version = bundle.min_from_version
+        row.bundle_url = bundle.bundle_url
+        row.signature_url = bundle.signature_url
+        row.sha256_url = bundle.sha256_url
+        row.size_bytes = bundle.size_bytes
+        row.created_at = bundle.created_at
+        row.last_success_at = now
+
+
+async def check_now(db: AsyncSession) -> Optional[BundleInfo]:
+    """Trigger an immediate poll and update the shared DB row.
+
+    Returns the new BundleInfo on success or the previously-stored
+    value on failure (so callers can rely on a successful ``check_now``
     not abruptly going None during transient GitHub flakes).
     """
-    global _latest_bundle, _last_success_at, _last_error
+    global _last_error
     bundle = await _fetch_latest_bundle()
     if bundle is not None:
-        _latest_bundle = bundle
-        _last_success_at = datetime.now(timezone.utc)
+        await set_latest_bundle(db, bundle)
+        await db.commit()
         _last_error = None
-    return _latest_bundle
+        return bundle
+    # Fetch failed; surface whatever the DB has (may still be None on
+    # cold-start before any successful poll has ever landed).
+    return await get_latest_bundle(db)
 
 
 async def bundle_check_loop() -> None:
-    """Background loop that polls GitHub releases periodically."""
-    global _latest_bundle, _last_success_at, _last_error
+    """Background loop that polls GitHub releases periodically.
+
+    Runs replicated across all CMS replicas (writes are idempotent on
+    identical payloads, so concurrent writers converge to the same
+    row content).
+    """
+    global _last_error
+
+    # Lazy import — avoids a hard cms.database dep at module import time
+    # so the test layer can import the module before init_db() runs.
+    from cms.database import get_session_factory
 
     try:
         await asyncio.sleep(10)
@@ -293,17 +409,40 @@ async def bundle_check_loop() -> None:
         except asyncio.CancelledError:
             return
         if bundle is not None:
-            prev_version = _latest_bundle.target_version if _latest_bundle else None
-            if prev_version != bundle.target_version:
-                logger.info(
-                    "Latest agora-os release: %s (was %s)",
-                    bundle.target_version,
-                    prev_version,
-                )
-            _latest_bundle = bundle
-            _last_success_at = datetime.now(timezone.utc)
-            _last_error = None
+            sf = get_session_factory()
+            if sf is None:
+                # Session factory not initialised (very early startup or
+                # tests that import this module without init_db()).
+                # Best-effort: skip this iteration, retry next tick.
+                logger.debug("bundle_check_loop: session factory not ready; skipping write")
+            else:
+                try:
+                    async with sf() as db:
+                        prev = await db.scalar(
+                            select(AgoraOsLatestBundle.target_version).where(
+                                AgoraOsLatestBundle.id == 1
+                            )
+                        )
+                        if prev != bundle.target_version:
+                            logger.info(
+                                "Latest agora-os release: %s (was %s)",
+                                bundle.target_version,
+                                prev,
+                            )
+                        await set_latest_bundle(db, bundle)
+                        await db.commit()
+                    _last_error = None
+                except Exception:
+                    # Don't crash the loop on a transient DB error -- the
+                    # in-process _last_error is left alone so a stuck DB
+                    # surfaces on the debug endpoint as the GH-side error,
+                    # but we log it for completeness.
+                    logger.warning(
+                        "bundle_check_loop: failed to persist latest bundle",
+                        exc_info=True,
+                    )
         try:
             await asyncio.sleep(CHECK_INTERVAL)
         except asyncio.CancelledError:
             return
+

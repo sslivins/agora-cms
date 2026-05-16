@@ -443,22 +443,25 @@ class TestFirmwareBadgePermission:
         from cms.models.device import Device, DeviceStatus
         from cms.services import bundle_checker
 
-        # Set a known latest version
-        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
-            target_version="99.0.0",
-            release_id="stub",
-            min_from_version="0.0.0",
-            bundle_url="https://example.com/x.tar.zst",
-            signature_url="https://example.com/x.tar.zst.minisig",
-            sha256_url=None,
-            size_bytes=0,
-            created_at="2026-05-15T00:00:00Z",
-        )
-
         factory = app.dependency_overrides[get_db]
         device_id = "firmware-test-001"
 
         async for db in factory():
+            # Issue #578: seed the shared DB row through the same factory
+            # the route handler uses so the latest_version is visible.
+            await bundle_checker.set_latest_bundle(
+                db,
+                bundle_checker.BundleInfo(
+                    target_version="99.0.0",
+                    release_id="stub",
+                    min_from_version="0.0.0",
+                    bundle_url="https://example.com/x.tar.zst",
+                    signature_url="https://example.com/x.tar.zst.minisig",
+                    sha256_url=None,
+                    size_bytes=0,
+                    created_at="2026-05-15T00:00:00Z",
+                ),
+            )
             device = Device(
                 id=device_id,
                 status=DeviceStatus.ADOPTED,
@@ -474,30 +477,29 @@ class TestFirmwareBadgePermission:
         assert resp.status_code == 200
         assert "99.0.0 available" in resp.text
 
-        # Cleanup
-        bundle_checker._latest_bundle = None
-
     async def test_operator_no_firmware_badge(self, operator_client, app):
         """Operator should NOT see firmware update badge."""
         from cms.database import get_db
         from cms.models.device import Device, DeviceStatus
         from cms.services import bundle_checker
 
-        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
-            target_version="99.0.0",
-            release_id="stub",
-            min_from_version="0.0.0",
-            bundle_url="https://example.com/x.tar.zst",
-            signature_url="https://example.com/x.tar.zst.minisig",
-            sha256_url=None,
-            size_bytes=0,
-            created_at="2026-05-15T00:00:00Z",
-        )
-
         factory = app.dependency_overrides[get_db]
         device_id = "firmware-test-002"
 
         async for db in factory():
+            await bundle_checker.set_latest_bundle(
+                db,
+                bundle_checker.BundleInfo(
+                    target_version="99.0.0",
+                    release_id="stub",
+                    min_from_version="0.0.0",
+                    bundle_url="https://example.com/x.tar.zst",
+                    signature_url="https://example.com/x.tar.zst.minisig",
+                    sha256_url=None,
+                    size_bytes=0,
+                    created_at="2026-05-15T00:00:00Z",
+                ),
+            )
             device = Device(
                 id=device_id,
                 status=DeviceStatus.ADOPTED,
@@ -512,8 +514,6 @@ class TestFirmwareBadgePermission:
         resp = await operator_client.get("/devices")
         assert resp.status_code == 200
         assert "99.0.0 available" not in resp.text
-
-        bundle_checker._latest_bundle = None
 
 
 @pytest.mark.asyncio
