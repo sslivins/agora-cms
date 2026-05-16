@@ -53,8 +53,8 @@ def upgrade() -> None:
         sa.Column("bundle_url", sa.Text(), nullable=False),
         sa.Column("signature_url", sa.Text(), nullable=False),
         sa.Column("sha256_url", sa.Text(), nullable=True),
-        sa.Column("size_bytes", sa.BigInteger(), nullable=False, server_default="0"),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=""),
+        sa.Column("size_bytes", sa.BigInteger(), nullable=False),
+        sa.Column("created_at", sa.Text(), nullable=False),
         sa.Column(
             "last_success_at",
             sa.DateTime(timezone=True),
