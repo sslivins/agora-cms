@@ -110,9 +110,12 @@ _STAGE_SUBPHASE_LABELS: dict[str, str] = {
 # extract_progress sub-phase → label.  This event fires *during* either
 # the extracting_boot or extracting_rootfs stage_progress windows, and
 # carries bytes_done / bytes_total of the underlying zstd stream.
+# Sub-phase strings match the corresponding stage_progress sub-phases
+# (see ``_STAGE_SUBPHASE_LABELS`` above) so the on-device emitter can
+# pass the same token through both event_types unchanged.
 _EXTRACT_SUBPHASE_LABELS: dict[str, str] = {
-    "boot":   "Extracting boot",
-    "rootfs": "Extracting rootfs",
+    "extracting_boot":   "Extracting boot",
+    "extracting_rootfs": "Extracting rootfs",
 }
 
 
@@ -126,7 +129,7 @@ def _derive(event_type: str, payload: dict) -> tuple[
 
       - download_progress: ``{bytes_done, bytes_total}``
       - stage_progress:    ``{phase: <one of 8 sub-phases>}``
-      - extract_progress:  ``{phase: "boot"|"rootfs", bytes_done, bytes_total}``
+      - extract_progress:  ``{phase: "extracting_boot"|"extracting_rootfs", bytes_done, bytes_total}``
       - all others:        no body fields used here
     """
     phase = event_type
