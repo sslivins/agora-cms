@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import BigInteger, JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -162,6 +162,25 @@ class Device(Base):
     # register path on reconnect and by the upgrade endpoint's failure
     # rollback (compare-and-clear against the claimed timestamp).
     upgrade_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # ---- OTA progress (issue agora-cms#574 / migration 0025) ----
+    # Live progress for the in-flight OS OTA, written by the WPS lifecycle
+    # event handler (`cms.services.ota_progress.handle_event`) and surfaced
+    # by `/api/devices` so the UI badge can render a filling progress bar
+    # instead of a static "Upgrading…" chip.  All six columns are nullable
+    # and default NULL — populated only while an OTA is in flight, cleared
+    # on every terminal lifecycle event (promoted / migration_complete /
+    # failed / declined).  `ota_updated_at` doubles as a freshness gate:
+    # `_ota_fields_for_out` in cms.routers.devices treats anything older
+    # than OTA_FRESH_TTL as stale and serves NULLs back to the UI.
+    ota_phase: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ota_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ota_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ota_bytes_done: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ota_bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ota_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

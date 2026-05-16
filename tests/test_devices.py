@@ -516,6 +516,110 @@ class TestGetSingleDevice:
 
 
 @pytest.mark.asyncio
+class TestOtaProgressFields:
+    """OTA progress columns are surfaced through ``DeviceOut`` only when
+    the device's last lifecycle event was within ``OTA_FRESH_TTL``.
+
+    Staleness gate (``cms/routers/devices.py::_ota_fields_for_out``)
+    exists so an OTA that hangs without a terminal event doesn't leave
+    the UI stuck on "Extracting rootfs 47%" forever — the badge falls
+    back to the legacy ``Upgrading…`` chip after the freshness window
+    and eventually clears at ``UPGRADE_TTL``.
+    """
+
+    async def test_ota_fields_fresh_show_through(self, client, db_session):
+        from datetime import datetime, timezone
+
+        from cms.models.device import Device, DeviceStatus
+
+        d = Device(
+            id="ota-fresh", name="ota-fresh", status=DeviceStatus.ADOPTED,
+            ota_phase="ota_download_progress",
+            ota_label="Downloading bundle",
+            ota_pct=42.5,
+            ota_bytes_done=425,
+            ota_bytes_total=1000,
+            ota_updated_at=datetime.now(timezone.utc),
+        )
+        db_session.add(d)
+        await db_session.commit()
+
+        # List endpoint surface.
+        resp = await client.get("/api/devices")
+        assert resp.status_code == 200
+        row = next(r for r in resp.json() if r["id"] == "ota-fresh")
+        assert row["ota_phase"] == "ota_download_progress"
+        assert row["ota_label"] == "Downloading bundle"
+        assert row["ota_pct"] == pytest.approx(42.5)
+        assert row["ota_bytes_done"] == 425
+        assert row["ota_bytes_total"] == 1000
+
+        # Detail endpoint surface — same staleness gate, same result.
+        resp = await client.get("/api/devices/ota-fresh")
+        assert resp.status_code == 200
+        detail = resp.json()
+        assert detail["ota_phase"] == "ota_download_progress"
+        assert detail["ota_pct"] == pytest.approx(42.5)
+
+    async def test_ota_fields_stale_are_null(self, client, db_session):
+        from datetime import datetime, timedelta, timezone
+
+        from cms.models.device import Device, DeviceStatus
+        from cms.routers.devices import OTA_FRESH_TTL
+
+        # ota_updated_at older than OTA_FRESH_TTL (default 2 min).
+        stale_at = datetime.now(timezone.utc) - OTA_FRESH_TTL - timedelta(seconds=1)
+        d = Device(
+            id="ota-stale", name="ota-stale", status=DeviceStatus.ADOPTED,
+            ota_phase="ota_extract_progress",
+            ota_label="Extracting rootfs",
+            ota_pct=47.0,
+            ota_bytes_done=470_000_000,
+            ota_bytes_total=1_000_000_000,
+            ota_updated_at=stale_at,
+        )
+        db_session.add(d)
+        await db_session.commit()
+
+        # List endpoint surface — all OTA fields NULL despite the row
+        # still carrying values; gate fires here.
+        resp = await client.get("/api/devices")
+        assert resp.status_code == 200
+        row = next(r for r in resp.json() if r["id"] == "ota-stale")
+        assert row["ota_phase"] is None
+        assert row["ota_label"] is None
+        assert row["ota_pct"] is None
+        assert row["ota_bytes_done"] is None
+        assert row["ota_bytes_total"] is None
+
+        # Detail endpoint surface — same.
+        resp = await client.get("/api/devices/ota-stale")
+        assert resp.status_code == 200
+        detail = resp.json()
+        assert detail["ota_phase"] is None
+        assert detail["ota_pct"] is None
+
+    async def test_ota_fields_never_set_are_null(self, client, db_session):
+        # A device that has never taken an OTA (ota_updated_at IS NULL)
+        # must surface NULL across all five OTA fields — no false-positive
+        # "Upgrading 0%" badge on a brand-new device.
+        from cms.models.device import Device, DeviceStatus
+
+        d = Device(id="ota-virgin", name="ota-virgin", status=DeviceStatus.ADOPTED)
+        db_session.add(d)
+        await db_session.commit()
+
+        resp = await client.get("/api/devices")
+        assert resp.status_code == 200
+        row = next(r for r in resp.json() if r["id"] == "ota-virgin")
+        assert row["ota_phase"] is None
+        assert row["ota_label"] is None
+        assert row["ota_pct"] is None
+        assert row["ota_bytes_done"] is None
+        assert row["ota_bytes_total"] is None
+
+
+@pytest.mark.asyncio
 class TestUpgradeGuard:
     async def test_upgrade_not_connected(self, client, db_session):
         """Upgrading an offline device returns 409."""

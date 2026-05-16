@@ -54,13 +54,69 @@ device_originated_router = APIRouter(prefix="/api/devices", tags=["devices (devi
 # letting another upgrade request reclaim it (covers stuck reboots).
 UPGRADE_TTL = timedelta(minutes=15)
 
+# Issue agora-cms#574 — how recent a device's last lifecycle event has
+# to be before we still trust ``devices.ota_*`` to reflect a live OTA.
+# Devices emit events on every FSM transition + every 2s during long
+# phases (download / extract), so 2 minutes is comfortably looser than
+# the slowest healthy cadence while still falling off quickly if the
+# device drops without a terminal event (kernel panic mid-extract,
+# tryboot that never confirms, etc.).
+OTA_FRESH_TTL = timedelta(minutes=2)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Promote a naive ``datetime`` to UTC.
+
+    Postgres ``timestamptz`` columns round-trip as tz-aware datetimes,
+    but the SQLite test backend strips the tzinfo on read.  Comparing
+    against ``datetime.now(timezone.utc)`` (always aware) would then
+    raise ``TypeError: can't subtract offset-naive and offset-aware
+    datetimes``.  All ``upgrade_started_at`` / ``ota_updated_at`` writes
+    in production are UTC, so naive ⇒ UTC is the right normalization.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 
 def _is_upgrading(device: Device, *, now: datetime | None = None) -> bool:
     """Return whether *device* has an active upgrade claim within TTL."""
     if device.upgrade_started_at is None:
         return False
     ref = now or datetime.now(timezone.utc)
-    return (ref - device.upgrade_started_at) < UPGRADE_TTL
+    return (ref - _as_utc(device.upgrade_started_at)) < UPGRADE_TTL
+
+
+def _ota_fields_for_out(device: Device, *, now: datetime | None = None) -> dict:
+    """Return staleness-gated ``ota_*`` kwargs for ``DeviceOut``.
+
+    All five UI-facing OTA fields are returned NULL when the device's
+    last lifecycle event is older than ``OTA_FRESH_TTL`` — that's
+    the safety net for OTAs that stall without a terminal event
+    (kernel panic, network drop, tryboot revert).  Without this gate
+    a device that hung mid-extract would render a stuck "Extracting
+    rootfs 47%" forever; with it, the badge falls back to the legacy
+    "Upgrading…" chip (driven by ``is_upgrading``) and eventually
+    clears at ``UPGRADE_TTL``.
+    """
+    if device.ota_updated_at is None:
+        return {
+            "ota_phase": None, "ota_label": None, "ota_pct": None,
+            "ota_bytes_done": None, "ota_bytes_total": None,
+        }
+    ref = now or datetime.now(timezone.utc)
+    if (ref - _as_utc(device.ota_updated_at)) >= OTA_FRESH_TTL:
+        return {
+            "ota_phase": None, "ota_label": None, "ota_pct": None,
+            "ota_bytes_done": None, "ota_bytes_total": None,
+        }
+    return {
+        "ota_phase": device.ota_phase,
+        "ota_label": device.ota_label,
+        "ota_pct": device.ota_pct,
+        "ota_bytes_done": device.ota_bytes_done,
+        "ota_bytes_total": device.ota_bytes_total,
+    }
 
 # Device model columns that are *also* passed explicitly as kwargs when
 # building a ``DeviceOut`` from the live-state + ORM row merge below.
@@ -90,6 +146,16 @@ _DEVICE_OUT_OVERLAP_COLUMNS = {
     "display_connected",
     "display_ports",
     "ip_address",
+    # OTA progress columns are excluded from the splat so the staleness
+    # gate in ``_ota_fields_for_out`` is the only path that writes them
+    # into the ``DeviceOut`` — preserves the invariant that the UI
+    # never sees stale OTA state past OTA_FRESH_TTL.
+    "ota_phase",
+    "ota_label",
+    "ota_pct",
+    "ota_bytes_done",
+    "ota_bytes_total",
+    "ota_updated_at",
 }
 
 
@@ -212,7 +278,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             **_device_row_kwargs(d),
             group_name=d.group.name if d.group else None,
             is_online=d.id in connected_ids,
-            is_upgrading=_is_upgrading(d),
+            is_upgrading=_is_upgrading(d, now=now),
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
             playback_asset=_resolve_asset_name(d.id),
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
@@ -230,6 +296,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             uptime_seconds=live_states[d.id]["uptime_seconds"] if d.id in live_states else 0,
             update_available=is_os_update_available(d.os_version),
             has_active_schedule=d.id in scheduled_device_ids,
+            **_ota_fields_for_out(d, now=now),
         )
         for d in devices
     ]
@@ -270,7 +337,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         **_device_row_kwargs(device),
         group_name=device.group.name if device.group else None,
         is_online=is_online,
-        is_upgrading=_is_upgrading(device),
+        is_upgrading=_is_upgrading(device, now=now),
         playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
         playback_asset=raw_asset,
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
@@ -288,6 +355,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         uptime_seconds=live_states[device.id]["uptime_seconds"] if device.id in live_states else 0,
         update_available=is_os_update_available(device.os_version),
         has_active_schedule=device.id in scheduled_device_ids,
+        **_ota_fields_for_out(device, now=now),
     )
 
 

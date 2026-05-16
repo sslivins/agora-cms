@@ -30,6 +30,21 @@ class DeviceOut(BaseModel):
     registered_at: datetime
     is_online: bool = False
     is_upgrading: bool = False
+    # ── OTA progress (issue agora-cms#574) ──
+    # While a device is in the middle of an OS OTA, these fields drive
+    # the live progress badge in the UI.  All None when no OTA is in
+    # flight, OR when the row is stale (last update older than
+    # ``OTA_FRESH_TTL`` per ``cms.routers.devices._ota_fields_for_out``).
+    # The UI falls back to the legacy "Upgrading…" badge when
+    # ``is_upgrading`` is True but these are all None — that's the
+    # transition window between the upgrade claim landing and the first
+    # lifecycle event arriving, plus any time a firmware older than
+    # ``agora#215`` is mid-OTA.
+    ota_phase: Optional[str] = None
+    ota_label: Optional[str] = None
+    ota_pct: Optional[float] = None
+    ota_bytes_done: Optional[int] = None
+    ota_bytes_total: Optional[int] = None
     playback_mode: Optional[str] = None
     playback_asset: Optional[str] = None
     pipeline_state: Optional[str] = None

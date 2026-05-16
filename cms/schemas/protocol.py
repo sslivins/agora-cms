@@ -68,6 +68,11 @@ class MessageType(str, Enum):
     FACTORY_RESET = "factory_reset"
     WIPE_ASSETS = "wipe_assets"
     REQUEST_LOGS = "request_logs"
+    # Device → CMS: per-OTA lifecycle event.  See
+    # ``cms.services.device_inbound`` for the ``WIRE_TO_CMS_EVENT`` map
+    # and ``cms.services.ota_progress`` for how the wire payload turns
+    # into UI-visible badge state.
+    LIFECYCLE_EVENT = "lifecycle_event"
 
     # Device → CMS (playback events)
     PLAYBACK_STARTED = "playback_started"

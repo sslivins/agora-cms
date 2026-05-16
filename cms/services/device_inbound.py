@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceStatus
+from cms.models.device_event import DeviceEventType
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLogEvent
 from cms.schemas.protocol import (
@@ -40,6 +41,29 @@ from cms.services.scheduler import (
 from cms.services.storage import get_storage
 
 logger = logging.getLogger("agora.cms.ws")
+
+
+# Wire ``event_type`` (per ``agora/os_updater/events.py::LifecycleEventType``)
+# → CMS ``DeviceEventType``.  Single source of truth for the
+# device → CMS contract on lifecycle event names.  Used by both the
+# ``lifecycle_event`` branch in ``dispatch_device_message`` below and
+# the unit tests in ``tests/test_lifecycle_events.py``.  Any new
+# wire-type ships in lock-step with both repos (agora#215 has a
+# matching enum on the device side).
+WIRE_TO_CMS_EVENT: dict[str, "DeviceEventType"] = {
+    "download_started":     DeviceEventType.OTA_DOWNLOAD_STARTED,
+    "download_progress":    DeviceEventType.OTA_DOWNLOAD_PROGRESS,
+    "signature_verified":   DeviceEventType.OTA_SIGNATURE_VERIFIED,
+    "staged":               DeviceEventType.OTA_STAGED,
+    "stage_progress":       DeviceEventType.OTA_STAGE_PROGRESS,
+    "extract_progress":     DeviceEventType.OTA_EXTRACT_PROGRESS,
+    "tryboot_initiated":    DeviceEventType.OTA_TRYBOOT_INITIATED,
+    "slot_confirmed":       DeviceEventType.OTA_SLOT_CONFIRMED,
+    "promoted":             DeviceEventType.OTA_PROMOTED,
+    "migration_complete":   DeviceEventType.OTA_MIGRATION_COMPLETE,
+    "failed":               DeviceEventType.OTA_FAILED,
+    "declined":             DeviceEventType.OTA_DECLINED,
+}
 
 
 def _hash_token(token: str) -> str:
@@ -518,6 +542,73 @@ async def dispatch_device_message(
                     "LOGS_RESPONSE outbox write failed for request %s (device %s)",
                     request_id, device_id, exc_info=True,
                 )
+
+    elif msg_type == MessageType.LIFECYCLE_EVENT:
+        # OTA lifecycle event from the device (issue agora-cms#574 /
+        # agora#215).  Wire shape:
+        #   {"type": "lifecycle_event",
+        #    "event_id": <per-device monotonic int>,
+        #    "event_type": "download_started" | "download_progress" | ...,
+        #    "release_id": str|None,
+        #    "target_version": str|None,
+        #    "occurred_at": ISO-8601 str|None,
+        #    "reason": str|None,
+        #    "payload": {...}}
+        #
+        # Two side effects per event:
+        #   1) Apply the projection to ``devices.ota_*`` so the next
+        #      ``/api/devices`` poll renders the live badge.
+        #   2) Persist a ``device_events`` row so the existing event-log
+        #      surface shows the OTA timeline (and so we have an audit
+        #      trail when post-mortem'ing a stuck OTA).
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+        from cms.services import ota_progress
+
+        # Forward-compat: an unknown wire ``event_type`` is dropped with
+        # an INFO log.  Distinct from the OUTER ``ce-type`` 400 rejection
+        # in ``wps_webhook.py`` (which is for unknown CloudEvents types
+        # at the HTTP envelope layer, not unknown user-message bodies).
+        wire_type = msg.get("event_type", "")
+        cms_type = WIRE_TO_CMS_EVENT.get(wire_type)
+        if cms_type is None:
+            logger.info(
+                "Unknown lifecycle event_type %r from device %s; dropping (forward-compat)",
+                wire_type, device_id,
+            )
+            return
+
+        payload = msg.get("payload") or {}
+
+        mutated = ota_progress.handle_event(device, cms_type.value, payload)
+
+        # Audit row.  We write this even when ``mutated`` is False
+        # (regression-dropped or unknown sub-payload) so the event log
+        # still shows that the device's monotonic event_id was
+        # accounted for — easier to debug "where did event_id 47 go?"
+        # if every event lands in the table, regression-dropped or not.
+        group_uuid = None
+        if ctx.group_id:
+            try:
+                group_uuid = uuid.UUID(ctx.group_id)
+            except (TypeError, ValueError):
+                group_uuid = None
+        db.add(DeviceEvent(
+            device_id=device_id,
+            device_name=ctx.device_name or device_id,
+            group_id=group_uuid,
+            group_name=ctx.group_name or "",
+            event_type=cms_type.value,
+            details={
+                "event_id": msg.get("event_id"),
+                "payload": payload,
+                "release_id": msg.get("release_id"),
+                "target_version": msg.get("target_version"),
+                "occurred_at": msg.get("occurred_at"),
+                "reason": msg.get("reason"),
+                "projection_applied": mutated,
+            },
+        ))
+        await db.commit()
 
     else:
         logger.warning("Unknown message type from %s: %s", device_id, msg_type)

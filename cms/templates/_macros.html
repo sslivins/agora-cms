@@ -516,8 +516,12 @@
 {% if d.is_online and (d.error or d.pipeline_state == 'ERROR') %}
 <span class="has-tooltip"><span class="badge badge-error">Error</span><span class="tooltip">{% if d.error %}{{ d.error }}{% else %}Player pipeline reported an error{% endif %}</span></span>
 {% endif %}
-{# Upgrading #}
-{% if d.is_upgrading %}
+{# Upgrading — show live OTA progress bar when available, else fall back to static "Upgrading…" chip #}
+{% if d.is_upgrading and d.ota_phase and d.ota_pct is not none %}
+<span class="has-tooltip"><span class="badge badge-progress" style="--pct: {{ "%.1f"|format(d.ota_pct) }}%">{{ d.ota_label or 'Upgrading' }} {{ d.ota_pct | round(0) | int }}%</span><span class="tooltip">{{ d.ota_label or 'Upgrading' }} — device will reboot when done</span></span>
+{% elif d.is_upgrading and d.ota_phase %}
+<span class="has-tooltip"><span class="badge badge-processing">{{ d.ota_label or 'Upgrading…' }}</span><span class="tooltip">{{ d.ota_label or 'Upgrading' }} — device will reboot when done</span></span>
+{% elif d.is_upgrading %}
 <span class="has-tooltip"><span class="badge badge-processing">Upgrading…</span><span class="tooltip">Firmware upgrade in progress — device will reboot when done</span></span>
 {% endif %}
 {# Temp #}
@@ -595,7 +599,7 @@
         {{ d.name or d.id }}
         {% endif %}
     </td>
-    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}">
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}|{{ d.ota_phase or 'n' }}|{{ (d.ota_pct | round(0) | int) if d.ota_pct is not none else 'n' }}">
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">This device matches a known device but couldn't authenticate, likely due to a factory reset or SD card replacement. It needs to be re-adopted.</span></span>
         {% elif d.status.value == 'pending' %}
@@ -855,7 +859,7 @@
         {{ d.name or d.id }}
         {% endif %}
     </td>
-    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}">
+    <td data-live-status="{{ d.id }}" data-device-status="{{ d.status.value }}" data-alerts-sig="{{ d.status.value }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.error or d.pipeline_state == 'ERROR' else 0 }}|{{ ((d.cpu_temp_c | round(0)) | int) if d.cpu_temp_c is not none else 'n' }}|{{ 1 if (d.display_ports and (d.display_ports | rejectattr('connected') | list | length) == (d.display_ports | length)) or ((not d.display_ports) and d.display_connected is false) else 0 }}|{{ (((d.storage_capacity_mb - d.storage_used_mb) / d.storage_capacity_mb * 100) | round(0) | int) if d.storage_capacity_mb else 'n' }}|{{ d.ota_phase or 'n' }}|{{ (d.ota_pct | round(0) | int) if d.ota_pct is not none else 'n' }}">
         {% if d.status.value == 'orphaned' %}
         <span class="has-tooltip"><span class="badge badge-orphaned">Orphaned</span><span class="tooltip">Re-flashed device — needs re-adoption</span></span>
         {% elif d.status.value == 'pending' %}
