@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from cms.models.api_key import APIKey  # noqa: F401
 from cms.models.asset import Asset, AssetType, AssetVariant, DeviceAsset, VariantStatus  # noqa: F401
 from cms.models.audit_log import AuditLog  # noqa: F401
+from cms.models.agora_os_latest_bundle import AgoraOsLatestBundle  # noqa: F401
 from cms.models.device import Device, DeviceGroup, DeviceStatus  # noqa: F401
 from cms.models.device_alert_state import DeviceAlertState  # noqa: F401
 from cms.models.device_event import DeviceEvent, DeviceEventType  # noqa: F401

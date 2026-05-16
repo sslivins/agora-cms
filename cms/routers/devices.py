@@ -35,7 +35,7 @@ from cms.services.transport import get_transport
 from cms.services.scheduler import push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
-from cms.services.bundle_checker import check_now, get_latest_bundle
+from cms.services.bundle_checker import check_now, get_latest_bundle, get_latest_os_version, is_os_update_available
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 
@@ -214,9 +214,9 @@ async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: A
 
 
 @router.post("/check-updates", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
-async def check_for_updates():
+async def check_for_updates(db: AsyncSession = Depends(get_db)):
     """Trigger an immediate check for the latest device firmware version."""
-    latest_bundle = await check_now()
+    latest_bundle = await check_now(db)
     return {"latest_version": latest_bundle.target_version if latest_bundle else None}
 
 
@@ -273,6 +273,10 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
         return _url_display.get(raw, raw) if raw else raw
 
     from cms.services.bundle_checker import is_os_update_available
+    # Issue #578: read the shared latest-version once per request and thread
+    # it through the per-device update_available check, so every replica
+    # returns the same view of "update available" within a single response.
+    latest_version = await get_latest_os_version(db)
     return [
         DeviceOut(
             **_device_row_kwargs(d),
@@ -294,7 +298,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             local_api_enabled=live_states[d.id]["local_api_enabled"] if d.id in live_states else None,
             error=live_states[d.id]["error"] if d.id in live_states else None,
             uptime_seconds=live_states[d.id]["uptime_seconds"] if d.id in live_states else 0,
-            update_available=is_os_update_available(d.os_version),
+            update_available=is_os_update_available(d.os_version, latest_version),
             has_active_schedule=d.id in scheduled_device_ids,
             **_ota_fields_for_out(d, now=now),
         )
@@ -333,6 +337,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
             raw_asset = resolved
 
     from cms.services.bundle_checker import is_os_update_available
+    latest_version = await get_latest_os_version(db)  # issue #578: shared cross-replica view
     return DeviceOut(
         **_device_row_kwargs(device),
         group_name=device.group.name if device.group else None,
@@ -353,7 +358,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         local_api_enabled=live_states[device.id]["local_api_enabled"] if device.id in live_states else None,
         error=live_states[device.id]["error"] if device.id in live_states else None,
         uptime_seconds=live_states[device.id]["uptime_seconds"] if device.id in live_states else 0,
-        update_available=is_os_update_available(device.os_version),
+        update_available=is_os_update_available(device.os_version, latest_version),
         has_active_schedule=device.id in scheduled_device_ids,
         **_ota_fields_for_out(device, now=now),
     )
@@ -575,7 +580,7 @@ async def upgrade_device(
     # poller refreshes this every 30 min; on a cold CMS start it may
     # still be None for up to one poll interval. Surface that as a
     # retryable 503 rather than dispatching a malformed message.
-    latest_bundle = get_latest_bundle()
+    latest_bundle = await get_latest_bundle(db)
     if latest_bundle is None:
         await _release_claim()
         raise HTTPException(
@@ -1092,6 +1097,7 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     ) or 0
 
     from cms.services.bundle_checker import is_os_update_available
+    latest_version = await get_latest_os_version(db)  # issue #578: shared cross-replica view
     transport = get_transport()
     live_states = {s["device_id"]: s for s in await transport.get_all_states()}
     for d in group.devices:
@@ -1112,7 +1118,7 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.update_available = is_os_update_available(d.os_version)
+        d.update_available = is_os_update_available(d.os_version, latest_version)
         d.is_upgrading = _is_upgrading(d)
         d.has_active_schedule = False  # poller will flip this via updateLiveFields
 
@@ -1150,13 +1156,13 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     # Phase C: rich device_row needs profiles, latest_version, timezones, and
     # per-device severity_tags + per-group rollup.
     from cms.models.device_profile import DeviceProfile
-    from cms.services.bundle_checker import get_latest_os_version
     from cms.services.device_alerts import device_severity_tags, fleet_counts
     from cms.ui import COMMON_TIMEZONES
 
     profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
     profiles = profiles_q.scalars().all()
-    latest_version = get_latest_os_version()
+    # Reuse the latest_version we read above for the per-device update_available
+    # decoration — this is the same shared cross-replica value.
     timezones = COMMON_TIMEZONES
 
     for d in group.devices:

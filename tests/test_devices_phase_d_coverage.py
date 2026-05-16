@@ -111,21 +111,27 @@ async def grouped_update_device(app):
         device_id = device.id
         break
 
-    saved = bundle_checker._latest_bundle
-    bundle_checker._latest_bundle = bundle_checker.BundleInfo(
-        target_version="9.9.9",
-        release_id="stub",
-        min_from_version="0.0.0",
-        bundle_url="https://example.com/x.tar.zst",
-        signature_url="https://example.com/x.tar.zst.minisig",
-        sha256_url=None,
-        size_bytes=0,
-        created_at="2026-05-15T00:00:00Z",
-    )
-    try:
-        yield {"group_id": group_id, "device_id": device_id}
-    finally:
-        bundle_checker._latest_bundle = saved
+    # Issue #578: seed the shared agora_os_latest_bundle DB row instead of
+    # poking the (now-removed) module-level cache. Reuse the same factory
+    # so the write is visible to the route handler's session.
+    async for db in factory():
+        await bundle_checker.set_latest_bundle(
+            db,
+            bundle_checker.BundleInfo(
+                target_version="9.9.9",
+                release_id="stub",
+                min_from_version="0.0.0",
+                bundle_url="https://example.com/x.tar.zst",
+                signature_url="https://example.com/x.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=0,
+                created_at="2026-05-15T00:00:00Z",
+            ),
+        )
+        await db.commit()
+        break
+
+    yield {"group_id": group_id, "device_id": device_id}
 
 
 # ── /api/devices/groups/{id}/panel — permission gating ──────────────

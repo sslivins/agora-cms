@@ -288,7 +288,6 @@ class TestCheckUpdates:
         from unittest.mock import AsyncMock, patch
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
         stub = bundle_checker.BundleInfo(
             target_version="9.9.9",
             release_id="stub",
@@ -299,13 +298,13 @@ class TestCheckUpdates:
             size_bytes=0,
             created_at="2026-05-15T00:00:00Z",
         )
-        try:
-            with patch.object(bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub):
-                resp = await client.post("/api/devices/check-updates")
-            assert resp.status_code == 200
-            assert resp.json()["latest_version"] == "9.9.9"
-        finally:
-            bundle_checker._latest_bundle = original
+        # Issue #578: check_now writes to the shared DB row -- the
+        # endpoint reads back via the same row so we don't need to
+        # pre-seed; patching _fetch_latest_bundle is enough.
+        with patch.object(bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub):
+            resp = await client.post("/api/devices/check-updates")
+        assert resp.status_code == 200
+        assert resp.json()["latest_version"] == "9.9.9"
 
 
 @pytest.mark.asyncio
@@ -667,23 +666,25 @@ class TestUpgradeGuard:
         from cms.services import device_presence
         await device_presence.mark_online(db_session, "up-pi-002")
 
-        prior_bundle = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
-            target_version="0.0.17-test",
-            release_id="rel-up-002",
-            min_from_version="0.0.0",
-            bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
-            signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
-            sha256_url=None,
-            size_bytes=1,
-            created_at="2026-05-15T00:00:00Z",
+        await bundle_checker.set_latest_bundle(
+            db_session,
+            bundle_checker.BundleInfo(
+                target_version="0.0.17-test",
+                release_id="rel-up-002",
+                min_from_version="0.0.0",
+                bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
+                signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=1,
+                created_at="2026-05-15T00:00:00Z",
+            ),
         )
+        await db_session.commit()
         try:
             resp = await client.post("/api/devices/up-pi-002/upgrade")
             assert resp.status_code == 409
             assert "already in progress" in resp.json()["detail"]
         finally:
-            bundle_checker._latest_bundle = prior_bundle
             device_manager.disconnect("up-pi-002")
 
     async def test_upgrade_no_bundle_cached(self, client, db_session):
@@ -709,14 +710,13 @@ class TestUpgradeGuard:
         device_manager.register("up-pi-503", FakeWS())
         await device_presence.mark_online(db_session, "up-pi-503")
 
-        prior_bundle = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = None
+        # Issue #578: shared DB row stays empty in this test -- no
+        # set_latest_bundle() means the upgrade endpoint sees None.
         try:
             resp = await client.post("/api/devices/up-pi-503/upgrade")
             assert resp.status_code == 503
             assert resp.json()["detail"] == "bundle_not_yet_cached"
         finally:
-            bundle_checker._latest_bundle = prior_bundle
             device_manager.disconnect("up-pi-503")
 
     async def test_upgrade_already_on_target_version(self, client, db_session):
@@ -745,23 +745,25 @@ class TestUpgradeGuard:
         device_manager.register("up-pi-409a", FakeWS())
         await device_presence.mark_online(db_session, "up-pi-409a")
 
-        prior_bundle = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
-            target_version="0.0.17-test",
-            release_id="rel-up-409a",
-            min_from_version="0.0.0",
-            bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
-            signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
-            sha256_url=None,
-            size_bytes=1,
-            created_at="2026-05-15T00:00:00Z",
+        await bundle_checker.set_latest_bundle(
+            db_session,
+            bundle_checker.BundleInfo(
+                target_version="0.0.17-test",
+                release_id="rel-up-409a",
+                min_from_version="0.0.0",
+                bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
+                signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=1,
+                created_at="2026-05-15T00:00:00Z",
+            ),
         )
+        await db_session.commit()
         try:
             resp = await client.post("/api/devices/up-pi-409a/upgrade")
             assert resp.status_code == 409
             assert resp.json()["detail"] == "already_on_target_version"
         finally:
-            bundle_checker._latest_bundle = prior_bundle
             device_manager.disconnect("up-pi-409a")
 
     async def test_upgrade_sends_os_update_dispatch(self, client, db_session):
@@ -796,17 +798,20 @@ class TestUpgradeGuard:
                 sent_messages.append((device_id, msg))
                 return True
 
-        prior_bundle = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = bundle_checker.BundleInfo(
-            target_version="0.0.17-test",
-            release_id="rel-up-ok",
-            min_from_version="0.0.0",
-            bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
-            signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
-            sha256_url=None,
-            size_bytes=12345,
-            created_at="2026-05-15T00:00:00Z",
+        await bundle_checker.set_latest_bundle(
+            db_session,
+            bundle_checker.BundleInfo(
+                target_version="0.0.17-test",
+                release_id="rel-up-ok",
+                min_from_version="0.0.0",
+                bundle_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst",
+                signature_url="https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=12345,
+                created_at="2026-05-15T00:00:00Z",
+            ),
         )
+        await db_session.commit()
 
         set_transport(CapturingTransport())
         try:
@@ -826,7 +831,6 @@ class TestUpgradeGuard:
                 "https://example.invalid/agora-bundle-0.0.17-test.tar.zst.minisig"
             )
         finally:
-            bundle_checker._latest_bundle = prior_bundle
             reset_transport_to_local()
 
     async def test_upgrade_clears_flag_on_disconnect(self, client, db_session):

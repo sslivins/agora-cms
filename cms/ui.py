@@ -741,6 +741,9 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     # the alert taxonomy needs.
     from cms.services.device_alerts import fleet_counts as _fleet_counts
     from cms.services.bundle_checker import is_os_update_available as _is_update_available
+    # Issue #578: read shared latest OS version once for this request,
+    # so every replica produces a consistent badge state.
+    _latest_os_version = await get_latest_os_version(db)
     _triage_devices = list(all_devices) + list(orphaned_devices)
     for d in _triage_devices:
         try:
@@ -753,7 +756,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         d.pipeline_state = state["pipeline_state"] if state else None
         d.display_connected = state["display_connected"] if state else None
         d.display_ports = state["display_ports"] if state else None
-        d.update_available = _is_update_available(d.os_version)
+        d.update_available = _is_update_available(d.os_version, _latest_os_version)
         d.is_upgrading = _devices_is_upgrading(d)
     fleet_counts_dashboard = _fleet_counts(_triage_devices, user_perms)
 
@@ -1051,6 +1054,10 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     _connected_ids = set(await _transport.connected_ids())
     scheduled_device_ids = {np["device_id"] for np in await compute_now_playing(db, tz, now)}
 
+    # Issue #578: read the shared latest OS version once for this request,
+    # so every replica produces a consistent "Update available" view.
+    latest_os_version = await get_latest_os_version(db)
+
     # Build URL→display name map for resolving playback_asset on URL-based assets
     assets_early_q = await db.execute(
         select(Asset)
@@ -1092,7 +1099,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.update_available = is_os_update_available(d.os_version)
+        d.update_available = is_os_update_available(d.os_version, latest_os_version)
         d.is_upgrading = _devices_is_upgrading(d)
         d.has_active_schedule = d.id in scheduled_device_ids
 
@@ -1144,7 +1151,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.ssh_enabled = state["ssh_enabled"] if state else None
             d.local_api_enabled = state["local_api_enabled"] if state else None
-            d.update_available = is_os_update_available(d.os_version)
+            d.update_available = is_os_update_available(d.os_version, latest_os_version)
             d.is_upgrading = _devices_is_upgrading(d)
             d.has_active_schedule = d.id in scheduled_device_ids
 
@@ -1199,7 +1206,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "assets": assets,
         "profiles": profiles,
         "timezones": COMMON_TIMEZONES,
-        "latest_version": get_latest_os_version(),
+        "latest_version": latest_os_version,
         "pending_ttl_hours": get_settings().pending_device_ttl_hours,
         "fleet_counts": counts,
         "active_alert": active_alert,

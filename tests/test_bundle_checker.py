@@ -3,7 +3,11 @@
 Mirrors the structure of the deleted tests/test_version_checker.py, but
 exercises the new agora-os GitHub-Releases-driven module that replaces
 the agora deb-polling version_checker as part of the CMS upgrade-path
-migration (M2).
+migration (M2).  Issue #578 moved the cached bundle out of a module
+global and into a shared single-row ``agora_os_latest_bundle`` table,
+so the seeding pattern is now ``await bundle_checker.set_latest_bundle(
+db_session, stub); await db_session.commit()`` instead of
+``bundle_checker._latest_bundle = stub``.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ class TestParseVersion:
         assert _parse_version("v1.2.3") == (1, 2, 3)
 
     def test_test_suffix_equals_unsuffixed(self):
-        """``0.0.17-test`` and ``0.0.17`` should compare equal — we treat the
+        """``0.0.17-test`` and ``0.0.17`` should compare equal -- we treat the
         ``-test`` label as the same release."""
         from cms.services.bundle_checker import _parse_version
 
@@ -56,7 +60,7 @@ class TestParseVersion:
         assert _parse_version("1.0.0") > _parse_version("0.99.99")
 
     def test_garbage_returns_empty_tuple(self):
-        """Empty tuple compares less than any populated tuple — same
+        """Empty tuple compares less than any populated tuple -- same
         fall-back behaviour as the old version_checker._parse_version."""
         from cms.services.bundle_checker import _parse_version
 
@@ -70,134 +74,149 @@ class TestParseVersion:
 
 
 class TestIsOsUpdateAvailable:
-    def test_returns_false_when_no_cache(self):
+    """``latest`` is required positionally after #578 -- no implicit
+    fallback to a module-level cache (the fallback WAS the per-replica
+    drift bug).  Every test passes ``latest`` directly."""
+
+    def test_returns_false_when_latest_is_none(self):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = None
-        try:
-            assert bundle_checker.is_os_update_available("1.0.0") is False
-        finally:
-            bundle_checker._latest_bundle = original
+        assert bundle_checker.is_os_update_available("1.0.0", None) is False
 
     def test_returns_false_when_current_is_none(self):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("1.2.3")
-        try:
-            assert bundle_checker.is_os_update_available(None) is False
-        finally:
-            bundle_checker._latest_bundle = original
+        assert bundle_checker.is_os_update_available(None, "1.2.3") is False
 
     def test_returns_true_when_older(self):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("1.2.3")
-        try:
-            assert bundle_checker.is_os_update_available("1.2.2") is True
-        finally:
-            bundle_checker._latest_bundle = original
+        assert bundle_checker.is_os_update_available("1.2.2", "1.2.3") is True
 
     def test_returns_false_when_equal(self):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("1.2.3")
-        try:
-            assert bundle_checker.is_os_update_available("1.2.3") is False
-        finally:
-            bundle_checker._latest_bundle = original
+        assert bundle_checker.is_os_update_available("1.2.3", "1.2.3") is False
 
     def test_returns_false_when_newer(self):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("1.2.3")
-        try:
-            assert bundle_checker.is_os_update_available("1.3.0") is False
-        finally:
-            bundle_checker._latest_bundle = original
+        assert bundle_checker.is_os_update_available("1.3.0", "1.2.3") is False
 
     def test_test_suffix_does_not_count_as_update(self):
         """``0.0.17-test`` and ``0.0.17`` compare equal, so the badge must
-        stay dark when the cached latest matches the device label-stripped."""
+        stay dark when the latest matches the device label-stripped."""
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("0.0.17-test")
-        try:
-            assert bundle_checker.is_os_update_available("0.0.17") is False
-            assert bundle_checker.is_os_update_available("0.0.17-test") is False
-        finally:
-            bundle_checker._latest_bundle = original
-
-    def test_explicit_latest_overrides_cache(self):
-        from cms.services import bundle_checker
-
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("1.0.0")
-        try:
-            assert bundle_checker.is_os_update_available("1.0.0", latest="2.0.0") is True
-        finally:
-            bundle_checker._latest_bundle = original
+        assert bundle_checker.is_os_update_available("0.0.17", "0.0.17-test") is False
+        assert bundle_checker.is_os_update_available("0.0.17-test", "0.0.17-test") is False
 
 
 @pytest.mark.asyncio
 class TestCheckNow:
-    async def test_check_now_updates_cache_on_success(self):
+    async def test_check_now_persists_to_shared_row_on_success(self, db_session):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        try:
-            bundle_checker._latest_bundle = None
-            stub = _stub_bundle("1.2.3")
-            with patch.object(bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub):
-                result = await bundle_checker.check_now()
-            assert result is stub
-            assert bundle_checker._latest_bundle is stub
-        finally:
-            bundle_checker._latest_bundle = original
+        stub = _stub_bundle("1.2.3")
+        with patch.object(
+            bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub
+        ):
+            result = await bundle_checker.check_now(db_session)
+        assert result is not None
+        assert result.target_version == "1.2.3"
+        # And the row is visible to a follow-on read on the same session.
+        assert (await bundle_checker.get_latest_os_version(db_session)) == "1.2.3"
 
-    async def test_check_now_keeps_prior_cache_on_fetch_failure(self):
-        """If GitHub is flaky, callers should still see the last known
-        good value via get_latest_bundle() / get_latest_os_version()."""
+    async def test_check_now_keeps_prior_row_on_fetch_failure(self, db_session):
+        """If GitHub is flaky, callers should still see the last known good
+        value via get_latest_bundle() / get_latest_os_version()."""
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        try:
-            prior = _stub_bundle("0.5.0")
-            bundle_checker._latest_bundle = prior
-            with patch.object(bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=None):
-                result = await bundle_checker.check_now()
-            # check_now returns the cached value, not None.
-            assert result is prior
-            assert bundle_checker._latest_bundle is prior
-        finally:
-            bundle_checker._latest_bundle = original
+        prior = _stub_bundle("0.5.0")
+        await bundle_checker.set_latest_bundle(db_session, prior)
+        await db_session.commit()
+
+        with patch.object(
+            bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=None
+        ):
+            result = await bundle_checker.check_now(db_session)
+        # check_now returns the persisted value, not None.
+        assert result is not None
+        assert result.target_version == "0.5.0"
+        assert (await bundle_checker.get_latest_os_version(db_session)) == "0.5.0"
 
 
+@pytest.mark.asyncio
 class TestGetLatestOsVersion:
-    def test_returns_none_when_empty(self):
+    async def test_returns_none_when_row_absent(self, db_session):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = None
-        try:
-            assert bundle_checker.get_latest_os_version() is None
-        finally:
-            bundle_checker._latest_bundle = original
+        assert (await bundle_checker.get_latest_os_version(db_session)) is None
 
-    def test_returns_target_version(self):
+    async def test_returns_target_version(self, db_session):
         from cms.services import bundle_checker
 
-        original = bundle_checker._latest_bundle
-        bundle_checker._latest_bundle = _stub_bundle("0.0.17-test")
-        try:
-            assert bundle_checker.get_latest_os_version() == "0.0.17-test"
-        finally:
-            bundle_checker._latest_bundle = original
+        await bundle_checker.set_latest_bundle(db_session, _stub_bundle("0.0.17-test"))
+        await db_session.commit()
+        assert (await bundle_checker.get_latest_os_version(db_session)) == "0.0.17-test"
+
+
+@pytest.mark.asyncio
+class TestSetLatestBundleUpsert:
+    """The shared row is a singleton (PK=1, CHECK id=1).  A second
+    ``set_latest_bundle`` must overwrite the row in place, not insert
+    a duplicate (which would 23514 the CHECK constraint anyway)."""
+
+    async def test_upsert_overwrites_existing_row(self, db_session):
+        from cms.services import bundle_checker
+        from cms.models.agora_os_latest_bundle import AgoraOsLatestBundle
+        from sqlalchemy import func, select
+
+        await bundle_checker.set_latest_bundle(db_session, _stub_bundle("1.0.0"))
+        await db_session.commit()
+        await bundle_checker.set_latest_bundle(db_session, _stub_bundle("1.0.1"))
+        await db_session.commit()
+
+        count = await db_session.scalar(select(func.count()).select_from(AgoraOsLatestBundle))
+        assert count == 1
+        assert (await bundle_checker.get_latest_os_version(db_session)) == "1.0.1"
+
+    async def test_upsert_stamps_last_success_at(self, db_session):
+        from cms.services import bundle_checker
+
+        await bundle_checker.set_latest_bundle(db_session, _stub_bundle("1.0.0"))
+        await db_session.commit()
+        status = await bundle_checker.get_status(db_session)
+        assert status["last_success_at"] is not None
+
+
+@pytest.mark.asyncio
+class TestSharedStateAcrossSessions:
+    """Issue #578 invariant: a write through session A must be visible
+    to a read through a separate session B (same engine, different
+    SQLAlchemy session).  This is the multi-replica correctness
+    guarantee that justifies the migration off the module global --
+    every CMS replica has its own session pool, but they all share the
+    same Postgres row."""
+
+    async def test_write_visible_to_independent_session(self, db_engine):
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        from cms.services import bundle_checker
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+        # "Replica A" writes.
+        async with factory() as session_a:
+            await bundle_checker.set_latest_bundle(session_a, _stub_bundle("3.4.5"))
+            await session_a.commit()
+
+        # "Replica B" reads through a completely separate session.
+        async with factory() as session_b:
+            assert (await bundle_checker.get_latest_os_version(session_b)) == "3.4.5"
+            bundle = await bundle_checker.get_latest_bundle(session_b)
+            assert bundle is not None
+            assert bundle.target_version == "3.4.5"
+            assert bundle.release_id == "stub-id"
 
 
 @pytest.mark.asyncio
@@ -213,7 +232,6 @@ class TestFetchLatestBundleFollowsRedirects:
     """
 
     async def test_meta_json_302_is_followed(self):
-        import json
         import httpx
         from cms.services import bundle_checker
 
