@@ -387,6 +387,51 @@ class TestDevicesUILiveUpdates:
         assert resp.status_code == 200
         assert f'data-live-storage="{device_with_live_state}"' in resp.text
 
+    async def test_data_live_firmware_and_os_version_attrs_in_html(self, client, device_with_live_state):
+        """#573: firmware + OS version spans should have data-live-* attributes
+        so the poller can repaint them after an OTA without a full page refresh."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert f'data-live-firmware-version="{device_with_live_state}"' in resp.text
+        assert f'data-live-os-version="{device_with_live_state}"' in resp.text
+
+    async def test_data_live_update_badge_always_rendered_for_admin(self, client, app):
+        """#573: badge wrapper must always be emitted (hidden via display:none
+        when no update available) so updateLiveFields() can flip its visibility
+        without rebuilding the surrounding firmware_version cell. Without
+        this, a device that boots into no-update-available state on first
+        render has no element for the JS to toggle when bundle_checker later
+        publishes a newer version."""
+        from cms.database import get_db
+        from cms.models.device import Device, DeviceStatus
+
+        factory = app.dependency_overrides[get_db]
+        device_id = "live-badge-rendered-001"
+
+        async for db in factory():
+            device = Device(
+                id=device_id,
+                status=DeviceStatus.ADOPTED,
+                name="No Update Yet",
+                firmware_version="1.0.0",
+                os_version="1.0.0",
+            )
+            db.add(device)
+            await db.commit()
+            break
+
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        # Badge hook is present even with no update available...
+        assert f'data-live-update-badge="{device_id}"' in resp.text
+        # ...and is hidden via inline style so the JS can simply flip
+        # display='' / 'none' instead of rebuilding the cell innerHTML.
+        text = resp.text
+        idx = text.find(f'data-live-update-badge="{device_id}"')
+        assert idx > -1
+        context = text[idx:idx + 200]
+        assert "display:none" in context
+
     async def test_data_live_actions_attr_in_html(self, client, device_with_live_state):
         """Actions cell should have data-live-actions attribute."""
         resp = await client.get("/devices")

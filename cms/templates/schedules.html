@@ -1015,6 +1015,35 @@ function editSchedule(s) {
         if (resp && resp.ok) {
             _editModalDirtyTracker = null;
             overlay.remove();
+            // #546: if the edit changed which panel the row belongs in
+            // (Active <-> Expired), an in-place fragment swap leaves
+            // the row in the wrong table. _replaceScheduleRow only
+            // refreshes markup at the row's current position; it does
+            // not relocate rows between <tbody>s. Detect the cross-
+            // bucket case by comparing the row's current bucket
+            // (`data-expired` attribute) against what the new end_date
+            // implies, and full-reload in that case so the server
+            // recomputes panel membership the same way it does on a
+            // fresh page load.
+            const existingRow = document.querySelector(`tr[data-schedule-id="${s.id}"]`);
+            const wasExpired = !!(existingRow && existingRow.dataset.expired === '1');
+            // A schedule is considered expired by the server when its
+            // end_date is strictly in the past. No end_date means
+            // never expires; an end_date today or in the future is
+            // still active. We use start-of-tomorrow as the cutoff so
+            // an end_date of "today" stays Active until midnight.
+            let newIsExpired = false;
+            if (endDate) {
+                const endParts = endDate.split('-').map(n => parseInt(n, 10));
+                if (endParts.length === 3 && endParts.every(n => !isNaN(n))) {
+                    const endLocal = new Date(endParts[0], endParts[1] - 1, endParts[2], 23, 59, 59, 999);
+                    newIsExpired = endLocal < new Date();
+                }
+            }
+            if (wasExpired !== newIsExpired) {
+                location.reload();
+                return;
+            }
             if (typeof _replaceScheduleRow === 'function') {
                 await _replaceScheduleRow(s.id);
                 showToast('Schedule updated');

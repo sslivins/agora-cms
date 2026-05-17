@@ -1022,6 +1022,13 @@ tr.highlight-new td {
 .group-header:hover { background: rgba(255,255,255,0.03); }
 .group-header .expand-toggle { font-size: 0.7rem; transition: transform 0.15s; }
 .group-panel.expanded .group-header .expand-toggle { transform: rotate(90deg); display: inline-block; }
+/* #569: inside a group panel, indent the device-row chevron one chevron-
+   width so children visually nest under the group's text label rather
+   than line up with the group's own chevron. Ungrouped Devices and
+   other device tables are unaffected because they are not inside a
+   .group-panel container. */
+.group-panel .device-row .expand-toggle,
+.group-panel .device-row td.expand-toggle { padding-left: 1.25rem; }
 .group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text); padding: 0.15rem 0.5rem; border-radius: 10px; }
 .group-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 .group-actions .btn-sm { font-size: 0.9rem; }

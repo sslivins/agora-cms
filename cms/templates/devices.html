@@ -699,6 +699,28 @@ window._adoptionProfiles = [
             const ipEl = document.querySelector(`[data-live-ip="${d.id}"]`);
             if (ipEl) ipEl.textContent = d.ip_address || '—';
 
+            // ── Detail panel: firmware + OS versions (#573) ──
+            // Both fields are read-once-then-stale in the initial server
+            // render; after an OTA the device's reported values change
+            // but the page didn't repaint them, so operators thought the
+            // upgrade hadn't completed until they hit F5.
+            const fwEl = document.querySelector(`[data-live-firmware-version="${d.id}"]`);
+            if (fwEl) fwEl.textContent = d.firmware_version || '—';
+            const osEl = document.querySelector(`[data-live-os-version="${d.id}"]`);
+            if (osEl) osEl.textContent = d.os_version || '—';
+            // The "{latest_version} available" badge is rendered server-
+            // side INSIDE the firmware-version detail cell and gated on
+            // d.update_available + the devices:manage permission. The
+            // badge wrapper is always emitted (hidden via style.display
+            // when not applicable) so the JS can flip its visibility
+            // without rebuilding the whole cell, even when the device
+            // initially had no badge. latest_version itself only changes
+            // via bundle_checker (~30 min cadence), so its text is left
+            // as the server-rendered value -- not worth wiring through
+            // the per-device payload.
+            const badgeEl = document.querySelector(`[data-live-update-badge="${d.id}"]`);
+            if (badgeEl) badgeEl.style.display = d.update_available ? '' : 'none';
+
             // ── Detail panel: storage detail ──
             const storageEl = document.querySelector(`[data-live-storage="${d.id}"]`);
             if (storageEl) {
