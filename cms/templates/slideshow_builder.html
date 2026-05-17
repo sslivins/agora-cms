@@ -424,7 +424,7 @@
                         <div id="ss-group-popup" popover class="group-popup">
                             {% for g in user_groups %}
                             <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
-                                    onclick="event.stopPropagation(); pickSsGroup('{{ g.id }}', '{{ g.name | replace("'", "\\'") }}')">{{ g.name }}</button>
+                                    onclick="event.stopPropagation(); pickSsGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
                             {% endfor %}
                         </div>
                     </span>

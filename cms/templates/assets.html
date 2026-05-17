@@ -36,7 +36,7 @@
                     <div id="upload-group-popup" popover class="group-popup">
                         {% for g in user_groups %}
                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
-                                onclick="event.stopPropagation(); pickUploadGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
+                                onclick="event.stopPropagation(); pickUploadGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
                         {% endfor %}
                     </div>
                 </span>
@@ -76,7 +76,7 @@
                     <div id="webpage-group-popup" popover class="group-popup">
                         {% for g in user_groups %}
                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
-                                onclick="event.stopPropagation(); pickWebpageGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
+                                onclick="event.stopPropagation(); pickWebpageGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
                         {% endfor %}
                     </div>
                 </span>
@@ -145,7 +145,7 @@
                     <div id="stream-group-popup" popover class="group-popup">
                         {% for g in user_groups %}
                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
-                                onclick="event.stopPropagation(); pickStreamGroup('{{ g.id }}', '{{ g.name }}')">{{ g.name }}</button>
+                                onclick="event.stopPropagation(); pickStreamGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
                         {% endfor %}
                     </div>
                 </span>
