@@ -98,8 +98,13 @@ function showPrompt(message, defaultValue = "", isPassword = false) {
         const close = (val) => { overlay.remove(); resolve(val); };
         cancelBtn.onclick = () => close(null);
         okBtn.onclick = () => close(input.value);
-        input.addEventListener("keydown", (e) => { if (e.key === "Enter") close(input.value); });
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") close(input.value);
+            else if (e.key === "Escape") close(null);
+        });
+        // Intentionally NOT closing on backdrop click -- the prompt has a
+        // text input and it's too easy to lose typed content with a stray
+        // click outside the dialog. Users dismiss via Cancel/Esc.
     });
 }
 
