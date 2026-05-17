@@ -165,6 +165,24 @@ class Device(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # ---- Issue agora-cms#511: send-failure cooldown ----
+    # When the upgrade endpoint's send-to-device call fails (502), we
+    # don't immediately clear ``upgrade_started_at`` -- a double-click
+    # during a slow send would otherwise hit the second send before the
+    # first's failure had a chance to roll back the claim, returning a
+    # second 502 instead of "wait a moment".  Instead, the send-failure
+    # path clears ``upgrade_started_at`` to NULL and sets this column
+    # to ``now() + SEND_FAILURE_COOLDOWN`` in a single UPDATE; the CAS
+    # in the upgrade endpoint refuses to issue a new claim while this
+    # timestamp is in the future.  Kept separate from
+    # ``upgrade_started_at`` so ``_is_upgrading()`` stays correct -- a
+    # device that hit a 502 is NOT upgrading, and the UI badge should
+    # reflect that.  Nullable + no default so existing rows pick up
+    # NULL on migration, which matches "no cooldown active".
+    upgrade_cooldown_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ---- OTA progress (issue agora-cms#574 / migration 0025) ----
     # Live progress for the in-flight OS OTA, written by the WPS lifecycle
     # event handler (`cms.services.ota_progress.handle_event`) and surfaced

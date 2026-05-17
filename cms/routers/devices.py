@@ -54,6 +54,16 @@ device_originated_router = APIRouter(prefix="/api/devices", tags=["devices (devi
 # letting another upgrade request reclaim it (covers stuck reboots).
 UPGRADE_TTL = timedelta(minutes=15)
 
+# Issue agora-cms#511: when the send-to-device call fails (502), hold a
+# cooldown for this short window before allowing another claim. Without
+# it, a double-click while the first send is in flight returns back-to-
+# back 502s instead of "give the first one a moment". Stored in its own
+# ``upgrade_cooldown_until`` column rather than backdating
+# ``upgrade_started_at`` so ``_is_upgrading()`` stays semantically
+# correct -- a device that just hit a 502 is *not* upgrading, and the
+# UI badge must reflect that throughout the cooldown.
+SEND_FAILURE_COOLDOWN = timedelta(seconds=10)
+
 # Issue agora-cms#574 — how recent a device's last lifecycle event has
 # to be before we still trust ``devices.ota_*`` to reflect a live OTA.
 # Devices emit events on every FSM transition + every 2s during long
@@ -549,6 +559,16 @@ async def upgrade_device(
                 Device.upgrade_started_at < ttl_cutoff,
             )
         )
+        .where(
+            # Issue agora-cms#511: also gate on the send-failure cooldown.
+            # A row that just rolled back from a 502 will have this column
+            # set ~10s into the future; the CAS must reject the retry
+            # until the cooldown elapses.
+            or_(
+                Device.upgrade_cooldown_until.is_(None),
+                Device.upgrade_cooldown_until < claim_ts,
+            )
+        )
         .values(upgrade_started_at=claim_ts)
         .returning(Device.upgrade_started_at)
         .execution_options(synchronize_session=False)
@@ -556,7 +576,8 @@ async def upgrade_device(
     claimed = result.scalar_one_or_none()
     await db.commit()
     if claimed is None:
-        # Another request holds a live claim within TTL.
+        # Another request holds a live claim within TTL, or we're inside
+        # the post-502 send-failure cooldown window.
         raise HTTPException(
             status_code=409,
             detail="Upgrade already in progress for this device",
@@ -572,6 +593,29 @@ async def upgrade_device(
             .where(Device.id == device_id)
             .where(Device.upgrade_started_at == claimed)
             .values(upgrade_started_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+
+    async def _release_with_cooldown() -> None:
+        """Release the claim AND arm the send-failure cooldown.
+
+        Used by the 502 (send-to-device failed) path only.  We clear
+        ``upgrade_started_at`` (so ``_is_upgrading()`` returns False
+        and the UI badge stops showing "Upgrading...") AND set
+        ``upgrade_cooldown_until = now + SEND_FAILURE_COOLDOWN`` in a
+        single UPDATE, guarded by the claim token so we don't disturb
+        a successor's claim if one snuck in past the cooldown clause.
+        """
+        cooldown_until = datetime.now(timezone.utc) + SEND_FAILURE_COOLDOWN
+        await db.execute(
+            update(Device)
+            .where(Device.id == device_id)
+            .where(Device.upgrade_started_at == claimed)
+            .values(
+                upgrade_started_at=None,
+                upgrade_cooldown_until=cooldown_until,
+            )
             .execution_options(synchronize_session=False)
         )
         await db.commit()
@@ -610,7 +654,10 @@ async def upgrade_device(
     )
     sent = await get_transport().send_to_device(device_id, upgrade_msg.model_dump(mode="json"))
     if not sent:
-        await _release_claim()
+        # Issue agora-cms#511: hold the claim slot for a short cooldown
+        # window before allowing another attempt. Without this, a
+        # double-click during a slow send returns back-to-back 502s.
+        await _release_with_cooldown()
         raise HTTPException(status_code=502, detail="Failed to send to device")
 
     await audit_log(
