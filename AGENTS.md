@@ -41,7 +41,7 @@ Real bugs that have shipped from this pattern:
 
 - PR #589 — webpage asset "Edit URL" kebab inert on any URL with a `'`
 - PR #590 — devices kebab Update / Reboot / etc. inert for `Mia's pi5`
-- PR #591 — sweep fix across assets / users / slideshow builder / asset row
+- PR #594 — sweep fix across assets / users / slideshow builder / asset row
 
 ## PR workflow
 
