@@ -1540,3 +1540,40 @@ textarea:not(:-webkit-autofill) {
 .kebab-menu > .kebab-item-danger:hover:not(:disabled) {
     background: rgba(231, 76, 60, 0.12);
 }
+
+/* "Now" chip for time inputs -- a small floating pill that appears
+   just above the input while it (or the chip itself) has focus.  Lets
+   the operator set the field to the current wall-clock time without
+   replacing the native time picker. */
+.time-now-wrap {
+    position: relative;
+}
+.time-now-chip {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 999px;
+    padding: 0.25rem 0.75rem 0.25rem 0.6rem;
+    font-size: 0.78rem;
+    line-height: 1.2;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    gap: 0.3rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    white-space: nowrap;
+    z-index: 5;
+}
+.time-now-chip:hover { background: var(--accent-hover); }
+.time-now-wrap.focused .time-now-chip { display: inline-flex; }
+.time-now-chip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 14px;
+    border: 5px solid transparent;
+    border-top-color: var(--accent);
+}

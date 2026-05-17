@@ -797,7 +797,10 @@ function editSchedule(s) {
         <div class="form-row">
             <div class="form-group">
                 <label>Start Time</label>
-                <input type="time" id="edit-start-time" value="${s.start_time}">
+                <div class="time-now-wrap" id="edit-start-time-wrap">
+                    <button type="button" class="time-now-chip" id="edit-start-time-now" tabindex="-1">⏱ Set to now</button>
+                    <input type="time" id="edit-start-time" value="${s.start_time}">
+                </div>
             </div>
             <div class="form-group">
                 <label>End Time</label>
@@ -899,6 +902,57 @@ function editSchedule(s) {
         computeLoopEndTime(box);
         updateEditSummary();
     });
+
+    // "Now" chip for Start Time -- appears while the input is focused,
+    // sets the field to the current wall-clock time in the schedule's
+    // currently-selected timezone, and fires a synthetic ``change``
+    // event so the existing end-time recompute / summary update /
+    // dirty-tracking logic all run as if the user had typed it.
+    const startWrap = box.querySelector("#edit-start-time-wrap");
+    const startNowChip = box.querySelector("#edit-start-time-now");
+    const editTzSel = box.querySelector("#edit-timezone");
+    function _currentTimeInTz(tz) {
+        try {
+            return new Intl.DateTimeFormat('en-GB', {
+                hour: '2-digit', minute: '2-digit', hour12: false,
+                timeZone: tz || undefined,
+            }).format(new Date());
+        } catch (e) {
+            // Bad/unknown IANA name -- fall back to browser local time.
+            const now = new Date();
+            return String(now.getHours()).padStart(2, '0') + ':' +
+                   String(now.getMinutes()).padStart(2, '0');
+        }
+    }
+    function _updateStartNowChipLabel() {
+        startNowChip.textContent = '\u23f1 Set to now (' + _currentTimeInTz(editTzSel.value) + ')';
+    }
+    _updateStartNowChipLabel();
+    editStartTimeEl.addEventListener('focus', function() {
+        _updateStartNowChipLabel();
+        startWrap.classList.add('focused');
+    });
+    editStartTimeEl.addEventListener('blur', function() {
+        // Delay so a click on the chip still registers before we hide
+        // it -- if the user is mid-click on the chip, focus has briefly
+        // left the input but ``document.activeElement`` will be the
+        // chip button by the time this fires.
+        setTimeout(function() {
+            if (document.activeElement !== startNowChip) {
+                startWrap.classList.remove('focused');
+            }
+        }, 120);
+    });
+    // Prevent the chip's mousedown from blurring the input mid-click.
+    startNowChip.addEventListener('mousedown', function(e) { e.preventDefault(); });
+    startNowChip.addEventListener('click', function() {
+        editStartTimeEl.value = _currentTimeInTz(editTzSel.value);
+        editStartTimeEl.dispatchEvent(new Event('change', { bubbles: true }));
+        editStartTimeEl.focus();
+    });
+    // Keep the chip label honest if the user changes the timezone
+    // dropdown while the modal is open.
+    editTzSel.addEventListener('change', _updateStartNowChipLabel);
 
     // Auto-advance end date in edit modal
     const editStartDateEl = box.querySelector("#edit-start-date");
