@@ -403,8 +403,14 @@
         var opt = baseSel.options[baseSel.selectedIndex];
         if (!fleet || !opt || !opt.value) { input.value = ''; return; }
         var variant = (opt.dataset.variant || '').replace(/[^a-z0-9]/gi, '') || 'pi';
-        var form = $('#imagerBuildForm', buildSection);
-        var version = (form && form.dataset.cmsVersion) || '0.0.0';
+        // #570: filename reflects the BASE-IMAGE / agora-os version that was
+        // baked in, NOT the CMS app version (cms_version is irrelevant to
+        // what's on the SD card). Read the resolved version from the
+        // selected <option>'s data-version attribute. If the option somehow
+        // has no version (shouldn't happen with the current API shape), use
+        // a 'unknown' sentinel so the bug is visible instead of silently
+        // re-introducing the cms-version-in-filename regression.
+        var version = (opt.dataset.version || '').replace(/[^a-z0-9.-]/gi, '') || 'unknown';
         var ssidEl = $('#imagerWifiSsid', buildSection);
         var slug = ssidSlug(ssidEl ? ssidEl.value.trim() : '');
         var name = 'agora-' + variant + '-' + version;
@@ -415,6 +421,14 @@
     // ── Job polling (build) ────────────────────────────────────
     var SS_KEY = 'imagerCurrentJob';
     var pollTimer = null;
+    // #568: toast is edge-triggered on a non-terminal -> DONE transition.
+    // Tracks the last status seen in this poll session for the current
+    // job. Reset on (a) a new polling session for a new jobId via
+    // startPolling, and (b) when polling stops. Without this, every
+    // remount of the Imager tab re-polled a cached terminal job and
+    // fired "Image build complete" again, even though no new build had
+    // run -- noise that lowered trust in real toasts.
+    var _lastBuildStatus = null;
 
     function saveActiveJob(jobId) {
         try { sessionStorage.setItem(SS_KEY, jobId); } catch (e) {}
@@ -659,13 +673,24 @@
         try {
             var job = await jsonFetch('/api/imager/jobs/' + encodeURIComponent(jobId));
             renderJobCard(job);
+            var status = statusUp(job.status);
             if (isTerminal(job.status)) {
                 stopPolling();
-                if (statusUp(job.status) === 'DONE') {
+                // #568: only toast on a NOT-DONE -> DONE transition.
+                // If the very first poll after navigating back to the
+                // Imager tab returns a terminal DONE job, the prior
+                // status is null (no transition observed in this
+                // session), so we suppress the toast. The user already
+                // saw the previous session's toast when the build
+                // actually completed.
+                if (status === 'DONE' && _lastBuildStatus && _lastBuildStatus !== 'DONE') {
                     toast('Image build complete', 'success');
+                }
+                if (status === 'DONE') {
                     loadBuiltImages();
                 }
             }
+            _lastBuildStatus = status;
         } catch (e) {
             if (e.status === 404) {
                 stopPolling();
@@ -679,6 +704,10 @@
 
     function startPolling(jobId) {
         stopPolling();
+        // #568: fresh polling session for a (possibly new) job -- reset
+        // the transition tracker so the upcoming first-poll's status
+        // becomes the baseline, not the toast trigger.
+        _lastBuildStatus = null;
         saveActiveJob(jobId);
         pollOnce(jobId);
         pollTimer = setInterval(function() {
@@ -689,6 +718,7 @@
 
     function stopPolling() {
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        _lastBuildStatus = null;
     }
 
     function dismissJobCard() {
