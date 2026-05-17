@@ -989,13 +989,13 @@ function clearDirty() {
 
 // Custom 3-button modal for unsaved-changes navigation: Save / Discard /
 // Cancel. Visually matches showConfirm in app.js by reusing the same
-// modal-overlay / modal-box / modal-actions classes.
+// modal-overlay / modal-box / modal-actions classes via createModal().
 function showUnsavedChangesModal(targetHref) {
-    if (typeof _closeOpenPopovers === 'function') _closeOpenPopovers();
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    const box = document.createElement('div');
-    box.className = 'modal-box';
+    // Backdrop click is the same as Cancel here, so allow it.
+    const { box, close } = createModal({
+        closeOnBackdrop: true,
+        closeOnEsc: true,
+    });
     const msg = document.createElement('p');
     msg.textContent = 'You have unsaved changes. Save them before leaving?';
     const actions = document.createElement('div');
@@ -1014,9 +1014,6 @@ function showUnsavedChangesModal(targetHref) {
     actions.appendChild(saveBtn);
     box.appendChild(msg);
     box.appendChild(actions);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    const close = () => overlay.remove();
     cancelBtn.onclick = () => close();
     discardBtn.onclick = () => {
         clearDirty();
@@ -1030,7 +1027,6 @@ function showUnsavedChangesModal(targetHref) {
         close();
         saveSlideshow({redirectTo: targetHref});
     };
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 }
 
 function initDirtyTracking() {

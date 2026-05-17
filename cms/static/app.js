@@ -34,14 +34,65 @@ function _closeOpenPopovers() {
     });
 }
 
+// ── Modal factory ─────────────────────────────────────────────────────
+// Builds the standard `modal-overlay` > `modal-box` shell, wires up the
+// close lifecycle, and exposes the helpers that nearly every modal needs.
+//
+// Opinionated defaults:
+//   - closeOnBackdrop: false — clicking the dark area outside the box does
+//     NOT dismiss the modal. Most modals contain form input where a stray
+//     click would silently lose state. Confirm dialogs and image-preview
+//     lightboxes opt in via {closeOnBackdrop: true}.
+//   - closeOnEsc: true — Esc always provides a one-key dismiss path.
+//
+// Returns {overlay, box, close}. Callers append their own content to
+// `box`, wire up their buttons to call `close(value)`, and pass an
+// `onClose` callback to receive the value (e.g. resolve a Promise).
+// `close()` is idempotent; safe to call from multiple paths.
+function createModal({ closeOnBackdrop = false, closeOnEsc = true, onClose } = {}) {
+    _closeOpenPopovers();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    let closed = false;
+    function _onKey(e) {
+        if (e.key !== "Escape") return;
+        // Only respond if we're the topmost modal -- otherwise a nested
+        // confirm/prompt opened on top of us would inadvertently dismiss
+        // us when the user hits Esc to close the inner one.
+        const overlays = document.querySelectorAll(".modal-overlay");
+        if (overlays[overlays.length - 1] !== overlay) return;
+        close(undefined);
+    }
+    function close(value) {
+        if (closed) return;
+        closed = true;
+        document.removeEventListener("keydown", _onKey);
+        overlay.remove();
+        if (typeof onClose === "function") onClose(value);
+    }
+    if (closeOnEsc) document.addEventListener("keydown", _onKey);
+    if (closeOnBackdrop) {
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay) close(undefined);
+        });
+    }
+    return { overlay, box, close };
+}
+
 // ── Modal confirm (replaces native confirm()) ──
 function showConfirm(message) {
-    _closeOpenPopovers();
     return new Promise((resolve) => {
-        const overlay = document.createElement("div");
-        overlay.className = "modal-overlay";
-        const box = document.createElement("div");
-        box.className = "modal-box";
+        // Backdrop click is safe for confirms -- resolves to false (cancel).
+        const { box, close } = createModal({
+            closeOnBackdrop: true,
+            closeOnEsc: true,
+            onClose: (v) => resolve(v === undefined ? false : v),
+        });
         const msg = document.createElement("p");
         msg.textContent = message;
         const actions = document.createElement("div");
@@ -56,23 +107,19 @@ function showConfirm(message) {
         actions.appendChild(okBtn);
         box.appendChild(msg);
         box.appendChild(actions);
-        overlay.appendChild(box);
-        document.body.appendChild(overlay);
-        const close = (result) => { overlay.remove(); resolve(result); };
         cancelBtn.onclick = () => close(false);
         okBtn.onclick = () => close(true);
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(false); });
     });
 }
 
 // ── Prompt modal (replaces native prompt()) ──
 function showPrompt(message, defaultValue = "", isPassword = false) {
-    _closeOpenPopovers();
     return new Promise((resolve) => {
-        const overlay = document.createElement("div");
-        overlay.className = "modal-overlay";
-        const box = document.createElement("div");
-        box.className = "modal-box";
+        // Defaults: no backdrop dismiss (text input -- don't lose typing),
+        // Esc cancels. Resolves null on cancel/Esc, string on submit.
+        const { box, close } = createModal({
+            onClose: (v) => resolve(v === undefined ? null : v),
+        });
         const msg = document.createElement("p");
         msg.textContent = message;
         const input = document.createElement("input");
@@ -92,14 +139,12 @@ function showPrompt(message, defaultValue = "", isPassword = false) {
         box.appendChild(msg);
         box.appendChild(input);
         box.appendChild(actions);
-        overlay.appendChild(box);
-        document.body.appendChild(overlay);
         input.focus();
-        const close = (val) => { overlay.remove(); resolve(val); };
         cancelBtn.onclick = () => close(null);
         okBtn.onclick = () => close(input.value);
-        input.addEventListener("keydown", (e) => { if (e.key === "Enter") close(input.value); });
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") close(input.value);
+        });
     });
 }
 
@@ -1199,12 +1244,11 @@ window.rejectPendingDevice = rejectPendingDevice;
 
 
 function showAdoptModal(defaultName, groups, profiles) {
-    _closeOpenPopovers();
     return new Promise((resolve) => {
-        const overlay = document.createElement("div");
-        overlay.className = "modal-overlay";
-        const box = document.createElement("div");
-        box.className = "modal-box";
+        // Defaults: no backdrop dismiss (form input), Esc cancels.
+        const { box, close } = createModal({
+            onClose: (v) => resolve(v === undefined ? null : v),
+        });
 
         const title = document.createElement("h3");
         title.textContent = "Adopt Device";
@@ -1302,12 +1346,9 @@ function showAdoptModal(defaultName, groups, profiles) {
         box.appendChild(groupLabel);
         box.appendChild(groupSelect);
         box.appendChild(actions);
-        overlay.appendChild(box);
-        document.body.appendChild(overlay);
         nameInput.focus();
         nameInput.select();
 
-        const close = (val) => { overlay.remove(); resolve(val); };
         cancelBtn.onclick = () => close(null);
         adoptBtn.onclick = () => {
             if (!nameInput.value.trim() || !profileSelect.value) return;
@@ -1470,11 +1511,12 @@ async function deleteGroup(groupId) {
 
 // ── Asset actions ──
 function previewAsset(assetId, filename, assetType) {
-    _closeOpenPopovers();
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    const box = document.createElement("div");
-    box.className = "modal-box preview-box";
+    // Lightbox: backdrop dismiss is the expected pattern.
+    const { box, close } = createModal({
+        closeOnBackdrop: true,
+        closeOnEsc: true,
+    });
+    box.classList.add("preview-box");
     const header = document.createElement("div");
     header.className = "preview-header";
     const title = document.createElement("span");
@@ -1482,7 +1524,7 @@ function previewAsset(assetId, filename, assetType) {
     const closeBtn = document.createElement("button");
     closeBtn.className = "btn btn-secondary btn-sm";
     closeBtn.textContent = "Close";
-    closeBtn.onclick = () => overlay.remove();
+    closeBtn.onclick = () => close();
     header.appendChild(title);
     header.appendChild(closeBtn);
     box.appendChild(header);
@@ -1501,19 +1543,15 @@ function previewAsset(assetId, filename, assetType) {
         img.className = "preview-media";
         box.appendChild(img);
     }
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
-    document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", esc); } });
 }
 
 function previewVariant(variantId, filename, assetType, profileName) {
-    _closeOpenPopovers();
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    const box = document.createElement("div");
-    box.className = "modal-box preview-box";
+    // Lightbox: backdrop dismiss is the expected pattern.
+    const { box, close } = createModal({
+        closeOnBackdrop: true,
+        closeOnEsc: true,
+    });
+    box.classList.add("preview-box");
     const header = document.createElement("div");
     header.className = "preview-header";
     const title = document.createElement("span");
@@ -1521,7 +1559,7 @@ function previewVariant(variantId, filename, assetType, profileName) {
     const closeBtn = document.createElement("button");
     closeBtn.className = "btn btn-secondary btn-sm";
     closeBtn.textContent = "Close";
-    closeBtn.onclick = () => overlay.remove();
+    closeBtn.onclick = () => close();
     header.appendChild(title);
     header.appendChild(closeBtn);
     box.appendChild(header);
@@ -1540,11 +1578,6 @@ function previewVariant(variantId, filename, assetType, profileName) {
         img.className = "preview-media";
         box.appendChild(img);
     }
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
-    document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", esc); } });
 }
 
 async function editAssetName(el) {

@@ -441,11 +441,8 @@ const rolesData = {
             const data = await resp.json();
             await loadAllKeys();
             copyToClipboard(data.key);
-            // Show key modal
-            const overlay = document.createElement("div");
-            overlay.className = "modal-overlay";
-            const box = document.createElement("div");
-            box.className = "modal-box";
+            // Show key modal. No backdrop dismiss -- key is shown once only.
+            const { box, close } = createModal();
             box.innerHTML = `
                 <p style="margin-bottom:0.5rem;"><strong>Key regenerated!</strong></p>
                 <p style="margin-bottom:0.75rem; font-size:0.85rem;" class="text-muted">Store it securely — it won't be shown again.</p>
@@ -455,12 +452,9 @@ const rolesData = {
                     <button class="btn btn-primary" id="admin-key-ok-btn">OK</button>
                 </div>
             `;
-            document.body.appendChild(overlay);
-            overlay.appendChild(box);
             box.querySelector("input").select();
             box.querySelector("#admin-key-copy-btn").onclick = () => { copyToClipboard(data.key); };
-            box.querySelector("#admin-key-ok-btn").onclick = () => { overlay.remove(); };
-            overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+            box.querySelector("#admin-key-ok-btn").onclick = () => close();
         } catch {
             showToast("Failed to regenerate key", true);
         }
