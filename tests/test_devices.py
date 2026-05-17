@@ -856,6 +856,227 @@ class TestUpgradeGuard:
         )).scalar_one()
         assert row.upgrade_started_at is None
 
+    async def test_send_failure_holds_claim_for_cooldown(self, client, db_session):
+        """Issue #511: a 502 send-failure arms a short cooldown window
+        during which a retry returns 409, not another 502.
+
+        Without this, double-clicking Upgrade while the first send is
+        in flight reliably produces back-to-back 502s because each
+        request sees ``upgrade_started_at IS NULL`` after the other's
+        rollback. The cooldown column makes the CAS reject the retry
+        until the window elapses.
+        """
+        from datetime import datetime, timezone, timedelta
+        from sqlalchemy import select, update
+        from cms.models.device import Device, DeviceStatus
+        from cms.services import bundle_checker, device_presence
+        from cms.services.transport import set_transport, reset_transport_to_local
+
+        device = Device(
+            id="up-pi-511a",
+            name="up-pi-511a",
+            status=DeviceStatus.ADOPTED,
+            os_version="0.0.16-test",
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await device_presence.mark_online(db_session, "up-pi-511a")
+
+        class AlwaysFailTransport:
+            async def is_connected(self, device_id): return True
+            async def send_to_device(self, device_id, msg): return False
+
+        await bundle_checker.set_latest_bundle(
+            db_session,
+            bundle_checker.BundleInfo(
+                target_version="0.0.17-test",
+                release_id="rel-up-511a",
+                min_from_version="0.0.0",
+                bundle_url="https://example.invalid/x.tar.zst",
+                signature_url="https://example.invalid/x.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=1,
+                created_at="2026-05-15T00:00:00Z",
+            ),
+        )
+        await db_session.commit()
+
+        set_transport(AlwaysFailTransport())
+        try:
+            # First attempt -- send fails, claim rolls back, cooldown is armed.
+            resp1 = await client.post("/api/devices/up-pi-511a/upgrade")
+            assert resp1.status_code == 502
+            assert resp1.json()["detail"] == "Failed to send to device"
+
+            # Immediate retry -- still inside cooldown window, must 409.
+            resp2 = await client.post("/api/devices/up-pi-511a/upgrade")
+            assert resp2.status_code == 409, (
+                f"expected 409 during cooldown, got {resp2.status_code}: {resp2.text}"
+            )
+            assert "already in progress" in resp2.json()["detail"]
+
+            # Verify the database state: upgrade_started_at cleared,
+            # cooldown set in the future.
+            db_session.expire_all()
+            row = (await db_session.execute(
+                select(Device).where(Device.id == "up-pi-511a")
+            )).scalar_one()
+            assert row.upgrade_started_at is None
+            assert row.upgrade_cooldown_until is not None
+            cooldown_until = row.upgrade_cooldown_until
+            if cooldown_until.tzinfo is None:
+                cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
+            assert cooldown_until > datetime.now(timezone.utc)
+
+            # Fast-forward past the cooldown by rewriting the column,
+            # then assert the CAS succeeds again (proves the cooldown
+            # was the only thing blocking the retry, not some leftover
+            # claim).
+            await db_session.execute(
+                update(Device)
+                .where(Device.id == "up-pi-511a")
+                .values(upgrade_cooldown_until=datetime.now(timezone.utc) - timedelta(seconds=1))
+            )
+            await db_session.commit()
+            resp3 = await client.post("/api/devices/up-pi-511a/upgrade")
+            assert resp3.status_code == 502  # still fails (transport still mocked to fail) but now reaches send
+        finally:
+            reset_transport_to_local()
+
+    async def test_send_failure_cooldown_does_not_render_is_upgrading(
+        self, client, db_session
+    ):
+        """Issue #511: during the post-502 cooldown window, the device
+        must NOT show ``is_upgrading=True`` -- no upgrade is in flight.
+
+        This is the test that would have caught the earlier backdated-
+        timestamp design: writing a stale ``upgrade_started_at`` would
+        make ``_is_upgrading()`` return True for the entire cooldown
+        window, displaying "Upgrading..." in the UI when nothing was
+        actually happening.
+        """
+        from cms.models.device import Device, DeviceStatus
+        from cms.services import bundle_checker, device_presence
+        from cms.services.transport import set_transport, reset_transport_to_local
+
+        device = Device(
+            id="up-pi-511b",
+            name="up-pi-511b",
+            status=DeviceStatus.ADOPTED,
+            os_version="0.0.16-test",
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await device_presence.mark_online(db_session, "up-pi-511b")
+
+        class AlwaysFailTransport:
+            async def is_connected(self, device_id): return True
+            async def send_to_device(self, device_id, msg): return False
+
+        await bundle_checker.set_latest_bundle(
+            db_session,
+            bundle_checker.BundleInfo(
+                target_version="0.0.17-test",
+                release_id="rel-up-511b",
+                min_from_version="0.0.0",
+                bundle_url="https://example.invalid/x.tar.zst",
+                signature_url="https://example.invalid/x.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=1,
+                created_at="2026-05-15T00:00:00Z",
+            ),
+        )
+        await db_session.commit()
+
+        set_transport(AlwaysFailTransport())
+        try:
+            resp_fail = await client.post("/api/devices/up-pi-511b/upgrade")
+            assert resp_fail.status_code == 502
+        finally:
+            reset_transport_to_local()
+
+        # GET /api/devices uses get_all_states() which AlwaysFailTransport
+        # doesn't stub; reset to the local transport first so the device
+        # list response is well-formed and we can assert on is_upgrading.
+        resp_list = await client.get("/api/devices")
+        assert resp_list.status_code == 200
+        target = next((d for d in resp_list.json() if d["id"] == "up-pi-511b"), None)
+        assert target is not None, "device not in /api/devices response"
+        assert target["is_upgrading"] is False, (
+            "is_upgrading must be False during send-failure cooldown -- "
+            "the UI must not lie about the device's upgrade state"
+        )
+
+    async def test_send_failure_cooldown_does_not_extend_ttl_recovery(
+        self, client, db_session
+    ):
+        """Issue #511: a stale ``upgrade_started_at`` claim (operator
+        clicked Upgrade, device dropped before any failure rollback)
+        still auto-expires via the existing ``UPGRADE_TTL`` regardless
+        of whether ``upgrade_cooldown_until`` is also set in the past.
+
+        Guards against an accidental implementation that ANDs the
+        cooldown clause into the TTL check itself, which would block
+        recovery from a stuck upgrade for any device that had ever hit
+        a 502 in the past (since cooldown_until is set permanently as
+        a timestamp, never NULLed out).
+        """
+        from datetime import datetime, timezone, timedelta
+        from cms.models.device import Device, DeviceStatus
+        from cms.services import bundle_checker, device_presence
+        from cms.services.transport import set_transport, reset_transport_to_local
+
+        # Seed a device with a STALE upgrade_started_at (older than
+        # UPGRADE_TTL) AND a long-past cooldown_until -- the legitimate
+        # state of a device that hit a 502 some time ago, then had an
+        # operator click Upgrade and lose connectivity. The new attempt
+        # below must succeed because the original claim is past TTL.
+        long_ago = datetime.now(timezone.utc) - timedelta(minutes=30)
+        device = Device(
+            id="up-pi-511c",
+            name="up-pi-511c",
+            status=DeviceStatus.ADOPTED,
+            os_version="0.0.16-test",
+            upgrade_started_at=long_ago,
+            upgrade_cooldown_until=long_ago,
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await device_presence.mark_online(db_session, "up-pi-511c")
+
+        sent_messages: list = []
+
+        class CapturingTransport:
+            async def is_connected(self, device_id): return True
+            async def send_to_device(self, device_id, msg):
+                sent_messages.append((device_id, msg))
+                return True
+
+        await bundle_checker.set_latest_bundle(
+            db_session,
+            bundle_checker.BundleInfo(
+                target_version="0.0.17-test",
+                release_id="rel-up-511c",
+                min_from_version="0.0.0",
+                bundle_url="https://example.invalid/x.tar.zst",
+                signature_url="https://example.invalid/x.tar.zst.minisig",
+                sha256_url=None,
+                size_bytes=1,
+                created_at="2026-05-15T00:00:00Z",
+            ),
+        )
+        await db_session.commit()
+
+        set_transport(CapturingTransport())
+        try:
+            resp = await client.post("/api/devices/up-pi-511c/upgrade")
+            assert resp.status_code == 200, (
+                f"stale TTL claim should release; got {resp.status_code}: {resp.text}"
+            )
+            assert len(sent_messages) == 1
+        finally:
+            reset_transport_to_local()
+
 
 @pytest.mark.asyncio
 class TestDeviceGroups:
