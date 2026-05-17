@@ -395,6 +395,37 @@ class TestDevicesUILiveUpdates:
         assert f'data-live-firmware-version="{device_with_live_state}"' in resp.text
         assert f'data-live-os-version="{device_with_live_state}"' in resp.text
 
+    async def test_data_live_supported_codecs_attr_in_html(self, client, device_with_live_state):
+        """Sibling fix to #573: supported codecs span should have a
+        data-live-* attribute so re-registration (or any other update of the
+        device's reported codec list) repaints without a full page refresh."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert f'data-live-supported-codecs="{device_with_live_state}"' in resp.text
+
+    async def test_data_live_device_type_attr_in_html(self, client, device_with_live_state):
+        """Sibling fix to #573: device type span should have a data-live-*
+        attribute so a re-registration with a changed device_type repaints
+        without a full page refresh."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        assert f'data-live-device-type="{device_with_live_state}"' in resp.text
+
+    async def test_storage_handler_resyncs_capacity_from_api(self, client, device_with_live_state):
+        """The storage live-update JS must read storage_capacity_mb from the
+        API payload, not just storage_used_mb from the initial dataset.
+        Regression: prior to this fix the capacity was only read from the
+        server-rendered dataset, so a capacity change (storage swap / re-flash
+        with a different SD card) never appeared until a full page refresh."""
+        resp = await client.get("/devices")
+        assert resp.status_code == 200
+        # Both the collapsed-row % handler and the detail-panel handler must
+        # write d.storage_capacity_mb back to dataset.storageMb (not just used).
+        assert "storagePctEl.dataset.storageMb = cap" in resp.text
+        assert "storageEl.dataset.storageMb = cap" in resp.text
+        # And both must source capacity from d.storage_capacity_mb first.
+        assert "d.storage_capacity_mb != null" in resp.text
+
     async def test_data_live_update_badge_always_rendered_for_admin(self, client, app):
         """#573: badge wrapper must always be emitted (hidden via display:none
         when no update available) so updateLiveFields() can flip its visibility
