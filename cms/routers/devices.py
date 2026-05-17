@@ -421,6 +421,16 @@ async def update_device(
                     ),
                 )
 
+    # Reject assignment to a missing or disabled profile (issue #583).
+    # Missing is 404 (a separate pre-existing gap, fixed here because we
+    # need the fetch anyway); disabled is 422.
+    if updates.get("profile_id"):
+        target_profile = await db.get(DeviceProfile, updates["profile_id"])
+        if target_profile is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        if not target_profile.enabled:
+            raise HTTPException(status_code=422, detail="Profile is disabled")
+
     # Snapshot before mutation so we can build a true diff for the audit log
     changes = compute_diff(device, updates)
 
@@ -808,10 +818,13 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
             raise HTTPException(status_code=404, detail="Group not found")
         device.group_id = body.group_id
 
-    # Verify and assign the encoder profile (required)
-    prof = await db.execute(select(DeviceProfile).where(DeviceProfile.id == body.profile_id))
-    if not prof.scalar_one_or_none():
+    # Verify and assign the encoder profile (required).
+    # Reject if missing (404) or disabled (422) — issue #583.
+    target_profile = await db.get(DeviceProfile, body.profile_id)
+    if target_profile is None:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if not target_profile.enabled:
+        raise HTTPException(status_code=422, detail="Profile is disabled")
     device.profile_id = body.profile_id
 
     await db.commit()

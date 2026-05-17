@@ -20,7 +20,7 @@ class TestVariantUUIDFilenames:
         """_enqueue_transcoding should create variants with UUID filenames."""
         from cms.models.asset import Asset, AssetType, AssetVariant
         from cms.models.device_profile import DeviceProfile
-        from cms.routers.assets import _enqueue_transcoding
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
 
         profile = DeviceProfile(name="pi-zero-2w", video_codec="h264")
         db_session.add(profile)
@@ -33,7 +33,7 @@ class TestVariantUUIDFilenames:
         db_session.add(asset)
         await db_session.flush()
 
-        await _enqueue_transcoding(asset, db_session)
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         from sqlalchemy import select
         result = await db_session.execute(select(AssetVariant))
@@ -74,7 +74,7 @@ class TestVariantUUIDFilenames:
         """Variant filename must NOT contain the profile name."""
         from cms.models.asset import Asset, AssetType, AssetVariant
         from cms.models.device_profile import DeviceProfile
-        from cms.routers.assets import _enqueue_transcoding
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
 
         profile = DeviceProfile(name="my-special-profile", video_codec="h264")
         db_session.add(profile)
@@ -87,7 +87,7 @@ class TestVariantUUIDFilenames:
         db_session.add(asset)
         await db_session.flush()
 
-        await _enqueue_transcoding(asset, db_session)
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         from sqlalchemy import select
         v = (await db_session.execute(select(AssetVariant))).scalar_one()
@@ -98,7 +98,7 @@ class TestVariantUUIDFilenames:
         """_enqueue_transcoding should create .jpg variants for IMAGE assets."""
         from cms.models.asset import Asset, AssetType, AssetVariant
         from cms.models.device_profile import DeviceProfile
-        from cms.routers.assets import _enqueue_transcoding
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
 
         profile = DeviceProfile(name="pi-img-test", video_codec="h264")
         db_session.add(profile)
@@ -111,7 +111,7 @@ class TestVariantUUIDFilenames:
         db_session.add(asset)
         await db_session.flush()
 
-        await _enqueue_transcoding(asset, db_session)
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         from sqlalchemy import select
         result = await db_session.execute(select(AssetVariant))

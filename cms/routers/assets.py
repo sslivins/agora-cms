@@ -476,8 +476,11 @@ async def upload_asset(
 
     # Queue transcoding for all profiles (video and image assets)
     if asset_type in (AssetType.VIDEO, AssetType.IMAGE):
-        variant_ids = await _enqueue_transcoding(asset, db)
-        from cms.services.transcoder import enqueue_variants
+        from cms.services.transcoder import (
+            _enqueue_transcoding_for_asset,
+            enqueue_variants,
+        )
+        variant_ids = await _enqueue_transcoding_for_asset(asset, db)
         await enqueue_variants(db, variant_ids)
 
     await audit_log(
@@ -1394,36 +1397,6 @@ async def recapture_stream(
     await db.commit()
 
     return {"recaptured": True, "asset_id": str(asset_id)}
-
-
-async def _enqueue_transcoding(asset: Asset, db: AsyncSession) -> list[uuid.UUID]:
-    """Create pending AssetVariant rows for all device profiles.
-
-    Returns the list of newly-created variant ids so the caller can pass
-    them to ``enqueue_variants`` for fan-out.
-    """
-    result = await db.execute(select(DeviceProfile))
-    profiles = result.scalars().all()
-    new_ids: list[uuid.UUID] = []
-    for profile in profiles:
-        variant_id = uuid.uuid4()
-        if asset.asset_type == AssetType.IMAGE:
-            from cms.services.transcoder import _image_variant_ext
-            ext = _image_variant_ext(asset)
-        elif profile.audio_codec == "libopus":
-            ext = ".mkv"
-        else:
-            ext = ".mp4"
-        variant = AssetVariant(
-            id=variant_id,
-            source_asset_id=asset.id,
-            profile_id=profile.id,
-            filename=f"{variant_id}{ext}",
-        )
-        db.add(variant)
-        new_ids.append(variant_id)
-    await db.commit()
-    return new_ids
 
 
 @router.get("/{asset_id}/row", dependencies=[Depends(require_permission(ASSETS_READ))])

@@ -35,10 +35,11 @@
   /remove it.
 #}
 {% macro profile_row(p, user_perms) -%}
-<tr data-profile-id="{{ p.id }}">
+<tr data-profile-id="{{ p.id }}"{% if not p.enabled %} class="row-inactive"{% endif %}>
     <td>
         {{ p.name }}
         {% if p.builtin %}<span class="badge badge-builtin">built-in</span>{% endif %}
+        {% if not p.enabled %}<span class="badge badge-muted">disabled</span>{% endif %}
     </td>
     <td>{% if p.video_codec == 'h264' %}H.264{% elif p.video_codec == 'h265' %}HEVC{% elif p.video_codec == 'av1' %}AV1{% else %}{{ p.video_codec }}{% endif %} / {{ p.video_profile | capitalize }}</td>
     <td>{{ p.max_width }}×{{ p.max_height }}</td>
@@ -64,6 +65,11 @@
         {% if 'profiles:write' in user_perms %}
         {% call kebab_menu() %}
             <button type="button" role="menuitem" onclick="editProfile('{{ p.id }}')">Edit</button>
+            {% if p.enabled %}
+            <button type="button" role="menuitem" onclick="disableProfile('{{ p.id }}', {{ p.name | tojson | forceescape }}, {{ p.total_variants }})">Disable</button>
+            {% else %}
+            <button type="button" role="menuitem" onclick="enableProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})">Enable</button>
+            {% endif %}
             <button type="button" role="menuitem" onclick="copyProfile('{{ p.id }}', {{ p.name | tojson | forceescape }})">Copy</button>
             {% if p.builtin %}
                 {% if p.matches_defaults %}
@@ -643,8 +649,13 @@
     <td>
         <select class="inline-edit" onclick="event.stopPropagation()" onchange="setProfile('{{ d.id }}', this.value)">
             <option value="">None</option>
+            {# Skip disabled profiles, but always include the currently-assigned
+               one so its <option> can render selected — admins can switch off
+               a disabled profile but can't re-pick it without re-enabling. #}
             {% for p in profiles %}
-            <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% if p.enabled or d.profile_id == p.id %}
+            <option value="{{ p.id }}" {% if d.profile_id == p.id %}selected{% endif %}>{{ p.name }}{% if not p.enabled %} (disabled){% endif %}</option>
+            {% endif %}
             {% endfor %}
         </select>
     </td>
