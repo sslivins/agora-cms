@@ -824,7 +824,9 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     adoption_groups_q = await db.execute(adoption_groups_query)
     adoption_groups = adoption_groups_q.scalars().all()
 
-    adoption_profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
+    adoption_profiles_q = await db.execute(
+        select(DeviceProfile).where(DeviceProfile.enabled == True).order_by(DeviceProfile.name)  # noqa: E712
+    )
     adoption_profiles = adoption_profiles_q.scalars().all()
 
     return templates.TemplateResponse(request, "dashboard.html", {
@@ -1162,6 +1164,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
     profiles = profiles_q.scalars().all()
+    # Adoption modal must only offer enabled profiles — disabled ones
+    # mustn't be assignable. The full `profiles` list is still passed
+    # to `device_row` so the per-device dropdown can keep showing a
+    # device's currently-assigned profile even if it was later disabled.
+    adoption_profiles = [p for p in profiles if p.enabled]
 
     from cms.services.device_alerts import (
         device_severity_tags,
@@ -1205,6 +1212,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         "ungrouped": ungrouped,
         "assets": assets,
         "profiles": profiles,
+        "adoption_profiles": adoption_profiles,
         "timezones": COMMON_TIMEZONES,
         "latest_version": latest_os_version,
         "pending_ttl_hours": get_settings().pending_device_ttl_hours,

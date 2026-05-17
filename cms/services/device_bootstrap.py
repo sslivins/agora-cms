@@ -484,6 +484,8 @@ async def _perform_adoption(
     ).scalar_one_or_none()
     if prof is None:
         raise ValueError("profile_not_found")
+    if not prof.enabled:
+        raise ValueError("profile_disabled")
 
     # Create the devices row.  ID is a fresh UUID — the device doesn't
     # pick its own id in the new flow; it learns it from the outbox

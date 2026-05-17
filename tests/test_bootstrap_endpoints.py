@@ -719,6 +719,29 @@ class TestAdopt:
         assert listed.status_code == 200
         assert listed.json() == {"items": []}
 
+    async def test_disabled_profile_returns_422(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport, db_session,
+    ):
+        # Issue #583: disabled profiles must not be assignable via /adopt
+        # either. Distinct from missing-profile (404) — 422 unprocessable.
+        _, pairing_secret, _, _ = await _register_one(
+            unauthed_client, device_id="pi-adopt-disabled",
+        )
+        from cms.models.device_profile import DeviceProfile
+        prof = DeviceProfile(name="adopt-disabled", enabled=False)
+        db_session.add(prof)
+        await db_session.commit()
+        r = await client.post(
+            "/api/devices/adopt",
+            json={
+                "pairing_secret": pairing_secret,
+                "profile_id": str(prof.id),
+            },
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "profile_disabled"
+
 
 # ---------------------------------------------------------------------
 # /pending + /adopt-pending + DELETE /pending/{id}
@@ -938,6 +961,27 @@ class TestAdoptPending:
         )
         assert r.status_code == 404
         assert r.json()["detail"] == "profile_not_found"
+
+    async def test_disabled_profile_returns_422(
+        self, client, unauthed_client, fleet_secret_enabled,
+        stub_wps_transport, db_session,
+    ):
+        # Issue #583: disabled profiles must not be assignable via
+        # /adopt-pending. Distinct from missing (404) — 422 unprocessable.
+        await _register_one(unauthed_client, device_id="pi-disprof")
+        listing = await client.get("/api/devices/pending")
+        pending_id = listing.json()["items"][0]["id"]
+        from cms.models.device_profile import DeviceProfile
+        prof = DeviceProfile(name="bootstrap-disabled-byid", enabled=False)
+        db_session.add(prof)
+        await db_session.commit()
+        r = await client.post(
+            "/api/devices/adopt-pending",
+            json={"pending_id": pending_id,
+                  "profile_id": str(prof.id)},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "profile_disabled"
 
 
 class TestRejectPending:

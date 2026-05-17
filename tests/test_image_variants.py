@@ -53,8 +53,8 @@ class TestEnqueueVariantExtension:
         db_session.add(asset)
         await db_session.commit()
 
-        from cms.routers.assets import _enqueue_transcoding
-        await _enqueue_transcoding(asset, db_session)
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         variants = (await db_session.execute(
             __import__("sqlalchemy").select(AssetVariant)
@@ -71,8 +71,8 @@ class TestEnqueueVariantExtension:
         db_session.add(asset)
         await db_session.commit()
 
-        from cms.routers.assets import _enqueue_transcoding
-        await _enqueue_transcoding(asset, db_session)
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         variants = (await db_session.execute(
             __import__("sqlalchemy").select(AssetVariant)
@@ -91,8 +91,8 @@ class TestEnqueueVariantExtension:
         db_session.add(asset)
         await db_session.commit()
 
-        from cms.routers.assets import _enqueue_transcoding
-        await _enqueue_transcoding(asset, db_session)
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         variants = (await db_session.execute(
             __import__("sqlalchemy").select(AssetVariant)
@@ -109,8 +109,8 @@ class TestEnqueueVariantExtension:
         db_session.add(asset)
         await db_session.commit()
 
-        from cms.routers.assets import _enqueue_transcoding
-        await _enqueue_transcoding(asset, db_session)
+        from cms.services.transcoder import _enqueue_transcoding_for_asset
+        await _enqueue_transcoding_for_asset(asset, db_session)
 
         variants = (await db_session.execute(
             __import__("sqlalchemy").select(AssetVariant)

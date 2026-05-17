@@ -452,6 +452,41 @@ async function resetProfile(profileId, name) {
     }
 }
 
+async function disableProfile(profileId, name, totalVariants) {
+    let msg = `Disable profile "${name}"?\n\nNew variants will not be generated for this profile until it is re-enabled.`;
+    if (totalVariants > 0) {
+        msg += `\n\nExisting variants (${totalVariants}) are preserved. Any ongoing transcodes for this profile will be stopped.`;
+    }
+    if (!await showConfirm(msg)) return;
+    const resp = await apiCall("POST", `/api/profiles/${profileId}/disable`);
+    if (resp && resp.ok) {
+        const updated = await resp.json().catch(() => null);
+        showToast(`Profile "${name}" disabled`);
+        if (updated && updated.id) {
+            window._rememberProfile && window._rememberProfile(updated.id, updated);
+        }
+        await window._replaceProfileRow(profileId);
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Disable failed", true);
+    }
+}
+
+async function enableProfile(profileId, name) {
+    const resp = await apiCall("POST", `/api/profiles/${profileId}/enable`);
+    if (resp && resp.ok) {
+        const updated = await resp.json().catch(() => null);
+        showToast(`Profile "${name}" enabled`);
+        if (updated && updated.id) {
+            window._rememberProfile && window._rememberProfile(updated.id, updated);
+        }
+        await window._replaceProfileRow(profileId);
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Enable failed", true);
+    }
+}
+
 // ── Row fragment helpers + cross-session poller ──
 (function() {
     const tbody = document.getElementById('profiles-body');

@@ -450,7 +450,7 @@ window._adoptionGroups = [
     {% endfor %}
 ];
 window._adoptionProfiles = [
-    {% for p in profiles %}
+    {% for p in adoption_profiles %}
     { id: {{ p.id | string | tojson }}, name: {{ p.name | tojson }} }{% if not loop.last %},{% endif %}
     {% endfor %}
 ];

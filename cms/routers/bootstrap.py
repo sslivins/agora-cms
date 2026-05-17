@@ -359,6 +359,8 @@ async def adopt(
         msg = str(e)
         if msg in ("group_not_found", "profile_not_found"):
             raise HTTPException(status_code=404, detail=msg) from e
+        if msg == "profile_disabled":
+            raise HTTPException(status_code=422, detail=msg) from e
         raise HTTPException(status_code=400, detail=msg) from e
     except HTTPException:
         await db.rollback()
@@ -503,6 +505,8 @@ async def adopt_pending(
         msg = str(e)
         if msg in ("group_not_found", "profile_not_found"):
             raise HTTPException(status_code=404, detail=msg) from e
+        if msg == "profile_disabled":
+            raise HTTPException(status_code=422, detail=msg) from e
         raise HTTPException(status_code=400, detail=msg) from e
     except HTTPException:
         await db.rollback()
