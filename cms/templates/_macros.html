@@ -664,14 +664,14 @@
     <td class="actions" data-live-actions="{{ d.id }}" data-actions-sig="{{ d.status.value }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.ssh_enabled else 0 }}|{{ 0 if d.local_api_enabled is false else 1 }}" onclick="event.stopPropagation()">
         {% call kebab_menu() %}
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
-        <button type="button" role="menuitem" onclick="adoptDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Register this device so it can receive content">Adopt</button>
+        <button type="button" role="menuitem" onclick="adoptDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Register this device so it can receive content">Adopt</button>
         {% elif d.is_upgrading %}
         <button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>
         {% elif d.is_online and d.update_available %}
-        <button type="button" role="menuitem" onclick="upgradeDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Update firmware from {{ d.firmware_version }} to {{ latest_version }}">Update</button>
+        <button type="button" role="menuitem" onclick="upgradeDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Update firmware from {{ d.firmware_version }} to {{ latest_version }}">Update</button>
         {% endif %}
         {% if d.status.value not in ('pending', 'orphaned') and d.is_online %}
-        <button type="button" role="menuitem" onclick="changeDevicePassword('{{ d.id }}', '{{ d.name or d.id }}')" title="Set the password for this device's local web UI">Change Web Password</button>
+        <button type="button" role="menuitem" onclick="changeDevicePassword({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Set the password for this device's local web UI">Change Web Password</button>
         {% if d.ssh_enabled %}
         <button type="button" role="menuitem" onclick="toggleSsh('{{ d.id }}', false)" title="SSH is currently enabled — click to disable">Disable SSH</button>
         {% else %}
@@ -682,8 +682,8 @@
         {% else %}
         <button type="button" role="menuitem" onclick="toggleLocalApi('{{ d.id }}', false)" title="Disable the device's local REST API">Disable Local API</button>
         {% endif %}
-        <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Restart this device immediately">Reboot</button>
-        <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice('{{ d.id }}', '{{ d.name or d.id }}')" title="Wipe all data and return device to setup mode">Factory Reset</button>
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Restart this device immediately">Reboot</button>
+        <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Wipe all data and return device to setup mode">Factory Reset</button>
         {% endif %}
         {% if d.group_id and 'devices:write' in user_perms %}
         <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from its group">Remove from group</button>
