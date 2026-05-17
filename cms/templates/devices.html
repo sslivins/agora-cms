@@ -644,12 +644,20 @@ window._adoptionProfiles = [
             });
 
             // ── Collapsed row: storage percentage ──
+            // Re-sync BOTH capacity and used from the API payload, not just
+            // used. The capacity bytes also change in practice (storage swap,
+            // re-flash with a different SD card) and reading capacity only
+            // from the initial server-rendered dataset is a stale-data bug.
             const storagePctEl = document.querySelector(`[data-live-storage-pct="${d.id}"]`);
             if (storagePctEl) {
-                const cap = parseInt(storagePctEl.dataset.storageMb) || 0;
+                const cap = (d.storage_capacity_mb != null)
+                    ? d.storage_capacity_mb
+                    : (parseInt(storagePctEl.dataset.storageMb) || 0);
                 if (cap > 0) {
                     const used = d.storage_used_mb != null ? d.storage_used_mb : parseInt(storagePctEl.dataset.usedMb) || 0;
                     storagePctEl.textContent = Math.round((cap - used) / cap * 100) + '% free';
+                    storagePctEl.dataset.storageMb = cap;
+                    storagePctEl.dataset.usedMb = used;
                 }
             }
 
@@ -722,12 +730,32 @@ window._adoptionProfiles = [
             if (badgeEl) badgeEl.style.display = d.update_available ? '' : 'none';
 
             // ── Detail panel: storage detail ──
+            // Same stale-capacity fix as the collapsed-row percentage above:
+            // pull capacity from the API payload, not the initial dataset.
             const storageEl = document.querySelector(`[data-live-storage="${d.id}"]`);
             if (storageEl) {
-                const cap = parseInt(storageEl.dataset.storageMb) || 0;
+                const cap = (d.storage_capacity_mb != null)
+                    ? d.storage_capacity_mb
+                    : (parseInt(storageEl.dataset.storageMb) || 0);
                 const used = d.storage_used_mb != null ? d.storage_used_mb : parseInt(storageEl.dataset.usedMb) || 0;
                 storageEl.textContent = fmtStorage(used) + ' / ' + fmtStorage(cap);
+                storageEl.dataset.storageMb = cap;
                 storageEl.dataset.usedMb = used;
+            }
+
+            // ── Detail panel: device type + supported codecs ──
+            // Both fields are written from the device's registration payload
+            // (services/device_register.py). Re-registration can change them,
+            // and after #573 we already repaint os/firmware version live in
+            // the same detail panel -- these two were the remaining stale
+            // values an operator could see without F5.
+            const deviceTypeEl = document.querySelector(`[data-live-device-type="${d.id}"]`);
+            if (deviceTypeEl) deviceTypeEl.textContent = d.device_type || '—';
+            const codecsEl = document.querySelector(`[data-live-supported-codecs="${d.id}"]`);
+            if (codecsEl) {
+                codecsEl.textContent = d.supported_codecs
+                    ? d.supported_codecs.replace(/,/g, ', ')
+                    : '—';
             }
 
             // ── Detail panel: last seen ──
