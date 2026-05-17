@@ -26,6 +26,10 @@ pipeline shipped in PRs 1–3:
   ``IMAGE_PROVISION`` lands.
 * :http:get:`/api/imager/download/{job_id}` — 302 to a fresh SAS
   URL for the provisioned image.  Audited.
+* :http:get:`/api/imager/download-url/{job_id}` — return that same
+  fresh SAS URL as JSON ``{"url": ...}`` so the UI's "Copy
+  download link" action can hand the raw URL to ``wget`` / ``curl``
+  without going through a browser redirect.  Audited.
 
 Identity model is **Model B only**: the image carries fleet
 credentials, not per-device credentials.  Each Pi flashed with the
@@ -1115,20 +1119,32 @@ async def get_job_status(
     return out
 
 
-@router.get("/download/{job_id}")
-async def download_provisioned(
-    job_id: uuid.UUID,
-    request: Request,
-    user: User = Depends(require_permission(IMAGER_BUILD)),
-    db: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    """Return a 302 to a fresh SAS URL for the provisioned image.
+class DownloadUrlOut(BaseModel):
+    """Response body for :http:get:`/api/imager/download-url/{job_id}`."""
 
-    Audited.  404s when the job is unknown, not an ``IMAGE_PROVISION``,
-    not yet succeeded, or whose row is no longer ``READY`` (e.g. the
-    24 h Azure lifecycle policy has expired the blob and the row is
-    now ``EXPIRED``).
+    url: str
+
+
+async def _resolve_provisioned_sas(
+    job_id: uuid.UUID,
+    db: AsyncSession,
+    settings: Settings,
+) -> tuple[Job, ProvisionedImage, str]:
+    """Validate an ``IMAGE_PROVISION`` job and mint a fresh SAS URL for it.
+
+    Shared between :func:`download_provisioned` (302 redirect) and
+    :func:`download_url_provisioned` (JSON for the "Copy download link"
+    kebab action) so both code paths apply identical validation +
+    blob-presence + SAS-minting rules.  Each caller is responsible
+    for its own ``audit_log`` entry and ``db.commit``.
+
+    Raises the same ``HTTPException``s the original endpoint did:
+
+    * 404 — job is unknown / not ``IMAGE_PROVISION`` / no longer
+      ``READY`` (e.g. the 24 h Azure lifecycle policy already
+      expired the blob and the row is now ``EXPIRED``) / the blob is
+      missing from storage.
+    * 409 — job is known but has not reached ``DONE`` yet.
     """
     job = await db.get(Job, job_id)
     if job is None or job.type != JobType.IMAGE_PROVISION:
@@ -1155,24 +1171,80 @@ async def download_provisioned(
         pi.blob_path,
         settings.imager_sas_ttl_hours,
     )
+    return job, pi, url
+
+
+def _provisioned_audit_details(job: Job, pi: ProvisionedImage) -> dict[str, Any]:
+    """Identity fields stamped into download/copy-link audit rows."""
+    return {
+        "job_id": str(job.id),
+        # base_image_id may be NULL if the cached base was deleted
+        # after this build was produced (audit FK is SET NULL).
+        # base_variant / base_version snapshot columns preserve
+        # identity in that case.
+        "base_image_id": str(pi.base_image_id) if pi.base_image_id else None,
+        "base_variant": pi.base_variant,
+        "base_version": pi.base_version,
+        "fleet_id": pi.fleet_id,
+        "output_name": pi.output_name,
+    }
+
+
+@router.get("/download/{job_id}")
+async def download_provisioned(
+    job_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(IMAGER_BUILD)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> RedirectResponse:
+    """Return a 302 to a fresh SAS URL for the provisioned image.
+
+    Audited.  404s when the job is unknown, not an ``IMAGE_PROVISION``,
+    not yet succeeded, or whose row is no longer ``READY`` (e.g. the
+    24 h Azure lifecycle policy has expired the blob and the row is
+    now ``EXPIRED``).
+    """
+    job, pi, url = await _resolve_provisioned_sas(job_id, db, settings)
 
     await audit_log(
         db, user=user, action="imager.download",
         resource_type="provisioned_image", resource_id=str(pi.id),
-        details={
-            "job_id": str(job.id),
-            # base_image_id may be NULL if the cached base was
-            # deleted after this build was produced (audit FK is
-            # SET NULL).  base_variant / base_version snapshot
-            # columns preserve identity in that case.
-            "base_image_id": str(pi.base_image_id) if pi.base_image_id else None,
-            "base_variant": pi.base_variant,
-            "base_version": pi.base_version,
-            "fleet_id": pi.fleet_id,
-            "output_name": pi.output_name,
-        },
+        details=_provisioned_audit_details(job, pi),
         request=request,
     )
     await db.commit()
 
     return RedirectResponse(url=url, status_code=302)
+
+
+@router.get("/download-url/{job_id}", response_model=DownloadUrlOut)
+async def download_url_provisioned(
+    job_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(IMAGER_BUILD)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> DownloadUrlOut:
+    """Return a fresh SAS download URL for the provisioned image as JSON.
+
+    Backs the built-images table's "Copy download link" kebab action
+    so an operator can paste the URL into ``wget`` / ``curl`` from a
+    Linux shell without going through the browser's redirect chain.
+
+    Applies the same validation, blob-existence check, and SAS TTL
+    as :func:`download_provisioned`.  Audited as ``imager.copy_link``
+    so this is distinguishable from a normal browser download in the
+    audit trail.
+    """
+    job, pi, url = await _resolve_provisioned_sas(job_id, db, settings)
+
+    await audit_log(
+        db, user=user, action="imager.copy_link",
+        resource_type="provisioned_image", resource_id=str(pi.id),
+        details=_provisioned_audit_details(job, pi),
+        request=request,
+    )
+    await db.commit()
+
+    return DownloadUrlOut(url=url)

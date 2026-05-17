@@ -512,19 +512,36 @@
                     ? '<a class="btn btn-primary btn-sm" href="/api/imager/download/' +
                       encodeURIComponent(r.download_job_id) + '" download>Download</a>'
                     : '<span class="text-muted" style="font-size:0.8rem;">unavailable</span>';
-                // Kebab (Delete only for now) -- matches the shared
-                // pattern from _macros.html / .btn-kebab CSS / the
-                // global popover positioning in app.js.
+                // Kebab (Copy download link + Delete) -- matches the
+                // shared pattern from _macros.html / .btn-kebab CSS /
+                // the global popover positioning in app.js.  We show
+                // the kebab whenever it would have at least one item:
+                // Copy-Link follows whoever can use the Download
+                // button (imager:build), and Delete is admin-only
+                // (canManage).  Non-manager users with a READY image
+                // therefore see a kebab containing only Copy-Link.
                 var actions = dlBtn;
+                var menuItems = '';
+                if (dlEnabled) {
+                    menuItems +=
+                        '<button type="button" role="menuitem" ' +
+                            'data-built-copy-link="' + escHtml(r.download_job_id) +
+                            '" data-built-name="' + escHtml(r.output_name) + '">' +
+                            'Copy download link</button>';
+                }
                 if (canManage) {
+                    menuItems +=
+                        '<button type="button" role="menuitem" class="kebab-item-danger" ' +
+                            'data-built-delete="' + escHtml(r.id) +
+                            '" data-built-name="' + escHtml(r.output_name) + '">Delete</button>';
+                }
+                if (menuItems) {
                     var kid = 'kebab-built-' + Math.floor(Math.random() * 1e12);
                     actions += ' ' +
                         '<button type="button" class="btn-kebab" popovertarget="' + kid +
                             '" aria-haspopup="menu" aria-label="Actions">\u22ee</button>' +
                         '<div id="' + kid + '" popover class="kebab-menu" role="menu">' +
-                            '<button type="button" role="menuitem" class="kebab-item-danger" ' +
-                                'data-built-delete="' + escHtml(r.id) +
-                                '" data-built-name="' + escHtml(r.output_name) + '">Delete</button>' +
+                            menuItems +
                         '</div>';
                 }
                 var base = (r.base_variant || r.base_version)
@@ -566,6 +583,17 @@
                     deleteBuiltImage(btn.dataset.builtDelete, btn.dataset.builtName);
                 });
             });
+            // Wire up "Copy download link" buttons (anyone who can
+            // see Download).  Fetches a fresh SAS URL on click so the
+            // copied link reflects the current TTL, and pastes
+            // straight into the OS clipboard via the shared
+            // ``copyToClipboard`` helper (which also fires its own
+            // "Copied to clipboard" toast).
+            tbody.querySelectorAll('button[data-built-copy-link]').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    copyBuiltImageLink(btn.dataset.builtCopyLink, btn.dataset.builtName);
+                });
+            });
         } catch (e) {
             if (myReq !== loadBuiltImagesReq) return;
             lastBuiltSig = '';
@@ -600,6 +628,31 @@
             loadBuiltImages();
         } catch (e) {
             toast('Delete failed: ' + (e.message || e), 'error');
+        }
+    }
+
+    async function copyBuiltImageLink(jobId, name) {
+        // Close the open kebab popover first so the "Copied to
+        // clipboard" toast isn't visually layered behind the menu.
+        var openPop = document.querySelector('.kebab-menu:popover-open');
+        if (openPop) { try { openPop.hidePopover(); } catch (e) { /* unsupported */ } }
+        try {
+            var resp = await jsonFetch('/api/imager/download-url/' + encodeURIComponent(jobId));
+            if (!resp || !resp.url) {
+                toast('Failed to mint download link for ' + name, 'error');
+                return;
+            }
+            // ``copyToClipboard`` shows its own "Copied to clipboard"
+            // toast on success and a fallback-failure toast on error,
+            // so we don't double-up here.
+            if (typeof copyToClipboard === 'function') {
+                copyToClipboard(resp.url);
+            } else {
+                // Defensive fallback: app.js missing for some reason.
+                toast(resp.url, 'success');
+            }
+        } catch (e) {
+            toast('Copy link failed: ' + (e.message || e), 'error');
         }
     }
 
