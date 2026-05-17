@@ -1,4 +1,9 @@
-"""E2E: cancelling the file picker after a drag-drop should reset the label."""
+"""E2E: cancelling the file picker after a drag-drop should reset the label.
+
+Also covers the post-successful-upload reset (issue #582): after a 201
+response the drop-label must revert to the default and the Upload
+button must be disabled, so the form looks fresh for the next upload.
+"""
 
 import pytest
 
@@ -46,3 +51,44 @@ def test_cancel_file_picker_resets_label_after_choose(page: "Page"):
     # Cancel
     file_input.set_input_files([])
     assert label.text_content() == DEFAULT_LABEL
+
+
+def test_form_resets_after_successful_upload(page: "Page"):
+    """Issue #582: after a 201 from /api/assets/upload, the drop-label
+    must revert to the default text and the Upload button must be
+    disabled — otherwise the form looks like it's still holding the
+    file the user just uploaded."""
+
+    page.goto("/assets")
+
+    label = page.locator("#drop-label")
+    submit = page.locator("#upload-submit")
+
+    # Sanity: initial state is the default label + disabled button.
+    assert label.text_content() == DEFAULT_LABEL
+    assert submit.is_disabled()
+
+    file_input = page.locator("#file-input")
+    file_input.set_input_files(
+        {"name": "reset-me.jpg", "mimeType": "image/jpeg", "buffer": b"\xFF\xD8" * 8}
+    )
+
+    # Pre-upload: label shows filename, button enabled.
+    assert label.text_content() == "reset-me.jpg"
+    assert submit.is_enabled()
+
+    # Fire the upload and wait for the 201.
+    with page.expect_response(
+        lambda r: "/api/assets/upload" in r.url and r.request.method == "POST",
+        timeout=30_000,
+    ) as rinfo:
+        submit.click()
+    resp = rinfo.value
+    assert resp.status == 201, f"upload failed: HTTP {resp.status} — {resp.text()[:300]}"
+
+    # Post-upload: label is reset, submit re-disabled.
+    # Use expect for both so we wait out the async XHR-load handler.
+    from playwright.sync_api import expect
+    expect(label).to_have_text(DEFAULT_LABEL, timeout=5_000)
+    expect(submit).to_be_disabled(timeout=5_000)
+

@@ -1692,15 +1692,20 @@ async function uploadAsset(form) {
                 statusEl.className = "form-status text-success";
                 let newId = null;
                 try { newId = JSON.parse(xhr.responseText)?.id || null; } catch (_) {}
-                // Reset the form so another upload can start immediately
+                // Reset the form so another upload can start immediately.
+                // form.reset() clears fileInput.files but does NOT fire the
+                // input's change event, so the drop-label and submit-disabled
+                // state must be reset manually to match the initial page load.
                 form.reset();
+                const dropLabel = document.getElementById("drop-label");
+                if (dropLabel) dropLabel.textContent = "Drag \u0026 drop a file here, or";
                 const badges = document.getElementById("upload-groups-badges");
                 if (badges) {
                     badges.querySelectorAll(".badge[data-group-id]").forEach(b => b.remove());
                 }
                 const popup = document.getElementById("upload-group-popup");
                 if (popup) popup.querySelectorAll("[data-group-id]").forEach(b => { b.style.display = ""; });
-                submitBtn.disabled = false;
+                submitBtn.disabled = true;
                 // Insert the new row (server-rendered, newest-first)
                 if (newId && window._insertAssetRow) {
                     window._insertAssetRow(newId).finally(() => {
