@@ -176,6 +176,7 @@ async def test_endpoints_require_auth(unauthed_client):
         ("DELETE", f"/api/imager/provisioned-images/{uuid.uuid4()}"),
         ("GET", f"/api/imager/jobs/{uuid.uuid4()}"),
         ("GET", f"/api/imager/download/{uuid.uuid4()}"),
+        ("GET", f"/api/imager/download-url/{uuid.uuid4()}"),
     ]
     for method, path in paths:
         kwargs = {"json": {}} if method == "POST" else {}
@@ -1004,6 +1005,86 @@ async def test_download_redirects_when_ready(
     resp = await client.get(f"/api/imager/download/{job.id}", follow_redirects=False)
     assert resp.status_code == 302, resp.text
     assert resp.headers.get("location", "").startswith("https://example.com/sas/")
+
+
+@pytest.mark.asyncio
+async def test_download_url_returns_sas_as_json(
+    client, db_session, imager_settings, monkeypatch,
+):
+    """``/download-url/{job_id}`` hands back the SAS as JSON for wget-style copy."""
+    from cms.models.audit_log import AuditLog
+    from shared.services import storage as storage_mod
+
+    async def _blob_exists(self, container: str, blob_name: str) -> bool:
+        return True
+
+    def _sas(self, container: str, blob_name: str, ttl_hours: int) -> str:
+        return f"https://example.com/sas/{container}/{blob_name}?sig=stub"
+
+    monkeypatch.setattr(
+        storage_mod.LocalStorageBackend, "blob_exists", _blob_exists,
+    )
+    monkeypatch.setattr(
+        storage_mod.LocalStorageBackend, "generate_blob_sas_url", _sas,
+    )
+
+    bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.flush()
+    pi = ProvisionedImage(
+        base_image_id=bi.id,
+        output_name="x.img.xz",
+        fleet_env_payload=b"x\n",
+        status=ProvisionedImageStatus.READY.value,
+        blob_path="abc/x.img.xz",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    db_session.add(pi)
+    await db_session.flush()
+    job = Job(
+        type=JobType.IMAGE_PROVISION, target_id=pi.id,
+        status=JobStatus.DONE,
+    )
+    db_session.add(job)
+    await db_session.commit()
+
+    resp = await client.get(f"/api/imager/download-url/{job.id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["url"].startswith("https://example.com/sas/")
+    assert "?sig=" in body["url"]
+
+    # Audit row is logged under a distinct action so the audit trail
+    # can distinguish "copied the link" from "actually downloaded".
+    rows = (await db_session.execute(
+        select(AuditLog).where(AuditLog.action == "imager.copy_link")
+    )).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].resource_id == str(pi.id)
+
+
+@pytest.mark.asyncio
+async def test_download_url_404_when_not_ready(
+    client, db_session, imager_settings,
+):
+    """Same not-ready guards as ``/download/{job_id}`` (job pending → 409)."""
+    bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
+    db_session.add(bi)
+    await db_session.flush()
+    pi = ProvisionedImage(
+        base_image_id=bi.id,
+        output_name="x.img.xz",
+        fleet_env_payload=b"x\n",
+        status=ProvisionedImageStatus.PROVISIONING.value,
+    )
+    db_session.add(pi)
+    await db_session.flush()
+    job = Job(type=JobType.IMAGE_PROVISION, target_id=pi.id, status=JobStatus.PENDING)
+    db_session.add(job)
+    await db_session.commit()
+
+    resp = await client.get(f"/api/imager/download-url/{job.id}")
+    assert resp.status_code == 409
 
 
 # ── Audit ──────────────────────────────────────────────────────────
