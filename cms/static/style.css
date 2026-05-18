@@ -1022,13 +1022,29 @@ tr.highlight-new td {
 .group-header:hover { background: rgba(255,255,255,0.03); }
 .group-header .expand-toggle { font-size: 0.7rem; transition: transform 0.15s; }
 .group-panel.expanded .group-header .expand-toggle { transform: rotate(90deg); display: inline-block; }
-/* #569: inside a group panel, indent the device-row chevron one chevron-
-   width so children visually nest under the group's text label rather
-   than line up with the group's own chevron. Ungrouped Devices and
-   other device tables are unaffected because they are not inside a
-   .group-panel container. */
-.group-panel .device-row .expand-toggle,
-.group-panel .device-row td.expand-toggle { padding-left: 1.25rem; }
+/* #569: more pronounced device-group child indent + faded chevron + row
+   tint. Inside a group panel, the device-row chevron is positioned
+   absolutely so it doesn't widen the table column (Edge's table-layout
+   inflates a regular chevron td with extra left-padding); the next td
+   pads to make room. The td remains in the DOM so .expand-toggle click
+   targets (used by e2e tests and toggleDevice handler) keep working.
+   Ungrouped Devices and other device tables are unaffected because they
+   are not inside a .group-panel container. */
+.group-panel .device-row { position: relative; }
+.group-panel .device-row td.expand-toggle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2.5rem;
+    padding: 0.5rem 0 0.5rem 1.5rem;
+    text-align: left;
+    opacity: 0.55;
+    z-index: 1;
+}
+.group-panel .device-row td.expand-toggle + td { padding-left: 2.5rem; }
+.group-panel .device-row td { background: rgba(255,255,255,0.05); }
+.group-panel .device-row:hover td { background: rgba(255,255,255,0.09); }
 .group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text); padding: 0.15rem 0.5rem; border-radius: 10px; }
 .group-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 .group-actions .btn-sm { font-size: 0.9rem; }
