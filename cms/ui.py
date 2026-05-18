@@ -189,7 +189,17 @@ async def setup_account(
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
-    """One-time magic link from welcome email — logs user in and redirects to password change."""
+    """Magic link from welcome email -- logs user in and redirects to password change.
+
+    The setup token is intentionally NOT consumed here. Many email-security
+    products (Microsoft Defender for Office 365 Safe Links, Proofpoint URL
+    Defense, Mimecast, etc.) detonate links in outbound mail to evaluate
+    reputation before delivery; that detonation is a real GET against this
+    handler. If we nulled the token on GET, the detonator would burn it
+    before the human ever clicked. The token is instead burned on successful
+    completion of /force-password-change (or POST /api/users/me/password),
+    so this endpoint is idempotent and replay-safe up until setup completes.
+    """
     result = await db.execute(
         select(User).where(User.setup_token == token, User.is_active.is_(True))
     )
@@ -201,8 +211,6 @@ async def setup_account(
             status_code=400,
         )
 
-    # Invalidate the token (single-use)
-    user.setup_token = None
     from datetime import datetime, timezone
     user.last_login_at = datetime.now(timezone.utc)
     await db.commit()
@@ -348,6 +356,10 @@ async def force_password_change_submit(
 
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
+    # Burn the setup token now -- successful password set is the only signal
+    # that the human actually completed setup. See setup_account() for why
+    # we defer this from the GET handler.
+    user.setup_token = None
     await db.commit()
 
     return RedirectResponse(url="/", status_code=303)
