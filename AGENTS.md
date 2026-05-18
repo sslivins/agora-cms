@@ -61,3 +61,16 @@ Real bugs that have shipped from this pattern:
   fine. Workaround: match `Publish & Deploy` runs that have `headSha`
   *equal to* or *one commit ahead of* the merge SHA (the bump is always
   a single commit on top).
+- **Watcher gotcha #2 — duplicate Publish & Deploy runs for the same
+  SHA.** A merge can produce *multiple* `Publish & Deploy` runs for the
+  same `headSha` (workflow_run fires once for the merge-commit Smoke
+  Test, then again for an unrelated trigger or a Smoke Test rerun). The
+  first run claims the bicep `revisionsuffix` (e.g. `v1-37-220`); any
+  later run fails with `revision with suffix v1-37-220 already exists`.
+  The default watch-pr-to-prod template picks the *latest* deploy run
+  by `createdAt DESC` and reports that failure as "did not ship" — but
+  prod is actually fine, the earlier success run shipped it. Workaround:
+  if the latest deploy is `failure` AND its log contains
+  `revision with suffix ... already exists`, find the earlier
+  `success` deploy run for the same SHA before declaring a failure.
+  Seen on PR #594 (this commit's PR).
