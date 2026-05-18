@@ -229,16 +229,16 @@
                         <a role="menuitem" href="/assets/{{ a.id }}/slideshow">View slides</a>
                         {% endif %}
                     {% else %}
-                        <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}')">Preview</button>
+                        <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', {{ a.filename | tojson | forceescape }}, '{{ a.asset_type.value }}')">Preview</button>
                     {% endif %}
                     {% if 'assets:write' in user_perms and a.asset_type.value == 'saved_stream' and is_owner %}
-                        <button type="button" role="menuitem" onclick="recaptureStream('{{ a.id }}', '{{ a.display_name or a.original_filename or a.filename }}')" title="Re-run the stream capture">Re-capture</button>
+                        <button type="button" role="menuitem" onclick="recaptureStream('{{ a.id }}', {{ (a.display_name or a.original_filename or a.filename) | tojson | forceescape }})" title="Re-run the stream capture">Re-capture</button>
                     {% endif %}
                     {% if 'assets:write' in user_perms and is_owner %}
                         {% if a.schedule_count > 0 %}
                         <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Used by {{ a.schedule_count }} schedule{{ 's' if a.schedule_count != 1 }}. Remove from all schedules before deleting.">Delete</button>
                         {% else %}
-                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset('{{ a.id }}', '{{ a.filename }}')">Delete</button>
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset('{{ a.id }}', {{ a.filename | tojson | forceescape }})">Delete</button>
                         {% endif %}
                     {% endif %}
                     {% endcall %}
@@ -357,7 +357,7 @@
                                     <div id="group-popup-{{ a.id }}" popover class="group-popup">
                                         {% for g in unassigned %}
                                         <button type="button" class="group-popup-item" data-group-id="{{ g.id }}"
-                                                onclick="event.stopPropagation(); pickAssetGroup('{{ a.id }}', '{{ g.id }}', '{{ g.name }}', this)">{{ g.name }}</button>
+                                                onclick="event.stopPropagation(); pickAssetGroup('{{ a.id }}', '{{ g.id }}', {{ g.name | tojson | forceescape }}, this)">{{ g.name }}</button>
                                         {% endfor %}
                                     </div>
                                 </span>
@@ -424,7 +424,7 @@
                                     </td>
                                     <td>
                                         {% if v.status.value == 'ready' %}
-                                        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); previewVariant('{{ v.id }}', '{{ a.filename }}', '{{ a.asset_type.value }}', '{{ v.profile.name if v.profile else '' }}')">Preview</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); previewVariant('{{ v.id }}', {{ a.filename | tojson | forceescape }}, '{{ a.asset_type.value }}', {{ (v.profile.name if v.profile else '') | tojson | forceescape }})">Preview</button>
                                         {% else %}—{% endif %}
                                     </td>
                                 </tr>

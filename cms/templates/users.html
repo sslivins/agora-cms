@@ -102,7 +102,7 @@
                     {% call macros.kebab_menu() %}
                         <button type="button" role="menuitem" onclick="openEditUser('{{ u.id }}')">Edit</button>
                         {% if u.must_change_password %}
-                        <button type="button" role="menuitem" onclick="resendInvite('{{ u.id }}', '{{ u.email }}')">Resend Invite</button>
+                        <button type="button" role="menuitem" onclick="resendInvite('{{ u.id }}', {{ u.email | tojson | forceescape }})">Resend Invite</button>
                         {% endif %}
                         {% if u.id | string != current_user_id %}
                             {% if u.is_active %}
@@ -110,7 +110,7 @@
                             {% else %}
                             <button type="button" role="menuitem" onclick="toggleUserActive('{{ u.id }}', true)">Enable</button>
                             {% endif %}
-                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteUser('{{ u.id }}', '{{ u.email }}')">Delete</button>
+                            <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteUser('{{ u.id }}', {{ u.email | tojson | forceescape }})">Delete</button>
                         {% endif %}
                     {% endcall %}
                 </td>
@@ -191,7 +191,7 @@
             <div class="role-actions">
                 {% call macros.kebab_menu() %}
                     <button type="button" role="menuitem" onclick="openEditRole('{{ role.id }}')">Edit</button>
-                    <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteRole('{{ role.id }}', '{{ role.name }}')">Delete</button>
+                    <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteRole('{{ role.id }}', {{ role.name | tojson | forceescape }})">Delete</button>
                 {% endcall %}
             </div>
             {% endif %}
