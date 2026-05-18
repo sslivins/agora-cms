@@ -178,10 +178,9 @@
     }
 
     function showKeyModal(key, title) {
-        const overlay = document.createElement("div");
-        overlay.className = "modal-overlay";
-        const box = document.createElement("div");
-        box.className = "modal-box";
+        // No backdrop dismiss -- the key is shown once and only once.
+        // A stray click that closes this would lose the key forever.
+        const { box, close } = createModal();
         box.innerHTML = `
             <p style="margin-bottom:0.5rem;"><strong>${title}</strong></p>
             <p style="margin-bottom:0.75rem; font-size:0.85rem;" class="text-muted">Store it securely — it won't be shown again.</p>
@@ -191,13 +190,10 @@
                 <button class="btn btn-primary" id="key-ok-btn">OK</button>
             </div>
         `;
-        document.body.appendChild(overlay);
-        overlay.appendChild(box);
         const keyInput = box.querySelector("input");
         keyInput.select();
         box.querySelector("#key-copy-btn").onclick = () => { copyToClipboard(key); };
-        box.querySelector("#key-ok-btn").onclick = () => { overlay.remove(); };
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+        box.querySelector("#key-ok-btn").onclick = () => close();
     }
 
     createBtn.addEventListener("click", async function() {

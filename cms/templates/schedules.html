@@ -849,10 +849,22 @@ function editSchedule(s) {
             const ok = await showConfirm("\u26a0\ufe0f You have unsaved changes to this schedule. Discard them and close?");
             if (!ok) return;
         }
+        document.removeEventListener("keydown", _onEditEsc);
         _editModalDirtyTracker = null;
         overlay.remove();
     };
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) _closeEditModal(false); });
+    // Esc closes the modal (with the dirty-check guard). We intentionally
+    // do NOT close on backdrop click -- the modal has a large form and
+    // a stray click outside it shouldn't dump the user's unsaved edits.
+    // Only respond if we're the topmost modal so a nested showConfirm
+    // (e.g. the discard-changes prompt) doesn't dismiss us by mistake.
+    const _onEditEsc = (e) => {
+        if (e.key !== "Escape") return;
+        const overlays = document.querySelectorAll(".modal-overlay");
+        if (overlays[overlays.length - 1] !== overlay) return;
+        _closeEditModal(false);
+    };
+    document.addEventListener("keydown", _onEditEsc);
     box.querySelector("#edit-cancel").onclick = () => _closeEditModal(false);
 
     // Edit modal summary helper
@@ -1067,6 +1079,7 @@ function editSchedule(s) {
         body.loop_count = hasLoopCount ? parseInt(editLoopCount) : null;
         const resp = await apiCall("PATCH", `/api/schedules/${s.id}`, body);
         if (resp && resp.ok) {
+            document.removeEventListener("keydown", _onEditEsc);
             _editModalDirtyTracker = null;
             overlay.remove();
             // #546: if the edit changed which panel the row belongs in
