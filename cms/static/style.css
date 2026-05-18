@@ -1043,8 +1043,11 @@ tr.highlight-new td {
     z-index: 1;
 }
 .group-panel .device-row td.expand-toggle + td { padding-left: 2.5rem; }
-.group-panel .device-row td { background: rgba(255,255,255,0.05); }
-.group-panel .device-row:hover td { background: rgba(255,255,255,0.09); }
+/* Tint applies only to in-flow tds; the absolute chevron td must stay
+   transparent or its background stacks over the in-flow row and produces a
+   darker stripe in the first 2.5rem (#569 follow-up). */
+.group-panel .device-row td:not(.expand-toggle) { background: rgba(255,255,255,0.05); }
+.group-panel .device-row:hover td:not(.expand-toggle) { background: rgba(255,255,255,0.09); }
 .group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text); padding: 0.15rem 0.5rem; border-radius: 10px; }
 .group-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 .group-actions .btn-sm { font-size: 0.9rem; }
