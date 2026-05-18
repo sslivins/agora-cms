@@ -790,7 +790,15 @@ async def setup_redirect_middleware(request: Request, call_next):
 
 @app.exception_handler(HTTPException)
 async def unauthorized_redirect(request: Request, exc: HTTPException):
-    """Redirect browser requests to /login on 401, return JSON for API calls."""
+    """Redirect browser requests to /login on 401, return JSON for API calls.
+
+    Always preserves ``exc.headers`` so things like 307 redirects raised by
+    ``require_auth`` (Location -> /force-password-change) survive the handler.
+    Before this was added, ``HTTPException(307, headers={'Location': ...})``
+    came out the other side as a 307 with no Location at all -- browsers just
+    showed an error page. Only ``require_auth`` actually uses ``headers``,
+    so honoring them is a safe no-op for every other raise site.
+    """
     if exc.status_code == status.HTTP_401_UNAUTHORIZED:
         accept = request.headers.get("accept", "")
         if "text/html" in accept:
@@ -799,6 +807,7 @@ async def unauthorized_redirect(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
     )
 
 # Static files

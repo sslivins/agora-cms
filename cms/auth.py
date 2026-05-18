@@ -37,6 +37,16 @@ SETTING_SMTP_PASSWORD = "smtp_password"
 SETTING_SMTP_FROM_EMAIL = "smtp_from_email"
 SETTING_SETUP_COMPLETED = "setup_completed"
 
+# Paths reachable by an authenticated user who still has must_change_password=True.
+# Anything not in this set returns 307 -> /force-password-change. Keep this set
+# as small as possible -- each entry widens the surface a half-setup user can
+# reach with only the session cookie minted by /setup-account.
+_PASSWORD_CHANGE_EXEMPT_PATHS = frozenset({
+    "/force-password-change",     # the HTML form itself
+    "/api/users/me/password",     # the JSON API that backs the same operation
+    "/logout",                    # let them bail out without being trapped
+})
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -223,8 +233,11 @@ async def require_auth(
     user = await get_current_user(request, settings, db)
     request.state.user = user
 
-    # Force password change redirect for web UI requests
-    if user.must_change_password and request.url.path != "/force-password-change":
+    # Force password change redirect for users that haven't completed setup.
+    # The exempt set is the minimum surface a half-setup user must reach to
+    # finish: the HTML form, the JSON API that backs the same operation,
+    # and logout (so they can bail out without being trapped).
+    if user.must_change_password and request.url.path not in _PASSWORD_CHANGE_EXEMPT_PATHS:
         from fastapi.responses import RedirectResponse
         raise HTTPException(
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,

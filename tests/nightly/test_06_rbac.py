@@ -11,9 +11,13 @@ compose stack:
 3. For each new user we walk the real welcome-email flow:
      a. Mailpit receives the welcome email.
      b. Follow ``/setup-account?token=...`` in a fresh browser context
-        (invalidates the token, sets a session cookie, redirects to
-        ``/force-password-change``).
-     c. Submit the new password via the force-password-change form.
+        (sets a session cookie, redirects to ``/force-password-change``).
+        The token is intentionally NOT consumed at this step -- it lives
+        until the user successfully sets a new password, so email-security
+        URL detonators (Defender for Office 365 Safe Links, etc.) can't
+        burn it before the human ever clicks.
+     c. Submit the new password via the force-password-change form. This
+        is what actually nulls ``setup_token`` in the DB.
      d. Log in via ``/login`` with the new creds.
 4. Assert the permission matrix:
      - Operator A can CRUD resources in Group A.

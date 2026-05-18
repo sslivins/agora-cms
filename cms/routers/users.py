@@ -8,14 +8,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import get_current_user, get_settings, hash_password, require_permission, verify_password
+from cms.auth import (
+    get_current_user,
+    get_settings,
+    hash_password,
+    require_auth,
+    require_permission,
+    verify_password,
+)
 from cms.database import get_db
 from cms.models.user import Role, User, UserGroup
 from cms.permissions import USERS_READ, USERS_WRITE
 from cms.schemas.user import PasswordChange, UserCreate, UserMe, UserRead, UserUpdate
 from cms.services.audit_service import audit_log
 
-router = APIRouter(prefix="/api/users")
+# require_auth at the router level enforces both authentication and the
+# must_change_password gate (see cms/auth.py::require_auth). Without this,
+# /api/users/me and /api/users/me/password were reachable by half-setup
+# users -- a real exploit window after we stopped burning setup_token on
+# the GET /setup-account prefetch. /api/users/me/password is exempted from
+# the must_change_password redirect inside require_auth so users can still
+# complete setup.
+router = APIRouter(prefix="/api/users", dependencies=[Depends(require_auth)])
 
 
 def _user_to_read(user: User, group_ids: list[uuid.UUID] | None = None) -> UserRead:
@@ -70,6 +84,10 @@ async def change_my_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     current_user.password_hash = hash_password(data.new_password)
     current_user.must_change_password = False
+    # Burn the setup token now -- successful password set is the only signal
+    # that the human actually completed setup. See cms/ui.py::setup_account
+    # for why we defer this from the GET handler.
+    current_user.setup_token = None
     await db.commit()
     return {"status": "ok"}
 
