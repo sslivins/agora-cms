@@ -46,6 +46,9 @@ param cmsAdminPassword string
 @secure()
 param githubIssuesToken string = ''
 
+@description('Public CMS URL override (e.g. https://agora.example.com, no trailing slash). When non-empty, used for AGORA_CMS_BASE_URL on the CMS container -- needed when a custom domain fronts the app so invite/setup-account email links and the wss://host/ws/device URL baked into provisioned Pis point at the real public hostname. When empty, bicep auto-derives the Azure default-domain URL.')
+param cmsBaseUrlOverride string = ''
+
 @description('Device transport mode: "wps" (multi-replica safe, routes via Azure Web PubSub — provisioned and wired by this template) or "local" (direct CMS→device websockets, single-replica only — skips the WPS resource entirely).')
 @allowed(['wps', 'local'])
 param deviceTransport string = 'wps'
@@ -236,6 +239,9 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Report-issue feature (GitHub)
     githubIssuesToken: githubIssuesToken
+
+    // Public CMS URL override (custom domain). Propagated to AGORA_CMS_BASE_URL.
+    cmsBaseUrlOverride: cmsBaseUrlOverride
   }
 }
 

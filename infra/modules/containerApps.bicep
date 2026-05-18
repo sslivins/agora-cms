@@ -59,6 +59,9 @@ param deviceTransport string = 'wps'
 @secure()
 param githubIssuesToken string = ''
 
+@description('Public CMS URL override (e.g. https://agora.example.com, no trailing slash). When non-empty, takes precedence over the auto-derived "https://<cmsAppName>.<defaultDomain>" for AGORA_CMS_BASE_URL -- needed when a custom domain fronts the app so invite/setup-account links, imager URLs, and the wss://host/ws/device baked into Pi fleet env all point at the real public hostname.')
+param cmsBaseUrlOverride string = ''
+
 // ── Blue/green deploy controls (Multiple revision mode) ──
 @description('Revision suffix for the CMS Container App. Each deploy MUST pass a unique value (e.g. "v1-12-34") so a brand-new revision is created at 0% traffic. The workflow flips traffic to it after smoke probes pass.')
 param cmsRevisionSuffix string = ''
@@ -287,14 +290,15 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               secretRef: 'github-issues-token'
             }
             {
-              // Public URL of the CMS — derived from the container app name +
-              // the managed environment's default domain so we have a single
-              // source of truth. The imager router and fleet env payload read
-              // this to build wss://host/ws/device for provisioned Pis. If you
-              // ever front the app with a custom domain (e.g. agora.example.com)
-              // this is the one place to override it.
+              // Public URL of the CMS -- the value used for invite-email
+              // setup-account links, the imager router's wss://host/ws/device
+              // URL baked into provisioned Pis, and any other place that
+              // needs an absolute URL. When cmsBaseUrlOverride is set (e.g.
+              // 'https://agora.example.com' for a custom-domain deploy) it
+              // wins; otherwise we auto-derive the Azure default-domain URL
+              // from the container app name + the managed environment.
               name: 'AGORA_CMS_BASE_URL'
-              value: 'https://${cmsAppName}.${containerAppsEnv.properties.defaultDomain}'
+              value: empty(cmsBaseUrlOverride) ? 'https://${cmsAppName}.${containerAppsEnv.properties.defaultDomain}' : cmsBaseUrlOverride
             }
             {
               // Picked up by azure-monitor-opentelemetry's

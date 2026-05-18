@@ -155,7 +155,8 @@ jobs:
               previousCmsRevisionName='${{ steps.revisions.outputs.previous_cms_revision }}' \
               mcpRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
               previousMcpRevisionName='${{ steps.revisions.outputs.previous_mcp_revision }}' \
-              alertEmail='${{ vars.ALERT_EMAIL }}'
+              alertEmail='${{ vars.ALERT_EMAIL }}' \
+              cmsBaseUrlOverride='${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}'
 
       - name: Bind custom domains (if configured)
         if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
