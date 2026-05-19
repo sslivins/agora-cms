@@ -82,6 +82,11 @@
     <div class="flash flash-error">{{ pw_error }}</div>
     {% endif %}
     <form method="POST" action="/profile/password" class="settings-form" style="max-width: 400px;">
+        {# Hidden username pins this password change to the right account
+           in iOS Keychain / 1Password / Bitwarden so the manager fills both
+           "New" and "Confirm" with the same generated password. #}
+        <input type="text" name="username" value="{{ profile_user.email or profile_user.username }}"
+               autocomplete="username" readonly hidden style="display:none">
         <div class="form-group">
             <label for="current_password">Current Password</label>
             <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
