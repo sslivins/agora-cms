@@ -4,11 +4,13 @@ import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.auth import (
     SETTING_SMTP_FROM_EMAIL,
+    SETTING_SMTP_FROM_NAME,
     SETTING_SMTP_HOST,
     SETTING_SMTP_PASSWORD,
     SETTING_SMTP_PORT,
@@ -28,6 +30,7 @@ async def get_smtp_settings(db: AsyncSession) -> dict:
         "username": await get_setting(db, SETTING_SMTP_USERNAME),
         "password": await get_setting(db, SETTING_SMTP_PASSWORD),
         "from_email": await get_setting(db, SETTING_SMTP_FROM_EMAIL),
+        "from_name": await get_setting(db, SETTING_SMTP_FROM_NAME),
         "use_tls": True,
     }
 
@@ -41,7 +44,19 @@ def _send_email(smtp_cfg: dict, to_email: str, subject: str, html_body: str, tex
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = smtp_cfg["from_email"]
+    # Render the From header as `"Display Name" <addr@host>` when a from_name
+    # is configured, so mail clients show the friendly name instead of the
+    # bare address. The SMTP envelope-from (server.sendmail below) still uses
+    # the bare address, per RFC 5321 -- some relays reject angle-bracketed
+    # addresses there.
+    #
+    # Strip CR/LF from from_name before formatting: it ultimately ends up in a
+    # MIME header, and the default email.policy.compat32 does not detect CRLF
+    # header injection. Admin-only setting, but cheap defense in depth.
+    raw_name = smtp_cfg.get("from_name") or ""
+    from_name = raw_name.replace("\r", "").replace("\n", "").strip()
+    from_email = smtp_cfg["from_email"]
+    msg["From"] = formataddr((from_name, from_email)) if from_name else from_email
     msg["To"] = to_email
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))

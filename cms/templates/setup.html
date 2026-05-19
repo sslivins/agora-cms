@@ -82,6 +82,12 @@
             </div>
             <div class="form-row">
                 <div class="form-group">
+                    <label for="smtp-from-name">From Name <span class="text-muted" style="font-weight: normal; font-size: 0.8rem;">(optional)</span></label>
+                    <input type="text" id="smtp-from-name" placeholder="e.g. Goodwill Digital Signage">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
                     <label for="smtp-from">From Email</label>
                     <input type="email" id="smtp-from" placeholder="e.g. noreply@example.com">
                 </div>
@@ -263,6 +269,7 @@
             port: parseInt(document.getElementById("smtp-port").value) || 587,
             username: document.getElementById("smtp-username").value.trim(),
             password: document.getElementById("smtp-password").value,
+            from_name: document.getElementById("smtp-from-name").value.trim(),
             from_email: document.getElementById("smtp-from").value.trim(),
         };
 
@@ -290,6 +297,7 @@
             port: parseInt(document.getElementById("smtp-port").value) || 587,
             username: document.getElementById("smtp-username").value.trim(),
             password: document.getElementById("smtp-password").value,
+            from_name: document.getElementById("smtp-from-name").value.trim(),
             from_email: document.getElementById("smtp-from").value.trim(),
         };
         try {
