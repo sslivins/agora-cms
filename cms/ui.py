@@ -172,7 +172,7 @@ def _report_issue_enabled() -> bool:
         return False
 templates.env.globals["report_issue_enabled"] = _report_issue_enabled
 
-router = APIRouter()
+router = APIRouter(include_in_schema=False)
 
 
 # ── Auth ──

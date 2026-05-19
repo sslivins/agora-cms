@@ -204,6 +204,8 @@ See `infra/` for the full Bicep templates and deployment script.
 
 The full REST API is documented in [docs/openapi.yaml](docs/openapi.yaml). You can explore it interactively using the [Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/sslivins/agora-cms/main/docs/openapi.yaml).
 
+`docs/openapi.yaml` is auto-generated from the live FastAPI route table — do not hand-edit it. After any route or response-schema change, regenerate with `python scripts/generate_openapi.py` and commit the result. CI (`openapi-check` in `.github/workflows/tests.yml`) fails the PR if the committed spec drifts from the code.
+
 ## Protocol (CMS ↔ Device)
 
 Protocol version: **1**
