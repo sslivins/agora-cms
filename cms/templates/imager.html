@@ -118,6 +118,40 @@
     </div>
 </div>
 
+{# - Provision Softplayer section -------------------------------- #}
+{# Sibling tile to "Build Image": same fleet model, but the output is
+   a tiny .env file the operator drops next to agora-softplayer.exe
+   instead of a flashable .img.xz. See
+   ``cms/routers/imager.py::build_softplayer_credentials``. #}
+<div class="card" data-imager-softplayer style="margin-bottom:1rem;">
+    <h3 style="margin-top:0;">Provision Softplayer</h3>
+    <p class="text-muted" style="margin-top:0;">
+        Generate a <code>softplayer.env</code> file for the Windows-native
+        <code>agora-softplayer.exe</code>. Same fleet-HMAC identity as a Pi
+        build; just drop the downloaded file next to the <code>.exe</code>
+        (or under <code>%LOCALAPPDATA%\agora-softplayer\</code>) and run.
+    </p>
+    <form id="imagerSoftplayerForm" autocomplete="off">
+        <div class="form-row" style="gap:0.75rem; flex-wrap:wrap; align-items:flex-end;">
+            <div class="form-group" style="flex:1.4 1 220px; min-width:0; margin-bottom:0;">
+                <label for="imagerSoftplayerFleetSelect">Fleet</label>
+                <select id="imagerSoftplayerFleetSelect" name="fleet_id" required>
+                    <option value="">Loading…</option>
+                </select>
+            </div>
+            <div style="flex:0 0 auto;">
+                <button type="submit" id="imagerSoftplayerDownloadBtn" class="btn btn-primary">
+                    Download softplayer.env
+                </button>
+            </div>
+        </div>
+        <small class="text-muted" style="margin-top:0.5rem; display:inline-block;">
+            The file carries the fleet HMAC secret. Keep it private — anyone
+            with it can enroll a device into this fleet.
+        </small>
+    </form>
+</div>
+
 {# ── Built images list ─────────────────────────────────────────── #}
 <div class="card" data-imager-built style="margin-bottom:1rem;">
     <h3 style="margin:0 0 0.5rem 0;">Built Images</h3>
@@ -321,6 +355,7 @@
 
     // ── Build section ─────────────────────────────────────────
     var buildSection = $('[data-imager-build]');
+    var softplayerSection = $('[data-imager-softplayer]');
     var manageSection = $('[data-imager-manage]');
 
     var fleetsCache = [];
@@ -355,6 +390,23 @@
             // -- the sentinel is never submitted.
             if (canManage) {
                 fleetSel.innerHTML += '<option value="__create__">+ Create new fleet…</option>';
+            }
+
+            // Mirror the fleet list (without the create-sentinel) into
+            // the Provision Softplayer card so both tiles share one
+            // fleet dropdown source-of-truth.
+            if (softplayerSection) {
+                var spSel = $('#imagerSoftplayerFleetSelect', softplayerSection);
+                if (spSel) {
+                    if (fleetsCache.length === 0) {
+                        spSel.innerHTML = '<option value="">No fleets configured</option>';
+                    } else {
+                        spSel.innerHTML = '<option value="">Select fleet…</option>' +
+                            fleetsCache.map(function(f) {
+                                return '<option value="' + escHtml(f.fleet_id) + '">' + escHtml(f.fleet_id) + '</option>';
+                            }).join('');
+                    }
+                }
             }
 
             baseSel.innerHTML = '';
@@ -825,6 +877,61 @@
             toast('Build failed to start: ' + (e.message || e), 'error');
             // Refresh in case base list changed (e.g. deleted in another tab).
             loadFleetsAndBases();
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // ── Provision Softplayer ───────────────────────────────────
+    // POST /api/imager/softplayer-credentials returns a text/plain body
+    // with Content-Disposition: attachment.  Use fetch+blob so the
+    // browser saves the response with the server-suggested filename
+    // (softplayer-<fleet>.env) and an XHR error surfaces as a toast
+    // rather than a half-rendered text page.
+    async function submitSoftplayerCredentials(ev) {
+        ev.preventDefault();
+        if (!softplayerSection) return;
+        var btn = $('#imagerSoftplayerDownloadBtn', softplayerSection);
+        var sel = $('#imagerSoftplayerFleetSelect', softplayerSection);
+        var fleetId = sel ? sel.value : '';
+        if (!fleetId) {
+            toast('Pick a fleet', 'error');
+            return;
+        }
+        btn.disabled = true;
+        try {
+            var resp = await fetch('/api/imager/softplayer-credentials', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fleet_id: fleetId }),
+            });
+            if (!resp.ok) {
+                var ct = resp.headers.get('content-type') || '';
+                var detail = ct.indexOf('application/json') >= 0
+                    ? ((await resp.json()).detail || resp.statusText)
+                    : (await resp.text() || resp.statusText);
+                throw new Error(detail);
+            }
+            var blob = await resp.blob();
+            // Pull the suggested filename out of Content-Disposition so
+            // the operator gets softplayer-<fleet>.env instead of the
+            // anchor's plain href fallback.
+            var cd = resp.headers.get('content-disposition') || '';
+            var match = cd.match(/filename\s*=\s*"?([^";]+)"?/i);
+            var filename = (match && match[1]) || ('softplayer-' + fleetId + '.env');
+
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            toast('Downloaded ' + filename, 'success');
+        } catch (e) {
+            toast('Download failed: ' + (e.message || e), 'error');
         } finally {
             btn.disabled = false;
         }
@@ -1348,6 +1455,11 @@
         // Resume any in-flight job from a prior page load.
         var resumeId = loadActiveJob();
         if (resumeId) startPolling(resumeId);
+    }
+
+    if (softplayerSection) {
+        var spForm = $('#imagerSoftplayerForm', softplayerSection);
+        if (spForm) spForm.addEventListener('submit', submitSoftplayerCredentials);
     }
 
     if (manageSection) {
