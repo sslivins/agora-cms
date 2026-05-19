@@ -1,1402 +1,5336 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Agora CMS
-  description: >
-    Central management server for Agora media playback devices. Provides device
-    registration, content scheduling, asset transcoding, and fleet management
-    via a REST API, WebSocket endpoint, and admin web UI.
-  version: 1.0.0
-  license:
-    name: MIT
-
-servers:
-  - url: http://localhost:8080
-    description: Local Docker Compose
-
-security:
-  - sessionCookie: []
-
-tags:
-  - name: dashboard
-    description: Dashboard overview data
-  - name: devices
-    description: Device management
-  - name: groups
-    description: Device groups
-  - name: assets
-    description: Asset library and transcoding
-  - name: schedules
-    description: Content scheduling
-  - name: profiles
-    description: Device profiles for transcoding
-  - name: settings
-    description: CMS settings
-
+  description: Central management system for Agora media playback devices
+  version: 1.37.232
 paths:
-  # ── Dashboard ──
-  /api/dashboard:
-    get:
-      tags: [dashboard]
-      summary: Dashboard data
-      description: Returns device states, now-playing info, pending/offline device lists, and upcoming schedules.
-      operationId: getDashboard
+  /api/devices/register:
+    post:
+      tags:
+      - bootstrap
+      summary: Register
+      description: Device-initiated registration.  Anonymous but fleet-HMAC gated.
+      operationId: register_api_devices_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
       responses:
-        "200":
-          description: Dashboard data.
+        '202':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DashboardResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+                $ref: '#/components/schemas/RegisterResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/bootstrap-status:
+    get:
+      tags:
+      - bootstrap
+      summary: Bootstrap Status
+      description: Poll endpoint the device hits until the operator adopts it.
+      operationId: bootstrap_status_api_devices_bootstrap_status_get
+      parameters:
+      - name: pubkey
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Pubkey
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/adopt:
+    post:
+      tags:
+      - bootstrap
+      summary: Adopt
+      description: |-
+        Operator-initiated adoption from the CMS UI (QR scanner).
 
-  # ── Devices ──
+        Coexists with the legacy ``/api/devices/{device_id}/adopt`` — that
+        one handles devices that completed the old WS-register flow; this
+        one handles devices that came in via the HTTPS bootstrap flow.
+      operationId: adopt_api_devices_adopt_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapAdoptRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapAdoptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/pending:
+    get:
+      tags:
+      - bootstrap
+      summary: List Pending
+      description: |-
+        List every pending (un-adopted) device registration.
+
+        Drives the "Pending Devices" section of the devices page.  Items
+        are sorted newest-first so the most recently connected device is
+        always on top.
+      operationId: list_pending_api_devices_pending_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingDevicesResponse'
+  /api/devices/adopt-pending:
+    post:
+      tags:
+      - bootstrap
+      summary: Adopt Pending
+      description: |-
+        Adopt a pending row by its id.
+
+        Same effect as ``POST /adopt`` with the pairing secret, but the
+        admin never sees the secret — it stays on the wire between the
+        device and CMS as an idempotency key.
+      operationId: adopt_pending_api_devices_adopt_pending_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdoptPendingRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapAdoptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/pending/{pending_id}:
+    delete:
+      tags:
+      - bootstrap
+      summary: Reject Pending
+      description: |-
+        Reject / drop an un-adopted pending row.
+
+        Useful for cleaning up bogus or duplicate registrations from the
+        UI without waiting for the reaper's TTL.  Refuses to delete rows
+        that have already been adopted.
+      operationId: reject_pending_api_devices_pending__pending_id__delete
+      parameters:
+      - name: pending_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Pending Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/connect-token:
+    post:
+      tags:
+      - bootstrap
+      summary: Connect Token
+      description: |-
+        Mint a fresh WPS JWT for an adopted device.
+
+        Proof-of-possession of the device's ed25519 private key via a
+        signed ``device_id|timestamp|nonce`` canonical string.  Replaces
+        the legacy ``GET /api/devices/{id}/client-token`` endpoint that
+        relied on the ``X-Device-API-Key`` header.
+      operationId: connect_token_api_devices_connect_token_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectTokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/check-updates:
     post:
-      tags: [devices]
-      summary: Check for firmware updates
-      description: Trigger an immediate check for new device firmware releases on GitHub.
-      operationId: checkUpdates
+      summary: Check For Updates
+      description: Trigger an immediate check for the latest device firmware version.
+      operationId: check_for_updates_api_devices_check_updates_post
       responses:
-        "200":
-          description: Update check result.
+        '200':
+          description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  latest_version:
-                    type: string
-                    nullable: true
-                    description: Latest firmware version, or null if check failed.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
+              schema: {}
   /api/devices:
     get:
-      tags: [devices]
-      summary: List devices
-      description: Returns all registered devices ordered by registration date.
-      operationId: listDevices
+      summary: List Devices
+      operationId: list_devices_api_devices_get
       responses:
-        "200":
-          description: Device list.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: array
                 items:
-                  $ref: "#/components/schemas/DeviceOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
+                  $ref: '#/components/schemas/DeviceOut'
+                type: array
+                title: Response List Devices Api Devices Get
   /api/devices/{device_id}:
     get:
-      tags: [devices]
-      summary: Get device
-      operationId: getDevice
+      summary: Get Device
+      operationId: get_device_api_devices__device_id__get
       parameters:
-        - $ref: "#/components/parameters/DeviceId"
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
       responses:
-        "200":
-          description: Device details.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DeviceOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found.
+                $ref: '#/components/schemas/DeviceOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     patch:
-      tags: [devices]
-      summary: Update device
-      description: Update device name, status, group, or default asset.
-      operationId: updateDevice
+      summary: Update Device
+      operationId: update_device_api_devices__device_id__patch
       parameters:
-        - $ref: "#/components/parameters/DeviceId"
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeviceUpdate"
+              $ref: '#/components/schemas/DeviceUpdate'
       responses:
-        "200":
-          description: Updated device.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DeviceOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found.
+                $ref: '#/components/schemas/DeviceOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     delete:
-      tags: [devices]
-      summary: Delete device
-      description: >
-        Remove a device from the CMS. If the device is connected, a wipe_assets
-        command is sent so it clears cached content. Associated schedules and
-        device-asset records are also removed.
-      operationId: deleteDevice
+      summary: Delete Device
+      operationId: delete_device_api_devices__device_id__delete
       parameters:
-        - $ref: "#/components/parameters/DeviceId"
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
       responses:
-        "200":
-          description: Device deleted.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found.
-
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/{device_id}/password:
     post:
-      tags: [devices]
-      summary: Set device web password
-      description: Push a new web UI password to the device over WebSocket.
-      operationId: setDevicePassword
+      summary: Set Device Password
+      operationId: set_device_password_api_devices__device_id__password_post
       parameters:
-        - $ref: "#/components/parameters/DeviceId"
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [password]
-              properties:
-                password:
-                  type: string
-                  minLength: 4
+              $ref: '#/components/schemas/SetPasswordRequest'
       responses:
-        "200":
-          description: Password set.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found or not connected.
-
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/{device_id}/reboot:
     post:
-      tags: [devices]
-      summary: Reboot device
-      description: Send a reboot command to the device over WebSocket.
-      operationId: rebootDevice
+      summary: Reboot Device
+      operationId: reboot_device_api_devices__device_id__reboot_post
       parameters:
-        - $ref: "#/components/parameters/DeviceId"
-      responses:
-        "200":
-          description: Reboot command sent.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found or not connected.
-
-  /api/devices/{device_id}/adopt:
-    post:
-      tags: [devices]
-      summary: Adopt device
-      description: >
-        Adopt a pending or orphaned device. Pending devices are set to adopted.
-        Orphaned devices have their auth credentials cleared and are set to adopted.
-        If the device is connected, a wipe_assets command is sent so it starts
-        fresh without stale content from a previous adoption.
-      operationId: adoptDevice
-      parameters:
-        - $ref: "#/components/parameters/DeviceId"
-      responses:
-        "200":
-          description: Device adopted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "400":
-          description: Device is already adopted.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found.
-
-  /api/devices/{device_id}/factory-reset:
-    post:
-      tags: [devices]
-      summary: Factory reset device
-      description: Send a factory reset command to a connected device over WebSocket.
-      operationId: factoryResetDevice
-      parameters:
-        - $ref: "#/components/parameters/DeviceId"
-      responses:
-        "200":
-          description: Factory reset command sent.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found.
-        "409":
-          description: Device not connected.
-
-  /api/devices/{device_id}/local-api:
-    post:
-      tags: [devices]
-      summary: Toggle local API
-      description: Enable or disable the local REST API on a connected device.
-      operationId: toggleDeviceLocalApi
-      parameters:
-        - $ref: "#/components/parameters/DeviceId"
-      requestBody:
+      - name: device_id
+        in: path
         required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enabled]
-              properties:
-                enabled:
-                  type: boolean
+        schema:
+          type: string
+          title: Device Id
       responses:
-        "200":
-          description: Local API state updated.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "400":
-          description: Invalid request (enabled must be a boolean).
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found.
-        "409":
-          description: Device not connected.
-
-  /api/devices/{device_id}/ssh:
-    post:
-      tags: [devices]
-      summary: Toggle SSH access
-      description: Enable or disable SSH on a connected device.
-      operationId: toggleDeviceSsh
-      parameters:
-        - $ref: "#/components/parameters/DeviceId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enabled]
-              properties:
-                enabled:
-                  type: boolean
-      responses:
-        "200":
-          description: SSH state updated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found or not connected.
-
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/{device_id}/upgrade:
     post:
-      tags: [devices]
-      summary: Trigger firmware upgrade
-      description: Send an upgrade command to the device over WebSocket.
-      operationId: upgradeDevice
+      summary: Upgrade Device
+      operationId: upgrade_device_api_devices__device_id__upgrade_post
       parameters:
-        - $ref: "#/components/parameters/DeviceId"
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
       responses:
-        "200":
-          description: Upgrade command sent.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Device not found or not connected.
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/ssh:
+    post:
+      summary: Toggle Device Ssh
+      operationId: toggle_device_ssh_api_devices__device_id__ssh_post
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/factory-reset:
+    post:
+      summary: Factory Reset Device
+      operationId: factory_reset_device_api_devices__device_id__factory_reset_post
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/local-api:
+    post:
+      summary: Toggle Device Local Api
+      operationId: toggle_device_local_api_api_devices__device_id__local_api_post
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/adopt:
+    post:
+      summary: Adopt Device
+      description: |-
+        Adopt a pending device or re-adopt an orphaned one.
 
-  # ── Device Groups ──
+        For pending devices: sets status to adopted and assigns an auth token on next connect.
+        For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
+
+        Optionally accepts a JSON body with name, location, and group_id to configure
+        the device during adoption.
+
+        In both cases, a wipe_assets command is sent so the device starts fresh
+        without stale content from a previous adoption.
+
+        Accepts optional name and group_id to configure the device during adoption.
+      operationId: adopt_device_api_devices__device_id__adopt_post
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdoptRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/groups/:
     get:
-      tags: [groups]
-      summary: List groups
-      description: Returns all device groups with device counts.
-      operationId: listGroups
+      summary: List Groups
+      operationId: list_groups_api_devices_groups__get
       responses:
-        "200":
-          description: Group list.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: array
                 items:
-                  $ref: "#/components/schemas/DeviceGroupOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+                  $ref: '#/components/schemas/DeviceGroupOut'
+                type: array
+                title: Response List Groups Api Devices Groups  Get
     post:
-      tags: [groups]
-      summary: Create group
-      operationId: createGroup
+      summary: Create Group
+      operationId: create_group_api_devices_groups__post
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeviceGroupCreate"
+              $ref: '#/components/schemas/DeviceGroupCreate'
+        required: true
       responses:
-        "201":
-          description: Group created.
+        '201':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DeviceGroupOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
+                $ref: '#/components/schemas/DeviceGroupOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/groups/{group_id}:
     patch:
-      tags: [groups]
-      summary: Update group
-      operationId: updateGroup
+      summary: Update Group
+      operationId: update_group_api_devices_groups__group_id__patch
       parameters:
-        - name: group_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Group Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeviceGroupUpdate"
+              $ref: '#/components/schemas/DeviceGroupUpdate'
       responses:
-        "200":
-          description: Updated group.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DeviceGroupOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Group not found.
+                $ref: '#/components/schemas/DeviceGroupOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     delete:
-      tags: [groups]
-      summary: Delete group
-      operationId: deleteGroup
+      summary: Delete Group
+      operationId: delete_group_api_devices_groups__group_id__delete
       parameters:
-        - name: group_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Group Id
       responses:
-        "200":
-          description: Group deleted.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Group not found.
-
-  # ── Assets ──
-  /api/assets:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/groups/{group_id}/panel:
     get:
-      tags: [assets]
-      summary: List assets
-      description: Returns all assets ordered by upload date.
-      operationId: listAssets
+      summary: Get Group Panel
+      description: |-
+        Return the rendered <div class='group-panel'> HTML for one group.
+
+        Mirrors the pattern established by GET /api/assets/{id}/row and
+        /api/profiles/{id}/row so the cross-session poller on /devices and the
+        createGroup handler can insert server-rendered markup instead of
+        synthesizing HTML in JS or issuing a full page reload. See issue #87.
+      operationId: get_group_panel_api_devices_groups__group_id__panel_get
+      parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Group Id
       responses:
-        "200":
-          description: Asset list.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/AssetOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/connect-token:
+    post:
+      tags:
+      - devices (device-originated)
+      summary: Connect Token
+      description: |-
+        Mint a WPS client access token (URL + JWT) for `device_id`.
 
+        Auth: `X-Device-API-Key` header bound to `device_id`.
+        Behaviour depends on the configured transport:
+          - `DEVICE_TRANSPORT=wps`: return {url, token} from the WPS SDK.
+          - else: 404 so devices flip back to the direct-WS path.
+      operationId: connect_token_api_devices__device_id__connect_token_post
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/status:
     get:
-      tags: [assets]
-      summary: Asset and variant stats
-      description: Returns counts of assets and transcoding variant statuses.
-      operationId: getAssetStatus
+      summary: Assets Status Json
+      description: Lightweight JSON for assets page polling — filtered by user's group access.
+      operationId: assets_status_json_api_assets_status_get
       responses:
-        "200":
-          description: Asset statistics.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/assets:
+    get:
+      summary: List Assets
+      description: List assets visible to the current user (filtered by group membership).
+      operationId: list_assets_api_assets_get
+      responses:
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AssetStatusResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
+                items:
+                  $ref: '#/components/schemas/AssetOut'
+                type: array
+                title: Response List Assets Api Assets Get
   /api/assets/upload:
     post:
-      tags: [assets]
-      summary: Upload asset
-      description: >
-        Upload a media file (up to 2 GB). Images in HEIC, AVIF, WebP, BMP,
-        TIFF, or GIF format are auto-converted to JPEG. Videos are queued for
-        transcoding against all device profiles.
-      operationId: uploadAsset
+      summary: Upload Asset
+      operationId: upload_asset_api_assets_upload_post
+      parameters:
+      - name: group_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Group UUID (single, for backward compat)
+          title: Group Id
+        description: Group UUID (single, for backward compat)
+      - name: group_ids
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated group UUIDs
+          title: Group Ids
+        description: Comma-separated group UUIDs
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
-              type: object
-              required: [file]
-              properties:
-                file:
-                  type: string
-                  format: binary
+              $ref: '#/components/schemas/Body_upload_asset_api_assets_upload_post'
       responses:
-        "201":
-          description: Asset uploaded.
+        '201':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AssetOut"
-        "400":
-          description: Invalid file type or filename.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /api/assets/{asset_id}:
+                $ref: '#/components/schemas/AssetOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/webpage:
+    post:
+      summary: Create Webpage Asset
+      description: Create a webpage asset from a URL (no file upload).
+      operationId: create_webpage_asset_api_assets_webpage_post
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+  /api/assets/stream:
+    post:
+      summary: Create Stream Asset
+      description: Create a stream asset from a video stream URL (HLS, DASH, RTMP, etc.).
+      operationId: create_stream_asset_api_assets_stream_post
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+  /api/assets/slideshow:
+    post:
+      summary: Create Slideshow Asset
+      description: |-
+        Create a slideshow asset — a synthetic Asset whose content is an
+        ordered list of existing image/video sources resolved on the device.
+      operationId: create_slideshow_asset_api_assets_slideshow_post
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+  /api/assets/{asset_id}/slides:
     get:
-      tags: [assets]
-      summary: Get asset details
-      description: Returns asset metadata including transcoding variant statuses.
-      operationId: getAsset
-      parameters:
-        - $ref: "#/components/parameters/AssetId"
-      responses:
-        "200":
-          description: Asset details with variants.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssetOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Asset not found.
-    delete:
-      tags: [assets]
-      summary: Delete asset
-      description: Delete an asset. Fails if the asset is referenced by any schedule.
-      operationId: deleteAsset
-      parameters:
-        - $ref: "#/components/parameters/AssetId"
-      responses:
-        "200":
-          description: Asset deleted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "400":
-          description: Asset is in use by one or more schedules.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Asset not found.
+      summary: List Slideshow Slides
+      description: |-
+        Return ordered slides with embedded source metadata.
 
+        When ``profile_id`` is provided, also include a ``readiness`` block
+        enumerating any slides that can't be served on that profile (used by
+        the builder UI and the assets table readiness badge).
+      operationId: list_slideshow_slides_api_assets__asset_id__slides_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      - name: profile_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Profile Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Replace Slideshow Slides
+      description: Replace the entire slide list for a slideshow atomically.
+      operationId: replace_slideshow_slides_api_assets__asset_id__slides_put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}:
+    patch:
+      summary: Update Asset
+      description: 'Update asset properties (currently: display_name).'
+      operationId: update_asset_api_assets__asset_id__patch
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      summary: Get Asset
+      operationId: get_asset_api_assets__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Asset
+      description: |-
+        Soft-delete an asset.
+
+        Sets ``assets.deleted_at`` and flags any in-flight Jobs targeting this
+        asset (or its variants) with ``cancel_requested = true``.  The worker
+        heartbeat will pick up the flag and abort ffmpeg within ~15s; the
+        CMS reaper loop (``deleted_asset_reaper_loop``) later hard-deletes
+        blobs + rows once all Jobs are terminal.  Returns 200 immediately.
+      operationId: delete_asset_api_assets__asset_id__delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}/recapture:
+    post:
+      summary: Recapture Stream
+      description: |-
+        Re-capture a SAVED_STREAM asset: re-downloads the stream, overwrites
+        the capture file, and resets all variants to PENDING for retranscoding.
+      operationId: recapture_stream_api_assets__asset_id__recapture_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}/row:
+    get:
+      summary: Get Asset Row
+      description: |-
+        Return the rendered <tr class='asset-row'> + <tr class='asset-detail'>
+        HTML for a single asset. Used by the no-reload flows on /assets (poller
+        swap when variants first appear, cross-replica new-asset insert, upload
+        complete, etc.) so the client never has to synthesize row markup in JS.
+        See issue #87.
+      operationId: get_asset_row_api_assets__asset_id__row_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/{asset_id}/preview:
     get:
-      tags: [assets]
-      summary: Preview source file
-      description: Download the original source file for preview.
-      operationId: previewAsset
+      summary: Preview Asset
+      operationId: preview_asset_api_assets__asset_id__preview_get
       parameters:
-        - $ref: "#/components/parameters/AssetId"
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
       responses:
-        "200":
-          description: Source file stream.
+        '200':
+          description: Successful Response
           content:
-            application/octet-stream: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Asset not found.
-
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/variants/{variant_id}/preview:
+    get:
+      summary: Preview Variant
+      operationId: preview_variant_api_assets_variants__variant_id__preview_get
+      parameters:
+      - name: variant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Variant Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}/share:
+    post:
+      summary: Share Asset
+      description: Share an asset with an additional group.
+      operationId: share_asset_api_assets__asset_id__share_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      - name: group_id
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+          description: Group UUID to share with
+          title: Group Id
+        description: Group UUID to share with
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Unshare Asset
+      description: Remove an asset from a group.
+      operationId: unshare_asset_api_assets__asset_id__share_delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      - name: group_id
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+          description: Group UUID to unshare from
+          title: Group Id
+        description: Group UUID to unshare from
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}/global:
+    post:
+      summary: Toggle Asset Global
+      description: Toggle an asset's global visibility.
+      operationId: toggle_asset_global_api_assets__asset_id__global_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/{asset_id}/download:
     get:
-      tags: [assets]
-      summary: Download source asset
-      description: Download source asset file. No authentication required (used by devices).
-      security: []
-      operationId: downloadAsset
+      summary: Download Asset
+      operationId: download_asset_api_assets__asset_id__download_get
       parameters:
-        - $ref: "#/components/parameters/AssetId"
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      - name: key
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key
       responses:
-        "200":
-          description: Asset file stream.
+        '200':
+          description: Successful Response
           content:
-            application/octet-stream: {}
-        "404":
-          description: Asset not found.
-
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/variants/{variant_id}/download:
     get:
-      tags: [assets]
-      summary: Download transcoded variant
-      description: Download a transcoded variant. Only available when variant status is READY. No authentication required.
-      security: []
-      operationId: downloadVariant
+      summary: Download Variant
+      description: Download a transcoded asset variant (used by devices).
+      operationId: download_variant_api_assets_variants__variant_id__download_get
       parameters:
-        - name: variant_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: variant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Variant Id
+      - name: key
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key
       responses:
-        "200":
-          description: Variant file stream.
+        '200':
+          description: Successful Response
           content:
-            application/octet-stream: {}
-        "404":
-          description: Variant not found or not ready.
-
-  # ── Schedules ──
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/schedules:
     get:
-      tags: [schedules]
-      summary: List schedules
-      description: Returns all schedules ordered by priority (desc) then name.
-      operationId: listSchedules
+      summary: List Schedules
+      operationId: list_schedules_api_schedules_get
       responses:
-        "200":
-          description: Schedule list.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: array
                 items:
-                  $ref: "#/components/schemas/ScheduleOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+                  $ref: '#/components/schemas/ScheduleOut'
+                type: array
+                title: Response List Schedules Api Schedules Get
     post:
-      tags: [schedules]
-      summary: Create schedule
-      description: >
-        Create a new schedule targeting a device or group. Exactly one of
-        device_id or group_id must be set. Triggers sync push to affected devices.
-      operationId: createSchedule
+      summary: Create Schedule
+      operationId: create_schedule_api_schedules_post
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ScheduleCreate"
+              $ref: '#/components/schemas/ScheduleCreate'
+        required: true
       responses:
-        "201":
-          description: Schedule created.
+        '201':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ScheduleOut"
-        "400":
-          description: Validation error (e.g., must set exactly one target).
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
+                $ref: '#/components/schemas/ScheduleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/schedules/{schedule_id}:
     get:
-      tags: [schedules]
-      summary: Get schedule
-      operationId: getSchedule
+      summary: Get Schedule
+      operationId: get_schedule_api_schedules__schedule_id__get
       parameters:
-        - $ref: "#/components/parameters/ScheduleId"
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Schedule Id
       responses:
-        "200":
-          description: Schedule details.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ScheduleOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Schedule not found.
+                $ref: '#/components/schemas/ScheduleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     patch:
-      tags: [schedules]
-      summary: Update schedule
-      description: Update schedule fields. Triggers sync push to affected devices.
-      operationId: updateSchedule
+      summary: Update Schedule
+      operationId: update_schedule_api_schedules__schedule_id__patch
       parameters:
-        - $ref: "#/components/parameters/ScheduleId"
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Schedule Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ScheduleUpdate"
+              $ref: '#/components/schemas/ScheduleUpdate'
       responses:
-        "200":
-          description: Updated schedule.
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ScheduleOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Schedule not found.
+                $ref: '#/components/schemas/ScheduleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     delete:
-      tags: [schedules]
-      summary: Delete schedule
-      description: Delete a schedule and sync affected devices.
-      operationId: deleteSchedule
+      summary: Delete Schedule
+      operationId: delete_schedule_api_schedules__schedule_id__delete
       parameters:
-        - $ref: "#/components/parameters/ScheduleId"
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Schedule Id
       responses:
-        "200":
-          description: Schedule deleted.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Schedule not found.
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/schedules/{schedule_id}/row:
+    get:
+      summary: Get Schedule Row
+      description: |-
+        Return just the rendered <tr> HTML for a single schedule.
 
+        Used by the no-reload flows on the schedules page (create, edit, and
+        the cross-replica poller) so the client never has to synthesize row
+        markup in JS. See issue #87 and the long-term plan captured on it —
+        we want a single Jinja source of truth for every row template.
+      operationId: get_schedule_row_api_schedules__schedule_id__row_get
+      parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Schedule Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/schedules/{schedule_id}/end-now:
     post:
-      tags: [schedules]
-      summary: End current occurrence
-      description: Skip the current occurrence of a schedule until its end time.
-      operationId: endScheduleNow
+      summary: End Schedule Now
+      description: |-
+        End the current occurrence of a schedule immediately.
+
+        Body (optional): ``{"device_id": "<id>"}`` — when provided, skips the
+        schedule only for that device; other devices keep playing.  When omitted,
+        the schedule is skipped for every target (legacy behavior).
+
+        The skip runs until the schedule's ``end_time`` today (or tomorrow for
+        overnight spans), then resumes on its next regular occurrence.
+      operationId: end_schedule_now_api_schedules__schedule_id__end_now_post
       parameters:
-        - $ref: "#/components/parameters/ScheduleId"
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Schedule Id
       responses:
-        "200":
-          description: Schedule skipped.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OkResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Schedule not found.
-
-  # ── Profiles ──
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
-      tags: [profiles]
-      summary: List profiles
-      description: Returns all device profiles with device counts and variant statistics.
-      operationId: listProfiles
+      summary: List Profiles
+      operationId: list_profiles_api_profiles_get
       responses:
-        "200":
-          description: Profile list.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ProfileOut'
+                type: array
+                title: Response List Profiles Api Profiles Get
+    post:
+      summary: Create Profile
+      operationId: create_profile_api_profiles_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/{profile_id}/row:
+    get:
+      summary: Get Profile Row
+      description: |-
+        Return just the rendered <tr> HTML for a single profile.
+
+        Used by the no-reload flows on the profiles page (create, edit,
+        copy, reset, and the cross-replica poller) so the client never has
+        to synthesize row markup in JS. See issue #87.
+      operationId: get_profile_row_api_profiles__profile_id__row_get
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/{profile_id}:
+    put:
+      summary: Update Profile
+      operationId: update_profile_api_profiles__profile_id__put
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Profile
+      operationId: delete_profile_api_profiles__profile_id__delete
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/{profile_id}/copy:
+    post:
+      summary: Copy Profile
+      operationId: copy_profile_api_profiles__profile_id__copy_post
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/{profile_id}/reset:
+    post:
+      summary: Reset Profile
+      description: Reset a built-in profile to its canonical default values.
+      operationId: reset_profile_api_profiles__profile_id__reset_post
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/{profile_id}/disable:
+    post:
+      summary: Disable Profile
+      description: |-
+        Disable a profile.
+
+        Stops new variants from being generated for this profile on asset
+        upload / new-profile fan-out. Any pending or in-flight transcode
+        jobs for this profile are cancelled. Existing READY variants are
+        preserved so re-enabling is instant.
+      operationId: disable_profile_api_profiles__profile_id__disable_post
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/{profile_id}/enable:
+    post:
+      summary: Enable Profile
+      description: |-
+        Re-enable a profile.
+
+        Re-enqueues transcoding for any assets that don't yet have a variant
+        for this profile (covers assets uploaded while the profile was
+        disabled). Existing variants are preserved.
+      operationId: enable_profile_api_profiles__profile_id__enable_post
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Profile Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/profiles/status:
+    get:
+      summary: Profiles Status Json
+      description: |-
+        Lightweight JSON for profiles page polling — queue status + profile variant counts.
+
+        Queue entries are filtered to assets the caller is permitted to see (to avoid
+        leaking filenames of group-scoped assets to non-admin users).
+      operationId: profiles_status_json_api_profiles_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/cms/logs:
+    get:
+      summary: Download Cms Logs
+      description: |-
+        Download the CMS in-memory log buffer as a zip.
+
+        Small, synchronous endpoint used by the new UI flow to fetch CMS
+        logs separately from per-device log bundles.  Does not reach
+        across the network to devices, so it is safe to call on any
+        replica.
+
+        Replica-local caveat: under any multi-replica deployment behind a
+        load balancer (including Azure Container Apps), the load balancer
+        routes each HTTP request to an arbitrary replica, so the returned
+        buffer reflects only that replica's recent logs.  In single-replica
+        deployments this is the full CMS log buffer.  For a complete view
+        across all replicas in a multi-replica deployment, use the Azure
+        Log Analytics workspace (container stdout is shipped there).
+      operationId: download_cms_logs_api_cms_logs_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/logs/requests:
+    post:
+      summary: Create Log Request
+      description: |-
+        Enqueue a log-request outbox row and try to dispatch immediately.
+
+        If dispatch succeeds the row flips to ``sent``; if the device is
+        offline or the transport fails we leave the row ``pending`` — the
+        Stage 3d drainer will retry (and the back-compat shim will still
+        land legacy ``LOGS_RESPONSE`` payloads if the device reconnects
+        and the old firmware replies synchronously).
+      operationId: create_log_request_api_logs_requests_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLogRequest'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logs/requests/{request_id}:
+    get:
+      summary: Get Log Request
+      operationId: get_log_request_api_logs_requests__request_id__get
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logs/requests/{request_id}/download:
+    get:
+      summary: Download Log Request
+      operationId: download_log_request_api_logs_requests__request_id__download_get
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/logs/{request_id}/upload:
+    post:
+      summary: Upload Log Bundle
+      description: |-
+        Accept a Pi-originated tar.gz log bundle for ``request_id``.
+
+        The authenticated device must match the path ``device_id`` so a
+        compromised Pi can't poison another device's row.
+      operationId: upload_log_bundle_api_devices__device_id__logs__request_id__upload_post
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/mcp/auth:
+    get:
+      summary: Verify Mcp Token
+      description: |-
+        Validate a bearer token (user API key) and return user permissions.
+
+        Called by the MCP server on each incoming connection.
+        The bearer token must be a valid user API key (``agora_...``) with
+        ``key_type="mcp"``.  API-type keys are rejected.
+        Returns the user's display name, role, and effective permissions
+        (user role ∩ MCP role ceiling).
+      operationId: verify_mcp_token_api_mcp_auth_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/keys/my:
+    get:
+      summary: List My Keys
+      description: List the current user's own keys.
+      operationId: list_my_keys_api_keys_my_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/APIKeyOut'
+                type: array
+                title: Response List My Keys Api Keys My Get
+    post:
+      summary: Create My Key
+      description: Create a new key for the current user.
+      operationId: create_my_key_api_keys_my_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/APIKeyCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/keys/my/{key_id}/regenerate:
+    post:
+      summary: Regenerate My Key
+      description: Regenerate an own key — same name/type, new secret.
+      operationId: regenerate_my_key_api_keys_my__key_id__regenerate_post
+      parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Key Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/keys/my/{key_id}:
+    delete:
+      summary: Delete My Key
+      description: Revoke (delete) an own key.
+      operationId: delete_my_key_api_keys_my__key_id__delete
+      parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Key Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/keys:
+    get:
+      summary: List All Keys
+      description: List ALL keys across all users (admin oversight).
+      operationId: list_all_keys_api_keys_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/APIKeyOut'
+                type: array
+                title: Response List All Keys Api Keys Get
+    post:
+      summary: Create Api Key
+      description: 'Admin: create a key (attributed to the admin user).'
+      operationId: create_api_key_api_keys_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/APIKeyCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/keys/{key_id}/regenerate:
+    post:
+      summary: Regenerate Api Key
+      description: 'Admin: regenerate any key — same name/type, new secret.'
+      operationId: regenerate_api_key_api_keys__key_id__regenerate_post
+      parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Key Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/keys/{key_id}:
+    delete:
+      summary: Delete Api Key
+      description: 'Admin: revoke (delete) any key.'
+      operationId: delete_api_key_api_keys__key_id__delete
+      parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Key Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/audit-log:
+    get:
+      summary: List Audit Logs
+      operationId: list_audit_logs_api_audit_log_get
+      parameters:
+      - name: action
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by action (e.g. device.reboot)
+          title: Action
+        description: Filter by action (e.g. device.reboot)
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by resource type
+          title: Resource Type
+        description: Filter by resource type
+      - name: user_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Filter by acting user
+          title: User Id
+        description: Filter by acting user
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only entries after this timestamp
+          title: Since
+        description: Only entries after this timestamp
+      - name: until
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Only entries before this timestamp
+          title: Until
+        description: Only entries before this timestamp
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Free-text search across description, action, resource_type
+          title: Q
+        description: Free-text search across description, action, resource_type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/ProfileOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      tags: [profiles]
-      summary: Create profile
-      description: Create a device profile. Queues transcoding for all existing video assets.
-      operationId: createProfile
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ProfileCreate"
-      responses:
-        "201":
-          description: Profile created.
+                  $ref: '#/components/schemas/AuditLogRead'
+                title: Response List Audit Logs Api Audit Log Get
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ProfileOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /api/profiles/{profile_id}:
-    put:
-      tags: [profiles]
-      summary: Update profile
-      operationId: updateProfile
-      parameters:
-        - name: profile_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ProfileUpdate"
-      responses:
-        "200":
-          description: Updated profile.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProfileOut"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Profile not found.
-    delete:
-      tags: [profiles]
-      summary: Delete profile
-      description: Delete a profile. Fails if it is built-in or has devices assigned.
-      operationId: deleteProfile
-      parameters:
-        - name: profile_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Profile deleted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OkResponse"
-        "400":
-          description: Cannot delete built-in profile or profile with assigned devices.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: Profile not found.
-
-  /api/profiles/status:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/audit-log/count:
     get:
-      tags: [profiles]
-      summary: Profile variant status
-      description: Returns per-profile variant counts and the transcoding job queue.
-      operationId: getProfileStatus
+      summary: Audit Log Count
+      description: Return total count matching filters — useful for pagination.
+      operationId: audit_log_count_api_audit_log_count_get
+      parameters:
+      - name: action
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Action
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resource Type
+      - name: user_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Since
+      - name: until
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Until
       responses:
-        "200":
-          description: Profile status with transcode queue.
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ProfileStatusResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  # ── Settings ──
-  /settings/password:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/notifications:
+    get:
+      summary: List Notifications
+      description: List notifications visible to the current user, newest first.
+      operationId: list_notifications_api_notifications_get
+      parameters:
+      - name: unread_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Unread Only
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationOut'
+                title: Response List Notifications Api Notifications Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete All Notifications
+      description: Delete all visible notifications.
+      operationId: delete_all_notifications_api_notifications_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/notifications/count:
+    get:
+      summary: Notification Count
+      description: Return unread notification count for the current user (for polling).
+      operationId: notification_count_api_notifications_count_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationCount'
+  /api/notifications/{notification_id}/read:
     post:
-      tags: [settings]
-      summary: Change admin password
-      operationId: changePassword
+      summary: Mark Read
+      description: Mark a single notification as read.
+      operationId: mark_read_api_notifications__notification_id__read_post
+      parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Notification Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/notifications/read-all:
+    post:
+      summary: Mark All Read
+      description: Mark all visible unread notifications as read.
+      operationId: mark_all_read_api_notifications_read_all_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/notifications/{notification_id}:
+    delete:
+      summary: Delete Notification
+      description: Delete a single notification.
+      operationId: delete_notification_api_notifications__notification_id__delete
+      parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Notification Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/notification-preferences:
+    get:
+      summary: Get Notification Prefs
+      description: |-
+        Return the current user's notification preferences.
+
+        Returns one entry per supported event type, creating defaults if needed.
+      operationId: get_notification_prefs_api_notification_preferences_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/NotificationPrefOut'
+                type: array
+                title: Response Get Notification Prefs Api Notification Preferences Get
+    put:
+      summary: Update Notification Prefs
+      description: Batch-update the current user's notification preferences.
+      operationId: update_notification_prefs_api_notification_preferences_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              items:
+                $ref: '#/components/schemas/NotificationPrefUpdate'
+              type: array
+              title: Updates
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/NotificationPrefOut'
+                type: array
+                title: Response Update Notification Prefs Api Notification Preferences Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/notification-preferences/email-status:
+    get:
+      summary: Email Notification Status
+      description: Check if email notifications are globally enabled.
+      operationId: email_notification_status_api_notification_preferences_email_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/device-events:
+    get:
+      summary: List Device Events
+      description: List device events visible to the current user, newest first.
+      operationId: list_device_events_api_device_events_get
+      parameters:
+      - name: device_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Device Id
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Type
+      - name: group_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceEventOut'
+                title: Response List Device Events Api Device Events Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/device-events/count:
+    get:
+      summary: Device Event Count
+      description: Return total event count (for pagination / dashboards).
+      operationId: device_event_count_api_device_events_count_get
+      parameters:
+      - name: device_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Device Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/users/me:
+    get:
+      summary: Get My Profile
+      description: Return the current user's profile and permissions.
+      operationId: get_my_profile_api_users_me_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserMe'
+  /api/users/me/password:
+    post:
+      summary: Change My Password
+      description: Change the current user's own password.
+      operationId: change_my_password_api_users_me_password_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChange'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/users:
+    get:
+      summary: List Users
+      operationId: list_users_api_users_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/UserRead'
+                type: array
+                title: Response List Users Api Users Get
+    post:
+      summary: Create User
+      operationId: create_user_api_users_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/users/{user_id}:
+    get:
+      summary: Get User
+      operationId: get_user_api_users__user_id__get
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Update User
+      operationId: update_user_api_users__user_id__patch
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
-              type: object
-              required: [current_password, new_password]
-              properties:
-                current_password:
-                  type: string
-                new_password:
-                  type: string
+              $ref: '#/components/schemas/UserUpdate'
       responses:
-        "303":
-          description: Redirect to settings page.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /settings/timezone:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete User
+      operationId: delete_user_api_users__user_id__delete
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/users/{user_id}/resend-invite:
     post:
-      tags: [settings]
-      summary: Set CMS timezone
-      operationId: setTimezone
+      summary: Resend Invite
+      description: Resend the activation email for a user who hasn't completed setup.
+      operationId: resend_invite_api_users__user_id__resend_invite_post
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/roles:
+    get:
+      summary: List Roles
+      operationId: list_roles_api_roles_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/RoleRead'
+                type: array
+                title: Response List Roles Api Roles Get
+    post:
+      summary: Create Role
+      operationId: create_role_api_roles_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/roles/{role_id}:
+    get:
+      summary: Get Role
+      operationId: get_role_api_roles__role_id__get
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Role Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Update Role
+      operationId: update_role_api_roles__role_id__patch
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Role Id
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
-              type: object
-              required: [timezone]
-              properties:
-                timezone:
-                  type: string
-                  example: America/New_York
+              $ref: '#/components/schemas/RoleUpdate'
       responses:
-        "303":
-          description: Redirect to settings page.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Role
+      operationId: delete_role_api_roles__role_id__delete
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Role Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/roles/permissions/catalogue:
+    get:
+      summary: Permission Catalogue
+      description: Return the full list of valid permissions for UI dropdowns.
+      operationId: permission_catalogue_api_roles_permissions_catalogue_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/streams/probe:
+    get:
+      summary: Probe Stream
+      description: Probe a stream URL and return metadata (live/vod, resolution, codecs, etc.).
+      operationId: probe_stream_api_streams_probe_get
+      parameters:
+      - name: url
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Url
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/issues/report/config:
+    get:
+      summary: Report Config
+      description: |-
+        Tell the UI whether the report-issue feature is enabled.
 
+        The button is rendered server-side via a template flag, but this
+        endpoint is useful for diagnostics and lets the modal guard the
+        submit if the token is removed mid-session.
+      operationId: report_config_api_issues_report_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Report Config Api Issues Report Config Get
+  /api/issues/report:
+    post:
+      summary: Report Issue
+      operationId: report_issue_api_issues_report_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportIssueRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportIssueResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/fleets:
+    get:
+      summary: List Fleets
+      description: |-
+        Return the fleet IDs this CMS can register devices for.
+
+        Source of truth is the ``fleets`` table (see
+        :mod:`cms.services.fleet_registry`). Secrets themselves are
+        never returned.
+      operationId: list_fleets_api_imager_fleets_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/FleetOut'
+                type: array
+                title: Response List Fleets Api Imager Fleets Get
+    post:
+      summary: Create Fleet Endpoint
+      description: |-
+        Create a new fleet.
+
+        The HMAC secret is server-generated (32 bytes from
+        ``secrets.token_bytes``) and is **never** returned by this or
+        any other endpoint -- once the row is written, only freshly-built
+        images carry it. To replace the secret, delete the fleet and
+        re-create it.
+
+        Returns 409 if an active fleet with the given ``fleet_id``
+        already exists.
+      operationId: create_fleet_endpoint_api_imager_fleets_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetCreateBody'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/fleets/{fleet_id}:
+    delete:
+      summary: Delete Fleet Endpoint
+      description: |-
+        Soft-delete a fleet.
+
+        Idempotent: returns 204 even if the fleet was already gone (the
+        UI's "Delete" button shouldn't 404 on a stale list view).
+
+        The row is soft-deleted (``deleted_at`` set) so existing
+        ``provisioned_images.fleet_id`` audit values still resolve to a
+        name in history views. Already-flashed Pis using this fleet's
+        HMAC will be rejected with 401 from /register on next attempt.
+      operationId: delete_fleet_endpoint_api_imager_fleets__fleet_id__delete
+      parameters:
+      - name: fleet_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Fleet Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/settings:
+    get:
+      summary: Get Imager Settings
+      description: |-
+        Return the current imager runtime settings.
+
+        Always 200; ``catalog_url`` may be ``None`` when unset, which the
+        UI uses to disable the "Import from catalog" button.
+      operationId: get_imager_settings_api_imager_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImagerSettingsOut'
+    put:
+      summary: Update Imager Settings
+      description: |-
+        Set the imager catalog URL.
+
+        Validates that the URL is https and the host is in
+        ``BASE_IMAGE_ALLOWED_HOSTS``.  Audited.
+      operationId: update_imager_settings_api_imager_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImagerSettingsUpdateBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImagerSettingsOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/catalog:
+    get:
+      summary: Get Catalog
+      description: |-
+        Live-fetch and parse the upstream catalog manifest.
+
+        Side-effect-free; intended for the UI to populate the
+        "import a new base image" picker without writing anything to DB.
+      operationId: get_catalog_api_imager_catalog_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogOut'
+  /api/imager/base-images:
+    get:
+      summary: List Base Images
+      description: List cached base images, newest first.
+      operationId: list_base_images_api_imager_base_images_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/BaseImageOut'
+                type: array
+                title: Response List Base Images Api Imager Base Images Get
+    post:
+      summary: Import Base Image
+      description: |-
+        Resolve ``(variant, version)`` against the catalog and enqueue an import.
+
+        Behaviour matrix on the unique ``(variant, version)`` constraint:
+
+        * No existing row → create + enqueue.
+        * Existing READY → return existing row, do nothing.
+        * Existing IMPORTING → return existing row, do nothing.
+        * Existing FAILED → reset to IMPORTING, restamp catalog
+          coordinates, re-enqueue.
+      operationId: import_base_image_api_imager_base_images_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BaseImageImportBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseImageOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/base-images/{base_image_id}:
+    delete:
+      summary: Delete Base Image
+      description: |-
+        Delete a cached base image (DB row + tenant blob).
+
+        Built ``.img.xz`` artifacts are fully self-contained -- the imager
+        pipeline embeds the OS into a fresh blob -- so removing a cached
+        base image cannot break any existing build.  The
+        ``provisioned_images.base_image_id`` FK is ``ON DELETE SET NULL``
+        (with denormalized ``base_variant`` / ``base_version`` snapshot
+        columns preserving the audit trail), so we can drop the row
+        unconditionally here.
+      operationId: delete_base_image_api_imager_base_images__base_image_id__delete
+      parameters:
+      - name: base_image_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Base Image Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/build:
+    post:
+      summary: Build Provisioned Image
+      description: |-
+        Enqueue an ``IMAGE_PROVISION`` job and return the job handle.
+
+        Validates that:
+
+        * ``output_name`` is a safe ``.img.xz`` basename;
+        * ``fleet_id`` is configured on this CMS (resolves to a secret);
+        * ``base_image_id`` exists and is READY;
+        * a CMS public base URL is configured (the firmware needs an
+          absolute URL to call ``/api/devices/register``).
+      operationId: build_provisioned_image_api_imager_build_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatusOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/provisioned-images:
+    get:
+      summary: List Provisioned Images
+      description: |-
+        List built ``.img.xz`` artifacts (newest first, capped at 200).
+
+        The UI surfaces this as the "Built images" section on the Imager
+        tab so admins can re-download or clean up artifacts long after
+        the build job poller has exited.  ``download_job_id`` is the FK
+        the existing ``/api/imager/download/{job_id}`` redirect needs --
+        it mints a fresh SAS on every hit so SAS lifetime is never an
+        operator-visible concern.
+      operationId: list_provisioned_images_api_imager_provisioned_images_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ProvisionedImageOut'
+                type: array
+                title: Response List Provisioned Images Api Imager Provisioned Images Get
+  /api/imager/provisioned-images/{provisioned_image_id}:
+    delete:
+      summary: Delete Provisioned Image
+      description: |-
+        Delete a built image (DB row + blob).
+
+        Audited.  Idempotent against blob storage: a missing blob is a
+        no-op (the lifecycle policy or a prior delete may have already
+        cleaned it up).
+      operationId: delete_provisioned_image_api_imager_provisioned_images__provisioned_image_id__delete
+      parameters:
+      - name: provisioned_image_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Provisioned Image Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/jobs/{job_id}:
+    get:
+      summary: Get Job Status
+      description: |-
+        Return the status of an imager job.
+
+        Filtered to imager job types so this endpoint cannot be used to
+        peek at unrelated CMS jobs (transcode, capture, etc.).
+      operationId: get_job_status_api_imager_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatusOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/download/{job_id}:
+    get:
+      summary: Download Provisioned
+      description: |-
+        Return a 302 to a fresh SAS URL for the provisioned image.
+
+        Audited.  404s when the job is unknown, not an ``IMAGE_PROVISION``,
+        not yet succeeded, or whose row is no longer ``READY`` (e.g. the
+        24 h Azure lifecycle policy has expired the blob and the row is
+        now ``EXPIRED``).
+      operationId: download_provisioned_api_imager_download__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/download-url/{job_id}:
+    get:
+      summary: Download Url Provisioned
+      description: |-
+        Return a fresh SAS download URL for the provisioned image as JSON.
+
+        Backs the built-images table's "Copy download link" kebab action
+        so an operator can paste the URL into ``wget`` / ``curl`` from a
+        Linux shell without going through the browser's redirect chain.
+
+        Applies the same validation, blob-existence check, and SAS TTL
+        as :func:`download_provisioned`.  Audited as ``imager.copy_link``
+        so this is distinguishable from a normal browser download in the
+        audit trail.
+      operationId: download_url_provisioned_api_imager_download_url__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadUrlOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /healthz:
+    get:
+      tags:
+      - system
+      summary: Healthz
+      description: Lightweight liveness probe — verifies the app can reach the database.
+      operationId: healthz_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /healthz/system:
+    get:
+      tags:
+      - system
+      summary: Healthz System
+      description: |-
+        Unauthenticated aggregated health probe for post-deploy smoke tests.
+
+        Returns boolean status for each subsystem (db, mcp, smtp) plus the
+        deployed version, without exposing any sensitive configuration.  Intended
+        for CI/monitoring callers that cannot authenticate.  The authenticated
+        UI equivalent ``/api/system/health`` returns richer detail for humans.
+      operationId: healthz_system_healthz_system_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
 components:
+  schemas:
+    APIKeyCreate:
+      properties:
+        name:
+          type: string
+          title: Name
+        key_type:
+          type: string
+          title: Key Type
+          default: api
+      type: object
+      required:
+      - name
+      title: APIKeyCreate
+    APIKeyCreated:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        key_prefix:
+          type: string
+          title: Key Prefix
+        key_type:
+          type: string
+          title: Key Type
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        user_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Display Name
+        key:
+          type: string
+          title: Key
+      type: object
+      required:
+      - id
+      - name
+      - key_prefix
+      - key_type
+      - created_at
+      - last_used_at
+      - key
+      title: APIKeyCreated
+      description: Returned only on creation/regeneration — includes the full key (shown once).
+    APIKeyOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        key_prefix:
+          type: string
+          title: Key Prefix
+        key_type:
+          type: string
+          title: Key Type
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        user_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Display Name
+      type: object
+      required:
+      - id
+      - name
+      - key_prefix
+      - key_type
+      - created_at
+      - last_used_at
+      title: APIKeyOut
+    AdoptPendingRequest:
+      properties:
+        pending_id:
+          type: string
+          minLength: 1
+          title: Pending Id
+        name:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Name
+        location:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Location
+        group_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Id
+        profile_id:
+          type: string
+          minLength: 1
+          title: Profile Id
+      type: object
+      required:
+      - pending_id
+      - profile_id
+      title: AdoptPendingRequest
+      description: |-
+        Request body for ``POST /api/devices/adopt-pending``.
+
+        Identifies the pending row by its primary key rather than the
+        pairing secret, so the admin never has to see or type the secret.
+    AdoptRequest:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        profile_id:
+          type: string
+          format: uuid
+          title: Profile Id
+      type: object
+      required:
+      - profile_id
+      title: AdoptRequest
+    AssetOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        filename:
+          type: string
+          title: Filename
+        original_filename:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Original Filename
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
+        size_bytes:
+          type: integer
+          title: Size Bytes
+        checksum:
+          type: string
+          title: Checksum
+        duration_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Duration Seconds
+        uploaded_at:
+          type: string
+          format: date-time
+          title: Uploaded At
+        is_global:
+          type: boolean
+          title: Is Global
+          default: false
+        uploaded_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Uploaded By User Id
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        capture_duration:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Capture Duration
+      type: object
+      required:
+      - id
+      - filename
+      - asset_type
+      - size_bytes
+      - checksum
+      - uploaded_at
+      title: AssetOut
+    AssetType:
+      type: string
+      enum:
+      - video
+      - image
+      - webpage
+      - stream
+      - saved_stream
+      - slideshow
+      title: AssetType
+    AuditLogRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        action:
+          type: string
+          title: Action
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        resource_type:
+          type: string
+          title: Resource Type
+        resource_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resource Id
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        ip_address:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ip Address
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - action
+      - resource_type
+      - created_at
+      title: AuditLogRead
+    BaseImageImportBody:
+      properties:
+        variant:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Variant
+        version:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Version
+      type: object
+      required:
+      - variant
+      - version
+      title: BaseImageImportBody
+    BaseImageOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        variant:
+          type: string
+          title: Variant
+        version:
+          type: string
+          title: Version
+        sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sha256
+        blob_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Blob Path
+        size_bytes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size Bytes
+        status:
+          type: string
+          title: Status
+        error_message:
+          type: string
+          title: Error Message
+        is_default:
+          type: boolean
+          title: Is Default
+        imported_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Imported At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        progress_stage:
+          type: string
+          title: Progress Stage
+          default: ''
+        progress_pct:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Progress Pct
+      type: object
+      required:
+      - id
+      - variant
+      - version
+      - sha256
+      - blob_path
+      - size_bytes
+      - status
+      - error_message
+      - is_default
+      - imported_at
+      - created_at
+      title: BaseImageOut
+    Body_upload_asset_api_assets_upload_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+      type: object
+      required:
+      - file
+      title: Body_upload_asset_api_assets_upload_post
+    BootstrapAdoptRequest:
+      properties:
+        pairing_secret:
+          type: string
+          maxLength: 128
+          minLength: 8
+          title: Pairing Secret
+        name:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Name
+        location:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Location
+        group_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Id
+        profile_id:
+          type: string
+          minLength: 1
+          title: Profile Id
+      type: object
+      required:
+      - pairing_secret
+      - profile_id
+      title: BootstrapAdoptRequest
+    BootstrapAdoptResponse:
+      properties:
+        device_id:
+          type: string
+          title: Device Id
+        status:
+          type: string
+          title: Status
+          default: adopted
+      type: object
+      required:
+      - device_id
+      title: BootstrapAdoptResponse
+    BootstrapStatusResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        payload:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - status
+      title: BootstrapStatusResponse
+    BuildBody:
+      properties:
+        base_image_id:
+          type: string
+          format: uuid
+          title: Base Image Id
+        fleet_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Fleet Id
+        output_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Output Name
+        wifi_ssid:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Wifi Ssid
+        wifi_psk:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 8
+          - type: 'null'
+          title: Wifi Psk
+      type: object
+      required:
+      - base_image_id
+      - fleet_id
+      - output_name
+      title: BuildBody
+    CatalogEntryOut:
+      properties:
+        variant:
+          type: string
+          title: Variant
+        url:
+          type: string
+          title: Url
+        sha256:
+          type: string
+          title: Sha256
+        size_bytes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size Bytes
+      type: object
+      required:
+      - variant
+      - url
+      - sha256
+      title: CatalogEntryOut
+    CatalogOut:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        entries:
+          items:
+            $ref: '#/components/schemas/CatalogEntryOut'
+          type: array
+          title: Entries
+      type: object
+      required:
+      - entries
+      title: CatalogOut
+    ConnectTokenRequest:
+      properties:
+        device_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Device Id
+        timestamp:
+          type: integer
+          title: Timestamp
+        nonce:
+          type: string
+          maxLength: 128
+          minLength: 32
+          pattern: ^[0-9a-fA-F]+$
+          title: Nonce
+        signature:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Signature
+      type: object
+      required:
+      - device_id
+      - timestamp
+      - nonce
+      - signature
+      title: ConnectTokenRequest
+    ConnectTokenResponse:
+      properties:
+        wps_jwt:
+          type: string
+          title: Wps Jwt
+        wps_url:
+          type: string
+          title: Wps Url
+        expires_at:
+          type: string
+          title: Expires At
+      type: object
+      required:
+      - wps_jwt
+      - wps_url
+      - expires_at
+      title: ConnectTokenResponse
+    CreateLogRequest:
+      properties:
+        device_id:
+          type: string
+          title: Device Id
+        services:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Services
+        since:
+          type: string
+          title: Since
+          default: 24h
+      type: object
+      required:
+      - device_id
+      title: CreateLogRequest
+    DeviceEventOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        device_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Device Id
+        device_name:
+          type: string
+          title: Device Name
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        group_name:
+          type: string
+          title: Group Name
+          default: ''
+        event_type:
+          type: string
+          title: Event Type
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - device_name
+      - event_type
+      - created_at
+      title: DeviceEventOut
+    DeviceGroupCreate:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+          default: ''
+        default_asset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Default Asset Id
+      type: object
+      required:
+      - name
+      title: DeviceGroupCreate
+    DeviceGroupOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        default_asset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Default Asset Id
+        device_count:
+          type: integer
+          title: Device Count
+          default: 0
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - name
+      - description
+      - created_at
+      title: DeviceGroupOut
+    DeviceGroupUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        default_asset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Default Asset Id
+      type: object
+      title: DeviceGroupUpdate
+    DeviceOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        location:
+          type: string
+          title: Location
+          default: ''
+        status:
+          $ref: '#/components/schemas/DeviceStatus'
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        group_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Name
+        default_asset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Default Asset Id
+        timezone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Timezone
+        firmware_version:
+          type: string
+          title: Firmware Version
+        os_version:
+          type: string
+          title: Os Version
+          default: ''
+        device_type:
+          type: string
+          title: Device Type
+          default: ''
+        supported_codecs:
+          type: string
+          title: Supported Codecs
+          default: ''
+        storage_capacity_mb:
+          type: integer
+          title: Storage Capacity Mb
+        storage_used_mb:
+          type: integer
+          title: Storage Used Mb
+        last_seen:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Seen
+        registered_at:
+          type: string
+          format: date-time
+          title: Registered At
+        is_online:
+          type: boolean
+          title: Is Online
+          default: false
+        is_upgrading:
+          type: boolean
+          title: Is Upgrading
+          default: false
+        ota_phase:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ota Phase
+        ota_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ota Label
+        ota_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Ota Pct
+        ota_bytes_done:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Ota Bytes Done
+        ota_bytes_total:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Ota Bytes Total
+        playback_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Playback Mode
+        playback_asset:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Playback Asset
+        pipeline_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pipeline State
+        display_connected:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Display Connected
+        display_ports:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Display Ports
+        has_active_schedule:
+          type: boolean
+          title: Has Active Schedule
+          default: false
+        cpu_temp_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cpu Temp C
+        ip_address:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ip Address
+        ssh_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Ssh Enabled
+        local_api_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Local Api Enabled
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        update_available:
+          type: boolean
+          title: Update Available
+          default: false
+        uptime_seconds:
+          type: integer
+          title: Uptime Seconds
+          default: 0
+      type: object
+      required:
+      - id
+      - name
+      - status
+      - firmware_version
+      - storage_capacity_mb
+      - storage_used_mb
+      - registered_at
+      title: DeviceOut
+    DeviceStatus:
+      type: string
+      enum:
+      - pending
+      - adopted
+      - orphaned
+      title: DeviceStatus
+    DeviceUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/DeviceStatus'
+          - type: 'null'
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        default_asset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Default Asset Id
+        profile_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Profile Id
+        timezone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Timezone
+      type: object
+      title: DeviceUpdate
+    DownloadUrlOut:
+      properties:
+        url:
+          type: string
+          title: Url
+      type: object
+      required:
+      - url
+      title: DownloadUrlOut
+      description: Response body for :http:get:`/api/imager/download-url/{job_id}`.
+    FleetCreateBody:
+      properties:
+        fleet_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Fleet Id
+        description:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Description
+      type: object
+      required:
+      - fleet_id
+      title: FleetCreateBody
+    FleetOut:
+      properties:
+        fleet_id:
+          type: string
+          title: Fleet Id
+      type: object
+      required:
+      - fleet_id
+      title: FleetOut
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ImagerSettingsOut:
+      properties:
+        catalog_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Catalog Url
+      type: object
+      title: ImagerSettingsOut
+      description: |-
+        Imager runtime settings exposed over the API.
+
+        ``catalog_url`` is ``None`` when no catalog URL has been
+        configured -- the UI uses this to disable the "Import from
+        catalog" button and show an admin-targeted prompt to configure it.
+    ImagerSettingsUpdateBody:
+      properties:
+        catalog_url:
+          type: string
+          maxLength: 2048
+          minLength: 1
+          title: Catalog Url
+      type: object
+      required:
+      - catalog_url
+      title: ImagerSettingsUpdateBody
+    JobStatusOut:
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          title: Job Id
+        type:
+          type: string
+          title: Type
+        status:
+          type: string
+          title: Status
+        target_id:
+          type: string
+          format: uuid
+          title: Target Id
+        error_message:
+          type: string
+          title: Error Message
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+        progress_stage:
+          type: string
+          title: Progress Stage
+          default: ''
+        progress_pct:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Progress Pct
+        download_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Download Url
+        output_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output Name
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - job_id
+      - type
+      - status
+      - target_id
+      - error_message
+      - created_at
+      - completed_at
+      title: JobStatusOut
+    NotificationCount:
+      properties:
+        unread:
+          type: integer
+          title: Unread
+      type: object
+      required:
+      - unread
+      title: NotificationCount
+    NotificationOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        scope:
+          type: string
+          title: Scope
+        level:
+          type: string
+          title: Level
+        title:
+          type: string
+          title: Title
+        message:
+          type: string
+          title: Message
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        read_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Read At
+      type: object
+      required:
+      - id
+      - scope
+      - level
+      - title
+      - message
+      - created_at
+      title: NotificationOut
+    NotificationPrefOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        event_type:
+          type: string
+          title: Event Type
+        email_enabled:
+          type: boolean
+          title: Email Enabled
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - user_id
+      - event_type
+      - email_enabled
+      - created_at
+      title: NotificationPrefOut
+    NotificationPrefUpdate:
+      properties:
+        event_type:
+          type: string
+          title: Event Type
+        email_enabled:
+          type: boolean
+          title: Email Enabled
+      type: object
+      required:
+      - event_type
+      - email_enabled
+      title: NotificationPrefUpdate
+    PasswordChange:
+      properties:
+        current_password:
+          type: string
+          title: Current Password
+        new_password:
+          type: string
+          minLength: 6
+          title: New Password
+      type: object
+      required:
+      - current_password
+      - new_password
+      title: PasswordChange
+    PendingDeviceSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        device_id:
+          type: string
+          title: Device Id
+        pubkey:
+          type: string
+          title: Pubkey
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+        ip_address:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ip Address
+        created_at:
+          type: string
+          title: Created At
+        polled_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Polled At
+        has_polled:
+          type: boolean
+          title: Has Polled
+          default: false
+      type: object
+      required:
+      - id
+      - device_id
+      - pubkey
+      - created_at
+      title: PendingDeviceSummary
+      description: |-
+        One row of the pending-devices list surfaced to admins.
+
+        Excludes ``pairing_secret_hash`` and ``outbox_ciphertext`` — those
+        are on-wire secrets the admin has no reason to see.  ``pubkey`` is
+        returned in full-string form but the UI only renders a short
+        fingerprint; full value is handy for support/debugging.
+    PendingDevicesResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/PendingDeviceSummary'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: PendingDevicesResponse
+    ProfileCreate:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+          default: ''
+        video_codec:
+          type: string
+          title: Video Codec
+          default: h264
+        video_profile:
+          type: string
+          title: Video Profile
+          default: main
+        max_width:
+          type: integer
+          title: Max Width
+          default: 1920
+        max_height:
+          type: integer
+          title: Max Height
+          default: 1080
+        max_fps:
+          type: integer
+          title: Max Fps
+          default: 30
+        video_bitrate:
+          type: string
+          title: Video Bitrate
+          default: ''
+        crf:
+          type: integer
+          title: Crf
+          default: 23
+        pixel_format:
+          type: string
+          title: Pixel Format
+          default: auto
+        color_space:
+          type: string
+          title: Color Space
+          default: auto
+        audio_codec:
+          type: string
+          title: Audio Codec
+          default: aac
+        audio_bitrate:
+          type: string
+          title: Audio Bitrate
+          default: 128k
+      type: object
+      required:
+      - name
+      title: ProfileCreate
+    ProfileOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        video_codec:
+          type: string
+          title: Video Codec
+        video_profile:
+          type: string
+          title: Video Profile
+        max_width:
+          type: integer
+          title: Max Width
+        max_height:
+          type: integer
+          title: Max Height
+        max_fps:
+          type: integer
+          title: Max Fps
+        video_bitrate:
+          type: string
+          title: Video Bitrate
+        crf:
+          type: integer
+          title: Crf
+        pixel_format:
+          type: string
+          title: Pixel Format
+        color_space:
+          type: string
+          title: Color Space
+        audio_codec:
+          type: string
+          title: Audio Codec
+        audio_bitrate:
+          type: string
+          title: Audio Bitrate
+        builtin:
+          type: boolean
+          title: Builtin
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        device_count:
+          type: integer
+          title: Device Count
+          default: 0
+        total_variants:
+          type: integer
+          title: Total Variants
+          default: 0
+        ready_variants:
+          type: integer
+          title: Ready Variants
+          default: 0
+        matches_defaults:
+          type: boolean
+          title: Matches Defaults
+          default: false
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - name
+      - description
+      - video_codec
+      - video_profile
+      - max_width
+      - max_height
+      - max_fps
+      - video_bitrate
+      - crf
+      - pixel_format
+      - color_space
+      - audio_codec
+      - audio_bitrate
+      - builtin
+      - created_at
+      title: ProfileOut
+    ProfileUpdate:
+      properties:
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        video_codec:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Video Codec
+        video_profile:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Video Profile
+        max_width:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Width
+        max_height:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Height
+        max_fps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Fps
+        video_bitrate:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Video Bitrate
+        crf:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Crf
+        pixel_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pixel Format
+        color_space:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color Space
+        audio_codec:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Audio Codec
+        audio_bitrate:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Audio Bitrate
+      type: object
+      title: ProfileUpdate
+    ProvisionedImageOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        output_name:
+          type: string
+          title: Output Name
+        fleet_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fleet Id
+        base_image_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Base Image Id
+        base_variant:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Variant
+        base_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Version
+        status:
+          type: string
+          title: Status
+        blob_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Blob Path
+        output_size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Output Size
+        download_job_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Download Job Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        built_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Built At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        wifi_ssid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Wifi Ssid
+        wifi_psk:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Wifi Psk
+        progress_stage:
+          type: string
+          title: Progress Stage
+          default: ''
+        progress_pct:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Progress Pct
+      type: object
+      required:
+      - id
+      - output_name
+      - fleet_id
+      - base_image_id
+      - base_variant
+      - base_version
+      - status
+      - blob_path
+      - output_size
+      - download_job_id
+      - created_at
+      - built_at
+      - expires_at
+      title: ProvisionedImageOut
+      description: |-
+        Read model for the built-images list view.
+
+        ``base_image_id`` may be ``None`` if the cached base was deleted
+        after this build was produced -- the denormalized ``base_variant``
+        and ``base_version`` snapshot columns preserve the audit trail.
+
+        ``download_job_id`` lets the UI build the link to
+        ``/api/imager/download/{job_id}`` (which 302s to a freshly-minted
+        SAS URL on each click -- the SAS embedded at build time is not
+        used).  ``None`` only for legacy rows pre-dating the
+        ``provisioning_job_id`` column; UI should disable Download.
+
+        ``wifi_ssid`` / ``wifi_psk`` are the cleartext WiFi creds baked
+        into the image, surfaced so the operator can recover them via the
+        Built Images tooltip.  Both ``None`` means the image carries no
+        wifi creds.
+    RegisterRequest:
+      properties:
+        device_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Device Id
+        pubkey:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Pubkey
+        pairing_secret_hash:
+          type: string
+          pattern: ^[0-9a-fA-F]{64}$
+          title: Pairing Secret Hash
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - device_id
+      - pubkey
+      - pairing_secret_hash
+      title: RegisterRequest
+    RegisterResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+          default: pending
+      type: object
+      title: RegisterResponse
+    ReportIssueRequest:
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+        description:
+          type: string
+          maxLength: 8000
+          minLength: 1
+          title: Description
+        page_url:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Page Url
+        user_agent:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: User Agent
+      type: object
+      required:
+      - title
+      - description
+      title: ReportIssueRequest
+    ReportIssueResponse:
+      properties:
+        ok:
+          type: boolean
+          title: Ok
+        number:
+          type: integer
+          title: Number
+        html_url:
+          type: string
+          title: Html Url
+      type: object
+      required:
+      - ok
+      - number
+      - html_url
+      title: ReportIssueResponse
+    RoleCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Name
+        description:
+          type: string
+          title: Description
+          default: ''
+        permissions:
+          items:
+            type: string
+          type: array
+          title: Permissions
+      type: object
+      required:
+      - name
+      title: RoleCreate
+    RoleRead:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Name
+        description:
+          type: string
+          title: Description
+          default: ''
+        permissions:
+          items:
+            type: string
+          type: array
+          title: Permissions
+        id:
+          type: string
+          format: uuid
+          title: Id
+        is_builtin:
+          type: boolean
+          title: Is Builtin
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - name
+      - id
+      - is_builtin
+      - created_at
+      - updated_at
+      title: RoleRead
+    RoleUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 100
+            minLength: 1
+          - type: 'null'
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        permissions:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Permissions
+      type: object
+      title: RoleUpdate
+    ScheduleCreate:
+      properties:
+        name:
+          type: string
+          title: Name
+        group_id:
+          type: string
+          format: uuid
+          title: Group Id
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        start_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+        end_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+        start_time:
+          type: string
+          format: time
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: time
+          - type: 'null'
+          title: End Time
+        days_of_week:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          title: Days Of Week
+        priority:
+          type: integer
+          title: Priority
+          default: 0
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        loop_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Loop Count
+      type: object
+      required:
+      - name
+      - group_id
+      - asset_id
+      - start_time
+      title: ScheduleCreate
+    ScheduleOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        group_id:
+          type: string
+          format: uuid
+          title: Group Id
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        asset_filename:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Filename
+        group_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Name
+        start_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+        end_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+        start_time:
+          type: string
+          format: time
+          title: Start Time
+        end_time:
+          type: string
+          format: time
+          title: End Time
+        days_of_week:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          title: Days Of Week
+        priority:
+          type: integer
+          title: Priority
+        enabled:
+          type: boolean
+          title: Enabled
+        loop_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Loop Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - name
+      - group_id
+      - asset_id
+      - start_time
+      - end_time
+      - priority
+      - enabled
+      - created_at
+      title: ScheduleOut
+    ScheduleUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        asset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Asset Id
+        start_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+        end_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+        start_time:
+          anyOf:
+          - type: string
+            format: time
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: time
+          - type: 'null'
+          title: End Time
+        days_of_week:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          title: Days Of Week
+        priority:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Priority
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+        loop_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Loop Count
+      type: object
+      title: ScheduleUpdate
+    SetPasswordRequest:
+      properties:
+        password:
+          type: string
+          title: Password
+      type: object
+      required:
+      - password
+      title: SetPasswordRequest
+    ToggleRequest:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: ToggleRequest
+    UserCreate:
+      properties:
+        email:
+          type: string
+          maxLength: 255
+          minLength: 3
+          title: Email
+        display_name:
+          type: string
+          title: Display Name
+          default: ''
+        password:
+          anyOf:
+          - type: string
+            minLength: 6
+          - type: 'null'
+          title: Password
+        role_id:
+          type: string
+          format: uuid
+          title: Role Id
+        group_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Group Ids
+      type: object
+      required:
+      - email
+      - role_id
+      title: UserCreate
+    UserMe:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        email:
+          type: string
+          title: Email
+        display_name:
+          type: string
+          title: Display Name
+        role:
+          $ref: '#/components/schemas/RoleRead'
+        group_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Group Ids
+        permissions:
+          items:
+            type: string
+          type: array
+          title: Permissions
+      type: object
+      required:
+      - id
+      - email
+      - display_name
+      - role
+      title: UserMe
+      description: Lightweight profile for the currently authenticated user.
+    UserRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        email:
+          type: string
+          title: Email
+        display_name:
+          type: string
+          title: Display Name
+        role_id:
+          type: string
+          format: uuid
+          title: Role Id
+        role:
+          anyOf:
+          - $ref: '#/components/schemas/RoleRead'
+          - type: 'null'
+        is_active:
+          type: boolean
+          title: Is Active
+        must_change_password:
+          type: boolean
+          title: Must Change Password
+          default: false
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        last_login_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Login At
+        group_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Group Ids
+      type: object
+      required:
+      - id
+      - email
+      - display_name
+      - role_id
+      - is_active
+      - created_at
+      - updated_at
+      title: UserRead
+    UserUpdate:
+      properties:
+        email:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 3
+          - type: 'null'
+          title: Email
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        password:
+          anyOf:
+          - type: string
+            minLength: 6
+          - type: 'null'
+          title: Password
+        role_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Role Id
+        is_active:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Active
+        must_change_password:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Must Change Password
+        group_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Group Ids
+      type: object
+      title: UserUpdate
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
   securitySchemes:
     sessionCookie:
       type: apiKey
       in: cookie
-      name: agora_cms_session
-      description: Signed session cookie (set after web login).
-
-  parameters:
-    DeviceId:
-      name: device_id
-      in: path
-      required: true
-      schema:
-        type: string
-      description: Device identifier (CPU serial or UUID).
-    AssetId:
-      name: asset_id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-    ScheduleId:
-      name: schedule_id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-
-  responses:
-    Unauthorized:
-      description: Authentication required.
-
-  schemas:
-    OkResponse:
-      type: object
-      properties:
-        ok:
-          type: boolean
-          example: true
-
-    DeviceStatus:
-      type: string
-      enum: [pending, adopted, orphaned]
-
-    AssetType:
-      type: string
-      enum: [video, image]
-
-    VariantStatus:
-      type: string
-      enum: [pending, processing, ready, failed]
-
-    DeviceOut:
-      type: object
-      properties:
-        id:
-          type: string
-        name:
-          type: string
-        status:
-          $ref: "#/components/schemas/DeviceStatus"
-        group_id:
-          type: string
-          format: uuid
-          nullable: true
-        group_name:
-          type: string
-          nullable: true
-        default_asset_id:
-          type: string
-          format: uuid
-          nullable: true
-        firmware_version:
-          type: string
-        device_type:
-          type: string
-        storage_capacity_mb:
-          type: integer
-        storage_used_mb:
-          type: integer
-        last_seen:
-          type: string
-          format: date-time
-          nullable: true
-        registered_at:
-          type: string
-          format: date-time
-
-    DeviceUpdate:
-      type: object
-      properties:
-        name:
-          type: string
-        status:
-          $ref: "#/components/schemas/DeviceStatus"
-        group_id:
-          type: string
-          format: uuid
-          nullable: true
-        default_asset_id:
-          type: string
-          format: uuid
-          nullable: true
-
-    DeviceGroupOut:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        description:
-          type: string
-        default_asset_id:
-          type: string
-          format: uuid
-          nullable: true
-        device_count:
-          type: integer
-        created_at:
-          type: string
-          format: date-time
-
-    DeviceGroupCreate:
-      type: object
-      required: [name]
-      properties:
-        name:
-          type: string
-        description:
-          type: string
-          default: ""
-        default_asset_id:
-          type: string
-          format: uuid
-          nullable: true
-
-    DeviceGroupUpdate:
-      type: object
-      properties:
-        name:
-          type: string
-        description:
-          type: string
-        default_asset_id:
-          type: string
-          format: uuid
-          nullable: true
-
-    AssetOut:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        filename:
-          type: string
-        original_filename:
-          type: string
-          nullable: true
-        asset_type:
-          $ref: "#/components/schemas/AssetType"
-        size_bytes:
-          type: integer
-        checksum:
-          type: string
-        uploaded_at:
-          type: string
-          format: date-time
-
-    AssetVariantOut:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        profile_id:
-          type: string
-          format: uuid
-        profile_name:
-          type: string
-        filename:
-          type: string
-        size_bytes:
-          type: integer
-        checksum:
-          type: string
-        status:
-          $ref: "#/components/schemas/VariantStatus"
-        progress:
-          type: number
-          format: float
-        error_message:
-          type: string
-        created_at:
-          type: string
-          format: date-time
-        completed_at:
-          type: string
-          format: date-time
-          nullable: true
-
-    AssetStatusResponse:
-      type: object
-      properties:
-        asset_count:
-          type: integer
-        variant_ready:
-          type: integer
-        variant_processing:
-          type: integer
-        variant_failed:
-          type: integer
-
-    ScheduleOut:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        device_id:
-          type: string
-          nullable: true
-        group_id:
-          type: string
-          format: uuid
-          nullable: true
-        asset_id:
-          type: string
-          format: uuid
-        asset_filename:
-          type: string
-          nullable: true
-        device_name:
-          type: string
-          nullable: true
-        group_name:
-          type: string
-          nullable: true
-        start_date:
-          type: string
-          format: date-time
-          nullable: true
-        end_date:
-          type: string
-          format: date-time
-          nullable: true
-        start_time:
-          type: string
-          format: time
-          example: "14:00"
-        end_time:
-          type: string
-          format: time
-          example: "16:00"
-        days_of_week:
-          type: array
-          items:
-            type: integer
-            minimum: 1
-            maximum: 7
-          nullable: true
-          description: ISO weekday numbers (1=Monday, 7=Sunday). Null means every day.
-        priority:
-          type: integer
-        enabled:
-          type: boolean
-        created_at:
-          type: string
-          format: date-time
-
-    ScheduleCreate:
-      type: object
-      required: [name, asset_id, start_time, end_time]
-      properties:
-        name:
-          type: string
-        device_id:
-          type: string
-          description: Target device (exactly one of device_id or group_id required).
-        group_id:
-          type: string
-          format: uuid
-          description: Target group (exactly one of device_id or group_id required).
-        asset_id:
-          type: string
-          format: uuid
-        start_date:
-          type: string
-          format: date-time
-          nullable: true
-        end_date:
-          type: string
-          format: date-time
-          nullable: true
-        start_time:
-          type: string
-          format: time
-          example: "14:00"
-        end_time:
-          type: string
-          format: time
-          example: "16:00"
-        days_of_week:
-          type: array
-          items:
-            type: integer
-            minimum: 1
-            maximum: 7
-          nullable: true
-        priority:
-          type: integer
-          default: 0
-        enabled:
-          type: boolean
-          default: true
-
-    ScheduleUpdate:
-      type: object
-      properties:
-        name:
-          type: string
-        device_id:
-          type: string
-        group_id:
-          type: string
-          format: uuid
-        asset_id:
-          type: string
-          format: uuid
-        start_date:
-          type: string
-          format: date-time
-          nullable: true
-        end_date:
-          type: string
-          format: date-time
-          nullable: true
-        start_time:
-          type: string
-          format: time
-        end_time:
-          type: string
-          format: time
-        days_of_week:
-          type: array
-          items:
-            type: integer
-          nullable: true
-        priority:
-          type: integer
-        enabled:
-          type: boolean
-
-    ProfileOut:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        description:
-          type: string
-        video_codec:
-          type: string
-        video_profile:
-          type: string
-        max_width:
-          type: integer
-        max_height:
-          type: integer
-        max_fps:
-          type: integer
-        video_bitrate:
-          type: string
-        crf:
-          type: integer
-        audio_codec:
-          type: string
-        audio_bitrate:
-          type: string
-        builtin:
-          type: boolean
-        device_count:
-          type: integer
-        total_variants:
-          type: integer
-        ready_variants:
-          type: integer
-        created_at:
-          type: string
-          format: date-time
-
-    ProfileCreate:
-      type: object
-      required: [name]
-      properties:
-        name:
-          type: string
-        description:
-          type: string
-          default: ""
-        video_codec:
-          type: string
-          default: h264
-        video_profile:
-          type: string
-          default: main
-        max_width:
-          type: integer
-          default: 1920
-        max_height:
-          type: integer
-          default: 1080
-        max_fps:
-          type: integer
-          default: 30
-        video_bitrate:
-          type: string
-          default: ""
-        crf:
-          type: integer
-          default: 23
-        audio_codec:
-          type: string
-          default: aac
-        audio_bitrate:
-          type: string
-          default: 128k
-
-    ProfileUpdate:
-      type: object
-      properties:
-        name:
-          type: string
-        description:
-          type: string
-        video_profile:
-          type: string
-        max_width:
-          type: integer
-        max_height:
-          type: integer
-        max_fps:
-          type: integer
-        video_bitrate:
-          type: string
-        crf:
-          type: integer
-        audio_codec:
-          type: string
-        audio_bitrate:
-          type: string
-
-    ProfileStatusResponse:
-      type: object
-      properties:
-        profiles:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-                format: uuid
-              total_variants:
-                type: integer
-              ready_variants:
-                type: integer
-        queue:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-                format: uuid
-              source_filename:
-                type: string
-              profile_name:
-                type: string
-              status:
-                $ref: "#/components/schemas/VariantStatus"
-              progress:
-                type: number
-                nullable: true
-              error_message:
-                type: string
-        queue_count:
-          type: integer
-
-    DashboardResponse:
-      type: object
-      properties:
-        now_playing:
-          type: object
-          description: Map of device_id to current playback info.
-        pending_ids:
-          type: array
-          items:
-            type: string
-        offline_ids:
-          type: array
-          items:
-            type: string
-        device_states:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              mode:
-                type: string
-              asset:
-                type: string
-                nullable: true
-        upcoming:
-          type: array
-          items:
-            type: object
-          description: Upcoming schedules in the next 24 hours.
+      name: session
+      description: Browser session cookie issued by POST /login.
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Static API key issued via /api/keys; used for device-originated and automation callers.
+servers:
+- url: http://localhost:8080
+  description: Local Docker Compose
+security:
+- sessionCookie: []
+tags:
+- name: bootstrap
+  description: First-contact registration / adoption endpoints used during device onboarding.
+- name: devices (device-originated)
+  description: Endpoints called by the device firmware itself.
+- name: system
+  description: Health checks and system endpoints.
