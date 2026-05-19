@@ -134,6 +134,7 @@ jobs:
       previous_mcp_revision: ${{ steps.revisions.outputs.previous_mcp_revision }}
       new_cms_revision: ${{ steps.revisions.outputs.new_cms_revision }}
       new_mcp_revision: ${{ steps.revisions.outputs.new_mcp_revision }}
+      skip_deploy: ${{ steps.preflight.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
 
@@ -206,7 +207,52 @@ jobs:
           echo "new_cms_revision=${CMS_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
           echo "new_mcp_revision=${MCP_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
 
+      # Idempotency guard. When two PRs merge to main back-to-back, each
+      # one's Smoke Test fires a separate Publish & Deploy run via the
+      # `workflow_run` trigger. Both runs read `cms/__init__.py` from
+      # whatever main looks like at checkout time, so they compute the
+      # same revision suffix. The second one to start would otherwise
+      # crash the `Deploy infrastructure` step with
+      #   Field 'template.revisionsuffix' is invalid with details:
+      #   'Invalid value: "v1-37-XXX": revision with suffix v1-37-XXX
+      #   already exists.'
+      # which surfaces as a deploy failure even though the version is
+      # already in prod (see #604). Probe ACA for the target revisions:
+      # if both apps already have them, the prior run already shipped
+      # this version end-to-end — exit clean and skip verify/bump-main.
+      - name: Preflight - skip if revision already deployed
+        id: preflight
+        run: |
+          set -uo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS='${{ steps.revisions.outputs.new_cms_revision }}'
+          NEW_MCP='${{ steps.revisions.outputs.new_mcp_revision }}'
+
+          CMS_EXISTS=0
+          MCP_EXISTS=0
+          if az containerapp revision show --name "$CMS_APP" --resource-group "$RG" --revision "$NEW_CMS" -o none 2>/dev/null; then
+            CMS_EXISTS=1
+          fi
+          if az containerapp revision show --name "$MCP_APP" --resource-group "$RG" --revision "$NEW_MCP" -o none 2>/dev/null; then
+            MCP_EXISTS=1
+          fi
+
+          # Only short-circuit if BOTH revisions exist. A half-deployed
+          # state (one revision present, the other missing) still needs
+          # bicep to run; the existing-revision side will fail loudly,
+          # which is the correct signal that something needs cleanup.
+          if [ "$CMS_EXISTS" = "1" ] && [ "$MCP_EXISTS" = "1" ]; then
+            echo "::notice::Revisions $NEW_CMS and $NEW_MCP already exist - assuming version ${{ needs.publish.outputs.version }} is already deployed. Skipping deploy + verify + bump-main."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "CMS_EXISTS=$CMS_EXISTS MCP_EXISTS=$MCP_EXISTS - proceeding with deploy."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy infrastructure
+        if: steps.preflight.outputs.skip != 'true'
         run: |
           CMS_REF='ghcr.io/sslivins/agora-cms@${{ needs.publish.outputs.cms_digest }}'
           MCP_REF='ghcr.io/sslivins/agora-cms-mcp@${{ needs.publish.outputs.mcp_digest }}'
@@ -237,7 +283,7 @@ jobs:
               cmsBaseUrlOverride='${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}'
 
       - name: Bind custom domains (if configured)
-        if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
+        if: steps.preflight.outputs.skip != 'true' && (vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != '')
         run: |
           ENV_NAME="${{ vars.INFRA_PREFIX }}-env"
           RG="${{ env.AZURE_RESOURCE_GROUP }}"
@@ -276,6 +322,12 @@ jobs:
 
   verify:
     needs: [publish, deploy]
+    # If preflight detected the revisions already exist, the prior run
+    # already shipped this version (including the traffic flip). Skip
+    # verify entirely - re-running Flip traffic when previous_revision
+    # == new_revision would fail, and Deactivate stale revisions would
+    # kill the real previous revision (rollback target). See #604.
+    if: needs.deploy.outputs.skip_deploy != 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
