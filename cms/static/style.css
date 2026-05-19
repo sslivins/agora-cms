@@ -1043,11 +1043,21 @@ tr.highlight-new td {
     z-index: 1;
 }
 .group-panel .device-row td.expand-toggle + td { padding-left: 2.5rem; }
-/* Tint applies only to in-flow tds; the absolute chevron td must stay
-   transparent or its background stacks over the in-flow row and produces a
-   darker stripe in the first 2.5rem (#569 follow-up). */
-.group-panel .device-row td:not(.expand-toggle) { background: rgba(255,255,255,0.05); }
-.group-panel .device-row:hover td:not(.expand-toggle) { background: rgba(255,255,255,0.09); }
+/* Row tint must cover the entire row including the chevron's 2.5rem
+   slot. Painting it on the <tr> (with the cells left transparent) means
+   one background layer covers the whole row -- including under the
+   absolutely-positioned chevron td, whose containing block is this
+   relatively-positioned <tr>. Avoids the "darker stripe in the first
+   2.5rem" double-tint that happens if both the chevron td and the
+   adjacent in-flow td paint their own backgrounds at the same alpha. */
+.group-panel .device-row { background: rgba(255,255,255,0.05); }
+.group-panel .device-row:hover { background: rgba(255,255,255,0.09); }
+/* Neutralize the global `.device-row:hover td` rule (line ~895) inside
+   group panels. Without this, in-flow tds would stack their own 0.04
+   tint on top of the row's hover tint, producing a darker band on every
+   cell except the absolutely-positioned chevron td (which isn't covered
+   by the global rule). Row-level hover is sufficient here. */
+.group-panel .device-row:hover td { background: transparent; }
 .group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text); padding: 0.15rem 0.5rem; border-radius: 10px; }
 .group-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 .group-actions .btn-sm { font-size: 0.9rem; }
