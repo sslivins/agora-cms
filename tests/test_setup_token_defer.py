@@ -82,6 +82,14 @@ async def _reload_must_change(db: AsyncSession, user_id: uuid.UUID) -> bool:
     return result.scalar_one()
 
 
+async def _reload_last_login(db: AsyncSession, user_id: uuid.UUID):
+    """Read last_login_at straight from the DB, bypassing any session cache."""
+    result = await db.execute(
+        select(User.last_login_at).where(User.id == user_id)
+    )
+    return result.scalar_one()
+
+
 # -- token deferral on GET ------------------------------------------------
 
 
@@ -106,6 +114,33 @@ async def test_setup_account_get_does_not_burn_token(
     still_set = await _reload_setup_token(db_session, user_id)
     assert still_set == "tok-defer-1", (
         f"setup_token must survive GET; got {still_set!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_account_get_does_not_set_last_login(
+    app, unauthed_client, db_session
+):
+    """GET /setup-account must NOT stamp last_login_at; URL prefetchers
+    (Defender Safe Links, Proofpoint, etc.) fire that GET before the user
+    ever clicks, which previously produced phantom 'last login' timestamps
+    on invitees who never actually completed setup."""
+    user = await _create_pending_user(
+        db_session, email="lastlogin1@test.com", setup_token="tok-ll-1"
+    )
+    user_id = user.id
+
+    # Sanity: user has never logged in
+    assert await _reload_last_login(db_session, user_id) is None
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-ll-1", follow_redirects=False
+    )
+    assert resp.status_code == 303, resp.text
+
+    still_none = await _reload_last_login(db_session, user_id)
+    assert still_none is None, (
+        f"last_login_at must remain NULL after a prefetcher-style GET; got {still_none!r}"
     )
 
 
@@ -168,6 +203,36 @@ async def test_force_password_change_burns_setup_token(
 
 
 @pytest.mark.asyncio
+async def test_force_password_change_sets_last_login(
+    app, unauthed_client, db_session
+):
+    """Successfully completing /force-password-change is the first real
+    authentication moment; last_login_at must be stamped here so the user
+    actually shows up as 'has logged in' on the users page."""
+    user = await _create_pending_user(
+        db_session, email="ll-force@test.com", setup_token="tok-ll-force"
+    )
+    user_id = user.id
+
+    assert await _reload_last_login(db_session, user_id) is None
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-ll-force", follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    resp = await unauthed_client.post(
+        "/force-password-change",
+        data={"new_password": "set-via-form-1", "confirm_password": "set-via-form-1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+
+    stamp = await _reload_last_login(db_session, user_id)
+    assert stamp is not None, "last_login_at must be set after first successful setup"
+
+
+@pytest.mark.asyncio
 async def test_api_change_password_burns_setup_token(
     app, unauthed_client, db_session
 ):
@@ -196,6 +261,92 @@ async def test_api_change_password_burns_setup_token(
 
     assert await _reload_setup_token(db_session, user_id) is None
     assert await _reload_must_change(db_session, user_id) is False
+
+
+@pytest.mark.asyncio
+async def test_api_change_password_sets_last_login_on_setup_completion(
+    app, unauthed_client, db_session
+):
+    """When a freshly-invited user finishes setup via the JSON API, the
+    call doubles as their first authentication so last_login_at must be
+    stamped (mirrors the form path)."""
+    user = await _create_pending_user(
+        db_session,
+        email="ll-api@test.com",
+        setup_token="tok-ll-api",
+        temp_password="initial-temp-api",
+    )
+    user_id = user.id
+
+    assert await _reload_last_login(db_session, user_id) is None
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-ll-api", follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    resp = await unauthed_client.post(
+        "/api/users/me/password",
+        json={"current_password": "initial-temp-api", "new_password": "post-setup-1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200, resp.text
+
+    stamp = await _reload_last_login(db_session, user_id)
+    assert stamp is not None, "last_login_at must be set after first setup completion via API"
+
+
+@pytest.mark.asyncio
+async def test_api_change_password_preserves_last_login_for_normal_change(
+    app, unauthed_client, db_session
+):
+    """A normal password change by an already-set-up user must NOT clobber
+    last_login_at -- that field reflects the last real login, not the last
+    password change. Without the must_change_password gate, this endpoint
+    would overwrite a meaningful timestamp with a meaningless one."""
+    from datetime import datetime, timezone, timedelta
+
+    role_id = await _get_role_id(db_session, "Viewer")
+    pinned = datetime.now(timezone.utc) - timedelta(days=7)
+    user = User(
+        username="settled",
+        email="settled@test.com",
+        display_name="Settled User",
+        password_hash=hash_password("current-pwd-1"),
+        role_id=role_id,
+        is_active=True,
+        must_change_password=False,
+        setup_token=None,
+        last_login_at=pinned,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    user_id = user.id
+
+    # Log in to mint a session cookie (last_login_at will be refreshed by /login;
+    # we capture the new value as the baseline we expect to be preserved).
+    resp = await unauthed_client.post(
+        "/login",
+        data={"email": "settled@test.com", "password": "current-pwd-1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+    baseline = await _reload_last_login(db_session, user_id)
+    assert baseline is not None
+
+    # Now change password via the API. last_login_at must NOT move.
+    resp = await unauthed_client.post(
+        "/api/users/me/password",
+        json={"current_password": "current-pwd-1", "new_password": "next-pwd-2"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200, resp.text
+
+    after = await _reload_last_login(db_session, user_id)
+    assert after == baseline, (
+        f"plain password change must not move last_login_at; baseline={baseline!r} after={after!r}"
+    )
 
 
 # -- /api/users hardening: must_change_password gate -----------------------

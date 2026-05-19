@@ -212,9 +212,12 @@ async def setup_account(
             status_code=400,
         )
 
-    from datetime import datetime, timezone
-    user.last_login_at = datetime.now(timezone.utc)
-    await db.commit()
+    # NOTE: do NOT touch user.last_login_at here. This endpoint is hit by
+    # email URL prefetchers (Defender Safe Links, Proofpoint, etc.) before
+    # the user ever sees the message, so writing a timestamp on every GET
+    # produces phantom "last login" values for invitees who haven't clicked.
+    # last_login_at is set on real authentications: POST /login and the
+    # successful first POST /force-password-change (see below).
 
     # Create session and redirect to force-password-change
     serializer = URLSafeTimedSerializer(settings.secret_key)
@@ -367,6 +370,11 @@ async def force_password_change_submit(
     # that the human actually completed setup. See setup_account() for why
     # we defer this from the GET handler.
     user.setup_token = None
+    # First real authentication moment: stamp last_login_at here (was
+    # previously stamped on every GET /setup-account, but that fires for
+    # URL prefetchers before the user even clicks -- see setup_account()).
+    from datetime import datetime, timezone
+    user.last_login_at = datetime.now(timezone.utc)
     await db.commit()
 
     return RedirectResponse(url="/", status_code=303)

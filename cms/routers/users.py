@@ -82,12 +82,21 @@ async def change_my_password(
     """Change the current user's own password."""
     if not verify_password(data.current_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
+    was_setup_completion = current_user.must_change_password
     current_user.password_hash = hash_password(data.new_password)
     current_user.must_change_password = False
     # Burn the setup token now -- successful password set is the only signal
     # that the human actually completed setup. See cms/ui.py::setup_account
     # for why we defer this from the GET handler.
     current_user.setup_token = None
+    if was_setup_completion:
+        # This call was the user finishing first-time setup, so it doubles
+        # as their first real authentication. Stamp last_login_at to match
+        # what POST /force-password-change does. Skipped for plain password
+        # changes from already-set-up users -- those would clobber a real
+        # last_login_at written by POST /login.
+        from datetime import datetime, timezone
+        current_user.last_login_at = datetime.now(timezone.utc)
     await db.commit()
     return {"status": "ok"}
 
