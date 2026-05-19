@@ -201,21 +201,26 @@ async def test_viewer_denied_imager_read(app, db_session):
 
 
 @pytest.mark.asyncio
-async def test_operator_denied_imager_manage(app, db_session, imager_settings):
-    """Operator has IMAGER_READ + IMAGER_BUILD but not IMAGER_MANAGE."""
+async def test_operator_denied_all_imager_endpoints(app, db_session, imager_settings):
+    """Operator has no imager permissions in the built-in role template.
+
+    All imager endpoints (read, build, manage) must 403 for an Operator
+    -- the Imager surface is admin-only.
+    """
     await _create_user(db_session, email="op-img@test.com", role_name="Operator")
     ac = await _login_as(app, "op-img@test.com")
     try:
-        # MANAGE-gated:
-        resp = await ac.get("/api/imager/catalog")
-        assert resp.status_code == 403
-        resp = await ac.post("/api/imager/base-images", json={"variant": "pi5", "version": "v1"})
-        assert resp.status_code == 403
-        # READ-gated should pass:
-        resp = await ac.get("/api/imager/fleets")
-        assert resp.status_code == 200
-        resp = await ac.get("/api/imager/base-images")
-        assert resp.status_code == 200
+        for method, path in [
+            ("GET", "/api/imager/fleets"),
+            ("GET", "/api/imager/base-images"),
+            ("GET", "/api/imager/catalog"),
+            ("POST", "/api/imager/base-images"),
+            ("POST", "/api/imager/build"),
+            ("GET", "/api/imager/provisioned-images"),
+        ]:
+            kwargs = {"json": {}} if method == "POST" else {}
+            resp = await ac.request(method, path, **kwargs)
+            assert resp.status_code == 403, f"{method} {path}: {resp.status_code}"
     finally:
         await ac.aclose()
 
@@ -1364,7 +1369,13 @@ async def test_delete_provisioned_image_404_when_missing(client, imager_settings
 async def test_delete_provisioned_image_403_for_operator(
     app, db_session, imager_settings,
 ):
-    """Operator (IMAGER_BUILD only) cannot delete built images."""
+    """Operator has no imager permissions at all -- delete still 403s.
+
+    (Was previously gated by lack of IMAGER_MANAGE; now gated by lack of
+    every imager:* permission. The end-user-visible behavior is unchanged
+    -- Operator gets 403 -- but the reason is broader after the role
+    template was tightened.)
+    """
     bi = BaseImage(variant="pi5", version="v1", status=BaseImageStatus.READY.value)
     db_session.add(bi)
     await db_session.flush()

@@ -1305,8 +1305,14 @@ tr.highlight-new td {
 }
 .perm-group-count { font-size: 0.75rem; }
 
-.perm-group .permissions-table { margin-top: 0; }
+.perm-group .permissions-table { margin-top: 0; table-layout: fixed; }
 .perm-group .permissions-table td:first-child { padding-left: 1.2rem; }
+/* Lock the middle "perm-tag" column to a fixed width so the description
+   column starts at the same x-coordinate across every category. Without
+   table-layout:fixed + an explicit width, each group's <table> sizes the
+   tag column to its own longest perm name and the descriptions zig-zag. */
+.perm-group .permissions-table td:nth-child(2) { width: 12rem; }
+.perm-group .permissions-table td:nth-child(3) { word-break: break-word; }
 
 .role-card {
     padding: 0.8rem;

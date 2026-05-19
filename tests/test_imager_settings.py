@@ -70,18 +70,18 @@ async def test_get_settings_returns_configured_url(
 
 
 @pytest.mark.asyncio
-async def test_get_settings_allowed_for_operator(
+async def test_get_settings_denied_for_operator(
     app, db_session, imager_settings, seeded_url
 ):
-    """IMAGER_READ is enough to fetch settings (operator role)."""
+    """Operator has no imager permissions in the built-in role template,
+    so even IMAGER_READ-gated settings reads must 403."""
     await _create_user(
         db_session, email="op-settings@test.com", role_name="Operator"
     )
     ac = await _login_as(app, "op-settings@test.com")
     try:
         resp = await ac.get("/api/imager/settings")
-        assert resp.status_code == 200
-        assert resp.json() == {"catalog_url": seeded_url}
+        assert resp.status_code == 403
     finally:
         await ac.aclose()
 
