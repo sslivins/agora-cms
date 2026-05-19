@@ -322,7 +322,11 @@ async def force_password_change_page(
         return RedirectResponse(url="/login", status_code=303)
     if not user.must_change_password:
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse(request, "force_password_change.html", {"error": None})
+    return templates.TemplateResponse(
+        request,
+        "force_password_change.html",
+        {"error": None, "user_email": user.email},
+    )
 
 
 @router.post("/force-password-change")
@@ -346,12 +350,14 @@ async def force_password_change_submit(
     if len(new_password) < 6:
         return templates.TemplateResponse(
             request, "force_password_change.html",
-            {"error": "Password must be at least 6 characters"}, status_code=400
+            {"error": "Password must be at least 6 characters", "user_email": user.email},
+            status_code=400,
         )
     if new_password != confirm_password:
         return templates.TemplateResponse(
             request, "force_password_change.html",
-            {"error": "Passwords do not match"}, status_code=400
+            {"error": "Passwords do not match", "user_email": user.email},
+            status_code=400,
         )
 
     user.password_hash = hash_password(new_password)

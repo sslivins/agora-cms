@@ -29,28 +29,42 @@
             <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
                 Set your display name, email, and a new password to replace the default credentials.
             </p>
-            <div class="form-group">
-                <label for="admin-name">Display Name</label>
-                <input type="text" id="admin-name" placeholder="e.g. John Smith"
-                       value="{{ user.display_name or '' }}" required autofocus>
-            </div>
-            <div class="form-group">
-                <label for="admin-email">Email</label>
-                <input type="email" id="admin-email" placeholder="admin@example.com"
-                       value="{{ user.email or '' }}" required>
-            </div>
-            <div class="form-group">
-                <label for="admin-password">New Password</label>
-                <input type="password" id="admin-password" placeholder="Min 6 characters" required minlength="6">
-            </div>
-            <div class="form-group">
-                <label for="admin-confirm">Confirm Password</label>
-                <input type="password" id="admin-confirm" placeholder="Repeat password" required minlength="6">
-            </div>
-            <div class="setup-actions">
-                <div></div>
-                <button class="btn btn-primary" onclick="submitAccount()">Next →</button>
-            </div>
+            {#
+              Wrapped in a real <form> so iOS Keychain / 1Password / Bitwarden
+              detect this as a password-creation flow and offer "Suggest Strong
+              Password" + auto-fill both New + Confirm. The form's onsubmit
+              prevents the default navigation; the existing submitAccount() JS
+              still drives the POST to /setup/account.
+            #}
+            <form id="setup-account-form" novalidate
+                  onsubmit="event.preventDefault(); submitAccount(); return false;"
+                  autocomplete="on">
+                <div class="form-group">
+                    <label for="admin-name">Display Name</label>
+                    <input type="text" id="admin-name" placeholder="e.g. John Smith"
+                           value="{{ user.display_name or '' }}" required autofocus
+                           autocomplete="name">
+                </div>
+                <div class="form-group">
+                    <label for="admin-email">Email</label>
+                    <input type="email" id="admin-email" placeholder="admin@example.com"
+                           value="{{ user.email or '' }}" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="admin-password">New Password</label>
+                    <input type="password" id="admin-password" placeholder="Min 6 characters"
+                           required minlength="6" autocomplete="new-password">
+                </div>
+                <div class="form-group">
+                    <label for="admin-confirm">Confirm Password</label>
+                    <input type="password" id="admin-confirm" placeholder="Repeat password"
+                           required minlength="6" autocomplete="new-password">
+                </div>
+                <div class="setup-actions">
+                    <div></div>
+                    <button type="submit" class="btn btn-primary">Next →</button>
+                </div>
+            </form>
         </div>
 
         <!-- Step 2: SMTP -->

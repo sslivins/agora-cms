@@ -82,6 +82,14 @@
     <div class="flash flash-error">{{ pw_error }}</div>
     {% endif %}
     <form method="POST" action="/profile/password" class="settings-form" style="max-width: 400px;">
+        {# Off-screen username field pins this password change to the right
+           account in iOS Keychain / 1Password / Bitwarden so the manager fills
+           both "New" and "Confirm" with the same generated password. Cannot
+           use hidden/display:none -- iOS's anti-phishing heuristic ignores
+           those. Off-screen positioning is the standard workaround. #}
+        <input type="email" name="username" value="{{ profile_user.email or profile_user.username }}"
+               autocomplete="username" readonly tabindex="-1" aria-hidden="true"
+               style="position:absolute; left:-9999px; width:1px; height:1px; opacity:0;">
         <div class="form-group">
             <label for="current_password">Current Password</label>
             <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
