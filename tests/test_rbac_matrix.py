@@ -130,17 +130,19 @@ ENDPOINTS: list[EP] = [
     # ── Logs ──
     EP("GET", "/api/cms/logs", (ADMIN, OPERATOR, VIEWER)),
 
-    # ── Imager (browser-driven Pi image provisioning) ──
-    EP("GET", "/api/imager/fleets", (ADMIN, OPERATOR)),
-    EP("GET", "/api/imager/base-images", (ADMIN, OPERATOR)),
+    # -- Imager (browser-driven Pi image provisioning) --
+    # Admin-only surface as of the role-template tightening: the built-in
+    # Operator role no longer carries imager:read or imager:build.
+    EP("GET", "/api/imager/fleets", (ADMIN,)),
+    EP("GET", "/api/imager/base-images", (ADMIN,)),
     EP("GET", "/api/imager/catalog", (ADMIN,)),
     EP("POST", "/api/imager/base-images", (ADMIN,),
        json_body={"variant": "pi5", "version": "v1.0"}),
     EP("DELETE", f"/api/imager/base-images/{_FAKE_ID}", (ADMIN,)),
-    EP("POST", "/api/imager/build", (ADMIN, OPERATOR),
+    EP("POST", "/api/imager/build", (ADMIN,),
        json_body={"base_image_id": _FAKE_ID, "fleet_id": "x", "output_name": "x.img.xz"}),
-    EP("GET", f"/api/imager/jobs/{_FAKE_ID}", (ADMIN, OPERATOR)),
-    EP("GET", f"/api/imager/download/{_FAKE_ID}", (ADMIN, OPERATOR)),
+    EP("GET", f"/api/imager/jobs/{_FAKE_ID}", (ADMIN,)),
+    EP("GET", f"/api/imager/download/{_FAKE_ID}", (ADMIN,)),
 
     # ── Admin-managed API keys ──
     EP("GET", "/api/keys", (ADMIN,)),

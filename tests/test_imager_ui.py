@@ -29,16 +29,13 @@ async def test_admin_sees_full_page(client):
 
 
 @pytest.mark.asyncio
-async def test_operator_sees_build_only(app, db_session):
-    """Operator has imager:read + imager:build but not imager:manage."""
+async def test_operator_denied(app, db_session):
+    """Operator has no imager permissions in the built-in role template."""
     await _create_user(db_session, email="op-img@test.com", role_name="Operator")
     ac = await _login_as(app, "op-img@test.com")
     try:
         resp = await ac.get("/imager")
-        assert resp.status_code == 200
-        html = resp.text
-        assert '<h3 style="margin-top:0;">Build Image</h3>' in html
-        assert '<h3 style="margin:0;">Base Images</h3>' not in html
+        assert resp.status_code == 403
     finally:
         await ac.aclose()
 
@@ -81,6 +78,23 @@ async def test_nav_link_absent_for_viewer(app, db_session):
     """Viewer (no imager:read) does not see the Imager nav tab."""
     await _create_user(db_session, email="viewer-nav@test.com", role_name="Viewer")
     ac = await _login_as(app, "viewer-nav@test.com")
+    try:
+        resp = await ac.get("/")
+        assert resp.status_code == 200
+        assert 'href="/imager"' not in resp.text
+    finally:
+        await ac.aclose()
+
+
+@pytest.mark.asyncio
+async def test_nav_link_absent_for_operator(app, db_session):
+    """Operator (no imager:read) does not see the Imager nav tab either.
+
+    The Imager surface is admin-only as of the role-template tightening
+    in the same PR that hides the tab; Operator must not see the link.
+    """
+    await _create_user(db_session, email="op-nav@test.com", role_name="Operator")
+    ac = await _login_as(app, "op-nav@test.com")
     try:
         resp = await ac.get("/")
         assert resp.status_code == 200
