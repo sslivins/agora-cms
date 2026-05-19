@@ -143,6 +143,12 @@
         </div>
         <div class="form-row">
             <div class="form-group">
+                <label for="smtp-from-name">From Name <span class="text-muted" style="font-weight: normal; font-size: 0.8rem;">(optional)</span></label>
+                <input type="text" id="smtp-from-name" placeholder="e.g. Goodwill Digital Signage" value="{{ smtp_from_name or '' }}">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
                 <label for="smtp-from-email">From Email</label>
                 <input type="email" id="smtp-from-email" placeholder="e.g. noreply@example.com" value="{{ smtp_from_email or '' }}">
             </div>
@@ -172,6 +178,7 @@ async function saveSmtpSettings() {
         host: document.getElementById("smtp-host").value.trim(),
         port: parseInt(document.getElementById("smtp-port").value) || 587,
         username: document.getElementById("smtp-username").value.trim(),
+        from_name: document.getElementById("smtp-from-name").value.trim(),
         from_email: document.getElementById("smtp-from-email").value.trim(),
 
     };

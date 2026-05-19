@@ -17,6 +17,7 @@ from cms.auth import (
     SETTING_PASSWORD_HASH,
     SETTING_SETUP_COMPLETED,
     SETTING_SMTP_FROM_EMAIL,
+    SETTING_SMTP_FROM_NAME,
     SETTING_SMTP_HOST,
     SETTING_SMTP_PASSWORD,
     SETTING_SMTP_PORT,
@@ -471,6 +472,7 @@ async def setup_smtp(
     if data.get("password"):
         await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
     await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    await set_setting(db, SETTING_SMTP_FROM_NAME, data.get("from_name", ""))
     await audit_log(
         db, user=user, action="settings.smtp.update", resource_type="settings",
         description=f"Setup wizard: updated SMTP settings (host={data.get('host', '')})",
@@ -479,6 +481,7 @@ async def setup_smtp(
             "port": data.get("port"),
             "username": data.get("username", ""),
             "from_email": data.get("from_email", ""),
+            "from_name": data.get("from_name", ""),
             "password_changed": bool(data.get("password")),
         },
         request=request,
@@ -1868,6 +1871,7 @@ async def settings_page(
     smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
     smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
     smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
+    smtp_from_name = await get_setting(db, SETTING_SMTP_FROM_NAME) or ""
 
     # Timezone
     current_timezone = await get_setting(db, SETTING_TIMEZONE) or "UTC"
@@ -1899,6 +1903,7 @@ async def settings_page(
         "smtp_username": smtp_username,
         "smtp_password": smtp_password,
         "smtp_from_email": smtp_from_email,
+        "smtp_from_name": smtp_from_name,
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "timezones": tz_options,
@@ -2047,6 +2052,7 @@ async def save_smtp_settings(
     if "password" in data and data["password"]:
         await set_setting(db, SETTING_SMTP_PASSWORD, data["password"])
     await set_setting(db, SETTING_SMTP_FROM_EMAIL, data.get("from_email", ""))
+    await set_setting(db, SETTING_SMTP_FROM_NAME, data.get("from_name", ""))
     await audit_log(
         db, user=_user, action="settings.smtp.update", resource_type="settings",
         description=f"Updated SMTP settings (host={data.get('host', '')})",
@@ -2055,6 +2061,7 @@ async def save_smtp_settings(
             "port": data.get("port"),
             "username": data.get("username", ""),
             "from_email": data.get("from_email", ""),
+            "from_name": data.get("from_name", ""),
             "password_changed": bool(data.get("password")),
         },
         request=request,
@@ -2204,6 +2211,7 @@ async def change_timezone(
     smtp_username = await get_setting(db, SETTING_SMTP_USERNAME) or ""
     smtp_password = await get_setting(db, SETTING_SMTP_PASSWORD) or ""
     smtp_from_email = await get_setting(db, SETTING_SMTP_FROM_EMAIL) or ""
+    smtp_from_name = await get_setting(db, SETTING_SMTP_FROM_NAME) or ""
 
     base_ctx = {
         "active_tab": "settings",
@@ -2213,6 +2221,7 @@ async def change_timezone(
         "smtp_username": smtp_username,
         "smtp_password": smtp_password,
         "smtp_from_email": smtp_from_email,
+        "smtp_from_name": smtp_from_name,
         "timezones": tz_options,
         "devices": device_list,
     }
