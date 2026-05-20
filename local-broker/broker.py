@@ -77,7 +77,6 @@ from typing import Any
 import httpx
 import jwt
 from fastapi import (
-    Body,
     FastAPI,
     Header,
     HTTPException,
@@ -87,7 +86,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 logger = logging.getLogger("agora.broker")
 
@@ -170,14 +168,26 @@ class ConnectionRegistry:
 # --------------------------------------------------------------------- auth
 
 
-def _verify_jwt(token: str, *, expected_aud_prefix: str | None = None) -> dict[str, Any]:
+def _verify_jwt(
+    token: str,
+    *,
+    expected_aud_prefix: str | None = None,
+    require_sub: bool = True,
+) -> dict[str, Any]:
     """Verify an HS256 JWT against ACCESS_KEY.  Returns claims on success.
 
     Raises ``jwt.InvalidTokenError`` subclasses on failure.
+
+    ``require_sub`` defaults True (client JWTs identify a device via
+    ``sub``); server JWTs minted by the Azure SDK don't carry ``sub``,
+    so the REST-auth path passes ``require_sub=False``.
     """
     # We check `aud` manually below (prefix match, not exact) — disable
     # PyJWT's exact-audience verification.
-    options = {"require": ["sub", "exp"], "verify_aud": False}
+    required = ["exp"]
+    if require_sub:
+        required.append("sub")
+    options = {"require": required, "verify_aud": False}
     claims = jwt.decode(
         token,
         ACCESS_KEY,
@@ -283,6 +293,7 @@ async def _post_webhook(
     }
     if event_name:
         headers["ce-eventName"] = event_name
+    logger.debug("_post_webhook enter type=%s conn=%s user=%s", event_type, connection_id, user_id)
     try:
         r = await client.post(UPSTREAM_URL, content=raw_body, headers=headers, timeout=UPSTREAM_TIMEOUT_S)
         if r.status_code >= 400:
@@ -290,22 +301,17 @@ async def _post_webhook(
                 "Upstream webhook %s -> %s failed: %s",
                 event_type, UPSTREAM_URL, r.status_code,
             )
+        else:
+            logger.debug(
+                "_post_webhook done type=%s status=%s", event_type, r.status_code,
+            )
     except httpx.HTTPError:
         logger.exception("Upstream webhook %s -> %s errored", event_type, UPSTREAM_URL)
+    except Exception:
+        logger.exception("_post_webhook unexpected error type=%s", event_type)
 
 
 # --------------------------------------------------------------------- app
-
-
-class SendPayload(BaseModel):
-    """WPS user-send body.
-
-    Matches the Azure REST shape:
-        {"data": ..., "dataType": "json"|"text"}
-    """
-
-    data: Any
-    dataType: str = Field(default="json", pattern="^(json|text|binary)$")
 
 
 def create_app() -> FastAPI:
@@ -349,7 +355,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=401, detail="missing bearer token")
         token = authorization.split(" ", 1)[1].strip()
         try:
-            return _verify_jwt(token, expected_aud_prefix=aud_prefix)
+            return _verify_jwt(
+                token,
+                expected_aud_prefix=aud_prefix,
+                require_sub=False,
+            )
         except jwt.InvalidTokenError as e:
             raise HTTPException(status_code=401, detail=f"invalid token: {e}") from e
 
@@ -358,8 +368,8 @@ def create_app() -> FastAPI:
         hub: str,
         user_id: str,
         request: Request,
-        payload: SendPayload = Body(...),
         authorization: str | None = Header(default=None),
+        content_type: str | None = Header(default=None),
     ) -> JSONResponse:
         # WPS server-JWT audience is the REST URI root for the hub.
         _require_bearer(
@@ -367,29 +377,40 @@ def create_app() -> FastAPI:
             aud_prefix=str(request.url.replace(query="", fragment="")).split(":send", 1)[0],
         )
 
+        # Match real Azure Web PubSub REST contract: the request body IS
+        # the payload; `Content-Type` selects the WS frame type.  The
+        # Azure SDK (``WebPubSubServiceClient.send_to_user``) sends the
+        # serialized payload as the raw body, never a ``{data, dataType}``
+        # wrapper — wrapping was a local-broker historical mistake.
+        raw_body = await request.body()
+        ct = (content_type or "").split(";", 1)[0].strip().lower()
+
+        if ct == "application/octet-stream":
+            frame_bytes: bytes = raw_body
+            frame_text: str | None = None
+        elif ct == "text/plain":
+            frame_bytes = b""
+            frame_text = raw_body.decode("utf-8", errors="replace")
+        else:
+            # Default + ``application/json``: deliver the body as a text
+            # frame.  For JSON the body is already a UTF-8-encoded JSON
+            # string; for unknown/missing Content-Type Azure WPS treats
+            # the payload as text/JSON.
+            frame_bytes = b""
+            frame_text = raw_body.decode("utf-8", errors="replace")
+
         conns = registry.connections_for_user(user_id)
         if not conns:
             # WPS returns 404 when user has no active connections.
             return JSONResponse(status_code=404, content={"error": "user not connected"})
 
-        # Shape we hand to the client follows WPS dataType semantics.
-        if payload.dataType == "json":
-            # WS text frame with JSON.  If data is already a dict, serialize.
-            text = json.dumps(payload.data) if not isinstance(payload.data, str) else payload.data
-            send_text = True
-        elif payload.dataType == "text":
-            text = payload.data if isinstance(payload.data, str) else json.dumps(payload.data)
-            send_text = True
-        else:  # binary
-            # Devices today only speak JSON; accept but coerce for parity.
-            text = payload.data if isinstance(payload.data, str) else json.dumps(payload.data)
-            send_text = True
-
         delivered = 0
         for conn in conns:
             try:
-                if send_text:
-                    await conn.ws.send_text(text)
+                if frame_text is not None:
+                    await conn.ws.send_text(frame_text)
+                else:
+                    await conn.ws.send_bytes(frame_bytes)
                 delivered += 1
             except Exception:
                 logger.exception(

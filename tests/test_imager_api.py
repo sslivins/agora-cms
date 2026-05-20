@@ -172,6 +172,7 @@ async def test_endpoints_require_auth(unauthed_client):
         ("POST", "/api/imager/base-images"),
         ("DELETE", f"/api/imager/base-images/{uuid.uuid4()}"),
         ("POST", "/api/imager/build"),
+        ("POST", "/api/imager/softplayer-credentials"),
         ("GET", "/api/imager/provisioned-images"),
         ("DELETE", f"/api/imager/provisioned-images/{uuid.uuid4()}"),
         ("GET", f"/api/imager/jobs/{uuid.uuid4()}"),
@@ -216,6 +217,7 @@ async def test_operator_denied_all_imager_endpoints(app, db_session, imager_sett
             ("GET", "/api/imager/catalog"),
             ("POST", "/api/imager/base-images"),
             ("POST", "/api/imager/build"),
+            ("POST", "/api/imager/softplayer-credentials"),
             ("GET", "/api/imager/provisioned-images"),
         ]:
             kwargs = {"json": {}} if method == "POST" else {}
@@ -1134,6 +1136,185 @@ async def test_import_writes_audit_row(client, db_session, patch_catalog_ok):
         select(AuditLog).where(AuditLog.action == "imager.base_image.import")
     )).scalars().all()
     assert len(rows) == 1
+
+
+# ── Softplayer credentials endpoint ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_returns_text_with_env_body(
+    client, db_session, imager_settings
+):
+    """Happy path: text/plain attachment with the full AGORA_* set."""
+    resp = await client.post(
+        "/api/imager/softplayer-credentials",
+        json={"fleet_id": "fleet-test"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    ct = resp.headers.get("content-type", "")
+    assert ct.startswith("text/plain")
+    assert "charset=utf-8" in ct.lower()
+
+    cd = resp.headers.get("content-disposition", "")
+    assert "attachment" in cd
+    assert 'filename="softplayer.env"' in cd
+
+    # No caching -- the body carries a secret.
+    assert resp.headers.get("cache-control") == "no-store"
+
+    body = resp.text
+    # Matches the Pi build's env file body verbatim (same _fleet_env_payload).
+    assert "AGORA_CMS_URL=wss://cms.example.com/ws/device" in body
+    assert "AGORA_CMS_TRANSPORT=direct" in body
+    assert "AGORA_FLEET_ID=fleet-test" in body
+    # Stored secret is base64 of b"secret-base64" -> hex of those bytes.
+    assert "AGORA_FLEET_SECRET_HEX=7365637265742d626173653634" in body
+    # WiFi keys MUST NOT appear -- softplayer is wifi-irrelevant.
+    assert "AGORA_WIFI_SSID" not in body
+    assert "AGORA_WIFI_PASS" not in body
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_wps_transport_baked(
+    client, db_session, imager_settings
+):
+    """A WPS-configured CMS bakes AGORA_CMS_TRANSPORT=wps."""
+    saved_transport = imager_settings.device_transport
+    try:
+        imager_settings.device_transport = "wps"
+        resp = await client.post(
+            "/api/imager/softplayer-credentials",
+            json={"fleet_id": "fleet-test"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "AGORA_CMS_TRANSPORT=wps" in resp.text
+    finally:
+        imager_settings.device_transport = saved_transport
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_404_when_fleet_unknown(
+    client, db_session, imager_settings
+):
+    resp = await client.post(
+        "/api/imager/softplayer-credentials",
+        json={"fleet_id": "no-such-fleet"},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_404_when_fleet_soft_deleted(
+    client, db_session, imager_settings
+):
+    """Soft-deleted fleets must not produce downloadable credentials."""
+    from cms.services import fleet_registry
+
+    await fleet_registry.delete_fleet(db_session, "fleet-test")
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/imager/softplayer-credentials",
+        json={"fleet_id": "fleet-test"},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_422_on_invalid_fleet_id(
+    client, imager_settings
+):
+    """Schema layer rejects fleet_ids that don't match _FLEET_ID_RE."""
+    # Pydantic min/max passes (1 char, <=64), but the regex on the
+    # endpoint must catch the slash. (Slash is path-injection-relevant.)
+    resp = await client.post(
+        "/api/imager/softplayer-credentials",
+        json={"fleet_id": "bad/id"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_503_when_base_url_missing(
+    client, db_session, imager_settings
+):
+    """Without AGORA_CMS_BASE_URL there's no CMS URL to embed."""
+    saved_base_url = imager_settings.base_url
+    try:
+        imager_settings.base_url = None
+        resp = await client.post(
+            "/api/imager/softplayer-credentials",
+            json={"fleet_id": "fleet-test"},
+        )
+        assert resp.status_code == 503, resp.text
+        assert "AGORA_CMS_BASE_URL" in resp.text
+    finally:
+        imager_settings.base_url = saved_base_url
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_503_when_device_transport_invalid(
+    client, db_session, imager_settings
+):
+    """Anything other than local/wps should refuse cleanly."""
+    saved_transport = imager_settings.device_transport
+    try:
+        imager_settings.device_transport = "carrier-pigeon"
+        resp = await client.post(
+            "/api/imager/softplayer-credentials",
+            json={"fleet_id": "fleet-test"},
+        )
+        assert resp.status_code == 503, resp.text
+        assert "carrier-pigeon" in resp.json()["detail"]
+    finally:
+        imager_settings.device_transport = saved_transport
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_writes_audit_row_without_secret(
+    client, db_session, imager_settings
+):
+    from cms.models.audit_log import AuditLog
+
+    resp = await client.post(
+        "/api/imager/softplayer-credentials",
+        json={"fleet_id": "fleet-test"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    rows = (await db_session.execute(
+        select(AuditLog).where(
+            AuditLog.action == "imager.softplayer_credentials.download"
+        )
+    )).scalars().all()
+    assert len(rows) == 1
+    details = rows[0].details or {}
+    assert details.get("fleet_id") == "fleet-test"
+    # Sanity: neither the b64 secret nor its hex form leak into the
+    # audit row. (Encoded versions of the b"secret-base64" fixture.)
+    serialized = str(details)
+    assert "c2VjcmV0LWJhc2U2NA==" not in serialized
+    assert "7365637265742d626173653634" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_softplayer_credentials_two_downloads_same_fleet_match(
+    client, db_session, imager_settings
+):
+    """The endpoint is stateless wrt the fleet: same secret on every download.
+
+    Future rotation work (delete-and-recreate) is the only way to
+    invalidate the HMAC.
+    """
+    r1 = await client.post(
+        "/api/imager/softplayer-credentials", json={"fleet_id": "fleet-test"}
+    )
+    r2 = await client.post(
+        "/api/imager/softplayer-credentials", json={"fleet_id": "fleet-test"}
+    )
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.text == r2.text
 
 
 # ── _derive_device_ws_url unit tests ──────────────────────────────

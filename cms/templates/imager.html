@@ -2,8 +2,8 @@
 {% block title %}Imager — Agora CMS{% endblock %}
 {% block content %}
 <div class="page-header">
-    <h2>Pi Image Provisioning</h2>
-    <span class="text-muted">Build pre-provisioned Raspberry Pi <code>.img.xz</code> files for fleet enrollment.</span>
+    <h2>Imager</h2>
+    <span class="text-muted">Provision new devices: build Raspberry Pi <code>.img.xz</code> images or generate Softplayer <code>.env</code> credentials.</span>
 </div>
 
 {% if not imager_can_build and not imager_can_manage %}
@@ -14,15 +14,33 @@
 </div>
 {% endif %}
 
+{% if imager_can_build or imager_can_manage %}
+{# ── Sub-tabs: Raspberry Pi / Softplayer / Fleets ──────────────── #}
+<div class="sub-tabs">
+    <button class="sub-tab active" type="button"
+            onclick="showUserTab('imager-pi-tab', this)">Raspberry Pi</button>
+    {% if imager_can_build %}
+    <button class="sub-tab" type="button"
+            onclick="showUserTab('imager-softplayer-tab', this)">Softplayer</button>
+    {% endif %}
+    {% if imager_can_manage %}
+    <button class="sub-tab" type="button"
+            onclick="showUserTab('imager-fleets-tab', this)">Fleets</button>
+    {% endif %}
+</div>
+
+{# ── Pi tab ────────────────────────────────────────────────────── #}
+{# Build .img.xz + Built images + Base image management.  These
+   sections share the "real Pi" mental model so they live behind
+   the same sub-tab; the Provision Softplayer card moves to its
+   own sub-tab below to keep this page from getting noisy. #}
+<div id="imager-pi-tab" class="tab-content active">
+{% endif %}
+
 {% if imager_can_build %}
 {# ── Build section ─────────────────────────────────────────────── #}
 <div class="card" data-imager-build style="margin-bottom:1rem;">
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
-        <h3 style="margin-top:0;">Build Image</h3>
-        {% if imager_can_manage %}
-        <button id="imagerManageFleetsBtn" type="button" class="btn btn-secondary btn-sm">Manage fleets…</button>
-        {% endif %}
-    </div>
+    <h3 style="margin-top:0;">Build Image</h3>
     <p class="text-muted" style="margin-top:0;">
         Choose a fleet and base image, then build a pre-provisioned <code>.img.xz</code>
         ready to flash to an SD card. The output is available for download for
@@ -118,6 +136,12 @@
     </div>
 </div>
 
+{# - Provision Softplayer section -------------------------------- #}
+{# Moved into its own sub-tab below -- see ``imager-softplayer-tab``.
+   The card itself is rendered there. This comment is left as a
+   breadcrumb so a grep for "Provision Softplayer" still lands
+   somewhere useful. #}
+
 {# ── Built images list ─────────────────────────────────────────── #}
 <div class="card" data-imager-built style="margin-bottom:1rem;">
     <h3 style="margin:0 0 0.5rem 0;">Built Images</h3>
@@ -203,9 +227,80 @@
         </table>
     </div>
 </div>
+{% endif %}{# imager_can_manage : Base Images card #}
 
+{% if imager_can_build or imager_can_manage %}
+</div>{# /imager-pi-tab #}
+{% endif %}
 
+{% if imager_can_build %}
+{# ── Softplayer tab ────────────────────────────────────────────── #}
+{# The Windows-native ``agora-softplayer.exe`` is provisioned by
+   downloading a fleet-HMAC env file (the .env-file analogue of a
+   Pi .img.xz build). Same fleet identity, same auth flow, just no
+   flashable image. #}
+<div id="imager-softplayer-tab" class="tab-content">
+    <div class="card" data-imager-softplayer style="margin-bottom:1rem;">
+        <h3 style="margin-top:0;">Provision Softplayer</h3>
+        <p class="text-muted" style="margin-top:0;">
+            Generate a <code>softplayer.env</code> file for the Windows-native
+            <code>agora-softplayer.exe</code>. Same fleet-HMAC identity as a Pi
+            build; just drop the downloaded file next to the <code>.exe</code>
+            (or under <code>%LOCALAPPDATA%\agora-softplayer\</code>) and run.
+        </p>
+        <form id="imagerSoftplayerForm" autocomplete="off">
+            <div class="form-row" style="gap:0.75rem; flex-wrap:wrap; align-items:flex-end;">
+                <div class="form-group" style="flex:1.4 1 220px; min-width:0; margin-bottom:0;">
+                    <label for="imagerSoftplayerFleetSelect">Fleet</label>
+                    <select id="imagerSoftplayerFleetSelect" name="fleet_id" required>
+                        <option value="">Loading…</option>
+                    </select>
+                </div>
+                <div style="flex:0 0 auto;">
+                    <button type="submit" id="imagerSoftplayerDownloadBtn" class="btn btn-primary">
+                        Download softplayer.env
+                    </button>
+                </div>
+            </div>
+            <small class="text-muted" style="margin-top:0.5rem; display:inline-block;">
+                The file carries the fleet HMAC secret. Keep it private — anyone
+                with it can enroll a device into this fleet.
+            </small>
+        </form>
+    </div>
+</div>
+{% endif %}
 
+{% if imager_can_manage %}
+{# ── Fleets tab ────────────────────────────────────────────────── #}
+{# Fleets are a shared resource: both Pi builds and Softplayer
+   provisioning enroll into the same fleet. The dedicated tab is the
+   canonical place to create / list / delete them; the dropdown
+   sentinels (``+ Create new fleet…``) on the Pi build form and the
+   Softplayer card stay as in-context shortcuts. #}
+<div id="imager-fleets-tab" class="tab-content">
+    <div class="card" data-imager-fleets style="margin-bottom:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+            <h3 style="margin:0;">Fleets</h3>
+            <button id="imagerFleetsCreateBtn" type="button" class="btn btn-primary btn-sm">
+                + Create fleet…
+            </button>
+        </div>
+        <p class="text-muted" style="margin-top:0.5rem;">
+            Each fleet has its own HMAC secret. The secret is generated on
+            create and never displayed -- it is only baked into freshly-built
+            Pi images and freshly-downloaded Softplayer <code>.env</code> files.
+            Deleting a fleet revokes the credential for any device that
+            hasn't yet completed first-boot registration.
+        </p>
+        <div class="table-wrap" id="imagerFleetsBody">
+            <p class="empty-state text-muted">Loading…</p>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if imager_can_manage %}
 {# ── Catalog modal ──────────────────────────────────────────────── #}
 <div id="imagerCatalogModal" class="modal-overlay" style="display:none;">
     <div class="modal-box" style="max-width:680px;">
@@ -223,24 +318,8 @@
     </div>
 </div>
 
-{# ── Manage fleets modal ───────────────────────────────────────── #}
-<div id="imagerFleetsModal" class="modal-overlay" style="display:none;">
-    <div class="modal-box" style="max-width:560px;">
-        <h3 style="margin-top:0;">Manage Fleets</h3>
-        <p class="text-muted" style="margin-top:0;">
-            Each fleet has its own HMAC secret. The secret is generated on
-            create and never displayed -- it is only baked into freshly-built
-            images. Deleting a fleet revokes the credential for any Pi that
-            hasn't yet completed first-boot registration.
-        </p>
-        <div id="imagerFleetsBody" style="max-height:60vh; overflow:auto;">
-            <p class="empty-state text-muted">Loading…</p>
-        </div>
-        <div class="modal-actions">
-            <button type="button" class="btn btn-secondary" id="imagerFleetsCloseBtn">Close</button>
-        </div>
-    </div>
-</div>
+{# Manage Fleets modal removed -- the Fleets sub-tab above is the
+   canonical surface for creating / listing / deleting fleets. #}
 {% endif %}
 
 {% endblock %}
@@ -321,7 +400,9 @@
 
     // ── Build section ─────────────────────────────────────────
     var buildSection = $('[data-imager-build]');
+    var softplayerSection = $('[data-imager-softplayer]');
     var manageSection = $('[data-imager-manage]');
+    var fleetsSection = $('[data-imager-fleets]');
 
     var fleetsCache = [];
     var basesCache = [];
@@ -355,6 +436,29 @@
             // -- the sentinel is never submitted.
             if (canManage) {
                 fleetSel.innerHTML += '<option value="__create__">+ Create new fleet…</option>';
+            }
+
+            // Mirror the fleet list into the Provision Softplayer card
+            // so both tiles share one fleet dropdown source-of-truth.
+            // The same ``+ Create new fleet…`` sentinel is shown when
+            // the user has manage permission; the change handler in
+            // the wire-up block intercepts it identically to the build
+            // dropdown.
+            if (softplayerSection) {
+                var spSel = $('#imagerSoftplayerFleetSelect', softplayerSection);
+                if (spSel) {
+                    if (fleetsCache.length === 0) {
+                        spSel.innerHTML = '<option value="">No fleets configured</option>';
+                    } else {
+                        spSel.innerHTML = '<option value="">Select fleet…</option>' +
+                            fleetsCache.map(function(f) {
+                                return '<option value="' + escHtml(f.fleet_id) + '">' + escHtml(f.fleet_id) + '</option>';
+                            }).join('');
+                    }
+                    if (canManage) {
+                        spSel.innerHTML += '<option value="__create__">+ Create new fleet…</option>';
+                    }
+                }
             }
 
             baseSel.innerHTML = '';
@@ -830,21 +934,81 @@
         }
     }
 
-    // ── Fleet create / manage modals ───────────────────────────
-    var lastFleetSelectValue = '';
+    // ── Provision Softplayer ───────────────────────────────────
+    // POST /api/imager/softplayer-credentials returns a text/plain body
+    // with Content-Disposition: attachment.  Use fetch+blob so the
+    // browser saves the response with the server-suggested filename
+    // (softplayer.env -- the canonical name the loader picks up from
+    // its default search paths) and an XHR error surfaces as a toast
+    // rather than a half-rendered text page.
+    async function submitSoftplayerCredentials(ev) {
+        ev.preventDefault();
+        if (!softplayerSection) return;
+        var btn = $('#imagerSoftplayerDownloadBtn', softplayerSection);
+        var sel = $('#imagerSoftplayerFleetSelect', softplayerSection);
+        var fleetId = sel ? sel.value : '';
+        if (!fleetId) {
+            toast('Pick a fleet', 'error');
+            return;
+        }
+        btn.disabled = true;
+        try {
+            var resp = await fetch('/api/imager/softplayer-credentials', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fleet_id: fleetId }),
+            });
+            if (!resp.ok) {
+                var ct = resp.headers.get('content-type') || '';
+                var detail = ct.indexOf('application/json') >= 0
+                    ? ((await resp.json()).detail || resp.statusText)
+                    : (await resp.text() || resp.statusText);
+                throw new Error(detail);
+            }
+            var blob = await resp.blob();
+            // Pull the suggested filename out of Content-Disposition so
+            // the operator gets softplayer.env (the loader's canonical
+            // default name) instead of the anchor's plain href fallback.
+            var cd = resp.headers.get('content-disposition') || '';
+            var match = cd.match(/filename\s*=\s*"?([^";]+)"?/i);
+            var filename = (match && match[1]) || 'softplayer.env';
 
-    async function handleFleetCreateSentinel(sel) {
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            toast('Downloaded ' + filename, 'success');
+        } catch (e) {
+            toast('Download failed: ' + (e.message || e), 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // ── Fleet create / manage ──────────────────────────────────
+    var lastFleetSelectValue = '';
+    var lastSpFleetSelectValue = '';
+
+    async function handleFleetCreateSentinel(sel, options) {
         // Triggered when the operator picks "+ Create new fleet…" in
-        // the build form's fleet select. Prompts for an id, POSTs to
-        // /api/imager/fleets, then refreshes the dropdown and
-        // re-selects the new id.  Falls back to the previously-selected
-        // value on cancel/error so the form isn't stuck on the sentinel.
+        // the build form's fleet select OR the softplayer card's
+        // fleet select. Prompts for an id, POSTs to /api/imager/fleets,
+        // then refreshes both dropdowns + the Fleets panel and
+        // re-selects the new id in the dropdown that triggered.
+        // Falls back to the previously-selected value on cancel/error.
+        options = options || {};
+        var prevValue = options.prevValue || '';
+        var afterFill = options.afterFill || function() {};
         var newId = await showPrompt(
             'Enter a fleet ID (letters, digits, dot, underscore, dash; 1-64 chars).',
             ''
         );
-        // Always restore the previous value first; we'll overwrite if create succeeds.
-        sel.value = lastFleetSelectValue || '';
+        sel.value = prevValue;
         if (newId === null) return;
         var trimmed = String(newId).trim();
         if (!trimmed) { toast('Fleet ID cannot be empty', 'error'); return; }
@@ -860,13 +1024,9 @@
             });
             toast('Fleet "' + trimmed + '" created', 'success');
             await loadFleetsAndBases();
-            // Re-select the freshly-created fleet so the form is ready.
-            var sel2 = $('#imagerFleetSelect', buildSection);
-            if (sel2) {
-                sel2.value = trimmed;
-                lastFleetSelectValue = trimmed;
-                autoFillName();
-            }
+            if (fleetsSection) loadFleetsPanel();
+            sel.value = trimmed;
+            afterFill(trimmed);
         } catch (e) {
             if (e.status === 409) {
                 toast('Fleet "' + trimmed + '" already exists', 'error');
@@ -876,32 +1036,59 @@
         }
     }
 
-    async function openManageFleetsModal() {
-        var modal = $('#imagerFleetsModal');
+    async function promptAndCreateFleet() {
+        // Standalone create-fleet entry point for the Fleets sub-tab's
+        // "+ Create fleet…" button. Same validation + POST + refresh
+        // pipeline as the dropdown sentinel, minus the dropdown-revert
+        // and re-select bookkeeping.
+        var newId = await showPrompt(
+            'Enter a fleet ID (letters, digits, dot, underscore, dash; 1-64 chars).',
+            ''
+        );
+        if (newId === null) return;
+        var trimmed = String(newId).trim();
+        if (!trimmed) { toast('Fleet ID cannot be empty', 'error'); return; }
+        if (!/^[A-Za-z0-9._-]{1,64}$/.test(trimmed)) {
+            toast('Invalid fleet ID -- use letters, digits, dot, underscore, dash', 'error');
+            return;
+        }
+        try {
+            await jsonFetch('/api/imager/fleets', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fleet_id: trimmed }),
+            });
+            toast('Fleet "' + trimmed + '" created', 'success');
+            await loadFleetsAndBases();
+            await loadFleetsPanel();
+        } catch (e) {
+            if (e.status === 409) {
+                toast('Fleet "' + trimmed + '" already exists', 'error');
+            } else {
+                toast('Create failed: ' + (e.message || e), 'error');
+            }
+        }
+    }
+
+    async function loadFleetsPanel() {
         var body = $('#imagerFleetsBody');
-        if (!modal || !body) return;
+        if (!body) return;
         body.innerHTML = '<p class="empty-state text-muted">Loading…</p>';
-        modal.style.display = '';
         try {
             var fleets = await jsonFetch('/api/imager/fleets');
-            renderFleetsModalBody(fleets || []);
+            renderFleetsPanel(fleets || []);
         } catch (e) {
             body.innerHTML = '<p class="empty-state text-muted">Failed to load: ' +
                 escHtml(e.message || e) + '</p>';
         }
     }
 
-    function closeManageFleetsModal() {
-        var modal = $('#imagerFleetsModal');
-        if (modal) modal.style.display = 'none';
-    }
-
-    function renderFleetsModalBody(fleets) {
+    function renderFleetsPanel(fleets) {
         var body = $('#imagerFleetsBody');
         if (!body) return;
         if (fleets.length === 0) {
-            body.innerHTML = '<p class="empty-state text-muted">No fleets configured. ' +
-                'Pick "+ Create new fleet…" in the Build form to add one.</p>';
+            body.innerHTML = '<p class="empty-state text-muted">' +
+                'No fleets configured. Click "+ Create fleet…" above to add one.</p>';
             return;
         }
         body.innerHTML = '<table style="width:100%;">' +
@@ -926,9 +1113,10 @@
     async function deleteFleet(fleetId) {
         var ok = await showConfirm(
             'Delete fleet "' + fleetId + '"?\n\n' +
-            'This revokes the HMAC secret. Pis already flashed with this ' +
-            "fleet that haven't yet completed first-boot registration will " +
-            'fail to register. Already-registered Pis are unaffected.'
+            'This revokes the HMAC secret. Any device (Pi or Softplayer) ' +
+            'flashed/provisioned with this fleet that has not yet completed ' +
+            'first-boot registration will fail to register. Already-registered ' +
+            'devices are unaffected.'
         );
         if (!ok) return;
         try {
@@ -936,8 +1124,7 @@
                 method: 'DELETE',
             });
             toast('Deleted fleet "' + fleetId + '"', 'success');
-            // Refresh modal AND build form fleet dropdown.
-            await openManageFleetsModal();
+            await loadFleetsPanel();
             loadFleetsAndBases();
         } catch (e) {
             toast('Delete failed: ' + (e.message || e), 'error');
@@ -1312,7 +1499,13 @@
             // running the auto-fill / form-state logic, so the form
             // never carries the placeholder value forward.
             if (fleetSelEl.value === '__create__') {
-                handleFleetCreateSentinel(fleetSelEl);
+                handleFleetCreateSentinel(fleetSelEl, {
+                    prevValue: lastFleetSelectValue,
+                    afterFill: function(newId) {
+                        lastFleetSelectValue = newId;
+                        autoFillName();
+                    },
+                });
                 return;
             }
             lastFleetSelectValue = fleetSelEl.value;
@@ -1332,22 +1525,38 @@
             });
         }
 
-        // Manage Fleets modal (admin only).
-        var mgrBtn = $('#imagerManageFleetsBtn');
-        if (mgrBtn) mgrBtn.addEventListener('click', openManageFleetsModal);
-        var mgrClose = $('#imagerFleetsCloseBtn');
-        if (mgrClose) mgrClose.addEventListener('click', closeManageFleetsModal);
-        var mgrModal = $('#imagerFleetsModal');
-        if (mgrModal) {
-            mgrModal.addEventListener('click', function(e) {
-                if (e.target === mgrModal) closeManageFleetsModal();
-            });
-        }
+        // Manage Fleets modal removed -- the Fleets sub-tab handles it.
 
         loadFleetsAndBases();
         // Resume any in-flight job from a prior page load.
         var resumeId = loadActiveJob();
         if (resumeId) startPolling(resumeId);
+    }
+
+    if (softplayerSection) {
+        var spForm = $('#imagerSoftplayerForm', softplayerSection);
+        if (spForm) spForm.addEventListener('submit', submitSoftplayerCredentials);
+        var spSelEl = $('#imagerSoftplayerFleetSelect', softplayerSection);
+        if (spSelEl) {
+            spSelEl.addEventListener('change', function() {
+                if (spSelEl.value === '__create__') {
+                    handleFleetCreateSentinel(spSelEl, {
+                        prevValue: lastSpFleetSelectValue,
+                        afterFill: function(newId) {
+                            lastSpFleetSelectValue = newId;
+                        },
+                    });
+                    return;
+                }
+                lastSpFleetSelectValue = spSelEl.value;
+            });
+        }
+    }
+
+    if (fleetsSection) {
+        var createBtn = $('#imagerFleetsCreateBtn', fleetsSection);
+        if (createBtn) createBtn.addEventListener('click', promptAndCreateFleet);
+        loadFleetsPanel();
     }
 
     if (manageSection) {

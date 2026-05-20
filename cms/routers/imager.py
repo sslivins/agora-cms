@@ -50,7 +50,7 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -212,6 +212,17 @@ class BuildBody(BaseModel):
                 "wifi_ssid and wifi_psk must be provided together or both omitted"
             )
         return self
+
+
+class SoftplayerCredentialsBody(BaseModel):
+    """Request body for ``POST /api/imager/softplayer-credentials``.
+
+    Just a fleet id -- the softplayer is the .env-file analogue of the Pi
+    .img.xz build, so there's no base image, output filename, or wifi to
+    plumb through.
+    """
+
+    fleet_id: str = Field(..., min_length=1, max_length=64)
 
 
 class ImagerSettingsOut(BaseModel):
@@ -967,6 +978,128 @@ async def build_provisioned_image(
         progress_stage=job.progress_stage or "",
         progress_pct=job.progress_pct,
         output_name=pi.output_name,
+    )
+
+
+@router.post("/softplayer-credentials")
+async def build_softplayer_credentials(
+    body: SoftplayerCredentialsBody,
+    request: Request,
+    user: User = Depends(require_permission(IMAGER_BUILD)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    """Render and return the ``softplayer.env`` body for a given fleet.
+
+    The Windows-native ``agora-softplayer`` is bootstrap-v2-only: it
+    authenticates to the CMS via the same fleet-HMAC pairing flow Pis
+    use in production. Operators provision a softplayer by downloading
+    this env file from the Imager tab and dropping it next to the .exe
+    (or under ``%LOCALAPPDATA%\\agora-softplayer\\``).
+
+    The output mirrors :func:`_fleet_env_payload`'s ``agora-fleet.env``
+    body baked into Pi images -- same keys, same ``AGORA_FLEET_SECRET_HEX``
+    encoding -- just delivered as a downloadable text file instead of
+    inside an ``.img.xz``. The softplayer CLI consumes the same
+    ``KEY=VALUE`` format.
+
+    Validates that:
+
+    * ``fleet_id`` matches ``_FLEET_ID_RE`` and is configured on this CMS
+      (resolves to a secret).
+    * ``settings.device_transport`` is ``local`` or ``wps``.
+    * ``settings.base_url`` is set (the firmware needs an absolute URL).
+
+    Audited via ``imager.softplayer_credentials.download``. No
+    ``ProvisionedImage`` row is written -- the env file is ephemeral and
+    regeneratable from the fleet at any time; revoking access means
+    deleting the fleet (which invalidates the HMAC for every previously
+    downloaded file).
+    """
+    if not _FLEET_ID_RE.match(body.fleet_id):
+        raise HTTPException(status_code=422, detail="invalid fleet_id")
+
+    # FOR SHARE lock -- same locking contract as the Pi /build endpoint.
+    # Serialises against a concurrent ``DELETE /api/imager/fleets/{id}``.
+    fleet = await fleet_registry.get_fleet_for_build(db, body.fleet_id)
+    if fleet is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"fleet_id {body.fleet_id!r} is not configured on this CMS",
+        )
+    try:
+        secret = base64.b64decode(fleet.secret_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"fleet {body.fleet_id!r} has a misconfigured secret",
+        ) from exc
+
+    if settings.device_transport not in ("local", "wps"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Softplayer credentials require AGORA_CMS_DEVICE_TRANSPORT to be "
+                f"'local' or 'wps'; this CMS is configured for "
+                f"{settings.device_transport!r}."
+            ),
+        )
+
+    cms_base = (settings.base_url or "").rstrip("/")
+    if not cms_base:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AGORA_CMS_BASE_URL is not configured. Set it to the public URL "
+                "of this CMS (e.g. https://agora.example.com) -- softplayer "
+                "credentials embed it so the device can reach /ws/device and "
+                "/api/devices/register."
+            ),
+        )
+    try:
+        cms_url = _derive_device_ws_url(cms_base)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"AGORA_CMS_BASE_URL is invalid ({exc}); expected an absolute URL "
+                "like https://agora.example.com"
+            ),
+        ) from exc
+
+    payload = _fleet_env_payload(
+        cms_url,
+        body.fleet_id,
+        secret,
+        settings.device_transport,
+    )
+
+    await audit_log(
+        db,
+        user=user,
+        action="imager.softplayer_credentials.download",
+        resource_type="fleet",
+        resource_id=str(fleet.id),
+        # NEVER include the secret here. fleet_id alone is enough trace.
+        details={"fleet_id": body.fleet_id},
+        request=request,
+    )
+    await db.commit()
+
+    # Always emit the canonical name the loader looks for in its default
+    # search paths (%LOCALAPPDATA%\agora-softplayer\softplayer.env, next to
+    # the .exe, or cwd). Operators can rename to disambiguate across
+    # multiple fleets if they really need to, but the common path is
+    # "drop the download where it belongs and start the player".
+    filename = "softplayer.env"
+    return Response(
+        content=payload,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Caching makes no sense for a secret-bearing download.
+            "Cache-Control": "no-store",
+        },
     )
 
 
