@@ -118,7 +118,8 @@ class TestRestAuth:
         async with _client(app) as c:
             r = await c.post(
                 "/api/hubs/agora/users/pi-1/:send",
-                json={"data": {"hello": "world"}, "dataType": "json"},
+                content=json.dumps({"hello": "world"}),
+                headers={"content-type": "application/json"},
             )
             assert r.status_code == 401
 
@@ -127,8 +128,11 @@ class TestRestAuth:
         async with _client(app) as c:
             r = await c.post(
                 "/api/hubs/agora/users/pi-1/:send",
-                json={"data": "x", "dataType": "text"},
-                headers={"authorization": "Bearer not.a.jwt"},
+                content="x",
+                headers={
+                    "authorization": "Bearer not.a.jwt",
+                    "content-type": "text/plain",
+                },
             )
             assert r.status_code == 401
 
@@ -139,8 +143,11 @@ class TestRestAuth:
         async with _client(app) as c:
             r = await c.post(
                 "/api/hubs/agora/users/pi-ghost/:send",
-                json={"data": "x", "dataType": "text"},
-                headers={"authorization": f"Bearer {token}"},
+                content="x",
+                headers={
+                    "authorization": f"Bearer {token}",
+                    "content-type": "text/plain",
+                },
             )
             assert r.status_code == 404
 
@@ -256,8 +263,11 @@ class TestWssLoopback:
                 async with _client_base(port) as c:
                     r = await c.post(
                         "/api/hubs/agora/users/pi-loop/:send",
-                        json={"data": {"cmd": "PING"}, "dataType": "json"},
-                        headers={"authorization": f"Bearer {server_token}"},
+                        content=json.dumps({"cmd": "PING"}),
+                        headers={
+                            "authorization": f"Bearer {server_token}",
+                            "content-type": "application/json",
+                        },
                     )
                     assert r.status_code == 202, r.text
                     assert r.json()["delivered"] == 1

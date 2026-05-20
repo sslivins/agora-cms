@@ -40,14 +40,20 @@ GET   /health
 GET   /_debug/users           (dev only — broker is on private net)
 ```
 
-`send` body:
+`send` body matches the **real Azure Web PubSub REST contract**: the
+request body IS the payload, and the `Content-Type` header selects the
+WS frame type:
 
-```json
-{ "data": { ... }, "dataType": "json" }
-```
+| Content-Type                | WS frame delivered                  |
+|-----------------------------|-------------------------------------|
+| `application/json`          | text frame containing the JSON body |
+| `text/plain`                | text frame containing the raw body  |
+| `application/octet-stream`  | binary frame containing the bytes   |
+| (unset / unknown)           | text frame containing the raw body  |
 
-Supported `dataType`: `json`, `text`, `binary` (all delivered as a WS
-text frame today — Pi client doesn't speak binary).
+This matches what the Azure SDK does — `send_to_user(user, payload,
+content_type="application/json")` POSTs the serialized payload as the
+raw body, never a `{data, dataType}` wrapper.
 
 Auth on every `/api/...` route: `Authorization: Bearer <jwt>` where the
 JWT is HS256-signed with `WPS_ACCESS_KEY`. `aud` must start with the
