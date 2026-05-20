@@ -33,9 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import get_settings
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.device import Device, DeviceGroup
+from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.services.alert_service import alert_service
-from cms.services.device_inbound import InboundContext, dispatch_device_message
+from cms.services.device_inbound import InboundContext, dispatch_device_message, rotate_api_key
 from cms.services.device_manager import device_manager
 from cms.services.device_register import register_known_device
 from cms.services.transport import get_transport
@@ -314,6 +314,25 @@ async def events_receiver(
                 group_name=_group_name,
                 status=_device_status,
             )
+
+            # Push (or rotate) the device API key, mirroring the legacy
+            # WS register path in ``cms/routers/ws.py``.  Without this,
+            # WPS-adopted devices have ``device_api_key_hash IS NULL``
+            # in the DB and their asset-download GETs (which carry
+            # ``X-Device-API-Key``) all 401.  ``rotate_api_key`` is
+            # idempotent in the sense that it always generates a fresh
+            # key and preserves the prior hash for a grace window —
+            # safe to call on every register/reconnect.
+            if device.status == DeviceStatus.ADOPTED:
+                async def _wps_send(message: dict) -> None:
+                    await transport.send_to_device(ce_user_id, message)
+                try:
+                    await rotate_api_key(device=device, db=db, send=_wps_send)
+                except Exception:
+                    logger.exception(
+                        "Failed to rotate API key for WPS device %s",
+                        ce_user_id,
+                    )
             return Response(status_code=204)
 
         base_url = _get_asset_base_url(request, settings)
