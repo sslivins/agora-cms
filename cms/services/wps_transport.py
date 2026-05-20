@@ -97,9 +97,16 @@ class WPSTransport(DeviceTransport):
 
         metrics.wps_send_attempt_total.add(1)
         try:
+            # Pass the dict directly: the Azure SDK serializes once for
+            # `content_type="application/json"` (sets ``_json = message``
+            # in azure.messaging.webpubsubservice._operations._patch).
+            # Passing ``json.dumps(message)`` here caused a double-encode
+            # so the device received `"{\"type\":\"sync\",...}"` -- a
+            # JSON string -- and ``json.loads`` on the wire returned a
+            # str, crashing the device transport iterator.
             await self._client.send_to_user(
                 device_id,
-                json.dumps(message),
+                message,
                 content_type="application/json",
             )
             metrics.wps_send_success_total.add(1)
