@@ -21,7 +21,7 @@ async def test_admin_sees_full_page(client):
     resp = await client.get("/imager")
     assert resp.status_code == 200
     html = resp.text
-    assert "Pi Image Provisioning" in html
+    assert "<h2>Imager</h2>" in html
     assert '<h3 style="margin-top:0;">Build Image</h3>' in html
     assert '<h3 style="margin:0;">Base Images</h3>' in html
     # Catalog modal markup is admin-only.

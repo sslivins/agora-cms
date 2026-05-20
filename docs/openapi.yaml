@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Agora CMS
   description: Central management system for Agora media playback devices
-  version: 1.37.232
+  version: 1.37.233
 paths:
   /api/devices/register:
     post:
@@ -2975,6 +2975,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/imager/softplayer-credentials:
+    post:
+      summary: Build Softplayer Credentials
+      description: |-
+        Render and return the ``softplayer.env`` body for a given fleet.
+
+        The Windows-native ``agora-softplayer`` is bootstrap-v2-only: it
+        authenticates to the CMS via the same fleet-HMAC pairing flow Pis
+        use in production. Operators provision a softplayer by downloading
+        this env file from the Imager tab and dropping it next to the .exe
+        (or under ``%LOCALAPPDATA%\agora-softplayer\``).
+
+        The output mirrors :func:`_fleet_env_payload`'s ``agora-fleet.env``
+        body baked into Pi images -- same keys, same ``AGORA_FLEET_SECRET_HEX``
+        encoding -- just delivered as a downloadable text file instead of
+        inside an ``.img.xz``. The softplayer CLI consumes the same
+        ``KEY=VALUE`` format.
+
+        Validates that:
+
+        * ``fleet_id`` matches ``_FLEET_ID_RE`` and is configured on this CMS
+          (resolves to a secret).
+        * ``settings.device_transport`` is ``local`` or ``wps``.
+        * ``settings.base_url`` is set (the firmware needs an absolute URL).
+
+        Audited via ``imager.softplayer_credentials.download``. No
+        ``ProvisionedImage`` row is written -- the env file is ephemeral and
+        regeneratable from the fleet at any time; revoking access means
+        deleting the fleet (which invalidates the HMAC for every previously
+        downloaded file).
+      operationId: build_softplayer_credentials_api_imager_softplayer_credentials_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SoftplayerCredentialsBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/imager/provisioned-images:
     get:
       summary: List Provisioned Images
@@ -5108,6 +5157,23 @@ components:
       required:
       - password
       title: SetPasswordRequest
+    SoftplayerCredentialsBody:
+      properties:
+        fleet_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Fleet Id
+      type: object
+      required:
+      - fleet_id
+      title: SoftplayerCredentialsBody
+      description: |-
+        Request body for ``POST /api/imager/softplayer-credentials``.
+
+        Just a fleet id -- the softplayer is the .env-file analogue of the Pi
+        .img.xz build, so there's no base image, output filename, or wifi to
+        plumb through.
     ToggleRequest:
       properties:
         enabled:
