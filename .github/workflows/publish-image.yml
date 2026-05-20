@@ -659,9 +659,10 @@ jobs:
           # downgrading to github-actions[bot] and hiding the misconfig.
           token: ${{ secrets.VERSION_BUMP_TOKEN }}
 
-      - name: Bump version and push
+      - name: Bump version + regenerate openapi.yaml and push
         env:
           NEW_VERSION: ${{ needs.publish.outputs.version }}
+          CMS_IMAGE: ghcr.io/sslivins/agora-cms:${{ needs.publish.outputs.version }}
         run: |
           set -euo pipefail
           current=$(python3 -c "exec(open('cms/__init__.py').read()); print(__version__)")
@@ -670,9 +671,29 @@ jobs:
             exit 0
           fi
           sed -i "s/^__version__ = .*/__version__ = \"$NEW_VERSION\"/" cms/__init__.py
+
+          # Regenerate docs/openapi.yaml so the committed spec keeps its
+          # ``info.version`` field in sync with cms/__init__.py. Without
+          # this, every PR rebased onto post-bump main inherits a stale
+          # openapi.yaml and trips the openapi-check job (1.37.234 in
+          # the live FastAPI app vs 1.37.233 still committed in
+          # docs/openapi.yaml). We piggy-back on the just-published cms
+          # image so we don't have to spin up a separate setup-python +
+          # pip install step — its runtime deps (fastapi, pyyaml,
+          # pydantic, ...) are exactly what the script needs. The
+          # bind-mount + sys.path.insert(REPO_ROOT) in
+          # scripts/generate_openapi.py makes the script import the
+          # host's freshly-bumped cms/ rather than the image-baked copy.
+          docker pull "$CMS_IMAGE"
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint python \
+            "$CMS_IMAGE" \
+            scripts/generate_openapi.py
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cms/__init__.py
+          git add cms/__init__.py docs/openapi.yaml
           git commit -m "chore: bump version to $NEW_VERSION [skip ci]" \
                      -m "Auto-bumped by publish-image.yml after successful deploy." \
                      -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
