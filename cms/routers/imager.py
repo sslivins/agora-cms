@@ -1086,7 +1086,12 @@ async def build_softplayer_credentials(
     )
     await db.commit()
 
-    filename = f"softplayer-{body.fleet_id}.env"
+    # Always emit the canonical name the loader looks for in its default
+    # search paths (%LOCALAPPDATA%\agora-softplayer\softplayer.env, next to
+    # the .exe, or cwd). Operators can rename to disambiguate across
+    # multiple fleets if they really need to, but the common path is
+    # "drop the download where it belongs and start the player".
+    filename = "softplayer.env"
     return Response(
         content=payload,
         media_type="text/plain; charset=utf-8",

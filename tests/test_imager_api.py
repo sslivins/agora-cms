@@ -1158,7 +1158,7 @@ async def test_softplayer_credentials_returns_text_with_env_body(
 
     cd = resp.headers.get("content-disposition", "")
     assert "attachment" in cd
-    assert 'filename="softplayer-fleet-test.env"' in cd
+    assert 'filename="softplayer.env"' in cd
 
     # No caching -- the body carries a secret.
     assert resp.headers.get("cache-control") == "no-store"
