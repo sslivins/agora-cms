@@ -369,3 +369,159 @@ class TestUpstreamWebhooks:
         assert msg_ev["headers"].get("ce-eventname") == "message"
         assert json.loads(msg_ev["body"]) == {"type": "HEARTBEAT"}
         assert msg_ev["headers"].get("content-type", "").startswith("application/json")
+
+
+# ---------------------------------------------------------------- WPS json subprotocol
+
+
+WPS_SUBPROTO = "json.webpubsub.azure.v1"
+
+
+@pytest.mark.asyncio
+class TestWpsJsonSubprotocol:
+    """When the client negotiates ``json.webpubsub.azure.v1`` the broker
+    must mirror Azure WPS: wrap server->client payloads in a ``message``
+    envelope, and unwrap client->server ``event`` envelopes before
+    forwarding upstream."""
+
+    async def test_send_wraps_payload_for_subprotocol_clients(self):
+        app = broker.create_app()
+        port = _free_port()
+        server = _run_uvicorn_in_thread(app, port)
+        try:
+            import websockets
+
+            token = broker.mint_client_token(user_id="pi-wps")
+            uri = f"ws://127.0.0.1:{port}/client/hubs/agora?access_token={token}"
+
+            async with websockets.connect(uri, subprotocols=[WPS_SUBPROTO]) as ws:
+                assert ws.subprotocol == WPS_SUBPROTO
+                for _ in range(50):
+                    await asyncio.sleep(0.02)
+                    if app.state.registry.user_exists("pi-wps"):
+                        break
+                assert app.state.registry.user_exists("pi-wps")
+
+                aud = f"http://127.0.0.1:{port}/api/hubs/agora/users/pi-wps/"
+                server_token = broker.mint_server_token(audience=aud)
+
+                async with _client_base(port) as c:
+                    r = await c.post(
+                        "/api/hubs/agora/users/pi-wps/:send",
+                        content=json.dumps({"cmd": "PING", "n": 1}),
+                        headers={
+                            "authorization": f"Bearer {server_token}",
+                            "content-type": "application/json",
+                        },
+                    )
+                    assert r.status_code == 202, r.text
+
+                received = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                envelope = json.loads(received)
+                assert envelope["type"] == "message"
+                assert envelope["from"] == "server"
+                assert envelope["dataType"] == "json"
+                assert envelope["data"] == {"cmd": "PING", "n": 1}
+        finally:
+            server.should_exit = True
+            await asyncio.sleep(0.2)
+
+    async def test_send_does_not_wrap_for_plain_clients(self):
+        """A plain WS client (no subprotocol) still gets the raw payload —
+        the legacy contract is preserved for compose smoke tests and any
+        non-WPS consumer."""
+        app = broker.create_app()
+        port = _free_port()
+        server = _run_uvicorn_in_thread(app, port)
+        try:
+            import websockets
+
+            token = broker.mint_client_token(user_id="pi-plain")
+            uri = f"ws://127.0.0.1:{port}/client/hubs/agora?access_token={token}"
+
+            async with websockets.connect(uri) as ws:
+                assert ws.subprotocol is None
+                for _ in range(50):
+                    await asyncio.sleep(0.02)
+                    if app.state.registry.user_exists("pi-plain"):
+                        break
+
+                aud = f"http://127.0.0.1:{port}/api/hubs/agora/users/pi-plain/"
+                server_token = broker.mint_server_token(audience=aud)
+
+                async with _client_base(port) as c:
+                    r = await c.post(
+                        "/api/hubs/agora/users/pi-plain/:send",
+                        content=json.dumps({"cmd": "PING"}),
+                        headers={
+                            "authorization": f"Bearer {server_token}",
+                            "content-type": "application/json",
+                        },
+                    )
+                    assert r.status_code == 202
+
+                received = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                # Raw payload, NOT an envelope.
+                assert json.loads(received) == {"cmd": "PING"}
+        finally:
+            server.should_exit = True
+            await asyncio.sleep(0.2)
+
+    async def test_inbound_event_envelope_is_unwrapped(self, monkeypatch):
+        """Client wraps its outgoing message in
+        ``{"type":"event","event":"<name>","dataType":"json","data":<…>}``.
+        Broker must forward only ``<data>`` upstream with
+        ``ce-eventName=<name>``."""
+        received: list[dict] = []
+
+        async def _capture(request):
+            import httpx as _httpx
+            body = await request.aread()
+            received.append({
+                "type": request.headers.get("ce-type"),
+                "event": request.headers.get("ce-eventname"),
+                "body": body,
+                "content_type": request.headers.get("content-type", ""),
+            })
+            return _httpx.Response(200)
+
+        import httpx as _httpx
+        transport = _httpx.MockTransport(_capture)
+
+        app = broker.create_app()
+        await app.state.http_client.aclose()
+        app.state.http_client = _httpx.AsyncClient(transport=transport)
+        monkeypatch.setattr(broker, "UPSTREAM_URL", "http://cms/internal/wps/events")
+
+        port = _free_port()
+        server = _run_uvicorn_in_thread(app, port)
+        try:
+            import websockets
+
+            token = broker.mint_client_token(user_id="pi-evt")
+            uri = f"ws://127.0.0.1:{port}/client/hubs/agora?access_token={token}"
+
+            async with websockets.connect(uri, subprotocols=[WPS_SUBPROTO]) as ws:
+                envelope = {
+                    "type": "event",
+                    "event": "register",
+                    "dataType": "json",
+                    "data": {"type": "register", "ip_address": "192.168.1.50"},
+                }
+                await ws.send(json.dumps(envelope))
+                for _ in range(100):
+                    await asyncio.sleep(0.05)
+                    if any(r["event"] == "register" for r in received):
+                        break
+        finally:
+            server.should_exit = True
+            await asyncio.sleep(0.2)
+
+        reg = next(r for r in received if r["event"] == "register")
+        assert reg["type"] == "azure.webpubsub.user.register"
+        # The body must be JUST the inner data — not the whole envelope.
+        assert json.loads(reg["body"]) == {
+            "type": "register",
+            "ip_address": "192.168.1.50",
+        }
+        assert reg["content_type"].startswith("application/json")

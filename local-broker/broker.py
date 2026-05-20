@@ -106,6 +106,18 @@ UPSTREAM_TIMEOUT_S = float(_getenv("WPS_UPSTREAM_TIMEOUT_S", "5.0"))
 
 JWT_ALG = "HS256"
 
+# Azure Web PubSub's JSON subprotocol.  When a client connects with
+# ``Sec-WebSocket-Protocol: json.webpubsub.azure.v1`` the service:
+#   * Wraps server->client payloads as
+#     ``{"type":"message","from":"server","dataType":<…>,"data":<…>}``
+#     on the WS wire.
+#   * Unwraps client->server ``{"type":"event","event":<name>,"dataType":<…>,
+#     "data":<…>}`` envelopes and forwards just ``data`` to the upstream
+#     webhook.
+# Real Azure WPS reference:
+# https://learn.microsoft.com/en-us/azure/azure-web-pubsub/reference-json-webpubsub-subprotocol
+WPS_JSON_SUBPROTOCOL = "json.webpubsub.azure.v1"
+
 
 # ----------------------------------------------------------------- connections
 
@@ -116,6 +128,10 @@ class _Conn:
     user_id: str
     hub: str
     ws: WebSocket
+    # Negotiated WebSocket subprotocol (empty string if none).  The
+    # broker wraps/unwraps payloads when this is ``json.webpubsub.azure.v1``
+    # and passes them through verbatim otherwise.
+    subprotocol: str = ""
     connected_at: float = field(default_factory=time.time)
 
 
@@ -253,6 +269,62 @@ def verify_webhook_signature(
 # --------------------------------------------------------------------- webhook
 
 
+def _unwrap_inbound_text(
+    text: str, *, subprotocol: str,
+) -> tuple[bytes, str, str]:
+    """Translate one client-to-server text frame into ``(body, content_type, event_name)``.
+
+    Clients using the ``json.webpubsub.azure.v1`` subprotocol wrap every
+    application message in an envelope::
+
+        {"type": "event", "event": "<name>", "dataType": "<…>", "data": <…>}
+
+    Real Azure WPS strips that envelope and posts the inner ``data`` as
+    the upstream webhook body, with ``ce-eventName`` set to ``<name>`` and
+    ``Content-Type`` derived from ``dataType``.  Match that behaviour so
+    CMS handlers see the same shape they would in production.
+
+    Frames that don't fit the envelope (bad JSON, missing fields, wrong
+    type) — and frames from clients NOT using the WPS subprotocol — are
+    passed through verbatim with content-type ``application/json`` and
+    event name ``message``, preserving the legacy behaviour.
+    """
+    encoded = text.encode("utf-8")
+    if subprotocol != WPS_JSON_SUBPROTOCOL:
+        return encoded, "application/json", "message"
+    try:
+        envelope = json.loads(text)
+    except json.JSONDecodeError:
+        return encoded, "application/json", "message"
+    if not isinstance(envelope, dict) or envelope.get("type") != "event":
+        return encoded, "application/json", "message"
+    event_name = envelope.get("event")
+    if not isinstance(event_name, str) or not event_name:
+        event_name = "message"
+    data_type = envelope.get("dataType", "json")
+    data = envelope.get("data")
+    if data_type == "json":
+        # Re-serialize the parsed object so the body is the JSON
+        # representation of just the data payload.
+        return json.dumps(data).encode("utf-8"), "application/json", event_name
+    if data_type == "text":
+        if not isinstance(data, str):
+            data = "" if data is None else str(data)
+        return data.encode("utf-8"), "text/plain", event_name
+    if data_type == "binary":
+        # Binary inside the JSON subproto is base64.  Best effort: decode
+        # if possible, else hand bytes of the string through.
+        import base64
+        if isinstance(data, str):
+            try:
+                return base64.b64decode(data, validate=False), "application/octet-stream", event_name
+            except Exception:  # pragma: no cover - degenerate
+                pass
+        return encoded, "application/json", event_name
+    # Unknown dataType — pass through.
+    return encoded, "application/json", event_name
+
+
 async def _post_webhook(
     client: httpx.AsyncClient,
     *,
@@ -378,26 +450,46 @@ def create_app() -> FastAPI:
         )
 
         # Match real Azure Web PubSub REST contract: the request body IS
-        # the payload; `Content-Type` selects the WS frame type.  The
-        # Azure SDK (``WebPubSubServiceClient.send_to_user``) sends the
+        # the payload; ``Content-Type`` selects the WS dataType.  The
+        # Azure SDK ``WebPubSubServiceClient.send_to_user`` sends the
         # serialized payload as the raw body, never a ``{data, dataType}``
-        # wrapper — wrapping was a local-broker historical mistake.
+        # wrapper.
         raw_body = await request.body()
         ct = (content_type or "").split(";", 1)[0].strip().lower()
 
+        # Parse the payload + tag a dataType the way real Azure WPS does
+        # for clients on the ``json.webpubsub.azure.v1`` subprotocol.  For
+        # plain WS clients we drop the wrapping and forward verbatim.
+        wps_data: Any
+        wps_data_type: str
+        passthrough_text: str | None
+        passthrough_bytes: bytes
         if ct == "application/octet-stream":
-            frame_bytes: bytes = raw_body
-            frame_text: str | None = None
+            wps_data = raw_body  # placeholder; binary not yet supported on json subproto
+            wps_data_type = "binary"
+            passthrough_text = None
+            passthrough_bytes = raw_body
         elif ct == "text/plain":
-            frame_bytes = b""
-            frame_text = raw_body.decode("utf-8", errors="replace")
+            text = raw_body.decode("utf-8", errors="replace")
+            wps_data = text
+            wps_data_type = "text"
+            passthrough_text = text
+            passthrough_bytes = b""
         else:
-            # Default + ``application/json``: deliver the body as a text
-            # frame.  For JSON the body is already a UTF-8-encoded JSON
-            # string; for unknown/missing Content-Type Azure WPS treats
-            # the payload as text/JSON.
-            frame_bytes = b""
-            frame_text = raw_body.decode("utf-8", errors="replace")
+            # Default + application/json: parse the body as JSON when
+            # possible.  Azure WPS does this server-side so the on-wire
+            # ``data`` field holds the parsed value, not the raw string.
+            text = raw_body.decode("utf-8", errors="replace")
+            try:
+                wps_data = json.loads(text) if text else None
+                wps_data_type = "json"
+            except json.JSONDecodeError:
+                # Not JSON despite the content type — fall back to text
+                # so the device still gets *something* it can inspect.
+                wps_data = text
+                wps_data_type = "text"
+            passthrough_text = text
+            passthrough_bytes = b""
 
         conns = registry.connections_for_user(user_id)
         if not conns:
@@ -407,10 +499,27 @@ def create_app() -> FastAPI:
         delivered = 0
         for conn in conns:
             try:
-                if frame_text is not None:
-                    await conn.ws.send_text(frame_text)
+                if conn.subprotocol == WPS_JSON_SUBPROTOCOL:
+                    envelope = {
+                        "type": "message",
+                        "from": "server",
+                        "dataType": wps_data_type,
+                        "data": wps_data,
+                    }
+                    if wps_data_type == "binary":
+                        # ``json.webpubsub.azure.v1`` carries binary as
+                        # base64 in the JSON ``data`` field.  Only handle
+                        # when we actually have bytes.
+                        import base64
+                        envelope["data"] = base64.b64encode(passthrough_bytes).decode("ascii")
+                    await conn.ws.send_text(json.dumps(envelope))
                 else:
-                    await conn.ws.send_bytes(frame_bytes)
+                    # No subprotocol negotiated — forward the raw payload
+                    # exactly as it arrived on the REST request body.
+                    if passthrough_text is not None:
+                        await conn.ws.send_text(passthrough_text)
+                    else:
+                        await conn.ws.send_bytes(passthrough_bytes)
                 delivered += 1
             except Exception:
                 logger.exception(
@@ -463,13 +572,27 @@ def create_app() -> FastAPI:
             await websocket.close(code=4401)
             return
 
+        # Negotiate the WebSocket subprotocol.  Real Azure WPS picks the
+        # ``json.webpubsub.azure.v1`` protocol when offered, and that
+        # choice toggles the wrap/unwrap behaviour below.  Anything else
+        # is accepted without negotiating a subprotocol — plain WS clients
+        # continue to see raw payloads (matches the legacy contract).
+        requested = list(websocket.scope.get("subprotocols", []) or [])
+        negotiated = (
+            WPS_JSON_SUBPROTOCOL if WPS_JSON_SUBPROTOCOL in requested else ""
+        )
+
         connection_id = uuid.uuid4().hex
-        await websocket.accept()
+        if negotiated:
+            await websocket.accept(subprotocol=negotiated)
+        else:
+            await websocket.accept()
         conn = _Conn(
             connection_id=connection_id,
             user_id=user_id,
             hub=hub,
             ws=websocket,
+            subprotocol=negotiated,
         )
         await registry.add(conn)
 
@@ -495,20 +618,26 @@ def create_app() -> FastAPI:
                     break
                 if "text" in msg and msg["text"] is not None:
                     text = msg["text"]
+                    body, ct, event_name = _unwrap_inbound_text(
+                        text, subprotocol=negotiated,
+                    )
                     asyncio.create_task(
                         _post_webhook(
                             http_client,
-                            event_type="azure.webpubsub.user.message",
+                            event_type="azure.webpubsub.user." + event_name,
                             hub=hub,
                             connection_id=connection_id,
                             user_id=user_id,
-                            event_name="message",
-                            raw_body=text.encode("utf-8"),
-                            content_type="application/json",
+                            event_name=event_name,
+                            raw_body=body,
+                            content_type=ct,
                         )
                     )
                 elif "bytes" in msg and msg["bytes"] is not None:
-                    # Binary frames — not used by current Pi agent but honour the shape.
+                    # Binary frames — not unwrapped (the WPS JSON subproto
+                    # carries data as a base64 string inside the JSON
+                    # envelope, so a true binary WS frame from the client
+                    # is an out-of-band payload either way).
                     asyncio.create_task(
                         _post_webhook(
                             http_client,

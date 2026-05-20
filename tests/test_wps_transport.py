@@ -58,9 +58,12 @@ class TestSendToDevice:
         assert ok is True
         c.send_to_user.assert_awaited_once()
         args, kwargs = c.send_to_user.call_args
-        # (user_id, body_str, content_type=...)
+        # (user_id, body_dict, content_type=...). The dict is passed
+        # straight through -- the Azure SDK serializes once when
+        # content_type=application/json. Passing json.dumps(...) here
+        # used to double-encode and crash the device transport.
         assert args[0] == "pi-1"
-        assert json.loads(args[1]) == {"type": "ping"}
+        assert args[1] == {"type": "ping"}
         assert kwargs.get("content_type") == "application/json"
 
     async def test_404_returns_false(self):

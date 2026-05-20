@@ -1173,6 +1173,117 @@ class TestAlertServiceHooks:
         mock_alert.device_disconnected.assert_not_called()
 
 
+# ---------------------------------------------------------------- api_key rotation
+
+
+@pytest.mark.asyncio
+class TestApiKeyRotationOnRegister:
+    """When an ADOPTED device sends ``register`` over WPS, the webhook
+    must rotate-and-push the device API key — mirrors the legacy
+    ``cms/routers/ws.py`` register path (line ~304).  Without this,
+    asset downloads 401 because ``Device.device_api_key_hash`` is
+    ``NULL`` until the first rotation."""
+
+    async def test_adopted_register_rotates_and_pushes_api_key(
+        self, client, app_and_session,
+    ):
+        from cms.models.device import DeviceStatus
+
+        _, session = app_and_session
+        # Real DeviceStatus enum so the ``device.status == DeviceStatus.ADOPTED``
+        # guard in the handler evaluates True.
+        device = MagicMock(
+            id="pi-key", group_id=None, status=DeviceStatus.ADOPTED,
+        )
+        device.name = "Lobby"
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-key"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ), patch(
+            "cms.routers.wps_webhook.rotate_api_key",
+            new=AsyncMock(return_value=None),
+        ) as mock_rotate:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-key",
+                    "auth_token": "valid",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-key",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_rotate.assert_awaited_once()
+        # ``rotate_api_key`` is invoked with kwargs (device, db, send).
+        kwargs = mock_rotate.call_args.kwargs
+        assert kwargs["device"] is device
+        # The ``send`` adapter should route through the WPS transport.
+        sender = kwargs["send"]
+        await sender({"type": "config", "api_key": "newkey"})
+        fake_transport.send_to_device.assert_awaited_once_with(
+            "pi-key", {"type": "config", "api_key": "newkey"},
+        )
+
+    async def test_non_adopted_register_does_not_rotate(
+        self, client, app_and_session,
+    ):
+        """A PENDING / ORPHANED device must not get a rotated key —
+        same guard the legacy WS handler enforces."""
+        from cms.models.device import DeviceStatus
+
+        _, session = app_and_session
+        device = MagicMock(
+            id="pi-pend", group_id=None, status=DeviceStatus.PENDING,
+        )
+        device.name = "New"
+        session.device_row = device
+
+        cid = "conn-pend"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.rotate_api_key",
+            new=AsyncMock(return_value=None),
+        ) as mock_rotate:
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-pend",
+                    "auth_token": "valid",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-pend",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        mock_rotate.assert_not_awaited()
+
+
 # ---------------------------------------------------------------- multi-key
 
 
