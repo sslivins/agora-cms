@@ -48,35 +48,11 @@ class WPSTransport(DeviceTransport):
         hub: str,
     ) -> None:
         self._hub = hub
-        # DEBUG (temporary, issue #XXX): snapshot the endpoint substring of
-        # the conn string used to construct this transport so we can compare
-        # it at token-mint time against what env says today.
-        ep = ""
-        try:
-            for part in (connection_string or "").split(";"):
-                if part.lower().startswith("endpoint="):
-                    ep = part.split("=", 1)[1]
-                    break
-        except Exception:
-            ep = "<parse-error>"
-        self._debug_endpoint = ep
-        logger.info(
-            "WPSTransport.__init__ hub=%s endpoint=%s conn_len=%d",
-            hub, ep, len(connection_string or ""),
-        )
         self._client: WebPubSubServiceClient = (
             WebPubSubServiceClient.from_connection_string(
                 connection_string, hub=hub,
             )
         )
-        try:
-            sdk_ep = getattr(self._client, "_config", None)
-            sdk_ep = getattr(sdk_ep, "endpoint", None) if sdk_ep else None
-            logger.info(
-                "WPSTransport.__init__ sdk_client_endpoint=%s", sdk_ep,
-            )
-        except Exception as e:
-            logger.warning("WPSTransport.__init__ sdk endpoint probe failed: %s", e)
 
     # ---- outbound -----------------------------------------------------
 
@@ -231,20 +207,8 @@ class WPSTransport(DeviceTransport):
         result = await self._client.get_client_access_token(
             user_id=device_id, minutes_to_expire=minutes_to_expire,
         )
-        out = dict(result)
-        # DEBUG (temporary): log endpoint snapshot + minted URL host so
-        # we can tell whether the running singleton was built with the
-        # correct conn string.
-        try:
-            url = str(out.get("url") or "")
-            host = url.split("/")[2] if "://" in url else "<no-host>"
-            logger.info(
-                "WPSTransport.mint device=%s init_endpoint=%s minted_host=%s id=%x",
-                device_id, getattr(self, "_debug_endpoint", "?"), host, id(self),
-            )
-        except Exception as e:
-            logger.warning("WPSTransport.mint debug log failed: %s", e)
-        return out
+        # SDK returns a MutableMapping with url/token/baseUrl.
+        return dict(result)
 
     async def close(self) -> None:
         await self._client.close()
