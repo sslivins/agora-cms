@@ -239,14 +239,55 @@ async def events_receiver(
                 )
                 return Response(status_code=204)
             if reg_result.auth_assigned is not None:
+                # DEBUG (temporary, prove-race): wrap the auth_assigned
+                # send-to-user with explicit timing + Azure WPS user
+                # presence probes pre/post.  If user_exists_pre is
+                # False we've proven the broker hasn't bound this
+                # user_id at the moment CMS fires send_to_user, which
+                # is consistent with Azure dropping the message
+                # silently (send-to-user has no retention).
+                import time as _t
+                t0 = _t.monotonic()
+                exists_pre: bool | str = "<probe-error>"
+                exists_post: bool | str = "<not-probed>"
+                send_ok: bool | str = "<not-sent>"
+                wps_client = getattr(transport, "_client", None)
                 try:
-                    await transport.send_to_device(
+                    if wps_client is not None:
+                        exists_pre = await wps_client.user_exists(
+                            user_id=ce_user_id,
+                        )
+                except Exception as e:
+                    exists_pre = f"<probe-error:{type(e).__name__}>"
+                logger.info(
+                    "AUTH_ASSIGNED_SEND user=%s connection_id=%s "
+                    "user_exists_pre=%s payload_keys=%s",
+                    ce_user_id, ce_connection_id, exists_pre,
+                    sorted(reg_result.auth_assigned.keys()),
+                )
+                try:
+                    send_ok = await transport.send_to_device(
                         ce_user_id, reg_result.auth_assigned,
                     )
                 except Exception:
+                    send_ok = "<exception>"
                     logger.exception(
                         "Failed to push auth_assigned to WPS device %s", ce_user_id,
                     )
+                try:
+                    if wps_client is not None:
+                        exists_post = await wps_client.user_exists(
+                            user_id=ce_user_id,
+                        )
+                except Exception as e:
+                    exists_post = f"<probe-error:{type(e).__name__}>"
+                logger.info(
+                    "AUTH_ASSIGNED_SEND_RESULT user=%s ok=%s "
+                    "elapsed_ms=%d user_exists_pre=%s user_exists_post=%s",
+                    ce_user_id, send_ok,
+                    int((_t.monotonic() - t0) * 1000),
+                    exists_pre, exists_post,
+                )
             # Clear any stale upgrade-in-progress claim so the device
             # can be upgraded again on a future request — but only
             # when this register represents an actual completed
