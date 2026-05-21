@@ -424,6 +424,43 @@ async def update_schedule(
         select(Schedule).options(*_eager_options()).where(Schedule.id == schedule.id)
     )
     schedule = result.scalar_one()
+
+    # "Set to now" invisibility-window debugging (#issue TBD).  When
+    # start_time/end_time/start_date/end_date change, log the immediate
+    # post-commit state vs the server's wall clock so we can tell
+    # whether the saved row should have matched ``_matches_now`` right
+    # away, or whether it landed slightly in the future (e.g. browser
+    # clock skew via the "Set to now" chip).  Remove once the
+    # invisibility-window report is fully understood.
+    _time_keys = {"start_time", "end_time", "start_date", "end_date"}
+    if _time_keys & set(updates):
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            from zoneinfo import ZoneInfo as _ZI
+            from cms.auth import SETTING_TIMEZONE, get_setting as _gs
+            from cms.services.scheduler import _matches_now as _mn
+            tz_name = await _gs(db, SETTING_TIMEZONE) or "UTC"
+            srv_now_utc = _dt.now(_tz.utc)
+            srv_now_local = srv_now_utc.astimezone(_ZI(tz_name)).replace(tzinfo=None)
+            today_start = _dt.combine(srv_now_local.date(), schedule.start_time)
+            logger.info(
+                "schedule.update.timing schedule_id=%s changed=%s "
+                "server_local_now=%s server_tz=%s "
+                "saved_start_time=%s saved_end_time=%s "
+                "saved_start_date=%s saved_end_date=%s "
+                "matches_now=%s today_start_vs_now=%s "
+                "delta_secs_to_start=%s",
+                schedule.id, sorted(_time_keys & set(updates)),
+                srv_now_local.isoformat(timespec="seconds"), tz_name,
+                schedule.start_time, schedule.end_time,
+                schedule.start_date, schedule.end_date,
+                _mn(schedule, srv_now_local),
+                "future" if today_start > srv_now_local else "past_or_now",
+                int((today_start - srv_now_local).total_seconds()),
+            )
+        except Exception:
+            logger.debug("schedule.update.timing log failed", exc_info=True)
+
     await push_sync_to_affected_devices(schedule, db)
     await _trigger_eval()
     return _schedule_to_out(schedule)

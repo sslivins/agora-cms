@@ -201,6 +201,33 @@ window._playingScheduleIds = {{ playing_schedule_ids | tojson }};
 const _tzList = JSON.parse(document.getElementById('_tzOptions').value);
 const _currentTz = document.getElementById('_tz').value;
 
+// Browser-vs-server clock skew in ms (browser - server).  The "Set to
+// now" chip needs server time, not browser time -- if the browser is
+// running a few seconds ahead of the server (common on Windows where
+// w32time syncs only weekly), formatting Date.now() to HH:MM truncates
+// into a *future* minute, the saved start_time is briefly > server's
+// current time, _matches_now() returns False on the next dashboard
+// poll, and the schedule is invisible until the server clock catches
+// up -- "appears about a minute after start_time".
+let _serverClockSkewMs = 0;
+async function _refreshServerSkew() {
+    try {
+        const before = Date.now();
+        const res = await fetch('/api/server-time', { cache: 'no-store' });
+        const after = Date.now();
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverMs = new Date(data.utc).getTime();
+        // Subtract half the round-trip so we approximate the server's
+        // clock at the midpoint of the request.
+        const browserMidpoint = (before + after) / 2;
+        _serverClockSkewMs = browserMidpoint - serverMs;
+    } catch (e) { /* keep last known offset */ }
+}
+// Kick off once on page load; also refreshed when the edit modal opens.
+_refreshServerSkew();
+function _serverNow() { return new Date(Date.now() - _serverClockSkewMs); }
+
 function saveTimezone(tz) {
     fetch('/settings/timezone', {
         method: 'POST',
@@ -742,6 +769,9 @@ document.getElementById("schedule-summary").addEventListener('click', function(e
 
 // ── Edit modal ──
 function editSchedule(s) {
+    // Refresh server-clock skew on each modal open so the "Set to now"
+    // chip uses an up-to-date offset (best-effort; non-blocking).
+    _refreshServerSkew();
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
 
@@ -928,10 +958,10 @@ function editSchedule(s) {
             return new Intl.DateTimeFormat('en-GB', {
                 hour: '2-digit', minute: '2-digit', hour12: false,
                 timeZone: tz || undefined,
-            }).format(new Date());
+            }).format(_serverNow());
         } catch (e) {
             // Bad/unknown IANA name -- fall back to browser local time.
-            const now = new Date();
+            const now = _serverNow();
             return String(now.getHours()).padStart(2, '0') + ':' +
                    String(now.getMinutes()).padStart(2, '0');
         }
