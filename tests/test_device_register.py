@@ -194,6 +194,38 @@ class TestRegisterKnownDevice:
         assert device.storage_used_mb == 100
         assert device.last_seen is not None
 
+    async def test_null_string_fields_preserve_prior_value(self):
+        """A device sending ``os_version: null`` / empty string / missing
+        key must not overwrite the existing column value -- the columns
+        are NOT NULL with default "" and a NULL UPDATE would crash the
+        webhook and get the register message silently dropped by Azure
+        WPS retry-then-drop.  Regression: softplayer on Windows.
+        """
+        device = _make_device(
+            device_auth_token_hash=hash_token("t"),
+            firmware_version="1.0.0",
+            os_version="0.0.16-test",
+            device_type="Raspberry Pi 5",
+        )
+        db = _FakeDB()
+
+        await register_known_device(
+            device,
+            {
+                "type": "register",
+                "device_id": "pi-1",
+                "auth_token": "t",
+                "firmware_version": None,
+                "os_version": None,
+                "device_type": "",
+            },
+            db,
+        )
+
+        assert device.firmware_version == "1.0.0"
+        assert device.os_version == "0.0.16-test"
+        assert device.device_type == "Raspberry Pi 5"
+
     async def test_device_name_not_overridden_unless_custom(self):
         """Register payloads only update device.name when the captive-portal
         flag device_name_custom=True is set — otherwise keep the CMS-side

@@ -159,10 +159,21 @@ async def register_known_device(
         ).model_dump(mode="json")
         logger.info("Auth token assigned to existing device %s", device.id)
 
-    # Refresh metadata from the register payload.
-    device.firmware_version = raw.get("firmware_version", device.firmware_version)
-    device.os_version = raw.get("os_version", device.os_version)
-    device.device_type = raw.get("device_type", device.device_type)
+    # Refresh metadata from the register payload.  Treat empty / null
+    # incoming string fields as "keep existing value" rather than
+    # overwriting -- the columns are NOT NULL with default "", and a
+    # device that legitimately omits a field (e.g. softplayer on
+    # Windows with no /etc/agora/version) must not 500 the webhook
+    # and get its register dropped by Azure WPS retry-then-drop.
+    new_fw = raw.get("firmware_version")
+    if new_fw:
+        device.firmware_version = new_fw
+    new_os = raw.get("os_version")
+    if new_os:
+        device.os_version = new_os
+    new_type = raw.get("device_type")
+    if new_type:
+        device.device_type = new_type
     reg_codecs = raw.get("supported_codecs")
     if reg_codecs is not None:
         device.supported_codecs = ",".join(reg_codecs)
