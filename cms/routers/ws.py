@@ -124,13 +124,18 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
         if device is None:
             # New device — create as pending, prefer device_name over raw ID
             device_name = raw.get("device_name", "") or device_id
+            # NOT NULL string columns -- coerce None/missing -> "" so
+            # a device that ships ``"os_version": null`` (e.g.
+            # softplayer on Windows) does not blow the INSERT with an
+            # IntegrityError and have its register dropped by Azure
+            # WPS retry-then-drop.
             device = Device(
                 id=device_id,
                 name=device_name,
                 status=DeviceStatus.PENDING,
-                firmware_version=raw.get("firmware_version", ""),
-                os_version=raw.get("os_version", ""),
-                device_type=raw.get("device_type", ""),
+                firmware_version=raw.get("firmware_version") or "",
+                os_version=raw.get("os_version") or "",
+                device_type=raw.get("device_type") or "",
                 supported_codecs=",".join(raw.get("supported_codecs", [])),
                 storage_capacity_mb=raw.get("storage_capacity_mb", 0),
                 storage_used_mb=raw.get("storage_used_mb", 0),
