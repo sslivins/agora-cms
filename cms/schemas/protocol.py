@@ -35,6 +35,30 @@ SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
 # is gated out of slideshow scheduling / default-asset assignment.
 CAPABILITY_SLIDESHOW_V1 = "slideshow_v1"
 
+# Slideshow manifest schema version (semver, additive minor bumps).  The
+# wire format of the slideshow manifest is independent of the
+# higher-level ``PROTOCOL_VERSION``: protocol bumps describe the WS
+# message envelope and binary frame encoding, schema bumps describe
+# which optional fields a ``FetchAssetMessage`` slideshow payload
+# (and its persisted on-device JSON) carries.
+#
+#   "1.0" — historical implicit version. ``slides`` only; no extras.
+#           A FetchAssetMessage with no ``manifest_schema_version``
+#           field is implicitly 1.0.
+#   "1.1" — adds optional ``cycle_duration_ms`` (sibling of ``slides``),
+#           optional ``started_at`` (wall-clock anchor, only present
+#           for ad-hoc / default-asset plays), and per-slide
+#           ``transition``/``transition_ms`` on ``SlideDescriptor``.
+#           Devices that don't understand 1.1 ignore the extras and
+#           keep playing the deck with the legacy relative-timer chain.
+#           Not yet emitted by the CMS — Phase 1a/1b lights it up.
+#
+# Rule for future bumps: minor bumps are additive (old players ignore
+# unknown fields).  A breaking change bumps the *major* and is gated
+# via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.0"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
+
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
 # firmware advertising the ``logs_chunk_v1`` capability sends these as
 # WS binary frames when a log bundle exceeds the single-message cap.
@@ -224,14 +248,22 @@ class FetchAssetMessage(BaseMessage):
     # ``slideshow``: an ordered list of resolved source slides the device
     # should fetch and play in sequence.  ``download_url`` and
     # ``size_bytes`` on the outer message are empty/zero for slideshows
-    # (no top-level file); ``checksum`` is the resolved manifest version
-    # (hash of structural metadata + per-slide variant checksums) so the
-    # device can short-circuit when nothing has changed.  Older firmware
-    # without ``slideshow_v1`` capability never receives a slideshow
-    # FETCH_ASSET (capability gate in the scheduler / default-asset
-    # endpoints prevents slideshows being assigned to incompatible
-    # devices in the first place).
+    # (no top-level file); ``checksum`` is the resolved manifest content
+    # hash (hash of structural metadata + per-slide variant checksums)
+    # so the device can short-circuit when nothing has changed.  Older
+    # firmware without ``slideshow_v1`` capability never receives a
+    # slideshow FETCH_ASSET (capability gate in the scheduler /
+    # default-asset endpoints prevents slideshows being assigned to
+    # incompatible devices in the first place).
     slides: Optional[list["SlideDescriptor"]] = None
+    # Schema version of the slideshow manifest carried in ``slides`` and
+    # the persisted on-device JSON.  Optional for backward compatibility
+    # with the unversioned v1.0 shape — a missing field is treated as
+    # ``"1.0"`` by both sides.  Bumped in Phase 1b to ``"1.1"`` to
+    # advertise wall-clock-anchor support.  See
+    # ``SLIDESHOW_MANIFEST_SCHEMA_VERSION_*`` constants at the top of
+    # this module for the version table.
+    manifest_schema_version: Optional[str] = None
 
 
 class SlideDescriptor(BaseModel):

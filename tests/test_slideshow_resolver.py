@@ -3,7 +3,7 @@
 Covers the new code in:
 - ``cms/services/slideshow_resolver.py`` (plan_slideshow,
   build_fetch_for_slideshow, slideshow_readiness, resolved checksum)
-- ``cms/routers/assets.py`` (manifest_version baked into Asset.checksum)
+- ``cms/routers/assets.py`` (manifest_content_hash baked into Asset.checksum)
 - ``cms/routers/schedules.py`` (slideshow_v1 capability gate)
 - ``cms/routers/devices.py`` (slideshow_v1 gate on default-asset)
 - ``cms/services/scheduler.py`` (per-device resolved manifest checksum
