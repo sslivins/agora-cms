@@ -717,7 +717,9 @@ window._adoptionProfiles = [
             const osEl = document.querySelector(`[data-live-os-version="${d.id}"]`);
             if (osEl) osEl.textContent = d.os_version || '—';
             // The "{latest_version} available" badge is rendered server-
-            // side INSIDE the firmware-version detail cell and gated on
+            // side INSIDE the os-version detail cell (latest_version comes
+            // from bundle_checker polling agora-os releases, so it's an
+            // OS version not a firmware version) and gated on
             // d.update_available + the devices:manage permission. The
             // badge wrapper is always emitted (hidden via style.display
             // when not applicable) so the JS can flip its visibility
