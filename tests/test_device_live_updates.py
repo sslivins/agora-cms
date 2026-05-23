@@ -453,12 +453,14 @@ class TestDevicesUILiveUpdates:
 
         resp = await client.get("/devices")
         assert resp.status_code == 200
-        # Badge hook is present even with no update available...
-        assert f'data-live-update-badge="{device_id}"' in resp.text
+        # Badge wrapper is present even with no update available...
+        assert f'data-live-update-badge-wrap="{device_id}"' in resp.text
         # ...and is hidden via inline style so the JS can simply flip
         # display='' / 'none' instead of rebuilding the cell innerHTML.
+        # (The wrapper -- not the inner badge -- carries the display style
+        # so the tooltip child sitting next to the badge gets hidden too.)
         text = resp.text
-        idx = text.find(f'data-live-update-badge="{device_id}"')
+        idx = text.find(f'data-live-update-badge-wrap="{device_id}"')
         assert idx > -1
         context = text[idx:idx + 200]
         assert "display:none" in context
