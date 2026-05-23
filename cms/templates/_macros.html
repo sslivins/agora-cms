@@ -728,13 +728,13 @@
             </div>
             <div class="detail-item">
                 <span class="detail-label">Firmware Version</span>
-                <span class="detail-value">
-                    <span data-live-firmware-version="{{ d.id }}">{{ d.firmware_version or '—' }}</span>{% if 'devices:manage' in user_perms %} <span class="badge badge-update" data-live-update-badge="{{ d.id }}"{% if not d.update_available %} style="display:none"{% endif %}>{{ latest_version }} available</span>{% endif %}
-                </span>
+                <span class="detail-value" data-live-firmware-version="{{ d.id }}">{{ d.firmware_version or '—' }}</span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">OS Version</span>
-                <span class="detail-value" data-live-os-version="{{ d.id }}">{{ d.os_version or '—' }}</span>
+                <span class="detail-value">
+                    <span data-live-os-version="{{ d.id }}">{{ d.os_version or '—' }}</span>{% if 'devices:manage' in user_perms %} <span class="badge badge-update" data-live-update-badge="{{ d.id }}"{% if not d.update_available %} style="display:none"{% endif %}>{{ latest_version }} available</span>{% endif %}
+                </span>
             </div>
             <div class="detail-item">
                 <span class="detail-label">Storage</span>
