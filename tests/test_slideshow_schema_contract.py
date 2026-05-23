@@ -148,9 +148,33 @@ class TestSlideshowV10Contract:
         in cms.schemas.protocol pins the default.
         """
         assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT == "1.0"
-        # Phase 0 ships the field but doesn't yet bump the LATEST
-        # constant beyond 1.0.  Phase 1b will move LATEST to "1.1".
-        assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST == "1.0"
+        # Phase 1b bumps LATEST to "1.1" (wall-clock fields).  Future
+        # phases will keep bumping as new fields land.  DEFAULT stays
+        # at "1.0" — that's the "no version on the wire" fallback.
+        assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST == "1.1"
+
+    def test_forward_wall_clock_fields_are_ignored(self):
+        """Phase 1b adds ``cycle_duration_ms`` and ``started_at`` to
+        ``FetchAssetMessage``.  A v1.0 device parser must silently drop
+        them — same forward-compat invariant as Phase 0/1a fields.
+        """
+        cms_msg = _build_cms_slideshow_msg(
+            manifest_schema_version="1.1",
+            cycle_duration_ms=15000,
+            started_at="2026-05-23T19:39:45.000Z",
+        )
+        wire = json.loads(cms_msg.model_dump_json())
+        assert wire["cycle_duration_ms"] == 15000
+        assert wire["started_at"] == "2026-05-23T19:39:45.000Z"
+
+        v10 = FetchAssetMessageV10.model_validate(wire)
+        # v1.0 parser drops the new fields without error.
+        assert not hasattr(v10, "cycle_duration_ms") or \
+            getattr(v10, "cycle_duration_ms", None) is None
+        assert not hasattr(v10, "started_at") or \
+            getattr(v10, "started_at", None) is None
+        assert v10.slides is not None
+        assert len(v10.slides) == 2
 
 
 class TestSlideshowSchemaFieldDefaults:

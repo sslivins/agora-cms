@@ -338,6 +338,44 @@ class TestSlideshowResolver:
         assert [s.transition for s in plan.slides] == ["fade", "cut"]
         assert [s.transition_ms for s in plan.slides] == [800, 600]
 
+    async def test_build_fetch_emits_wall_clock_fields(self, db_session, app):
+        """Phase 1b: ``build_fetch_for_slideshow`` must populate
+        ``manifest_schema_version``, ``cycle_duration_ms``, and
+        ``started_at`` on the outbound ``FetchAssetMessage``.
+
+        ``cycle_duration_ms`` = sum(per-slide duration_ms).
+        ``started_at`` = floor(now_utc, cycle_duration_ms) as
+        ISO-8601 UTC ("Z" suffix).
+        """
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "p-wc")
+        img = await _seed_image(db_session, filename="wc1.png", checksum="rwc")
+        ss = await _seed_slideshow(
+            db_session, name="ss-wc",
+            slides_data=[(img, 3000, False), (img, 4500, False)],
+            checksum="mwc",
+        )
+        device = await _seed_device(
+            db_session, did="dev-wc", profile=profile,
+            capabilities=[CAPABILITY_SLIDESHOW_V1],
+        )
+
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        assert fetch.manifest_schema_version == "1.1"
+        assert fetch.cycle_duration_ms == 7500
+        assert fetch.started_at is not None
+        assert fetch.started_at.endswith("Z")
+        # Cycle-floor invariant: parsing the anchor must yield an integer
+        # millisecond count that's an exact multiple of cycle_duration_ms.
+        from datetime import datetime
+        anchor = datetime.fromisoformat(fetch.started_at.replace("Z", "+00:00"))
+        anchor_ms = int(anchor.timestamp() * 1000)
+        assert anchor_ms % fetch.cycle_duration_ms == 0
+
 
 # ---------------------------------------------------------------------------
 # Manifest version stability tests

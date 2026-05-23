@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -32,7 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
-from cms.schemas.protocol import FetchAssetMessage, SlideDescriptor
+from cms.schemas.protocol import (
+    FetchAssetMessage,
+    SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST,
+    SlideDescriptor,
+)
 from cms.services.storage import get_storage
 from shared.models.slideshow_slide import SlideshowSlide
 
@@ -295,6 +300,11 @@ async def build_fetch_for_slideshow(
         )
 
     resolved = _compute_resolved_manifest_checksum(asset.checksum or "", plan.slides)
+
+    # Phase 1b of agora#226 — wall-clock anchor support.
+    cycle_duration_ms = sum(sp.duration_ms for sp in plan.slides)
+    started_at = _compute_cycle_anchor(cycle_duration_ms)
+
     return FetchAssetMessage(
         asset_name=asset.filename,
         download_url="",
@@ -302,7 +312,33 @@ async def build_fetch_for_slideshow(
         size_bytes=0,
         asset_type=AssetType.SLIDESHOW.value,
         slides=descriptors,
+        manifest_schema_version=SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST,
+        cycle_duration_ms=cycle_duration_ms,
+        started_at=started_at,
     )
+
+
+def _compute_cycle_anchor(cycle_duration_ms: int) -> Optional[str]:
+    """Floor ``now_utc`` to the nearest ``cycle_duration_ms`` boundary
+    since the Unix epoch, returned as an ISO-8601 UTC string.
+
+    The anchor is purely derived from the wall clock and the cycle
+    length, so any two devices computing it locally with synchronized
+    clocks would land on the same instant — which is what makes the
+    chromium-player branch's "same content at the same second" promise
+    work across reflashes and reboots.
+
+    Returns ``None`` if ``cycle_duration_ms <= 0`` (defensive — an empty
+    deck shouldn't reach here because the planner rejects it earlier).
+    """
+    if cycle_duration_ms <= 0:
+        return None
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    floor_ms = (now_ms // cycle_duration_ms) * cycle_duration_ms
+    anchor = datetime.fromtimestamp(floor_ms / 1000, tz=timezone.utc)
+    # ISO-8601 with millisecond precision, "Z" suffix for UTC.
+    iso = anchor.isoformat(timespec="milliseconds")
+    return iso.replace("+00:00", "Z")
 
 
 async def slideshow_readiness(
