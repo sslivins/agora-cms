@@ -18,7 +18,7 @@ from cms.models.device import Device, DeviceStatus
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
-from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, clear_sync_hash, schedules_conflict, evaluate_schedules
+from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, schedules_conflict, evaluate_schedules
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
 
@@ -627,9 +627,8 @@ async def end_schedule_now(
             ))
         await db.commit()
 
-    # Clear sync hash and re-push so affected devices drop this schedule immediately
+    # Re-push so affected devices drop this schedule immediately.
     for did in affected_ids:
-        clear_sync_hash(did)
         await push_sync_to_device(did, db)
 
     return {
