@@ -713,23 +713,33 @@ window._adoptionProfiles = [
             // but the page didn't repaint them, so operators thought the
             // upgrade hadn't completed until they hit F5.
             const fwEl = document.querySelector(`[data-live-firmware-version="${d.id}"]`);
-            if (fwEl) fwEl.textContent = d.firmware_version || '—';
+            if (fwEl) {
+                fwEl.textContent = d.firmware_version || '—';
+                fwEl.title = d.firmware_version || '';
+            }
             const osEl = document.querySelector(`[data-live-os-version="${d.id}"]`);
-            if (osEl) osEl.textContent = d.os_version || '—';
+            if (osEl) {
+                osEl.textContent = d.os_version || '—';
+                osEl.title = d.os_version || '';
+            }
             // The "{latest_version} available" badge is rendered server-
             // side INSIDE the os-version detail cell (latest_version comes
             // from bundle_checker polling agora-os releases, so it's an
             // OS version not a firmware version) and gated on
             // d.update_available + the devices:manage permission. The
-            // badge wrapper is always emitted (hidden via style.display
-            // when not applicable) so the JS can flip its visibility
-            // without rebuilding the whole cell, even when the device
-            // initially had no badge. latest_version itself only changes
-            // via bundle_checker (~30 min cadence), so its text is left
-            // as the server-rendered value -- not worth wiring through
-            // the per-device payload.
-            const badgeEl = document.querySelector(`[data-live-update-badge="${d.id}"]`);
-            if (badgeEl) badgeEl.style.display = d.update_available ? '' : 'none';
+            // badge wrapper (the .has-tooltip span -- tagged with
+            // data-live-update-badge-wrap so we flip the whole wrapper,
+            // not just the inner badge, otherwise the tooltip child
+            // would still hover-render against an invisible badge) is
+            // always emitted (hidden via style.display when not
+            // applicable) so the JS can flip its visibility without
+            // rebuilding the whole cell, even when the device initially
+            // had no badge. latest_version itself only changes via
+            // bundle_checker (~30 min cadence), so its text is left as
+            // the server-rendered value -- not worth wiring through the
+            // per-device payload.
+            const badgeWrapEl = document.querySelector(`[data-live-update-badge-wrap="${d.id}"]`);
+            if (badgeWrapEl) badgeWrapEl.style.display = d.update_available ? '' : 'none';
 
             // ── Detail panel: storage detail ──
             // Same stale-capacity fix as the collapsed-row percentage above:
