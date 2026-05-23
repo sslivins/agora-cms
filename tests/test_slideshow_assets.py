@@ -423,6 +423,173 @@ class TestSlideshowSlidesEndpoints:
         assert ss.duration_seconds == pytest.approx(5.5)
 
 
+@pytest.mark.asyncio
+class TestSlideTransitions:
+    """Phase 1a of agora#226: per-slide transition + transition_ms."""
+
+    async def test_create_defaults_transition_to_cut_600(self, client, db_session):
+        img = await _seed_image(db_session, filename="t1.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "td",
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["transition"] == "cut"
+        assert slides[0]["transition_ms"] == 600
+
+    async def test_create_round_trips_explicit_transition(self, client, db_session):
+        img = await _seed_image(db_session, filename="t2.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "te",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 2000,
+                    "transition": "fade",
+                    "transition_ms": 800,
+                }],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["transition"] == "fade"
+        assert slides[0]["transition_ms"] == 800
+
+    async def test_replace_round_trips_explicit_transition(self, client, db_session):
+        img = await _seed_image(db_session, filename="t3.png", is_global=True)
+        sid = (await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "tr",
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )).json()["id"]
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{
+                "source_asset_id": str(img.id),
+                "duration_ms": 1000,
+                "transition": "dissolve",
+                "transition_ms": 1500,
+            }]},
+        )
+        assert put.status_code == 200, put.text
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["transition"] == "dissolve"
+        assert slides[0]["transition_ms"] == 1500
+
+    async def test_rejects_unknown_transition(self, client, db_session):
+        img = await _seed_image(db_session, filename="t4.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "tx",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "transition": "warp_speed",
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+    async def test_rejects_transition_ms_above_cap(self, client, db_session):
+        img = await _seed_image(db_session, filename="t5.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "th",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "transition": "fade",
+                    "transition_ms": 99999,
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+    async def test_transition_change_flips_manifest_content_hash(
+        self, client, db_session
+    ):
+        """Editing the transition is a user-visible content change → the
+        structural manifest content hash MUST flip so the device refetches.
+        Documented in plan.md Phase 1a (deliberate refetch-storm decision).
+        """
+        img = await _seed_image(db_session, filename="t6.png", is_global=True)
+        sid = (await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "th2",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "transition": "cut",
+                    "transition_ms": 600,
+                }],
+            },
+        )).json()["id"]
+        ss = await db_session.get(Asset, uuid.UUID(sid))
+        await db_session.refresh(ss)
+        original_hash = ss.checksum
+
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{
+                "source_asset_id": str(img.id),
+                "duration_ms": 1000,
+                "transition": "fade",  # only this changed
+                "transition_ms": 600,
+            }]},
+        )
+        assert put.status_code == 200, put.text
+        await db_session.refresh(ss)
+        assert ss.checksum != original_hash, (
+            "transition edit must flip the manifest content hash so devices "
+            "refetch on the next sync"
+        )
+
+    async def test_transition_ms_change_flips_manifest_content_hash(
+        self, client, db_session
+    ):
+        img = await _seed_image(db_session, filename="t7.png", is_global=True)
+        sid = (await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "th3",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "transition": "fade",
+                    "transition_ms": 600,
+                }],
+            },
+        )).json()["id"]
+        ss = await db_session.get(Asset, uuid.UUID(sid))
+        await db_session.refresh(ss)
+        original_hash = ss.checksum
+
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{
+                "source_asset_id": str(img.id),
+                "duration_ms": 1000,
+                "transition": "fade",
+                "transition_ms": 1200,  # only this changed
+            }]},
+        )
+        assert put.status_code == 200, put.text
+        await db_session.refresh(ss)
+        assert ss.checksum != original_hash
+
+
 # ── Source-delete guard ──
 
 

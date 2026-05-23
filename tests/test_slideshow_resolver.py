@@ -88,7 +88,9 @@ async def _seed_variant(
 async def _seed_slideshow(db, *, name, slides_data, checksum=""):
     """Seed a slideshow asset directly (bypasses API ACL flow).
 
-    ``slides_data`` is a list of (source_asset, duration_ms, play_to_end).
+    ``slides_data`` is a list of ``(source_asset, duration_ms, play_to_end)``
+    or ``(source_asset, duration_ms, play_to_end, transition, transition_ms)``
+    for tests that need to assert on transition propagation.
     """
     ss = Asset(
         filename=name,
@@ -100,13 +102,20 @@ async def _seed_slideshow(db, *, name, slides_data, checksum=""):
     db.add(ss)
     await db.commit()
     await db.refresh(ss)
-    for idx, (src, dur_ms, pte) in enumerate(slides_data):
+    for idx, row in enumerate(slides_data):
+        if len(row) == 3:
+            src, dur_ms, pte = row
+            trans, trans_ms = "cut", 600
+        else:
+            src, dur_ms, pte, trans, trans_ms = row
         db.add(SlideshowSlide(
             slideshow_asset_id=ss.id,
             source_asset_id=src.id,
             position=idx,
             duration_ms=dur_ms,
             play_to_end=pte,
+            transition=trans,
+            transition_ms=trans_ms,
         ))
     await db.commit()
     await db.refresh(ss)
@@ -308,6 +317,26 @@ class TestSlideshowResolver:
 
         c2 = await resolved_slideshow_checksum(ss, profile.id, db_session)
         assert c1 != c2 and c1 is not None and c2 is not None
+
+    async def test_plan_propagates_transition_fields(self, db_session):
+        """Phase 1a: per-slide transition + transition_ms must reach the
+        wire ``SlideDescriptor`` via the plan."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "p-trans")
+        img = await _seed_image(db_session, filename="tr1.png", checksum="raw")
+        ss = await _seed_slideshow(
+            db_session, name="ss-trans",
+            slides_data=[
+                (img, 3000, False, "fade", 800),
+                (img, 4000, False, "cut", 600),
+            ],
+            checksum="m",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        assert [s.transition for s in plan.slides] == ["fade", "cut"]
+        assert [s.transition_ms for s in plan.slides] == [800, 600]
 
 
 # ---------------------------------------------------------------------------

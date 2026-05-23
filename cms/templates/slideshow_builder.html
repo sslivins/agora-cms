@@ -647,7 +647,12 @@ function makeSlot(s, i) {
     return slot;
 }
 
-// Transition types — only 'cut' is implemented today; the rest are placeholders.
+// Transition types — only ``cut`` is exposed in the UI today.  The wire
+// schema (Phase 1a of agora#226) accepts ``fade``/``dissolve``/``wipe``
+// too, but the mpv-based fleet renders any non-``cut`` value as an
+// instant swap (same visual result as cut) — so enabling those options
+// in the picker would be a UX trap.  The chromium-player branch flips
+// these to ``enabled: true`` once it can render them for real.
 const SS_TRANSITIONS = [
     {id: 'cut',      label: 'Cut',      icon: '\u2702',    enabled: true},   // ✂
     {id: 'fade',     label: 'Fade',     icon: '\u25D0',    enabled: false},  // ◐
@@ -796,6 +801,11 @@ function addSlideFromAsset(assetId, atIndex) {
             ? Math.round(a.duration_seconds * 1000)
             : 10000,
         play_to_end: a.asset_type === 'video',
+        // New slides default to ``cut`` / 600 ms — matches the server-side
+        // default and the legacy mpv player's "instant swap" behaviour.
+        // Phase 1a of agora#226 makes these editable per slide.
+        transition: 'cut',
+        transition_ms: 600,
         source_filename: a.display_name || a.original_filename || a.filename,
         source_asset_type: a.asset_type,
         source_duration_seconds: a.duration_seconds,
@@ -894,6 +904,8 @@ async function saveSlideshow(opts) {
             source_asset_id: s.source_asset_id,
             duration_ms: s.duration_ms,
             play_to_end: !!s.play_to_end,
+            transition: s.transition || 'cut',
+            transition_ms: (typeof s.transition_ms === 'number') ? s.transition_ms : 600,
         }));
         if (SS_EDIT_MODE) {
             const r = await fetch(`/api/assets/${SS_ASSET_ID}/slides`, {
