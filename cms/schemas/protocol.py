@@ -276,6 +276,12 @@ class SlideDescriptor(BaseModel):
     size_bytes: int
     duration_ms: int
     play_to_end: bool = False
+    # Per-slide transition controls (Phase 1a of agora#226).  Optional on
+    # the wire so a v1.0 device parser ignores them; a v1.1+ player reads
+    # them.  ``transition`` is one of cut/fade/dissolve/wipe.  Default
+    # behaviour (``cut`` / 600 ms) matches the pre-versioning era.
+    transition: str = "cut"
+    transition_ms: int = 600
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> "SlideDescriptor":
@@ -290,6 +296,16 @@ class SlideDescriptor(BaseModel):
         if self.play_to_end and self.asset_type != "video":
             raise ValueError(
                 "SlideDescriptor.play_to_end=True is only valid for video sources"
+            )
+        if self.transition not in ("cut", "fade", "dissolve", "wipe"):
+            raise ValueError(
+                f"SlideDescriptor.transition must be one of "
+                f"cut/fade/dissolve/wipe, got {self.transition!r}"
+            )
+        if self.transition_ms < 0 or self.transition_ms > 5000:
+            raise ValueError(
+                f"SlideDescriptor.transition_ms must be in [0, 5000], "
+                f"got {self.transition_ms}"
             )
         return self
 

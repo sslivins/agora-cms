@@ -934,7 +934,7 @@ def _compute_slideshow_manifest_content_hash(
         src_checksum = src.checksum or ""
         h.update(
             f"{idx}|{s.source_asset_id}|{src_checksum}|{s.duration_ms}|"
-            f"{int(s.play_to_end)}|".encode()
+            f"{int(s.play_to_end)}|{s.transition}|{s.transition_ms}|".encode()
         )
     return h.hexdigest()
 
@@ -1104,6 +1104,8 @@ async def create_slideshow_asset(
                 position=idx,
                 duration_ms=s.duration_ms,
                 play_to_end=s.play_to_end,
+                transition=s.transition,
+                transition_ms=s.transition_ms,
             )
         )
 
@@ -1169,6 +1171,8 @@ async def list_slideshow_slides(
                 "position": slide.position,
                 "duration_ms": slide.duration_ms,
                 "play_to_end": slide.play_to_end,
+                "transition": slide.transition,
+                "transition_ms": slide.transition_ms,
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.filename,
                 "source_asset_type": src.asset_type.value,
@@ -1248,6 +1252,8 @@ async def replace_slideshow_slides(
                 position=idx,
                 duration_ms=s.duration_ms,
                 play_to_end=s.play_to_end,
+                transition=s.transition,
+                transition_ms=s.transition_ms,
             )
         )
     asset.duration_seconds = duration_seconds

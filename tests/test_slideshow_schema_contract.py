@@ -110,17 +110,27 @@ class TestSlideshowV10Contract:
         assert len(v10.slides) == 2
 
     def test_forward_per_slide_field_is_ignored(self):
-        """Per-slide additions (e.g. transition/transition_ms in Phase 1a)
-        must also be silently dropped by a v1.0 parser.
+        """Per-slide additions (transition/transition_ms, Phase 1a) must
+        be silently dropped by a v1.0 parser.
         """
-        # We can't yet construct a CMS SlideDescriptor with a
-        # ``transition`` field (Phase 1a adds it).  Simulate the
-        # forward shape by editing the wire dict directly.
-        cms_msg = _build_cms_slideshow_msg()
+        cms_msg = _build_cms_slideshow_msg(
+            slides=[
+                SlideDescriptor(
+                    asset_name="intro.png",
+                    asset_type="image",
+                    download_url="/assets/intro.png",
+                    checksum="a" * 64,
+                    size_bytes=2048,
+                    duration_ms=5000,
+                    play_to_end=False,
+                    transition="fade",
+                    transition_ms=800,
+                ),
+            ]
+        )
         wire = json.loads(cms_msg.model_dump_json())
-        for slide in wire["slides"]:
-            slide["transition"] = "fade"
-            slide["transition_ms"] = 800
+        assert wire["slides"][0]["transition"] == "fade"
+        assert wire["slides"][0]["transition_ms"] == 800
 
         v10 = FetchAssetMessageV10.model_validate(wire)
         assert v10.slides is not None

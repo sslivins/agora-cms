@@ -55,6 +55,11 @@ class _SlidePlan:
     source_asset_type: AssetType
     duration_ms: int
     play_to_end: bool
+    # Per-slide transition (Phase 1a of agora#226).  Default ``cut`` / 600
+    # ms matches the pre-Phase-1a behaviour for slides created before the
+    # column existed.
+    transition: str = "cut"
+    transition_ms: int = 600
     # Populated for ready slides only:
     download_path: Optional[str] = None  # storage path for get_device_download_url
     api_url_path: Optional[str] = None  # CMS-relative API URL for fallback
@@ -162,6 +167,8 @@ async def plan_slideshow(
             source_asset_type=src.asset_type,
             duration_ms=slide_row.duration_ms,
             play_to_end=slide_row.play_to_end,
+            transition=slide_row.transition,
+            transition_ms=slide_row.transition_ms,
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
@@ -226,7 +233,7 @@ def _compute_resolved_manifest_checksum(
     for s in slides:
         h.update(
             f"|{s.position}|{s.source_asset_id}|{s.checksum or ''}|"
-            f"{s.duration_ms}|{int(s.play_to_end)}".encode()
+            f"{s.duration_ms}|{int(s.play_to_end)}|{s.transition}|{s.transition_ms}".encode()
         )
     return h.hexdigest()
 
@@ -282,6 +289,8 @@ async def build_fetch_for_slideshow(
                 size_bytes=sp.size_bytes or 0,
                 duration_ms=sp.duration_ms,
                 play_to_end=sp.play_to_end,
+                transition=sp.transition,
+                transition_ms=sp.transition_ms,
             )
         )
 
