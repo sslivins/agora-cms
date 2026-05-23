@@ -1,7 +1,6 @@
 """Schedule evaluator — background task that syncs schedules to devices."""
 
 import asyncio
-import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -32,12 +31,6 @@ def _asset_display_name(asset) -> str:
     if asset is None:
         return "—"
     return asset.display_name or asset.original_filename or asset.filename
-
-# Track last sync hash per device to avoid re-sending identical syncs.
-# NOTE: this is replica-local. Under N>1 replicas two replicas may both
-# push to the same device, but the device firmware deduplicates via the
-# sync_hash echoed in acks. See docs/multi-replica.md.
-_last_sync_hash: dict[str, str] = {}
 
 # Confirmed playback: a **replica-local optimization cache** of what each
 # device has confirmed it's playing. Populated by WS PLAYBACK_STARTED,
@@ -317,11 +310,6 @@ def clear_schedule_skip(schedule_id: str, device_id: str | None = None) -> None:
     no in-memory cleanup is needed.
     """
     _ = schedule_id, device_id  # signature-compat only
-
-
-def clear_sync_hash(device_id: str) -> None:
-    """Clear the cached sync hash for a device so the next eval re-sends."""
-    _last_sync_hash.pop(device_id, None)
 
 
 async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
@@ -919,11 +907,6 @@ def _schedule_to_entry(
     )
 
 
-def _sync_hash(sync: SyncMessage) -> str:
-    """Compute a hash of a sync message for dedup."""
-    return hashlib.md5(sync.model_dump_json().encode()).hexdigest()
-
-
 async def build_device_sync(
     device_id: str,
     db,
@@ -1117,12 +1100,10 @@ async def push_sync_to_device(
     if sync is None:
         return
 
-    h = _sync_hash(sync)
-    if _last_sync_hash.get(device_id) == h:
+    ok = await get_transport().send_to_device(device_id, sync.model_dump(mode="json"))
+    if not ok:
+        logger.warning("Sync send to device %s failed at transport layer", device_id)
         return
-
-    await get_transport().send_to_device(device_id, sync.model_dump(mode="json"))
-    _last_sync_hash[device_id] = h
     logger.info("Pushed full sync to device %s (%d schedules)", device_id, len(sync.schedules))
 
 
@@ -1187,9 +1168,6 @@ async def evaluate_schedules() -> None:
                 .where(Schedule.id == sid)
                 .values(skipped_until=None)
             )
-            # Clear sync hash so the schedule gets re-pushed on next eval
-            for did in connected:
-                _last_sync_hash.pop(did, None)
         if expired:
             await db.commit()
 
@@ -1203,7 +1181,6 @@ async def evaluate_schedules() -> None:
                     & (ScheduleDeviceSkip.device_id == did)
                 )
             )
-            _last_sync_hash.pop(did, None)
         if dev_expired:
             await db.commit()
 

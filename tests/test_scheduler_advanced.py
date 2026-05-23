@@ -1,5 +1,6 @@
 """Advanced scheduler tests: priorities, skip/end-now, upcoming, unique names, evaluate_schedules."""
 
+import asyncio
 import uuid
 from datetime import datetime, time, timedelta, timezone
 from unittest.mock import AsyncMock, patch, PropertyMock
@@ -17,10 +18,8 @@ from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
     _matches_now,
     _now_playing,
-    _last_sync_hash,
     MISSED_GRACE_SECONDS,
     build_device_sync,
-    clear_sync_hash,
     clear_now_playing,
     evaluate_schedules,
     get_now_playing,
@@ -95,11 +94,9 @@ class TestSkipScheduleBehavior:
 
     def setup_method(self):
         _now_playing.clear()
-        _last_sync_hash.clear()
 
     def teardown_method(self):
         _now_playing.clear()
-        _last_sync_hash.clear()
 
     def test_skipped_schedule_hidden_from_upcoming(self):
         low = _make_schedule(
@@ -135,21 +132,175 @@ class TestSkipScheduleBehavior:
         assert any(r.get("preempted") for r in result)
 
 
-class TestClearSyncHash:
-    def setup_method(self):
-        _last_sync_hash.clear()
+class TestClearSyncHash_REMOVED:
+    """The per-process sync-dedup cache was removed; see fix/remove-sync-dedup.
 
-    def teardown_method(self):
-        _last_sync_hash.clear()
+    The tests that lived here verified clear_sync_hash() — that helper is
+    gone along with the dedup it supported. Regression coverage for the
+    "every push_sync_to_device call actually pushes" invariant now lives
+    in TestPushSyncToDevice below.
+    """
 
-    def test_clear_existing(self):
-        _last_sync_hash["device-1"] = "abc123"
-        clear_sync_hash("device-1")
-        assert "device-1" not in _last_sync_hash
 
-    def test_clear_nonexistent_is_harmless(self):
-        clear_sync_hash("no-such-device")
-        assert len(_last_sync_hash) == 0
+@pytest.mark.asyncio
+class TestPushSyncToDevice:
+    """Regression tests for the dedup-removal fix.
+
+    The bug (pre-fix): ``push_sync_to_device`` consulted a per-process
+    ``_last_sync_hash`` dict and silently dropped any send whose payload
+    matched the previous send for that device. This caused three
+    distinct failure modes:
+
+      1. Under N>=2 replicas, each pod's cache was independent. A PATCH
+         that reverted a device to a state replica X had previously sent
+         was suppressed even though the device may have only ever heard
+         it from a different replica.
+      2. The cache was poisoned by transport failures — send_to_device's
+         bool return was discarded, so a WPS failure stamped the cache
+         as "we sent X" even though the device never received it.
+      3. Concurrent PATCHes on a single replica could race on the
+         DB read, both compute the same hash, and the second be dropped.
+
+    The fix: removed the cache entirely. Every push_sync_to_device call
+    that gets past the connected+adopted gate now invokes the transport.
+
+    These tests assert the new invariant: **N calls in => N sends out.**
+    """
+
+    async def test_n_calls_n_sends_alternating_state(self, monkeypatch):
+        """Six sequential calls => six transport sends regardless of payload.
+
+        This is the user-reproduced single-stream repro: alternating
+        between two splash assets used to drop mid-stream PATCHes.
+        """
+        from cms.services import scheduler as sched_mod
+        from cms.schemas.protocol import SyncMessage
+
+        sends: list[dict] = []
+
+        fake_transport = AsyncMock()
+        fake_transport.is_connected = AsyncMock(return_value=True)
+        fake_transport.send_to_device = AsyncMock(
+            side_effect=lambda did, msg: (sends.append(msg) or True)
+        )
+        monkeypatch.setattr(sched_mod, "get_transport", lambda: fake_transport)
+
+        # Bypass the DB read by stubbing build_device_sync.
+        # Alternate splash filenames across calls, mirroring user repro.
+        names = ["pipes.jpg", "goodwill_splash.png"] * 3
+        idx = {"i": 0}
+
+        async def _fake_build(device_id, db, skips=None):
+            name = names[idx["i"]]
+            idx["i"] += 1
+            return SyncMessage(schedules=[], default_asset=name, splash=name)
+
+        monkeypatch.setattr(sched_mod, "build_device_sync", _fake_build)
+
+        # Bypass the adopted-status DB check.
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(
+            return_value=type(
+                "R", (), {"scalar_one_or_none": lambda self: DeviceStatus.ADOPTED}
+            )()
+        )
+
+        for _ in range(6):
+            await sched_mod.push_sync_to_device("dev-1", fake_db)
+
+        assert len(sends) == 6, (
+            f"Expected 6 sends for 6 calls; got {len(sends)}. "
+            "Dedup must not silently drop pushes."
+        )
+
+    async def test_concurrent_calls_all_fire(self, monkeypatch):
+        """asyncio.gather of two pushes on the same device => both send.
+
+        Pre-fix, two concurrent push_sync_to_device coroutines could
+        both read the post-commit DB state, compute the same hash, and
+        one's send would be dedup-suppressed by the other's store.
+        Post-fix, both must fire.
+        """
+        from cms.services import scheduler as sched_mod
+        from cms.schemas.protocol import SyncMessage
+
+        sends: list[dict] = []
+
+        async def _send(did, msg):
+            # Force an await boundary so the scheduler can interleave.
+            await asyncio.sleep(0)
+            sends.append(msg)
+            return True
+
+        fake_transport = AsyncMock()
+        fake_transport.is_connected = AsyncMock(return_value=True)
+        fake_transport.send_to_device = AsyncMock(side_effect=_send)
+        monkeypatch.setattr(sched_mod, "get_transport", lambda: fake_transport)
+
+        async def _fake_build(device_id, db, skips=None):
+            await asyncio.sleep(0)
+            # Both coroutines see the same post-commit DB state.
+            return SyncMessage(schedules=[], default_asset="pipes.jpg", splash="pipes.jpg")
+
+        monkeypatch.setattr(sched_mod, "build_device_sync", _fake_build)
+
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(
+            return_value=type(
+                "R", (), {"scalar_one_or_none": lambda self: DeviceStatus.ADOPTED}
+            )()
+        )
+
+        await asyncio.gather(
+            sched_mod.push_sync_to_device("dev-1", fake_db),
+            sched_mod.push_sync_to_device("dev-1", fake_db),
+        )
+
+        assert len(sends) == 2, (
+            f"Expected 2 sends for 2 concurrent calls; got {len(sends)}. "
+            "Concurrent pushes must not dedup against each other."
+        )
+
+    async def test_transport_failure_does_not_poison_future_sends(self, monkeypatch):
+        """A False return from send_to_device must not suppress the next call.
+
+        Pre-fix, a transport failure still stamped _last_sync_hash, so
+        the next equivalent state was dedup-suppressed forever. Post-fix,
+        there's no cache to poison: the next call rebuilds and resends.
+        """
+        from cms.services import scheduler as sched_mod
+        from cms.schemas.protocol import SyncMessage
+
+        sends: list[dict] = []
+        return_values = iter([False, True, True])
+
+        async def _send(did, msg):
+            sends.append(msg)
+            return next(return_values)
+
+        fake_transport = AsyncMock()
+        fake_transport.is_connected = AsyncMock(return_value=True)
+        fake_transport.send_to_device = AsyncMock(side_effect=_send)
+        monkeypatch.setattr(sched_mod, "get_transport", lambda: fake_transport)
+
+        async def _fake_build(device_id, db, skips=None):
+            return SyncMessage(schedules=[], default_asset="pipes.jpg", splash="pipes.jpg")
+
+        monkeypatch.setattr(sched_mod, "build_device_sync", _fake_build)
+
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(
+            return_value=type(
+                "R", (), {"scalar_one_or_none": lambda self: DeviceStatus.ADOPTED}
+            )()
+        )
+
+        for _ in range(3):
+            await sched_mod.push_sync_to_device("dev-1", fake_db)
+
+        assert len(sends) == 3, (
+            "Transport failures must not cache-poison subsequent sends."
+        )
 
 
 # ── Priority tests (pure logic, no DB) ──
@@ -666,11 +817,9 @@ class TestNowPlayingCleanup:
 
     def setup_method(self):
         _now_playing.clear()
-        _last_sync_hash.clear()
 
     def teardown_method(self):
         _now_playing.clear()
-        _last_sync_hash.clear()
 
     async def test_now_playing_cleared_when_schedule_deleted(self, app, db_session):
         """Deleting a schedule should clear its _now_playing entries."""

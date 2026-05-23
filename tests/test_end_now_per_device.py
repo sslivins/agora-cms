@@ -30,10 +30,8 @@ from cms.services.scheduler import build_device_sync, load_skip_snapshot
 def _reset_scheduler_state():
     """Clear the remaining replica-local scheduler caches between tests."""
     sched_mod._confirmed_playing.clear()
-    sched_mod._last_sync_hash.clear()
     yield
     sched_mod._confirmed_playing.clear()
-    sched_mod._last_sync_hash.clear()
 
 
 @pytest.mark.asyncio
