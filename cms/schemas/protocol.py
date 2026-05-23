@@ -56,7 +56,7 @@ CAPABILITY_SLIDESHOW_V1 = "slideshow_v1"
 # Rule for future bumps: minor bumps are additive (old players ignore
 # unknown fields).  A breaking change bumps the *major* and is gated
 # via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
-SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.0"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.1"
 SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
@@ -264,6 +264,21 @@ class FetchAssetMessage(BaseMessage):
     # ``SLIDESHOW_MANIFEST_SCHEMA_VERSION_*`` constants at the top of
     # this module for the version table.
     manifest_schema_version: Optional[str] = None
+    # Total cycle length in milliseconds (Phase 1b of agora#226).  Sum of
+    # ``slide.duration_ms`` across the deck.  Optional / additive; v1.0
+    # devices ignore it.  Emitted whenever ``slides`` is non-empty.  NOT
+    # part of the manifest content hash — it's a pure function of slide
+    # durations which are already hashed.
+    cycle_duration_ms: Optional[int] = None
+    # Wall-clock anchor for the slideshow cycle, ISO-8601 UTC string
+    # (e.g. "2026-05-23T18:30:00Z").  Phase 1b: present ONLY for ad-hoc
+    # / default-asset plays where the CMS picks a cycle boundary aligned
+    # to "now".  For *scheduled* plays the device computes the anchor
+    # from the active ``ScheduleEntry.start_time`` (wall-clock of the
+    # currently-active window) so a reboot mid-window resyncs without
+    # the CMS having to tell each device a different start time.
+    # Optional / additive; v1.0 devices ignore it.
+    started_at: Optional[str] = None
 
 
 class SlideDescriptor(BaseModel):
