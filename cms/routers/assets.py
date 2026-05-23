@@ -909,10 +909,10 @@ def _compute_slideshow_duration_seconds(
     return total_ms / 1000.0
 
 
-def _compute_slideshow_manifest_version(
+def _compute_slideshow_manifest_content_hash(
     slides: list[SlideIn], sources_by_id: dict[uuid.UUID, Asset]
 ) -> str:
-    """Structural manifest hash stored on ``Asset.checksum``.
+    """Structural manifest content hash stored on ``Asset.checksum``.
 
     Hashes ordered slide structure plus each source asset's own checksum
     so that any change to the slide list (reorder, add/remove, durations,
@@ -920,6 +920,13 @@ def _compute_slideshow_manifest_version(
     The *resolved* per-device checksum (which additionally folds in the
     selected READY variant checksum for the device's profile) is computed
     at sync/resolve time on top of this base value.
+
+    Renamed from ``_compute_slideshow_manifest_version`` to free up the
+    word "version" for ``manifest_schema_version`` on the wire (the
+    protocol-semver string added in agora#226 / slideshow wall-clock
+    work). This hash and the schema version are independent concepts:
+    the hash detects content edits, the schema version describes which
+    fields the wire format carries.
     """
     h = hashlib.sha256()
     for idx, s in enumerate(slides):
@@ -1069,7 +1076,7 @@ async def create_slideshow_asset(
     )
 
     duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
-    manifest_version = _compute_slideshow_manifest_version(slides, sources_by_id)
+    manifest_content_hash = _compute_slideshow_manifest_content_hash(slides, sources_by_id)
 
     filename = await _unique_filename(db, name)
 
@@ -1077,7 +1084,7 @@ async def create_slideshow_asset(
         filename=filename,
         asset_type=AssetType.SLIDESHOW,
         size_bytes=0,
-        checksum=manifest_version,
+        checksum=manifest_content_hash,
         url=None,
         duration_seconds=duration_seconds,
         is_global=make_global,
@@ -1227,7 +1234,7 @@ async def replace_slideshow_slides(
     )
 
     duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
-    manifest_version = _compute_slideshow_manifest_version(slides, sources_by_id)
+    manifest_content_hash = _compute_slideshow_manifest_content_hash(slides, sources_by_id)
 
     await db.execute(
         delete(SlideshowSlide).where(SlideshowSlide.slideshow_asset_id == asset_id)
@@ -1244,7 +1251,7 @@ async def replace_slideshow_slides(
             )
         )
     asset.duration_seconds = duration_seconds
-    asset.checksum = manifest_version
+    asset.checksum = manifest_content_hash
 
     await audit_log(
         db, user=user, action="asset.replace_slides", resource_type="asset",
