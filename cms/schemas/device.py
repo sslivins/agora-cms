@@ -30,6 +30,15 @@ class DeviceOut(BaseModel):
     registered_at: datetime
     is_online: bool = False
     is_upgrading: bool = False
+    # Issue agora-cms#626 -- True iff the device has been in the
+    # ``tryboot`` phase for more than ``STUCK_TRYBOOT_TTL`` (15 min)
+    # without progress.  In that state the on-device os-updater FSM
+    # is wedged in ``tryboot_running`` and will silently drop every
+    # upgrade dispatch.  The UI uses this flag to (a) render a "Upgrade
+    # stalled" warning badge, (b) disable the Update kebab item with an
+    # explanatory tooltip, and (c) short-circuit ``upgradeDevice()``
+    # with a toast.  The upgrade endpoint also refuses 409 server-side.
+    upgrade_stuck: bool = False
     # ── OTA progress (issue agora-cms#574) ──
     # While a device is in the middle of an OS OTA, these fields drive
     # the live progress badge in the UI.  All None when no OTA is in

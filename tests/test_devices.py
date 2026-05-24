@@ -1831,3 +1831,129 @@ class TestGroupDeleteButtonUI:
         html = resp.text
 
         assert f"deleteGroup('{group.id}')" in html
+
+
+# ── agora-cms#626: stuck-tryboot surfacing ────────────────────────────────
+
+
+def test_is_upgrade_stuck_returns_false_when_no_ota_phase():
+    from datetime import datetime, timezone, timedelta
+    from cms.routers.devices import _is_upgrade_stuck, STUCK_TRYBOOT_TTL
+    from cms.models.device import Device, DeviceStatus
+
+    d = Device(id="x", name="x", status=DeviceStatus.ADOPTED)
+    d.ota_phase = None
+    d.ota_updated_at = datetime.now(timezone.utc) - STUCK_TRYBOOT_TTL - timedelta(minutes=5)
+    assert _is_upgrade_stuck(d) is False
+
+
+def test_is_upgrade_stuck_returns_false_when_wrong_phase():
+    from datetime import datetime, timezone, timedelta
+    from cms.routers.devices import _is_upgrade_stuck, STUCK_TRYBOOT_TTL
+    from cms.models.device import Device, DeviceStatus
+
+    d = Device(id="x", name="x", status=DeviceStatus.ADOPTED)
+    d.ota_phase = "ota_download_progress"
+    d.ota_updated_at = datetime.now(timezone.utc) - STUCK_TRYBOOT_TTL - timedelta(minutes=5)
+    assert _is_upgrade_stuck(d) is False
+
+
+def test_is_upgrade_stuck_returns_false_when_tryboot_fresh():
+    from datetime import datetime, timezone
+    from cms.routers.devices import _is_upgrade_stuck
+    from cms.models.device import Device, DeviceStatus
+
+    d = Device(id="x", name="x", status=DeviceStatus.ADOPTED)
+    d.ota_phase = "ota_tryboot_initiated"
+    d.ota_updated_at = datetime.now(timezone.utc)
+    assert _is_upgrade_stuck(d) is False
+
+
+def test_is_upgrade_stuck_returns_true_when_tryboot_stale():
+    from datetime import datetime, timezone, timedelta
+    from cms.routers.devices import _is_upgrade_stuck, STUCK_TRYBOOT_TTL
+    from cms.models.device import Device, DeviceStatus
+
+    d = Device(id="x", name="x", status=DeviceStatus.ADOPTED)
+    d.ota_phase = "ota_tryboot_initiated"
+    d.ota_updated_at = datetime.now(timezone.utc) - STUCK_TRYBOOT_TTL - timedelta(minutes=1)
+    assert _is_upgrade_stuck(d) is True
+
+
+def test_is_upgrade_stuck_returns_false_when_ota_updated_at_is_none():
+    from cms.routers.devices import _is_upgrade_stuck
+    from cms.models.device import Device, DeviceStatus
+
+    d = Device(id="x", name="x", status=DeviceStatus.ADOPTED)
+    d.ota_phase = "ota_tryboot_initiated"
+    d.ota_updated_at = None
+    assert _is_upgrade_stuck(d) is False
+
+
+@pytest.mark.asyncio
+class TestUpgradeStuckSurfacing:
+    """Issue agora-cms#626 -- a device that's been mid-tryboot for >15
+    min must surface as ``upgrade_stuck=True`` via the device API AND
+    refuse new upgrade dispatches with a 409 instead of silently no-op'ing.
+    """
+
+    async def _make_stuck_device(self, db_session, device_id="stuck-pi-001"):
+        from datetime import datetime, timezone, timedelta
+        from cms.models.device import Device, DeviceStatus
+        from cms.routers.devices import STUCK_TRYBOOT_TTL
+
+        device = Device(
+            id=device_id,
+            name=device_id,
+            status=DeviceStatus.ADOPTED,
+            ota_phase="ota_tryboot_initiated",
+            ota_updated_at=datetime.now(timezone.utc) - STUCK_TRYBOOT_TTL - timedelta(minutes=1),
+        )
+        db_session.add(device)
+        await db_session.commit()
+        return device
+
+    async def test_get_device_exposes_upgrade_stuck_true(self, client, db_session):
+        await self._make_stuck_device(db_session, "stuck-pi-get")
+        resp = await client.get("/api/devices/stuck-pi-get")
+        assert resp.status_code == 200
+        assert resp.json()["upgrade_stuck"] is True
+
+    async def test_list_devices_exposes_upgrade_stuck(self, client, db_session):
+        await self._make_stuck_device(db_session, "stuck-pi-list")
+        resp = await client.get("/api/devices")
+        assert resp.status_code == 200
+        rows = {d["id"]: d for d in resp.json()}
+        assert rows["stuck-pi-list"]["upgrade_stuck"] is True
+
+    async def test_upgrade_endpoint_refuses_stuck_device(self, client, db_session):
+        """POST /upgrade on a stuck device returns 409 BEFORE taking a claim."""
+        from cms.services.device_manager import device_manager
+        from cms.services import device_presence
+
+        await self._make_stuck_device(db_session, "stuck-pi-upgrade")
+
+        class FakeWS:
+            async def send_json(self, data): pass
+        device_manager.register("stuck-pi-upgrade", FakeWS())
+        await device_presence.mark_online(db_session, "stuck-pi-upgrade")
+        try:
+            resp = await client.post("/api/devices/stuck-pi-upgrade/upgrade")
+            assert resp.status_code == 409
+            detail = resp.json()["detail"]
+            assert "stuck" in detail.lower()
+            assert "tryboot" in detail.lower()
+
+            # And critically: no claim was taken -- a follow-up GET must
+            # still show upgrade_stuck=True and upgrade_started_at=None
+            # on the row (i.e. the row isn't now locked for 15 min behind
+            # a dispatch the device would have dropped).
+            from cms.models.device import Device
+            from sqlalchemy import select
+            row = (await db_session.execute(
+                select(Device).where(Device.id == "stuck-pi-upgrade")
+            )).scalar_one()
+            await db_session.refresh(row)
+            assert row.upgrade_started_at is None
+        finally:
+            device_manager.disconnect("stuck-pi-upgrade")

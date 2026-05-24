@@ -510,6 +510,8 @@ window._adoptionProfiles = [
         let items = '';
         if (adoptable) {
             items += '<button type="button" role="menuitem" onclick="adoptDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Register this device so it can receive content">Adopt</button>';
+        } else if (d.upgrade_stuck) {
+            items += '<button type="button" role="menuitem" disabled title="Device is stuck mid-upgrade (tryboot did not complete). Reboot the device or wait for the on-device slot manager to recover before retrying.">Upgrade stalled</button>';
         } else if (d.is_upgrading) {
             items += '<button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>';
         } else if (d.is_online && d.update_available) {
@@ -547,8 +549,14 @@ window._adoptionProfiles = [
             const msg = d.error ? String(d.error).replace(/[<>&]/g, '') : 'Player pipeline reported an error';
             out.push('<span class="has-tooltip"><span class="badge badge-error">Error</span><span class="tooltip">' + msg + '</span></span>');
         }
-        // Upgrading — live OTA progress bar if available, else legacy chip.
-        if (d.is_upgrading && d.ota_phase && d.ota_pct != null) {
+        // Upgrade stalled — device is wedged in mid-tryboot.  Takes
+        // precedence over the in-flight "Upgrading…" / progress chip
+        // because the in-flight state is the *cause* of the stuck
+        // signal; we want the operator to see the warning, not a stale
+        // progress bar.  See agora-cms#626 / agora#243.
+        if (d.upgrade_stuck) {
+            out.push('<span class="has-tooltip"><span class="badge badge-error">Upgrade stalled</span><span class="tooltip">Device has been mid-upgrade for over 15 minutes without completing. New upgrade commands will be ignored until the device recovers — reboot it manually, or wait for the on-device slot manager to roll back.</span></span>');
+        } else if (d.is_upgrading && d.ota_phase && d.ota_pct != null) {
             const pct = Math.round(d.ota_pct);
             const label = (d.ota_label || 'Upgrading').replace(/[<>&]/g, '');
             const tooltip = label + ' — device will reboot when done';
@@ -618,7 +626,7 @@ window._adoptionProfiles = [
         return [
             d.status, d.is_online ? 1 : 0, d.is_upgrading ? 1 : 0,
             d.update_available ? 1 : 0, errFlag, tempBucket, displayOff, storageBucket,
-            otaPhase, otaPctBucket
+            otaPhase, otaPctBucket, d.upgrade_stuck ? 1 : 0
         ].join('|');
     }
 
@@ -671,6 +679,7 @@ window._adoptionProfiles = [
                     d.status, d.is_upgrading ? 1 : 0, d.is_online ? 1 : 0,
                     d.update_available ? 1 : 0, d.ssh_enabled ? 1 : 0,
                     d.local_api_enabled === false ? 0 : 1,
+                    d.upgrade_stuck ? 1 : 0,
                 ].join("|");
                 if (actionsEl.dataset.actionsSig !== sig) {
                     actionsEl.innerHTML = buildActionButtons(d);
