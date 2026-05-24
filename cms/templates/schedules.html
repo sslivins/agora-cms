@@ -848,7 +848,10 @@ function editSchedule(s) {
         <div class="form-row">
             <div class="form-group">
                 <label>Start Date</label>
-                <input type="date" id="edit-start-date" value="${s.start_date}">
+                <div class="time-now-wrap" id="edit-start-date-wrap">
+                    <button type="button" class="time-now-chip" id="edit-start-date-today" tabindex="-1">📅 Set to today</button>
+                    <input type="date" id="edit-start-date" value="${s.start_date}">
+                </div>
             </div>
             <div class="form-group">
                 <label>End Date</label>
@@ -953,7 +956,11 @@ function editSchedule(s) {
     const startWrap = box.querySelector("#edit-start-time-wrap");
     const startNowChip = box.querySelector("#edit-start-time-now");
     const editTzSel = box.querySelector("#edit-timezone");
-    function _currentTimeInTz(tz) {
+    // The HTML5 ``<input type="time">`` value MUST be 24h HH:MM
+    // regardless of locale -- the native picker handles 12/24h display
+    // off the browser/OS locale.  So we keep this strict-24h helper
+    // for writing the input value...
+    function _currentTimeValueInTz(tz) {
         try {
             return new Intl.DateTimeFormat('en-GB', {
                 hour: '2-digit', minute: '2-digit', hour12: false,
@@ -966,8 +973,23 @@ function editSchedule(s) {
                    String(now.getMinutes()).padStart(2, '0');
         }
     }
+    // ...and a separate helper for the chip label, which respects the
+    // user's browser locale (12h vs 24h) so it matches what the native
+    // time picker is going to render after they click.  Using
+    // ``undefined`` as the locale lets the runtime pick up the browser
+    // default, and omitting ``hour12`` lets the locale decide.
+    function _currentTimeDisplayInTz(tz) {
+        try {
+            return new Intl.DateTimeFormat(undefined, {
+                hour: 'numeric', minute: '2-digit',
+                timeZone: tz || undefined,
+            }).format(_serverNow());
+        } catch (e) {
+            return _currentTimeValueInTz(tz);
+        }
+    }
     function _updateStartNowChipLabel() {
-        startNowChip.textContent = '\u23f1 Set to now (' + _currentTimeInTz(editTzSel.value) + ')';
+        startNowChip.textContent = '\u23f1 Set to now (' + _currentTimeDisplayInTz(editTzSel.value) + ')';
     }
     _updateStartNowChipLabel();
     editStartTimeEl.addEventListener('focus', function() {
@@ -988,7 +1010,7 @@ function editSchedule(s) {
     // Prevent the chip's mousedown from blurring the input mid-click.
     startNowChip.addEventListener('mousedown', function(e) { e.preventDefault(); });
     startNowChip.addEventListener('click', function() {
-        editStartTimeEl.value = _currentTimeInTz(editTzSel.value);
+        editStartTimeEl.value = _currentTimeValueInTz(editTzSel.value);
         editStartTimeEl.dispatchEvent(new Event('change', { bubbles: true }));
         editStartTimeEl.focus();
     });
@@ -996,9 +1018,64 @@ function editSchedule(s) {
     // dropdown while the modal is open.
     editTzSel.addEventListener('change', _updateStartNowChipLabel);
 
-    // Auto-advance end date in edit modal
+    // "Today" chip for Start Date -- same UX shape as the Start Time
+    // chip above.  Input value must be YYYY-MM-DD (HTML5 spec); the
+    // chip label is rendered in the user's browser locale so it
+    // matches what the native date picker shows.
+    const startDateWrap = box.querySelector("#edit-start-date-wrap");
+    const startTodayChip = box.querySelector("#edit-start-date-today");
     const editStartDateEl = box.querySelector("#edit-start-date");
     const editEndDateEl = box.querySelector("#edit-end-date");
+    function _currentDateValueInTz(tz) {
+        try {
+            const parts = new Intl.DateTimeFormat('en-CA', {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                timeZone: tz || undefined,
+            }).format(_serverNow());
+            // en-CA always formats as YYYY-MM-DD, which is the wire
+            // format <input type="date"> expects.
+            return parts;
+        } catch (e) {
+            const now = _serverNow();
+            return now.getFullYear() + '-' +
+                   String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                   String(now.getDate()).padStart(2, '0');
+        }
+    }
+    function _currentDateDisplayInTz(tz) {
+        try {
+            return new Intl.DateTimeFormat(undefined, {
+                year: 'numeric', month: 'short', day: 'numeric',
+                timeZone: tz || undefined,
+            }).format(_serverNow());
+        } catch (e) {
+            return _currentDateValueInTz(tz);
+        }
+    }
+    function _updateStartTodayChipLabel() {
+        startTodayChip.textContent = '\uD83D\uDCC5 Set to today (' + _currentDateDisplayInTz(editTzSel.value) + ')';
+    }
+    _updateStartTodayChipLabel();
+    editStartDateEl.addEventListener('focus', function() {
+        _updateStartTodayChipLabel();
+        startDateWrap.classList.add('focused');
+    });
+    editStartDateEl.addEventListener('blur', function() {
+        setTimeout(function() {
+            if (document.activeElement !== startTodayChip) {
+                startDateWrap.classList.remove('focused');
+            }
+        }, 120);
+    });
+    startTodayChip.addEventListener('mousedown', function(e) { e.preventDefault(); });
+    startTodayChip.addEventListener('click', function() {
+        editStartDateEl.value = _currentDateValueInTz(editTzSel.value);
+        editStartDateEl.dispatchEvent(new Event('change', { bubbles: true }));
+        editStartDateEl.focus();
+    });
+    editTzSel.addEventListener('change', _updateStartTodayChipLabel);
+
+    // Auto-advance end date in edit modal
     editStartDateEl.addEventListener('change', function() {
         if (!editEndDateEl.value || editEndDateEl.value < this.value) {
             editEndDateEl.value = this.value;
