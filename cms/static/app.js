@@ -1703,82 +1703,112 @@ async function uploadAsset(form) {
 
     const statusEl = document.getElementById("upload-status");
     const submitBtn = form.querySelector("button[type=submit]");
-    const data = new FormData(form);
+    // Snapshot the FileList up front -- form.reset() at the end will clear it.
+    const files = Array.from(fileInput.files);
+    const total = files.length;
+
+    // Build group_ids query param from selected badges (once -- reused per file)
+    const ids = _getUploadGroupIds();
+    const globalCb = document.getElementById("upload-global");
+    let qs = "";
+    if (globalCb && globalCb.checked) {
+        // No group_ids → admin upload becomes global
+    } else if (ids.length) {
+        qs = "?group_ids=" + ids.join(",");
+    }
 
     submitBtn.disabled = true;
-    statusEl.textContent = "Uploading… 0%";
     statusEl.className = "form-status";
 
-    return new Promise((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.upload.addEventListener("progress", (e) => {
-            if (e.lengthComputable) {
-                const pct = Math.round((e.loaded / e.total) * 100);
-                statusEl.textContent = "Uploading… " + pct + "%";
-            }
-        });
-        xhr.addEventListener("load", () => {
-            if (xhr.status === 401) {
-                window.location.href = "/login";
-            } else if (xhr.status >= 200 && xhr.status < 300) {
-                statusEl.textContent = "Upload complete!";
-                statusEl.className = "form-status text-success";
-                let newId = null;
-                try { newId = JSON.parse(xhr.responseText)?.id || null; } catch (_) {}
-                // Reset the form so another upload can start immediately.
-                // form.reset() clears fileInput.files but does NOT fire the
-                // input's change event, so the drop-label and submit-disabled
-                // state must be reset manually to match the initial page load.
-                form.reset();
-                const dropLabel = document.getElementById("drop-label");
-                if (dropLabel) dropLabel.textContent = "Drag \u0026 drop a file here, or";
-                const badges = document.getElementById("upload-groups-badges");
-                if (badges) {
-                    badges.querySelectorAll(".badge[data-group-id]").forEach(b => b.remove());
+    let okCount = 0;
+    const failures = [];
+
+    for (let i = 0; i < total; i++) {
+        const file = files[i];
+        const prefix = total > 1
+            ? "Uploading " + (i + 1) + "/" + total + " (" + file.name + ")… "
+            : "Uploading… ";
+        statusEl.textContent = prefix + "0%";
+
+        const ok = await new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            const data = new FormData();
+            data.append("file", file);
+            xhr.upload.addEventListener("progress", (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    statusEl.textContent = prefix + pct + "%";
                 }
-                const popup = document.getElementById("upload-group-popup");
-                if (popup) popup.querySelectorAll("[data-group-id]").forEach(b => { b.style.display = ""; });
-                submitBtn.disabled = true;
-                // Insert the new row (server-rendered, newest-first)
-                if (newId && window._insertAssetRow) {
-                    window._insertAssetRow(newId).finally(() => {
-                        setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
-                    });
+            });
+            xhr.addEventListener("load", () => {
+                if (xhr.status === 401) {
+                    window.location.href = "/login";
+                    resolve(false);
+                    return;
+                }
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    let newId = null;
+                    try { newId = JSON.parse(xhr.responseText)?.id || null; } catch (_) {}
+                    if (newId && window._insertAssetRow) {
+                        // Fire-and-forget; don't block the next upload on row insertion.
+                        window._insertAssetRow(newId);
+                    }
+                    resolve(true);
                 } else {
-                    setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
+                    let msg = "Upload failed";
+                    try {
+                        const err = JSON.parse(xhr.responseText);
+                        if (err && err.detail) msg = err.detail;
+                    } catch (_) {}
+                    failures.push({ name: file.name, msg: msg });
+                    resolve(false);
                 }
-                resolve(true);
-                return;
-            } else {
-                try {
-                    const err = JSON.parse(xhr.responseText);
-                    showToast(err.detail || "Upload failed", true);
-                } catch (_) {
-                    showToast("Upload failed", true);
-                }
-                statusEl.textContent = "";
-                submitBtn.disabled = false;
-            }
-            resolve(false);
+            });
+            xhr.addEventListener("error", () => {
+                failures.push({ name: file.name, msg: "Network error" });
+                resolve(false);
+            });
+            xhr.open("POST", "/api/assets/upload" + qs);
+            xhr.send(data);
         });
-        xhr.addEventListener("error", () => {
-            showToast("Upload failed — network error", true);
-            statusEl.textContent = "";
-            submitBtn.disabled = false;
-            resolve(false);
-        });
-        // Build group_ids query param from selected badges
-        const ids = _getUploadGroupIds();
-        const globalCb = document.getElementById("upload-global");
-        let qs = "";
-        if (globalCb && globalCb.checked) {
-            // No group_ids → admin upload becomes global
-        } else if (ids.length) {
-            qs = "?group_ids=" + ids.join(",");
-        }
-        xhr.open("POST", "/api/assets/upload" + qs);
-        xhr.send(data);
-    });
+        if (ok) okCount += 1;
+    }
+
+    // Reset the form so another upload can start immediately. form.reset()
+    // clears fileInput.files but does NOT fire the input's change event, so
+    // the drop-label and submit-disabled state must be reset manually to
+    // match the initial page load.
+    form.reset();
+    const dropLabel = document.getElementById("drop-label");
+    if (dropLabel) dropLabel.textContent = "Drag \u0026 drop files here, or";
+    const badges = document.getElementById("upload-groups-badges");
+    if (badges) {
+        badges.querySelectorAll(".badge[data-group-id]").forEach(b => b.remove());
+    }
+    const popup = document.getElementById("upload-group-popup");
+    if (popup) popup.querySelectorAll("[data-group-id]").forEach(b => { b.style.display = ""; });
+    submitBtn.disabled = true;
+
+    // Final status + per-failure toasts
+    if (failures.length === 0) {
+        statusEl.textContent = total > 1
+            ? "All " + total + " uploads complete!"
+            : "Upload complete!";
+        statusEl.className = "form-status text-success";
+    } else if (okCount === 0) {
+        statusEl.textContent = "";
+        statusEl.className = "form-status";
+    } else {
+        statusEl.textContent = okCount + " of " + total + " uploaded, " + failures.length + " failed.";
+        statusEl.className = "form-status text-warning";
+    }
+    for (const f of failures) {
+        showToast(f.name + ": " + f.msg, true);
+    }
+    if (failures.length === 0) {
+        setTimeout(() => { statusEl.textContent = ""; statusEl.className = "form-status"; }, 1500);
+    }
+    return failures.length === 0;
 }
 
 // ── Upload multi-group selector ──
