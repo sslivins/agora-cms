@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import List
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, select, update
@@ -25,7 +27,12 @@ from cms.models.schedule import Schedule
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.user import User
 from cms.schemas.asset import (
+    AssetBulkFailure,
+    AssetBulkIn,
+    AssetBulkOut,
     AssetOut,
+    AssetPageOut,
+    BULK_ACTIONS,
     MAX_SLIDE_DURATION_MS,
     MAX_SLIDESHOW_SLIDES,
     SlideIn,
@@ -355,6 +362,330 @@ async def list_assets(
     result = await db.execute(q)
     return result.scalars().all()
 
+
+# ── Paginated / filtered listing for the asset library UI ──
+#
+# This sits alongside the legacy ``GET /api/assets`` (above) so the many
+# existing callers (MCP client, slideshow_builder, half the test suite)
+# keep working with the old flat-list shape. Only the new asset-library
+# UI talks to ``/page``.
+
+
+class _OrderSpec:
+    """Maps an ``order=`` query value to (sort column, secondary cursor)."""
+
+    def __init__(self, column, *, nulls_last: bool = False, coalesce_with=None):
+        self.column = column
+        self.nulls_last = nulls_last
+        self.coalesce_with = coalesce_with
+
+    def expr(self, descending: bool):
+        from sqlalchemy import nulls_last as _nl
+
+        col = self.column
+        if self.coalesce_with is not None:
+            col = func.coalesce(self.column, self.coalesce_with)
+        ordered = col.desc() if descending else col.asc()
+        if self.nulls_last:
+            ordered = _nl(ordered)
+        return ordered, col
+
+
+def _build_order_specs() -> dict[str, _OrderSpec]:
+    # Lazily built so the column references resolve after the model is
+    # fully imported.
+    return {
+        "display_name": _OrderSpec(
+            Asset.display_name, coalesce_with=Asset.filename
+        ),
+        "asset_type": _OrderSpec(Asset.asset_type),
+        "size_bytes": _OrderSpec(Asset.size_bytes),
+        "uploaded_at": _OrderSpec(Asset.uploaded_at),
+        "duration_seconds": _OrderSpec(
+            Asset.duration_seconds, nulls_last=True
+        ),
+    }
+
+
+def _encode_cursor(value, last_id: uuid.UUID) -> str:
+    import base64
+    import json
+
+    if isinstance(value, datetime):
+        payload_value = value.isoformat()
+    elif isinstance(value, uuid.UUID):
+        payload_value = str(value)
+    elif isinstance(value, AssetType):
+        payload_value = value.value
+    else:
+        payload_value = value
+    raw = json.dumps([payload_value, str(last_id)], separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple:
+    import base64
+    import json
+
+    pad = "=" * ((4 - len(cursor) % 4) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(cursor + pad).decode()
+        value, last_id = json.loads(raw)
+        return value, uuid.UUID(last_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor")
+
+
+_ALLOWED_TYPES = {t.value for t in AssetType}
+
+
+@router.get("/page", response_model=AssetPageOut)
+async def list_assets_paged(
+    user: User = Depends(require_permission(ASSETS_READ)),
+    db: AsyncSession = Depends(get_db),
+    q: str = Query("", description="Substring search across name/filename"),
+    type: list[str] = Query(default_factory=list, alias="type"),
+    group_id: list[uuid.UUID] = Query(default_factory=list, alias="group_id"),
+    uploader_id: list[uuid.UUID] = Query(default_factory=list, alias="uploader_id"),
+    uploaded_after: datetime | None = Query(None),
+    uploaded_before: datetime | None = Query(None),
+    order: str = Query("-uploaded_at"),
+    cursor: str | None = Query(None),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    """Paginated + filtered asset listing for the asset library UI.
+
+    All filters are AND-composed. ``q`` is a case-insensitive substring
+    match against ``display_name``, ``original_filename``, and
+    ``filename`` (Postgres-side this hits a trigram GIN index; SQLite
+    falls back to a sequential scan in tests). The caller's group ACL
+    is applied last and cannot be widened by URL parameters.
+    """
+    # ── Parse + validate order ──
+    descending = order.startswith("-")
+    key = order.lstrip("-")
+    specs = _build_order_specs()
+    if key not in specs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"order must be one of {sorted(specs)} (optionally prefixed with -)",
+        )
+    spec = specs[key]
+    order_expr, order_col = spec.expr(descending)
+
+    # ── Validate type filter ──
+    if type:
+        bad = [t for t in type if t not in _ALLOWED_TYPES]
+        if bad:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown type filter values: {bad}",
+            )
+        type_enums = [AssetType(t) for t in type]
+    else:
+        type_enums = []
+
+    # ── Base query (live assets only) ──
+    stmt = select(Asset, func.count().over().label("total")).where(
+        Asset.deleted_at.is_(None)
+    )
+
+    # ── ACL ──
+    visible = await _visible_asset_ids(user, db)
+    if visible is not None:
+        stmt = stmt.where(Asset.id.in_(visible))
+
+    # ── Filters ──
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            func.coalesce(Asset.display_name, "").ilike(like)
+            | func.coalesce(Asset.original_filename, "").ilike(like)
+            | Asset.filename.ilike(like)
+        )
+
+    if type_enums:
+        stmt = stmt.where(Asset.asset_type.in_(type_enums))
+
+    if uploader_id:
+        stmt = stmt.where(Asset.uploaded_by_user_id.in_(uploader_id))
+
+    if uploaded_after is not None:
+        stmt = stmt.where(Asset.uploaded_at >= uploaded_after)
+    if uploaded_before is not None:
+        stmt = stmt.where(Asset.uploaded_at < uploaded_before)
+
+    if group_id:
+        # AND-intersected with the ACL: caller is still bounded by what
+        # they can see — non-admins passing a group they aren't a member
+        # of just see an empty page rather than getting 403.
+        stmt = stmt.where(
+            Asset.id.in_(
+                select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_id))
+            )
+        )
+
+    # ── Cursor (encodes the order key value and the last id seen) ──
+    if cursor:
+        cursor_value, cursor_last_id = _decode_cursor(cursor)
+        # Re-hydrate the cursor value into the order column's native type
+        # so the WHERE clause type-checks on Postgres.
+        if key == "uploaded_at":
+            try:
+                cursor_value = datetime.fromisoformat(cursor_value)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid cursor value")
+        elif key == "asset_type":
+            try:
+                cursor_value = AssetType(cursor_value)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid cursor value")
+        # size_bytes / duration_seconds come back as int / float from JSON
+        # already; display_name comes back as a string. Nothing to do.
+
+        if descending:
+            stmt = stmt.where(
+                (order_col < cursor_value)
+                | ((order_col == cursor_value) & (Asset.id < cursor_last_id))
+            )
+        else:
+            stmt = stmt.where(
+                (order_col > cursor_value)
+                | ((order_col == cursor_value) & (Asset.id > cursor_last_id))
+            )
+
+    # ── Order: primary key then id as deterministic tiebreaker ──
+    id_tiebreak = Asset.id.desc() if descending else Asset.id.asc()
+    stmt = stmt.order_by(order_expr, id_tiebreak).limit(page_size + 1)
+
+    rows = (await db.execute(stmt)).all()
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
+
+    items = [row[0] for row in rows]
+    total_estimate = int(rows[0][1]) if rows else 0
+
+    next_cursor: str | None = None
+    if has_more and items:
+        last = items[-1]
+        # Pull the same expression value we ordered by (handles
+        # coalesce(display_name, filename) etc.).
+        last_value = getattr(last, key, None)
+        if key == "display_name" and last_value is None:
+            last_value = last.filename
+        next_cursor = _encode_cursor(last_value, last.id)
+
+    return AssetPageOut(
+        items=[AssetOut.model_validate(a) for a in items],
+        next_cursor=next_cursor,
+        total_estimate=total_estimate,
+    )
+
+
+# ── Bulk endpoint ──
+#
+# Polymorphic. Routes per-id to the existing single-asset endpoint
+# logic so all ACL invariants (schedule references, slideshow audience,
+# group-membership scoping, admin-only global toggles) are enforced
+# exactly as they would be in the per-asset path. Failures are reported
+# per-id rather than failing the whole batch — same shape as ``POST
+# /api/devices/bulk``.
+
+@router.post(
+    "/bulk",
+    response_model=AssetBulkOut,
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
+)
+async def bulk_assets(
+    payload: AssetBulkIn,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    if payload.action in ("add_group", "remove_group") and payload.group_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"group_id is required for action={payload.action!r}",
+        )
+    if payload.action == "set_global":
+        if payload.is_global is None:
+            raise HTTPException(
+                status_code=400,
+                detail="is_global is required for action='set_global'",
+            )
+        # set_global is admin-only — same posture as the single-asset
+        # toggle endpoint, but expressed up-front for clarity.
+        user_groups_check = await get_user_group_ids(user, db)
+        if user_groups_check is not None:
+            raise HTTPException(
+                status_code=403,
+                detail="Only admins can change an asset's global flag",
+            )
+
+    succeeded: list[uuid.UUID] = []
+    failed: list[AssetBulkFailure] = []
+
+    # De-duplicate while preserving order — callers occasionally send the
+    # same id twice from a misbehaving UI; a duplicate would just produce
+    # a 404 on the second pass which is noisy without being useful.
+    seen: set[uuid.UUID] = set()
+    asset_ids = [a for a in payload.asset_ids if not (a in seen or seen.add(a))]
+
+    for aid in asset_ids:
+        try:
+            if payload.action == "delete":
+                await delete_asset(
+                    asset_id=aid, request=request, user=user, db=db, settings=settings
+                )
+            elif payload.action == "add_group":
+                await share_asset(
+                    asset_id=aid,
+                    request=request,
+                    group_id=payload.group_id,  # type: ignore[arg-type]
+                    user=user,
+                    db=db,
+                )
+            elif payload.action == "remove_group":
+                await unshare_asset(
+                    asset_id=aid,
+                    request=request,
+                    group_id=payload.group_id,  # type: ignore[arg-type]
+                    user=user,
+                    db=db,
+                )
+            elif payload.action == "set_global":
+                # Toggle only if the current state differs from the
+                # requested state so the operation is idempotent.
+                cur = (
+                    await db.execute(
+                        select(Asset.is_global).where(
+                            Asset.id == aid, Asset.deleted_at.is_(None)
+                        )
+                    )
+                ).scalar_one_or_none()
+                if cur is None:
+                    raise HTTPException(status_code=404, detail="Asset not found")
+                if bool(cur) != bool(payload.is_global):
+                    await toggle_asset_global(
+                        asset_id=aid, request=request, db=db
+                    )
+            succeeded.append(aid)
+        except HTTPException as exc:
+            # Roll back any partial work the failed handler did so the
+            # session is clean for the next iteration. The single-asset
+            # endpoints commit on success, so rollback only affects the
+            # current failed attempt.
+            await db.rollback()
+            failed.append(
+                AssetBulkFailure(
+                    id=aid,
+                    reason=str(exc.detail),
+                    status=exc.status_code,
+                )
+            )
+
+    return AssetBulkOut(succeeded=succeeded, failed=failed)
 
 @router.post("/upload", response_model=AssetOut, status_code=201)
 async def upload_asset(
