@@ -38,12 +38,13 @@ class TestParseVersion:
     def test_basic_three_part(self):
         from cms.services.bundle_checker import _parse_version
 
-        assert _parse_version("1.2.3") == (1, 2, 3)
+        # Trailing (1, 0) marks "released" tier so it sorts above any rc-N pre-release.
+        assert _parse_version("1.2.3") == (1, 2, 3, 1, 0)
 
     def test_strips_v_prefix(self):
         from cms.services.bundle_checker import _parse_version
 
-        assert _parse_version("v1.2.3") == (1, 2, 3)
+        assert _parse_version("v1.2.3") == (1, 2, 3, 1, 0)
 
     def test_test_suffix_equals_unsuffixed(self):
         """``0.0.17-test`` and ``0.0.17`` should compare equal -- we treat the
@@ -51,13 +52,23 @@ class TestParseVersion:
         from cms.services.bundle_checker import _parse_version
 
         assert _parse_version("0.0.17-test") == _parse_version("0.0.17")
-        assert _parse_version("0.0.17-test") == (0, 0, 17)
+        assert _parse_version("0.0.17-test") == (0, 0, 17, 1, 0)
 
     def test_ordering(self):
         from cms.services.bundle_checker import _parse_version
 
         assert _parse_version("0.0.16-test") < _parse_version("0.0.17-test")
         assert _parse_version("1.0.0") > _parse_version("0.99.99")
+
+    def test_rc_suffix_orders_pre_release(self):
+        """#625: ``1.0.0-rc1`` and ``1.0.0-rc2`` must compare distinct so
+        a device on rc1 sees rc2 as an available update.  Bare ``1.0.0``
+        outranks any rc (matches semver pre-release semantics)."""
+        from cms.services.bundle_checker import _parse_version
+
+        assert _parse_version("1.0.0-rc1") < _parse_version("1.0.0-rc2")
+        assert _parse_version("1.0.0-rc2") < _parse_version("1.0.0")
+        assert _parse_version("1.0.0-rc9") < _parse_version("1.0.0-rc10")
 
     def test_garbage_returns_empty_tuple(self):
         """Empty tuple compares less than any populated tuple -- same
@@ -110,6 +121,20 @@ class TestIsOsUpdateAvailable:
 
         assert bundle_checker.is_os_update_available("0.0.17", "0.0.17-test") is False
         assert bundle_checker.is_os_update_available("0.0.17-test", "0.0.17-test") is False
+
+    def test_rc_suffix_reports_update(self):
+        """#625: device on ``1.0.0-rc1`` must see ``1.0.0-rc2`` as an
+        available update.  Pre-fix the parser dropped the ``rcN`` chunk
+        and both versions compared equal, so the badge stayed dark."""
+        from cms.services import bundle_checker
+
+        assert bundle_checker.is_os_update_available("1.0.0-rc1", "1.0.0-rc2") is True
+        assert bundle_checker.is_os_update_available("1.0.0-rc2", "1.0.0-rc1") is False
+        assert bundle_checker.is_os_update_available("1.0.0-rc2", "1.0.0-rc2") is False
+        # rc N -> released N is still an update.
+        assert bundle_checker.is_os_update_available("1.0.0-rc2", "1.0.0") is True
+        # Released -> rc of same N is NOT an update (the rc is older).
+        assert bundle_checker.is_os_update_available("1.0.0", "1.0.0-rc2") is False
 
 
 @pytest.mark.asyncio

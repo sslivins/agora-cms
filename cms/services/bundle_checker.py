@@ -166,28 +166,54 @@ def _parse_version(v: str) -> tuple:
     """Parse a version string into a comparable tuple of ints.
 
     Handles our ``MAJOR.MINOR.PATCH[-LABEL]`` convention by splitting
-    on both ``.`` and ``-`` and taking the leading run of numeric
-    segments.  ``"0.0.17-test"`` → ``(0, 0, 17)`` so that
-    ``parse("0.0.17-test") > parse("0.0.16-test")`` is True and
-    ``parse("0.0.17-test") == parse("0.0.17")`` is True (we treat
-    ``-test`` as the same release as the non-suffixed form).
+    on ``.``, ``-``, and ``+`` and taking the leading run of numeric
+    segments, then attaching a trailing (tier, pre_number) pair so
+    pre-release labels order correctly:
+
+    * No suffix or a non-numeric label like ``-test`` -> ``(..., 1, 0)``
+      ("released" tier).  We treat ``-test`` as the same release as the
+      non-suffixed form, which keeps dev-tag builds comparable with
+      their eventual public version.
+    * ``-rc<N>`` -> ``(..., 0, N)`` ("pre-release" tier, lower than 1),
+      so ``1.0.0-rc1 < 1.0.0-rc2 < 1.0.0``.  Without this special-case
+      the parser drops ``rcN`` entirely and rc1/rc2 compare equal --
+      see #625.
+
+    Examples:
+        ``"0.0.17-test"`` -> ``(0, 0, 17, 1, 0)``
+        ``"0.0.17"``      -> ``(0, 0, 17, 1, 0)``  (equal to ``-test``)
+        ``"1.0.0-rc1"``   -> ``(1, 0, 0, 0, 1)``
+        ``"1.0.0-rc2"``   -> ``(1, 0, 0, 0, 2)``   (greater than rc1)
+        ``"1.0.0"``       -> ``(1, 0, 0, 1, 0)``   (greater than any rc)
 
     Returns the empty tuple on parse failure, which compares less than
-    any populated tuple — the same fall-back behaviour as the old
+    any populated tuple -- the same fall-back behaviour as the old
     version_checker._parse_version.
     """
     if not v:
         return ()
     v = v.lstrip("v")
-    out: list[int] = []
+    nums: list[int] = []
+    pre_number: Optional[int] = None
     for chunk in re.split(r"[.\-+]", v):
         if not chunk:
             break
         try:
-            out.append(int(chunk))
+            nums.append(int(chunk))
+            continue
         except ValueError:
-            break
-    return tuple(out)
+            pass
+        m = re.match(r"^rc(\d+)$", chunk, re.IGNORECASE)
+        if m:
+            pre_number = int(m.group(1))
+        # Any non-numeric chunk (rc match or not) ends the leading
+        # numeric run -- we don't try to mix multiple labels.
+        break
+    if not nums:
+        return ()
+    if pre_number is not None:
+        return tuple(nums) + (0, pre_number)
+    return tuple(nums) + (1, 0)
 
 
 def is_os_update_available(
