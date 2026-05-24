@@ -315,6 +315,37 @@
     color: #888;
     font-style: italic;
 }
+.ssb-trans-opt-sel {
+    background: rgba(22,160,133,0.25);
+}
+.ssb-trans-opt-sel .ssb-trans-opt-icon {
+    color: #1abc9c;
+}
+.ssb-trans-dur {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.7rem;
+    border-top: 1px solid #333;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: #bbb;
+}
+.ssb-trans-dur-label { flex: 0 0 auto; }
+.ssb-trans-dur-input {
+    width: 4.5rem;
+    background: #111;
+    color: #ddd;
+    border: 1px solid #444;
+    border-radius: 0.25rem;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.75rem;
+}
+.ssb-trans-dur-input:disabled {
+    color: #555;
+    background: #1a1a1a;
+}
+.ssb-trans-dur-unit { color: #888; }
 
 /* Drop zone at end of timeline / when empty */
 .ssb-end {
@@ -647,17 +678,19 @@ function makeSlot(s, i) {
     return slot;
 }
 
-// Transition types — only ``cut`` is exposed in the UI today.  The wire
-// schema (Phase 1a of agora#226) accepts ``fade``/``dissolve``/``wipe``
-// too, but the mpv-based fleet renders any non-``cut`` value as an
-// instant swap (same visual result as cut) — so enabling those options
-// in the picker would be a UX trap.  The chromium-player branch flips
-// these to ``enabled: true`` once it can render them for real.
+// Transition types — all wire IDs come from cms.schemas.asset.SLIDE_TRANSITIONS.
+// The mpv-based legacy fleet renders any non-``cut`` value as an instant
+// swap (it ignores transitions entirely); the chromium-player shell that
+// ships on every supported Pi today renders the rest. ``cut`` keeps
+// transition_ms forced to 0 since there's nothing to time.
 const SS_TRANSITIONS = [
-    {id: 'cut',      label: 'Cut',      icon: '\u2702',    enabled: true},   // ✂
-    {id: 'fade',     label: 'Fade',     icon: '\u25D0',    enabled: false},  // ◐
-    {id: 'dissolve', label: 'Dissolve', icon: '\u2592',    enabled: false},  // ▒
-    {id: 'wipe',     label: 'Wipe',     icon: '\u21E8',    enabled: false},  // ⇨
+    {id: 'cut',        label: 'Cut',                icon: '\u2702'},   // ✂
+    {id: 'fade',       label: 'Crossfade',          icon: '\u25D0'},   // ◐
+    {id: 'fade_black', label: 'Fade through black', icon: '\u25D1'},   // ◑
+    {id: 'dissolve',   label: 'Dissolve (Ken Burns)', icon: '\u2299'}, // ⊙
+    {id: 'push',       label: 'Push',               icon: '\u21E2'},   // ⇢
+    {id: 'wipe',       label: 'Wipe',               icon: '\u21E8'},   // ⇨
+    {id: 'zoom',       label: 'Zoom',               icon: '\u2295'},   // ⊕
 ];
 function transitionDef(id) {
     return SS_TRANSITIONS.find(t => t.id === id) || SS_TRANSITIONS[0];
@@ -686,28 +719,65 @@ function makeGap(index, isLeading) {
             const opt = document.createElement('button');
             opt.type = 'button';
             opt.className = 'ssb-trans-opt';
-            opt.disabled = !t.enabled;
-            opt.title = t.enabled ? t.label : `${t.label} — coming soon`;
+            opt.title = t.label;
             opt.innerHTML = `
                 <span class="ssb-trans-opt-icon">${t.icon}</span>
-                <span>${t.label}</span>
-                ${t.enabled ? '' : '<span class="ssb-trans-opt-soon">soon</span>'}`;
+                <span>${t.label}</span>`;
             opt.addEventListener('click', (e) => {
                 e.stopPropagation();
-                if (!t.enabled) return;
                 if (slides[slideIdx]) {
                     const prev = slides[slideIdx].transition || 'cut';
                     if (prev !== t.id) {
                         slides[slideIdx].transition = t.id;
+                        // ``cut`` has no duration; clamp to 0 so the wire/UI agree.
+                        if (t.id === 'cut') {
+                            slides[slideIdx].transition_ms = 0;
+                        } else if (!slides[slideIdx].transition_ms) {
+                            slides[slideIdx].transition_ms = 600;
+                        }
                         markDirty();
                     }
                 }
-                try { menu.hidePopover(); } catch {}
                 btn.textContent = t.icon;
                 btn.title = `${t.label} transition — click to change`;
+                // Refresh duration input enabled state without closing the popover.
+                const di = menu.querySelector('.ssb-trans-dur-input');
+                if (di) {
+                    di.disabled = (t.id === 'cut');
+                    di.value = slides[slideIdx].transition_ms || 0;
+                }
+                // Mark selected option visually.
+                menu.querySelectorAll('.ssb-trans-opt').forEach(o => o.classList.remove('ssb-trans-opt-sel'));
+                opt.classList.add('ssb-trans-opt-sel');
             });
+            if (t.id === current.id) opt.classList.add('ssb-trans-opt-sel');
             menu.appendChild(opt);
         });
+        // Duration footer — numeric ms input bound to slides[slideIdx].transition_ms.
+        const dur = document.createElement('div');
+        dur.className = 'ssb-trans-dur';
+        const curMs = (slides[slideIdx] && typeof slides[slideIdx].transition_ms === 'number')
+            ? slides[slideIdx].transition_ms : 600;
+        const isCut = (current.id === 'cut');
+        dur.innerHTML = `
+            <label class="ssb-trans-dur-label">Duration</label>
+            <input type="number" class="ssb-trans-dur-input"
+                   min="0" max="5000" step="50"
+                   value="${isCut ? 0 : curMs}" ${isCut ? 'disabled' : ''}>
+            <span class="ssb-trans-dur-unit">ms</span>`;
+        const di = dur.querySelector('.ssb-trans-dur-input');
+        di.addEventListener('click', (e) => e.stopPropagation());
+        di.addEventListener('input', (e) => {
+            if (!slides[slideIdx]) return;
+            let v = parseInt(e.target.value, 10);
+            if (isNaN(v)) v = 0;
+            v = Math.max(0, Math.min(5000, v));
+            if (slides[slideIdx].transition_ms !== v) {
+                slides[slideIdx].transition_ms = v;
+                markDirty();
+            }
+        });
+        menu.appendChild(dur);
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const open = menu.matches(':popover-open');

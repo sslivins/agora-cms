@@ -20,13 +20,20 @@ MAX_SLIDESHOW_SLIDES = 50
 MIN_SLIDE_DURATION_MS = 500
 MAX_SLIDE_DURATION_MS = 60 * 60 * 1000
 
-# Per-slide transition controls (Phase 1a of agora#226).  ``cut`` means an
-# instant swap (no transition) and is the only transition the mpv-based
-# player actually renders today — ``fade``/``dissolve``/``wipe`` are
-# accepted on the wire so the chromium-player branch can render them
-# without a follow-up schema bump.  The mpv player ignores anything other
-# than ``cut`` (renders the slide instantly).
-SLIDE_TRANSITIONS = ("cut", "fade", "dissolve", "wipe")
+# Per-slide transition controls (Phase 1a of agora#226, expanded in 0029).
+# ``cut`` is an instant swap (no transition) and is the only mode the
+# legacy mpv-based player renders — it ignores everything else.  The
+# chromium-player shell renders the rest.  Wire IDs are kept short
+# (snake_case) so they round-trip through DB CHECK + JSON cleanly.
+SLIDE_TRANSITIONS = (
+    "cut",
+    "fade",
+    "fade_black",
+    "dissolve",
+    "push",
+    "wipe",
+    "zoom",
+)
 DEFAULT_SLIDE_TRANSITION = "cut"
 # Transition duration bounds.  ``0`` is valid (and required for ``cut``);
 # upper bound is a soft sanity limit — anything longer would dominate the
