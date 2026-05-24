@@ -3988,6 +3988,10 @@ components:
           type: boolean
           title: Is Upgrading
           default: false
+        upgrade_stuck:
+          type: boolean
+          title: Upgrade Stuck
+          default: false
         ota_phase:
           anyOf:
           - type: string
