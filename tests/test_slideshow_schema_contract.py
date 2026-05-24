@@ -199,3 +199,43 @@ class TestSlideshowSchemaFieldDefaults:
         cms_msg = _build_cms_slideshow_msg(manifest_schema_version="1.1")
         wire = json.loads(cms_msg.model_dump_json())
         assert wire["manifest_schema_version"] == "1.1"
+
+
+class TestSlideDescriptorTransitionAllowList:
+    """Regression: SlideDescriptor must accept every transition ID listed
+    in cms.schemas.asset.SLIDE_TRANSITIONS.  These two lists drifted once
+    (the Pydantic validator hard-coded ``cut/fade/dissolve/wipe`` while
+    SLIDE_TRANSITIONS grew to include fade_black/push/zoom), which made
+    the slideshow fetch path 500 for any slide using the new modes and
+    devices stuck in a fetch-retry loop.
+    """
+
+    @pytest.mark.parametrize("transition", list(__import__("cms.schemas.asset", fromlist=["SLIDE_TRANSITIONS"]).SLIDE_TRANSITIONS))
+    def test_every_known_transition_accepted(self, transition: str) -> None:
+        from cms.schemas.protocol import SlideDescriptor
+
+        SlideDescriptor(
+            asset_name="slide.png",
+            asset_type="image",
+            download_url="/x",
+            checksum="a" * 64,
+            size_bytes=1024,
+            duration_ms=2000,
+            transition=transition,
+            transition_ms=600,
+        )
+
+    def test_unknown_transition_rejected(self) -> None:
+        from cms.schemas.protocol import SlideDescriptor
+
+        with pytest.raises(ValueError, match="transition must be one of"):
+            SlideDescriptor(
+                asset_name="slide.png",
+                asset_type="image",
+                download_url="/x",
+                checksum="a" * 64,
+                size_bytes=1024,
+                duration_ms=2000,
+                transition="kaleidoscope",
+                transition_ms=600,
+            )
