@@ -8,7 +8,7 @@ button must be disabled, so the form looks fresh for the next upload.
 import pytest
 
 
-DEFAULT_LABEL = "Drag & drop a file here, or"
+DEFAULT_LABEL = "Drag & drop files here, or"
 
 
 def test_cancel_file_picker_resets_label_after_drop(page: "Page"):

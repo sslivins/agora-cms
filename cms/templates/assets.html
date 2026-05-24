@@ -22,10 +22,10 @@
     <div id="add-tab-upload" class="tab-content active" style="padding:1.25rem;">
     <form id="upload-form" onsubmit="event.preventDefault(); uploadAsset(this)" enctype="multipart/form-data">
         <div class="upload-area" id="drop-zone">
-            <p id="drop-label">Drag &amp; drop a file here, or</p>
-            <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem">Accepts video (mp4, mov, mkv, avi, webm) and image (jpg, png, heif, avif, webp, gif, bmp, tiff) files</p>
-            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Choose File</button>
-            <input type="file" id="file-input" name="file" accept=".mp4,.mov,.mkv,.avi,.webm,.ts,.m4v,.jpg,.jpeg,.png,.heif,.heic,.avif,.webp,.gif,.bmp,.tiff,.tif" required style="display:none">
+            <p id="drop-label">Drag &amp; drop files here, or</p>
+            <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem">Accepts video (mp4, mov, mkv, avi, webm) and image (jpg, png, heif, avif, webp, gif, bmp, tiff) files. Multiple files allowed.</p>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Choose Files</button>
+            <input type="file" id="file-input" name="file" multiple accept=".mp4,.mov,.mkv,.avi,.webm,.ts,.m4v,.jpg,.jpeg,.png,.heif,.heic,.avif,.webp,.gif,.bmp,.tiff,.tif" style="display:none">
         </div>
         {% if user_groups | length > 0 %}
         <div style="margin-top:0.75rem;">
@@ -428,7 +428,7 @@
         const files = e.dataTransfer.files;
         if (files.length) {
             fileInput.files = files;
-            document.getElementById("drop-label").textContent = files[0].name;
+            document.getElementById("drop-label").textContent = _describeSelectedFiles(files);
             document.getElementById("upload-submit").disabled = false;
         }
     });
@@ -437,13 +437,18 @@
         const label = document.getElementById("drop-label");
         const submitBtn = document.getElementById("upload-submit");
         if (fileInput.files.length) {
-            label.textContent = fileInput.files[0].name;
+            label.textContent = _describeSelectedFiles(fileInput.files);
             submitBtn.disabled = false;
         } else {
-            label.textContent = "Drag \u0026 drop a file here, or";
+            label.textContent = "Drag \u0026 drop files here, or";
             submitBtn.disabled = true;
         }
     });
+
+    function _describeSelectedFiles(files) {
+        if (files.length === 1) return files[0].name;
+        return files.length + " files selected";
+    }
 
     // Prevent browser from opening dropped files outside the zone
     document.addEventListener("dragover", (e) => e.preventDefault());
