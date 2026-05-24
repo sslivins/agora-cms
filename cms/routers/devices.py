@@ -73,6 +73,21 @@ SEND_FAILURE_COOLDOWN = timedelta(seconds=10)
 # tryboot that never confirms, etc.).
 OTA_FRESH_TTL = timedelta(minutes=2)
 
+# Issue agora-cms#626 — how long a device may sit in the ``tryboot``
+# phase before we treat it as stuck mid-upgrade.  The device emits
+# ``tryboot_initiated`` right before rebooting into the new slot and we
+# expect ``slot_confirmed`` / ``promoted`` (success) or ``failed`` /
+# ``declined`` (failure) within at most a few minutes -- the actual
+# reboot + slot-mgr aging gate on the device is bounded at ~5 minutes
+# by default.  If 15 minutes pass with no terminal event, the device's
+# slot-mgr / os-updater are stuck (see ``sslivins/agora#243``) and any
+# upgrade dispatch the CMS sends will be silently rejected by the
+# on-device state machine.  We surface this as ``upgrade_stuck`` on
+# ``DeviceOut`` so the UI can warn the operator and the upgrade
+# endpoint can refuse new claims with a clear 409 instead of silently
+# no-op'ing on the device.
+STUCK_TRYBOOT_TTL = timedelta(minutes=15)
+
 
 def _as_utc(dt: datetime) -> datetime:
     """Promote a naive ``datetime`` to UTC.
@@ -95,6 +110,27 @@ def _is_upgrading(device: Device, *, now: datetime | None = None) -> bool:
         return False
     ref = now or datetime.now(timezone.utc)
     return (ref - _as_utc(device.upgrade_started_at)) < UPGRADE_TTL
+
+
+def _is_upgrade_stuck(device: Device, *, now: datetime | None = None) -> bool:
+    """Return whether *device* is stuck mid-tryboot (issue agora-cms#626).
+
+    True iff the last lifecycle event we received was
+    ``tryboot_initiated`` AND it landed more than ``STUCK_TRYBOOT_TTL``
+    ago without any subsequent ``slot_confirmed`` / ``promoted`` /
+    ``failed`` / ``declined`` event clearing the row.  Reads the raw
+    ``ota_phase`` / ``ota_updated_at`` columns -- NOT the
+    ``_ota_fields_for_out`` projection, which already zeroes after
+    ``OTA_FRESH_TTL=2min`` for live-progress purposes.  The stuck flag
+    is precisely the case where the projection has gone stale because
+    no further events arrived.
+    """
+    if device.ota_phase != "ota_tryboot_initiated":
+        return False
+    if device.ota_updated_at is None:
+        return False
+    ref = now or datetime.now(timezone.utc)
+    return (ref - _as_utc(device.ota_updated_at)) >= STUCK_TRYBOOT_TTL
 
 
 def _ota_fields_for_out(device: Device, *, now: datetime | None = None) -> dict:
@@ -293,6 +329,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             group_name=d.group.name if d.group else None,
             is_online=d.id in connected_ids,
             is_upgrading=_is_upgrading(d, now=now),
+            upgrade_stuck=_is_upgrade_stuck(d, now=now),
             playback_mode=live_states[d.id]["mode"] if d.id in live_states else None,
             playback_asset=_resolve_asset_name(d.id),
             pipeline_state=live_states[d.id]["pipeline_state"] if d.id in live_states else None,
@@ -353,6 +390,7 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         group_name=device.group.name if device.group else None,
         is_online=is_online,
         is_upgrading=_is_upgrading(device, now=now),
+        upgrade_stuck=_is_upgrade_stuck(device, now=now),
         playback_mode=live_states[device.id]["mode"] if device.id in live_states else None,
         playback_asset=raw_asset,
         pipeline_state=live_states[device.id]["pipeline_state"] if device.id in live_states else None,
@@ -545,6 +583,24 @@ async def upgrade_device(
 
     if not await get_transport().is_connected(device_id):
         raise HTTPException(status_code=409, detail="Device is not connected")
+
+    # Issue agora-cms#626 -- if the device is stuck mid-tryboot, the
+    # on-device os-updater FSM is in ``state=tryboot_running`` and will
+    # silently drop every dispatch we send.  Refuse the upgrade here
+    # *before* taking a claim so we don't lock the row for 15 minutes
+    # behind a dispatch the device will never act on.  The UI ought to
+    # already be greying out the Update kebab off the ``upgrade_stuck``
+    # flag in ``DeviceOut``; this is the server-side belt-and-braces
+    # for stale UI / API clients / etc.
+    if _is_upgrade_stuck(device):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Device is stuck mid-upgrade (tryboot did not complete). "
+                "Wait for the device to recover, or reboot it manually, "
+                "before retrying."
+            ),
+        )
 
     # Stage 4: atomic claim — set ``upgrade_started_at`` iff it's NULL
     # or older than the TTL.  The timestamp we just wrote is captured
