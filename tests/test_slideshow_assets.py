@@ -500,6 +500,31 @@ class TestSlideTransitions:
         )
         assert resp.status_code in (400, 422), resp.text
 
+    @pytest.mark.parametrize("tx", ["fade_black", "push", "zoom"])
+    async def test_new_transition_ids_round_trip(self, client, db_session, tx):
+        """The transition set expanded in 0029 — make sure each new ID
+        passes Pydantic validation, the DB CHECK constraint, and round-trips
+        through GET /slides."""
+        img = await _seed_image(db_session, filename=f"t-{tx}.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": f"slideshow-{tx}",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "transition": tx,
+                    "transition_ms": 500,
+                }],
+            },
+        )
+        assert resp.status_code in (200, 201), resp.text
+        ss_id = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{ss_id}/slides")).json()["slides"]
+        assert slides[0]["transition"] == tx
+        assert slides[0]["transition_ms"] == 500
+
+
     async def test_rejects_transition_ms_above_cap(self, client, db_session):
         img = await _seed_image(db_session, filename="t5.png", is_global=True)
         resp = await client.post(

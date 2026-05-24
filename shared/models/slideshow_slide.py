@@ -42,7 +42,7 @@ class SlideshowSlide(Base):
         # transition_ms upper bound (5000 ms) matches MAX_SLIDE_TRANSITION_MS
         # in cms.schemas.asset.
         CheckConstraint(
-            "transition IN ('cut','fade','dissolve','wipe')",
+            "transition IN ('cut','fade','fade_black','dissolve','push','wipe','zoom')",
             name="ck_slideshow_slide_transition_known",
         ),
         CheckConstraint(
