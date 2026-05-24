@@ -312,10 +312,13 @@ class SlideDescriptor(BaseModel):
             raise ValueError(
                 "SlideDescriptor.play_to_end=True is only valid for video sources"
             )
-        if self.transition not in ("cut", "fade", "dissolve", "wipe"):
+        # Keep this allow-list in sync with cms.schemas.asset.SLIDE_TRANSITIONS
+        # and the JS shell's KNOWN_TRANSITIONS in agora/player/shell/player.js.
+        from cms.schemas.asset import SLIDE_TRANSITIONS
+        if self.transition not in SLIDE_TRANSITIONS:
             raise ValueError(
                 f"SlideDescriptor.transition must be one of "
-                f"cut/fade/dissolve/wipe, got {self.transition!r}"
+                f"{SLIDE_TRANSITIONS}, got {self.transition!r}"
             )
         if self.transition_ms < 0 or self.transition_ms > 5000:
             raise ValueError(
