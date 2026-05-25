@@ -159,32 +159,150 @@
 </div>
 {% endif %}
 
-<div class="card">
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+<div class="card" id="assets-library-card">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap;">
         <h2 style="margin:0;">Library</h2>
+        <div class="library-toolbar" style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" id="assets-refresh-btn"
+                    onclick="window._assetLibrary && window._assetLibrary.reload()" title="Refresh from server">↻ Refresh</button>
+            <div class="view-toggle" role="group" aria-label="View" style="display:inline-flex; border:1px solid var(--border, #444); border-radius:4px; overflow:hidden;">
+                <button type="button" class="btn btn-secondary btn-sm" id="view-toggle-table"
+                        onclick="window._assetLibrary && window._assetLibrary.setView('table')"
+                        style="border-radius:0; border:0; display:inline-flex; align-items:center; justify-content:center; line-height:1;" title="Table view"><span style="display:inline-block; width:1em; text-align:center; margin-right:0.35em; font-size:0.9em;">&#9776;</span>Table</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="view-toggle-grid"
+                        onclick="window._assetLibrary && window._assetLibrary.setView('grid')"
+                        style="border-radius:0; border:0; border-left:1px solid var(--border, #444); display:inline-flex; align-items:center; justify-content:center; line-height:1;" title="Grid view"><span style="display:inline-block; width:1em; text-align:center; margin-right:0.35em; font-size:0.9em;">&#9638;</span>Grid</button>
+            </div>
+        </div>
     </div>
-    <div class="table-wrap">
+
+    {# ── Filter bar ── #}
+    <div id="assets-filter-bar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem; padding:0.5rem; background:var(--bg-subtle, rgba(255,255,255,0.03)); border-radius:4px;">
+        <input type="search" id="filter-q" placeholder="Search name / filename…"
+               style="flex:1 1 220px; min-width:180px; max-width:360px;"
+               autocomplete="off" spellcheck="false">
+        <select id="filter-type" style="min-width:130px;">
+            <option value="">All types</option>
+            <option value="video">Video</option>
+            <option value="image">Image</option>
+            <option value="webpage">Webpage</option>
+            <option value="stream">Stream</option>
+            <option value="saved_stream">Saved Stream</option>
+            <option value="slideshow">Slideshow</option>
+        </select>
+        {% if user_groups | length > 0 or is_admin %}
+        <select id="filter-group" style="min-width:140px;">
+            <option value="">All groups</option>
+            {% for g in user_groups %}
+            <option value="{{ g.id }}">{{ g.name }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        {% if is_admin %}
+        <select id="filter-uploader" style="min-width:160px;">
+            <option value="">All uploaders</option>
+            {% for uid, uname in uploader_map.items() %}
+            <option value="{{ uid }}">{{ uname }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        <select id="filter-date" style="min-width:130px;" title="Uploaded date range">
+            <option value="">Any time</option>
+            <option value="1">Past 24 hours</option>
+            <option value="7">Past 7 days</option>
+            <option value="30">Past 30 days</option>
+            <option value="90">Past 90 days</option>
+        </select>
+        <button type="button" class="btn btn-secondary btn-sm" id="filter-clear-btn"
+                onclick="window._assetLibrary && window._assetLibrary.clearFilters()"
+                style="display:none;">Clear filters</button>
+        <span class="text-muted" id="filter-summary" style="font-size:0.85rem;"></span>
+    </div>
+
+    {# ── Bulk action bar (hidden until a row is selected) ── #}
+    {% if 'assets:write' in user_perms %}
+    <div id="bulk-action-bar" style="display:none; margin-top:0.5rem; padding:0.5rem 0.75rem; background:var(--bg-subtle, rgba(64,128,255,0.10)); border:1px solid rgba(64,128,255,0.4); border-radius:4px; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+        <strong id="bulk-action-count">0 selected</strong>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="window._assetLibrary && window._assetLibrary.clearSelection()">Clear</button>
+        <span style="flex:1;"></span>
+        {% if user_groups | length > 0 or is_admin %}
+        <span class="bulk-group-picker" style="position:relative; display:inline-block;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="event.stopPropagation(); document.getElementById('bulk-add-group-popup').showPopover()">+ Add to group</button>
+            <div id="bulk-add-group-popup" popover class="group-popup">
+                {% for g in user_groups %}
+                <button type="button" class="group-popup-item"
+                        onclick="window._assetLibrary && window._assetLibrary.bulkAddGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
+                {% endfor %}
+                {% if user_groups | length == 0 %}
+                <span class="text-muted" style="padding:0.5rem; display:block;">No groups available</span>
+                {% endif %}
+            </div>
+        </span>
+        <span class="bulk-group-picker" style="position:relative; display:inline-block;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="event.stopPropagation(); document.getElementById('bulk-remove-group-popup').showPopover()">− Remove from group</button>
+            <div id="bulk-remove-group-popup" popover class="group-popup">
+                {% for g in user_groups %}
+                <button type="button" class="group-popup-item"
+                        onclick="window._assetLibrary && window._assetLibrary.bulkRemoveGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
+                {% endfor %}
+                {% if user_groups | length == 0 %}
+                <span class="text-muted" style="padding:0.5rem; display:block;">No groups available</span>
+                {% endif %}
+            </div>
+        </span>
+        {% endif %}
+        {% if is_admin %}
+        <button type="button" class="btn btn-secondary btn-sm"
+                onclick="window._assetLibrary && window._assetLibrary.bulkSetGlobal(true)">⭐ Make global</button>
+        <button type="button" class="btn btn-secondary btn-sm"
+                onclick="window._assetLibrary && window._assetLibrary.bulkSetGlobal(false)">☆ Unmark global</button>
+        {% endif %}
+        <button type="button" class="btn btn-danger btn-sm"
+                onclick="window._assetLibrary && window._assetLibrary.bulkDelete()">🗑 Delete</button>
+    </div>
+    {% endif %}
+
+    <div class="table-wrap" id="assets-table-wrap">
     <table>
         <thead>
             <tr>
+                {% if 'assets:write' in user_perms %}
+                <th style="width:2rem; padding-right:0;">
+                    <input type="checkbox" id="bulk-select-all" title="Select all loaded">
+                </th>
+                {% else %}
                 <th style="width:2rem"></th>
-                <th class="col-filename">Name</th>
-                <th>Type</th>
+                {% endif %}
+                <th class="col-filename sortable" data-sort-key="display_name">Name <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort-key="asset_type">Type <span class="sort-indicator"></span></th>
                 <th>Scope</th>
-                <th>Size</th>
+                <th class="sortable" data-sort-key="size_bytes">Size <span class="sort-indicator"></span></th>
                 <th>Status</th>
-                <th>Duration</th>
+                <th class="sortable" data-sort-key="duration_seconds">Duration <span class="sort-indicator"></span></th>
+                <th class="sortable col-uploaded" data-sort-key="uploaded_at">Uploaded <span class="sort-indicator">▼</span></th>
                 <th>Actions</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="assets-tbody">
             {% for a in assets %}
             {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id) }}
             {% else %}
-            <tr><td colspan="8" class="empty">No assets uploaded yet</td></tr>
+            <tr id="assets-empty-row"><td colspan="9" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
+
+    {# ── Grid view (hidden by default, populated client-side on view toggle) ── #}
+    <div id="assets-grid-wrap" style="display:none; margin-top:0.5rem;">
+        <div id="assets-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:0.75rem;"></div>
+    </div>
+
+    {# ── Infinite-scroll sentinel + status footer ── #}
+    <div id="assets-load-more" style="margin-top:0.75rem; padding:0.5rem; text-align:center; color:var(--text-muted, #888); font-size:0.85rem;">
+        <span id="assets-load-status">Showing {{ assets | length }} asset{{ '' if assets|length == 1 else 's' }}</span>
     </div>
 </div>
 
@@ -383,6 +501,8 @@
 
     window._insertAssetRow = _insertAssetRow;
     window._replaceAssetDetailRow = _replaceAssetDetailRow;
+    window._fetchAssetRowFragment = _fetchAssetRowFragment;
+    window.applyScopeChanges = applyScopeChanges;
 
     // Apply scope changes from API data without reloading the page
     function applyScopeChanges(assets) {
@@ -633,7 +753,7 @@
             const scopeChanged = lastState.scope_hash !== null && newState.scope_hash !== lastState.scope_hash;
             const countChanged = newState.asset_count !== lastState.asset_count;
             if (scopeChanged || countChanged) {
-                applyScopeChanges(data.assets);
+                (window.applyScopeChanges || applyScopeChanges)(data.assets);
             }
             lastState = newState;
         } catch (e) { /* ignore */ }
@@ -732,6 +852,545 @@ function fallbackCopy(text, onSuccess) {
     applyExpand();
     refreshQueue();
     setInterval(refreshQueue, 5000);
+})();
+
+// ── Asset library: filter / sort / paginate / bulk / grid view ──
+//
+// This module ADDS to the existing polling + drag-drop + upload IIFE
+// above; it does not replace it. The existing IIFE owns:
+//   - the upload form + drag-drop wiring
+//   - the /api/assets/status poller (variant progress, scope changes)
+//   - the per-id row insert/replace helpers (_insertAssetRow,
+//     _replaceAssetDetailRow)
+// This IIFE owns:
+//   - the filter bar (search, type, group, uploader, date range)
+//   - sortable column headers
+//   - infinite scroll
+//   - bulk-select + bulk action bar
+//   - grid view toggle
+//   - URL state sync
+(function() {
+    const tbody = document.getElementById('assets-tbody');
+    if (!tbody) return;  // page may not render this card for some perms
+
+    const VIEW_LS_KEY = 'agora-cms.assets.view';
+    const DEFAULT_PAGE_SIZE = 50;
+    const SEARCH_DEBOUNCE_MS = 300;
+
+    // Filter state mirrors the URL query string. Initialise from URL so
+    // shareable links work and the back button restores prior state.
+    const urlParams = new URLSearchParams(window.location.search);
+    const state = {
+        q: urlParams.get('q') || '',
+        type: urlParams.get('type') || '',
+        group_id: urlParams.get('group_id') || '',
+        uploader_id: urlParams.get('uploader_id') || '',
+        date_days: urlParams.get('date_days') || '',  // 1/7/30/90 preset
+        order: urlParams.get('order') || '-uploaded_at',
+        cursor: null,
+        next_cursor: null,
+        view: localStorage.getItem(VIEW_LS_KEY) || 'table',
+        selection: new Set(),
+        loadedIds: new Set(),  // ids currently rendered (table or grid)
+        searchFocused: false,
+        loading: false,
+        anyFilterActive: false,
+    };
+
+    // Wire up filter controls from initial state.
+    const qInput = document.getElementById('filter-q');
+    const typeSelect = document.getElementById('filter-type');
+    const groupSelect = document.getElementById('filter-group');
+    const uploaderSelect = document.getElementById('filter-uploader');
+    const dateSelect = document.getElementById('filter-date');
+    if (qInput) qInput.value = state.q;
+    if (typeSelect) typeSelect.value = state.type;
+    if (groupSelect) groupSelect.value = state.group_id;
+    if (uploaderSelect) uploaderSelect.value = state.uploader_id;
+    if (dateSelect) dateSelect.value = state.date_days;
+
+    function _isAnyFilterActive() {
+        return !!(state.q || state.type || state.group_id || state.uploader_id || state.date_days);
+    }
+
+    function _syncUrl() {
+        const p = new URLSearchParams();
+        if (state.q) p.set('q', state.q);
+        if (state.type) p.set('type', state.type);
+        if (state.group_id) p.set('group_id', state.group_id);
+        if (state.uploader_id) p.set('uploader_id', state.uploader_id);
+        if (state.date_days) p.set('date_days', state.date_days);
+        if (state.order && state.order !== '-uploaded_at') p.set('order', state.order);
+        const qs = p.toString();
+        const newUrl = window.location.pathname + (qs ? '?' + qs : '');
+        if (window.location.pathname + window.location.search !== newUrl) {
+            window.history.replaceState({}, '', newUrl);
+        }
+    }
+
+    function _buildApiParams() {
+        const p = new URLSearchParams();
+        if (state.q) p.set('q', state.q);
+        if (state.type) p.append('type', state.type);
+        if (state.group_id) p.append('group_id', state.group_id);
+        if (state.uploader_id) p.append('uploader_id', state.uploader_id);
+        if (state.date_days) {
+            const since = new Date(Date.now() - parseInt(state.date_days, 10) * 86400 * 1000);
+            p.set('uploaded_after', since.toISOString());
+        }
+        p.set('order', state.order);
+        p.set('page_size', String(DEFAULT_PAGE_SIZE));
+        if (state.cursor) p.set('cursor', state.cursor);
+        return p.toString();
+    }
+
+    function _updateFilterSummary(total) {
+        const el = document.getElementById('filter-summary');
+        if (!el) return;
+        const loaded = state.loadedIds.size;
+        if (total === 0) {
+            el.textContent = state.anyFilterActive ? 'No matches' : '';
+        } else if (loaded < total) {
+            el.textContent = 'Showing ' + loaded + ' of ' + total;
+        } else {
+            el.textContent = total + ' asset' + (total === 1 ? '' : 's');
+        }
+        const status = document.getElementById('assets-load-status');
+        if (status) status.textContent = loaded < total
+            ? 'Scroll to load more (' + (total - loaded) + ' remaining)'
+            : (total === 0 ? '' : 'All ' + total + ' loaded');
+        const clearBtn = document.getElementById('filter-clear-btn');
+        if (clearBtn) clearBtn.style.display = state.anyFilterActive ? '' : 'none';
+    }
+
+    async function _fetchPage(append) {
+        if (state.loading) return null;
+        state.loading = true;
+        try {
+            const resp = await fetch('/api/assets/page?' + _buildApiParams());
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            state.next_cursor = data.next_cursor;
+            if (!append) {
+                _renderTableEmpty();
+                _renderGridEmpty();
+                state.loadedIds.clear();
+            }
+            // Render each row by fetching the rich server-rendered row
+            // markup in parallel. This reuses the existing Jinja macro so
+            // expandable details, action menus, scope badges etc. all
+            // continue to work without re-implementing them in JS.
+            const idsToRender = data.items.filter(a => !state.loadedIds.has(a.id));
+            const rowFragments = await Promise.all(
+                idsToRender.map(a => window._fetchAssetRowFragment
+                    ? window._fetchAssetRowFragment(a.id)
+                    : null)
+            );
+            for (let i = 0; i < idsToRender.length; i++) {
+                const a = idsToRender[i];
+                const frag = rowFragments[i];
+                if (frag) {
+                    tbody.appendChild(frag);
+                }
+                state.loadedIds.add(a.id);
+            }
+            // Grid view renders cards directly from JSON (no per-id row fetch).
+            if (state.view === 'grid') {
+                for (const a of data.items) {
+                    if (!document.querySelector('[data-grid-card="' + a.id + '"]')) {
+                        document.getElementById('assets-grid').appendChild(_renderGridCard(a));
+                    }
+                }
+            }
+            _updateFilterSummary(data.total_estimate);
+            _refreshSelectAllCheckbox();
+            return data;
+        } catch (e) {
+            console.error('asset page fetch failed', e);
+            return null;
+        } finally {
+            state.loading = false;
+        }
+    }
+
+    function _renderTableEmpty() {
+        // Remove the server-rendered "No assets uploaded yet" placeholder
+        // and all data rows. Detail rows (asset-detail) are paired with
+        // each asset-row, so wipe them too.
+        tbody.innerHTML = '';
+    }
+
+    function _renderGridEmpty() {
+        const grid = document.getElementById('assets-grid');
+        if (grid) grid.innerHTML = '';
+    }
+
+    function _escHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function _typeIcon(t) {
+        return { video: '▶', image: '🖼', webpage: '🌐', stream: '📡',
+                 saved_stream: '🎞', slideshow: '🗂' }[t] || '📄';
+    }
+
+    function _formatSize(bytes) {
+        if (!bytes) return '—';
+        const mb = bytes / 1048576;
+        if (mb >= 1) return mb.toFixed(1) + ' MB';
+        return Math.round(bytes / 1024) + ' KB';
+    }
+
+    function _renderGridCard(a) {
+        const card = document.createElement('div');
+        card.className = 'asset-grid-card';
+        card.setAttribute('data-grid-card', a.id);
+        card.style.cssText = 'border:1px solid var(--border, #444); border-radius:6px; overflow:hidden; background:var(--bg-card, #1a1a1a); position:relative;';
+
+        const name = a.display_name || a.original_filename || a.filename;
+        // Only fetch a preview for image assets. For video/webpage/stream
+        // assets we show the type icon instead: /api/assets/{id}/preview
+        // serves the *full* source file (no thumbnail pipeline yet — see
+        // Phase 2-a), so previewing 60 videos in grid view would casually
+        // pull gigabytes. A dedicated thumbnail profile will be added in
+        // a follow-up PR; until then, lazy-loaded image previews only.
+        const previewSrc = (a.asset_type === 'image') ? ('/api/assets/' + a.id + '/preview') : null;
+
+        card.innerHTML =
+            '<div class="asset-grid-thumb" style="aspect-ratio:16/9; background:#0a0a0a; display:flex; align-items:center; justify-content:center; font-size:2rem; color:#666; position:relative;">' +
+                (previewSrc
+                    ? '<img loading="lazy" src="' + previewSrc + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.replaceWith(document.createTextNode(\'' + _typeIcon(a.asset_type) + '\'))">'
+                    : _typeIcon(a.asset_type)) +
+                '<input type="checkbox" class="bulk-select-grid" data-asset-id="' + a.id + '" onclick="event.stopPropagation()" style="position:absolute; top:6px; left:6px; transform:scale(1.2);">' +
+                (a.is_global ? '<span class="badge badge-ready" style="position:absolute; top:6px; right:6px; font-size:0.7rem;">Global</span>' : '') +
+            '</div>' +
+            '<div style="padding:0.5rem;">' +
+                '<div class="asset-grid-name" title="' + _escHtml(name) + '" style="font-size:0.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + _escHtml(name) + '</div>' +
+                '<div class="text-muted" style="font-size:0.75rem; display:flex; justify-content:space-between; gap:0.5rem; margin-top:0.25rem;">' +
+                    '<span>' + _typeIcon(a.asset_type) + ' ' + a.asset_type + '</span>' +
+                    '<span>' + _formatSize(a.size_bytes) + '</span>' +
+                '</div>' +
+            '</div>';
+
+        // Wire selection checkbox.
+        const cb = card.querySelector('.bulk-select-grid');
+        cb.checked = state.selection.has(a.id);
+        cb.addEventListener('change', () => {
+            if (cb.checked) state.selection.add(a.id);
+            else state.selection.delete(a.id);
+            _refreshBulkBar();
+            // Mirror to table view checkbox if present.
+            const tableCb = tbody.querySelector('.bulk-select-row[data-asset-id="' + a.id + '"]');
+            if (tableCb) tableCb.checked = cb.checked;
+        });
+
+        // Card body itself is non-interactive in Phase 1 — only the
+        // checkbox is wired. (Earlier prototype flipped to table view
+        // and expanded the row on click, but that yanked users out of
+        // grid view unexpectedly. A proper preview lightbox is Phase 2.)
+        return card;
+    }
+
+    // ── Filter input wiring ──
+    function _onFilterChange(resetCursor) {
+        if (resetCursor !== false) {
+            state.cursor = null;
+            state.next_cursor = null;
+        }
+        state.anyFilterActive = _isAnyFilterActive();
+        _syncUrl();
+        // Re-render from scratch.
+        _fetchPage(false);
+    }
+
+    let qDebounceTimer = null;
+    if (qInput) {
+        qInput.addEventListener('input', () => {
+            state.q = qInput.value.trim();
+            clearTimeout(qDebounceTimer);
+            qDebounceTimer = setTimeout(() => _onFilterChange(), SEARCH_DEBOUNCE_MS);
+        });
+        qInput.addEventListener('focus', () => { state.searchFocused = true; });
+        qInput.addEventListener('blur', () => { state.searchFocused = false; });
+    }
+    if (typeSelect) typeSelect.addEventListener('change', () => {
+        state.type = typeSelect.value; _onFilterChange();
+    });
+    if (groupSelect) groupSelect.addEventListener('change', () => {
+        state.group_id = groupSelect.value; _onFilterChange();
+    });
+    if (uploaderSelect) uploaderSelect.addEventListener('change', () => {
+        state.uploader_id = uploaderSelect.value; _onFilterChange();
+    });
+    if (dateSelect) dateSelect.addEventListener('change', () => {
+        state.date_days = dateSelect.value; _onFilterChange();
+    });
+
+    // ── Sortable headers ──
+    document.querySelectorAll('th.sortable').forEach(th => {
+        th.style.cursor = 'pointer';
+        th.style.userSelect = 'none';
+        th.addEventListener('click', () => {
+            const key = th.dataset.sortKey;
+            if (!key) return;
+            // Cycle: not-sorted -> desc -> asc -> not-sorted (back to default uploaded_at desc).
+            const curDesc = state.order === '-' + key;
+            const curAsc = state.order === key;
+            if (!curDesc && !curAsc) state.order = '-' + key;
+            else if (curDesc) state.order = key;
+            else state.order = '-uploaded_at';
+            _updateSortIndicators();
+            _onFilterChange();
+        });
+    });
+
+    function _updateSortIndicators() {
+        document.querySelectorAll('th.sortable').forEach(th => {
+            const ind = th.querySelector('.sort-indicator');
+            if (!ind) return;
+            const key = th.dataset.sortKey;
+            if (state.order === '-' + key) {
+                ind.textContent = '▼';
+                ind.style.opacity = '1';
+            } else if (state.order === key) {
+                ind.textContent = '▲';
+                ind.style.opacity = '1';
+            } else {
+                // Idle state: show a dim ↕ glyph so the column reads as
+                // sortable even before the user has clicked it.
+                ind.textContent = '↕';
+                ind.style.opacity = '0.6';
+            }
+        });
+    }
+
+    // ── Bulk selection ──
+    function _refreshBulkBar() {
+        const bar = document.getElementById('bulk-action-bar');
+        if (!bar) return;
+        const n = state.selection.size;
+        bar.style.display = n > 0 ? 'flex' : 'none';
+        const countEl = document.getElementById('bulk-action-count');
+        if (countEl) countEl.textContent = n + ' selected';
+    }
+
+    function _refreshSelectAllCheckbox() {
+        const sa = document.getElementById('bulk-select-all');
+        if (!sa) return;
+        const all = Array.from(tbody.querySelectorAll('.bulk-select-row'));
+        if (all.length === 0) { sa.checked = false; sa.indeterminate = false; return; }
+        const checked = all.filter(c => c.checked).length;
+        sa.checked = (checked === all.length);
+        sa.indeterminate = (checked > 0 && checked < all.length);
+    }
+
+    // Delegate row-checkbox change events (rows arrive async + replace
+    // themselves periodically via _replaceAssetDetailRow / scope poller).
+    tbody.addEventListener('change', (e) => {
+        const cb = e.target.closest('.bulk-select-row');
+        if (!cb) return;
+        const id = cb.dataset.assetId;
+        if (cb.checked) state.selection.add(id);
+        else state.selection.delete(id);
+        _refreshBulkBar();
+        _refreshSelectAllCheckbox();
+        // Mirror to grid view card if present.
+        const gridCb = document.querySelector('.bulk-select-grid[data-asset-id="' + id + '"]');
+        if (gridCb) gridCb.checked = cb.checked;
+    });
+
+    const selectAll = document.getElementById('bulk-select-all');
+    if (selectAll) {
+        selectAll.addEventListener('click', (e) => {
+            const checked = e.target.checked;
+            tbody.querySelectorAll('.bulk-select-row').forEach(cb => {
+                cb.checked = checked;
+                const id = cb.dataset.assetId;
+                if (checked) state.selection.add(id);
+                else state.selection.delete(id);
+            });
+            // Mirror to grid checkboxes too.
+            document.querySelectorAll('.bulk-select-grid').forEach(cb => {
+                cb.checked = checked;
+            });
+            _refreshBulkBar();
+            _refreshSelectAllCheckbox();
+        });
+    }
+
+    async function _runBulk(action, extra) {
+        const ids = Array.from(state.selection);
+        if (ids.length === 0) return;
+        const body = Object.assign({ asset_ids: ids, action }, extra || {});
+        try {
+            const resp = await fetch('/api/assets/bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                if (window.showToast) window.showToast(data.detail || 'Bulk action failed', true);
+                return;
+            }
+            const ok = data.succeeded.length;
+            const fail = data.failed.length;
+            const msg = ok + ' succeeded' + (fail ? ', ' + fail + ' failed' : '');
+            if (window.showToast) window.showToast(msg, fail > 0);
+            // Wipe selection (some ids may no longer be visible) and refresh.
+            state.selection.clear();
+            _refreshBulkBar();
+            await reload();
+        } catch (e) {
+            if (window.showToast) window.showToast('Bulk action error: ' + e.message, true);
+        }
+    }
+
+    async function reload() {
+        state.cursor = null;
+        await _fetchPage(false);
+    }
+
+    function clearSelection() {
+        state.selection.clear();
+        tbody.querySelectorAll('.bulk-select-row').forEach(cb => cb.checked = false);
+        document.querySelectorAll('.bulk-select-grid').forEach(cb => cb.checked = false);
+        const sa = document.getElementById('bulk-select-all');
+        if (sa) { sa.checked = false; sa.indeterminate = false; }
+        _refreshBulkBar();
+    }
+
+    function clearFilters() {
+        state.q = '';
+        state.type = '';
+        state.group_id = '';
+        state.uploader_id = '';
+        state.date_days = '';
+        if (qInput) qInput.value = '';
+        if (typeSelect) typeSelect.value = '';
+        if (groupSelect) groupSelect.value = '';
+        if (uploaderSelect) uploaderSelect.value = '';
+        if (dateSelect) dateSelect.value = '';
+        _onFilterChange();
+    }
+
+    function _setView(v) {
+        state.view = v;
+        localStorage.setItem(VIEW_LS_KEY, v);
+        const wrap = document.getElementById('assets-table-wrap');
+        const grid = document.getElementById('assets-grid-wrap');
+        const btnT = document.getElementById('view-toggle-table');
+        const btnG = document.getElementById('view-toggle-grid');
+        if (v === 'grid') {
+            if (wrap) wrap.style.display = 'none';
+            if (grid) grid.style.display = '';
+            if (btnT) btnT.classList.remove('active');
+            if (btnG) btnG.classList.add('active');
+            // Re-render grid cards from currently loaded rows.
+            _populateGridFromRows();
+        } else {
+            if (wrap) wrap.style.display = '';
+            if (grid) grid.style.display = 'none';
+            if (btnT) btnT.classList.add('active');
+            if (btnG) btnG.classList.remove('active');
+        }
+    }
+
+    function _populateGridFromRows() {
+        const grid = document.getElementById('assets-grid');
+        if (!grid) return;
+        grid.innerHTML = '';
+        // Pull what we have from the DOM (the table rows have all the
+        // attributes we need for grid card rendering).
+        tbody.querySelectorAll('tr.asset-row').forEach(row => {
+            const a = {
+                id: row.dataset.assetId,
+                asset_type: row.dataset.assetType,
+                size_bytes: parseInt(row.dataset.sizeBytes || '0', 10),
+                is_global: row.dataset.isGlobal === '1',
+                display_name: (row.querySelector('.asset-filename-truncate') || {}).textContent || '',
+                original_filename: '',
+                filename: '',
+            };
+            grid.appendChild(_renderGridCard(a));
+        });
+    }
+
+    // ── Infinite scroll ──
+    const sentinel = document.getElementById('assets-load-more');
+    if (sentinel && 'IntersectionObserver' in window) {
+        const io = new IntersectionObserver(async (entries) => {
+            for (const ent of entries) {
+                if (ent.isIntersecting && state.next_cursor && !state.loading) {
+                    state.cursor = state.next_cursor;
+                    await _fetchPage(true);
+                }
+            }
+        }, { rootMargin: '200px' });
+        io.observe(sentinel);
+    }
+
+    // ── Initial wiring ──
+    // The server already rendered the first page (best for FCP). Capture
+    // its ids so the polling reconciler in the other IIFE doesn't fight
+    // us, and apply initial sort indicator.
+    tbody.querySelectorAll('tr.asset-row').forEach(row => {
+        state.loadedIds.add(row.dataset.assetId);
+    });
+    _updateSortIndicators();
+    state.anyFilterActive = _isAnyFilterActive();
+
+    // If a filter / non-default sort is active from the URL, refetch.
+    if (state.anyFilterActive || state.order !== '-uploaded_at') {
+        _fetchPage(false);
+    } else {
+        _updateFilterSummary(tbody.querySelectorAll('tr.asset-row').length);
+    }
+    _setView(state.view);
+
+    // Expose API for the inline onclick handlers.
+    window._assetLibrary = {
+        reload,
+        clearSelection,
+        clearFilters,
+        setView: _setView,
+        bulkDelete: async () => {
+            const n = state.selection.size;
+            if (n === 0) return;
+            const msg = 'Delete ' + n + ' asset' + (n === 1 ? '' : 's') + '? This cannot be undone (while the asset is still referenced by an active schedule the action will be refused for that asset).';
+            const ok = await showConfirm(msg);
+            if (!ok) return;
+            _runBulk('delete');
+        },
+        bulkAddGroup: (groupId) => _runBulk('add_group', { group_id: groupId }),
+        bulkRemoveGroup: (groupId) => _runBulk('remove_group', { group_id: groupId }),
+        bulkSetGlobal: (val) => _runBulk('set_global', { is_global: val }),
+    };
+
+    // Pause polling reconciliation while a filter is active: the
+    // /api/assets/status endpoint isn't filter-aware, so the original
+    // applyScopeChanges would remove every filtered-out row. Wrap it so
+    // it short-circuits when any filter is active; in that case we rely
+    // on the user clicking Refresh (or the next fetch) for new data.
+    const _origScope = window.applyScopeChanges;
+    if (typeof _origScope === 'function') {
+        window.applyScopeChanges = function(assets) {
+            if (state.anyFilterActive) return;  // skip; would clobber filter
+            return _origScope(assets);
+        };
+    }
+    // _insertAssetRow is called by applyScopeChanges (above) and also by
+    // the upload-complete handler. With a filter active, defer to reload
+    // rather than blindly inserting a row that might not match.
+    const _origInsert = window._insertAssetRow;
+    if (typeof _origInsert === 'function') {
+        window._insertAssetRow = async function(id) {
+            if (!state.anyFilterActive) return _origInsert(id);
+            await reload();
+        };
+    }
 })();
 </script>
 {% endblock %}

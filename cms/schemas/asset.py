@@ -77,6 +77,50 @@ class AssetOut(BaseModel):
     capture_duration: Optional[int] = None
 
 
+class AssetPageOut(BaseModel):
+    """Paginated asset listing for the asset library UI.
+
+    Used by ``GET /api/assets/page``. The legacy ``GET /api/assets`` still
+    returns the flat ``List[AssetOut]`` and is unchanged.
+    """
+
+    items: list[AssetOut]
+    next_cursor: Optional[str] = None
+    total_estimate: int
+
+
+BULK_ACTIONS = ("delete", "add_group", "remove_group", "set_global")
+
+
+class AssetBulkIn(BaseModel):
+    """Request body for ``POST /api/assets/bulk``."""
+
+    asset_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=500)
+    action: str
+    group_id: Optional[uuid.UUID] = None
+    is_global: Optional[bool] = None
+
+    @field_validator("action")
+    @classmethod
+    def _validate_action(cls, v: str) -> str:
+        if v not in BULK_ACTIONS:
+            raise ValueError(f"action must be one of {BULK_ACTIONS}")
+        return v
+
+
+class AssetBulkFailure(BaseModel):
+    id: uuid.UUID
+    reason: str
+    status: int = 400
+
+
+class AssetBulkOut(BaseModel):
+    """Result of ``POST /api/assets/bulk``."""
+
+    succeeded: list[uuid.UUID]
+    failed: list[AssetBulkFailure]
+
+
 # ── Slideshow ──
 
 

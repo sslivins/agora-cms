@@ -130,8 +130,13 @@
 {% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None) -%}
             {% set is_owner = (current_user_id and a.uploaded_by_user_id == current_user_id) or is_admin %}
             {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
-            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}">
-                <td class="expand-toggle">▶</td>
+            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}">
+                <td class="expand-toggle" style="white-space:nowrap;">
+                    {% if 'assets:write' in user_perms %}
+                    <input type="checkbox" class="bulk-select-row" data-asset-id="{{ a.id }}" onclick="event.stopPropagation()" style="margin-right:0.25rem; vertical-align:middle;">
+                    {% endif %}
+                    <span class="expand-arrow">▶</span>
+                </td>
                 <td class="wrap asset-filename-cell">
                     <span class="has-tooltip">
                         <span class="asset-filename-truncate editable-name" data-asset-id="{{ a.id }}" onclick="event.stopPropagation(); editAssetName(this)" title="Click to rename">{{ a.display_name or a.original_filename or a.filename }}</span>
@@ -139,6 +144,9 @@
                     </span>
                     {% if shared_badge %}
                     <span class="has-tooltip" style="margin-left:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
+                    {% endif %}
+                    {% if a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
+                    <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>
                     {% endif %}
                 </td>
                 <td><span class="badge badge-{{ a.asset_type.value }}"><span aria-hidden="true">{{ a | asset_icon }}</span> {% if a.asset_type.value == 'saved_stream' %}Saved Stream{% else %}{{ a.asset_type.value | capitalize }}{% endif %}</span></td>
@@ -213,6 +221,16 @@
                     <span class="text-muted">—</span>
                     {% endif %}
                 </td>
+                <td class="col-uploaded" style="white-space:nowrap;">
+                    {% if a.uploaded_at %}
+                    <span class="has-tooltip">
+                        <span data-rel-time="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%Y-%m-%d') }}</span>
+                        <span class="tooltip">{{ a.uploaded_at.isoformat() }}</span>
+                    </span>
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
                 <td class="actions" onclick="event.stopPropagation()">
                     {% call kebab_menu() %}
                     {% if a.asset_type.value == 'webpage' %}
@@ -246,7 +264,7 @@
             </tr>
             <tr class="asset-detail" data-detail-for="{{ a.id }}" style="display: none;">
                 <td></td>
-                <td colspan="7">
+                <td colspan="8">
                     <div class="detail-grid">
                         {% if (a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' or a.asset_type.value == 'saved_stream') and a.url %}
                         <div class="detail-item detail-item-wide">

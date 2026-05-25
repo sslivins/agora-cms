@@ -675,6 +675,132 @@ paths:
                   $ref: '#/components/schemas/AssetOut'
                 type: array
                 title: Response List Assets Api Assets Get
+  /api/assets/page:
+    get:
+      summary: List Assets Paged
+      description: |-
+        Paginated + filtered asset listing for the asset library UI.
+
+        All filters are AND-composed. ``q`` is a case-insensitive substring
+        match against ``display_name``, ``original_filename``, and
+        ``filename`` (Postgres-side this hits a trigram GIN index; SQLite
+        falls back to a sequential scan in tests). The caller's group ACL
+        is applied last and cannot be widened by URL parameters.
+      operationId: list_assets_paged_api_assets_page_get
+      parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Substring search across name/filename
+          default: ''
+          title: Q
+        description: Substring search across name/filename
+      - name: type
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          title: Type
+      - name: group_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+            format: uuid
+          title: Group Id
+      - name: uploader_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+            format: uuid
+          title: Uploader Id
+      - name: uploaded_after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Uploaded After
+      - name: uploaded_before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Uploaded Before
+      - name: order
+        in: query
+        required: false
+        schema:
+          type: string
+          default: -uploaded_at
+          title: Order
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetPageOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/bulk:
+    post:
+      summary: Bulk Assets
+      operationId: bulk_assets_api_assets_bulk_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetBulkIn'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetBulkOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/upload:
     post:
       summary: Upload Asset
@@ -3372,6 +3498,73 @@ components:
       required:
       - profile_id
       title: AdoptRequest
+    AssetBulkFailure:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        reason:
+          type: string
+          title: Reason
+        status:
+          type: integer
+          title: Status
+          default: 400
+      type: object
+      required:
+      - id
+      - reason
+      title: AssetBulkFailure
+    AssetBulkIn:
+      properties:
+        asset_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Asset Ids
+        action:
+          type: string
+          title: Action
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        is_global:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Global
+      type: object
+      required:
+      - asset_ids
+      - action
+      title: AssetBulkIn
+      description: Request body for ``POST /api/assets/bulk``.
+    AssetBulkOut:
+      properties:
+        succeeded:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Succeeded
+        failed:
+          items:
+            $ref: '#/components/schemas/AssetBulkFailure'
+          type: array
+          title: Failed
+      type: object
+      required:
+      - succeeded
+      - failed
+      title: AssetBulkOut
+      description: Result of ``POST /api/assets/bulk``.
     AssetOut:
       properties:
         id:
@@ -3437,6 +3630,31 @@ components:
       - checksum
       - uploaded_at
       title: AssetOut
+    AssetPageOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AssetOut'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+        total_estimate:
+          type: integer
+          title: Total Estimate
+      type: object
+      required:
+      - items
+      - total_estimate
+      title: AssetPageOut
+      description: |-
+        Paginated asset listing for the asset library UI.
+
+        Used by ``GET /api/assets/page``. The legacy ``GET /api/assets`` still
+        returns the flat ``List[AssetOut]`` and is unchanged.
     AssetType:
       type: string
       enum:
