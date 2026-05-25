@@ -60,6 +60,23 @@ resource sslConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@202
   }
 }
 
+// Allow-list pg_trgm so migration 0030 (asset-library trigram indexes) can
+// CREATE EXTENSION pg_trgm at app startup. On Azure PG Flex, even an admin
+// role cannot create an extension that isn't named here -- the statement
+// fails with "extension X is not allow-listed for azure.extensions". The
+// 2026-05-25 prod incident (revision agoracms-cms--v1-37-255 crash-looping
+// on /healthz for ~50 min) was exactly this: the parameter was unset, so
+// init_db()'s alembic upgrade hung the container at "Running upgrade 0029
+// -> 0030" without surfacing the error before Azure SIGKILL'd it.
+resource extensionsConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
+  parent: postgresServer
+  name: 'azure.extensions'
+  properties: {
+    value: 'pg_trgm'
+    source: 'user-override'
+  }
+}
+
 // max_connections is intentionally left at the B1ms default (50). The
 // 2026-05-06T13-14Z Sev2 was caused by stacked active Container App
 // revisions (each pinned to minReplicas=2) blowing past the 50-slot
