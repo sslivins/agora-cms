@@ -485,45 +485,49 @@ async def list_assets_paged(
     else:
         type_enums = []
 
-    # ── Base query (live assets only) ──
-    stmt = select(Asset, func.count().over().label("total")).where(
-        Asset.deleted_at.is_(None)
-    )
+    # ── Build the filter predicates once, apply to both the page query
+    #    and the (separate) count query. The count MUST NOT include the
+    #    cursor predicate, otherwise total_estimate shrinks on each
+    #    successive page (e.g. "61 → 11" after one scroll) which makes
+    #    the load-more footer report nonsense.
+    filter_clauses = [Asset.deleted_at.is_(None)]
 
     # ── ACL ──
     visible = await _visible_asset_ids(user, db)
     if visible is not None:
-        stmt = stmt.where(Asset.id.in_(visible))
+        filter_clauses.append(Asset.id.in_(visible))
 
     # ── Filters ──
     if q:
         like = f"%{q}%"
-        stmt = stmt.where(
+        filter_clauses.append(
             func.coalesce(Asset.display_name, "").ilike(like)
             | func.coalesce(Asset.original_filename, "").ilike(like)
             | Asset.filename.ilike(like)
         )
 
     if type_enums:
-        stmt = stmt.where(Asset.asset_type.in_(type_enums))
+        filter_clauses.append(Asset.asset_type.in_(type_enums))
 
     if uploader_id:
-        stmt = stmt.where(Asset.uploaded_by_user_id.in_(uploader_id))
+        filter_clauses.append(Asset.uploaded_by_user_id.in_(uploader_id))
 
     if uploaded_after is not None:
-        stmt = stmt.where(Asset.uploaded_at >= uploaded_after)
+        filter_clauses.append(Asset.uploaded_at >= uploaded_after)
     if uploaded_before is not None:
-        stmt = stmt.where(Asset.uploaded_at < uploaded_before)
+        filter_clauses.append(Asset.uploaded_at < uploaded_before)
 
     if group_id:
         # AND-intersected with the ACL: caller is still bounded by what
         # they can see — non-admins passing a group they aren't a member
         # of just see an empty page rather than getting 403.
-        stmt = stmt.where(
+        filter_clauses.append(
             Asset.id.in_(
                 select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_id))
             )
         )
+
+    stmt = select(Asset).where(*filter_clauses)
 
     # ── Cursor (encodes the order key value and the last id seen) ──
     if cursor:
@@ -563,7 +567,16 @@ async def list_assets_paged(
     rows = rows[:page_size]
 
     items = [row[0] for row in rows]
-    total_estimate = int(rows[0][1]) if rows else 0
+
+    # ── Total estimate: count all rows matching the filters, ignoring
+    #    the cursor. We only need this once per filter context but cost
+    #    is low enough (single round-trip, hits the same indexes) to
+    #    compute every page; UI uses it to render "Showing N of M".
+    total_estimate = int(
+        (await db.execute(
+            select(func.count()).select_from(Asset).where(*filter_clauses)
+        )).scalar() or 0
+    )
 
     next_cursor: str | None = None
     if has_more and items:
