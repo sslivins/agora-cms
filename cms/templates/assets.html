@@ -1356,10 +1356,12 @@ function fallbackCopy(text, onSuccess) {
         clearSelection,
         clearFilters,
         setView: _setView,
-        bulkDelete: () => {
+        bulkDelete: async () => {
             const n = state.selection.size;
             if (n === 0) return;
-            if (!confirm('Delete ' + n + ' asset' + (n === 1 ? '' : 's') + '? This cannot be undone (while the asset is still referenced by an active schedule the action will be refused for that asset).')) return;
+            const msg = 'Delete ' + n + ' asset' + (n === 1 ? '' : 's') + '? This cannot be undone (while the asset is still referenced by an active schedule the action will be refused for that asset).';
+            const ok = await showConfirm(msg);
+            if (!ok) return;
             _runBulk('delete');
         },
         bulkAddGroup: (groupId) => _runBulk('add_group', { group_id: groupId }),
