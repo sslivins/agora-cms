@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,6 +91,41 @@ class Asset(Base):
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="asset")
     variants: Mapped[list["AssetVariant"]] = relationship(back_populates="source_asset")
     group_asset_links: Mapped[list["GroupAsset"]] = relationship(back_populates="asset")
+
+    # Asset library search + pagination indexes (migration 0030).
+    # The trigram GIN indexes power substring search via /api/assets/page
+    # on Postgres; SQLite (used in the unit-test matrix) doesn't support
+    # GIN/pg_trgm so the migration skips them on SQLite, but they are
+    # declared here unconditionally so ``alembic check`` sees the model
+    # and migration agree about their existence on Postgres.
+    # The partial btree on uploaded_at covers the common newest-first
+    # listing path while excluding soft-deleted rows.
+    __table_args__ = (
+        Index(
+            "idx_assets_display_name_trgm",
+            "display_name",
+            postgresql_using="gin",
+            postgresql_ops={"display_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_assets_original_filename_trgm",
+            "original_filename",
+            postgresql_using="gin",
+            postgresql_ops={"original_filename": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_assets_filename_trgm",
+            "filename",
+            postgresql_using="gin",
+            postgresql_ops={"filename": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_assets_uploaded_at_live",
+            "uploaded_at",
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class AssetVariant(Base):
