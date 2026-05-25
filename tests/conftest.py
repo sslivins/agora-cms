@@ -218,6 +218,11 @@ async def db_engine(tmp_path):
             if "postgresql" in db_url:
                 await conn.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
                 await conn.run_sync(Base.metadata.drop_all)
+                # Asset model declares GIN trigram indexes (migration 0030);
+                # ensure the extension exists before create_all tries to
+                # build them, otherwise we hit
+                # "operator class gin_trgm_ops does not exist".
+                await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS pg_trgm")
             await conn.run_sync(Base.metadata.create_all)
 
     try:
