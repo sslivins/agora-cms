@@ -1672,7 +1672,7 @@ function fallbackCopy(text, onSuccess) {
             }
         },
         renameTag: async (tagId, currentName) => {
-            const name = window.prompt('Rename tag:', currentName || '');
+            const name = await showPrompt('Rename tag:', currentName || '');
             if (name === null) return;
             const newName = name.trim();
             if (!newName || newName === currentName) return;
