@@ -33,6 +33,16 @@ class DeviceProfile(Base):
     # Whether this is a built-in (non-deletable) profile
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # What this profile is for.  ``device`` is the historical default —
+    # variants are pushed to playback devices.  ``thumbnail`` is a
+    # CMS-internal profile whose variants are tiny JPEG stills used by
+    # the asset library grid view; thumbnail-purpose profiles are
+    # hidden from the user-facing profiles list and from device-bound
+    # selection paths.
+    purpose: Mapped[str] = mapped_column(
+        String(20), default="device", nullable=False, server_default="device"
+    )
+
     # Enable/disable toggle — disabled profiles don't generate new variants
     # on upload / new-profile fan-out, and any in-flight/pending transcodes
     # for them are cancelled. Existing READY variants are preserved so

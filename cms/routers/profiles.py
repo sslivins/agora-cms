@@ -88,10 +88,23 @@ def _validate_profile_compat(
 
 
 @router.get("", response_model=List[ProfileOut], dependencies=[Depends(require_permission(PROFILES_READ))])
-async def list_profiles(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(DeviceProfile).order_by(DeviceProfile.name)
-    )
+async def list_profiles(
+    db: AsyncSession = Depends(get_db),
+    include_internal: bool = False,
+):
+    """List device profiles.
+
+    By default only ``purpose='device'`` profiles are returned --
+    CMS-internal profiles (currently just the thumbnail profile that
+    backs the asset library grid view) are hidden from the profiles
+    page, the device-assignment dropdowns, and the MCP tool surface.
+    Pass ``include_internal=true`` to surface them (used by debugging
+    flows; not exposed in any UI).
+    """
+    stmt = select(DeviceProfile).order_by(DeviceProfile.name)
+    if not include_internal:
+        stmt = stmt.where(DeviceProfile.purpose == "device")
+    result = await db.execute(stmt)
     profiles = result.scalars().all()
 
     # Annotate with device count and variant stats
@@ -126,6 +139,7 @@ async def list_profiles(db: AsyncSession = Depends(get_db)):
             audio_bitrate=p.audio_bitrate,
             builtin=p.builtin,
             enabled=p.enabled,
+            purpose=getattr(p, "purpose", "device"),
             device_count=dev_count.scalar() or 0,
             total_variants=total_var.scalar() or 0,
             ready_variants=ready_var.scalar() or 0,
@@ -198,7 +212,7 @@ async def create_profile(data: ProfileCreate, request: Request, db: AsyncSession
 _TRANSCODE_FIELDS = {
     "video_codec", "video_profile", "max_width", "max_height", "max_fps",
     "crf", "video_bitrate", "pixel_format", "color_space",
-    "audio_codec", "audio_bitrate",
+    "audio_codec", "audio_bitrate", "purpose",
 }
 
 
@@ -295,6 +309,12 @@ async def update_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+
+    if getattr(profile, "purpose", "device") != "device":
+        raise HTTPException(
+            status_code=400,
+            detail="Internal profiles cannot be edited",
+        )
 
     updates = data.model_dump(exclude_unset=True)
 
@@ -416,6 +436,8 @@ async def delete_profile(profile_id: uuid.UUID, request: Request, db: AsyncSessi
         raise HTTPException(status_code=404, detail="Profile not found")
     if profile.builtin:
         raise HTTPException(status_code=400, detail="Cannot delete built-in profile")
+    if getattr(profile, "purpose", "device") != "device":
+        raise HTTPException(status_code=400, detail="Internal profiles cannot be deleted")
 
     # Check if devices use this profile
     dev_count = await db.execute(
@@ -473,6 +495,13 @@ async def copy_profile(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Internal (non-device) profiles are CMS-managed and not user-copyable.
+    if getattr(source, "purpose", "device") != "device":
+        raise HTTPException(
+            status_code=400,
+            detail="Internal profiles cannot be copied",
+        )
 
     # Generate a unique copy name
     base_name = f"Copy of {source.name}"
@@ -561,6 +590,8 @@ async def reset_profile(
         raise HTTPException(status_code=404, detail="Profile not found")
     if not profile.builtin:
         raise HTTPException(status_code=400, detail="Only built-in profiles can be reset")
+    if getattr(profile, "purpose", "device") != "device":
+        raise HTTPException(status_code=400, detail="Internal profiles cannot be reset")
     if profile.name not in BUILTIN_PROFILES:
         raise HTTPException(status_code=400, detail="No defaults found for this profile")
 
@@ -676,6 +707,12 @@ async def disable_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
+    if getattr(profile, "purpose", "device") != "device":
+        raise HTTPException(
+            status_code=400,
+            detail="Internal profiles cannot be disabled",
+        )
+
     if not profile.enabled:
         # Idempotent — return current state
         dev_count = await db.execute(
@@ -775,6 +812,12 @@ async def enable_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+
+    if getattr(profile, "purpose", "device") != "device":
+        raise HTTPException(
+            status_code=400,
+            detail="Internal profiles cannot be enabled/disabled",
+        )
 
     was_disabled = not profile.enabled
     profile.enabled = True

@@ -541,8 +541,14 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     variants_dir = asset_dir / "variants"
     variants_dir.mkdir(parents=True, exist_ok=True)
 
+    # Thumbnail-purpose variants are always written as .jpg regardless
+    # of source type.  CMS-side variant filename creation already forces
+    # .jpg (see cms/services/transcoder._variant_ext_for), so no
+    # rewrite is needed here.
+    is_thumbnail = getattr(profile, "purpose", "device") == "thumbnail"
+
     # For image assets, force the correct output extension
-    if source.asset_type == AssetType.IMAGE:
+    if source.asset_type == AssetType.IMAGE and not is_thumbnail:
         correct_ext = image_variant_ext(source.filename)
         output_path = variants_dir / (variant.filename.rsplit(".", 1)[0] + correct_ext)
     else:
@@ -564,9 +570,111 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
     _active_variant_id = variant.id
 
     logger.info(
-        "Transcoding %s → %s (profile: %s)",
+        "Transcoding %s -> %s (profile: %s, purpose: %s)",
         source.filename, variant.filename, profile.name,
+        getattr(profile, "purpose", "device"),
     )
+
+    # ── Thumbnail branch ───────────────────────────────────────
+    # A thumbnail-purpose variant is always a single tiny JPEG:
+    #   * Image source -> downscale via convert_image (writes .jpg).
+    #   * Video source -> ffmpeg seek to 5s and grab a single frame.
+    # SAVED_STREAM and other asset types are filtered out at enqueue
+    # time and should not reach this code path.
+    if is_thumbnail:
+        try:
+            if source.asset_type == AssetType.IMAGE:
+                ok = await convert_image(
+                    source_path, output_path,
+                    max_width=profile.max_width,
+                    max_height=profile.max_height,
+                )
+                if not ok:
+                    await _mark_failed(variant, source, "Thumbnail image conversion failed", db)
+                    return
+            else:
+                # Single still at ~5s.  ``-ss`` before ``-i`` is the fast
+                # input-seek path; for short videos the demuxer will
+                # clamp to the last keyframe, which still produces a
+                # representative frame.
+                w = profile.max_width
+                h = profile.max_height
+                vf = (
+                    f"scale=w='min(iw,{w})':h='min(ih,{h})'"
+                    ":force_original_aspect_ratio=decrease"
+                )
+                args = [
+                    "ffmpeg", "-y",
+                    "-ss", "5",
+                    "-i", str(source_path),
+                    "-frames:v", "1",
+                    "-vf", vf,
+                    "-q:v", "5",
+                    "-update", "1",
+                    str(output_path),
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    "nice", "-n", "15", *args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _active_process = proc
+                _stderr, _err = await proc.communicate()
+                if proc.returncode != 0 or not output_path.is_file():
+                    # Retry without the -ss seek for very short clips.
+                    args_retry = [
+                        "ffmpeg", "-y",
+                        "-i", str(source_path),
+                        "-frames:v", "1",
+                        "-vf", vf,
+                        "-q:v", "5",
+                        "-update", "1",
+                        str(output_path),
+                    ]
+                    proc = await asyncio.create_subprocess_exec(
+                        "nice", "-n", "15", *args_retry,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    _active_process = proc
+                    await proc.communicate()
+                    if proc.returncode != 0 or not output_path.is_file():
+                        await _mark_failed(
+                            variant, source,
+                            "Thumbnail frame extraction failed", db,
+                        )
+                        return
+
+            file_size = output_path.stat().st_size
+            sha = hashlib.sha256()
+            with open(output_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    sha.update(chunk)
+
+            if await _source_asset_is_deleted(db, variant.source_asset_id):
+                await _abort_on_deleted(variant, output_path, db)
+                return
+
+            variant.checksum = sha.hexdigest()
+            variant.size_bytes = file_size
+            variant.status = VariantStatus.READY
+            variant.progress = 100.0
+            variant.completed_at = datetime.now(timezone.utc)
+
+            try:
+                await db.commit()
+            except SQLAlchemyError:
+                logger.warning("Variant %s deleted before thumbnail completion recorded", variant.id)
+                return
+            logger.info("Thumbnail variant complete: %s (%d bytes)", variant.filename, variant.size_bytes)
+
+            storage = get_storage()
+            await storage.on_file_stored(f"variants/{variant.filename}")
+            return
+        except Exception as e:
+            await _mark_failed(variant, source, str(e)[:500], db)
+            logger.exception("Thumbnail variant error for %s", variant.filename)
+            return
 
     # Image assets: convert/downscale at profile max dimensions
     if source.asset_type == AssetType.IMAGE:

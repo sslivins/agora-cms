@@ -127,10 +127,11 @@
   /api/assets/{id}/row fragment endpoint so both paths emit identical markup
   — see issue #87.
 #}
-{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None) -%}
+{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None, thumbnail_url_map={}) -%}
             {% set is_owner = (current_user_id and a.uploaded_by_user_id == current_user_id) or is_admin %}
             {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
-            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}">
+            {% set thumb_url = thumbnail_url_map.get(a.id, '') %}
+            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}" data-thumbnail-url="{{ thumb_url }}">
                 <td class="expand-toggle" style="white-space:nowrap;">
                     {% if 'assets:write' in user_perms %}
                     <input type="checkbox" class="bulk-select-row" data-asset-id="{{ a.id }}" onclick="event.stopPropagation()" style="margin-right:0.25rem; vertical-align:middle;">

@@ -271,11 +271,21 @@ async def assets_status_json(
         slide_counts = {sid: cnt for sid, cnt in sc_rows}
 
     assets_detail = []
+    thumb_map = await _thumbnail_urls_for([a.id for a in all_assets], db)
     for a in all_assets:
         # Collapse to newest live row per profile for consistency with
         # the Library template render (cms/ui.py assets_page).
         from cms.services.variant_view import collapse_to_latest
-        visible_variants = collapse_to_latest(a.variants)
+        # Drop CMS-internal variants (thumbnail profile) from the
+        # device-facing readiness picture entirely — they don't gate
+        # device delivery and their status would confuse the per-asset
+        # progress badge.
+        device_variants = [
+            v for v in a.variants
+            if v.profile is None
+            or getattr(v.profile, "purpose", "device") == "device"
+        ]
+        visible_variants = collapse_to_latest(device_variants)
         variants = []
         a_ready = a_processing = a_failed = 0
         for v in sorted(visible_variants, key=lambda v: (v.profile.name if v.profile else "")):
@@ -327,6 +337,7 @@ async def assets_status_json(
                 if user_group_ids is None or ga.group_id in user_group_ids
             ],
             "slide_count": slide_counts.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
+            "thumbnail_url": thumb_map.get(a.id),
         })
 
     # Compute a hash of group-asset assignments so the poller can detect scope changes
@@ -360,7 +371,9 @@ async def list_assets(
     if visible is not None:
         q = q.where(Asset.id.in_(visible))
     result = await db.execute(q)
-    return result.scalars().all()
+    assets = list(result.scalars().all())
+    thumbs = await _thumbnail_urls_for([a.id for a in assets], db)
+    return [_asset_out_with_thumb(a, thumbs) for a in assets]
 
 
 # ── Paginated / filtered listing for the asset library UI ──
@@ -437,6 +450,47 @@ def _decode_cursor(cursor: str) -> tuple:
 
 
 _ALLOWED_TYPES = {t.value for t in AssetType}
+
+
+async def _thumbnail_urls_for(
+    asset_ids: list[uuid.UUID], db: AsyncSession
+) -> dict[uuid.UUID, str]:
+    """Return a {asset_id -> thumbnail variant URL} map for the given
+    ids, including only assets whose thumbnail variant is READY.
+
+    A single SQL round-trip joins ``device_profiles`` so we filter on
+    ``purpose='thumbnail'`` server-side. Assets with no ready thumbnail
+    (pending, failed, deleted, or asset type that can't produce one)
+    are simply absent from the result -- callers should treat that as
+    ``thumbnail_url=None``.
+    """
+    if not asset_ids:
+        return {}
+    rows = (await db.execute(
+        select(AssetVariant.source_asset_id, AssetVariant.id)
+        .join(DeviceProfile, AssetVariant.profile_id == DeviceProfile.id)
+        .where(
+            AssetVariant.source_asset_id.in_(asset_ids),
+            AssetVariant.status == VariantStatus.READY,
+            AssetVariant.deleted_at.is_(None),
+            DeviceProfile.purpose == "thumbnail",
+        )
+        .order_by(AssetVariant.created_at.desc())
+    )).all()
+    out: dict[uuid.UUID, str] = {}
+    for aid, vid in rows:
+        # First (newest) wins per asset.
+        out.setdefault(aid, f"/api/assets/variants/{vid}/preview")
+    return out
+
+
+def _asset_out_with_thumb(
+    asset: Asset, thumbs: dict[uuid.UUID, str]
+) -> AssetOut:
+    out = AssetOut.model_validate(asset)
+    if asset.id in thumbs:
+        out.thumbnail_url = thumbs[asset.id]
+    return out
 
 
 @router.get("/page", response_model=AssetPageOut)
@@ -567,6 +621,7 @@ async def list_assets_paged(
     rows = rows[:page_size]
 
     items = [row[0] for row in rows]
+    thumbs = await _thumbnail_urls_for([a.id for a in items], db)
 
     # ── Total estimate: count all rows matching the filters, ignoring
     #    the cursor. We only need this once per filter context but cost
@@ -589,7 +644,7 @@ async def list_assets_paged(
         next_cursor = _encode_cursor(last_value, last.id)
 
     return AssetPageOut(
-        items=[AssetOut.model_validate(a) for a in items],
+        items=[_asset_out_with_thumb(a, thumbs) for a in items],
         next_cursor=next_cursor,
         total_estimate=total_estimate,
     )
@@ -1785,8 +1840,14 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
     is_admin = group_ids is None
 
     # Annotate the same way ui.assets_page does so the macro sees identical fields.
+    # Skip thumbnail-purpose variants — they're CMS-internal.
+    device_variants = [
+        v for v in asset.variants
+        if v.profile is None
+        or getattr(v.profile, "purpose", "device") == "device"
+    ]
     visible_variants = sorted(
-        collapse_to_latest(asset.variants),
+        collapse_to_latest(device_variants),
         key=lambda v: (v.profile.name if v.profile else ""),
     )
     asset.visible_variants = visible_variants
@@ -1836,6 +1897,7 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
             uploader_map[str(row.id)] = row.username or row.email
 
     macros = templates.env.get_template("_macros.html").module
+    thumbnail_url_map = await _thumbnail_urls_for([asset.id], db)
     html = macros.asset_row(
         asset,
         user_perms,
@@ -1844,6 +1906,7 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
         user_groups,
         uploader_map,
         user.id if user else None,
+        thumbnail_url_map,
     )
     return HTMLResponse(str(html))
 
@@ -1855,7 +1918,8 @@ async def get_asset(asset_id: uuid.UUID, request: Request, db: AsyncSession = De
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     await _verify_asset_access(asset_id, request, db)
-    return asset
+    thumbs = await _thumbnail_urls_for([asset.id], db)
+    return _asset_out_with_thumb(asset, thumbs)
 
 
 @device_router.get("/{asset_id}/download")
