@@ -74,8 +74,14 @@ class TestMultiBoardProfileSeeding:
         from cms.main import _seed_profiles
         await _seed_profiles(db_session)
 
+        # Only check the three device-facing built-ins; the CMS also
+        # seeds internal profiles like ``thumbnail`` (purpose != device)
+        # which are intentionally not user-visible board choices.
         result = await db_session.execute(
-            select(DeviceProfile).where(DeviceProfile.builtin == True)
+            select(DeviceProfile).where(
+                DeviceProfile.builtin == True,
+                DeviceProfile.purpose == "device",
+            )
         )
         profiles = {p.name for p in result.scalars().all()}
         assert profiles == {"pi-zero-2w", "pi-4", "pi-5"}
