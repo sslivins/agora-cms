@@ -1,0 +1,413 @@
+name: Deploy Goodwill Dev
+
+# Auto-deploy to the Goodwill DEV environment on every successful
+# "Publish & Deploy" run on main.  Uses the just-published GHCR image
+# tag (resolved via scripts/resolve_deploy_version.py "auto" mode).
+#
+# Mirrors deploy-goodwill.yml (prod) but:
+#   * triggers automatically off the publish workflow (plus manual)
+#   * targets resource group agoragw-cms-dev-rg
+#   * uses the `seattle-goodwill-dev` GH environment (no reviewer gate)
+#   * applies infra/parameters/goodwill-dev.bicepparam (smaller sizing)
+#
+# Required manual setup (one-time, per repo settings):
+#   * `seattle-goodwill-dev` GitHub environment (no required reviewers).
+#   * Environment secrets:
+#       AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#       POSTGRES_ADMIN_PASSWORD, CMS_SECRET_KEY, CMS_ADMIN_PASSWORD,
+#       ADMIN_PRINCIPAL_ID,
+#       AGORA_CMS_ISSUES_TOKEN (optional)
+#   * Environment variables:
+#       INFRA_PREFIX=agoragwdev, AZURE_RESOURCE_GROUP=agoragw-cms-dev-rg,
+#       ALERT_EMAIL (optional), CMS_CUSTOM_DOMAIN (optional),
+#       MCP_CUSTOM_DOMAIN (optional)
+#   * OIDC federated credential on the Goodwill app registration:
+#       repo:sslivins/agora-cms:environment:seattle-goodwill-dev
+#     (either reuse the prod app reg and add this credential, or
+#      register a separate dev app — either way grant Contributor on
+#      agoragw-cms-dev-rg only)
+#   * Pre-create the resource group in the Goodwill tenant:
+#       az group create -n agoragw-cms-dev-rg -l westus2
+#
+# Bicep is the source of truth.  If a deployment fails, fix the
+# template (infra/main.bicep / infra/parameters/goodwill-dev.bicepparam)
+# and redeploy — never hand-patch resources in the portal.  The new
+# revision is blue/green-gated, so a failed deploy leaves the previous
+# revision serving and is safe to re-run after the bicep fix.
+
+on:
+  workflow_run:
+    workflows: ["Publish & Deploy"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version to deploy (e.g. 1.12.34). Leave as 'auto' to resolve the highest co-versioned tag automatically."
+        required: true
+        type: string
+        default: auto
+      deployRoleAssignments:
+        description: "Run role assignment module (only needed on first bootstrap or when adminPrincipalId changes)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-goodwill-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for Azure login
+
+env:
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Only run on success of the upstream publish workflow (or on manual dispatch).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    environment: seattle-goodwill-dev
+    outputs:
+      resolved_version: ${{ steps.resolve.outputs.resolved_version }}
+      revision_suffix: ${{ steps.revisions.outputs.revision_suffix }}
+      previous_cms_revision: ${{ steps.revisions.outputs.previous_cms_revision }}
+      previous_mcp_revision: ${{ steps.revisions.outputs.previous_mcp_revision }}
+      new_cms_revision: ${{ steps.revisions.outputs.new_cms_revision }}
+      new_mcp_revision: ${{ steps.revisions.outputs.new_mcp_revision }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Resolve "auto" -> latest co-versioned semver across all three GHCR
+      # repos (agora-cms, agora-cms-mcp, agora-worker), or accept a literal
+      # pin from workflow_dispatch.  workflow_run has no inputs, so we
+      # always pass "auto" for it.
+      - name: Resolve and verify image version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || 'auto' }}
+        run: python3 scripts/resolve_deploy_version.py
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Blue/green: capture the currently-serving revisions before we deploy.
+      - name: Capture pre-deploy revision state
+        id: revisions
+        run: |
+          set -euo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+
+          fetch_prev() {
+            local app="$1"
+            az containerapp revision list --name "$app" --resource-group "$RG" \
+              --query "reverse(sort_by([?properties.active && properties.healthState=='Healthy'], &properties.createdTime))[0].name" \
+              -o tsv 2>/dev/null || true
+          }
+
+          PREV_CMS=$(fetch_prev "$CMS_APP")
+          PREV_MCP=$(fetch_prev "$MCP_APP")
+          echo "previous_cms_revision=${PREV_CMS}" >> "$GITHUB_OUTPUT"
+          echo "previous_mcp_revision=${PREV_MCP}" >> "$GITHUB_OUTPUT"
+          echo "  cms previous: ${PREV_CMS:-<bootstrap>}"
+          echo "  mcp previous: ${PREV_MCP:-<bootstrap>}"
+
+          SUFFIX="v$(echo '${{ steps.resolve.outputs.resolved_version }}' | tr '.' '-')"
+          echo "revision_suffix=${SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "  new revision suffix: ${SUFFIX}"
+
+          echo "new_cms_revision=${CMS_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "new_mcp_revision=${MCP_APP}--${SUFFIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy infrastructure
+        run: |
+          VERSION='${{ steps.resolve.outputs.resolved_version }}'
+          CMS_REF="ghcr.io/sslivins/agora-cms:${VERSION}"
+          MCP_REF="ghcr.io/sslivins/agora-cms-mcp:${VERSION}"
+          WORKER_REF="ghcr.io/sslivins/agora-worker:${VERSION}"
+          echo "Deploying:"
+          echo "  cms:    $CMS_REF"
+          echo "  mcp:    $MCP_REF"
+          echo "  worker: $WORKER_REF"
+          az deployment group create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters infra/parameters/goodwill-dev.bicepparam \
+            --parameters \
+              prefix='${{ vars.INFRA_PREFIX }}' \
+              postgresAdminPassword='${{ secrets.POSTGRES_ADMIN_PASSWORD }}' \
+              cmsSecretKey='${{ secrets.CMS_SECRET_KEY }}' \
+              cmsAdminPassword='${{ secrets.CMS_ADMIN_PASSWORD }}' \
+              githubIssuesToken='${{ secrets.AGORA_CMS_ISSUES_TOKEN }}' \
+              adminPrincipalId='${{ secrets.ADMIN_PRINCIPAL_ID }}' \
+              deployRoleAssignments=${{ github.event_name == 'workflow_dispatch' && inputs.deployRoleAssignments || 'false' }} \
+              cmsImage="$CMS_REF" \
+              mcpImage="$MCP_REF" \
+              workerImage="$WORKER_REF" \
+              cmsRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
+              previousCmsRevisionName='${{ steps.revisions.outputs.previous_cms_revision }}' \
+              mcpRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
+              previousMcpRevisionName='${{ steps.revisions.outputs.previous_mcp_revision }}' \
+              alertEmail='${{ vars.ALERT_EMAIL }}' \
+              cmsBaseUrlOverride='${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}'
+
+      - name: Bind custom domains (if configured)
+        if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
+        run: |
+          ENV_NAME="${{ vars.INFRA_PREFIX }}-env"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+
+          bind_domain() {
+            local APP_NAME="$1" DOMAIN="$2"
+            [ -z "$DOMAIN" ] && return 0
+
+            BINDING=$(az containerapp hostname list --name "$APP_NAME" --resource-group "$RG" \
+              --query "[?name=='$DOMAIN'].bindingType" -o tsv 2>/dev/null)
+            if [ "$BINDING" = "SniEnabled" ]; then
+              echo "✅ $DOMAIN already bound with cert to $APP_NAME"
+              return 0
+            fi
+
+            echo "Adding hostname $DOMAIN to $APP_NAME..."
+            az containerapp hostname add \
+              --name "$APP_NAME" \
+              --resource-group "$RG" \
+              --hostname "$DOMAIN" 2>/dev/null || true
+
+            echo "Binding managed certificate for $DOMAIN..."
+            az containerapp hostname bind \
+              --name "$APP_NAME" \
+              --resource-group "$RG" \
+              --hostname "$DOMAIN" \
+              --environment "$ENV_NAME" \
+              --validation-method CNAME || echo "⚠️ Failed to bind $DOMAIN (may need manual setup)"
+          }
+
+          bind_domain "${{ vars.INFRA_PREFIX }}-cms" "${{ vars.CMS_CUSTOM_DOMAIN }}"
+          bind_domain "${{ vars.INFRA_PREFIX }}-mcp" "${{ vars.MCP_CUSTOM_DOMAIN }}"
+
+  verify:
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    environment: seattle-goodwill-dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve new-revision FQDNs
+        id: fqdn
+        run: |
+          set -euo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+
+          CMS_FQDN=$(az containerapp revision show \
+            --name "$CMS_APP" --resource-group "$RG" \
+            --revision "$NEW_CMS_REV" \
+            --query "properties.fqdn" -o tsv 2>/dev/null || echo "")
+          MCP_FQDN=$(az containerapp revision show \
+            --name "$MCP_APP" --resource-group "$RG" \
+            --revision "$NEW_MCP_REV" \
+            --query "properties.fqdn" -o tsv 2>/dev/null || echo "")
+
+          if [ -z "$CMS_FQDN" ]; then
+            echo "::error::could not resolve per-revision FQDN for $NEW_CMS_REV"
+            exit 1
+          fi
+          echo "  cms new revision: $NEW_CMS_REV @ $CMS_FQDN"
+          echo "  mcp new revision: $NEW_MCP_REV @ ${MCP_FQDN:-<none>}"
+          echo "cms_fqdn=$CMS_FQDN" >> "$GITHUB_OUTPUT"
+          echo "mcp_fqdn=$MCP_FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for new CMS revision to become healthy
+        id: health
+        run: |
+          EXPECTED="${{ needs.deploy.outputs.resolved_version }}"
+          FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
+          URL="https://${FQDN}/healthz"
+          echo "Polling $URL — expecting version $EXPECTED ..."
+          LAST_VERSION=""
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/health.json -w '%{http_code}' "$URL" --max-time 5 || echo "000")
+            if [ "$CODE" = "200" ]; then
+              LAST_VERSION=$(cat /tmp/health.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))")
+              if [ "$LAST_VERSION" = "$EXPECTED" ]; then
+                echo "✅ CMS healthy — version $LAST_VERSION (attempt $i)"
+                echo "status=ok" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "  attempt $i — version $LAST_VERSION != $EXPECTED, waiting 10s ..."
+            else
+              echo "  attempt $i — HTTP $CODE, waiting 10s ..."
+            fi
+            sleep 10
+          done
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "last_version=$LAST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "::error::New CMS revision did not reach expected version $EXPECTED within 5 minutes (last: ${LAST_VERSION:-no response})"
+
+      - name: Post-deploy smoke probes (against new revision)
+        id: smoke
+        if: steps.health.outputs.status == 'ok'
+        run: |
+          FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
+          fail=0
+
+          echo "── GET /healthz/system ──"
+          CODE=$(curl -s -o /tmp/sys.json -w '%{http_code}' "https://${FQDN}/healthz/system" --max-time 10 || echo "000")
+          echo "  HTTP $CODE"
+          cat /tmp/sys.json 2>/dev/null || true
+          echo ""
+          if [ "$CODE" != "200" ]; then
+            echo "::error::/healthz/system returned HTTP $CODE"
+            fail=1
+          else
+            STATUS=$(python3 -c "import json; d=json.load(open('/tmp/sys.json')); print(d.get('status','?'))")
+            if [ "$STATUS" != "ok" ]; then
+              echo "::error::/healthz/system reported status=$STATUS"
+              python3 scripts/explain_healthz_system.py /tmp/sys.json || true
+              fail=1
+            fi
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "smoke=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "smoke=ok" >> "$GITHUB_OUTPUT"
+          echo "✅ All post-deploy smoke probes passed against new revision"
+
+      - name: Flip traffic to new revisions
+        if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
+        run: |
+          set -euo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+          PREV_CMS='${{ needs.deploy.outputs.previous_cms_revision }}'
+          PREV_MCP='${{ needs.deploy.outputs.previous_mcp_revision }}'
+
+          flip() {
+            local app="$1" new="$2" prev="$3"
+            echo "── flipping $app traffic to $new ──"
+            if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
+              az containerapp ingress traffic set \
+                --name "$app" --resource-group "$RG" \
+                --revision-weight "$new=100" "$prev=0"
+            else
+              az containerapp ingress traffic set \
+                --name "$app" --resource-group "$RG" \
+                --revision-weight "$new=100"
+            fi
+          }
+
+          flip "$CMS_APP" "$NEW_CMS_REV" "$PREV_CMS"
+          flip "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
+          echo "✅ Traffic flipped — $NEW_CMS_REV is now serving Goodwill dev traffic"
+
+      - name: Deactivate stale revisions
+        if: steps.health.outputs.status == 'ok' && steps.smoke.outputs.smoke == 'ok'
+        run: |
+          set -uo pipefail
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+          PREV_CMS='${{ needs.deploy.outputs.previous_cms_revision }}'
+          PREV_MCP='${{ needs.deploy.outputs.previous_mcp_revision }}'
+
+          deactivate_stale() {
+            local app="$1" keep_new="$2" keep_prev="$3"
+            echo "── deactivating stale revisions for $app (keeping $keep_new + $keep_prev) ──"
+            local stale
+            stale=$(az containerapp revision list \
+              --name "$app" --resource-group "$RG" \
+              --query "[?properties.active && name!='$keep_new' && name!='$keep_prev'].name" \
+              -o tsv 2>/dev/null || echo "")
+            if [ -z "$stale" ]; then
+              echo "  (none)"
+              return 0
+            fi
+            for rev in $stale; do
+              echo "  deactivating $rev"
+              az containerapp revision deactivate \
+                --name "$app" --resource-group "$RG" \
+                --revision "$rev" 2>&1 \
+                || echo "  (failed to deactivate $rev — continuing)"
+            done
+          }
+
+          deactivate_stale "$CMS_APP" "$NEW_CMS_REV" "$PREV_CMS"
+          deactivate_stale "$MCP_APP" "$NEW_MCP_REV" "$PREV_MCP"
+          echo "✅ Stale revisions deactivated — only current + previous remain warm"
+
+      - name: Deactivate new revisions on failure
+        if: failure() && (steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed')
+        run: |
+          set +e
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          MCP_APP="${{ vars.INFRA_PREFIX }}-mcp"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          NEW_MCP_REV='${{ needs.deploy.outputs.new_mcp_revision }}'
+
+          echo "── Smoke or health failed — deactivating new revisions; previous revision keeps serving ──"
+          az containerapp revision deactivate \
+            --name "$CMS_APP" --resource-group "$RG" \
+            --revision "$NEW_CMS_REV" 2>&1 || echo "(failed to deactivate $NEW_CMS_REV)"
+          az containerapp revision deactivate \
+            --name "$MCP_APP" --resource-group "$RG" \
+            --revision "$NEW_MCP_REV" 2>&1 || echo "(failed to deactivate $NEW_MCP_REV)"
+
+      - name: Fetch container logs on failure
+        if: failure() && (steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed')
+        run: |
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          echo "──── Console logs (last 150 lines) ────"
+          az containerapp logs show \
+            --name "$CMS_APP" \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --revision "$NEW_CMS_REV" \
+            --type console --tail 150 2>&1 || echo "(failed to fetch console logs)"
+
+          echo ""
+          echo "──── System logs (last 50 lines) ────"
+          az containerapp logs show \
+            --name "$CMS_APP" \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --revision "$NEW_CMS_REV" \
+            --type system --tail 50 2>&1 || echo "(failed to fetch system logs)"
+
+          echo ""
+          echo "──── Active revisions ────"
+          az containerapp revision list \
+            --name "$CMS_APP" \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            -o table 2>&1 || echo "(failed to list revisions)"
+
+      - name: Fail the job on health/smoke failure
+        if: steps.health.outputs.status == 'failed' || steps.smoke.outputs.smoke == 'failed'
+        run: |
+          echo "::error::Deployment verification failed — new revision deactivated; previous revision continues to serve traffic"
+          exit 1
