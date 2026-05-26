@@ -17,7 +17,10 @@ using '../main.bicep'
 //   mcp    : 0.25 vCPU / 0.5Gi (main.bicep default for mcp at this scale)
 //   worker : 1.0 vCPU / 2Gi
 //
-// Region: westus2 — same as Goodwill prod for proximity / quota parity.
+// Region: westus — matches the pre-created agoragw-cms-dev-rg.
+// (Goodwill prod uses westus2; dev is in westus for cost/region
+// flexibility. westus has full Container Apps + Postgres Flexible
+// + Web PubSub coverage so all bicep modules apply unchanged.)
 //
 // Manual deploy (rare — prefer the workflow):
 //   az deployment group create \
@@ -35,7 +38,7 @@ using '../main.bicep'
 // ──────────────────────────────────────────────────────────────
 
 param prefix = 'agoragwdev'
-param location = 'westus2'
+param location = 'westus'
 
 param postgresAdminLogin = 'agoraadmin'
 param cmsAdminUsername = 'admin'

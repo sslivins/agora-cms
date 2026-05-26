@@ -27,7 +27,10 @@ name: Deploy Goodwill Dev
 #      register a separate dev app — either way grant Contributor on
 #      agoragw-cms-dev-rg only)
 #   * Pre-create the resource group in the Goodwill tenant:
-#       az group create -n agoragw-cms-dev-rg -l westus2
+#       az group create -n agoragw-cms-dev-rg -l westus
+#     (Note: dev is in westus, not westus2. If you want westus2 for
+#      proximity to prod, delete the RG first and recreate, then also
+#      update `location` in infra/parameters/goodwill-dev.bicepparam.)
 #
 # Bicep is the source of truth.  If a deployment fails, fix the
 # template (infra/main.bicep / infra/parameters/goodwill-dev.bicepparam)
