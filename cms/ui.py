@@ -154,6 +154,32 @@ def schedule_json(s):
 
 templates.env.filters["schedule_json"] = schedule_json
 
+
+def contrast_text_color(bg_hex: str) -> str:
+    """Pick white or near-black text to maximize contrast on ``bg_hex``.
+
+    Uses the WCAG relative-luminance formula (sRGB → linear → Y); returns
+    ``#1a1a1a`` for light backgrounds and ``#ffffff`` for dark ones.
+    """
+    try:
+        h = (bg_hex or "").lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) != 6:
+            return "#ffffff"
+        r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+        def _lin(c: float) -> float:
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+        y = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+        return "#1a1a1a" if y > 0.5 else "#ffffff"
+    except Exception:
+        return "#ffffff"
+
+
+templates.env.filters["contrast_text_color"] = contrast_text_color
+
 # Cache-busting: use build timestamp so browsers fetch fresh static files after deploy
 import time as _time
 _static_version = str(int(_time.time()))

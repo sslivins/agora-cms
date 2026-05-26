@@ -179,7 +179,7 @@
     {# ── Filter bar ── #}
     <div id="assets-filter-bar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem; padding:0.5rem; background:var(--bg-subtle, rgba(255,255,255,0.03)); border-radius:4px;">
         <input type="search" id="filter-q" placeholder="Search name / filename…"
-               style="flex:1 1 220px; min-width:180px; max-width:360px;"
+               style="flex:1 1 220px; min-width:180px; max-width:360px; padding:0.4rem 0.65rem; font-size:0.88rem;"
                autocomplete="off" spellcheck="false">
         <select id="filter-type" style="min-width:130px;">
             <option value="">All types</option>
@@ -221,14 +221,14 @@
             {% endfor %}
         </select>
         {% endif %}
-        {% if is_admin %}
-        <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
-                onclick="event.stopPropagation(); document.getElementById('tag-manager-popup').showPopover()"
-                title="Manage tags">🏷 Manage tags</button>
-        {% endif %}
         <button type="button" class="btn btn-secondary btn-sm" id="filter-clear-btn"
                 onclick="window._assetLibrary && window._assetLibrary.clearFilters()"
                 style="display:none;">Clear filters</button>
+        {% if is_admin %}
+        <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
+                onclick="event.stopPropagation(); document.getElementById('tag-manager-modal').style.display='flex'; window._assetLibrary && window._assetLibrary.refreshTagManager && window._assetLibrary.refreshTagManager()"
+                title="Manage tags">🏷 Manage tags</button>
+        {% endif %}
         <span class="text-muted" id="filter-summary" style="font-size:0.85rem;"></span>
     </div>
 
@@ -305,22 +305,39 @@
 
     {# ── Tag manager modal (admin-only) ── #}
     {% if is_admin %}
-    <div id="tag-manager-popup" popover style="min-width:360px; max-width:520px; padding:1rem; border-radius:6px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
-            <strong style="font-size:1.05rem;">Manage tags</strong>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('tag-manager-popup').hidePopover()">Close</button>
+    <div id="tag-manager-modal" class="modal-overlay" style="display:none">
+        <div class="modal-box" style="max-width:520px;">
+            <div class="modal-header">
+                <h3>Manage tags</h3>
+                <button class="modal-close" onclick="window._assetLibrary && window._assetLibrary.closeTagManager()">&times;</button>
+            </div>
+            <div id="tag-manager-list" style="max-height:360px; overflow-y:auto; margin-bottom:0.75rem;">
+                <!-- populated by JS -->
+            </div>
+            <div style="border-top:1px solid rgba(255,255,255,0.08); padding-top:0.75rem;">
+                <label style="display:block; margin-bottom:0.3rem; font-size:0.85rem; color:var(--text-muted);">Create new tag</label>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <input type="text" id="new-tag-name" placeholder="Tag name" maxlength="64"
+                           style="flex:1 1 auto; padding:0.5rem 0.75rem; background:var(--select-bg); color:var(--text); border:1px solid var(--select-border); border-radius:var(--radius); font-size:0.9rem;">
+                    <input type="color" id="new-tag-color" value="#e94560" title="Color"
+                           style="flex:0 0 2.4rem; width:2.4rem; height:2.2rem; padding:0; border:1px solid var(--select-border); border-radius:var(--radius); background:transparent; cursor:pointer;">
+                    <button type="button" class="btn btn-primary"
+                            onclick="window._assetLibrary && window._assetLibrary.createTagFromManager()">Add</button>
+                </div>
+            </div>
         </div>
-        <div id="tag-manager-list" style="max-height:320px; overflow-y:auto; margin-bottom:0.75rem;">
-            <!-- populated by JS -->
-        </div>
-        <div style="display:flex; gap:0.4rem; align-items:center; border-top:1px solid rgba(255,255,255,0.08); padding-top:0.6rem;">
-            <input type="text" id="new-tag-name" placeholder="New tag name" maxlength="64"
-                   style="flex:1 1 auto;">
-            <input type="color" id="new-tag-color" value="#737373" title="Color"
-                   style="width:2.4rem; height:2rem; padding:0; border:none; background:transparent;">
-            <button type="button" class="btn btn-primary btn-sm"
-                    onclick="window._assetLibrary && window._assetLibrary.createTagFromManager()">Add</button>
-        </div>
+    </div>
+    {% endif %}
+
+    {# ── Shared per-row "+ tag" picker (one popup, positioned per click) ── #}
+    {% if all_tags | length > 0 and 'assets:write' in user_perms %}
+    <div id="row-add-tag-popup" popover class="group-popup">
+        {% for t in all_tags %}
+        <button type="button" class="group-popup-item" data-tag-id="{{ t.id }}"
+                onclick="window._assetLibrary && window._assetLibrary.addTagToCurrentRow('{{ t.id }}')">
+            <span style="display:inline-block; width:0.7rem; height:0.7rem; background:{{ t.color }}; border-radius:50%; margin-right:0.4rem; vertical-align:middle;"></span>{{ t.name }}
+        </button>
+        {% endfor %}
     </div>
     {% endif %}
 
@@ -987,6 +1004,7 @@ function fallbackCopy(text, onSuccess) {
     // Filter state mirrors the URL query string. Initialise from URL so
     // shareable links work and the back button restores prior state.
     const urlParams = new URLSearchParams(window.location.search);
+    let _tagManagerDirty = false;
     const state = {
         q: urlParams.get('q') || '',
         type: urlParams.get('type') || '',
@@ -1143,6 +1161,20 @@ function fallbackCopy(text, onSuccess) {
         return d.innerHTML;
     }
 
+    function _contrastTextColor(hex) {
+        try {
+            let h = (hex || '').replace('#', '');
+            if (h.length === 3) h = h.split('').map(c => c + c).join('');
+            if (h.length !== 6) return '#ffffff';
+            const r = parseInt(h.slice(0, 2), 16) / 255;
+            const g = parseInt(h.slice(2, 4), 16) / 255;
+            const b = parseInt(h.slice(4, 6), 16) / 255;
+            const lin = (c) => (c <= 0.03928) ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            const y = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+            return y > 0.5 ? '#1a1a1a' : '#ffffff';
+        } catch (e) { return '#ffffff'; }
+    }
+
     function _typeIcon(t) {
         return { video: '▶', image: '🖼', webpage: '🌐', stream: '📡',
                  saved_stream: '🎞', slideshow: '🗂' }[t] || '📄';
@@ -1164,12 +1196,14 @@ function fallbackCopy(text, onSuccess) {
         const tags = Array.isArray(a.tags) ? a.tags : [];
         const tagChipsHtml = tags.length
             ? '<div class="asset-grid-tags" style="margin-top:0.25rem; display:flex; flex-wrap:wrap; gap:0.2rem;">' +
-                tags.map(t =>
-                    '<span class="tag-chip" data-tag-id="' + _escHtml(t.id) + '" ' +
-                    'onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag(\'' + _escHtml(t.id) + '\')" ' +
-                    'style="font-size:0.65rem; padding:0.05rem 0.4rem; border-radius:999px; background:' + _escHtml(t.color || '#737373') + '; color:#fff; cursor:pointer;" ' +
-                    'title="Filter by ' + _escHtml(t.name) + '">' + _escHtml(t.name) + '</span>'
-                ).join('') +
+                tags.map(t => {
+                    const bg = t.color || '#737373';
+                    const fg = _contrastTextColor(bg);
+                    return '<span class="tag-chip" data-tag-id="' + _escHtml(t.id) + '" ' +
+                        'onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag(\'' + _escHtml(t.id) + '\')" ' +
+                        'style="font-size:0.65rem; padding:0.05rem 0.4rem; border-radius:999px; background:' + _escHtml(bg) + '; color:' + fg + '; cursor:pointer;" ' +
+                        'title="Filter by ' + _escHtml(t.name) + '">' + _escHtml(t.name) + '</span>';
+                }).join('') +
               '</div>'
             : '';
         // Prefer the dedicated thumbnail variant. If it hasn't been
@@ -1517,6 +1551,95 @@ function fallbackCopy(text, onSuccess) {
             if (pop && pop.hidePopover) try { pop.hidePopover(); } catch (e) {}
             _runBulk('remove_tag', { tag_id: tagId });
         },
+        removeTagFromAsset: async (assetId, tagId) => {
+            try {
+                const resp = await fetch('/api/assets/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ asset_ids: [assetId], action: 'remove_tag', tag_id: tagId }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (window.showToast) window.showToast(data.detail || 'Remove tag failed', true);
+                    return;
+                }
+                if (window.showToast) window.showToast('Tag removed', false);
+                await reload();
+            } catch (e) {
+                if (window.showToast) window.showToast('Remove tag error: ' + e.message, true);
+            }
+        },
+        openRowAddTagPicker: (assetId, ev) => {
+            const pop = document.getElementById('row-add-tag-popup');
+            if (!pop) return;
+            state._rowAddTagAssetId = assetId;
+            // Hide tags already applied to this asset.
+            let appliedIds = new Set();
+            const row = tbody.querySelector('tr.asset-row[data-asset-id="' + assetId + '"]');
+            if (row && row.dataset.tags) {
+                try {
+                    const parsed = JSON.parse(row.dataset.tags);
+                    parsed.forEach(t => appliedIds.add(t.id));
+                } catch (e) { /* ignore */ }
+            }
+            let visibleCount = 0;
+            pop.querySelectorAll('[data-tag-id]').forEach(btn => {
+                if (appliedIds.has(btn.dataset.tagId)) {
+                    btn.style.display = 'none';
+                } else {
+                    btn.style.display = '';
+                    visibleCount++;
+                }
+            });
+            // Toggle the "all applied" hint.
+            let hint = pop.querySelector('.row-add-tag-empty');
+            if (visibleCount === 0) {
+                if (!hint) {
+                    hint = document.createElement('div');
+                    hint.className = 'row-add-tag-empty text-muted';
+                    hint.style.cssText = 'padding:0.4rem 0.75rem; font-size:0.8rem;';
+                    hint.textContent = 'All tags already applied';
+                    pop.appendChild(hint);
+                }
+                hint.style.display = '';
+            } else if (hint) {
+                hint.style.display = 'none';
+            }
+            // Position near the clicked + button.
+            const target = (ev && ev.currentTarget) || (ev && ev.target);
+            if (target && pop.style) {
+                const rect = target.getBoundingClientRect();
+                pop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+                pop.style.left = (rect.left + window.scrollX) + 'px';
+            }
+            try { pop.showPopover(); } catch (e) {}
+        },
+        addTagToCurrentRow: async (tagId) => {
+            const pop = document.getElementById('row-add-tag-popup');
+            if (pop && pop.hidePopover) try { pop.hidePopover(); } catch (e) {}
+            const assetId = state._rowAddTagAssetId;
+            if (!assetId) return;
+            try {
+                const resp = await fetch('/api/assets/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ asset_ids: [assetId], action: 'add_tag', tag_id: tagId }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (window.showToast) window.showToast(data.detail || 'Add tag failed', true);
+                    return;
+                }
+                if (data.failed && data.failed.length) {
+                    if (window.showToast) window.showToast('Add tag failed for asset', true);
+                    return;
+                }
+                if (window.showToast) window.showToast('Tag added', false);
+                await reload();
+            } catch (e) {
+                if (window.showToast) window.showToast('Add tag error: ' + e.message, true);
+            }
+        },
         filterByTag: (tagId) => {
             state.tag_id = tagId || '';
             if (tagSelect) tagSelect.value = state.tag_id;
@@ -1542,9 +1665,8 @@ function fallbackCopy(text, onSuccess) {
                 }
                 if (window.showToast) window.showToast('Tag "' + name + '" created', false);
                 nameEl.value = '';
+                _tagManagerDirty = true;
                 await _refreshTagManager();
-                // Page reload picks up the new tag in dropdowns.
-                setTimeout(() => window.location.reload(), 400);
             } catch (e) {
                 if (window.showToast) window.showToast('Tag create error: ' + e.message, true);
             }
@@ -1564,8 +1686,8 @@ function fallbackCopy(text, onSuccess) {
                 if (window.showToast) window.showToast(data.detail || 'Rename failed', true);
                 return;
             }
+            _tagManagerDirty = true;
             await _refreshTagManager();
-            setTimeout(() => window.location.reload(), 400);
         },
         recolorTag: async (tagId, color) => {
             const resp = await fetch('/api/tags/' + tagId, {
@@ -1578,6 +1700,7 @@ function fallbackCopy(text, onSuccess) {
                 if (window.showToast) window.showToast(data.detail || 'Recolor failed', true);
                 return;
             }
+            _tagManagerDirty = true;
             await _refreshTagManager();
         },
         deleteTag: async (tagId, tagName, assetCount) => {
@@ -1592,9 +1715,17 @@ function fallbackCopy(text, onSuccess) {
                 return;
             }
             if (window.showToast) window.showToast('Tag deleted', false);
+            _tagManagerDirty = true;
             await _refreshTagManager();
-            setTimeout(() => window.location.reload(), 400);
         },
+        closeTagManager: () => {
+            if (typeof closeModal === 'function') closeModal('tag-manager-modal');
+            if (_tagManagerDirty) {
+                _tagManagerDirty = false;
+                setTimeout(() => window.location.reload(), 150);
+            }
+        },
+        refreshTagManager: () => _refreshTagManager(),
     };
 
     async function _refreshTagManager() {
@@ -1608,25 +1739,36 @@ function fallbackCopy(text, onSuccess) {
                 list.innerHTML = '<div class="text-muted" style="padding:0.5rem; font-size:0.85rem;">No tags yet. Create one below.</div>';
                 return;
             }
+            // Attribute-safe JSON: HTML-attr-escape the double quotes that
+            // JSON.stringify emits, otherwise inline onclick="..." breaks.
+            const _attr = (s) => JSON.stringify(s).replace(/"/g, '&quot;');
             list.innerHTML = tags.map(t =>
                 '<div class="tag-mgr-row" style="display:flex; align-items:center; gap:0.4rem; padding:0.35rem 0.2rem; border-bottom:1px solid rgba(255,255,255,0.06);">' +
                     '<input type="color" value="' + _escHtml(t.color) + '" title="Color" ' +
                         'onchange="window._assetLibrary && window._assetLibrary.recolorTag(\'' + _escHtml(t.id) + '\', this.value)" ' +
-                        'style="width:1.8rem; height:1.6rem; padding:0; border:none; background:transparent; flex:0 0 auto;">' +
+                        'style="width:1.8rem; height:1.6rem; padding:0; border:none; background:transparent; flex:0 0 auto; cursor:pointer;">' +
                     '<span style="flex:1 1 auto; font-size:0.9rem;">' + _escHtml(t.name) + '</span>' +
                     '<span class="text-muted" style="font-size:0.75rem;">' + (t.asset_count || 0) + '</span>' +
                     '<button type="button" class="btn btn-secondary btn-sm" ' +
-                        'onclick="window._assetLibrary && window._assetLibrary.renameTag(\'' + _escHtml(t.id) + '\', ' + _escHtml(JSON.stringify(t.name)) + ')">Rename</button>' +
+                        'onclick="window._assetLibrary && window._assetLibrary.renameTag(\'' + _escHtml(t.id) + '\', ' + _attr(t.name) + ')">Rename</button>' +
                     '<button type="button" class="btn btn-danger btn-sm" ' +
-                        'onclick="window._assetLibrary && window._assetLibrary.deleteTag(\'' + _escHtml(t.id) + '\', ' + _escHtml(JSON.stringify(t.name)) + ', ' + (t.asset_count || 0) + ')">Delete</button>' +
+                        'onclick="window._assetLibrary && window._assetLibrary.deleteTag(\'' + _escHtml(t.id) + '\', ' + _attr(t.name) + ', ' + (t.asset_count || 0) + ')">Delete</button>' +
                 '</div>'
             ).join('');
         } catch (e) { /* ignore */ }
     }
 
-    // Lazy-load tag manager contents when the popover opens.
-    const tagMgrBtn = document.getElementById('manage-tags-btn');
-    if (tagMgrBtn) tagMgrBtn.addEventListener('click', () => { _refreshTagManager(); });
+    // Lazy-load tag manager contents when the modal opens (wired via the
+    // button's inline onclick which calls refreshTagManager directly).
+    const newTagNameEl = document.getElementById('new-tag-name');
+    if (newTagNameEl) {
+        newTagNameEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                window._assetLibrary && window._assetLibrary.createTagFromManager();
+            }
+        });
+    }
 
     // Pause polling reconciliation while a filter is active: the
     // /api/assets/status endpoint isn't filter-aware, so the original

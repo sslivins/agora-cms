@@ -150,9 +150,21 @@
                     {% if asset_tags %}
                     <span class="asset-tag-chips" data-asset-id="{{ a.id }}" style="display:inline-flex; flex-wrap:wrap; gap:0.25rem; margin-left:0.35rem; vertical-align:middle;">
                         {% for t in asset_tags %}
-                        <span class="asset-tag-chip" data-tag-id="{{ t.id }}" title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag('{{ t.id }}')" style="background:{{ t.color }}; color:#fff; font-size:0.72rem; padding:0.05rem 0.45rem; border-radius:999px; cursor:pointer; line-height:1.4;">{{ t.name }}</span>
+                        {% set _tc = t.color | contrast_text_color %}
+                        <span class="asset-tag-chip" data-tag-id="{{ t.id }}" style="background:{{ t.color }}; color:{{ _tc }}; font-size:0.72rem; padding:0.05rem 0.1rem 0.05rem 0.45rem; border-radius:999px; line-height:1.4; display:inline-flex; align-items:center; gap:0.15rem;">
+                            <span title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag('{{ t.id }}')" style="cursor:pointer;">{{ t.name }}</span>
+                            {% if 'assets:write' in user_perms %}
+                            <button type="button" title="Remove tag" onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.removeTagFromAsset('{{ a.id }}', '{{ t.id }}')" style="background:rgba(0,0,0,0.25); color:{{ _tc }}; border:none; border-radius:50%; width:1rem; height:1rem; font-size:0.7rem; line-height:1; padding:0; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">&times;</button>
+                            {% endif %}
+                        </span>
                         {% endfor %}
                     </span>
+                    {% endif %}
+                    {% if 'assets:write' in user_perms %}
+                    <button type="button" class="asset-add-tag-btn" data-asset-id="{{ a.id }}"
+                            onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.openRowAddTagPicker('{{ a.id }}', event)"
+                            title="Add tag"
+                            style="margin-left:0.35rem; background:transparent; color:var(--text-muted, #999); border:1px dashed rgba(255,255,255,0.25); font-size:0.7rem; padding:0.02rem 0.4rem; border-radius:999px; cursor:pointer; line-height:1.4; vertical-align:middle;">+ tag</button>
                     {% endif %}
                     {% if a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
                     <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>
