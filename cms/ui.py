@@ -1642,6 +1642,10 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
             .where(SlideshowSlide.slideshow_asset_id == asset_id)
             .order_by(SlideshowSlide.position.asc())
         )).all()
+        from cms.routers.assets import _thumbnail_urls_for
+        src_thumb_map = await _thumbnail_urls_for(
+            [src.id for _, src in slide_rows], db
+        )
         slides = []
         for slide, src in slide_rows:
             slides.append({
@@ -1655,6 +1659,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                 "source_filename": src.display_name or src.original_filename or src.filename,
                 "source_asset_type": src.asset_type.value,
                 "source_duration_seconds": src.duration_seconds,
+                "thumbnail_url": src_thumb_map.get(src.id),
             })
         asset_group_rows = (await db.execute(
             select(GroupAsset.group_id).where(GroupAsset.asset_id == asset_id)

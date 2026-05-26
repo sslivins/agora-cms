@@ -529,6 +529,14 @@ function fmtDur(s) {
 }
 
 function thumbHtml(asset) {
+    // Prefer the dedicated thumbnail-variant URL (small JPEG, baked once).
+    // Fall back to the full-res preview only when the thumbnail variant
+    // isn't ready yet -- otherwise we'd be downloading the full asset
+    // just to render a tile.
+    const thumb = asset.thumbnail_url;
+    if (thumb) {
+        return `<img class="ssb-lib-thumb" src="${thumb}" alt="" loading="lazy">`;
+    }
     const url = `/api/assets/${asset.id}/preview`;
     if (asset.asset_type === 'image') {
         return `<img class="ssb-lib-thumb" src="${url}" alt="" loading="lazy">`;
@@ -616,10 +624,18 @@ function makeSlot(s, i) {
     slot.dataset.slotIndex = String(i);
 
     const isVideo = s.source_asset_type === 'video';
-    const previewUrl = `/api/assets/${s.source_asset_id}/preview`;
-    const thumb = isVideo
-        ? `<video class="ssb-slot-thumb" src="${previewUrl}" preload="metadata" muted playsinline></video>`
-        : `<img class="ssb-slot-thumb" src="${previewUrl}" alt="" loading="lazy">`;
+    // Prefer the small thumbnail-variant if available; only fall back to
+    // the full-res preview while a fresh upload's thumbnail is still
+    // transcoding.
+    let thumb;
+    if (s.thumbnail_url) {
+        thumb = `<img class="ssb-slot-thumb" src="${s.thumbnail_url}" alt="" loading="lazy">`;
+    } else {
+        const previewUrl = `/api/assets/${s.source_asset_id}/preview`;
+        thumb = isVideo
+            ? `<video class="ssb-slot-thumb" src="${previewUrl}" preload="metadata" muted playsinline></video>`
+            : `<img class="ssb-slot-thumb" src="${previewUrl}" alt="" loading="lazy">`;
+    }
     const effectiveSec = s.play_to_end && isVideo && s.source_duration_seconds
         ? s.source_duration_seconds
         : (s.duration_ms / 1000);
@@ -879,6 +895,7 @@ function addSlideFromAsset(assetId, atIndex) {
         source_filename: a.display_name || a.original_filename || a.filename,
         source_asset_type: a.asset_type,
         source_duration_seconds: a.duration_seconds,
+        thumbnail_url: a.thumbnail_url || null,
     };
     const idx = Math.max(0, Math.min(atIndex, slides.length));
     slides.splice(idx, 0, slide);

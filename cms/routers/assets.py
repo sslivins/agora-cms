@@ -1667,6 +1667,8 @@ async def list_slideshow_slides(
         )
     ).all()
 
+    src_thumb_map = await _thumbnail_urls_for([src.id for _, src in rows], db)
+
     slides_out = []
     for slide, src in rows:
         slides_out.append(
@@ -1681,6 +1683,7 @@ async def list_slideshow_slides(
                 "source_filename": src.filename,
                 "source_asset_type": src.asset_type.value,
                 "source_duration_seconds": src.duration_seconds,
+                "thumbnail_url": src_thumb_map.get(src.id),
             }
         )
     payload: dict = {"slideshow_id": str(asset_id), "slides": slides_out}

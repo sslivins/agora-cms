@@ -174,4 +174,5 @@ class SlideOut(BaseModel):
     source_filename: str
     source_asset_type: AssetType
     source_duration_seconds: Optional[float] = None
+    thumbnail_url: Optional[str] = None
 
