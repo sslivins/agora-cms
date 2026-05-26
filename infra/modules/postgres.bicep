@@ -68,6 +68,15 @@ resource sslConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@202
 // on /healthz for ~50 min) was exactly this: the parameter was unset, so
 // init_db()'s alembic upgrade hung the container at "Running upgrade 0029
 // -> 0030" without surfacing the error before Azure SIGKILL'd it.
+//
+// dependsOn sslConfig is load-bearing: Azure Postgres Flexible Server
+// serialises all `configurations` writes on the server, and Bicep would
+// otherwise dispatch the two sibling configuration resources in parallel.
+// When that happens the loser fails with `ServerIsBusy` ("Cannot complete
+// operation while server '<name>' is busy processing another operation"),
+// which has tripped both first-bootstrap and routine redeploys on the
+// Goodwill dev B1ms SKU. The explicit chain forces sequential apply so
+// the race cannot occur on any SKU.
 resource extensionsConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
   parent: postgresServer
   name: 'azure.extensions'
@@ -75,6 +84,9 @@ resource extensionsConfig 'Microsoft.DBforPostgreSQL/flexibleServers/configurati
     value: 'pg_trgm'
     source: 'user-override'
   }
+  dependsOn: [
+    sslConfig
+  ]
 }
 
 // max_connections is intentionally left at the B1ms default (50). The
