@@ -1531,8 +1531,20 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
             )).all()
             uploader_map = {str(u.id): u.username or u.email for u in uploaders}
 
-    from cms.routers.assets import _thumbnail_urls_for
+    from cms.routers.assets import _thumbnail_urls_for, _tags_for
     thumbnail_url_map = await _thumbnail_urls_for([a.id for a in assets], db)
+    tags_by_asset = await _tags_for([a.id for a in assets], db)
+    # Stringify ids for direct template use (Jinja dict keys default to str).
+    tags_map = {str(aid): [t.model_dump(mode="json") for t in tlist]
+                for aid, tlist in tags_by_asset.items()}
+
+    # Full tag catalog for filter / bulk / manager dropdowns.
+    from cms.models.tag import Tag
+    all_tags_q = await db.execute(select(Tag).order_by(Tag.name))
+    all_tags = [
+        {"id": str(t.id), "name": t.name, "color": t.color}
+        for t in all_tags_q.scalars().all()
+    ]
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
@@ -1543,6 +1555,8 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         "uploader_map": uploader_map,
         "current_user_id": user.id if user else None,
         "thumbnail_url_map": thumbnail_url_map,
+        "tags_map": tags_map,
+        "all_tags": all_tags,
     })
 
 

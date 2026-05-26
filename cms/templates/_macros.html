@@ -127,11 +127,12 @@
   /api/assets/{id}/row fragment endpoint so both paths emit identical markup
   — see issue #87.
 #}
-{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None, thumbnail_url_map={}) -%}
+{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None, thumbnail_url_map={}, tags_map={}) -%}
             {% set is_owner = (current_user_id and a.uploaded_by_user_id == current_user_id) or is_admin %}
             {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
             {% set thumb_url = thumbnail_url_map.get(a.id, '') %}
-            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}" data-thumbnail-url="{{ thumb_url }}">
+            {% set asset_tags = tags_map.get(a.id | string, []) %}
+            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}" data-thumbnail-url="{{ thumb_url }}" data-tags="{{ asset_tags | tojson | forceescape }}">
                 <td class="expand-toggle" style="white-space:nowrap;">
                     {% if 'assets:write' in user_perms %}
                     <input type="checkbox" class="bulk-select-row" data-asset-id="{{ a.id }}" onclick="event.stopPropagation()" style="margin-right:0.25rem; vertical-align:middle;">
@@ -145,6 +146,13 @@
                     </span>
                     {% if shared_badge %}
                     <span class="has-tooltip" style="margin-left:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
+                    {% endif %}
+                    {% if asset_tags %}
+                    <span class="asset-tag-chips" data-asset-id="{{ a.id }}" style="display:inline-flex; flex-wrap:wrap; gap:0.25rem; margin-left:0.35rem; vertical-align:middle;">
+                        {% for t in asset_tags %}
+                        <span class="asset-tag-chip" data-tag-id="{{ t.id }}" title="Filter by tag: {{ t.name }}" onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag('{{ t.id }}')" style="background:{{ t.color }}; color:#fff; font-size:0.72rem; padding:0.05rem 0.45rem; border-radius:999px; cursor:pointer; line-height:1.4;">{{ t.name }}</span>
+                        {% endfor %}
+                    </span>
                     {% endif %}
                     {% if a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
                     <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>

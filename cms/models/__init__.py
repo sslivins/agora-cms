@@ -20,6 +20,7 @@ from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent  # noqa: F401
 from cms.models.schedule_missed_event import ScheduleMissedEvent  # noqa: F401
 from cms.models.setting import CMSSetting  # noqa: F401
 from cms.models.slideshow_slide import SlideshowSlide  # noqa: F401
+from cms.models.tag import Tag, AssetTag, DEFAULT_TAG_COLOR  # noqa: F401
 from cms.models.user import Role, User, UserGroup  # noqa: F401
 
 # ── CMS-only relationships ──
@@ -30,3 +31,12 @@ Asset.schedules = relationship("Schedule", back_populates="asset")
 DeviceAsset.device = relationship("Device", back_populates="device_assets")
 DeviceProfile.devices = relationship("Device", back_populates="profile")
 GroupAsset.group = relationship("DeviceGroup")
+
+# Tags are CMS-only metadata on assets.  Defined here so the Asset model
+# (which lives in shared/) doesn't need to know about Tag.
+Asset.tags = relationship(
+    "Tag",
+    secondary="asset_tags",
+    order_by="Tag.name",
+    lazy="selectin",
+)

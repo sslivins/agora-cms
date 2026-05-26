@@ -25,6 +25,7 @@ from cms.models.device_profile import DeviceProfile
 from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
 from cms.models.slideshow_slide import SlideshowSlide
+from cms.models.tag import AssetTag, Tag
 from cms.models.user import User
 from cms.schemas.asset import (
     AssetBulkFailure,
@@ -37,6 +38,7 @@ from cms.schemas.asset import (
     MAX_SLIDESHOW_SLIDES,
     SlideIn,
 )
+from cms.schemas.tag import TagOut
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.storage import get_storage
 
@@ -373,7 +375,8 @@ async def list_assets(
     result = await db.execute(q)
     assets = list(result.scalars().all())
     thumbs = await _thumbnail_urls_for([a.id for a in assets], db)
-    return [_asset_out_with_thumb(a, thumbs) for a in assets]
+    tags = await _tags_for([a.id for a in assets], db)
+    return [_asset_out_with_thumb(a, thumbs, tags) for a in assets]
 
 
 # ── Paginated / filtered listing for the asset library UI ──
@@ -485,11 +488,37 @@ async def _thumbnail_urls_for(
 
 
 def _asset_out_with_thumb(
-    asset: Asset, thumbs: dict[uuid.UUID, str]
+    asset: Asset, thumbs: dict[uuid.UUID, str],
+    tags: dict[uuid.UUID, list[TagOut]] | None = None,
 ) -> AssetOut:
     out = AssetOut.model_validate(asset)
     if asset.id in thumbs:
         out.thumbnail_url = thumbs[asset.id]
+    if tags is not None and asset.id in tags:
+        out.tags = tags[asset.id]
+    return out
+
+
+async def _tags_for(
+    asset_ids: list[uuid.UUID], db: AsyncSession
+) -> dict[uuid.UUID, list[TagOut]]:
+    """Return ``{asset_id: [TagOut, ...]}`` in a single round-trip.
+
+    Avoids the N+1 trap that a naive ``Asset.tags`` access on each row
+    would otherwise produce when serialising a 50-item page.  Tags are
+    ordered by name for stable rendering.
+    """
+    if not asset_ids:
+        return {}
+    rows = (await db.execute(
+        select(AssetTag.asset_id, Tag.id, Tag.name, Tag.color)
+        .join(Tag, Tag.id == AssetTag.tag_id)
+        .where(AssetTag.asset_id.in_(asset_ids))
+        .order_by(Tag.name)
+    )).all()
+    out: dict[uuid.UUID, list[TagOut]] = {}
+    for aid, tid, name, color in rows:
+        out.setdefault(aid, []).append(TagOut(id=tid, name=name, color=color))
     return out
 
 
@@ -501,6 +530,7 @@ async def list_assets_paged(
     type: list[str] = Query(default_factory=list, alias="type"),
     group_id: list[uuid.UUID] = Query(default_factory=list, alias="group_id"),
     uploader_id: list[uuid.UUID] = Query(default_factory=list, alias="uploader_id"),
+    tag_id: list[uuid.UUID] = Query(default_factory=list, alias="tag_id"),
     uploaded_after: datetime | None = Query(None),
     uploaded_before: datetime | None = Query(None),
     order: str = Query("-uploaded_at"),
@@ -581,6 +611,22 @@ async def list_assets_paged(
             )
         )
 
+    if tag_id:
+        # AND-semantics across multiple tags: asset must have ALL of the
+        # selected tags.  Implemented as a grouped subquery so we don't
+        # need a JOIN+HAVING on the outer select (which would force the
+        # cursor logic to do a DISTINCT and break the deterministic
+        # ordering).
+        n_tags = len(set(tag_id))
+        filter_clauses.append(
+            Asset.id.in_(
+                select(AssetTag.asset_id)
+                .where(AssetTag.tag_id.in_(tag_id))
+                .group_by(AssetTag.asset_id)
+                .having(func.count(func.distinct(AssetTag.tag_id)) == n_tags)
+            )
+        )
+
     stmt = select(Asset).where(*filter_clauses)
 
     # ── Cursor (encodes the order key value and the last id seen) ──
@@ -622,6 +668,7 @@ async def list_assets_paged(
 
     items = [row[0] for row in rows]
     thumbs = await _thumbnail_urls_for([a.id for a in items], db)
+    tags = await _tags_for([a.id for a in items], db)
 
     # ── Total estimate: count all rows matching the filters, ignoring
     #    the cursor. We only need this once per filter context but cost
@@ -644,7 +691,7 @@ async def list_assets_paged(
         next_cursor = _encode_cursor(last_value, last.id)
 
     return AssetPageOut(
-        items=[_asset_out_with_thumb(a, thumbs) for a in items],
+        items=[_asset_out_with_thumb(a, thumbs, tags) for a in items],
         next_cursor=next_cursor,
         total_estimate=total_estimate,
     )
@@ -676,6 +723,19 @@ async def bulk_assets(
             status_code=400,
             detail=f"group_id is required for action={payload.action!r}",
         )
+    if payload.action in ("add_tag", "remove_tag"):
+        if payload.tag_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"tag_id is required for action={payload.action!r}",
+            )
+        # Resolve the tag once up-front -- a missing tag is a request
+        # error (400), not a per-asset failure.
+        tag_row = (
+            await db.execute(select(Tag).where(Tag.id == payload.tag_id))
+        ).scalar_one_or_none()
+        if tag_row is None:
+            raise HTTPException(status_code=404, detail="Tag not found")
     if payload.action == "set_global":
         if payload.is_global is None:
             raise HTTPException(
@@ -738,6 +798,51 @@ async def bulk_assets(
                     await toggle_asset_global(
                         asset_id=aid, request=request, db=db
                     )
+            elif payload.action == "add_tag":
+                # Per-asset ACL check first (mirrors add_group posture).
+                exists = (await db.execute(
+                    select(Asset.id).where(Asset.id == aid, Asset.deleted_at.is_(None))
+                )).scalar_one_or_none()
+                if exists is None:
+                    raise HTTPException(status_code=404, detail="Asset not found")
+                await _verify_asset_access(aid, request, db)
+                # Idempotent: skip if the (asset, tag) link already exists.
+                existing = (await db.execute(
+                    select(AssetTag.id).where(
+                        AssetTag.asset_id == aid, AssetTag.tag_id == payload.tag_id
+                    )
+                )).scalar_one_or_none()
+                if existing is None:
+                    db.add(AssetTag(asset_id=aid, tag_id=payload.tag_id))
+                    await audit_log(
+                        db, user=user, action="asset.tag.add", resource_type="asset",
+                        resource_id=str(aid),
+                        description=f"Tagged asset with '{tag_row.name}'",
+                        details={"tag_id": str(payload.tag_id), "tag_name": tag_row.name},
+                        request=request,
+                    )
+                    await db.commit()
+            elif payload.action == "remove_tag":
+                exists = (await db.execute(
+                    select(Asset.id).where(Asset.id == aid, Asset.deleted_at.is_(None))
+                )).scalar_one_or_none()
+                if exists is None:
+                    raise HTTPException(status_code=404, detail="Asset not found")
+                await _verify_asset_access(aid, request, db)
+                deleted = (await db.execute(
+                    delete(AssetTag).where(
+                        AssetTag.asset_id == aid, AssetTag.tag_id == payload.tag_id
+                    )
+                )).rowcount
+                if deleted:
+                    await audit_log(
+                        db, user=user, action="asset.tag.remove", resource_type="asset",
+                        resource_id=str(aid),
+                        description=f"Removed tag '{tag_row.name}' from asset",
+                        details={"tag_id": str(payload.tag_id), "tag_name": tag_row.name},
+                        request=request,
+                    )
+                    await db.commit()
             succeeded.append(aid)
         except HTTPException as exc:
             # Roll back any partial work the failed handler did so the
@@ -1898,6 +2003,9 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
 
     macros = templates.env.get_template("_macros.html").module
     thumbnail_url_map = await _thumbnail_urls_for([asset.id], db)
+    tags_for = await _tags_for([asset.id], db)
+    tags_map = {str(aid): [t.model_dump(mode="json") for t in tlist]
+                for aid, tlist in tags_for.items()}
     html = macros.asset_row(
         asset,
         user_perms,
@@ -1907,6 +2015,7 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
         uploader_map,
         user.id if user else None,
         thumbnail_url_map,
+        tags_map,
     )
     return HTMLResponse(str(html))
 
@@ -1919,7 +2028,8 @@ async def get_asset(asset_id: uuid.UUID, request: Request, db: AsyncSession = De
         raise HTTPException(status_code=404, detail="Asset not found")
     await _verify_asset_access(asset_id, request, db)
     thumbs = await _thumbnail_urls_for([asset.id], db)
-    return _asset_out_with_thumb(asset, thumbs)
+    tags = await _tags_for([asset.id], db)
+    return _asset_out_with_thumb(asset, thumbs, tags)
 
 
 @device_router.get("/{asset_id}/download")

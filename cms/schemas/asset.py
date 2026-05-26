@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from cms.models.asset import AssetType, VariantStatus
+from cms.schemas.tag import TagOut
 
 
 # Maximum number of slides allowed per slideshow.  Mirrored in the API
@@ -76,6 +77,7 @@ class AssetOut(BaseModel):
     url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     capture_duration: Optional[int] = None
+    tags: list[TagOut] = Field(default_factory=list)
 
 
 class AssetPageOut(BaseModel):
@@ -90,7 +92,7 @@ class AssetPageOut(BaseModel):
     total_estimate: int
 
 
-BULK_ACTIONS = ("delete", "add_group", "remove_group", "set_global")
+BULK_ACTIONS = ("delete", "add_group", "remove_group", "set_global", "add_tag", "remove_tag")
 
 
 class AssetBulkIn(BaseModel):
@@ -99,6 +101,7 @@ class AssetBulkIn(BaseModel):
     asset_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=500)
     action: str
     group_id: Optional[uuid.UUID] = None
+    tag_id: Optional[uuid.UUID] = None
     is_global: Optional[bool] = None
 
     @field_validator("action")

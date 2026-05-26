@@ -213,6 +213,19 @@
             <option value="30">Past 30 days</option>
             <option value="90">Past 90 days</option>
         </select>
+        {% if all_tags | length > 0 %}
+        <select id="filter-tag" style="min-width:140px;" title="Filter by tag">
+            <option value="">All tags</option>
+            {% for t in all_tags %}
+            <option value="{{ t.id }}">{{ t.name }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        {% if is_admin %}
+        <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
+                onclick="event.stopPropagation(); document.getElementById('tag-manager-popup').showPopover()"
+                title="Manage tags">🏷 Manage tags</button>
+        {% endif %}
         <button type="button" class="btn btn-secondary btn-sm" id="filter-clear-btn"
                 onclick="window._assetLibrary && window._assetLibrary.clearFilters()"
                 style="display:none;">Clear filters</button>
@@ -253,6 +266,32 @@
             </div>
         </span>
         {% endif %}
+        {% if all_tags | length > 0 %}
+        <span class="bulk-tag-picker" style="position:relative; display:inline-block;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="event.stopPropagation(); document.getElementById('bulk-add-tag-popup').showPopover()">🏷 Add tag</button>
+            <div id="bulk-add-tag-popup" popover class="group-popup">
+                {% for t in all_tags %}
+                <button type="button" class="group-popup-item"
+                        onclick="window._assetLibrary && window._assetLibrary.bulkAddTag('{{ t.id }}', {{ t.name | tojson | forceescape }})">
+                    <span style="display:inline-block; width:0.7rem; height:0.7rem; background:{{ t.color }}; border-radius:50%; margin-right:0.4rem; vertical-align:middle;"></span>{{ t.name }}
+                </button>
+                {% endfor %}
+            </div>
+        </span>
+        <span class="bulk-tag-picker" style="position:relative; display:inline-block;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="event.stopPropagation(); document.getElementById('bulk-remove-tag-popup').showPopover()">− Remove tag</button>
+            <div id="bulk-remove-tag-popup" popover class="group-popup">
+                {% for t in all_tags %}
+                <button type="button" class="group-popup-item"
+                        onclick="window._assetLibrary && window._assetLibrary.bulkRemoveTag('{{ t.id }}', {{ t.name | tojson | forceescape }})">
+                    <span style="display:inline-block; width:0.7rem; height:0.7rem; background:{{ t.color }}; border-radius:50%; margin-right:0.4rem; vertical-align:middle;"></span>{{ t.name }}
+                </button>
+                {% endfor %}
+            </div>
+        </span>
+        {% endif %}
         {% if is_admin %}
         <button type="button" class="btn btn-secondary btn-sm"
                 onclick="window._assetLibrary && window._assetLibrary.bulkSetGlobal(true)">⭐ Make global</button>
@@ -261,6 +300,27 @@
         {% endif %}
         <button type="button" class="btn btn-danger btn-sm"
                 onclick="window._assetLibrary && window._assetLibrary.bulkDelete()">🗑 Delete</button>
+    </div>
+    {% endif %}
+
+    {# ── Tag manager modal (admin-only) ── #}
+    {% if is_admin %}
+    <div id="tag-manager-popup" popover style="min-width:360px; max-width:520px; padding:1rem; border-radius:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+            <strong style="font-size:1.05rem;">Manage tags</strong>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('tag-manager-popup').hidePopover()">Close</button>
+        </div>
+        <div id="tag-manager-list" style="max-height:320px; overflow-y:auto; margin-bottom:0.75rem;">
+            <!-- populated by JS -->
+        </div>
+        <div style="display:flex; gap:0.4rem; align-items:center; border-top:1px solid rgba(255,255,255,0.08); padding-top:0.6rem;">
+            <input type="text" id="new-tag-name" placeholder="New tag name" maxlength="64"
+                   style="flex:1 1 auto;">
+            <input type="color" id="new-tag-color" value="#737373" title="Color"
+                   style="width:2.4rem; height:2rem; padding:0; border:none; background:transparent;">
+            <button type="button" class="btn btn-primary btn-sm"
+                    onclick="window._assetLibrary && window._assetLibrary.createTagFromManager()">Add</button>
+        </div>
     </div>
     {% endif %}
 
@@ -287,7 +347,7 @@
         </thead>
         <tbody id="assets-tbody">
             {% for a in assets %}
-            {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id, thumbnail_url_map) }}
+            {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id, thumbnail_url_map, tags_map) }}
             {% else %}
             <tr id="assets-empty-row"><td colspan="9" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
@@ -932,6 +992,7 @@ function fallbackCopy(text, onSuccess) {
         type: urlParams.get('type') || '',
         group_id: urlParams.get('group_id') || '',
         uploader_id: urlParams.get('uploader_id') || '',
+        tag_id: urlParams.get('tag_id') || '',
         date_days: urlParams.get('date_days') || '',  // 1/7/30/90 preset
         order: urlParams.get('order') || '-uploaded_at',
         cursor: null,
@@ -950,14 +1011,16 @@ function fallbackCopy(text, onSuccess) {
     const groupSelect = document.getElementById('filter-group');
     const uploaderSelect = document.getElementById('filter-uploader');
     const dateSelect = document.getElementById('filter-date');
+    const tagSelect = document.getElementById('filter-tag');
     if (qInput) qInput.value = state.q;
     if (typeSelect) typeSelect.value = state.type;
     if (groupSelect) groupSelect.value = state.group_id;
     if (uploaderSelect) uploaderSelect.value = state.uploader_id;
     if (dateSelect) dateSelect.value = state.date_days;
+    if (tagSelect) tagSelect.value = state.tag_id;
 
     function _isAnyFilterActive() {
-        return !!(state.q || state.type || state.group_id || state.uploader_id || state.date_days);
+        return !!(state.q || state.type || state.group_id || state.uploader_id || state.tag_id || state.date_days);
     }
 
     function _syncUrl() {
@@ -966,6 +1029,7 @@ function fallbackCopy(text, onSuccess) {
         if (state.type) p.set('type', state.type);
         if (state.group_id) p.set('group_id', state.group_id);
         if (state.uploader_id) p.set('uploader_id', state.uploader_id);
+        if (state.tag_id) p.set('tag_id', state.tag_id);
         if (state.date_days) p.set('date_days', state.date_days);
         if (state.order && state.order !== '-uploaded_at') p.set('order', state.order);
         const qs = p.toString();
@@ -981,6 +1045,7 @@ function fallbackCopy(text, onSuccess) {
         if (state.type) p.append('type', state.type);
         if (state.group_id) p.append('group_id', state.group_id);
         if (state.uploader_id) p.append('uploader_id', state.uploader_id);
+        if (state.tag_id) p.append('tag_id', state.tag_id);
         if (state.date_days) {
             const since = new Date(Date.now() - parseInt(state.date_days, 10) * 86400 * 1000);
             p.set('uploaded_after', since.toISOString());
@@ -1096,6 +1161,17 @@ function fallbackCopy(text, onSuccess) {
         card.setAttribute('data-grid-card', a.id);
         card.style.cssText = 'border:1px solid var(--border, #444); border-radius:6px; overflow:hidden; background:var(--bg-card, #1a1a1a); position:relative;';
         const name = a.display_name || a.original_filename || a.filename;
+        const tags = Array.isArray(a.tags) ? a.tags : [];
+        const tagChipsHtml = tags.length
+            ? '<div class="asset-grid-tags" style="margin-top:0.25rem; display:flex; flex-wrap:wrap; gap:0.2rem;">' +
+                tags.map(t =>
+                    '<span class="tag-chip" data-tag-id="' + _escHtml(t.id) + '" ' +
+                    'onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.filterByTag(\'' + _escHtml(t.id) + '\')" ' +
+                    'style="font-size:0.65rem; padding:0.05rem 0.4rem; border-radius:999px; background:' + _escHtml(t.color || '#737373') + '; color:#fff; cursor:pointer;" ' +
+                    'title="Filter by ' + _escHtml(t.name) + '">' + _escHtml(t.name) + '</span>'
+                ).join('') +
+              '</div>'
+            : '';
         // Prefer the dedicated thumbnail variant. If it hasn't been
         // generated yet (fresh upload, mid-transcode, or asset_type with
         // no thumbnail support), show a type icon placeholder. The
@@ -1115,6 +1191,7 @@ function fallbackCopy(text, onSuccess) {
             '</div>' +
             '<div style="padding:0.5rem;">' +
                 '<div class="asset-grid-name" title="' + _escHtml(name) + '" style="font-size:0.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + _escHtml(name) + '</div>' +
+                tagChipsHtml +
                 '<div class="text-muted" style="font-size:0.75rem; display:flex; justify-content:space-between; gap:0.5rem; margin-top:0.25rem;">' +
                     '<span>' + _typeIcon(a.asset_type) + ' ' + a.asset_type + '</span>' +
                     '<span>' + _formatSize(a.size_bytes) + '</span>' +
@@ -1173,6 +1250,9 @@ function fallbackCopy(text, onSuccess) {
     });
     if (dateSelect) dateSelect.addEventListener('change', () => {
         state.date_days = dateSelect.value; _onFilterChange();
+    });
+    if (tagSelect) tagSelect.addEventListener('change', () => {
+        state.tag_id = tagSelect.value; _onFilterChange();
     });
 
     // ── Sortable headers ──
@@ -1314,11 +1394,13 @@ function fallbackCopy(text, onSuccess) {
         state.type = '';
         state.group_id = '';
         state.uploader_id = '';
+        state.tag_id = '';
         state.date_days = '';
         if (qInput) qInput.value = '';
         if (typeSelect) typeSelect.value = '';
         if (groupSelect) groupSelect.value = '';
         if (uploaderSelect) uploaderSelect.value = '';
+        if (tagSelect) tagSelect.value = '';
         if (dateSelect) dateSelect.value = '';
         _onFilterChange();
     }
@@ -1352,6 +1434,10 @@ function fallbackCopy(text, onSuccess) {
         // Pull what we have from the DOM (the table rows have all the
         // attributes we need for grid card rendering).
         tbody.querySelectorAll('tr.asset-row').forEach(row => {
+            let parsedTags = [];
+            try {
+                if (row.dataset.tags) parsedTags = JSON.parse(row.dataset.tags);
+            } catch (e) { parsedTags = []; }
             const a = {
                 id: row.dataset.assetId,
                 asset_type: row.dataset.assetType,
@@ -1361,6 +1447,7 @@ function fallbackCopy(text, onSuccess) {
                 display_name: (row.querySelector('.asset-filename-truncate') || {}).textContent || '',
                 original_filename: '',
                 filename: '',
+                tags: parsedTags,
             };
             grid.appendChild(_renderGridCard(a));
         });
@@ -1420,7 +1507,126 @@ function fallbackCopy(text, onSuccess) {
         bulkAddGroup: (groupId) => _runBulk('add_group', { group_id: groupId }),
         bulkRemoveGroup: (groupId) => _runBulk('remove_group', { group_id: groupId }),
         bulkSetGlobal: (val) => _runBulk('set_global', { is_global: val }),
+        bulkAddTag: (tagId, tagName) => {
+            const pop = document.getElementById('bulk-add-tag-popup');
+            if (pop && pop.hidePopover) try { pop.hidePopover(); } catch (e) {}
+            _runBulk('add_tag', { tag_id: tagId });
+        },
+        bulkRemoveTag: (tagId, tagName) => {
+            const pop = document.getElementById('bulk-remove-tag-popup');
+            if (pop && pop.hidePopover) try { pop.hidePopover(); } catch (e) {}
+            _runBulk('remove_tag', { tag_id: tagId });
+        },
+        filterByTag: (tagId) => {
+            state.tag_id = tagId || '';
+            if (tagSelect) tagSelect.value = state.tag_id;
+            _onFilterChange();
+        },
+        createTagFromManager: async () => {
+            const nameEl = document.getElementById('new-tag-name');
+            const colorEl = document.getElementById('new-tag-color');
+            if (!nameEl) return;
+            const name = (nameEl.value || '').trim();
+            if (!name) return;
+            const color = (colorEl && colorEl.value) || '#737373';
+            try {
+                const resp = await fetch('/api/tags', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, color }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (window.showToast) window.showToast(data.detail || 'Failed to create tag', true);
+                    return;
+                }
+                if (window.showToast) window.showToast('Tag "' + name + '" created', false);
+                nameEl.value = '';
+                await _refreshTagManager();
+                // Page reload picks up the new tag in dropdowns.
+                setTimeout(() => window.location.reload(), 400);
+            } catch (e) {
+                if (window.showToast) window.showToast('Tag create error: ' + e.message, true);
+            }
+        },
+        renameTag: async (tagId, currentName) => {
+            const name = window.prompt('Rename tag:', currentName || '');
+            if (name === null) return;
+            const newName = name.trim();
+            if (!newName || newName === currentName) return;
+            const resp = await fetch('/api/tags/' + tagId, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                if (window.showToast) window.showToast(data.detail || 'Rename failed', true);
+                return;
+            }
+            await _refreshTagManager();
+            setTimeout(() => window.location.reload(), 400);
+        },
+        recolorTag: async (tagId, color) => {
+            const resp = await fetch('/api/tags/' + tagId, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ color }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                if (window.showToast) window.showToast(data.detail || 'Recolor failed', true);
+                return;
+            }
+            await _refreshTagManager();
+        },
+        deleteTag: async (tagId, tagName, assetCount) => {
+            const msg = 'Delete tag "' + tagName + '"?' +
+                (assetCount ? ' It is applied to ' + assetCount + ' asset(s); those associations will be removed.' : '');
+            const ok = await showConfirm(msg);
+            if (!ok) return;
+            const resp = await fetch('/api/tags/' + tagId, { method: 'DELETE' });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                if (window.showToast) window.showToast(data.detail || 'Delete failed', true);
+                return;
+            }
+            if (window.showToast) window.showToast('Tag deleted', false);
+            await _refreshTagManager();
+            setTimeout(() => window.location.reload(), 400);
+        },
     };
+
+    async function _refreshTagManager() {
+        const list = document.getElementById('tag-manager-list');
+        if (!list) return;
+        try {
+            const resp = await fetch('/api/tags');
+            if (!resp.ok) return;
+            const tags = await resp.json();
+            if (!tags.length) {
+                list.innerHTML = '<div class="text-muted" style="padding:0.5rem; font-size:0.85rem;">No tags yet. Create one below.</div>';
+                return;
+            }
+            list.innerHTML = tags.map(t =>
+                '<div class="tag-mgr-row" style="display:flex; align-items:center; gap:0.4rem; padding:0.35rem 0.2rem; border-bottom:1px solid rgba(255,255,255,0.06);">' +
+                    '<input type="color" value="' + _escHtml(t.color) + '" title="Color" ' +
+                        'onchange="window._assetLibrary && window._assetLibrary.recolorTag(\'' + _escHtml(t.id) + '\', this.value)" ' +
+                        'style="width:1.8rem; height:1.6rem; padding:0; border:none; background:transparent; flex:0 0 auto;">' +
+                    '<span style="flex:1 1 auto; font-size:0.9rem;">' + _escHtml(t.name) + '</span>' +
+                    '<span class="text-muted" style="font-size:0.75rem;">' + (t.asset_count || 0) + '</span>' +
+                    '<button type="button" class="btn btn-secondary btn-sm" ' +
+                        'onclick="window._assetLibrary && window._assetLibrary.renameTag(\'' + _escHtml(t.id) + '\', ' + _escHtml(JSON.stringify(t.name)) + ')">Rename</button>' +
+                    '<button type="button" class="btn btn-danger btn-sm" ' +
+                        'onclick="window._assetLibrary && window._assetLibrary.deleteTag(\'' + _escHtml(t.id) + '\', ' + _escHtml(JSON.stringify(t.name)) + ', ' + (t.asset_count || 0) + ')">Delete</button>' +
+                '</div>'
+            ).join('');
+        } catch (e) { /* ignore */ }
+    }
+
+    // Lazy-load tag manager contents when the popover opens.
+    const tagMgrBtn = document.getElementById('manage-tags-btn');
+    if (tagMgrBtn) tagMgrBtn.addEventListener('click', () => { _refreshTagManager(); });
 
     // Pause polling reconciliation while a filter is active: the
     // /api/assets/status endpoint isn't filter-aware, so the original
