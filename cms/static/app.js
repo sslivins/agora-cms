@@ -23,7 +23,16 @@ function copyToClipboard(text) {
 
 // ── Modal guard for auto-refresh polling ──
 function isModalOpen() {
-    return !!document.querySelector(".modal-overlay");
+    // Some modals (e.g. tag-manager) are static elements toggled via
+    // `display: flex|none` rather than created/destroyed dynamically, so
+    // just checking for `.modal-overlay` would return true even when no
+    // modal is actually shown. Filter to overlays that are actually
+    // visible.
+    const overlays = document.querySelectorAll(".modal-overlay");
+    for (const o of overlays) {
+        if (o.offsetParent !== null) return true;
+    }
+    return false;
 }
 
 // Dismiss any open native popover (kebab menus, etc.) before opening a
