@@ -41,7 +41,14 @@ param tags object = {}
 @description('Short identifier prefix used to name alert resources (e.g. "agoracms").')
 param namePrefix string
 
+@description('Public FQDN of the CMS container app (e.g. agoragwdev-cms.<env>.azurecontainerapps.io or a custom domain). Required when useSyntheticHeartbeat=true; ignored otherwise.')
+param cmsFqdn string = ''
+
+@description('When true, deploy an Application Insights standard availability test against https://<cmsFqdn>/healthz and switch the heartbeat alert to fire on probe failures. When false (legacy), the heartbeat alert fires on absence of any AppRequests — which produces false positives on idle environments because the OTel SDK filters probe traffic before ingestion.')
+param useSyntheticHeartbeat bool = false
+
 var alertsEnabled = !empty(alertEmail)
+var syntheticHeartbeatEnabled = alertsEnabled && useSyntheticHeartbeat && !empty(cmsFqdn)
 
 // ──────────────────────────────────────────────────────────────
 // Action Group — email-only for now. Webhooks/SMS can be layered
@@ -242,13 +249,64 @@ resource alertExceptions 'Microsoft.Insights/scheduledQueryRules@2023-03-15-prev
 //    when the table is empty, which is what makes the LessThan
 //    comparison fire instead of silently returning no rows.
 // ──────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// Synthetic availability test (preferred heartbeat signal).
+//
+// AppInsights standard test pings /healthz from multiple Azure
+// regions every 5 minutes.  This is independent of in-app
+// telemetry, so it works correctly on idle environments where the
+// OTel SDK filters probe traffic and there is no user/device
+// activity.  The companion heartbeat alert below switches its
+// query to availabilityResults when this is enabled.
+// ──────────────────────────────────────────────────────────────
+resource webtestCmsHealthz 'Microsoft.Insights/webtests@2022-06-15' = if (syntheticHeartbeatEnabled) {
+  name: '${namePrefix}-webtest-cms-healthz'
+  location: location
+  tags: union(tags, {
+    'hidden-link:${appInsightsId}': 'Resource'
+  })
+  kind: 'standard'
+  properties: {
+    SyntheticMonitorId: '${namePrefix}-webtest-cms-healthz'
+    Name: 'CMS /healthz availability'
+    Description: 'External synthetic probe of /healthz from multiple Azure regions. Drives the CMS heartbeat alert.'
+    Enabled: true
+    Frequency: 300
+    Timeout: 30
+    Kind: 'standard'
+    RetryEnabled: true
+    Locations: [
+      { Id: 'us-ca-sjc-azr' }   // West US
+      { Id: 'us-tx-sn1-azr' }   // South Central US
+      { Id: 'us-va-ash-azr' }   // East US
+    ]
+    Request: {
+      RequestUrl: 'https://${cmsFqdn}/healthz'
+      HttpVerb: 'GET'
+      ParseDependentRequests: false
+    }
+    ValidationRules: {
+      ExpectedHttpStatusCode: 200
+      SSLCheck: true
+      SSLCertRemainingLifetimeCheck: 7
+      ContentValidation: {
+        ContentMatch: '"status":"ok"'
+        IgnoreCase: false
+        PassIfTextFound: true
+      }
+    }
+  }
+}
+
 resource alertHeartbeat 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = if (alertsEnabled) {
   name: '${namePrefix}-alert-cms-heartbeat'
   location: location
   tags: tags
   properties: {
-    displayName: 'CMS heartbeat (no telemetry)'
-    description: 'Triggers when the CMS emits zero AppRequests of any kind (including probes) over a 15-minute window. Probes are intentionally NOT excluded here — their absence is the canonical "the service is gone" signal.'
+    displayName: syntheticHeartbeatEnabled ? 'CMS heartbeat (synthetic probe failing)' : 'CMS heartbeat (no telemetry)'
+    description: syntheticHeartbeatEnabled
+      ? 'Fires when the AppInsights standard availability test against /healthz fails from 2+ source regions over a 15-minute window. Replaces the prior request-count heartbeat, which produced false positives on idle environments because the OTel SDK filters probe traffic before ingestion.'
+      : 'Triggers when the CMS emits zero AppRequests of any kind (including probes) over a 15-minute window. Probes are intentionally NOT excluded here — their absence is the canonical "the service is gone" signal.'
     severity: 1
     enabled: true
     evaluationFrequency: 'PT5M'
@@ -257,7 +315,19 @@ resource alertHeartbeat 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previ
       appInsightsId
     ]
     criteria: {
-      allOf: [
+      allOf: syntheticHeartbeatEnabled ? [
+        {
+          query: 'availabilityResults\n| where success == false\n| summarize FailingLocations = dcount(location)'
+          timeAggregation: 'Total'
+          metricMeasureColumn: 'FailingLocations'
+          operator: 'GreaterThanOrEqual'
+          threshold: 2
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ] : [
         {
           query: 'requests\n| count'
           timeAggregation: 'Total'

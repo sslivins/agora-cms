@@ -49,6 +49,14 @@ param cmsMemory = '1Gi'
 param workerCpu = '1.0'
 param workerMemory = '2Gi'
 
+// Use the AppInsights standard availability test against /healthz as
+// the CMS heartbeat signal instead of the legacy request-count rule.
+// Idle dev envs (no devices, no users) otherwise trip the legacy
+// rule constantly because the OTel SDK filters probe traffic before
+// ingestion.  Dev is the canary for this approach; once validated
+// here we'll flip the default for the other envs too.
+param useSyntheticHeartbeat = true
+
 // Secure params — passed via the deploy-goodwill-dev workflow, never commit values:
 // param postgresAdminPassword = '<set-via-cli>'
 // param cmsSecretKey = '<set-via-cli>'
