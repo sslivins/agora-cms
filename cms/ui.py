@@ -154,6 +154,32 @@ def schedule_json(s):
 
 templates.env.filters["schedule_json"] = schedule_json
 
+
+def contrast_text_color(bg_hex: str) -> str:
+    """Pick white or near-black text to maximize contrast on ``bg_hex``.
+
+    Uses the WCAG relative-luminance formula (sRGB → linear → Y); returns
+    ``#1a1a1a`` for light backgrounds and ``#ffffff`` for dark ones.
+    """
+    try:
+        h = (bg_hex or "").lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) != 6:
+            return "#ffffff"
+        r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+        def _lin(c: float) -> float:
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+        y = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+        return "#1a1a1a" if y > 0.5 else "#ffffff"
+    except Exception:
+        return "#ffffff"
+
+
+templates.env.filters["contrast_text_color"] = contrast_text_color
+
 # Cache-busting: use build timestamp so browsers fetch fresh static files after deploy
 import time as _time
 _static_version = str(int(_time.time()))
@@ -1531,8 +1557,20 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
             )).all()
             uploader_map = {str(u.id): u.username or u.email for u in uploaders}
 
-    from cms.routers.assets import _thumbnail_urls_for
+    from cms.routers.assets import _thumbnail_urls_for, _tags_for
     thumbnail_url_map = await _thumbnail_urls_for([a.id for a in assets], db)
+    tags_by_asset = await _tags_for([a.id for a in assets], db)
+    # Stringify ids for direct template use (Jinja dict keys default to str).
+    tags_map = {str(aid): [t.model_dump(mode="json") for t in tlist]
+                for aid, tlist in tags_by_asset.items()}
+
+    # Full tag catalog for filter / bulk / manager dropdowns.
+    from cms.models.tag import Tag
+    all_tags_q = await db.execute(select(Tag).order_by(Tag.name))
+    all_tags = [
+        {"id": str(t.id), "name": t.name, "color": t.color}
+        for t in all_tags_q.scalars().all()
+    ]
 
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
@@ -1543,6 +1581,8 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         "uploader_map": uploader_map,
         "current_user_id": user.id if user else None,
         "thumbnail_url_map": thumbnail_url_map,
+        "tags_map": tags_map,
+        "all_tags": all_tags,
     })
 
 

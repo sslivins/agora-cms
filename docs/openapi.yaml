@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Agora CMS
   description: Central management system for Agora media playback devices
-  version: 1.38.7
+  version: 1.38.19
 paths:
   /api/devices/register:
     post:
@@ -723,6 +723,15 @@ paths:
             type: string
             format: uuid
           title: Uploader Id
+      - name: tag_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+            format: uuid
+          title: Tag Id
       - name: uploaded_after
         in: query
         required: false
@@ -1461,6 +1470,97 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/tags:
+    get:
+      summary: List Tags
+      description: List all tags, with per-tag asset counts.
+      operationId: list_tags_api_tags_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/TagOut'
+                type: array
+                title: Response List Tags Api Tags Get
+    post:
+      summary: Create Tag
+      description: Create a new tag (admin only).
+      operationId: create_tag_api_tags_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagIn'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/tags/{tag_id}:
+    patch:
+      summary: Update Tag
+      description: Rename / recolor a tag (admin only).
+      operationId: update_tag_api_tags__tag_id__patch
+      parameters:
+      - name: tag_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Tag Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagPatch'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Tag
+      description: Hard-delete a tag.  Junction rows cascade.  Admin only.
+      operationId: delete_tag_api_tags__tag_id__delete
+      parameters:
+      - name: tag_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Tag Id
+      responses:
+        '204':
+          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -3558,6 +3658,12 @@ components:
             format: uuid
           - type: 'null'
           title: Group Id
+        tag_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Tag Id
         is_global:
           anyOf:
           - type: boolean
@@ -3649,6 +3755,11 @@ components:
           - type: integer
           - type: 'null'
           title: Capture Duration
+        tags:
+          items:
+            $ref: '#/components/schemas/TagOut'
+          type: array
+          title: Tags
       type: object
       required:
       - id
@@ -5428,6 +5539,70 @@ components:
         Just a fleet id -- the softplayer is the .env-file analogue of the Pi
         .img.xz build, so there's no base image, output filename, or wifi to
         plumb through.
+    TagIn:
+      properties:
+        name:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Name
+        color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color
+      type: object
+      required:
+      - name
+      title: TagIn
+      description: Request body for ``POST /api/tags``.
+    TagOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        color:
+          type: string
+          title: Color
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        asset_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Asset Count
+      type: object
+      required:
+      - id
+      - name
+      - color
+      title: TagOut
+      description: Single tag record, used both standalone and embedded in ``AssetOut``.
+    TagPatch:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Name
+        color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color
+      type: object
+      title: TagPatch
+      description: Request body for ``PATCH /api/tags/{id}``.  All fields optional.
     ToggleRequest:
       properties:
         enabled:
