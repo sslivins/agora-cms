@@ -101,6 +101,9 @@ param adminPrincipalId string
 @description('Email recipient for telemetry alerts (CMS 5xx, latency, dependency failures, exceptions). Empty disables the alerts module entirely (e.g. for dev environments where pages are noise).')
 param alertEmail string = ''
 
+@description('When true, replace the legacy request-count CMS heartbeat alert with an Application Insights standard availability test against /healthz. Recommended for low-traffic / idle-friendly environments (dev, fresh prod) where the OTel SDK filters probe traffic and the legacy alert produces false positives. Currently opt-in; will be flipped to default-true after dev validation.')
+param useSyntheticHeartbeat bool = false
+
 var tags = {
   project: 'agora-cms'
   managedBy: 'bicep'
@@ -297,6 +300,8 @@ module alerts 'modules/alerts.bicep' = {
     appInsightsName: containerApps.outputs.appInsightsName
     alertEmail: alertEmail
     tags: tags
+    cmsFqdn: containerApps.outputs.cmsAppFqdn
+    useSyntheticHeartbeat: useSyntheticHeartbeat
   }
 }
 
