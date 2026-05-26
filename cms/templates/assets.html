@@ -287,7 +287,7 @@
         </thead>
         <tbody id="assets-tbody">
             {% for a in assets %}
-            {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id) }}
+            {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id, thumbnail_url_map) }}
             {% else %}
             <tr id="assets-empty-row"><td colspan="9" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
@@ -477,6 +477,23 @@
         if (empty && empty.parentElement) empty.parentElement.remove();
         // Server renders newest-first (ORDER BY uploaded_at DESC); prepend.
         tbody.insertBefore(frag, tbody.firstChild);
+        // Mirror to the grid view so a fresh upload appears immediately
+        // there too -- without this the grid only updates on page reload.
+        const grid = document.getElementById('assets-grid');
+        const newRow = tbody.querySelector(`tr.asset-row[data-asset-id="${id}"]`);
+        if (grid && newRow && typeof window._renderGridCard === 'function') {
+            const a = {
+                id: newRow.dataset.assetId,
+                asset_type: newRow.dataset.assetType,
+                size_bytes: parseInt(newRow.dataset.sizeBytes || '0', 10),
+                is_global: newRow.dataset.isGlobal === '1',
+                thumbnail_url: newRow.dataset.thumbnailUrl || null,
+                display_name: (newRow.querySelector('.asset-filename-truncate') || {}).textContent || '',
+                original_filename: '',
+                filename: '',
+            };
+            grid.insertBefore(window._renderGridCard(a), grid.firstChild);
+        }
     }
 
     async function _replaceAssetDetailRow(id) {
@@ -717,6 +734,36 @@
             }
             // Update expanded detail panel variant table
             updateVariantTable(a.id, a.variants);
+            // Swap in the thumbnail when it finishes transcoding.  The
+            // grid card initially shows a type-icon placeholder for fresh
+            // uploads; once the thumbnail variant lands, /api/assets/status
+            // includes its URL and we update both the row data attribute
+            // (so a view toggle reads it) and any live grid card image.
+            if (a.thumbnail_url) {
+                const row = document.querySelector('tr.asset-row[data-asset-id="' + a.id + '"]');
+                if (row && row.dataset.thumbnailUrl !== a.thumbnail_url) {
+                    row.dataset.thumbnailUrl = a.thumbnail_url;
+                }
+                const card = document.querySelector('[data-grid-card="' + a.id + '"]');
+                if (card) {
+                    const thumbDiv = card.querySelector('.asset-grid-thumb');
+                    if (thumbDiv && !thumbDiv.querySelector('img')) {
+                        // Placeholder icon present -- replace with <img>.
+                        const checkbox = thumbDiv.querySelector('.bulk-select-grid');
+                        const badge = thumbDiv.querySelector('.badge');
+                        const img = document.createElement('img');
+                        img.loading = 'lazy';
+                        img.src = a.thumbnail_url;
+                        img.alt = '';
+                        img.style.cssText = 'width:100%; height:100%; object-fit:cover;';
+                        // Wipe icon text + re-insert img + preserved overlays.
+                        thumbDiv.textContent = '';
+                        thumbDiv.appendChild(img);
+                        if (checkbox) thumbDiv.appendChild(checkbox);
+                        if (badge) thumbDiv.appendChild(badge);
+                    }
+                }
+            }
         }
         // Detect saved_stream assets that just got their variants: DOM still shows
         // the "Pending" placeholder (no tbody) but server now has variants. Swap
@@ -1048,15 +1095,15 @@ function fallbackCopy(text, onSuccess) {
         card.className = 'asset-grid-card';
         card.setAttribute('data-grid-card', a.id);
         card.style.cssText = 'border:1px solid var(--border, #444); border-radius:6px; overflow:hidden; background:var(--bg-card, #1a1a1a); position:relative;';
-
         const name = a.display_name || a.original_filename || a.filename;
-        // Only fetch a preview for image assets. For video/webpage/stream
-        // assets we show the type icon instead: /api/assets/{id}/preview
-        // serves the *full* source file (no thumbnail pipeline yet — see
-        // Phase 2-a), so previewing 60 videos in grid view would casually
-        // pull gigabytes. A dedicated thumbnail profile will be added in
-        // a follow-up PR; until then, lazy-loaded image previews only.
-        const previewSrc = (a.asset_type === 'image') ? ('/api/assets/' + a.id + '/preview') : null;
+        // Prefer the dedicated thumbnail variant. If it hasn't been
+        // generated yet (fresh upload, mid-transcode, or asset_type with
+        // no thumbnail support), show a type icon placeholder. The
+        // status poller will swap in the real thumbnail when it lands.
+        // We intentionally do NOT fall back to /api/assets/{id}/preview
+        // (full-res) here -- a 2MB image per card is wasteful and there
+        // is no equivalent for video sources.
+        let previewSrc = a.thumbnail_url || null;
 
         card.innerHTML =
             '<div class="asset-grid-thumb" style="aspect-ratio:16/9; background:#0a0a0a; display:flex; align-items:center; justify-content:center; font-size:2rem; color:#666; position:relative;">' +
@@ -1310,6 +1357,7 @@ function fallbackCopy(text, onSuccess) {
                 asset_type: row.dataset.assetType,
                 size_bytes: parseInt(row.dataset.sizeBytes || '0', 10),
                 is_global: row.dataset.isGlobal === '1',
+                thumbnail_url: row.dataset.thumbnailUrl || null,
                 display_name: (row.querySelector('.asset-filename-truncate') || {}).textContent || '',
                 original_filename: '',
                 filename: '',
@@ -1348,6 +1396,11 @@ function fallbackCopy(text, onSuccess) {
     } else {
         _updateFilterSummary(tbody.querySelectorAll('tr.asset-row').length);
     }
+    // Expose for cross-IIFE callers (notably _insertAssetRow which
+    // lives in the upload/poll IIFE and needs to mirror new uploads
+    // into the grid without re-declaring this builder).
+    window._renderGridCard = _renderGridCard;
+
     _setView(state.view);
 
     // Expose API for the inline onclick handlers.

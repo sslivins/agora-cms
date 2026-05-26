@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Agora CMS
   description: Central management system for Agora media playback devices
-  version: 1.37.257
+  version: 1.38.2
 paths:
   /api/devices/register:
     post:
@@ -1470,26 +1470,49 @@ paths:
   /api/profiles:
     get:
       summary: List Profiles
+      description: |-
+        List device profiles.
+
+        By default only ``purpose='device'`` profiles are returned --
+        CMS-internal profiles (currently just the thumbnail profile that
+        backs the asset library grid view) are hidden from the profiles
+        page, the device-assignment dropdowns, and the MCP tool surface.
+        Pass ``include_internal=true`` to surface them (used by debugging
+        flows; not exposed in any UI).
       operationId: list_profiles_api_profiles_get
+      parameters:
+      - name: include_internal
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Internal
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
+                type: array
                 items:
                   $ref: '#/components/schemas/ProfileOut'
-                type: array
                 title: Response List Profiles Api Profiles Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     post:
       summary: Create Profile
       operationId: create_profile_api_profiles_post
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/ProfileCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -3616,6 +3639,11 @@ components:
           - type: string
           - type: 'null'
           title: Url
+        thumbnail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Thumbnail Url
         capture_duration:
           anyOf:
           - type: integer
@@ -4778,6 +4806,10 @@ components:
           type: boolean
           title: Enabled
           default: true
+        purpose:
+          type: string
+          title: Purpose
+          default: device
         device_count:
           type: integer
           title: Device Count

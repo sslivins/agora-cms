@@ -58,6 +58,26 @@ def _image_variant_ext(asset) -> str:
     return image_variant_ext(asset.filename)
 
 
+def _variant_ext_for(asset: Asset, profile: DeviceProfile) -> str:
+    """Pick the correct file extension for a new variant of ``asset``
+    under ``profile``.
+
+    Thumbnail-purpose profiles always emit ``.jpg`` regardless of
+    source type — the variant is a single still frame, never video.
+    Otherwise we fall back to the legacy per-asset-type rules:
+    images keep their natural extension (``.png`` for PNG sources,
+    ``.jpg`` otherwise); audio-only profiles use ``.mkv``; everything
+    else is ``.mp4``.
+    """
+    if getattr(profile, "purpose", "device") == "thumbnail":
+        return ".jpg"
+    if asset.asset_type == AssetType.IMAGE:
+        return image_variant_ext(asset.filename)
+    if profile.audio_codec == "libopus":
+        return ".mkv"
+    return ".mp4"
+
+
 def cancel_profile_transcodes(profile_id: uuid.UUID) -> bool:
     """No-op — transcoding runs in the worker container."""
     return False
@@ -202,12 +222,7 @@ async def supersede_profile_variants(
             continue
 
         variant_id = uuid.uuid4()
-        if asset.asset_type == AssetType.IMAGE:
-            ext = image_variant_ext(asset.filename)
-        elif profile.audio_codec == "libopus":
-            ext = ".mkv"
-        else:
-            ext = ".mp4"
+        ext = _variant_ext_for(asset, profile)
         db.add(
             AssetVariant(
                 id=variant_id,
@@ -308,12 +323,7 @@ async def enqueue_for_new_profile(
             continue
 
         variant_id = uuid.uuid4()
-        if asset.asset_type == AssetType.IMAGE:
-            ext = image_variant_ext(asset.filename)
-        elif profile.audio_codec == "libopus":
-            ext = ".mkv"
-        else:
-            ext = ".mp4"
+        ext = _variant_ext_for(asset, profile)
         variant = AssetVariant(
             id=variant_id,
             source_asset_id=asset.id,
@@ -393,12 +403,7 @@ async def _enqueue_transcoding_for_asset(
             continue
 
         variant_id = uuid.uuid4()
-        if asset.asset_type == AssetType.IMAGE:
-            ext = image_variant_ext(asset.filename)
-        elif profile.audio_codec == "libopus":
-            ext = ".mkv"
-        else:
-            ext = ".mp4"
+        ext = _variant_ext_for(asset, profile)
         variant = AssetVariant(
             id=variant_id,
             source_asset_id=asset.id,

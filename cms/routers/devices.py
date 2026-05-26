@@ -1275,7 +1275,11 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     from cms.services.device_alerts import device_severity_tags, fleet_counts
     from cms.ui import COMMON_TIMEZONES
 
-    profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
+    profiles_q = await db.execute(
+        select(DeviceProfile)
+        .where(DeviceProfile.purpose == "device")
+        .order_by(DeviceProfile.name)
+    )
     profiles = profiles_q.scalars().all()
     # Reuse the latest_version we read above for the per-device update_available
     # decoration — this is the same shared cross-replica value.

@@ -105,6 +105,9 @@ async def _seed_profiles(db):
 
     for name, defaults in BUILTIN_PROFILES.items():
         if name not in existing_names:
+            # ``purpose`` lives in BUILTIN_PROFILES so reset-to-defaults
+            # roundtrips correctly, but the DeviceProfile column already
+            # defaults to "device" when absent.  Pass it through if set.
             profile = DeviceProfile(name=name, builtin=True, **defaults)
             db.add(profile)
             await db.commit()

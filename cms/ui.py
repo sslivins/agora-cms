@@ -854,7 +854,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     adoption_groups = adoption_groups_q.scalars().all()
 
     adoption_profiles_q = await db.execute(
-        select(DeviceProfile).where(DeviceProfile.enabled == True).order_by(DeviceProfile.name)  # noqa: E712
+        select(DeviceProfile).where(
+            DeviceProfile.enabled == True,  # noqa: E712
+            DeviceProfile.purpose == "device",
+        ).order_by(DeviceProfile.name)
     )
     adoption_profiles = adoption_profiles_q.scalars().all()
 
@@ -1191,7 +1194,11 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     assets = assets_early
 
-    profiles_q = await db.execute(select(DeviceProfile).order_by(DeviceProfile.name))
+    profiles_q = await db.execute(
+        select(DeviceProfile)
+        .where(DeviceProfile.purpose == "device")
+        .order_by(DeviceProfile.name)
+    )
     profiles = profiles_q.scalars().all()
     # Adoption modal must only offer enabled profiles — disabled ones
     # mustn't be assignable. The full `profiles` list is still passed
@@ -1451,8 +1458,15 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         # marks the dropped rows as orphans and autoflush will then issue
         # ``UPDATE asset_variants SET source_asset_id=NULL ...`` which
         # fails the NOT NULL constraint.
+        # Drop CMS-internal (thumbnail) variants — they don't belong
+        # to the device-readiness picture shown in the Library UI.
+        device_variants = [
+            v for v in a.variants
+            if v.profile is None
+            or getattr(v.profile, "purpose", "device") == "device"
+        ]
         visible_variants = sorted(
-            collapse_to_latest(a.variants),
+            collapse_to_latest(device_variants),
             key=lambda v: (v.profile.name if v.profile else ""),
         )
         a.visible_variants = visible_variants
@@ -1517,6 +1531,9 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
             )).all()
             uploader_map = {str(u.id): u.username or u.email for u in uploaders}
 
+    from cms.routers.assets import _thumbnail_urls_for
+    thumbnail_url_map = await _thumbnail_urls_for([a.id for a in assets], db)
+
     return templates.TemplateResponse(request, "assets.html", {
         "active_tab": "assets",
         "assets": assets,
@@ -1525,6 +1542,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
         "is_admin": is_admin,
         "uploader_map": uploader_map,
         "current_user_id": user.id if user else None,
+        "thumbnail_url_map": thumbnail_url_map,
     })
 
 
@@ -1826,7 +1844,9 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
 async def profiles_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(
-        select(DeviceProfile).order_by(DeviceProfile.name)
+        select(DeviceProfile)
+        .where(DeviceProfile.purpose == "device")
+        .order_by(DeviceProfile.name)
     )
     profiles = result.scalars().all()
 
