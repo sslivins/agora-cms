@@ -406,6 +406,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-info { background: #3498db; color: #fff; }
 .badge-muted { background: #555; color: #ccc; }
 .badge-offline { background: var(--warning); color: #000; }
+.badge-usage { background: var(--primary); color: #fff; }
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
 
