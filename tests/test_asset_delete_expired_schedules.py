@@ -1,16 +1,16 @@
 """Tests for deleting assets that are referenced only by expired or
 disabled schedules (issue #177).
 
-Prior behavior: the DELETE /{asset_id} endpoint blocked the delete with a
-409 if *any* schedule referenced the asset, even if every referencing
-schedule had already expired or been disabled.
+Behavior (per Option B of the asset usage badge work):
 
-New behavior:
- - Active schedules (enabled AND (end_date is NULL OR end_date >= now))
-   still block deletion with 409.
- - Expired or disabled schedules are silently removed alongside the asset.
- - Mixed: any active schedule present → 409; once all active refs are
-   removed the asset becomes deletable.
+- Non-expired schedules (end_date is NULL OR end_date >= now), enabled
+  OR disabled, block deletion with 409. Disabling a schedule is a
+  deliberate, typically temporary action; hard-deleting the asset out
+  from under it would silently break later re-enabling.
+- Expired schedules (end_date in the past) are silently removed
+  alongside the asset.
+- Mixed: any non-expired schedule present (enabled or disabled) -> 409;
+  once all non-expired refs are removed the asset becomes deletable.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ class TestAssetDeleteWithExpiredSchedules:
 
         resp = await client.delete(f"/api/assets/{asset_id}")
         assert resp.status_code == 409
-        assert "active schedule" in resp.json()["detail"].lower()
+        assert "non-expired schedule" in resp.json()["detail"].lower()
 
     async def test_delete_blocked_by_future_schedule(self, client, db_session):
         """Schedule whose end_date is still in the future also blocks delete."""
@@ -112,8 +112,12 @@ class TestAssetDeleteWithExpiredSchedules:
         )).scalar_one_or_none()
         assert remaining is None
 
-    async def test_delete_allowed_when_only_disabled_schedules(self, client, db_session):
-        """Asset referenced only by disabled schedules is deletable."""
+    async def test_delete_blocked_by_disabled_schedule(self, client, db_session):
+        """Asset referenced only by a disabled (but not expired) schedule is
+        blocked from deletion -- disabling is a deliberate, typically
+        temporary action; we don't want re-enabling to silently break
+        because the asset was deleted in the meantime.
+        """
         from cms.models.schedule import Schedule
         from sqlalchemy import select
 
@@ -126,12 +130,13 @@ class TestAssetDeleteWithExpiredSchedules:
         await db_session.commit()
 
         resp = await client.delete(f"/api/assets/{asset_id}")
-        assert resp.status_code == 200
+        assert resp.status_code == 409
 
+        # Schedule row should still be there.
         remaining = (await db_session.execute(
             select(Schedule).where(Schedule.id == sched_id)
         )).scalar_one_or_none()
-        assert remaining is None
+        assert remaining is not None
 
     async def test_delete_blocked_by_mix_with_active_schedule(self, client, db_session):
         """Mix of expired + one active: still blocked; nothing removed."""

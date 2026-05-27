@@ -25,6 +25,7 @@
     show_uploader=False,
     show_date=True,
     show_tags=True,
+    show_usage=False,
     show_manage_tags=False,
     show_clear_button=True,
     prefix="filter",
@@ -82,6 +83,13 @@
         {% endfor %}
     </select>
     {% endif %}
+    {% if show_usage %}
+    <select id="{{ prefix }}-usage" style="min-width:130px;" title="Filter by usage">
+        <option value="">All usage</option>
+        <option value="used">Used</option>
+        <option value="unused">Unused</option>
+    </select>
+    {% endif %}
     {% if show_clear_button %}
     <button type="button" class="btn btn-secondary btn-sm" id="{{ prefix }}-clear-btn"
             {% if prefix == "filter" %}onclick="window._assetLibrary && window._assetLibrary.clearFilters()"{% endif %}
@@ -90,7 +98,7 @@
     {% if show_manage_tags and is_admin %}
     <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
             onclick="event.stopPropagation(); document.getElementById('tag-manager-modal').style.display='flex'; window._assetLibrary && window._assetLibrary.refreshTagManager && window._assetLibrary.refreshTagManager()"
-            title="Manage tags">🏷 Manage tags</button>
+            title="Manage tags">🏷️ Manage tags</button>
     {% endif %}
     <span class="text-muted" id="{{ prefix }}-summary" style="font-size:0.85rem;"></span>
 </div>

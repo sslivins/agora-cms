@@ -127,11 +127,12 @@
   /api/assets/{id}/row fragment endpoint so both paths emit identical markup
   — see issue #87.
 #}
-{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None, thumbnail_url_map={}, tags_map={}) -%}
+{% macro asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id=None, thumbnail_url_map={}, tags_map={}, usage_map={}) -%}
             {% set is_owner = (current_user_id and a.uploaded_by_user_id == current_user_id) or is_admin %}
             {% set shared_badge = ('assets:write' in user_perms) and (not is_owner) %}
             {% set thumb_url = thumbnail_url_map.get(a.id, '') %}
             {% set asset_tags = tags_map.get(a.id | string, []) %}
+            {% set asset_usage = usage_map.get(a.id | string, None) %}
             <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}" data-thumbnail-url="{{ thumb_url }}" data-tags="{{ asset_tags | tojson | forceescape }}">
                 <td class="expand-toggle" style="white-space:nowrap;">
                     {% if 'assets:write' in user_perms %}
@@ -146,6 +147,25 @@
                     </span>
                     {% if shared_badge %}
                     <span class="has-tooltip" style="margin-left:0.4rem"><span class="badge badge-processing" style="font-size:0.75rem">Shared</span><span class="tooltip">Shared with you via a group. Only the owner can delete this asset.</span></span>
+                    {% endif %}
+                    {% if asset_usage and asset_usage.total %}
+                    {% set _u_sched_names = asset_usage.schedules | map(attribute='name') | list %}
+                    {% set _u_slide_names = asset_usage.slides | map(attribute='name') | list %}
+                    {% set _u_tooltip_lines = [] %}
+                    {% if _u_sched_names %}
+                        {% set _line = 'Schedules: ' + (_u_sched_names | join(', ')) %}
+                        {% if asset_usage.extra_schedules %}{% set _line = _line + ', +' + asset_usage.extra_schedules|string + ' more' %}{% endif %}
+                        {% set _ = _u_tooltip_lines.append(_line) %}
+                    {% endif %}
+                    {% if _u_slide_names %}
+                        {% set _line = 'Slideshows: ' + (_u_slide_names | join(', ')) %}
+                        {% if asset_usage.extra_slides %}{% set _line = _line + ', +' + asset_usage.extra_slides|string + ' more' %}{% endif %}
+                        {% set _ = _u_tooltip_lines.append(_line) %}
+                    {% endif %}
+                    <span class="has-tooltip asset-usage-badge" style="margin-left:0.4rem">
+                        <span class="badge badge-pending" style="font-size:0.75rem; cursor:help;">&#128279; {{ asset_usage.total }}</span>
+                        <span class="tooltip">{{ _u_tooltip_lines | join(' \u2014 ') }}</span>
+                    </span>
                     {% endif %}
                     {% if asset_tags %}
                     <span class="asset-tag-chips" data-asset-id="{{ a.id }}" style="display:inline-flex; flex-wrap:wrap; gap:0.25rem; margin-left:0.35rem; vertical-align:middle;">

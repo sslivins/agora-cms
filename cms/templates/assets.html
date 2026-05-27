@@ -166,6 +166,11 @@
         <div class="library-toolbar" style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary btn-sm" id="assets-refresh-btn"
                     onclick="window._assetLibrary && window._assetLibrary.reload()" title="Refresh from server">↻ Refresh</button>
+            {% if is_admin %}
+            <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
+                    onclick="event.stopPropagation(); document.getElementById('tag-manager-modal').style.display='flex'; window._assetLibrary && window._assetLibrary.refreshTagManager && window._assetLibrary.refreshTagManager()"
+                    title="Manage tags">🏷️ Manage tags</button>
+            {% endif %}
             <div class="view-toggle" role="group" aria-label="View" style="display:inline-flex; border:1px solid var(--border, #444); border-radius:4px; overflow:hidden;">
                 <button type="button" class="btn btn-secondary btn-sm" id="view-toggle-table"
                         onclick="window._assetLibrary && window._assetLibrary.setView('table')"
@@ -184,7 +189,8 @@
         show_uploader=True,
         show_date=True,
         show_tags=True,
-        show_manage_tags=True,
+        show_usage=True,
+        show_manage_tags=False,
         user_groups=user_groups,
         uploader_map=uploader_map,
         all_tags=all_tags,
@@ -323,7 +329,7 @@
         </thead>
         <tbody id="assets-tbody">
             {% for a in assets %}
-            {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id, thumbnail_url_map, tags_map) }}
+            {{ macros.asset_row(a, user_perms, is_admin, group_name_map, user_groups, uploader_map, current_user_id, thumbnail_url_map, tags_map, usage_map) }}
             {% else %}
             <tr id="assets-empty-row"><td colspan="9" class="empty">No assets uploaded yet</td></tr>
             {% endfor %}
@@ -970,6 +976,7 @@ function fallbackCopy(text, onSuccess) {
         group_id: urlParams.get('group_id') || '',
         uploader_id: urlParams.get('uploader_id') || '',
         tag_id: urlParams.get('tag_id') || '',
+        usage: urlParams.get('usage') || '',
         date_days: urlParams.get('date_days') || '',  // 1/7/30/90 preset
         order: urlParams.get('order') || '-uploaded_at',
         cursor: null,
@@ -989,15 +996,17 @@ function fallbackCopy(text, onSuccess) {
     const uploaderSelect = document.getElementById('filter-uploader');
     const dateSelect = document.getElementById('filter-date');
     const tagSelect = document.getElementById('filter-tag');
+    const usageSelect = document.getElementById('filter-usage');
     if (qInput) qInput.value = state.q;
     if (typeSelect) typeSelect.value = state.type;
     if (groupSelect) groupSelect.value = state.group_id;
     if (uploaderSelect) uploaderSelect.value = state.uploader_id;
     if (dateSelect) dateSelect.value = state.date_days;
     if (tagSelect) tagSelect.value = state.tag_id;
+    if (usageSelect) usageSelect.value = state.usage;
 
     function _isAnyFilterActive() {
-        return !!(state.q || state.type || state.group_id || state.uploader_id || state.tag_id || state.date_days);
+        return !!(state.q || state.type || state.group_id || state.uploader_id || state.tag_id || state.usage || state.date_days);
     }
 
     function _syncUrl() {
@@ -1007,6 +1016,7 @@ function fallbackCopy(text, onSuccess) {
         if (state.group_id) p.set('group_id', state.group_id);
         if (state.uploader_id) p.set('uploader_id', state.uploader_id);
         if (state.tag_id) p.set('tag_id', state.tag_id);
+        if (state.usage) p.set('usage', state.usage);
         if (state.date_days) p.set('date_days', state.date_days);
         if (state.order && state.order !== '-uploaded_at') p.set('order', state.order);
         const qs = p.toString();
@@ -1023,6 +1033,7 @@ function fallbackCopy(text, onSuccess) {
         if (state.group_id) p.append('group_id', state.group_id);
         if (state.uploader_id) p.append('uploader_id', state.uploader_id);
         if (state.tag_id) p.append('tag_id', state.tag_id);
+        if (state.usage) p.set('usage', state.usage);
         if (state.date_days) {
             const since = new Date(Date.now() - parseInt(state.date_days, 10) * 86400 * 1000);
             p.set('uploaded_after', since.toISOString());
@@ -1247,6 +1258,9 @@ function fallbackCopy(text, onSuccess) {
     if (tagSelect) tagSelect.addEventListener('change', () => {
         state.tag_id = tagSelect.value; _onFilterChange();
     });
+    if (usageSelect) usageSelect.addEventListener('change', () => {
+        state.usage = usageSelect.value; _onFilterChange();
+    });
 
     // ── Sortable headers ──
     document.querySelectorAll('th.sortable').forEach(th => {
@@ -1388,12 +1402,14 @@ function fallbackCopy(text, onSuccess) {
         state.group_id = '';
         state.uploader_id = '';
         state.tag_id = '';
+        state.usage = '';
         state.date_days = '';
         if (qInput) qInput.value = '';
         if (typeSelect) typeSelect.value = '';
         if (groupSelect) groupSelect.value = '';
         if (uploaderSelect) uploaderSelect.value = '';
         if (tagSelect) tagSelect.value = '';
+        if (usageSelect) usageSelect.value = '';
         if (dateSelect) dateSelect.value = '';
         _onFilterChange();
     }
