@@ -187,3 +187,54 @@ class TestSchedulesPageExpiredPartition:
             "in cms/templates/schedules.html so it doesn't swap rows whose "
             "shape doesn't match."
         )
+
+    async def test_expired_schedules_sorted_most_recent_first(
+        self, client, db_session
+    ):
+        """Expired schedules render most-recently-expired first, not by name.
+
+        Without an explicit sort, the expired list inherited the main
+        query's (priority desc, name) ordering, which surfaced ancient
+        expired schedules above ones that expired yesterday. This pins
+        the user-facing contract: newest expiry at the top.
+        """
+        up = await client.post("/api/assets/upload", files=_upload("s.mp4"))
+        asset_id = uuid.UUID(up.json()["id"])
+        group_id = await _make_group(db_session)
+
+        suffix = uuid.uuid4().hex[:6]
+        old_sid = await _make_schedule(
+            db_session,
+            asset_id=asset_id,
+            group_id=group_id,
+            name=f"aaa-old-{suffix}",
+            end_date=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+        recent_sid = await _make_schedule(
+            db_session,
+            asset_id=asset_id,
+            group_id=group_id,
+            name=f"zzz-recent-{suffix}",
+            end_date=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        await db_session.commit()
+
+        resp = await client.get("/schedules")
+        assert resp.status_code == 200
+        html = resp.text
+
+        m = re.search(
+            r'<table class="table-schedules table-expired">(.*?)</table>',
+            html,
+            re.DOTALL,
+        )
+        assert m, "expired table missing"
+        block = m.group(1)
+        pos_recent = block.find(f'data-schedule-id="{recent_sid}"')
+        pos_old = block.find(f'data-schedule-id="{old_sid}"')
+        assert pos_recent != -1 and pos_old != -1
+        assert pos_recent < pos_old, (
+            "Most-recently-expired schedule must appear above older ones; "
+            "the expired list was alphabetical despite the 'zzz-recent' "
+            "name sorting after 'aaa-old'."
+        )
