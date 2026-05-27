@@ -7,13 +7,13 @@ import uuid
 from pathlib import Path
 from typing import List
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission
 from cms.config import Settings
@@ -33,6 +33,8 @@ from cms.schemas.asset import (
     AssetBulkOut,
     AssetOut,
     AssetPageOut,
+    AssetUsage,
+    AssetUsageRef,
     BULK_ACTIONS,
     MAX_SLIDE_DURATION_MS,
     MAX_SLIDESHOW_SLIDES,
@@ -376,7 +378,8 @@ async def list_assets(
     assets = list(result.scalars().all())
     thumbs = await _thumbnail_urls_for([a.id for a in assets], db)
     tags = await _tags_for([a.id for a in assets], db)
-    return [_asset_out_with_thumb(a, thumbs, tags) for a in assets]
+    usage = await _usage_for([a.id for a in assets], db)
+    return [_asset_out_with_thumb(a, thumbs, tags, usage) for a in assets]
 
 
 # ── Paginated / filtered listing for the asset library UI ──
@@ -490,12 +493,15 @@ async def _thumbnail_urls_for(
 def _asset_out_with_thumb(
     asset: Asset, thumbs: dict[uuid.UUID, str],
     tags: dict[uuid.UUID, list[TagOut]] | None = None,
+    usage: dict[uuid.UUID, AssetUsage] | None = None,
 ) -> AssetOut:
     out = AssetOut.model_validate(asset)
     if asset.id in thumbs:
         out.thumbnail_url = thumbs[asset.id]
     if tags is not None and asset.id in tags:
         out.tags = tags[asset.id]
+    if usage is not None:
+        out.usage = usage.get(asset.id) or AssetUsage()
     return out
 
 
@@ -522,6 +528,92 @@ async def _tags_for(
     return out
 
 
+# Maximum number of named references included in each usage list.
+# Anything past this lands in ``extra_*`` so the badge tooltip can render
+# "and N more" without bloating list responses.
+_USAGE_NAME_CAP = 10
+
+
+async def _usage_for(
+    asset_ids: list[uuid.UUID], db: AsyncSession
+) -> dict[uuid.UUID, AssetUsage]:
+    """Return ``{asset_id: AssetUsage}`` describing where each asset is
+    referenced.
+
+    "Referenced" means either:
+
+    - any non-expired schedule row (``end_date IS NULL OR end_date >=
+      NOW()``). ``enabled`` state is ignored on purpose: a disabled
+      schedule still represents intent and should count as "in use".
+    - any slideshow that uses this asset as a slide
+      (``slideshow_slides.source_asset_id``).
+
+    Two batched queries (no per-asset round-trips). Schedule and
+    slideshow names are included up to ``_USAGE_NAME_CAP``; overflow is
+    surfaced via ``extra_schedules`` / ``extra_slides`` so the UI can
+    render "Schedule A, Schedule B, +3 more" without paying for every
+    name in every payload.
+    """
+    if not asset_ids:
+        return {}
+    now_utc = datetime.now(timezone.utc)
+
+    out: dict[uuid.UUID, AssetUsage] = {aid: AssetUsage() for aid in asset_ids}
+
+    sched_rows = (await db.execute(
+        select(Schedule.asset_id, Schedule.id, Schedule.name)
+        .where(
+            Schedule.asset_id.in_(asset_ids),
+            (Schedule.end_date.is_(None)) | (Schedule.end_date >= now_utc),
+        )
+        .order_by(Schedule.asset_id, Schedule.name)
+    )).all()
+    sched_by_asset: dict[uuid.UUID, list[tuple[uuid.UUID, str]]] = {}
+    for aid, sid, sname in sched_rows:
+        sched_by_asset.setdefault(aid, []).append((sid, sname))
+
+    slide_rows = (await db.execute(
+        select(
+            SlideshowSlide.source_asset_id,
+            Asset.id,
+            Asset.display_name,
+            Asset.original_filename,
+            Asset.filename,
+        )
+        .join(Asset, Asset.id == SlideshowSlide.slideshow_asset_id)
+        .where(
+            SlideshowSlide.source_asset_id.in_(asset_ids),
+            Asset.deleted_at.is_(None),
+        )
+        .order_by(SlideshowSlide.source_asset_id, Asset.id)
+    )).all()
+    slides_by_asset: dict[uuid.UUID, list[tuple[uuid.UUID, str]]] = {}
+    for source_id, ss_id, display_name, original_filename, filename in slide_rows:
+        bucket = slides_by_asset.setdefault(source_id, [])
+        if bucket and bucket[-1][0] == ss_id:
+            # Same slideshow appears once per slide it contains; collapse
+            # to one entry per (source, slideshow). The order_by above
+            # guarantees duplicates are adjacent.
+            continue
+        label = display_name or original_filename or filename or str(ss_id)
+        bucket.append((ss_id, label))
+
+    for aid in asset_ids:
+        scheds = sched_by_asset.get(aid, [])
+        slides = slides_by_asset.get(aid, [])
+        usage = out[aid]
+        usage.schedules = [
+            AssetUsageRef(id=sid, name=sname) for sid, sname in scheds[:_USAGE_NAME_CAP]
+        ]
+        usage.extra_schedules = max(0, len(scheds) - _USAGE_NAME_CAP)
+        usage.slides = [
+            AssetUsageRef(id=ss_id, name=lbl) for ss_id, lbl in slides[:_USAGE_NAME_CAP]
+        ]
+        usage.extra_slides = max(0, len(slides) - _USAGE_NAME_CAP)
+        usage.total = len(scheds) + len(slides)
+    return out
+
+
 @router.get("/page", response_model=AssetPageOut)
 async def list_assets_paged(
     user: User = Depends(require_permission(ASSETS_READ)),
@@ -533,6 +625,13 @@ async def list_assets_paged(
     tag_id: list[uuid.UUID] = Query(default_factory=list, alias="tag_id"),
     uploaded_after: datetime | None = Query(None),
     uploaded_before: datetime | None = Query(None),
+    usage: str | None = Query(
+        None,
+        description=(
+            "Filter by usage. 'used': asset is referenced by a non-expired "
+            "schedule OR a slideshow slide. 'unused': neither."
+        ),
+    ),
     order: str = Query("-uploaded_at"),
     cursor: str | None = Query(None),
     page_size: int = Query(50, ge=1, le=200),
@@ -627,6 +726,36 @@ async def list_assets_paged(
             )
         )
 
+    if usage is not None:
+        if usage not in ("used", "unused"):
+            raise HTTPException(
+                status_code=400,
+                detail="usage must be one of: used, unused",
+            )
+        now_utc = datetime.now(timezone.utc)
+        # An asset is "used" when either a non-expired schedule references
+        # it (disabled-but-not-expired counts) OR a slideshow slide
+        # references it (and the parent slideshow isn't soft-deleted).
+        non_expired_sched_subq = (
+            select(Schedule.asset_id).where(
+                (Schedule.end_date.is_(None)) | (Schedule.end_date >= now_utc),
+            )
+        )
+        slideshow_alias = aliased(Asset)
+        slide_used_subq = (
+            select(SlideshowSlide.source_asset_id)
+            .join(slideshow_alias, slideshow_alias.id == SlideshowSlide.slideshow_asset_id)
+            .where(slideshow_alias.deleted_at.is_(None))
+        )
+        if usage == "used":
+            filter_clauses.append(
+                Asset.id.in_(non_expired_sched_subq)
+                | Asset.id.in_(slide_used_subq)
+            )
+        else:  # unused
+            filter_clauses.append(Asset.id.notin_(non_expired_sched_subq))
+            filter_clauses.append(Asset.id.notin_(slide_used_subq))
+
     stmt = select(Asset).where(*filter_clauses)
 
     # ── Cursor (encodes the order key value and the last id seen) ──
@@ -669,6 +798,7 @@ async def list_assets_paged(
     items = [row[0] for row in rows]
     thumbs = await _thumbnail_urls_for([a.id for a in items], db)
     tags = await _tags_for([a.id for a in items], db)
+    usage_map = await _usage_for([a.id for a in items], db)
 
     # ── Total estimate: count all rows matching the filters, ignoring
     #    the cursor. We only need this once per filter context but cost
@@ -691,7 +821,7 @@ async def list_assets_paged(
         next_cursor = _encode_cursor(last_value, last.id)
 
     return AssetPageOut(
-        items=[_asset_out_with_thumb(a, thumbs, tags) for a in items],
+        items=[_asset_out_with_thumb(a, thumbs, tags, usage_map) for a in items],
         next_cursor=next_cursor,
         total_estimate=total_estimate,
     )
@@ -2009,6 +2139,8 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
     tags_for = await _tags_for([asset.id], db)
     tags_map = {str(aid): [t.model_dump(mode="json") for t in tlist]
                 for aid, tlist in tags_for.items()}
+    usage_for = await _usage_for([asset.id], db)
+    usage_map = {str(aid): u.model_dump(mode="json") for aid, u in usage_for.items()}
     html = macros.asset_row(
         asset,
         user_perms,
@@ -2019,6 +2151,7 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
         user.id if user else None,
         thumbnail_url_map,
         tags_map,
+        usage_map,
     )
     return HTMLResponse(str(html))
 
@@ -2179,26 +2312,26 @@ async def delete_asset(
                 ),
             )
 
-    # Block deletion only if ACTIVE schedules reference this asset.
-    # A schedule is "active" if it is enabled AND either has no end_date
-    # or its end_date is still in the future (hasn't expired yet).
-    # Expired or disabled schedules don't block deletion — their rows
-    # will be removed alongside the asset so the FK stays consistent.
+    # Block deletion if ANY non-expired schedule references this asset.
+    # We treat "disabled but not yet expired" as still in use, because
+    # disabling a schedule is an intentional, typically temporary action
+    # by the user — hard-deleting the asset out from under it would make
+    # later re-enabling silently fail. Expired schedules (end_date in
+    # the past) don't block deletion and their rows are cleaned up below.
     now_utc = datetime.now(timezone.utc)
-    active_sched_count = await db.scalar(
+    blocking_sched_count = await db.scalar(
         select(func.count()).select_from(Schedule).where(
             Schedule.asset_id == asset_id,
-            Schedule.enabled.is_(True),
             (Schedule.end_date.is_(None)) | (Schedule.end_date >= now_utc),
         )
     )
-    if active_sched_count:
+    if blocking_sched_count:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Cannot delete — asset is used by {active_sched_count} active "
-                "schedule(s). Remove it from all active schedules (or wait for "
-                "them to expire) first."
+                f"Cannot delete -- asset is referenced by {blocking_sched_count} "
+                "non-expired schedule(s) (enabled or disabled). Delete or expire "
+                "those schedules first."
             ),
         )
 

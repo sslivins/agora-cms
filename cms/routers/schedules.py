@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -33,6 +33,33 @@ async def _trigger_eval():
         await evaluate_schedules()
     except Exception:
         logger.debug("Immediate eval after schedule change failed (background loop will catch up)", exc_info=True)
+
+
+def _guard_deleted_asset(asset: Asset, enabled: bool, end_date) -> None:
+    """Reject (409) if the resulting schedule would be enabled-and-not-expired
+    against a soft-deleted asset.
+
+    Disabling a schedule is a deliberate, typically temporary action; the
+    asset behind it shouldn't have been hard-deletable in the first place
+    (see Option B in the asset usage badge work).  But for older schedules
+    whose asset row IS soft-deleted, we still block transitions that would
+    put the schedule back into a state where the scheduler would try to
+    push it to a device.
+    """
+    if asset is None or asset.deleted_at is None:
+        return
+    if not enabled:
+        return
+    if end_date is not None and end_date < datetime.now(timezone.utc):
+        return
+    name = asset.display_name or asset.original_filename or asset.filename or str(asset.id)
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Cannot activate schedule -- its asset '{name}' has been "
+            "deleted. Pick a different asset or delete the schedule."
+        ),
+    )
 
 
 def _schedule_to_out(s: Schedule) -> ScheduleOut:
@@ -235,6 +262,12 @@ async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSessi
     is_url_asset = is_webpage or is_live_stream
     is_slideshow = asset.asset_type == AssetType.SLIDESHOW
 
+    _guard_deleted_asset(
+        asset,
+        enabled=fields.get("enabled", True),
+        end_date=fields.get("end_date"),
+    )
+
     # Webpage/live-stream assets cannot use loop_count (no duration)
     if is_url_asset and data.loop_count is not None:
         raise HTTPException(
@@ -367,6 +400,14 @@ async def update_schedule(
     is_live_stream = target_asset and target_asset.asset_type == AssetType.STREAM
     is_url_asset = is_webpage or is_live_stream
     is_slideshow = target_asset and target_asset.asset_type == AssetType.SLIDESHOW
+
+    # If the resulting state would be enabled-and-not-expired against a
+    # soft-deleted asset, reject (asset usage badge / Option B).
+    _guard_deleted_asset(
+        target_asset,
+        enabled=updates.get("enabled", schedule.enabled),
+        end_date=updates.get("end_date", schedule.end_date),
+    )
 
     # Webpage/live-stream assets cannot use loop_count
     if is_url_asset and updates.get("loop_count") is not None:

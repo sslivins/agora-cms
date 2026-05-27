@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Agora CMS
   description: Central management system for Agora media playback devices
-  version: 1.38.28
+  version: 1.38.30
 paths:
   /api/devices/register:
     post:
@@ -750,6 +750,18 @@ paths:
             format: date-time
           - type: 'null'
           title: Uploaded Before
+      - name: usage
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Filter by usage. ''used'': asset is referenced by a non-expired schedule OR a slideshow slide. ''unused'':
+            neither.'
+          title: Usage
+        description: 'Filter by usage. ''used'': asset is referenced by a non-expired schedule OR a slideshow slide. ''unused'':
+          neither.'
       - name: order
         in: query
         required: false
@@ -3760,6 +3772,10 @@ components:
             $ref: '#/components/schemas/TagOut'
           type: array
           title: Tags
+        usage:
+          anyOf:
+          - $ref: '#/components/schemas/AssetUsage'
+          - type: 'null'
       type: object
       required:
       - id
@@ -3804,6 +3820,54 @@ components:
       - saved_stream
       - slideshow
       title: AssetType
+    AssetUsage:
+      properties:
+        schedules:
+          items:
+            $ref: '#/components/schemas/AssetUsageRef'
+          type: array
+          title: Schedules
+        slides:
+          items:
+            $ref: '#/components/schemas/AssetUsageRef'
+          type: array
+          title: Slides
+        extra_schedules:
+          type: integer
+          title: Extra Schedules
+          default: 0
+        extra_slides:
+          type: integer
+          title: Extra Slides
+          default: 0
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: AssetUsage
+      description: |-
+        Where an asset is referenced.
+
+        ``schedules`` and ``slides`` are capped lists; the ``extra_*`` counts
+        surface "and N more" overflow so a hover tooltip can render
+        "Schedule A, Schedule B, +3 more" without paying for every name in
+        every list payload.
+    AssetUsageRef:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - id
+      - name
+      title: AssetUsageRef
+      description: One scheduled-or-slideshow reference to an asset.
     AuditLogRead:
       properties:
         id:

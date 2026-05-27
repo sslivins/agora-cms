@@ -60,6 +60,29 @@ class AssetVariantOut(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class AssetUsageRef(BaseModel):
+    """One scheduled-or-slideshow reference to an asset."""
+
+    id: uuid.UUID
+    name: str
+
+
+class AssetUsage(BaseModel):
+    """Where an asset is referenced.
+
+    ``schedules`` and ``slides`` are capped lists; the ``extra_*`` counts
+    surface "and N more" overflow so a hover tooltip can render
+    "Schedule A, Schedule B, +3 more" without paying for every name in
+    every list payload.
+    """
+
+    schedules: list[AssetUsageRef] = Field(default_factory=list)
+    slides: list[AssetUsageRef] = Field(default_factory=list)
+    extra_schedules: int = 0
+    extra_slides: int = 0
+    total: int = 0
+
+
 class AssetOut(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -78,6 +101,7 @@ class AssetOut(BaseModel):
     thumbnail_url: Optional[str] = None
     capture_duration: Optional[int] = None
     tags: list[TagOut] = Field(default_factory=list)
+    usage: Optional[AssetUsage] = None
 
 
 class AssetPageOut(BaseModel):
