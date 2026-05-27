@@ -166,6 +166,24 @@
         <div class="library-toolbar" style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary btn-sm" id="assets-refresh-btn"
                     onclick="window._assetLibrary && window._assetLibrary.reload()" title="Refresh from server">↻ Refresh</button>
+            <div style="position:relative; display:inline-block;">
+                <button type="button" class="btn btn-secondary btn-sm" id="views-menu-btn"
+                        onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.toggleViewsMenu()"
+                        title="Saved views">
+                    <span style="display:inline-block; font-size:1em; margin-right:0.25em; vertical-align:middle;">&#x1F4D1;</span>Views <span style="font-size:0.75em;">&#x25BE;</span>
+                </button>
+                <div id="views-menu" style="display:none; position:absolute; top:100%; left:0; margin-top:4px; min-width:240px; max-width:320px; background:var(--card-bg, #2a2a2a); border:1px solid var(--border, #444); border-radius:var(--radius, 4px); box-shadow:0 4px 16px rgba(0,0,0,0.35); z-index:50; padding:0.35rem 0;">
+                    <div id="views-menu-list" style="max-height:280px; overflow-y:auto;">
+                        <!-- populated by JS -->
+                    </div>
+                    <div style="border-top:1px solid rgba(255,255,255,0.08); margin-top:0.35rem; padding-top:0.35rem;">
+                        <button type="button" class="btn btn-link btn-sm" style="width:100%; text-align:left; padding:0.4rem 0.75rem; background:none; border:0; color:var(--text); cursor:pointer;"
+                                onclick="window._assetLibrary && window._assetLibrary.openSaveViewModal()">&#x2795; Save current as view&hellip;</button>
+                        <button type="button" class="btn btn-link btn-sm" id="views-manage-btn" style="display:none; width:100%; text-align:left; padding:0.4rem 0.75rem; background:none; border:0; color:var(--text); cursor:pointer;"
+                                onclick="window._assetLibrary && window._assetLibrary.openManageViewsModal()">&#x2699;&#xFE0F; Manage views&hellip;</button>
+                    </div>
+                </div>
+            </div>
             {% if is_admin %}
             <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
                     onclick="event.stopPropagation(); document.getElementById('tag-manager-modal').style.display='flex'; window._assetLibrary && window._assetLibrary.refreshTagManager && window._assetLibrary.refreshTagManager()"
@@ -267,6 +285,45 @@
                 onclick="window._assetLibrary && window._assetLibrary.bulkDelete()">🗑 Delete</button>
     </div>
     {% endif %}
+
+    {# ── Saved views: Save modal ── #}
+    <div id="save-view-modal" class="modal-overlay" style="display:none">
+        <div class="modal-box" style="max-width:440px;">
+            <div class="modal-header">
+                <h3 id="save-view-title">Save view</h3>
+                <button class="modal-close" onclick="window._assetLibrary && window._assetLibrary.closeSaveViewModal()">&times;</button>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                <label style="display:block; font-size:0.85rem; color:var(--text-muted);">
+                    Name
+                    <input type="text" id="save-view-name" maxlength="80" placeholder="e.g. My videos this week"
+                           style="display:block; width:100%; margin-top:0.25rem; padding:0.5rem 0.75rem; background:var(--select-bg); color:var(--text); border:1px solid var(--select-border); border-radius:var(--radius); font-size:0.9rem;">
+                </label>
+                <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.9rem;">
+                    <input type="checkbox" id="save-view-default">
+                    <span>Set as my default view (auto-applied when I open the page)</span>
+                </label>
+                <div id="save-view-error" style="display:none; color:var(--danger, #e94560); font-size:0.85rem;"></div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                    <button type="button" class="btn btn-secondary" onclick="window._assetLibrary && window._assetLibrary.closeSaveViewModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="window._assetLibrary && window._assetLibrary.submitSaveView()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ── Saved views: Manage modal ── #}
+    <div id="manage-views-modal" class="modal-overlay" style="display:none">
+        <div class="modal-box" style="max-width:560px;">
+            <div class="modal-header">
+                <h3>Manage views</h3>
+                <button class="modal-close" onclick="window._assetLibrary && window._assetLibrary.closeManageViewsModal()">&times;</button>
+            </div>
+            <div id="manage-views-list" style="max-height:420px; overflow-y:auto;">
+                <!-- populated by JS -->
+            </div>
+        </div>
+    </div>
 
     {# ── Tag manager modal (admin-only) ── #}
     {% if is_admin %}
@@ -1414,6 +1471,267 @@ function fallbackCopy(text, onSuccess) {
         _onFilterChange();
     }
 
+    // ── Saved views ────────────────────────────────────────────────────
+    // state.views is an array of {id, name, filters, is_default, ...}
+    // loaded lazily on first menu open and refreshed after any mutation.
+    state.views = [];
+    state.viewsLoaded = false;
+
+    async function _loadViews() {
+        try {
+            const resp = await fetch('/api/asset-views');
+            if (!resp.ok) return;
+            state.views = await resp.json();
+            state.viewsLoaded = true;
+        } catch (e) { /* swallow; menu just shows empty state */ }
+    }
+
+    function _captureCurrentFilters() {
+        const f = {};
+        if (state.q) f.q = state.q;
+        if (state.type) f.type = state.type;
+        if (state.group_id) f.group_id = state.group_id;
+        if (state.uploader_id) f.uploader_id = state.uploader_id;
+        if (state.tag_id) f.tag_id = state.tag_id;
+        if (state.usage) f.usage = state.usage;
+        if (state.date_days) f.date_days = state.date_days;
+        if (state.order && state.order !== '-uploaded_at') f.order = state.order;
+        if (state.view && state.view !== 'table') f.view_mode = state.view;
+        return f;
+    }
+
+    function _applyViewFilters(filters) {
+        state.q = filters.q || '';
+        state.type = filters.type || '';
+        state.group_id = filters.group_id || '';
+        state.uploader_id = filters.uploader_id || '';
+        state.tag_id = filters.tag_id || '';
+        state.usage = filters.usage || '';
+        state.date_days = filters.date_days || '';
+        state.order = filters.order || '-uploaded_at';
+        if (qInput) qInput.value = state.q;
+        if (typeSelect) typeSelect.value = state.type;
+        if (groupSelect) groupSelect.value = state.group_id;
+        if (uploaderSelect) uploaderSelect.value = state.uploader_id;
+        if (tagSelect) tagSelect.value = state.tag_id;
+        if (usageSelect) usageSelect.value = state.usage;
+        if (dateSelect) dateSelect.value = state.date_days;
+        if (filters.view_mode && filters.view_mode !== state.view) {
+            _setView(filters.view_mode);
+        }
+        _updateSortIndicators && _updateSortIndicators();
+        _onFilterChange(true);
+    }
+
+    function _renderViewsMenu() {
+        const list = document.getElementById('views-menu-list');
+        const manageBtn = document.getElementById('views-manage-btn');
+        if (!list) return;
+        if (!state.views.length) {
+            list.innerHTML = '<div style="padding:0.5rem 0.75rem; color:var(--text-muted); font-size:0.85rem;">No saved views yet</div>';
+            if (manageBtn) manageBtn.style.display = 'none';
+            return;
+        }
+        if (manageBtn) manageBtn.style.display = '';
+        const items = state.views.map(v => {
+            const star = v.is_default ? '<span title="Default view" style="margin-right:0.35rem;">&#x2B50;</span>' : '<span style="display:inline-block; width:1.1em;"></span>';
+            const safeName = v.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return '<button type="button" class="views-menu-item" data-view-id="' + v.id + '"'
+                + ' style="display:flex; width:100%; align-items:center; padding:0.4rem 0.75rem; background:none; border:0; color:var(--text); cursor:pointer; text-align:left; font-size:0.9rem;"'
+                + ' onmouseover="this.style.background=\'rgba(255,255,255,0.06)\'" onmouseout="this.style.background=\'none\'"'
+                + ' onclick="window._assetLibrary && window._assetLibrary.applyView(\'' + v.id + '\')">'
+                + star + '<span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeName + '</span></button>';
+        }).join('');
+        list.innerHTML = items;
+    }
+
+    async function _toggleViewsMenu() {
+        const menu = document.getElementById('views-menu');
+        if (!menu) return;
+        if (menu.style.display === 'none' || !menu.style.display) {
+            if (!state.viewsLoaded) await _loadViews();
+            _renderViewsMenu();
+            menu.style.display = '';
+        } else {
+            menu.style.display = 'none';
+        }
+    }
+
+    function _closeViewsMenu() {
+        const menu = document.getElementById('views-menu');
+        if (menu) menu.style.display = 'none';
+    }
+
+    // Click-outside to close.
+    document.addEventListener('click', (ev) => {
+        const menu = document.getElementById('views-menu');
+        const btn = document.getElementById('views-menu-btn');
+        if (!menu || menu.style.display === 'none') return;
+        if (menu.contains(ev.target) || (btn && btn.contains(ev.target))) return;
+        _closeViewsMenu();
+    });
+
+    async function _applyView(viewId) {
+        _closeViewsMenu();
+        const v = state.views.find(x => x.id === viewId);
+        if (!v) return;
+        _applyViewFilters(v.filters || {});
+    }
+
+    function _openSaveViewModal() {
+        _closeViewsMenu();
+        const modal = document.getElementById('save-view-modal');
+        const nameInput = document.getElementById('save-view-name');
+        const defChk = document.getElementById('save-view-default');
+        const err = document.getElementById('save-view-error');
+        if (!modal) return;
+        if (nameInput) { nameInput.value = ''; setTimeout(() => nameInput.focus(), 30); }
+        if (defChk) defChk.checked = false;
+        if (err) { err.style.display = 'none'; err.textContent = ''; }
+        modal.style.display = 'flex';
+    }
+
+    function _closeSaveViewModal() {
+        const modal = document.getElementById('save-view-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function _submitSaveView() {
+        const nameInput = document.getElementById('save-view-name');
+        const defChk = document.getElementById('save-view-default');
+        const err = document.getElementById('save-view-error');
+        const name = (nameInput && nameInput.value || '').trim();
+        if (!name) {
+            if (err) { err.textContent = 'Name is required.'; err.style.display = ''; }
+            return;
+        }
+        const body = {
+            name: name,
+            filters: _captureCurrentFilters(),
+            is_default: !!(defChk && defChk.checked),
+        };
+        try {
+            const resp = await fetch('/api/asset-views', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                if (err) { err.textContent = data.detail || ('Save failed (' + resp.status + ')'); err.style.display = ''; }
+                return;
+            }
+            await _loadViews();
+            _renderViewsMenu();
+            _closeSaveViewModal();
+            if (window.showToast) window.showToast('View saved', false);
+        } catch (e) {
+            if (err) { err.textContent = 'Save error: ' + e.message; err.style.display = ''; }
+        }
+    }
+
+    function _renderManageViewsList() {
+        const list = document.getElementById('manage-views-list');
+        if (!list) return;
+        if (!state.views.length) {
+            list.innerHTML = '<div style="padding:0.75rem; color:var(--text-muted);">No saved views yet.</div>';
+            return;
+        }
+        const rows = state.views.map(v => {
+            const safeName = v.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return '<div data-view-id="' + v.id + '" style="display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.25rem; border-bottom:1px solid rgba(255,255,255,0.06);">'
+                + '<input type="radio" name="default-view-radio" ' + (v.is_default ? 'checked' : '')
+                + ' onchange="window._assetLibrary && window._assetLibrary.setDefaultView(\'' + v.id + '\')" title="Set as default">'
+                + '<input type="text" class="manage-view-name" value="' + safeName.replace(/"/g, '&quot;') + '" maxlength="80"'
+                + ' style="flex:1 1 auto; padding:0.4rem 0.6rem; background:var(--select-bg); color:var(--text); border:1px solid var(--select-border); border-radius:var(--radius); font-size:0.9rem;"'
+                + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault(); window._assetLibrary && window._assetLibrary.renameView(\'' + v.id + '\', this.value);}"'
+                + ' onblur="window._assetLibrary && window._assetLibrary.renameView(\'' + v.id + '\', this.value)">'
+                + '<button type="button" class="btn btn-secondary btn-sm" onclick="window._assetLibrary && window._assetLibrary.deleteView(\'' + v.id + '\')" title="Delete view">&#x1F5D1;&#xFE0F;</button>'
+                + '</div>';
+        }).join('');
+        list.innerHTML = rows;
+    }
+
+    async function _openManageViewsModal() {
+        _closeViewsMenu();
+        if (!state.viewsLoaded) await _loadViews();
+        _renderManageViewsList();
+        const modal = document.getElementById('manage-views-modal');
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function _closeManageViewsModal() {
+        const modal = document.getElementById('manage-views-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function _renameView(viewId, newName) {
+        const v = state.views.find(x => x.id === viewId);
+        if (!v) return;
+        const trimmed = (newName || '').trim();
+        if (!trimmed || trimmed === v.name) {
+            _renderManageViewsList();
+            return;
+        }
+        try {
+            const resp = await fetch('/api/asset-views/' + encodeURIComponent(viewId), {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: trimmed }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                if (window.showToast) window.showToast(data.detail || 'Rename failed', true);
+                _renderManageViewsList();
+                return;
+            }
+            await _loadViews();
+            _renderManageViewsList();
+            _renderViewsMenu();
+        } catch (e) {
+            if (window.showToast) window.showToast('Rename error: ' + e.message, true);
+        }
+    }
+
+    async function _setDefaultView(viewId) {
+        try {
+            const resp = await fetch('/api/asset-views/' + encodeURIComponent(viewId), {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_default: true }),
+            });
+            if (!resp.ok) {
+                if (window.showToast) window.showToast('Failed to set default', true);
+                return;
+            }
+            await _loadViews();
+            _renderManageViewsList();
+            _renderViewsMenu();
+        } catch (e) {
+            if (window.showToast) window.showToast('Set-default error: ' + e.message, true);
+        }
+    }
+
+    async function _deleteView(viewId) {
+        const v = state.views.find(x => x.id === viewId);
+        if (!v) return;
+        const ok = await showConfirm('Delete view "' + v.name + '"? This cannot be undone.');
+        if (!ok) return;
+        try {
+            const resp = await fetch('/api/asset-views/' + encodeURIComponent(viewId), { method: 'DELETE' });
+            if (!resp.ok && resp.status !== 204) {
+                if (window.showToast) window.showToast('Delete failed', true);
+                return;
+            }
+            await _loadViews();
+            _renderManageViewsList();
+            _renderViewsMenu();
+            if (window.showToast) window.showToast('View deleted', false);
+        } catch (e) {
+            if (window.showToast) window.showToast('Delete error: ' + e.message, true);
+        }
+    }
+
     function _setView(v) {
         state.view = v;
         localStorage.setItem(VIEW_LS_KEY, v);
@@ -1491,6 +1809,16 @@ function fallbackCopy(text, onSuccess) {
         _fetchPage(false);
     } else {
         _updateFilterSummary(tbody.querySelectorAll('tr.asset-row').length);
+        // No URL filters present — try to load and apply the user's
+        // default saved view (Phase 3). URL params always win, so we
+        // only get here when there were none.
+        (async () => {
+            await _loadViews();
+            const def = state.views.find(v => v.is_default);
+            if (def && def.filters && Object.keys(def.filters).length > 0) {
+                _applyViewFilters(def.filters);
+            }
+        })();
     }
     // Expose for cross-IIFE callers (notably _insertAssetRow which
     // lives in the upload/poll IIFE and needs to mirror new uploads
@@ -1505,6 +1833,16 @@ function fallbackCopy(text, onSuccess) {
         clearSelection,
         clearFilters,
         setView: _setView,
+        toggleViewsMenu: _toggleViewsMenu,
+        applyView: _applyView,
+        openSaveViewModal: _openSaveViewModal,
+        closeSaveViewModal: _closeSaveViewModal,
+        submitSaveView: _submitSaveView,
+        openManageViewsModal: _openManageViewsModal,
+        closeManageViewsModal: _closeManageViewsModal,
+        renameView: _renameView,
+        setDefaultView: _setDefaultView,
+        deleteView: _deleteView,
         bulkDelete: async () => {
             const n = state.selection.size;
             if (n === 0) return;
