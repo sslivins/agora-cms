@@ -163,8 +163,8 @@
                         {% set _ = _u_tooltip_lines.append(_line) %}
                     {% endif %}
                     <span class="has-tooltip asset-usage-badge" style="margin-left:0.4rem">
-                        <span class="badge badge-pending" style="font-size:0.75rem; cursor:help;">&#128279; {{ asset_usage.total }}</span>
-                        <span class="tooltip">{{ _u_tooltip_lines | join(' \u2014 ') }}</span>
+                        <span class="badge badge-usage" style="font-size:0.75rem; cursor:help;">&#128279;&#xFE0F; {{ asset_usage.total }}</span>
+                        <span class="tooltip">{% for _line in _u_tooltip_lines %}<div>{{ _line }}</div>{% endfor %}</span>
                     </span>
                     {% endif %}
                     {% if asset_tags %}
