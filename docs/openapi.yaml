@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Agora CMS
   description: Central management system for Agora media playback devices
-  version: 1.38.33
+  version: 1.38.34
 paths:
   /api/devices/register:
     post:
