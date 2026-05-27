@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as macros %}
+{% from "_components/asset_filter_bar.html" import asset_filter_bar %}
 {% block title %}Assets — Agora CMS{% endblock %}
 {% block content %}
 <h1>Assets</h1>
@@ -176,61 +177,19 @@
         </div>
     </div>
 
-    {# ── Filter bar ── #}
-    <div id="assets-filter-bar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem; padding:0.5rem; background:var(--bg-subtle, rgba(255,255,255,0.03)); border-radius:4px;">
-        <input type="search" id="filter-q" placeholder="Search name / filename…"
-               style="flex:1 1 220px; min-width:180px; max-width:360px; padding:0.4rem 0.65rem; font-size:0.88rem;"
-               autocomplete="off" spellcheck="false">
-        <select id="filter-type" style="min-width:130px;">
-            <option value="">All types</option>
-            <option value="video">Video</option>
-            <option value="image">Image</option>
-            <option value="webpage">Webpage</option>
-            <option value="stream">Stream</option>
-            <option value="saved_stream">Saved Stream</option>
-            <option value="slideshow">Slideshow</option>
-        </select>
-        {% if user_groups | length > 0 or is_admin %}
-        <select id="filter-group" style="min-width:140px;">
-            <option value="">All groups</option>
-            {% for g in user_groups %}
-            <option value="{{ g.id }}">{{ g.name }}</option>
-            {% endfor %}
-        </select>
-        {% endif %}
-        {% if is_admin %}
-        <select id="filter-uploader" style="min-width:160px;">
-            <option value="">All uploaders</option>
-            {% for uid, uname in uploader_map.items() %}
-            <option value="{{ uid }}">{{ uname }}</option>
-            {% endfor %}
-        </select>
-        {% endif %}
-        <select id="filter-date" style="min-width:130px;" title="Uploaded date range">
-            <option value="">Any time</option>
-            <option value="1">Past 24 hours</option>
-            <option value="7">Past 7 days</option>
-            <option value="30">Past 30 days</option>
-            <option value="90">Past 90 days</option>
-        </select>
-        {% if all_tags | length > 0 %}
-        <select id="filter-tag" style="min-width:140px;" title="Filter by tag">
-            <option value="">All tags</option>
-            {% for t in all_tags %}
-            <option value="{{ t.id }}">{{ t.name }}</option>
-            {% endfor %}
-        </select>
-        {% endif %}
-        <button type="button" class="btn btn-secondary btn-sm" id="filter-clear-btn"
-                onclick="window._assetLibrary && window._assetLibrary.clearFilters()"
-                style="display:none;">Clear filters</button>
-        {% if is_admin %}
-        <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
-                onclick="event.stopPropagation(); document.getElementById('tag-manager-modal').style.display='flex'; window._assetLibrary && window._assetLibrary.refreshTagManager && window._assetLibrary.refreshTagManager()"
-                title="Manage tags">🏷 Manage tags</button>
-        {% endif %}
-        <span class="text-muted" id="filter-summary" style="font-size:0.85rem;"></span>
-    </div>
+    {# ── Filter bar (shared component) ── #}
+    {{ asset_filter_bar(
+        show_type=True,
+        show_groups=True,
+        show_uploader=True,
+        show_date=True,
+        show_tags=True,
+        show_manage_tags=True,
+        user_groups=user_groups,
+        uploader_map=uploader_map,
+        all_tags=all_tags,
+        is_admin=is_admin
+    ) }}
 
     {# ── Bulk action bar (hidden until a row is selected) ── #}
     {% if 'assets:write' in user_perms %}

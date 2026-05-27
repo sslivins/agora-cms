@@ -1613,10 +1613,29 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         groups_q = None
     user_groups = groups_q.scalars().all() if groups_q else []
 
+    # Filter-bar dropdowns need the same data the assets page uses.
+    uploader_map: dict[str, str] = {}
+    if is_admin:
+        uploaders = (await db.execute(
+            select(User.id, User.username, User.email).order_by(
+                func.coalesce(User.username, User.email)
+            )
+        )).all()
+        uploader_map = {str(u.id): u.username or u.email for u in uploaders}
+
+    from cms.models.tag import Tag
+    all_tags_q = await db.execute(select(Tag).order_by(Tag.name))
+    all_tags = [
+        {"id": str(t.id), "name": t.name, "color": t.color}
+        for t in all_tags_q.scalars().all()
+    ]
+
     ctx = {
         "active_tab": "assets",
         "is_admin": is_admin,
         "user_groups": user_groups,
+        "uploader_map": uploader_map,
+        "all_tags": all_tags,
         "edit_mode": False,
         "asset": None,
         "asset_id": None,

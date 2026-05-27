@@ -1,0 +1,97 @@
+{# ── Shared asset filter bar ──
+   Renders a horizontal filter bar with search + type/group/uploader/date/tag
+   selects. Every input gets an id of "{{ prefix }}-{name}" so multiple bars
+   can coexist on the same page (give them different prefixes). The default
+   prefix "filter" matches the original assets-page IDs so the existing
+   controller in assets.html keeps working without changes.
+
+   Caller flags:
+     show_type          : include the asset-type select (default True)
+     show_groups        : include the group select if any are visible
+     show_uploader      : include the uploader select (admin-only consumer concern)
+     show_date          : include the uploaded-date preset select
+     show_tags          : include the tag select if tags exist
+     show_manage_tags   : render the "Manage tags" button (admin-only)
+     show_clear_button  : render the Clear-filters button (default True)
+     prefix             : id prefix (default "filter")
+     user_groups        : iterable of group rows ({id, name})
+     uploader_map       : dict[id_str -> display_name]
+     all_tags           : iterable of {id, name, color}
+     is_admin           : drives uploader + manage-tags visibility
+#}
+{% macro asset_filter_bar(
+    show_type=True,
+    show_groups=True,
+    show_uploader=False,
+    show_date=True,
+    show_tags=True,
+    show_manage_tags=False,
+    show_clear_button=True,
+    prefix="filter",
+    user_groups=[],
+    uploader_map={},
+    all_tags=[],
+    is_admin=False,
+    search_placeholder="Search name / filename…"
+) %}
+<div id="{{ prefix }}-bar" class="asset-filter-bar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem; padding:0.5rem; background:var(--bg-subtle, rgba(255,255,255,0.03)); border-radius:4px;">
+    <input type="search" id="{{ prefix }}-q" placeholder="{{ search_placeholder }}"
+           style="flex:1 1 220px; min-width:180px; max-width:360px; padding:0.4rem 0.65rem; font-size:0.88rem;"
+           autocomplete="off" spellcheck="false">
+    {% if show_type %}
+    <select id="{{ prefix }}-type" style="min-width:130px;">
+        <option value="">All types</option>
+        <option value="video">Video</option>
+        <option value="image">Image</option>
+        <option value="webpage">Webpage</option>
+        <option value="stream">Stream</option>
+        <option value="saved_stream">Saved Stream</option>
+        <option value="slideshow">Slideshow</option>
+    </select>
+    {% endif %}
+    {% if show_groups and (user_groups | length > 0 or is_admin) %}
+    <select id="{{ prefix }}-group" style="min-width:140px;">
+        <option value="">All groups</option>
+        {% for g in user_groups %}
+        <option value="{{ g.id }}">{{ g.name }}</option>
+        {% endfor %}
+    </select>
+    {% endif %}
+    {% if show_uploader and is_admin %}
+    <select id="{{ prefix }}-uploader" style="min-width:160px;">
+        <option value="">All uploaders</option>
+        {% for uid, uname in uploader_map.items() %}
+        <option value="{{ uid }}">{{ uname }}</option>
+        {% endfor %}
+    </select>
+    {% endif %}
+    {% if show_date %}
+    <select id="{{ prefix }}-date" style="min-width:130px;" title="Uploaded date range">
+        <option value="">Any time</option>
+        <option value="1">Past 24 hours</option>
+        <option value="7">Past 7 days</option>
+        <option value="30">Past 30 days</option>
+        <option value="90">Past 90 days</option>
+    </select>
+    {% endif %}
+    {% if show_tags and (all_tags | length > 0) %}
+    <select id="{{ prefix }}-tag" style="min-width:140px;" title="Filter by tag">
+        <option value="">All tags</option>
+        {% for t in all_tags %}
+        <option value="{{ t.id }}">{{ t.name }}</option>
+        {% endfor %}
+    </select>
+    {% endif %}
+    {% if show_clear_button %}
+    <button type="button" class="btn btn-secondary btn-sm" id="{{ prefix }}-clear-btn"
+            {% if prefix == "filter" %}onclick="window._assetLibrary && window._assetLibrary.clearFilters()"{% endif %}
+            style="display:none;">Clear filters</button>
+    {% endif %}
+    {% if show_manage_tags and is_admin %}
+    <button type="button" class="btn btn-secondary btn-sm" id="manage-tags-btn"
+            onclick="event.stopPropagation(); document.getElementById('tag-manager-modal').style.display='flex'; window._assetLibrary && window._assetLibrary.refreshTagManager && window._assetLibrary.refreshTagManager()"
+            title="Manage tags">🏷 Manage tags</button>
+    {% endif %}
+    <span class="text-muted" id="{{ prefix }}-summary" style="font-size:0.85rem;"></span>
+</div>
+{% endmacro %}
