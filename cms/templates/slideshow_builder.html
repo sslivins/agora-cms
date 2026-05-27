@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components/asset_filter_bar.html" import asset_filter_bar %}
 {% block title %}{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %} — Agora CMS{% endblock %}
 {% block content %}
 <style>
@@ -479,6 +480,20 @@
                 Library
                 <span class="text-muted" style="font-weight:normal; font-size:0.85rem;">— drag onto the timeline, or click to append</span>
             </h3>
+            {{ asset_filter_bar(
+                show_type=False,
+                show_groups=True,
+                show_uploader=True,
+                show_date=True,
+                show_tags=True,
+                show_manage_tags=False,
+                prefix="ssfilter",
+                user_groups=user_groups,
+                uploader_map=uploader_map,
+                all_tags=all_tags,
+                is_admin=is_admin,
+                search_placeholder="Search library…"
+            ) }}
             <div id="ss-library" class="ssb-library">
                 <div class="ssb-lib-empty">Loading library…</div>
             </div>
@@ -930,15 +945,35 @@ function moveSlide(i, dir) {
     renderTimeline();
 }
 
+let ssFilter = null;
+
 async function loadAvailableAssets() {
     try {
-        const r = await fetch('/api/assets');
+        const root = document.getElementById('ss-library');
+        const params = ssFilter ? ssFilter.buildApiParams() : new URLSearchParams();
+        // Cap at the API maximum; for libraries above this, users narrow via filter.
+        params.set('page_size', '200');
+        // Belt-and-suspenders: even without ssFilter, never show non-media types here.
+        if (!params.has('type')) {
+            params.append('type', 'image');
+            params.append('type', 'video');
+        }
+        const r = await fetch('/api/assets/page?' + params.toString());
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
-        availableAssets = (Array.isArray(data) ? data : (data.assets || [])).filter(a =>
+        const items = Array.isArray(data) ? data : (data.items || data.assets || []);
+        availableAssets = items.filter(a =>
             (a.asset_type === 'image' || a.asset_type === 'video') && !a.deleted_at
         );
         renderLibrary();
+        if (data && data.next_cursor) {
+            // Hint to the user that more items exist beyond the 200-cap.
+            const note = document.createElement('div');
+            note.className = 'ssb-lib-empty';
+            note.style.cssText = 'grid-column: 1 / -1; padding:0.5rem; font-size:0.85rem;';
+            note.textContent = 'Showing the first 200 results. Use the search or filters above to narrow.';
+            root.appendChild(note);
+        }
     } catch (e) {
         document.getElementById('ss-library').innerHTML =
             '<div class="ssb-lib-empty" style="color:#e74c3c;">Failed to load assets: ' + escapeHtml(e.message) + '</div>';
@@ -1054,6 +1089,15 @@ function openGroupPopup(id) {
 
 document.addEventListener('DOMContentLoaded', () => {
     renderTimeline();
+    if (window.AssetFilter) {
+        ssFilter = new AssetFilter({
+            prefix: 'ssfilter',
+            fixedTypes: ['image', 'video'],
+            syncUrl: false,
+            debounceMs: 300,
+            onChange: () => { loadAvailableAssets(); },
+        }).start();
+    }
     loadAvailableAssets();
     initDirtyTracking();
     // Safety net: if a drag ends anywhere (released outside any drop
@@ -1138,17 +1182,32 @@ function initDirtyTracking() {
         });
     }
     // Intercept any in-page link that would discard unsaved changes
-    // (Cancel button + the "← Back to Assets" subtab). Show a 3-button
-    // modal: Save (saveSlideshow handles its own redirect), Discard
-    // (just navigate), Cancel (stay on page).
-    document.querySelectorAll('a[href="/assets"]').forEach(a => {
-        a.addEventListener('click', (e) => {
-            if (!__ssDirty) return;
-            e.preventDefault();
-            const href = a.getAttribute('href');
-            showUnsavedChangesModal(href);
-        });
-    });
+    // (Cancel button + the "← Back to Assets" subtab + any other nav
+    // link on the page). Show a 3-button modal: Save (saveSlideshow
+    // handles its own redirect), Discard (just navigate), Cancel
+    // (stay on page).
+    document.addEventListener('click', (e) => {
+        if (!__ssDirty) return;
+        const a = e.target.closest && e.target.closest('a[href]');
+        if (!a) return;
+        const href = a.getAttribute('href');
+        // Skip fragment-only links, javascript: hrefs, new-tab/middle-clicks,
+        // and anything that isn't a same-origin navigation.
+        if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+        if (a.target === '_blank' || a.hasAttribute('download')) return;
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+        // Resolve relative -> absolute and require same-origin to avoid
+        // breaking external links.
+        let absolute;
+        try { absolute = new URL(href, window.location.href); }
+        catch { return; }
+        if (absolute.origin !== window.location.origin) return;
+        // Don't intercept clicks back to the page we're already on.
+        if (absolute.pathname === window.location.pathname &&
+            absolute.search === window.location.search) return;
+        e.preventDefault();
+        showUnsavedChangesModal(absolute.pathname + absolute.search + absolute.hash);
+    }, true);
     // Native browser warning if the user closes the tab / hits browser back / refreshes.
     window.addEventListener('beforeunload', (e) => {
         if (!__ssDirty) return;
