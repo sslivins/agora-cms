@@ -1858,6 +1858,15 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
                 continue
         active_schedules.append(s)
 
+    # Expired schedules: surface most-recently-expired first so users see
+    # what just fell off the cliff before the long tail of old schedules.
+    # Same end_date -> later end_time first. Schedules with no end_date
+    # never reach this list, so end_date is guaranteed non-null here.
+    expired_schedules.sort(
+        key=lambda s: (s.end_date.date(), s.end_time),
+        reverse=True,
+    )
+
     tz_options = build_tz_options()
 
     # Determine which schedules are currently playing on at least one device.
