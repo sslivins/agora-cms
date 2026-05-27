@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Agora CMS
   description: Central management system for Agora media playback devices
-  version: 1.38.34
+  version: 1.38.36
 paths:
   /api/devices/register:
     post:
@@ -1570,6 +1570,97 @@ paths:
           type: string
           format: uuid
           title: Tag Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/asset-views:
+    get:
+      summary: List Views
+      description: List the caller's saved views, ordered by name.
+      operationId: list_views_api_asset_views_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/AssetViewOut'
+                type: array
+                title: Response List Views Api Asset Views Get
+    post:
+      summary: Create View
+      description: Create a new saved view for the caller.
+      operationId: create_view_api_asset_views_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetViewIn'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetViewOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/asset-views/{view_id}:
+    patch:
+      summary: Update View
+      description: Update name, filters, or default flag on a saved view.
+      operationId: update_view_api_asset_views__view_id__patch
+      parameters:
+      - name: view_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: View Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetViewPatch'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetViewOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete View
+      description: Hard-delete a saved view.  No auto-promotion of another default.
+      operationId: delete_view_api_asset_views__view_id__delete
+      parameters:
+      - name: view_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: View Id
       responses:
         '204':
           description: Successful Response
@@ -3868,6 +3959,151 @@ components:
       - name
       title: AssetUsageRef
       description: One scheduled-or-slideshow reference to an asset.
+    AssetViewFilters:
+      properties:
+        q:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Q
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+        group_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Id
+        uploader_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uploader Id
+        tag_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tag Id
+        usage:
+          anyOf:
+          - type: string
+            enum:
+            - used
+            - unused
+          - type: 'null'
+          title: Usage
+        uploaded_after:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uploaded After
+        uploaded_before:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uploaded Before
+        date_days:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Date Days
+        order:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Order
+        view_mode:
+          anyOf:
+          - type: string
+            enum:
+            - table
+            - grid
+          - type: 'null'
+          title: View Mode
+      type: object
+      title: AssetViewFilters
+      description: |-
+        Filter snapshot embedded in a saved view.
+
+        All fields optional -- a view may pin only a subset of the filter
+        state (e.g. just ``type=video, usage=unused``).
+    AssetViewIn:
+      properties:
+        name:
+          type: string
+          maxLength: 80
+          minLength: 1
+          title: Name
+        filters:
+          $ref: '#/components/schemas/AssetViewFilters'
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
+      type: object
+      required:
+      - name
+      title: AssetViewIn
+      description: Request body for ``POST /api/asset-views``.
+    AssetViewOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        filters:
+          additionalProperties: true
+          type: object
+          title: Filters
+        is_default:
+          type: boolean
+          title: Is Default
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - id
+      - name
+      - filters
+      - is_default
+      title: AssetViewOut
+      description: Single saved view as returned by the API.
+    AssetViewPatch:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 80
+            minLength: 1
+          - type: 'null'
+          title: Name
+        filters:
+          anyOf:
+          - $ref: '#/components/schemas/AssetViewFilters'
+          - type: 'null'
+        is_default:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Default
+      type: object
+      title: AssetViewPatch
+      description: Request body for ``PATCH /api/asset-views/{id}``. All fields optional.
     AuditLogRead:
       properties:
         id:
