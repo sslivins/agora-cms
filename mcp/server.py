@@ -68,6 +68,33 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "play_now": "schedules:write",
     "end_schedule_now": "schedules:write",
     "list_profiles": "profiles:read",
+    "create_profile": "profiles:write",
+    "update_profile": "profiles:write",
+    "delete_profile": "profiles:write",
+    "copy_profile": "profiles:write",
+    "reset_profile": "profiles:write",
+    "disable_profile": "profiles:write",
+    "enable_profile": "profiles:write",
+    "check_device_updates": "devices:manage",
+    "set_device_password": "devices:manage",
+    "upgrade_device": "devices:manage",
+    "toggle_device_ssh": "devices:manage",
+    "factory_reset_device": "devices:manage",
+    "toggle_device_local_api": "devices:manage",
+    "list_tags": "assets:read",
+    "create_tag": "assets:write",
+    "update_tag": "assets:write",
+    "delete_tag": "assets:write",
+    "list_asset_views": None,
+    "create_asset_view": None,
+    "update_asset_view": None,
+    "delete_asset_view": None,
+    "list_assets_paged": "assets:read",
+    "update_asset": "assets:write",
+    "recapture_stream": "assets:write",
+    "share_asset": "assets:write",
+    "unshare_asset": "assets:write",
+    "toggle_asset_global": "assets:write",
     "get_device_logs": "logs:read",
     "get_server_time": None,  # any authenticated user
     "get_dashboard": None,    # any authenticated user
@@ -687,6 +714,542 @@ async def list_audit_events(
         q=q,
     )
     return _json_result(events)
+
+
+# ── Tags ──
+
+
+@mcp.tool()
+async def list_tags() -> str:
+    """List all asset-library tags with per-tag asset counts.
+
+    Tags are an admin-managed, org-flat vocabulary applied to assets in
+    the library. Use this to discover the tag set before filtering
+    list_assets_paged with tag_id.
+    """
+    if err := _check_permission("list_tags"):
+        return err
+    return _json_result(await _call_api("list_tags"))
+
+
+@mcp.tool()
+async def create_tag(name: str, color: str | None = None) -> str:
+    """Create a new tag. Admin only.
+
+    Args:
+        name: Tag name (lowercased automatically, 1-64 chars, must be unique).
+        color: Optional hex color (e.g. "#aabbcc" or "#abc"). Server default applied otherwise.
+    """
+    if err := _check_permission("create_tag"):
+        return err
+    return _json_result(await _call_api("create_tag", name, color=color))
+
+
+@mcp.tool()
+async def update_tag(
+    tag_id: str, name: str | None = None, color: str | None = None,
+) -> str:
+    """Rename and/or recolor a tag. Admin only.
+
+    Args:
+        tag_id: UUID of the tag.
+        name: New name (optional).
+        color: New hex color (optional).
+    """
+    if err := _check_permission("update_tag"):
+        return err
+    fields: dict = {}
+    if name is not None:
+        fields["name"] = name
+    if color is not None:
+        fields["color"] = color
+    if not fields:
+        return "No fields provided to update."
+    return _json_result(await _call_api("update_tag", tag_id, fields))
+
+
+@mcp.tool()
+async def delete_tag(tag_id: str) -> str:
+    """Delete a tag. Removes the tag from every asset it was applied to. Admin only.
+
+    Args:
+        tag_id: UUID of the tag.
+    """
+    if err := _check_permission("delete_tag"):
+        return err
+    await _call_api("delete_tag", tag_id)
+    return f"Tag {tag_id} deleted"
+
+
+# ── Saved asset views ──
+
+
+@mcp.tool()
+async def list_asset_views() -> str:
+    """List the caller's saved asset-library filter views.
+
+    A saved view stores a filter preset (type, tags, group, uploader,
+    date range, sort order, etc.) for quick recall from the asset
+    library toolbar. Views are per-user; you only see your own.
+    """
+    if err := _check_permission("list_asset_views"):
+        return err
+    return _json_result(await _call_api("list_asset_views"))
+
+
+@mcp.tool()
+async def create_asset_view(
+    name: str,
+    filters: dict | None = None,
+    is_default: bool = False,
+) -> str:
+    """Create a saved asset view.
+
+    Args:
+        name: View name (1-80 chars, must be unique for the caller).
+        filters: Filter snapshot. Supported keys: q, type, group_id,
+            uploader_id, tag_id, usage ('used'|'unused'),
+            uploaded_after, uploaded_before, date_days, order.
+            Example: {"type": "video", "date_days": "1", "order": "-uploaded_at"}.
+        is_default: When true, this view auto-applies on next visit to
+            the asset library (and clears the default flag on other views).
+    """
+    if err := _check_permission("create_asset_view"):
+        return err
+    return _json_result(
+        await _call_api("create_asset_view", name, filters or {}, is_default),
+    )
+
+
+@mcp.tool()
+async def update_asset_view(
+    view_id: str,
+    name: str | None = None,
+    filters: dict | None = None,
+    is_default: bool | None = None,
+) -> str:
+    """Update a saved asset view's name, filters, and/or default flag.
+
+    Args:
+        view_id: UUID of the saved view (must be owned by the caller).
+        name: New name (optional).
+        filters: New filter snapshot (optional, replaces in full).
+        is_default: When true, promote this view to default (auto-clears
+            the flag on other views). When false, unset the default flag.
+    """
+    if err := _check_permission("update_asset_view"):
+        return err
+    fields: dict = {}
+    if name is not None:
+        fields["name"] = name
+    if filters is not None:
+        fields["filters"] = filters
+    if is_default is not None:
+        fields["is_default"] = is_default
+    if not fields:
+        return "No fields provided to update."
+    return _json_result(await _call_api("update_asset_view", view_id, fields))
+
+
+@mcp.tool()
+async def delete_asset_view(view_id: str) -> str:
+    """Delete a saved asset view.
+
+    Args:
+        view_id: UUID of the saved view (must be owned by the caller).
+    """
+    if err := _check_permission("delete_asset_view"):
+        return err
+    await _call_api("delete_asset_view", view_id)
+    return f"View {view_id} deleted"
+
+
+# ── Assets: filtered listing + management ──
+
+
+@mcp.tool()
+async def list_assets_paged(
+    q: str | None = None,
+    type: list[str] | None = None,
+    group_id: list[str] | None = None,
+    uploader_id: list[str] | None = None,
+    tag_id: list[str] | None = None,
+    uploaded_after: str | None = None,
+    uploaded_before: str | None = None,
+    usage: str | None = None,
+    order: str = "-uploaded_at",
+    cursor: str | None = None,
+    page_size: int = 50,
+) -> str:
+    """Paginated + filtered asset listing (mirrors what the asset library UI uses).
+
+    All filters AND-compose. ``q`` is case-insensitive substring match
+    across display_name / original_filename / filename. Multiple values
+    in type/group_id/uploader_id/tag_id are OR-combined within the
+    field, except tag_id which requires ALL selected tags (AND).
+
+    Args:
+        q: Substring search.
+        type: Restrict to types. Valid values: 'video', 'image',
+            'webpage', 'stream', 'saved_stream', 'slideshow'.
+        group_id: Restrict to assets shared with any of these groups.
+        uploader_id: Restrict to assets uploaded by any of these users.
+        tag_id: Restrict to assets carrying ALL these tags.
+        uploaded_after: ISO-8601 lower bound on uploaded_at (inclusive).
+        uploaded_before: ISO-8601 upper bound on uploaded_at (exclusive).
+        usage: 'used' (referenced by a non-expired schedule or slideshow
+            slide) or 'unused'.
+        order: Sort key. Default '-uploaded_at'. Prefix with '-' for descending.
+        cursor: Opaque pagination cursor returned in a previous response.
+        page_size: 1-200, default 50.
+    """
+    if err := _check_permission("list_assets_paged"):
+        return err
+    return _json_result(await _call_api(
+        "list_assets_paged",
+        q=q, type=type, group_id=group_id, uploader_id=uploader_id,
+        tag_id=tag_id, uploaded_after=uploaded_after,
+        uploaded_before=uploaded_before, usage=usage, order=order,
+        cursor=cursor, page_size=page_size,
+    ))
+
+
+@mcp.tool()
+async def update_asset(
+    asset_id: str,
+    display_name: str | None = None,
+    url: str | None = None,
+) -> str:
+    """Update editable asset properties.
+
+    Args:
+        asset_id: UUID of the asset.
+        display_name: New display name (max 255 chars; pass empty string to clear).
+        url: New URL (webpage assets only). Stream URLs cannot be edited
+            mid-flight; use recapture_stream after editing a saved-stream URL.
+    """
+    if err := _check_permission("update_asset"):
+        return err
+    fields: dict = {}
+    if display_name is not None:
+        fields["display_name"] = display_name
+    if url is not None:
+        fields["url"] = url
+    if not fields:
+        return "No fields provided to update."
+    return _json_result(await _call_api("update_asset", asset_id, fields))
+
+
+@mcp.tool()
+async def recapture_stream(asset_id: str) -> str:
+    """Re-capture a SAVED_STREAM asset: redownload the stream, overwrite the
+    capture, and reset all variants to PENDING for retranscoding.
+
+    Args:
+        asset_id: UUID of a saved-stream asset.
+    """
+    if err := _check_permission("recapture_stream"):
+        return err
+    return _json_result(await _call_api("recapture_stream", asset_id))
+
+
+@mcp.tool()
+async def share_asset(asset_id: str, group_id: str) -> str:
+    """Share an asset with an additional group.
+
+    Args:
+        asset_id: UUID of the asset.
+        group_id: UUID of the group to share with.
+    """
+    if err := _check_permission("share_asset"):
+        return err
+    return _json_result(await _call_api("share_asset", asset_id, group_id))
+
+
+@mcp.tool()
+async def unshare_asset(asset_id: str, group_id: str) -> str:
+    """Remove an asset from a group.
+
+    Returns 409 if a slideshow scoped to the group still references this
+    asset (would orphan visibility); resolve by removing the source from
+    the blocking slideshow(s) first.
+
+    Args:
+        asset_id: UUID of the asset.
+        group_id: UUID of the group to unshare from.
+    """
+    if err := _check_permission("unshare_asset"):
+        return err
+    return _json_result(await _call_api("unshare_asset", asset_id, group_id))
+
+
+@mcp.tool()
+async def toggle_asset_global(asset_id: str) -> str:
+    """Toggle an asset's global visibility (visible to all groups vs. only shared groups).
+
+    Returns 409 when un-globalising would orphan an existing global
+    slideshow that references the asset.
+
+    Args:
+        asset_id: UUID of the asset.
+    """
+    if err := _check_permission("toggle_asset_global"):
+        return err
+    return _json_result(await _call_api("toggle_asset_global", asset_id))
+
+
+# ── Devices: additional management actions ──
+
+
+@mcp.tool()
+async def check_device_updates() -> str:
+    """Trigger an immediate check for the latest device firmware version.
+
+    Refreshes the CMS bundle_checker so device.available_version reflects
+    the newest agora-os release without waiting for the periodic poll.
+    """
+    if err := _check_permission("check_device_updates"):
+        return err
+    return _json_result(await _call_api("check_device_updates"))
+
+
+@mcp.tool()
+async def set_device_password(device_id: str, password: str) -> str:
+    """Set the device's local web admin password. Device must be online.
+
+    Args:
+        device_id: ID of the device.
+        password: New web password (>= 4 chars).
+    """
+    if err := _check_permission("set_device_password"):
+        return err
+    return _json_result(
+        await _call_api("set_device_password", device_id, password),
+    )
+
+
+@mcp.tool()
+async def upgrade_device(device_id: str) -> str:
+    """Tell a connected device to upgrade to its currently-available OS version.
+
+    Returns 409 if the device is stuck mid-tryboot (must recover or be
+    rebooted manually first). Use check_device_updates first if you
+    suspect available_version is stale.
+
+    Args:
+        device_id: ID of the device.
+    """
+    if err := _check_permission("upgrade_device"):
+        return err
+    return _json_result(await _call_api("upgrade_device", device_id))
+
+
+@mcp.tool()
+async def toggle_device_ssh(device_id: str, enabled: bool) -> str:
+    """Enable or disable SSH on a connected device.
+
+    Args:
+        device_id: ID of the device.
+        enabled: True to enable SSH, False to disable.
+    """
+    if err := _check_permission("toggle_device_ssh"):
+        return err
+    return _json_result(
+        await _call_api("toggle_device_ssh", device_id, enabled),
+    )
+
+
+@mcp.tool()
+async def factory_reset_device(device_id: str) -> str:
+    """Trigger a factory reset on a connected device. Destructive.
+
+    Args:
+        device_id: ID of the device.
+    """
+    if err := _check_permission("factory_reset_device"):
+        return err
+    return _json_result(await _call_api("factory_reset_device", device_id))
+
+
+@mcp.tool()
+async def toggle_device_local_api(device_id: str, enabled: bool) -> str:
+    """Enable or disable the device's local HTTP API.
+
+    Args:
+        device_id: ID of the device.
+        enabled: True to enable, False to disable.
+    """
+    if err := _check_permission("toggle_device_local_api"):
+        return err
+    return _json_result(
+        await _call_api("toggle_device_local_api", device_id, enabled),
+    )
+
+
+# ── Profiles: full CRUD ──
+
+
+@mcp.tool()
+async def create_profile(
+    name: str,
+    description: str = "",
+    video_codec: str = "h264",
+    video_profile: str = "main",
+    max_width: int = 1920,
+    max_height: int = 1080,
+    max_fps: int = 30,
+    video_bitrate: str = "",
+    crf: int = 23,
+    pixel_format: str = "auto",
+    color_space: str = "auto",
+    audio_codec: str = "aac",
+    audio_bitrate: str = "128k",
+) -> str:
+    """Create a new transcode profile.
+
+    Args:
+        name: 1-64 chars; letters, digits, hyphens, underscores; must
+            start with a letter or digit. Becomes part of variant
+            filenames so it's restricted to safe chars.
+        description: Free-form description.
+        video_codec: 'h264' | 'hevc' | 'av1' | ...
+        video_profile: codec profile (e.g. 'main', 'high', 'main10').
+        max_width, max_height: target resolution caps.
+        max_fps: frame-rate cap.
+        video_bitrate: bitrate string (e.g. '4M'); empty = CRF-driven.
+        crf: 0-51 (lower = higher quality).
+        pixel_format: 'auto' or e.g. 'yuv420p', 'yuv420p10le'.
+        color_space: 'auto' or e.g. 'bt709', 'bt2020nc'. Must be
+            compatible with video_profile (HDR color spaces require a
+            10-bit profile).
+        audio_codec: e.g. 'aac', 'opus'.
+        audio_bitrate: e.g. '128k'.
+    """
+    if err := _check_permission("create_profile"):
+        return err
+    data = {
+        "name": name, "description": description,
+        "video_codec": video_codec, "video_profile": video_profile,
+        "max_width": max_width, "max_height": max_height, "max_fps": max_fps,
+        "video_bitrate": video_bitrate, "crf": crf,
+        "pixel_format": pixel_format, "color_space": color_space,
+        "audio_codec": audio_codec, "audio_bitrate": audio_bitrate,
+    }
+    return _json_result(await _call_api("create_profile", data))
+
+
+@mcp.tool()
+async def update_profile(
+    profile_id: str,
+    description: str | None = None,
+    video_codec: str | None = None,
+    video_profile: str | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    max_fps: int | None = None,
+    video_bitrate: str | None = None,
+    crf: int | None = None,
+    pixel_format: str | None = None,
+    color_space: str | None = None,
+    audio_codec: str | None = None,
+    audio_bitrate: str | None = None,
+) -> str:
+    """Update a transcode profile (PUT semantics with only the provided fields applied).
+
+    Name is immutable. Built-in profiles can be edited but can be
+    restored via reset_profile. Internal (non-device) profiles cannot
+    be edited.
+
+    Args:
+        profile_id: UUID of the profile.
+        (other args same shape as create_profile; all optional.)
+    """
+    if err := _check_permission("update_profile"):
+        return err
+    fields = {
+        k: v for k, v in {
+            "description": description, "video_codec": video_codec,
+            "video_profile": video_profile, "max_width": max_width,
+            "max_height": max_height, "max_fps": max_fps,
+            "video_bitrate": video_bitrate, "crf": crf,
+            "pixel_format": pixel_format, "color_space": color_space,
+            "audio_codec": audio_codec, "audio_bitrate": audio_bitrate,
+        }.items() if v is not None
+    }
+    if not fields:
+        return "No fields provided to update."
+    return _json_result(await _call_api("update_profile", profile_id, fields))
+
+
+@mcp.tool()
+async def delete_profile(profile_id: str) -> str:
+    """Delete a transcode profile. Refused if any device is assigned to it.
+
+    Cancels in-flight transcodes for the profile and removes all of its
+    variants (both DB rows and files). Built-in and internal profiles
+    cannot be deleted.
+
+    Args:
+        profile_id: UUID of the profile.
+    """
+    if err := _check_permission("delete_profile"):
+        return err
+    await _call_api("delete_profile", profile_id)
+    return f"Profile {profile_id} deleted"
+
+
+@mcp.tool()
+async def copy_profile(profile_id: str) -> str:
+    """Duplicate a profile (auto-named 'Copy of <name>', 'Copy of <name> (2)', ...).
+
+    Args:
+        profile_id: UUID of the source profile.
+    """
+    if err := _check_permission("copy_profile"):
+        return err
+    return _json_result(await _call_api("copy_profile", profile_id))
+
+
+@mcp.tool()
+async def reset_profile(profile_id: str) -> str:
+    """Reset a built-in profile to its canonical default values.
+
+    Only valid for built-in profiles. Cancels in-flight transcodes and
+    supersedes existing variants if transcoding-relevant fields change.
+
+    Args:
+        profile_id: UUID of a built-in profile.
+    """
+    if err := _check_permission("reset_profile"):
+        return err
+    return _json_result(await _call_api("reset_profile", profile_id))
+
+
+@mcp.tool()
+async def disable_profile(profile_id: str) -> str:
+    """Disable a profile. New variants stop being generated, pending/in-flight
+    transcodes for this profile are cancelled. Existing READY variants are
+    preserved so re-enabling is instant.
+
+    Args:
+        profile_id: UUID of the profile.
+    """
+    if err := _check_permission("disable_profile"):
+        return err
+    return _json_result(await _call_api("disable_profile", profile_id))
+
+
+@mcp.tool()
+async def enable_profile(profile_id: str) -> str:
+    """Re-enable a profile. Re-runs the variant fan-out so assets uploaded
+    while the profile was disabled get their variants enqueued.
+
+    Args:
+        profile_id: UUID of the profile.
+    """
+    if err := _check_permission("enable_profile"):
+        return err
+    return _json_result(await _call_api("enable_profile", profile_id))
 
 
 # ── Health check endpoints ──

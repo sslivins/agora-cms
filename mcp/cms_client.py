@@ -71,8 +71,13 @@ class CMSClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def _delete(self, path: str) -> str:
-        resp = await self._client.delete(path)
+    async def _put(self, path: str, json: dict | None = None) -> dict:
+        resp = await self._client.put(path, json=json)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _delete(self, path: str, *, params: dict | None = None) -> str:
+        resp = await self._client.delete(path, params=params)
         resp.raise_for_status()
         return "ok"
 
@@ -258,6 +263,158 @@ class CMSClient:
         resp = await self._client.get("/api/audit-log", params=params)
         resp.raise_for_status()
         return resp.json()
+
+    # -- Devices: additional management actions --
+
+    async def check_device_updates(self) -> dict:
+        return await self._post("/api/devices/check-updates")
+
+    async def set_device_password(self, device_id: str, password: str) -> dict:
+        return await self._post(
+            f"/api/devices/{device_id}/password", json={"password": password},
+        )
+
+    async def upgrade_device(self, device_id: str) -> dict:
+        return await self._post(f"/api/devices/{device_id}/upgrade")
+
+    async def toggle_device_ssh(self, device_id: str, enabled: bool) -> dict:
+        return await self._post(
+            f"/api/devices/{device_id}/ssh", json={"enabled": enabled},
+        )
+
+    async def factory_reset_device(self, device_id: str) -> dict:
+        return await self._post(f"/api/devices/{device_id}/factory-reset")
+
+    async def toggle_device_local_api(self, device_id: str, enabled: bool) -> dict:
+        return await self._post(
+            f"/api/devices/{device_id}/local-api", json={"enabled": enabled},
+        )
+
+    # -- Tags --
+
+    async def list_tags(self) -> list:
+        return await self._get("/api/tags")
+
+    async def create_tag(self, name: str, color: str | None = None) -> dict:
+        data: dict = {"name": name}
+        if color is not None:
+            data["color"] = color
+        return await self._post("/api/tags", json=data)
+
+    async def update_tag(self, tag_id: str, fields: dict) -> dict:
+        return await self._patch(f"/api/tags/{tag_id}", json=fields)
+
+    async def delete_tag(self, tag_id: str) -> str:
+        return await self._delete(f"/api/tags/{tag_id}")
+
+    # -- Saved asset views --
+
+    async def list_asset_views(self) -> list:
+        return await self._get("/api/asset-views")
+
+    async def create_asset_view(
+        self, name: str, filters: dict, is_default: bool = False,
+    ) -> dict:
+        return await self._post(
+            "/api/asset-views",
+            json={"name": name, "filters": filters, "is_default": is_default},
+        )
+
+    async def update_asset_view(self, view_id: str, fields: dict) -> dict:
+        return await self._patch(f"/api/asset-views/{view_id}", json=fields)
+
+    async def delete_asset_view(self, view_id: str) -> str:
+        return await self._delete(f"/api/asset-views/{view_id}")
+
+    # -- Assets: filtered listing + management --
+
+    async def list_assets_paged(
+        self,
+        *,
+        q: str | None = None,
+        type: list[str] | None = None,
+        group_id: list[str] | None = None,
+        uploader_id: list[str] | None = None,
+        tag_id: list[str] | None = None,
+        uploaded_after: str | None = None,
+        uploaded_before: str | None = None,
+        usage: str | None = None,
+        order: str = "-uploaded_at",
+        cursor: str | None = None,
+        page_size: int = 50,
+    ) -> dict:
+        params: list[tuple[str, str]] = []
+        if q:
+            params.append(("q", q))
+        for t in type or []:
+            params.append(("type", t))
+        for gid in group_id or []:
+            params.append(("group_id", gid))
+        for uid in uploader_id or []:
+            params.append(("uploader_id", uid))
+        for tid in tag_id or []:
+            params.append(("tag_id", tid))
+        if uploaded_after:
+            params.append(("uploaded_after", uploaded_after))
+        if uploaded_before:
+            params.append(("uploaded_before", uploaded_before))
+        if usage:
+            params.append(("usage", usage))
+        params.append(("order", order))
+        if cursor:
+            params.append(("cursor", cursor))
+        params.append(("page_size", str(page_size)))
+        resp = await self._client.get("/api/assets/page", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def update_asset(self, asset_id: str, fields: dict) -> dict:
+        return await self._patch(f"/api/assets/{asset_id}", json=fields)
+
+    async def recapture_stream(self, asset_id: str) -> dict | str:
+        return await self._post(f"/api/assets/{asset_id}/recapture")
+
+    async def share_asset(self, asset_id: str, group_id: str) -> dict:
+        resp = await self._client.post(
+            f"/api/assets/{asset_id}/share", params={"group_id": group_id},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def unshare_asset(self, asset_id: str, group_id: str) -> str:
+        resp = await self._client.delete(
+            f"/api/assets/{asset_id}/share", params={"group_id": group_id},
+        )
+        resp.raise_for_status()
+        return "ok" if not resp.content else (
+            resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text
+        )
+
+    async def toggle_asset_global(self, asset_id: str) -> dict | str:
+        return await self._post(f"/api/assets/{asset_id}/global")
+
+    # -- Profiles: full CRUD --
+
+    async def create_profile(self, data: dict) -> dict:
+        return await self._post("/api/profiles", json=data)
+
+    async def update_profile(self, profile_id: str, fields: dict) -> dict:
+        return await self._put(f"/api/profiles/{profile_id}", json=fields)
+
+    async def delete_profile(self, profile_id: str) -> str:
+        return await self._delete(f"/api/profiles/{profile_id}")
+
+    async def copy_profile(self, profile_id: str) -> dict:
+        return await self._post(f"/api/profiles/{profile_id}/copy")
+
+    async def reset_profile(self, profile_id: str) -> dict:
+        return await self._post(f"/api/profiles/{profile_id}/reset")
+
+    async def disable_profile(self, profile_id: str) -> dict:
+        return await self._post(f"/api/profiles/{profile_id}/disable")
+
+    async def enable_profile(self, profile_id: str) -> dict:
+        return await self._post(f"/api/profiles/{profile_id}/enable")
 
     async def close(self) -> None:
         await self._client.aclose()
