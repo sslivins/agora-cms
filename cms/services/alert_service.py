@@ -5,13 +5,21 @@ so they survive replica failover and don't double-fire across replicas:
 
 1. **Offline detection** — the disconnect path only transitions
    ``offline_since`` NULL→timestamp (duplicate disconnects don't reset
-   the grace window).  A leader-gated sweep loop
-   (:func:`offline_sweep_once` driven from ``cms/main.py``) flips
-   ``offline_notified`` and emits the "offline" notification + event
-   in a single transaction.  The reconnect path CAS-consumes
-   ``offline_notified`` in the same transaction that emits the "back
-   online" notification, so a race between two replicas handling the
-   reconnect only lets one of them fire the alert.
+   the grace window).  Neither the OFFLINE event row nor the
+   notification fire from the disconnect path itself; a leader-gated
+   sweep loop (:func:`offline_sweep_once` driven from ``cms/main.py``)
+   flips ``offline_notified`` and emits both the OFFLINE event and the
+   "offline" notification in a single transaction once the grace
+   window has elapsed.  The reconnect path CAS-consumes
+   ``offline_notified`` in the same transaction that emits the
+   matching ONLINE event + "back online" notification, so brief
+   disconnect→reconnect blips (notably the every-50-minute clean
+   reconnect the device does after a successful WPS JWT refresh) are
+   suppressed entirely from the event log.  A genuinely silent
+   disconnect (Pi power-cut, dead link the WPS gateway never reports)
+   is still surfaced within ~1 minute by
+   :func:`stale_presence_sweep_once`, which writes its own immediate
+   OFFLINE event with ``details={"kind": "stale_heartbeat"}``.
 
 2. **Temperature monitoring** — STATUS heartbeats land on whichever
    replica the WPS webhook is routed to.  ``check_temperature`` locks
@@ -185,12 +193,22 @@ class AlertService:
     ):
         """Called from ws.py when a device's WebSocket closes.
 
-        Spawns a detached task that (a) logs an OFFLINE event for the
-        adopted+grouped device and (b) transitions ``device_alert_state``
+        Spawns a detached task that transitions ``device_alert_state``
         from online→offline by writing ``offline_since = NOW()`` *only
         when it is currently NULL*.  Duplicate disconnects do not reset
-        the grace window.  The actual notification is fired later by
-        the leader-gated sweep loop once ``offline_since + grace < now``.
+        the grace window.
+
+        The OFFLINE event log row and the notification are both fired
+        later by the leader-gated sweep loop once
+        ``offline_since + grace < now``.  Debouncing the event row (not
+        just the notification) keeps short blips — most notably the
+        every-50-minute clean close + reconnect the device does after
+        a successful WPS JWT refresh — from spamming the event log.
+        A genuinely silent disconnect (Pi power-cut, network drop where
+        the WPS gateway never sees ``sys.disconnected``) is still
+        surfaced within ~1 minute by ``stale_presence_sweep_once``,
+        which writes its own immediate OFFLINE event with
+        ``details={"kind": "stale_heartbeat"}``.
         """
         if status != "adopted" or not group_id:
             return
@@ -236,27 +254,29 @@ class AlertService:
         group_id: str,
         group_name: str,
     ) -> None:
-        """Persist the disconnect: OFFLINE event + offline_since transition."""
+        """Persist the disconnect: offline_since transition.
+
+        The OFFLINE event row is NOT written here — it's deferred to
+        ``offline_sweep_once``, which emits the OFFLINE event together
+        with the notification after the grace window expires.  This
+        debounces the every-50-minute clean close+reconnect the device
+        does after a successful WPS JWT refresh, which would otherwise
+        spam an OFFLINE+ONLINE pair into the event log every hour for
+        every adopted device.  Genuinely silent disconnects are still
+        surfaced quickly by ``stale_presence_sweep_once``, which writes
+        its own immediate OFFLINE event with
+        ``details={"kind": "stale_heartbeat"}``.
+        """
         try:
             from cms.database import get_db
-            gid = _to_uuid(group_id)
             async for db in get_db():
-                # 1. Always log an OFFLINE event immediately.
-                db.add(DeviceEvent(
-                    device_id=device_id,
-                    device_name=device_name,
-                    group_id=gid,
-                    group_name=group_name,
-                    event_type=DeviceEventType.OFFLINE,
-                ))
-
-                # 2. Transition-only update: set offline_since=NOW() if
-                #    currently NULL, otherwise leave it alone.  We use a
-                #    SELECT-then-write pattern so it works across
-                #    SQLite+Postgres (SQLite's ORM INSERT..ON CONFLICT
-                #    support is dialect-fiddly); the transaction isolation
-                #    from the surrounding session gives us the
-                #    atomicity we need.
+                # Transition-only update: set offline_since=NOW() if
+                # currently NULL, otherwise leave it alone.  We use a
+                # SELECT-then-write pattern so it works across
+                # SQLite+Postgres (SQLite's ORM INSERT..ON CONFLICT
+                # support is dialect-fiddly); the transaction isolation
+                # from the surrounding session gives us the
+                # atomicity we need.
                 state = (await db.execute(
                     select(DeviceAlertState).where(
                         DeviceAlertState.device_id == device_id
@@ -274,7 +294,9 @@ class AlertService:
 
                 await db.commit()
                 logger.debug(
-                    "Offline event + state recorded for device %s", device_id,
+                    "Offline state recorded for device %s "
+                    "(event deferred to grace expiry)",
+                    device_id,
                 )
                 break
         except Exception:
@@ -291,21 +313,21 @@ class AlertService:
         group_id: str,
         group_name: str,
     ) -> None:
-        """Persist the reconnect: ONLINE event + CAS-consume offline_notified."""
+        """Persist the reconnect: CAS-consume offline_notified; ONLINE event only on real recovery.
+
+        Stage-4-debounce note: the ONLINE event row is now only written
+        when ``was_notified`` is TRUE — i.e., when the grace window had
+        expired and ``offline_sweep_once`` had already fired the
+        matching OFFLINE event + notification.  Reconnects within the
+        grace window (the common case for JWT-refresh blips) are
+        suppressed entirely: no OFFLINE was logged, so logging a lone
+        ONLINE would look like a phantom recovery in the event log.
+        """
         try:
             from cms.database import get_db
             gid = _to_uuid(group_id)
             async for db in get_db():
-                # 1. Always log an ONLINE event.
-                db.add(DeviceEvent(
-                    device_id=device_id,
-                    device_name=device_name,
-                    group_id=gid,
-                    group_name=group_name,
-                    event_type=DeviceEventType.ONLINE,
-                ))
-
-                # 2. Atomically CAS-consume offline_notified.  Only the
+                # 1. Atomically CAS-consume offline_notified.  Only the
                 #    replica whose UPDATE lands first gets a returned
                 #    row — other replicas handling the same reconnect
                 #    event see an empty result and skip the "back
@@ -337,10 +359,9 @@ class AlertService:
                         # simultaneously for the same device's first
                         # reconnect.  The second INSERT would violate
                         # the PK constraint and poison the outer
-                        # transaction (rolling back our ONLINE event).
-                        # Isolate the INSERT in a SAVEPOINT and treat
-                        # IntegrityError as benign — the other replica
-                        # already created the row.
+                        # transaction.  Isolate the INSERT in a
+                        # SAVEPOINT and treat IntegrityError as benign
+                        # — the other replica already created the row.
                         from sqlalchemy.exc import IntegrityError
                         try:
                             async with db.begin_nested():
@@ -357,11 +378,20 @@ class AlertService:
                     elif existing.offline_since is not None:
                         existing.offline_since = None
 
-                # 3. If we'd previously fired an offline notification,
-                #    emit the matching back-online notification in the
-                #    same transaction — so a crash between commit and
-                #    INSERT can't lose the signal.
+                # 2. If we'd previously fired an offline notification,
+                #    emit the matching ONLINE event + back-online
+                #    notification in the same transaction — so a crash
+                #    between commit and INSERT can't lose the signal.
+                #    Reconnects within the grace window write nothing
+                #    (the matching OFFLINE event was never written).
                 if was_notified:
+                    db.add(DeviceEvent(
+                        device_id=device_id,
+                        device_name=device_name,
+                        group_id=gid,
+                        group_name=group_name,
+                        event_type=DeviceEventType.ONLINE,
+                    ))
                     db.add(Notification(
                         scope="group",
                         level="success",
@@ -380,11 +410,14 @@ class AlertService:
                 await db.commit()
                 if was_notified:
                     logger.info(
-                        "Online notification created for device %s", device_id,
+                        "Online event + notification created for device %s",
+                        device_id,
                     )
                 else:
                     logger.debug(
-                        "Online event recorded for device %s", device_id,
+                        "Reconnect within grace window for device %s "
+                        "— ONLINE event suppressed",
+                        device_id,
                     )
                 break
         except Exception:
