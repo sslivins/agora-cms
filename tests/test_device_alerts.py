@@ -100,6 +100,18 @@ def fresh_alert_service():
     return svc
 
 
+async def _drive_offline_sweep(app, svc):
+    """Run one offline_sweep_once tick — used in tests that expect an
+    OFFLINE event/notification to materialize.  The disconnect path no
+    longer writes the event row directly; both event and notification
+    fire from this sweep once the grace window has elapsed."""
+    from cms.database import get_db
+    factory = app.dependency_overrides[get_db]
+    async for db in factory():
+        await svc.offline_sweep_once(db)
+        break
+
+
 # ── Alert Service Unit Tests ──
 
 class TestOfflineDetection:
@@ -154,12 +166,11 @@ class TestOfflineDetection:
 
     @pytest.mark.asyncio
     async def test_reconnect_cancels_grace_period(self, app, seed_group_and_device, fresh_alert_service):
-        """Reconnecting before grace period expires prevents the offline *notification*.
+        """Reconnecting before grace period expires prevents the offline notification.
 
-        Note: since the event/notification split, the OFFLINE DeviceEvent is
-        logged immediately on disconnect regardless of grace, but the bell
-        notification is only created after grace expires. A quick reconnect
-        cancels the pending notification timer.
+        Both the OFFLINE DeviceEvent and the notification are debounced
+        by the grace window — a quick reconnect leaves no event-log
+        entry and fires no bell notification.
         """
         info = seed_group_and_device
         svc = fresh_alert_service
@@ -658,6 +669,7 @@ class TestDeviceEventsAPI:
             status="adopted",
         )
         await asyncio.sleep(1.5)
+        await _drive_offline_sweep(app, svc)
 
         resp = await client.get("/api/device-events")
         assert resp.status_code == 200
@@ -676,6 +688,7 @@ class TestDeviceEventsAPI:
             status="adopted",
         )
         await asyncio.sleep(1.5)
+        await _drive_offline_sweep(app, svc)
 
         resp = await client.get(f"/api/device-events?device_id={info['device_id']}")
         assert resp.status_code == 200
@@ -695,6 +708,7 @@ class TestDeviceEventsAPI:
             status="adopted",
         )
         await asyncio.sleep(1.5)
+        await _drive_offline_sweep(app, svc)
 
         resp = await client.get("/api/device-events?event_type=offline")
         assert resp.status_code == 200
@@ -714,6 +728,7 @@ class TestDeviceEventsAPI:
             status="adopted",
         )
         await asyncio.sleep(1.5)
+        await _drive_offline_sweep(app, svc)
 
         resp = await client.get("/api/device-events/count")
         assert resp.status_code == 200
@@ -730,6 +745,7 @@ class TestDeviceEventsAPI:
             status="adopted",
         )
         await asyncio.sleep(1.5)
+        await _drive_offline_sweep(app, svc)
 
         resp = await operator_client.get("/api/device-events")
         assert resp.status_code == 200

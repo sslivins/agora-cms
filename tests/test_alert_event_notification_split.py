@@ -1,6 +1,11 @@
 """Tests for the event/notification split in AlertService.
 
-Events always fire immediately; notifications are gated by the grace period.
+OFFLINE and ONLINE event rows are debounced together with their
+notifications — written by the leader-gated grace-expiry sweep, not by
+the immediate disconnect/reconnect handlers — so brief blips (notably
+the every-50-min WPS JWT-refresh reconnect) leave no event-log trail.
+A genuinely silent disconnect still surfaces immediately via the
+stale-presence sweep's ``kind=stale_heartbeat`` event.
 """
 
 import asyncio
@@ -71,17 +76,17 @@ async def _count_notifications(app, group_id):
         return result.scalars().all()
 
 
-# ── Event fires immediately ──
+# ── Disconnect path defers events (debounced by grace) ──
 
 
 @pytest.mark.asyncio
-async def test_disconnect_creates_offline_event_before_grace(
+async def test_disconnect_does_not_create_offline_event_before_grace(
     app, seed_group_and_device, fresh_alert_service,
 ):
-    """An OFFLINE DeviceEvent is created immediately on disconnect — no wait."""
+    """Disconnect path only stamps offline_since — no immediate OFFLINE event."""
     info = seed_group_and_device
     svc = fresh_alert_service
-    svc._offline_grace_seconds = 30  # Long grace — ensure event fires before
+    svc._offline_grace_seconds = 30  # Long grace — ensure no sweep tick fires
 
     svc.device_disconnected(info["device_id"], info["device_name"],
                              info["group_id"], info["group_name"], status="adopted")
@@ -89,20 +94,36 @@ async def test_disconnect_creates_offline_event_before_grace(
     await asyncio.sleep(0.2)
 
     events = await _count_events(app, info["device_id"], DeviceEventType.OFFLINE)
-    assert len(events) == 1
+    assert len(events) == 0
 
-    # No notification yet (grace hasn't fired)
+    # No notification yet either (grace hasn't fired)
     notifs = await _count_notifications(app, info["group_id"])
     assert len(notifs) == 0
 
+    # But offline_since must be stamped so the sweep can find it.
+    from cms.database import get_db
+    from cms.models.device_alert_state import DeviceAlertState
+    factory = app.dependency_overrides[get_db]
+    async for db in factory():
+        state = (await db.execute(
+            select(DeviceAlertState).where(
+                DeviceAlertState.device_id == info["device_id"]
+            )
+        )).scalar_one_or_none()
+        assert state is not None
+        assert state.offline_since is not None
+        assert state.offline_notified is False
+        break
 
-# ── Reconnect before grace: ONLINE event, no notifications ──
+
+# ── Reconnect before grace: no events, no notifications ──
 
 
 @pytest.mark.asyncio
-async def test_reconnect_before_grace_no_notification_but_events_logged(
+async def test_reconnect_before_grace_writes_no_events_or_notifications(
     app, seed_group_and_device, fresh_alert_service,
 ):
+    """A blip (disconnect+reconnect within grace) leaves no trail."""
     info = seed_group_and_device
     svc = fresh_alert_service
     svc._offline_grace_seconds = 30  # Make sure grace never expires during test
@@ -114,13 +135,13 @@ async def test_reconnect_before_grace_no_notification_but_events_logged(
                             info["group_id"], info["group_name"], status="adopted")
     await asyncio.sleep(0.3)
 
-    # Both OFFLINE and ONLINE events were logged
+    # Neither OFFLINE nor ONLINE was logged
     offline_events = await _count_events(app, info["device_id"], DeviceEventType.OFFLINE)
     online_events = await _count_events(app, info["device_id"], DeviceEventType.ONLINE)
-    assert len(offline_events) == 1
-    assert len(online_events) == 1
+    assert len(offline_events) == 0
+    assert len(online_events) == 0
 
-    # But NO notifications (neither offline nor back-online)
+    # No notifications (neither offline nor back-online)
     notifs = await _count_notifications(app, info["group_id"])
     assert len(notifs) == 0
 
@@ -225,12 +246,17 @@ async def test_fresh_grace_timer_after_quick_reconnect(
     offline_notifs = [n for n in notifs if "offline" in n.title.lower()]
     assert len(offline_notifs) == 1
 
-    # Two OFFLINE events from the disconnect signals themselves
-    # (offline_sweep_once also emits a grace_expired OFFLINE event, so
-    # we exclude those when counting the disconnect-driven events).
+    # Only the grace_expired OFFLINE event from the sweep exists now —
+    # the immediate-on-disconnect OFFLINE write was removed when we
+    # debounced the event log onto the grace window.
     offline_events = await _count_events(app, info["device_id"], DeviceEventType.OFFLINE)
     disconnect_events = [
         e for e in offline_events
         if (e.details or {}).get("kind") != "grace_expired"
     ]
-    assert len(disconnect_events) == 2
+    grace_events = [
+        e for e in offline_events
+        if (e.details or {}).get("kind") == "grace_expired"
+    ]
+    assert len(disconnect_events) == 0
+    assert len(grace_events) == 1
