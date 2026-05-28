@@ -1,9 +1,6 @@
 name: Smoke Test
 
 on:
-  schedule:
-    # 07:00 UTC daily = 00:00 PDT / 23:00 PST
-    - cron: "0 7 * * *"
   workflow_dispatch:
     inputs:
       keep_stack:
