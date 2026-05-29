@@ -1670,6 +1670,116 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/feature:
+    get:
+      summary: Get Feature Status
+      description: Report whether the caller has the Assistant feature enabled.
+      operationId: get_feature_status_api_chat_feature_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistantFeatureStatus'
+  /api/chat/threads:
+    get:
+      summary: List Threads
+      description: List the caller's threads, newest-updated first.
+      operationId: list_threads_api_chat_threads_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ChatThreadOut'
+                type: array
+                title: Response List Threads Api Chat Threads Get
+    post:
+      summary: Create Thread
+      description: |-
+        Create a new empty thread for the caller.
+
+        ``title`` is optional; the agent loop (PR 3) will summarise the
+        first user message and stamp the title automatically.  Until then
+        the UI renders the first message as a placeholder title.
+      operationId: create_thread_api_chat_threads_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatThreadCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatThreadOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/threads/{thread_id}:
+    delete:
+      summary: Delete Thread
+      description: Hard-delete a thread and all of its messages.
+      operationId: delete_thread_api_chat_threads__thread_id__delete
+      parameters:
+      - name: thread_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Thread Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/threads/{thread_id}/messages:
+    get:
+      summary: List Thread Messages
+      description: |-
+        Return every message in the thread in chronological order.
+
+        No pagination in Phase 1 — a single thread is bounded by the budget
+        cap (PR 6) long before message counts would matter.
+      operationId: list_thread_messages_api_chat_threads__thread_id__messages_get
+      parameters:
+      - name: thread_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Thread Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatMessageOut'
+                title: Response List Thread Messages Api Chat Threads  Thread Id  Messages Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
       summary: List Profiles
@@ -4104,6 +4214,20 @@ components:
       type: object
       title: AssetViewPatch
       description: Request body for ``PATCH /api/asset-views/{id}``. All fields optional.
+    AssistantFeatureStatus:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: AssistantFeatureStatus
+      description: |-
+        Response body for ``GET /api/chat/feature``.
+
+        Lets the frontend decide whether to render the Assistant tab without
+        needing to probe a 404 from another endpoint.
     AuditLogRead:
       properties:
         id:
@@ -4389,6 +4513,89 @@ components:
       required:
       - entries
       title: CatalogOut
+    ChatMessageOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        thread_id:
+          type: string
+          format: uuid
+          title: Thread Id
+        role:
+          type: string
+          title: Role
+        content:
+          type: string
+          title: Content
+        tool_calls:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Tool Calls
+        tool_call_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Call Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - thread_id
+      - role
+      - content
+      - created_at
+      title: ChatMessageOut
+      description: |-
+        A single message in a thread.
+
+        ``tool_calls`` and ``tool_call_id`` are surfaced on the wire because
+        the frontend needs them to render the tool-call timeline (and, in
+        PR 4, the approval cards).  ``tokens_in`` / ``tokens_out`` are NOT
+        surfaced; the budget badge reads from ``/api/chat/budget`` instead.
+    ChatThreadCreate:
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          title: Title
+          default: ''
+      type: object
+      title: ChatThreadCreate
+      description: Request body for ``POST /api/chat/threads``.
+    ChatThreadOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        title:
+          type: string
+          title: Title
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - title
+      - created_at
+      - updated_at
+      title: ChatThreadOut
+      description: A chat thread as returned by the API.
     ConnectTokenRequest:
       properties:
         device_id:

@@ -831,6 +831,7 @@ from cms.routers.profiles import router as profiles_router  # noqa: E402
 from cms.routers.schedules import router as schedules_router  # noqa: E402
 from cms.routers.tags import router as tags_router  # noqa: E402
 from cms.routers.asset_views import router as asset_views_router  # noqa: E402
+from cms.routers.chat import router as chat_router  # noqa: E402
 from cms.routers.ws import router as ws_router  # noqa: E402
 from cms.routers.api_keys import router as api_keys_router  # noqa: E402
 from cms.routers.audit import router as audit_router  # noqa: E402
@@ -853,6 +854,7 @@ app.include_router(assets_device_router)
 app.include_router(schedules_router)
 app.include_router(tags_router)
 app.include_router(asset_views_router)
+app.include_router(chat_router)
 app.include_router(profiles_router)
 app.include_router(logs_router)
 app.include_router(cms_logs_router)
