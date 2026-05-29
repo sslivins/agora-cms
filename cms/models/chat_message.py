@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -48,16 +48,24 @@ class ChatMessage(Base):
         index=True,
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
-    content: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     tool_calls: Mapped[list[dict[str, Any]] | None] = mapped_column(
         _JSON_TYPE, nullable=True
     )
     tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
-    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_in: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    tokens_out: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        server_default=func.current_timestamp(),
         index=True,
     )
 
