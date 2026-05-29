@@ -104,6 +104,23 @@ param alertEmail string = ''
 @description('When true, replace the legacy request-count CMS heartbeat alert with an Application Insights standard availability test against /healthz. Recommended for low-traffic / idle-friendly environments (dev, fresh prod) where the OTel SDK filters probe traffic and the legacy alert produces false positives. Currently opt-in; will be flipped to default-true after dev validation.')
 param useSyntheticHeartbeat bool = false
 
+// ── Assistant feature (Azure OpenAI) ──
+@description('When true, deploy an Azure OpenAI account + chat model deployment and wire it to the CMS container app. Required by the Assistant feature; safe to leave false in environments that are not opted in yet — the CMS treats missing endpoint env vars as "feature disabled" at runtime.')
+param deployAzureOpenAI bool = false
+
+@description('Azure region for the Azure OpenAI account when deployAzureOpenAI=true. Defaults to the RG location; override when the RG region has no quota for the requested model. westus has GPT-4o; eastus2 has best GPT-5 quota.')
+param azureOpenAIRegion string = ''
+
+@description('Chat model to deploy under the "chat" deployment name on the Azure OpenAI account. Only used when deployAzureOpenAI=true.')
+@allowed(['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'])
+param azureOpenAIChatModel string = 'gpt-4o'
+
+@description('Chat model version pinned for the "chat" deployment. Validate against the Azure OpenAI model-versions doc for the chosen azureOpenAIRegion.')
+param azureOpenAIChatModelVersion string = '2024-11-20'
+
+@description('TPM capacity for the chat deployment, in thousands (30 = 30k TPM). Phase-1 default of 30 is generous for a single-org pilot.')
+param azureOpenAIChatCapacity int = 30
+
 var tags = {
   project: 'agora-cms'
   managedBy: 'bicep'
@@ -119,6 +136,7 @@ var cmsAppName = '${prefix}-cms'
 var mcpAppName = '${prefix}-mcp'
 var workerJobName = '${prefix}-worker'
 var webPubSubName = '${prefix}-cms-wps'
+var azureOpenAIAccountName = '${prefix}-aoai'
 
 // ── Networking ──
 module networking 'modules/networking.bicep' = {
@@ -178,6 +196,22 @@ module webPubSub 'modules/webPubSub.bicep' = if (deviceTransport == 'wps') {
     location: location
     webPubSubName: webPubSubName
     skuName: webPubSubSku
+    tags: tags
+  }
+}
+
+// ── Azure OpenAI (Assistant feature backend) ──
+// Optional: only deployed when deployAzureOpenAI=true. Account
+// region defaults to the RG region; override via azureOpenAIRegion
+// when the RG region lacks quota for the requested model.
+module azureOpenAI 'modules/azureOpenAI.bicep' = if (deployAzureOpenAI) {
+  name: 'azureOpenAI'
+  params: {
+    location: empty(azureOpenAIRegion) ? location : azureOpenAIRegion
+    accountName: azureOpenAIAccountName
+    chatModel: azureOpenAIChatModel
+    chatModelVersion: azureOpenAIChatModelVersion
+    chatModelCapacity: azureOpenAIChatCapacity
     tags: tags
   }
 }
@@ -245,6 +279,31 @@ module containerApps 'modules/containerApps.bicep' = {
 
     // Public CMS URL override (custom domain). Propagated to AGORA_CMS_BASE_URL.
     cmsBaseUrlOverride: cmsBaseUrlOverride
+
+    // Azure OpenAI (Assistant feature). Empty when not deployed —
+    // CMS treats empty endpoint as "feature disabled" at runtime.
+    azureOpenAIEndpoint: deployAzureOpenAI ? azureOpenAI.outputs.endpoint : ''
+    azureOpenAIDeployment: deployAzureOpenAI ? azureOpenAI.outputs.deploymentName : ''
+  }
+}
+
+// ── Azure OpenAI RBAC ──
+// Grant the CMS container app's managed identity the
+// 'Cognitive Services OpenAI User' role on the AOAI account so it
+// can call chat.completions with DefaultAzureCredential, no keys
+// required. Role guid 5e0bd9bd-7b93-4f28-af87-19fc36ad61bd is the
+// built-in 'Cognitive Services OpenAI User' definition.
+resource existingAzureOpenAI 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAzureOpenAI) {
+  name: azureOpenAIAccountName
+}
+
+resource cmsAzureOpenAIRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAzureOpenAI && deployRoleAssignments) {
+  name: guid(existingAzureOpenAI.id, cmsAppName, '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+  scope: existingAzureOpenAI
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+    principalId: containerApps.outputs.cmsPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -314,3 +373,5 @@ output mcpLatestRevisionName string = containerApps.outputs.mcpLatestRevisionNam
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output keyVaultUri string = keyVault.outputs.keyVaultUri
 output storageAccountName string = storage.outputs.storageAccountName
+output azureOpenAIEndpoint string = deployAzureOpenAI ? azureOpenAI.outputs.endpoint : ''
+output azureOpenAIDeployment string = deployAzureOpenAI ? azureOpenAI.outputs.deploymentName : ''
