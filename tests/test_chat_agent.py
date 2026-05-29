@@ -78,6 +78,46 @@ class FakeLLMClient:
             return self._scripted.pop(0)
         return _FakeResult(content=self.reply, tokens_in=42, tokens_out=17)
 
+    async def stream(
+        self,
+        messages,
+        *,
+        max_completion_tokens=None,
+        temperature: float = 0.2,
+        tools=None,
+        tool_choice=None,
+    ):
+        """Adapt a scripted ``_FakeResult`` into the streaming delta
+        shape ``LLMClient.stream`` yields.  One call = one
+        ``_FakeResult`` worth of deltas (one content chunk if the
+        reply is text, one tool_call_delta per tool call if any,
+        then a ``finish``)."""
+        self.calls.append(list(messages))
+        self.tools_seen.append(list(tools) if tools else None)
+        result = (
+            self._scripted.pop(0)
+            if self._scripted
+            else _FakeResult(content=self.reply, tokens_in=42, tokens_out=17)
+        )
+        if result.content:
+            yield {"type": "content", "text": result.content}
+        if result.tool_calls:
+            for idx, tc in enumerate(result.tool_calls):
+                fn = tc.get("function", {})
+                yield {
+                    "type": "tool_call_delta",
+                    "index": idx,
+                    "id": tc.get("id"),
+                    "name": fn.get("name"),
+                    "arguments_delta": fn.get("arguments", ""),
+                }
+        yield {
+            "type": "finish",
+            "reason": "tool_calls" if result.tool_calls else "stop",
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+        }
+
     async def aclose(self) -> None:
         self.closed = True
 
@@ -868,5 +908,186 @@ def test_read_service_key_ok(tmp_path):
     p = tmp_path / "k"
     p.write_text("agora_svc_deadbeef\n")
     assert _read_service_key(str(p)) == "agora_svc_deadbeef"
+
+
+# ── PR 3c: SSE streaming endpoint ─────────────────────────────────────
+
+
+def _parse_sse(text: str) -> list[tuple[str, str]]:
+    """Return ``[(event_name, data_json), ...]`` from an SSE blob.
+
+    Only handles the subset the agent emits — a sequence of frames of
+    the form ``event: foo\\ndata: {...}\\n\\n``.  Heartbeat ping frames
+    sent by ``sse-starlette`` (``: ping\\n\\n``) are skipped.
+    """
+    frames: list[tuple[str, str]] = []
+    # SSE frames use ``\r\n`` line endings; normalise first.
+    normalised = text.replace("\r\n", "\n")
+    for raw in normalised.split("\n\n"):
+        block = raw.strip()
+        if not block or block.startswith(":"):
+            continue
+        event = None
+        data = None
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data = line[len("data:"):].strip()
+        if event is not None and data is not None:
+            frames.append((event, data))
+    return frames
+
+
+@pytest.mark.asyncio
+class TestStreamingEndpoint:
+    async def test_text_only_stream_yields_token_and_done(
+        self, client, scripted_agent
+    ):
+        scripted_agent["mcp_tools"] = []
+        scripted_agent["llm_replies"] = [
+            _FakeResult(content="Hello world", tokens_in=3, tokens_out=2)
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{tid}/stream",
+            json={"content": "hi"},
+        ) as resp:
+            assert resp.status_code == 200
+            body = await resp.aread()
+        text = body.decode()
+        frames = _parse_sse(text)
+        events = [name for name, _ in frames]
+        assert events == ["token", "done"]
+        import json as _json
+
+        assert _json.loads(frames[0][1])["text"] == "Hello world"
+        done = _json.loads(frames[-1][1])
+        assert done["tokens_in"] == 3
+        assert done["tokens_out"] == 2
+        assert "message_id" in done
+
+    async def test_stream_with_tool_call_then_final_answer(
+        self, client, scripted_agent, app
+    ):
+        from cms.database import get_db
+        from cms.models.chat_message import ChatMessage
+
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_devices",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        scripted_agent["mcp_results"] = {"list_devices": '[{"id":"d1"}]'}
+        scripted_agent["llm_replies"] = [
+            _FakeResult(
+                content="",
+                tokens_in=10,
+                tokens_out=5,
+                tool_calls=[_tool_call("list_devices", {})],
+            ),
+            _FakeResult(content="One device.", tokens_in=20, tokens_out=8),
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{tid}/stream",
+            json={"content": "how many"},
+        ) as resp:
+            assert resp.status_code == 200
+            body = await resp.aread()
+        frames = _parse_sse(body.decode())
+        events = [name for name, _ in frames]
+        # The streaming agent emits tool_call → tool_result → (final
+        # text) token(s) → done.  No assistant token frame for the
+        # intermediate empty-content tool-call turn.
+        assert events == ["tool_call", "tool_result", "token", "done"]
+
+        # Persisted rows: user, assistant(tool_calls), tool, assistant(final).
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            rows = (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.thread_id == uuid.UUID(tid))
+                    .order_by(ChatMessage.created_at, ChatMessage.id)
+                )
+            ).scalars().all()
+            assert [r.role for r in rows] == [
+                "user",
+                "assistant",
+                "tool",
+                "assistant",
+            ]
+            assert rows[3].content == "One device."
+            break
+
+    async def test_stream_503_when_llm_not_configured(self, client):
+        # No patched_llm fixture — settings have empty endpoint.
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{tid}/stream",
+            json={"content": "hi"},
+        ) as resp:
+            assert resp.status_code == 503
+
+    async def test_stream_404_on_unknown_thread(self, client, scripted_agent):
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{uuid.uuid4()}/stream",
+            json={"content": "hi"},
+        ) as resp:
+            assert resp.status_code == 404
+
+    async def test_stream_emits_error_event_on_mcp_failure(
+        self, client, app, monkeypatch
+    ):
+        from cms.auth import get_settings
+        from cms.routers import chat as chat_router
+        from cms.services.assistant import agent as agent_mod
+        from cms.services.assistant.mcp_client import McpUnavailableError
+
+        settings = app.dependency_overrides[get_settings]()
+        settings.azure_openai_endpoint = "https://fake.openai.azure.com"
+        settings.azure_openai_deployment = "gpt-4o-fake"
+        monkeypatch.setattr(
+            chat_router, "assistant_llm_available", lambda s: True
+        )
+        monkeypatch.setattr(agent_mod, "LLMClient", FakeLLMClient)
+
+        class _BrokenMcp:
+            def __init__(self, *, settings=None, user=None):
+                pass
+
+            async def __aenter__(self):
+                raise McpUnavailableError("simulated outage")
+
+            async def __aexit__(self, *a):
+                pass
+
+        monkeypatch.setattr(agent_mod, "AssistantMcpClient", _BrokenMcp)
+
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{tid}/stream",
+            json={"content": "hi"},
+        ) as resp:
+            # Handshake succeeds (LLM looks configured); the failure is
+            # surfaced as an error frame.
+            assert resp.status_code == 200
+            body = await resp.aread()
+        frames = _parse_sse(body.decode())
+        assert any(name == "error" for name, _ in frames)
+        err_frame = next(d for name, d in frames if name == "error")
+        assert "simulated outage" in err_frame
+
 
 

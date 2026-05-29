@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -319,3 +320,245 @@ async def run_user_turn(
         final_assistant_row.tokens_out,
     )
     return final_assistant_row
+
+
+# ── Streaming variant (PR 3c) ─────────────────────────────────────────
+
+
+def _assemble_tool_calls(
+    by_index: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """Convert accumulated streaming tool-call fragments to OpenAI shape.
+
+    Returns ``None`` when no fragments were seen.  Empty-name fragments
+    are dropped (defensive against partial Azure responses).
+    """
+    if not by_index:
+        return None
+    out: list[dict[str, Any]] = []
+    for idx in sorted(by_index.keys()):
+        tc = by_index[idx]
+        if not tc.get("name"):
+            continue
+        out.append(
+            {
+                "id": tc.get("id") or f"call_{idx}",
+                "type": "function",
+                "function": {
+                    "name": tc["name"],
+                    "arguments": tc.get("arguments", ""),
+                },
+            }
+        )
+    return out or None
+
+
+async def run_user_turn_streaming(
+    *,
+    db: AsyncSession,
+    settings: Settings,
+    user: User,
+    thread: ChatThread,
+    user_message: str,
+    llm_client: LLMClient | None = None,
+    mcp_client: AssistantMcpClient | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Streaming counterpart of :func:`run_user_turn`.
+
+    Yields event dicts the SSE endpoint serialises to the client:
+
+    * ``{"type": "token", "text": str}`` — assistant text chunk.
+    * ``{"type": "tool_call", "id", "name", "arguments"}`` — tool invocation
+      starting (after the LLM finished requesting it).
+    * ``{"type": "tool_result", "id", "name", "content"}`` — tool result.
+    * ``{"type": "done", "message_id", "tokens_in", "tokens_out"}`` —
+      final answer turn complete.
+    * ``{"type": "error", "message"}`` — fatal error; the generator
+      raises after yielding (caller turns it into the SSE error frame
+      and disconnects).
+
+    Persistence rules mirror :func:`run_user_turn`: every assistant /
+    tool turn is written to the DB as it happens so an interrupted
+    stream still leaves a coherent thread.
+    """
+    user_message = user_message.strip()
+    if not user_message:
+        raise ValueError("user_message must not be empty")
+
+    # 1. Persist the user turn first.
+    user_row = ChatMessage(
+        thread_id=thread.id, role="user", content=user_message
+    )
+    db.add(user_row)
+    await db.flush()
+
+    rows = (
+        await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread.id)
+            .order_by(ChatMessage.created_at, ChatMessage.id)
+        )
+    ).scalars().all()
+
+    openai_messages: list[dict[str, Any]] = [
+        {"role": "system", "content": build_system_prompt(user)},
+    ]
+    openai_messages.extend(_history_to_openai_messages(list(rows)))
+
+    owns_llm = llm_client is None
+    llm = llm_client if llm_client is not None else LLMClient(settings)
+    owns_mcp = mcp_client is None
+    mcp = mcp_client if mcp_client is not None else AssistantMcpClient(
+        settings=settings, user=user
+    )
+    if owns_mcp:
+        await mcp.__aenter__()
+
+    final_row: ChatMessage | None = None
+    try:
+        tools = await mcp.list_openai_tools()
+        max_iters = max(1, int(settings.assistant_max_tool_iterations))
+
+        for iteration in range(max_iters):
+            full_content: list[str] = []
+            tc_by_idx: dict[int, dict[str, Any]] = {}
+            tokens_in = 0
+            tokens_out = 0
+
+            async for delta in llm.stream(
+                openai_messages, tools=tools or None
+            ):
+                dtype = delta.get("type")
+                if dtype == "content":
+                    full_content.append(delta["text"])
+                    yield {"type": "token", "text": delta["text"]}
+                elif dtype == "tool_call_delta":
+                    idx = delta.get("index", 0)
+                    slot = tc_by_idx.setdefault(
+                        idx, {"id": None, "name": "", "arguments": ""}
+                    )
+                    if delta.get("id"):
+                        slot["id"] = delta["id"]
+                    if delta.get("name"):
+                        slot["name"] = (slot["name"] or "") + delta["name"]
+                    if delta.get("arguments_delta"):
+                        slot["arguments"] += delta["arguments_delta"]
+                elif dtype == "finish":
+                    tokens_in = delta.get("tokens_in", 0) or tokens_in
+                    tokens_out = delta.get("tokens_out", 0) or tokens_out
+
+            content = "".join(full_content)
+            tool_calls = _assemble_tool_calls(tc_by_idx)
+
+            if not tool_calls:
+                final_row = ChatMessage(
+                    thread_id=thread.id,
+                    role="assistant",
+                    content=content,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                )
+                db.add(final_row)
+                openai_messages.append(
+                    {"role": "assistant", "content": content}
+                )
+                break
+
+            tc_row = ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content=content,
+                tool_calls=tool_calls,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+            )
+            db.add(tc_row)
+            await db.flush()
+            openai_messages.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
+            )
+
+            for tool_call in tool_calls:
+                fn = tool_call.get("function", {}) or {}
+                yield {
+                    "type": "tool_call",
+                    "id": tool_call.get("id"),
+                    "name": fn.get("name"),
+                    "arguments": fn.get("arguments", ""),
+                }
+                tool_content = await _execute_tool_call(
+                    mcp=mcp, tool_call=tool_call
+                )
+                tool_row = ChatMessage(
+                    thread_id=thread.id,
+                    role="tool",
+                    content=tool_content,
+                    tool_call_id=tool_call.get("id"),
+                )
+                db.add(tool_row)
+                await db.flush()
+                openai_messages.append(
+                    {
+                        "role": "tool",
+                        "content": tool_content,
+                        "tool_call_id": tool_call.get("id"),
+                    }
+                )
+                yield {
+                    "type": "tool_result",
+                    "id": tool_call.get("id"),
+                    "name": fn.get("name"),
+                    "content": tool_content,
+                }
+        else:
+            logger.warning(
+                "assistant.stream.max_iters_hit thread=%s user=%s cap=%d",
+                thread.id,
+                user.id,
+                max_iters,
+            )
+            final_row = ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content=(
+                    "(stopped: max tool iterations reached. The assistant "
+                    "kept requesting more tools without producing a final "
+                    "answer. Try rephrasing the request.)"
+                ),
+            )
+            db.add(final_row)
+    finally:
+        if owns_mcp:
+            await mcp.__aexit__(None, None, None)
+        if owns_llm:
+            await llm.aclose()
+
+    # Auto-title + updated_at + commit.
+    user_turn_count = sum(1 for r in rows if r.role == "user")
+    if user_turn_count == 1 and not thread.title.strip():
+        thread.title = _auto_title(user_message)
+    thread.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    await db.commit()
+    assert final_row is not None
+    await db.refresh(final_row)
+    logger.info(
+        "assistant.stream.complete thread=%s user=%s in=%d out=%d",
+        thread.id,
+        user.id,
+        final_row.tokens_in,
+        final_row.tokens_out,
+    )
+    yield {
+        "type": "done",
+        "message_id": str(final_row.id),
+        "tokens_in": final_row.tokens_in,
+        "tokens_out": final_row.tokens_out,
+    }
+
+
+
