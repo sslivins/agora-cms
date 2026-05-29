@@ -1090,4 +1090,191 @@ class TestStreamingEndpoint:
         assert "simulated outage" in err_frame
 
 
+# ── PR 4: streaming approval intercept ────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestStreamingApprovalIntercept:
+    async def test_write_tool_yields_approval_request_and_stops(
+        self, client, scripted_agent, app
+    ):
+        from cms.database import get_db
+        from cms.models.chat_message import ChatMessage
+        from cms.models.chat_pending_approval import (
+            STATUS_PENDING,
+            ChatPendingApproval,
+        )
+
+        # ``delete_device`` is intentionally NOT in READ_ONLY_TOOLS.
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_device",
+                    "description": "delete a device",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        scripted_agent["llm_replies"] = [
+            _FakeResult(
+                content="",
+                tokens_in=12,
+                tokens_out=4,
+                tool_calls=[
+                    _tool_call("delete_device", {"id": "dev-1"})
+                ],
+            ),
+            # Should NOT be consumed — the loop must stop on the
+            # approval intercept and not call the LLM again.
+            _FakeResult(content="should not appear", tokens_in=0, tokens_out=0),
+        ]
+
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{tid}/stream",
+            json={"content": "delete it"},
+        ) as resp:
+            assert resp.status_code == 200
+            body = await resp.aread()
+
+        frames = _parse_sse(body.decode())
+        events = [name for name, _ in frames]
+        # tool_call → approval_request (no tool_result) → done.
+        assert events == ["tool_call", "approval_request", "done"]
+
+        import json as _json
+
+        ar = _json.loads(frames[1][1])
+        assert ar["name"] == "delete_device"
+        assert ar["arguments"] == {"id": "dev-1"}
+        assert "approval_id" in ar
+
+        # An approval row was created.
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            rows = (
+                await db.execute(
+                    select(ChatPendingApproval).where(
+                        ChatPendingApproval.thread_id == uuid.UUID(tid)
+                    )
+                )
+            ).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].tool_name == "delete_device"
+            assert rows[0].status == STATUS_PENDING
+            assert rows[0].tool_arguments == {"id": "dev-1"}
+
+            # Placeholder ``role=tool`` message persisted so OpenAI
+            # history stays consistent on the next turn.
+            msgs = (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.thread_id == uuid.UUID(tid))
+                    .order_by(ChatMessage.created_at, ChatMessage.id)
+                )
+            ).scalars().all()
+            roles = [m.role for m in msgs]
+            assert roles == ["user", "assistant", "tool", "assistant"]
+            placeholder = _json.loads(msgs[2].content)
+            assert placeholder["status"] == "awaiting_approval"
+            assert placeholder["tool"] == "delete_device"
+            # Final assistant message explains the pause.
+            assert "awaiting your approval" in msgs[3].content
+            break
+
+        # Only one LLM call was made — the loop stopped on the
+        # approval intercept and didn't iterate again.
+        assert FakeLLMClient.last_instance is not None
+        assert len(FakeLLMClient.last_instance.calls) == 1
+
+    async def test_read_tool_alongside_write_intercepts_only_write(
+        self, client, scripted_agent, app
+    ):
+        from cms.database import get_db
+        from cms.models.chat_pending_approval import ChatPendingApproval
+
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_devices",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_device",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        scripted_agent["mcp_results"] = {"list_devices": "[]"}
+        scripted_agent["llm_replies"] = [
+            _FakeResult(
+                content="",
+                tokens_in=8,
+                tokens_out=3,
+                tool_calls=[
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "list_devices",
+                            "arguments": "{}",
+                        },
+                    },
+                    {
+                        "id": "call_write",
+                        "type": "function",
+                        "function": {
+                            "name": "delete_device",
+                            "arguments": '{"id": "dev-1"}',
+                        },
+                    },
+                ],
+            )
+        ]
+
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        async with client.stream(
+            "POST",
+            f"/api/chat/threads/{tid}/stream",
+            json={"content": "list then delete"},
+        ) as resp:
+            assert resp.status_code == 200
+            body = await resp.aread()
+
+        frames = _parse_sse(body.decode())
+        events = [name for name, _ in frames]
+        # Read tool executes normally; write tool becomes approval.
+        # Order: tool_call(read) → tool_result(read) → tool_call(write)
+        # → approval_request(write) → done.
+        assert events == [
+            "tool_call",
+            "tool_result",
+            "tool_call",
+            "approval_request",
+            "done",
+        ]
+
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            approvals = (
+                await db.execute(
+                    select(ChatPendingApproval).where(
+                        ChatPendingApproval.thread_id == uuid.UUID(tid)
+                    )
+                )
+            ).scalars().all()
+            assert len(approvals) == 1
+            assert approvals[0].tool_name == "delete_device"
+            break
+
+
+
 

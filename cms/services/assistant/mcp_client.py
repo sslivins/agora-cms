@@ -195,24 +195,39 @@ class AssistantMcpClient:
         )
         return out
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        bypass_whitelist: bool = False,
+    ) -> str:
         """Invoke an MCP tool and return its result as a JSON-string.
 
         Raises :class:`PermissionError` if ``name`` isn't in the
         read-only whitelist — the agent loop catches this and turns it
         into a synthetic tool-result the LLM can reason about.
+
+        ``bypass_whitelist=True`` is the **explicit** opt-out used by
+        the PR 4 approval flow: when the user has clicked Approve on a
+        pending write-tool approval, the chat_approvals router runs
+        the tool with the whitelist disabled.  The whitelist exists to
+        prevent the LLM running writes without a human in the loop;
+        the approval click IS that human in the loop.  Never set this
+        flag without an approved :class:`ChatPendingApproval` row.
         """
         if self._session is None:  # pragma: no cover
             raise RuntimeError("AssistantMcpClient not entered")
-        if name not in READ_ONLY_TOOLS:
+        if not bypass_whitelist and name not in READ_ONLY_TOOLS:
             raise PermissionError(
                 f"Tool '{name}' is not in the read-only whitelist "
                 "(writes require approval; see PR 4)."
             )
         logger.info(
-            "assistant.mcp.call name=%s user=%s",
+            "assistant.mcp.call name=%s user=%s bypass=%s",
             name,
             self._user.id,
+            bypass_whitelist,
         )
         result = await self._session.call_tool(name, arguments)
         # Prefer structuredContent if the server sent it.
