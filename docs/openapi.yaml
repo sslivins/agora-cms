@@ -2229,13 +2229,27 @@ paths:
     get:
       summary: Verify Mcp Token
       description: |-
-        Validate a bearer token (user API key) and return user permissions.
+        Validate a bearer token and return the resolved user's permissions.
 
-        Called by the MCP server on each incoming connection.
-        The bearer token must be a valid user API key (``agora_...``) with
-        ``key_type="mcp"``.  API-type keys are rejected.
-        Returns the user's display name, role, and effective permissions
-        (user role ∩ MCP role ceiling).
+        Called by the MCP server's ``BearerAuthMiddleware`` on every
+        incoming connection.  Supports two authentication modes:
+
+        1. **Personal MCP key** (existing path).  The bearer token is a
+           ``key_type="mcp"`` API key owned by a user; the response carries
+           that user's effective permissions.
+
+        2. **Service key + X-On-Behalf-Of** (new — used by the in-process
+           Assistant agent).  The bearer is the CMS-issued MCP service key
+           (``agora_svc_...``) AND the ``X-On-Behalf-Of`` header carries
+           the UUID of the user the request is acting for.  The response
+           carries THAT user's effective permissions — never a synthetic
+           "service" permission set.  This lets the CMS act as a trusted
+           proxy without duplicating per-user secrets while keeping the
+           per-tool permission gating identical to mode (1).
+
+        Both modes share the same ``compute_effective_permissions`` path
+        (user role ∩ MCP role ceiling).  No new privileged permission set
+        is introduced.
       operationId: verify_mcp_token_api_mcp_auth_get
       parameters:
       - name: authorization
@@ -2245,6 +2259,14 @@ paths:
           type: string
           default: ''
           title: Authorization
+      - name: x-on-behalf-of
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-On-Behalf-Of
       responses:
         '200':
           description: Successful Response

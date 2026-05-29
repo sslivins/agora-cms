@@ -1309,11 +1309,22 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Extract raw key from "Bearer <key>"
         raw_key = token.removeprefix("Bearer ").strip()
 
+        # Forward X-On-Behalf-Of unchanged.  When the CMS Assistant
+        # calls MCP, it sends the service key as bearer AND this header
+        # to identify which user the request is acting for; the CMS
+        # auth endpoint validates the pairing and returns that user's
+        # permissions.  For personal-MCP-key auth this header is unset
+        # and harmlessly omitted.
+        on_behalf_of = request.headers.get("x-on-behalf-of", "")
+        forwarded_headers = {"Authorization": token}
+        if on_behalf_of:
+            forwarded_headers["X-On-Behalf-Of"] = on_behalf_of
+
         try:
             async with httpx.AsyncClient(timeout=5.0) as http:
                 resp = await http.get(
                     f"{CMS_BASE_URL}/api/mcp/auth",
-                    headers={"Authorization": token},
+                    headers=forwarded_headers,
                 )
                 if resp.status_code != 200:
                     detail = resp.json().get("detail", "Access denied")
@@ -1330,16 +1341,19 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 status_code=503,
             )
 
-        # Store user context for MCP tools
+        # Store user context for MCP tools.  For service-key auth the
+        # CMS echoes the resolved user via ``on_behalf_of``; for
+        # personal-key auth it carries the key owner's display name.
         _ctx_api_key.set(raw_key)
         _ctx_permissions.set(auth_data.get("permissions", []))
         _ctx_user_name.set(auth_data.get("user", "unknown"))
 
         logger.info(
-            "Authenticated MCP user: %s (role: %s, %d permissions)",
+            "Authenticated MCP user: %s (role: %s, %d permissions, auth=%s)",
             auth_data.get("user"),
             auth_data.get("role"),
             len(auth_data.get("permissions", [])),
+            auth_data.get("key_type", "mcp"),
         )
 
         return await call_next(request)
