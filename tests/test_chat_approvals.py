@@ -307,3 +307,98 @@ class TestRejectEndpoint:
         await client.post(f"/api/chat/approvals/{aid}/approve")
         resp = await client.post(f"/api/chat/approvals/{aid}/reject")
         assert resp.status_code == 409
+
+
+# ── Placeholder upsert (PR 6) ────────────────────────────────────────
+
+
+async def _insert_placeholder_tool_row(
+    app, thread_id: uuid.UUID, tool_call_id: str
+) -> uuid.UUID:
+    """Insert a `role=tool` placeholder row that the streaming agent
+    would have written when it intercepted a write tool.  Returns the
+    row id so the test can assert it was UPDATED (not replaced)."""
+    from cms.database import get_db
+
+    factory = app.dependency_overrides[get_db]
+    row_id: uuid.UUID | None = None
+    async for db in factory():
+        row = ChatMessage(
+            thread_id=thread_id,
+            role="tool",
+            tool_call_id=tool_call_id,
+            content=json.dumps({"status": "awaiting_approval"}),
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        row_id = row.id
+        break
+    assert row_id is not None
+    return row_id
+
+
+@pytest.mark.asyncio
+class TestApprovalResultUpsert:
+    """The approve / reject paths must UPDATE the placeholder tool row
+    in place rather than INSERT a duplicate — otherwise the next turn's
+    history would carry two rows with the same `tool_call_id`."""
+
+    async def test_approve_updates_placeholder_in_place(
+        self, client, app, patched_approve_mcp
+    ):
+        tid = await _create_thread(client)
+        aid = await _new_approval(app, tid)
+        # Find the approval's tool_call_id and pre-seed the placeholder.
+        approval = await client.get(f"/api/chat/approvals/{aid}")
+        tc_id = approval.json()["tool_call_id"]
+        placeholder_id = await _insert_placeholder_tool_row(app, tid, tc_id)
+        patched_approve_mcp.result = '{"deleted": "dev-1"}'
+
+        resp = await client.post(f"/api/chat/approvals/{aid}/approve")
+        assert resp.status_code == 200
+
+        messages = await _fetch_thread_messages(app, tid)
+        tool_msgs = [m for m in messages if m.tool_call_id == tc_id]
+        assert len(tool_msgs) == 1, (
+            "expected exactly one tool row per tool_call_id after approve"
+        )
+        assert tool_msgs[0].id == placeholder_id
+        assert tool_msgs[0].content == '{"deleted": "dev-1"}'
+
+    async def test_reject_updates_placeholder_in_place(self, client, app):
+        tid = await _create_thread(client)
+        aid = await _new_approval(app, tid)
+        approval = await client.get(f"/api/chat/approvals/{aid}")
+        tc_id = approval.json()["tool_call_id"]
+        placeholder_id = await _insert_placeholder_tool_row(app, tid, tc_id)
+
+        resp = await client.post(
+            f"/api/chat/approvals/{aid}/reject", json={"note": "nope"}
+        )
+        assert resp.status_code == 200
+
+        messages = await _fetch_thread_messages(app, tid)
+        tool_msgs = [m for m in messages if m.tool_call_id == tc_id]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0].id == placeholder_id
+        body = json.loads(tool_msgs[0].content)
+        assert body["rejected"] is True
+        assert "nope" in body["reason"]
+
+    async def test_approve_inserts_when_no_placeholder_exists(
+        self, client, app, patched_approve_mcp
+    ):
+        # Backward-compat: if no placeholder is pre-seeded (legacy /
+        # non-streaming origin path) the upsert falls back to INSERT.
+        tid = await _create_thread(client)
+        aid = await _new_approval(app, tid)
+        patched_approve_mcp.result = '{"ok": true}'
+
+        resp = await client.post(f"/api/chat/approvals/{aid}/approve")
+        assert resp.status_code == 200
+
+        messages = await _fetch_thread_messages(app, tid)
+        tool_msgs = [m for m in messages if m.role == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0].content == '{"ok": true}'
