@@ -234,7 +234,14 @@ async def require_auth(
     user = await get_current_user(request, settings, db)
     request.state.user = user
 
-    # Force password change redirect for users that haven't completed setup.
+    # Stash the assistant allowlist check on request.state so the topbar
+    # template can conditionally render the Assistant tab without each
+    # page route having to look it up.  Cheap (single cms_settings read).
+    try:
+        from cms.services.assistant_flag import assistant_enabled_for
+        request.state.assistant_enabled = await assistant_enabled_for(db, user)
+    except Exception:
+        request.state.assistant_enabled = False
     # The exempt set is the minimum surface a half-setup user must reach to
     # finish: the HTML form, the JSON API that backs the same operation,
     # and logout (so they can bail out without being trapped).

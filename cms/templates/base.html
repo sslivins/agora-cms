@@ -84,6 +84,9 @@
         {% if 'users:read' in user_perms %}
         <a href="/users" class="nav-tab {% if active_tab == 'users' %}active{% endif %}">Users</a>
         {% endif %}
+        {% if request.state.assistant_enabled is defined and request.state.assistant_enabled %}
+        <a href="/assistant" class="nav-tab {% if active_tab == 'assistant' %}active{% endif %}">Assistant</a>
+        {% endif %}
         </div>
         {% if request.state.user is defined and request.state.user %}
         <div class="header-status-lights">

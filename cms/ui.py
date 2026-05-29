@@ -905,6 +905,26 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     })
 
 
+@router.get("/assistant", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def assistant_page(request: Request, db: AsyncSession = Depends(get_db)):
+    """Render the Assistant chat UI.
+
+    Gated by the per-user allowlist: users not on the list get a 404
+    (matches the /api/chat/* endpoints, which return 404 so the feature
+    is invisible).  The client-side JS does its own /api/chat/feature
+    probe and renders a polite "not enabled" view when the user is off
+    the allowlist — this server-side gate is the belt-and-braces.
+    """
+    from fastapi import HTTPException
+    from cms.services.assistant_flag import assistant_enabled_for
+    user = getattr(request.state, "user", None)
+    if user is None or not await assistant_enabled_for(db, user):
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(request, "assistant.html", {
+        "active_tab": "assistant",
+    })
+
+
 @router.get("/api/server-time", dependencies=[Depends(require_auth)])
 async def server_time_json(db: AsyncSession = Depends(get_db)):
     """Return the CMS server's configured timezone and current local time."""
