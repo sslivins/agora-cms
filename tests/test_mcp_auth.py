@@ -149,6 +149,193 @@ class TestMcpAuth:
 
 
 @pytest.mark.asyncio
+class TestMcpAuthOnBehalfOf:
+    """Service-key + X-On-Behalf-Of auth path (used by the Assistant agent).
+
+    Mode 2 from the docstring on verify_mcp_token:  the CMS sends its
+    own service key as the bearer AND identifies the target user via
+    the X-On-Behalf-Of header.  The endpoint must return that user's
+    permissions — never any synthetic "service" permission set — and
+    must reject the request if the service key is wrong, the header
+    is missing or malformed, or the named user doesn't exist / is
+    disabled.
+    """
+
+    async def _seed_service_key(self, db_session):
+        """Install a known service key hash and return the raw key."""
+        from cms.auth import (
+            SETTING_MCP_SERVICE_KEY_HASH,
+            SERVICE_KEY_PREFIX,
+        )
+        raw = SERVICE_KEY_PREFIX + "test_service_key_value_1234567890"
+        await set_setting(db_session, SETTING_MCP_SERVICE_KEY_HASH,
+                          _hash_api_key(raw))
+        return raw
+
+    async def _create_operator_user(self, db_session):
+        from sqlalchemy import select
+        from cms.auth import hash_password
+        from cms.models.user import Role, User
+
+        role = (await db_session.execute(
+            select(Role).where(Role.name == "Operator")
+        )).scalar_one()
+        user = User(
+            username="op-on-behalf-of",
+            email="op-obo@test.com",
+            display_name="Op OBO",
+            password_hash=hash_password("x"),
+            role_id=role.id,
+            is_active=True,
+            must_change_password=False,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        return user
+
+    async def test_service_key_with_admin_obo_returns_admin_perms(
+        self, client, db_session
+    ):
+        from sqlalchemy import select
+        from cms.models.user import User
+
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        service_key = await self._seed_service_key(db_session)
+        admin = (await db_session.execute(
+            select(User).where(User.username == "admin")
+        )).scalar_one()
+
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "X-On-Behalf-Of": str(admin.id),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["valid"] is True
+        assert data["key_type"] == "service"
+        assert data["on_behalf_of"] == str(admin.id)
+        # Admin gets all permissions
+        assert "devices:read" in data["permissions"]
+        assert "users:write" in data["permissions"]
+
+    async def test_service_key_with_operator_obo_returns_operator_perms(
+        self, client, db_session
+    ):
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        service_key = await self._seed_service_key(db_session)
+        op = await self._create_operator_user(db_session)
+
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "X-On-Behalf-Of": str(op.id),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # Operator does NOT have admin-only permissions even when the
+        # request comes via the trusted CMS service key.
+        assert "users:write" not in data["permissions"]
+        assert "roles:write" not in data["permissions"]
+        # But still has the basic read permissions Operator role has.
+        assert "devices:read" in data["permissions"]
+
+    async def test_service_key_without_obo_header_rejected(
+        self, client, db_session
+    ):
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        service_key = await self._seed_service_key(db_session)
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={"Authorization": f"Bearer {service_key}"},
+        )
+        assert resp.status_code == 400
+        assert "X-On-Behalf-Of" in resp.json()["detail"]
+
+    async def test_wrong_service_key_rejected(self, client, db_session):
+        from cms.auth import SERVICE_KEY_PREFIX
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        await self._seed_service_key(db_session)  # plant the correct hash
+        wrong = SERVICE_KEY_PREFIX + "definitely_not_the_real_one_nope"
+        import uuid
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {wrong}",
+                "X-On-Behalf-Of": str(uuid.uuid4()),
+            },
+        )
+        assert resp.status_code == 401
+
+    async def test_obo_with_non_uuid_rejected(self, client, db_session):
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        service_key = await self._seed_service_key(db_session)
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "X-On-Behalf-Of": "not-a-uuid",
+            },
+        )
+        assert resp.status_code == 400
+
+    async def test_obo_with_unknown_user_404s(self, client, db_session):
+        import uuid
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        service_key = await self._seed_service_key(db_session)
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "X-On-Behalf-Of": str(uuid.uuid4()),
+            },
+        )
+        assert resp.status_code == 404
+
+    async def test_obo_with_disabled_user_403s(self, client, db_session):
+        await set_setting(db_session, SETTING_MCP_ENABLED, "true")
+        service_key = await self._seed_service_key(db_session)
+        op = await self._create_operator_user(db_session)
+        op.is_active = False
+        await db_session.commit()
+
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "X-On-Behalf-Of": str(op.id),
+            },
+        )
+        assert resp.status_code == 403
+
+    async def test_mcp_disabled_blocks_service_key_path(
+        self, client, db_session
+    ):
+        from sqlalchemy import select
+        from cms.models.user import User
+
+        # MCP off — even valid service-key + OBO should 403.
+        await set_setting(db_session, SETTING_MCP_ENABLED, "false")
+        service_key = await self._seed_service_key(db_session)
+        admin = (await db_session.execute(
+            select(User).where(User.username == "admin")
+        )).scalar_one()
+        resp = await client.get(
+            "/api/mcp/auth",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "X-On-Behalf-Of": str(admin.id),
+            },
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 class TestMcpSettings:
     """Test the MCP settings UI endpoints."""
 
