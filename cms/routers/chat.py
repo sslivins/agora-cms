@@ -30,9 +30,15 @@ from cms.models.chat_thread import ChatThread
 from cms.models.user import User
 from cms.schemas.chat import (
     AssistantFeatureStatus,
+    ChatMessageCreate,
     ChatMessageOut,
     ChatThreadCreate,
     ChatThreadOut,
+)
+from cms.services.assistant.agent import run_user_turn
+from cms.services.assistant.llm_client import (
+    AssistantUnavailableError,
+    is_available as assistant_llm_available,
 )
 from cms.services.assistant_flag import assistant_enabled_for
 
@@ -171,3 +177,52 @@ async def list_thread_messages(
         )
     ).scalars().all()
     return [ChatMessageOut.model_validate(m) for m in rows]
+
+
+# ── Chat turn (PR 3a: non-streaming, no tools) ────────────────────────
+# Posts a user message and runs a single LLM turn.  Returns the
+# assistant message synchronously — no streaming yet (that lands in
+# PR 3b alongside MCP tool calls).
+
+@router.post(
+    "/threads/{thread_id}/message",
+    response_model=ChatMessageOut,
+    status_code=201,
+)
+async def post_message(
+    thread_id: uuid.UUID,
+    payload: ChatMessageCreate,
+    user: User = Depends(_current_user),
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a user prompt and return the assistant's reply.
+
+    Returns 503 if the environment hasn't been wired up with Azure
+    OpenAI yet (allowlisted user but no LLM backend).  This is distinct
+    from the feature-flag 404 — the feature IS on for this user, but
+    the backend is missing.
+    """
+    await _require_feature(user, db)
+    thread = await _get_owned_thread(thread_id, user, db)
+
+    if not assistant_llm_available(settings):
+        raise HTTPException(
+            status_code=503,
+            detail="Assistant LLM backend is not configured in this environment.",
+        )
+
+    try:
+        assistant_row = await run_user_turn(
+            db=db,
+            settings=settings,
+            user=user,
+            thread=thread,
+            user_message=payload.content,
+        )
+    except AssistantUnavailableError as exc:
+        # Defensive — assistant_llm_available() should have caught this,
+        # but a race against config changes is theoretically possible.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return ChatMessageOut.model_validate(assistant_row)

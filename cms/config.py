@@ -140,3 +140,18 @@ class Settings(SharedSettings):
     github_issues_token: str | None = None
     github_issues_repo: str = "sslivins/agora-cms"
     github_issues_label: str = "user-reported"
+
+    # Assistant feature (Azure OpenAI).  Endpoint + deployment are
+    # injected by infra/modules/containerApps.bicep when the env opts
+    # into AOAI; if either is empty the runtime treats the Assistant
+    # as disabled (LLM client raises a clean RuntimeError that the
+    # router converts to a 503).  Auth is always managed-identity via
+    # DefaultAzureCredential — no API keys.
+    azure_openai_endpoint: str = ""
+    azure_openai_deployment: str = ""
+    azure_openai_api_version: str = "2024-10-21"
+    # Per-turn completion cap.  Keeps a runaway response from blowing
+    # through the daily budget in a single shot; PR 6 layers a real
+    # budget cap on top of this.
+    assistant_max_completion_tokens: int = 1024
+

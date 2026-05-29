@@ -1780,6 +1780,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/threads/{thread_id}/message:
+    post:
+      summary: Post Message
+      description: |-
+        Send a user prompt and return the assistant's reply.
+
+        Returns 503 if the environment hasn't been wired up with Azure
+        OpenAI yet (allowlisted user but no LLM backend).  This is distinct
+        from the feature-flag 404 — the feature IS on for this user, but
+        the backend is missing.
+      operationId: post_message_api_chat_threads__thread_id__message_post
+      parameters:
+      - name: thread_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Thread Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessageOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
       summary: List Profiles
@@ -4513,6 +4551,23 @@ components:
       required:
       - entries
       title: CatalogOut
+    ChatMessageCreate:
+      properties:
+        content:
+          type: string
+          maxLength: 10000
+          minLength: 1
+          title: Content
+      type: object
+      required:
+      - content
+      title: ChatMessageCreate
+      description: |-
+        Request body for ``POST /api/chat/threads/{id}/message``.
+
+        Single field — the user's prompt.  The agent loop is responsible
+        for persisting both the user turn AND the assistant turn; callers
+        just send the prompt and get back the assistant's reply.
     ChatMessageOut:
       properties:
         id:
