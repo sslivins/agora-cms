@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}Assistant — Agora CMS{% endblock %}
+{% block content %}
+<style>
+/* ── Assistant layout ─────────────────────────────────────────── */
+.assistant-page {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 1rem;
+    height: calc(100vh - 200px);
+    min-height: 500px;
+}
+.assistant-sidebar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+.assistant-sidebar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+.assistant-sidebar-header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+.assistant-thread-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.assistant-thread {
+    padding: 0.5rem 0.6rem;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    color: var(--text);
+    border: 1px solid transparent;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.4rem;
+}
+.assistant-thread:hover {
+    background: var(--surface-2, rgba(0,0,0,0.04));
+}
+.assistant-thread.active {
+    background: var(--accent-soft, rgba(78,140,255,0.12));
+    border-color: var(--accent, #4e8cff);
+}
+.assistant-thread-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.assistant-thread-delete {
+    opacity: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 0.2rem;
+}
+.assistant-thread:hover .assistant-thread-delete {
+    opacity: 1;
+}
+.assistant-empty-state {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    padding: 0.5rem;
+    text-align: center;
+}
+
+.assistant-main {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.assistant-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+.assistant-message {
+    display: flex;
+    flex-direction: column;
+    max-width: 80%;
+    word-wrap: break-word;
+}
+.assistant-message.user {
+    align-self: flex-end;
+}
+.assistant-message.assistant, .assistant-message.tool {
+    align-self: flex-start;
+}
+.assistant-message-bubble {
+    padding: 0.6rem 0.85rem;
+    border-radius: 12px;
+    font-size: 0.92rem;
+    white-space: pre-wrap;
+}
+.assistant-message.user .assistant-message-bubble {
+    background: var(--accent, #4e8cff);
+    color: white;
+    border-bottom-right-radius: 4px;
+}
+.assistant-message.assistant .assistant-message-bubble {
+    background: var(--surface-2, rgba(0,0,0,0.05));
+    color: var(--text);
+    border-bottom-left-radius: 4px;
+}
+.assistant-message.tool .assistant-message-bubble {
+    background: rgba(120,120,120,0.08);
+    color: var(--text-muted);
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.78rem;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px dashed var(--border);
+}
+.assistant-message-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+    padding: 0 0.2rem;
+}
+
+.assistant-tool-call {
+    align-self: flex-start;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 0.2rem 0.5rem;
+}
+
+/* Approval card */
+.assistant-approval {
+    align-self: stretch;
+    background: var(--warn-soft, #fff8e6);
+    border: 1px solid var(--warn, #d4a72c);
+    border-radius: 8px;
+    padding: 0.75rem;
+}
+.assistant-approval h4 {
+    margin: 0 0 0.4rem 0;
+    color: var(--warn-text, #8c6a00);
+    font-size: 0.9rem;
+}
+.assistant-approval-args {
+    font-family: ui-monospace, monospace;
+    font-size: 0.78rem;
+    background: rgba(0,0,0,0.04);
+    padding: 0.4rem 0.55rem;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    margin: 0.3rem 0;
+    max-height: 180px;
+    overflow-y: auto;
+}
+.assistant-approval-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+.assistant-approval-actions button {
+    padding: 0.3rem 0.8rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+.assistant-approval-actions .btn-approve {
+    background: var(--accent, #4e8cff);
+    color: white;
+    border-color: var(--accent, #4e8cff);
+}
+.assistant-approval-actions .btn-reject {
+    background: white;
+    color: var(--danger, #c93434);
+    border-color: var(--danger, #c93434);
+}
+.assistant-approval.decided {
+    opacity: 0.65;
+}
+.assistant-approval.decided .assistant-approval-actions { display: none; }
+.assistant-approval-decision {
+    font-size: 0.78rem;
+    font-style: italic;
+    margin-top: 0.3rem;
+}
+
+.assistant-composer {
+    border-top: 1px solid var(--border);
+    padding: 0.6rem 0.75rem;
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-end;
+}
+.assistant-composer textarea {
+    flex: 1;
+    resize: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.92rem;
+    min-height: 38px;
+    max-height: 180px;
+    background: var(--bg, white);
+    color: var(--text);
+}
+.assistant-composer button {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    border: 1px solid var(--accent, #4e8cff);
+    background: var(--accent, #4e8cff);
+    color: white;
+    cursor: pointer;
+    font-weight: 500;
+}
+.assistant-composer button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.assistant-streaming-indicator {
+    align-self: flex-start;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+    padding: 0.25rem 0.5rem;
+}
+.assistant-streaming-indicator::after {
+    content: "▍";
+    animation: assistant-blink 1s infinite;
+}
+@keyframes assistant-blink {
+    50% { opacity: 0; }
+}
+
+.assistant-error {
+    align-self: stretch;
+    background: var(--danger-soft, #fde6e6);
+    border: 1px solid var(--danger, #c93434);
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    color: var(--danger-text, #8c1f1f);
+    font-size: 0.85rem;
+}
+
+#assistant-unavailable {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+}
+</style>
+
+<div id="assistant-app" style="display:none;">
+    <h1>Assistant <small style="font-weight:normal;color:var(--text-muted);font-size:0.85rem;">— preview</small></h1>
+    <div class="assistant-page">
+        <aside class="assistant-sidebar">
+            <div class="assistant-sidebar-header">
+                <h3>Threads</h3>
+                <button class="btn btn-sm" id="assistant-new-thread">+ New</button>
+            </div>
+            <div class="assistant-thread-list" id="assistant-thread-list">
+                <p class="assistant-empty-state">No conversations yet.</p>
+            </div>
+        </aside>
+        <section class="assistant-main">
+            <div class="assistant-messages" id="assistant-messages">
+                <p class="assistant-empty-state">Pick a thread or start a new one.</p>
+            </div>
+            <form class="assistant-composer" id="assistant-composer">
+                <textarea
+                    id="assistant-input"
+                    placeholder="Ask about devices, schedules, assets…  (Shift+Enter for newline)"
+                    rows="1"
+                    disabled></textarea>
+                <button type="submit" id="assistant-send" disabled>Send</button>
+            </form>
+        </section>
+    </div>
+</div>
+
+<div id="assistant-unavailable">
+    <p>The Assistant is not enabled for your account.</p>
+    <p style="font-size:0.85rem;">Ask an admin to add you to the allowlist in Settings.</p>
+</div>
+
+<script src="/static/assistant.js?v={{ static_version }}"></script>
+{% endblock %}
