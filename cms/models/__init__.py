@@ -22,6 +22,8 @@ from cms.models.setting import CMSSetting  # noqa: F401
 from cms.models.slideshow_slide import SlideshowSlide  # noqa: F401
 from cms.models.tag import Tag, AssetTag, DEFAULT_TAG_COLOR  # noqa: F401
 from cms.models.asset_view import AssetView  # noqa: F401
+from cms.models.chat_message import ChatMessage  # noqa: F401
+from cms.models.chat_thread import ChatThread  # noqa: F401
 from cms.models.user import Role, User, UserGroup  # noqa: F401
 
 # ── CMS-only relationships ──
