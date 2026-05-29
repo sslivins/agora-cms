@@ -36,3 +36,7 @@ azure-monitor-opentelemetry>=1.6,<2.0
 # provisioned by infra/modules/azureOpenAI.bicep.  Auth via managed
 # identity (DefaultAzureCredential) — no API keys.
 openai>=1.50,<2.0
+# Server-Sent Events response helper for the chat-assistant streaming
+# endpoint (cms/routers/chat.py).  Pinned to a recent stable; the
+# library is tiny and stable.
+sse-starlette>=2.1,<4.0

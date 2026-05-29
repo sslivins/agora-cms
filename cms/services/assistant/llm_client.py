@@ -21,6 +21,7 @@ point.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -180,3 +181,94 @@ class LLMClient:
             tokens_out=tokens_out,
             tool_calls=tool_calls,
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_completion_tokens: int | None = None,
+        temperature: float = 0.2,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Streaming counterpart of :meth:`complete`.
+
+        Yields delta dicts in one of these shapes:
+
+        * ``{"type": "content", "text": str}`` — assistant text chunk.
+        * ``{"type": "tool_call_delta", "index": int, "id": str|None,
+              "name": str|None, "arguments_delta": str|None}`` — partial
+          tool-call (OpenAI streams ``function.arguments`` as JSON
+          fragments).
+        * ``{"type": "finish", "reason": str, "tokens_in": int,
+              "tokens_out": int}`` — final terminator; ``tokens_*`` are
+          0 when usage wasn't reported.
+
+        The caller is responsible for accumulating tool_call fragments
+        across deltas and joining content chunks.
+        """
+        max_tokens = (
+            max_completion_tokens
+            if max_completion_tokens is not None
+            else self._settings.assistant_max_completion_tokens
+        )
+        kwargs: dict[str, Any] = {
+            "model": self._settings.azure_openai_deployment,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            # Asks Azure OpenAI to emit a final chunk with .usage; the
+            # SDK silently ignores it on older API versions.
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            kwargs["tools"] = tools
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
+        logger.info(
+            "assistant.llm.stream_request deployment=%s messages=%d tools=%d",
+            self._settings.azure_openai_deployment,
+            len(messages),
+            len(tools) if tools else 0,
+        )
+        response = await self._client.chat.completions.create(**kwargs)
+        tokens_in = 0
+        tokens_out = 0
+        async for chunk in response:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                tokens_in = getattr(usage, "prompt_tokens", 0) or tokens_in
+                tokens_out = (
+                    getattr(usage, "completion_tokens", 0) or tokens_out
+                )
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = getattr(choice, "delta", None)
+            if delta is not None:
+                content = getattr(delta, "content", None)
+                if content:
+                    yield {"type": "content", "text": content}
+                raw_tcs = getattr(delta, "tool_calls", None)
+                if raw_tcs:
+                    for tc in raw_tcs:
+                        fn = getattr(tc, "function", None)
+                        yield {
+                            "type": "tool_call_delta",
+                            "index": getattr(tc, "index", 0),
+                            "id": getattr(tc, "id", None),
+                            "name": getattr(fn, "name", None) if fn else None,
+                            "arguments_delta": (
+                                getattr(fn, "arguments", None) if fn else None
+                            ),
+                        }
+            if getattr(choice, "finish_reason", None):
+                yield {
+                    "type": "finish",
+                    "reason": choice.finish_reason,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                }
+

@@ -1818,6 +1818,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/threads/{thread_id}/stream:
+    post:
+      summary: Post Message Stream
+      description: |-
+        Send a user prompt and stream the assistant's reply as SSE.
+
+        The response is an ``EventSourceResponse`` with these event types
+        (each ``data`` is JSON):
+
+        * ``token`` — assistant text chunk.
+        * ``tool_call`` — model is about to invoke a tool.
+        * ``tool_result`` — tool finished, result attached.
+        * ``done`` — turn complete (carries final ``message_id``).
+        * ``error`` — fatal error; the stream terminates after this frame.
+
+        LLM-unavailable / MCP-unavailable are surfaced as ``error`` frames
+        once the SSE handshake has succeeded.  Pre-stream failures (feature
+        flag, thread ownership, LLM config missing) still return HTTP
+        4xx/5xx the normal way before any event is sent.
+      operationId: post_message_stream_api_chat_threads__thread_id__stream_post
+      parameters:
+      - name: thread_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Thread Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageCreate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
       summary: List Profiles

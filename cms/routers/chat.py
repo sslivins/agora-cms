@@ -15,12 +15,15 @@ escape hatch.
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from cms.auth import get_current_user, get_settings, require_auth
 from cms.config import Settings
@@ -35,13 +38,15 @@ from cms.schemas.chat import (
     ChatThreadCreate,
     ChatThreadOut,
 )
-from cms.services.assistant.agent import run_user_turn
+from cms.services.assistant.agent import run_user_turn, run_user_turn_streaming
 from cms.services.assistant.llm_client import (
     AssistantUnavailableError,
     is_available as assistant_llm_available,
 )
 from cms.services.assistant.mcp_client import McpUnavailableError
 from cms.services.assistant_flag import assistant_enabled_for
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/chat", dependencies=[Depends(require_auth)])
@@ -234,3 +239,97 @@ async def post_message(
         ) from exc
 
     return ChatMessageOut.model_validate(assistant_row)
+
+
+# ── Streaming chat turn (PR 3c) ──────────────────────────────────────
+# Same agent loop as POST /message above, but the response is an SSE
+# stream so the UI can render tokens / tool-call progress as they
+# happen instead of waiting for the whole turn.
+
+
+def _format_sse_error(message: str) -> dict[str, str]:
+    """sse-starlette dict-shape for a terminal error frame."""
+    return {"event": "error", "data": json.dumps({"message": message})}
+
+
+async def _stream_agent_events(
+    *,
+    db: AsyncSession,
+    settings: Settings,
+    user: User,
+    thread: ChatThread,
+    content: str,
+):
+    """Adapt :func:`run_user_turn_streaming` events into sse-starlette
+    ``{event, data}`` dicts.
+
+    Catches the two known *Unavailable* errors and emits a final
+    ``error`` event instead of letting them propagate — the SSE
+    connection is already open at this point so an HTTP 503 wouldn't
+    actually reach the client.
+    """
+    try:
+        async for evt in run_user_turn_streaming(
+            db=db,
+            settings=settings,
+            user=user,
+            thread=thread,
+            user_message=content,
+        ):
+            yield {"event": evt["type"], "data": json.dumps(evt)}
+    except AssistantUnavailableError as exc:
+        logger.warning("assistant.stream.llm_unavailable: %s", exc)
+        yield _format_sse_error(f"Assistant LLM unavailable: {exc}")
+    except McpUnavailableError as exc:
+        logger.warning("assistant.stream.mcp_unavailable: %s", exc)
+        yield _format_sse_error(f"Assistant tool backend unavailable: {exc}")
+    except Exception as exc:  # noqa: BLE001 — last-resort error frame
+        logger.exception("assistant.stream.unexpected_error")
+        yield _format_sse_error(f"{type(exc).__name__}: {exc}")
+
+
+@router.post("/threads/{thread_id}/stream")
+async def post_message_stream(
+    thread_id: uuid.UUID,
+    payload: ChatMessageCreate,
+    user: User = Depends(_current_user),
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a user prompt and stream the assistant's reply as SSE.
+
+    The response is an ``EventSourceResponse`` with these event types
+    (each ``data`` is JSON):
+
+    * ``token`` — assistant text chunk.
+    * ``tool_call`` — model is about to invoke a tool.
+    * ``tool_result`` — tool finished, result attached.
+    * ``done`` — turn complete (carries final ``message_id``).
+    * ``error`` — fatal error; the stream terminates after this frame.
+
+    LLM-unavailable / MCP-unavailable are surfaced as ``error`` frames
+    once the SSE handshake has succeeded.  Pre-stream failures (feature
+    flag, thread ownership, LLM config missing) still return HTTP
+    4xx/5xx the normal way before any event is sent.
+    """
+    await _require_feature(user, db)
+    thread = await _get_owned_thread(thread_id, user, db)
+
+    if not assistant_llm_available(settings):
+        raise HTTPException(
+            status_code=503,
+            detail="Assistant LLM backend is not configured in this environment.",
+        )
+
+    return EventSourceResponse(
+        _stream_agent_events(
+            db=db,
+            settings=settings,
+            user=user,
+            thread=thread,
+            content=payload.content,
+        ),
+        # ``ping`` keeps intermediate proxies (Container Apps front-door,
+        # browsers) from closing the connection during long LLM waits.
+        ping=15,
+    )
