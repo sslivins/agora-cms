@@ -65,3 +65,42 @@ class AssistantFeatureStatus(BaseModel):
     """
 
     enabled: bool
+
+
+# ── PR 4: write-tool approval flow ────────────────────────────────────
+
+
+class ChatPendingApprovalOut(BaseModel):
+    """A pending write-tool approval as returned by the API.
+
+    Surfaces the proposed tool name + arguments so the UI can render an
+    Approve / Reject card with the same detail level it would use for a
+    completed tool call.  ``status`` lets the UI hide already-decided
+    rows from the pending list without a separate filter param.
+    """
+
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    thread_id: uuid.UUID
+    proposed_by_message_id: Optional[uuid.UUID] = None
+    tool_name: str
+    tool_call_id: str
+    tool_arguments: dict[str, Any]
+    status: str
+    result_content: Optional[str] = None
+    decision_note: Optional[str] = None
+    created_at: datetime
+    decided_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+
+class ChatApprovalDecision(BaseModel):
+    """Request body for ``POST /api/chat/approvals/{id}/{approve|reject}``.
+
+    ``note`` is an optional free-form audit string.  We don't enforce
+    it on either path — UIs may collect a reason on reject and leave
+    it blank on approve.
+    """
+
+    note: Optional[str] = Field(default=None, max_length=500)

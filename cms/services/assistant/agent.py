@@ -45,6 +45,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.config import Settings
 from cms.models.chat_message import ChatMessage
+from cms.models.chat_pending_approval import (
+    STATUS_PENDING,
+    ChatPendingApproval,
+)
 from cms.models.chat_thread import ChatThread
 from cms.models.user import User
 from cms.services.assistant.llm_client import (
@@ -424,6 +428,7 @@ async def run_user_turn_streaming(
             tc_by_idx: dict[int, dict[str, Any]] = {}
             tokens_in = 0
             tokens_out = 0
+            pending_approvals: list[dict[str, Any]] = []
 
             async for delta in llm.stream(
                 openai_messages, tools=tools or None
@@ -484,12 +489,83 @@ async def run_user_turn_streaming(
 
             for tool_call in tool_calls:
                 fn = tool_call.get("function", {}) or {}
+                tc_name = fn.get("name") or ""
+                tc_id = tool_call.get("id") or ""
                 yield {
                     "type": "tool_call",
-                    "id": tool_call.get("id"),
-                    "name": fn.get("name"),
+                    "id": tc_id,
+                    "name": tc_name,
                     "arguments": fn.get("arguments", ""),
                 }
+
+                # PR 4: write-tool approval intercept.  Any tool name
+                # NOT in the read-only whitelist becomes an approval
+                # request instead of an MCP call.  We still persist a
+                # placeholder ``role=tool`` row so the conversation
+                # history stays internally consistent (OpenAI rejects
+                # any assistant-with-tool_calls turn that isn't followed
+                # by matching tool rows on the next API call).  The
+                # approve / reject endpoint OVERWRITES this row's
+                # content with the real result once the user decides.
+                if tc_name and tc_name not in READ_ONLY_TOOLS:
+                    parsed_args, parse_err = _parse_tool_arguments(
+                        fn.get("arguments")
+                    )
+                    approval_args = (
+                        parsed_args
+                        if parse_err is None
+                        else {"_unparsed_arguments": fn.get("arguments")}
+                    )
+                    approval = ChatPendingApproval(
+                        thread_id=thread.id,
+                        proposed_by_message_id=tc_row.id,
+                        tool_name=tc_name,
+                        tool_call_id=tc_id,
+                        tool_arguments=approval_args,
+                        status=STATUS_PENDING,
+                    )
+                    db.add(approval)
+                    await db.flush()
+
+                    placeholder = json.dumps(
+                        {
+                            "status": "awaiting_approval",
+                            "approval_id": str(approval.id),
+                            "tool": tc_name,
+                        }
+                    )
+                    tool_row = ChatMessage(
+                        thread_id=thread.id,
+                        role="tool",
+                        content=placeholder,
+                        tool_call_id=tc_id,
+                    )
+                    db.add(tool_row)
+                    await db.flush()
+                    openai_messages.append(
+                        {
+                            "role": "tool",
+                            "content": placeholder,
+                            "tool_call_id": tc_id,
+                        }
+                    )
+                    pending_approvals.append(
+                        {
+                            "id": str(approval.id),
+                            "tool": tc_name,
+                            "arguments": approval_args,
+                            "tool_call_id": tc_id,
+                        }
+                    )
+                    yield {
+                        "type": "approval_request",
+                        "approval_id": str(approval.id),
+                        "tool_call_id": tc_id,
+                        "name": tc_name,
+                        "arguments": approval_args,
+                    }
+                    continue
+
                 tool_content = await _execute_tool_call(
                     mcp=mcp, tool_call=tool_call
                 )
@@ -497,7 +573,7 @@ async def run_user_turn_streaming(
                     thread_id=thread.id,
                     role="tool",
                     content=tool_content,
-                    tool_call_id=tool_call.get("id"),
+                    tool_call_id=tc_id,
                 )
                 db.add(tool_row)
                 await db.flush()
@@ -505,15 +581,35 @@ async def run_user_turn_streaming(
                     {
                         "role": "tool",
                         "content": tool_content,
-                        "tool_call_id": tool_call.get("id"),
+                        "tool_call_id": tc_id,
                     }
                 )
                 yield {
                     "type": "tool_result",
-                    "id": tool_call.get("id"),
-                    "name": fn.get("name"),
+                    "id": tc_id,
+                    "name": tc_name,
                     "content": tool_content,
                 }
+
+            # PR 4: if any tool call in this batch was deferred to the
+            # approval queue, stop the agent loop here.  The user has
+            # to decide before any more LLM iterations make sense; the
+            # conversation resumes when the user sends their next
+            # message (which sees the placeholder tool rows + the
+            # decided approval state via the approve/reject endpoint).
+            if pending_approvals:
+                final_row = ChatMessage(
+                    thread_id=thread.id,
+                    role="assistant",
+                    content=(
+                        "(awaiting your approval before continuing — "
+                        f"{len(pending_approvals)} action"
+                        f"{'s' if len(pending_approvals) != 1 else ''} "
+                        "queued)"
+                    ),
+                )
+                db.add(final_row)
+                break
         else:
             logger.warning(
                 "assistant.stream.max_iters_hit thread=%s user=%s cap=%d",

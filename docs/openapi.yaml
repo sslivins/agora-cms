@@ -1864,6 +1864,155 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/threads/{thread_id}/approvals:
+    get:
+      summary: List Thread Approvals
+      description: |-
+        List approval rows for ``thread_id``.
+
+        Defaults to ``status=pending`` so the UI's "needs your attention"
+        badge has a cheap query.  Pass ``status=`` (empty) to fetch every
+        state for the audit timeline.
+      operationId: list_thread_approvals_api_chat_threads__thread_id__approvals_get
+      parameters:
+      - name: thread_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Thread Id
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatPendingApprovalOut'
+                title: Response List Thread Approvals Api Chat Threads  Thread Id  Approvals Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/approvals/{approval_id}:
+    get:
+      summary: Get Approval
+      operationId: get_approval_api_chat_approvals__approval_id__get
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Approval Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatPendingApprovalOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/approvals/{approval_id}/approve:
+    post:
+      summary: Approve Approval
+      description: |-
+        Execute the proposed write tool via MCP and persist the result.
+
+        On success the agent loop's next turn (i.e. when the user types
+        again) sees a ``role=tool`` history row and can carry on as if the
+        tool had run normally.  No in-flight stream is resumed — keeping
+        "approve" decoupled from a live SSE connection avoids a whole
+        class of reconnect / orphan-generator failure modes.
+      operationId: approve_approval_api_chat_approvals__approval_id__approve_post
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Approval Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ChatApprovalDecision'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatPendingApprovalOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/approvals/{approval_id}/reject:
+    post:
+      summary: Reject Approval
+      description: |-
+        Decline the proposed write tool and tell the LLM the user said no.
+
+        We still persist a ``role=tool`` row so the conversation history
+        is internally consistent (every ``tool_calls`` assistant turn must
+        have matching ``tool`` rows for the OpenAI API to accept the
+        history on the next turn).  The content is a structured JSON blob
+        so the LLM can reliably detect the rejection.
+      operationId: reject_approval_api_chat_approvals__approval_id__reject_post
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Approval Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ChatApprovalDecision'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatPendingApprovalOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
       summary: List Profiles
@@ -4619,6 +4768,22 @@ components:
       required:
       - entries
       title: CatalogOut
+    ChatApprovalDecision:
+      properties:
+        note:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Note
+      type: object
+      title: ChatApprovalDecision
+      description: |-
+        Request body for ``POST /api/chat/approvals/{id}/{approve|reject}``.
+
+        ``note`` is an optional free-form audit string.  We don't enforce
+        it on either path — UIs may collect a reason on reject and leave
+        it blank on approve.
     ChatMessageCreate:
       properties:
         content:
@@ -4684,6 +4849,78 @@ components:
         the frontend needs them to render the tool-call timeline (and, in
         PR 4, the approval cards).  ``tokens_in`` / ``tokens_out`` are NOT
         surfaced; the budget badge reads from ``/api/chat/budget`` instead.
+    ChatPendingApprovalOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        thread_id:
+          type: string
+          format: uuid
+          title: Thread Id
+        proposed_by_message_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Proposed By Message Id
+        tool_name:
+          type: string
+          title: Tool Name
+        tool_call_id:
+          type: string
+          title: Tool Call Id
+        tool_arguments:
+          additionalProperties: true
+          type: object
+          title: Tool Arguments
+        status:
+          type: string
+          title: Status
+        result_content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Content
+        decision_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decision Note
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - id
+      - thread_id
+      - tool_name
+      - tool_call_id
+      - tool_arguments
+      - status
+      - created_at
+      title: ChatPendingApprovalOut
+      description: |-
+        A pending write-tool approval as returned by the API.
+
+        Surfaces the proposed tool name + arguments so the UI can render an
+        Approve / Reject card with the same detail level it would use for a
+        completed tool call.  ``status`` lets the UI hide already-decided
+        rows from the pending list without a separate filter param.
     ChatThreadCreate:
       properties:
         title:
