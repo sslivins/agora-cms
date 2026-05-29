@@ -176,6 +176,13 @@ async def run_user_turn(
     if not user_message:
         raise ValueError("user_message must not be empty")
 
+    # 0. Daily-cap check.  Done BEFORE persisting the user row so a
+    #    user who is at the cap doesn't accumulate empty turns; the
+    #    router converts BudgetExceededError into a 429 with the
+    #    cap details and the user sees a friendly message.
+    from cms.services.assistant.budget import check_budget
+    await check_budget(db, user)
+
     # 1. Persist the user turn first so it's visible in history even if
     #    the LLM call later fails (the frontend's optimistic render
     #    will reconcile to this row on the next poll).
@@ -388,6 +395,13 @@ async def run_user_turn_streaming(
     user_message = user_message.strip()
     if not user_message:
         raise ValueError("user_message must not be empty")
+
+    # 0. Daily-cap check (same as run_user_turn).  Raised before any
+    #    DB mutation so the router can surface 429 BEFORE the SSE
+    #    handshake — the user never sees a half-open stream that
+    #    immediately errors out.
+    from cms.services.assistant.budget import check_budget
+    await check_budget(db, user)
 
     # 1. Persist the user turn first.
     user_row = ChatMessage(

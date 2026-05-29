@@ -39,6 +39,7 @@ from cms.schemas.chat import (
     ChatThreadOut,
 )
 from cms.services.assistant.agent import run_user_turn, run_user_turn_streaming
+from cms.services.assistant.budget import BudgetExceededError, check_budget
 from cms.services.assistant.llm_client import (
     AssistantUnavailableError,
     is_available as assistant_llm_available,
@@ -212,6 +213,19 @@ async def post_message(
     await _require_feature(user, db)
     thread = await _get_owned_thread(thread_id, user, db)
 
+    try:
+        await check_budget(db, user)
+    except BudgetExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Daily token cap reached.",
+                "daily_cap": exc.daily_cap,
+                "used": exc.used,
+            },
+            headers={"Retry-After": "3600"},
+        ) from exc
+
     if not assistant_llm_available(settings):
         raise HTTPException(
             status_code=503,
@@ -226,6 +240,16 @@ async def post_message(
             thread=thread,
             user_message=payload.content,
         )
+    except BudgetExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Daily token cap reached.",
+                "daily_cap": exc.daily_cap,
+                "used": exc.used,
+            },
+            headers={"Retry-After": "3600"},
+        ) from exc
     except AssistantUnavailableError as exc:
         # Defensive — assistant_llm_available() should have caught this,
         # but a race against config changes is theoretically possible.
@@ -314,6 +338,23 @@ async def post_message_stream(
     """
     await _require_feature(user, db)
     thread = await _get_owned_thread(thread_id, user, db)
+
+    # Budget pre-check.  Runs BEFORE EventSourceResponse so a user
+    # over their cap gets a clean 429 instead of a half-open SSE
+    # stream that immediately emits an error frame.  The agent re-
+    # checks internally as a belt-and-braces safety net.
+    try:
+        await check_budget(db, user)
+    except BudgetExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Daily token cap reached.",
+                "daily_cap": exc.daily_cap,
+                "used": exc.used,
+            },
+            headers={"Retry-After": "3600"},
+        ) from exc
 
     if not assistant_llm_available(settings):
         raise HTTPException(

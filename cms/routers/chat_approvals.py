@@ -165,11 +165,55 @@ async def get_approval(
 # ── Decide ────────────────────────────────────────────────────────────
 
 
+async def _upsert_tool_result(
+    db: AsyncSession,
+    thread_id: uuid.UUID,
+    tool_call_id: str,
+    content: str,
+) -> None:
+    """Write the tool result for ``tool_call_id`` into the thread.
+
+    The streaming agent persists a *placeholder* ``role=tool`` row at
+    the moment a write tool is intercepted so the OpenAI conversation
+    history stays internally consistent (every ``tool_calls`` assistant
+    turn must have a matching ``role=tool`` row).  When the human
+    later approves or rejects, we UPDATE that placeholder in place
+    rather than INSERTing a duplicate — otherwise the next turn's
+    history would carry two rows with the same ``tool_call_id``,
+    which is a wire-protocol violation OpenAI may or may not reject
+    silently.
+
+    If no placeholder exists (legacy data, or an approval created by
+    the non-streaming path that didn't go through the intercept), we
+    INSERT a fresh row — the upsert is idempotent on first call.
+    """
+    existing = (
+        await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread_id)
+            .where(ChatMessage.tool_call_id == tool_call_id)
+            .where(ChatMessage.role == "tool")
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.content = content
+        return
+    db.add(
+        ChatMessage(
+            thread_id=thread_id,
+            role="tool",
+            tool_call_id=tool_call_id,
+            content=content,
+        )
+    )
+
+
 def _result_message(
     thread_id: uuid.UUID, tool_call_id: str, content: str
 ) -> ChatMessage:
-    """Build the synthetic ``role=tool`` ChatMessage the agent loop
-    would have produced if the tool had been called normally."""
+    """Legacy synchronous helper, kept for callers that still INSERT
+    a fresh row.  Prefer :func:`_upsert_tool_result` which handles
+    the placeholder-update case from the streaming approval flow."""
     return ChatMessage(
         thread_id=thread_id,
         role="tool",
@@ -229,7 +273,7 @@ async def approve_approval(
         )
         result_text = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
-    db.add(_result_message(row.thread_id, row.tool_call_id, result_text))
+    await _upsert_tool_result(db, row.thread_id, row.tool_call_id, result_text)
     row.status = STATUS_APPROVED
     row.result_content = result_text
     row.decision_note = (payload.note if payload else None) or None
@@ -274,7 +318,7 @@ async def reject_approval(
     }
     result_text = json.dumps(rejection_payload)
 
-    db.add(_result_message(row.thread_id, row.tool_call_id, result_text))
+    await _upsert_tool_result(db, row.thread_id, row.tool_call_id, result_text)
     row.status = STATUS_REJECTED
     row.result_content = result_text
     row.decision_note = note
