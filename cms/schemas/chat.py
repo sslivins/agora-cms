@@ -26,6 +26,17 @@ class ChatThreadCreate(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+class ChatMessageCreate(BaseModel):
+    """Request body for ``POST /api/chat/threads/{id}/message``.
+
+    Single field — the user's prompt.  The agent loop is responsible
+    for persisting both the user turn AND the assistant turn; callers
+    just send the prompt and get back the assistant's reply.
+    """
+
+    content: str = Field(min_length=1, max_length=10_000)
+
+
 class ChatMessageOut(BaseModel):
     """A single message in a thread.
 

@@ -409,3 +409,55 @@ async def unauthed_client(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest_asyncio.fixture
+async def operator_client(app):
+    """Authenticated client for a non-admin Operator user.
+
+    Used by the Assistant chat tests (and any future tests that need a
+    user without ``settings:write``) to exercise role-gated paths.
+    The created user is unique per-test via UUID-suffixed username so
+    multiple parameterised tests can coexist.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from cms.auth import hash_password
+    from cms.database import get_db
+    from cms.models.user import Role, User
+
+    suffix = _uuid.uuid4().hex[:8]
+    username = f"chat-operator-{suffix}"
+    password = "oppass"
+
+    factory = app.dependency_overrides[get_db]
+    async for db in factory():
+        role = (
+            await db.execute(select(Role).where(Role.name == "Operator"))
+        ).scalar_one()
+        user = User(
+            username=username,
+            email=f"{username}@test.com",
+            display_name="Chat Operator",
+            password_hash=hash_password(password),
+            role_id=role.id,
+            is_active=True,
+            must_change_password=False,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        operator_id = user.id
+        break
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        await ac.post(
+            "/login",
+            data={"username": username, "password": password},
+            follow_redirects=False,
+        )
+        ac.user_id = operator_id  # type: ignore[attr-defined]
+        yield ac

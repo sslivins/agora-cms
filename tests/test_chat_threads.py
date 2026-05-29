@@ -11,51 +11,7 @@ import json
 import uuid
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-
-
-@pytest_asyncio.fixture
-async def operator_client(app):
-    """Authenticated client for a non-admin Operator user.
-
-    Used to exercise the allowlist gate: operators have no
-    ``settings:write`` so the admin escape hatch doesn't apply.
-    """
-    from cms.auth import hash_password
-    from cms.database import get_db
-    from cms.models.user import Role, User
-
-    factory = app.dependency_overrides[get_db]
-    async for db in factory():
-        role = (
-            await db.execute(select(Role).where(Role.name == "Operator"))
-        ).scalar_one()
-        user = User(
-            username="chat-operator",
-            email="chat-op@test.com",
-            display_name="Chat Operator",
-            password_hash=hash_password("oppass"),
-            role_id=role.id,
-            is_active=True,
-            must_change_password=False,
-        )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-        operator_id = user.id
-        break
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        await ac.post(
-            "/login",
-            data={"username": "chat-operator", "password": "oppass"},
-            follow_redirects=False,
-        )
-        ac.user_id = operator_id  # type: ignore[attr-defined]
-        yield ac
 
 
 async def _enable_for(app, user_id: uuid.UUID) -> None:

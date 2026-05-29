@@ -30,3 +30,9 @@ azure-messaging-webpubsubservice>=1.2,<2.0
 # A no-op when APPLICATIONINSIGHTS_CONNECTION_STRING is unset — see
 # cms/observability.py for the wiring.
 azure-monitor-opentelemetry>=1.6,<2.0
+
+# Azure OpenAI client for the Assistant feature (issue #5xx).
+# Used by cms/services/assistant/* to call the GPT-4o deployment
+# provisioned by infra/modules/azureOpenAI.bicep.  Auth via managed
+# identity (DefaultAzureCredential) — no API keys.
+openai>=1.50,<2.0
