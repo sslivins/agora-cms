@@ -62,6 +62,13 @@ param githubIssuesToken string = ''
 @description('Public CMS URL override (e.g. https://agora.example.com, no trailing slash). When non-empty, takes precedence over the auto-derived "https://<cmsAppName>.<defaultDomain>" for AGORA_CMS_BASE_URL -- needed when a custom domain fronts the app so invite/setup-account links, imager URLs, and the wss://host/ws/device baked into Pi fleet env all point at the real public hostname.')
 param cmsBaseUrlOverride string = ''
 
+// ── Azure OpenAI (Assistant feature) ──
+@description('Azure OpenAI endpoint URL (e.g. https://agoragwdev-aoai.openai.azure.com/). Empty when the Assistant feature is not deployed in this environment; CMS treats empty as "feature disabled" at runtime.')
+param azureOpenAIEndpoint string = ''
+
+@description('Azure OpenAI deployment name to use for chat completions (matches the deployment provisioned in azureOpenAI.bicep, default "chat"). Empty when the Assistant feature is not deployed in this environment.')
+param azureOpenAIDeployment string = ''
+
 // ── Blue/green deploy controls (Multiple revision mode) ──
 @description('Revision suffix for the CMS Container App. Each deploy MUST pass a unique value (e.g. "v1-12-34") so a brand-new revision is created at 0% traffic. The workflow flips traffic to it after smoke probes pass.')
 param cmsRevisionSuffix string = ''
@@ -307,6 +314,19 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
               // docker-compose) telemetry export is silently disabled.
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               secretRef: 'app-insights-connection-string'
+            }
+            {
+              // Azure OpenAI endpoint for the Assistant feature.
+              // Empty string in environments that haven't opted into
+              // the feature; the runtime treats empty as "Assistant
+              // disabled" so non-opted-in envs ship with the same
+              // image but the feature stays dark.
+              name: 'AGORA_CMS_AZURE_OPENAI_ENDPOINT'
+              value: azureOpenAIEndpoint
+            }
+            {
+              name: 'AGORA_CMS_AZURE_OPENAI_DEPLOYMENT'
+              value: azureOpenAIDeployment
             }
             {
               // Tag every emitted record so we can distinguish prod from

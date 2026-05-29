@@ -57,6 +57,17 @@ param workerMemory = '2Gi'
 // here we'll flip the default for the other envs too.
 param useSyntheticHeartbeat = true
 
+// Opt this environment into the Assistant feature backend.
+// Phase 1: dev only. Prod opts in after the dev pilot validates the
+// budget caps + approval UX.
+param deployAzureOpenAI = true
+// westus has GPT-4o quota out of the box; pin chat model + version
+// so deploys are reproducible regardless of Azure's "latest" drift.
+param azureOpenAIRegion = 'westus'
+param azureOpenAIChatModel = 'gpt-4o'
+param azureOpenAIChatModelVersion = '2024-11-20'
+param azureOpenAIChatCapacity = 30
+
 // Secure params — passed via the deploy-goodwill-dev workflow, never commit values:
 // param postgresAdminPassword = '<set-via-cli>'
 // param cmsSecretKey = '<set-via-cli>'
