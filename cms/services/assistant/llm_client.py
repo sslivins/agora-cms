@@ -55,6 +55,11 @@ class CompletionResult:
     content: str
     tokens_in: int
     tokens_out: int
+    # When the model wanted to invoke one or more tools this turn the
+    # OpenAI ``tool_calls`` array is preserved verbatim (each entry
+    # already has ``id``, ``type``, ``function.name``,
+    # ``function.arguments``).  ``None`` for a plain text reply.
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 def is_available(settings: Settings) -> bool:
@@ -100,12 +105,19 @@ class LLMClient:
         *,
         max_completion_tokens: int | None = None,
         temperature: float = 0.2,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> CompletionResult:
         """Run a single non-streaming chat completion.
 
         ``messages`` is the OpenAI-format conversation (``{role, content}``
         dicts), pre-trimmed by the caller — this method does not enforce
         a context-window budget.
+
+        ``tools`` is the optional OpenAI tool schema list.  When supplied
+        the model may respond with ``tool_calls`` instead of (or in
+        addition to) text; both are returned on :class:`CompletionResult`
+        for the agent loop to act on.
 
         Returns the assembled assistant content and token usage.  If the
         API returns ``None`` for ``content`` (e.g. content-filter
@@ -118,28 +130,53 @@ class LLMClient:
             else self._settings.assistant_max_completion_tokens
         )
         logger.info(
-            "assistant.llm.request deployment=%s messages=%d max_tokens=%d",
+            "assistant.llm.request deployment=%s messages=%d max_tokens=%d tools=%d",
             self._settings.azure_openai_deployment,
             len(messages),
             max_tokens,
+            len(tools) if tools else 0,
         )
-        response = await self._client.chat.completions.create(
-            model=self._settings.azure_openai_deployment,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._settings.azure_openai_deployment,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
+        response = await self._client.chat.completions.create(**kwargs)
         choice = response.choices[0]
         content = choice.message.content or ""
+        tool_calls: list[dict[str, Any]] | None = None
+        raw_tcs = getattr(choice.message, "tool_calls", None)
+        if raw_tcs:
+            tool_calls = []
+            for tc in raw_tcs:
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                )
         usage = response.usage
         tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
         tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
         logger.info(
-            "assistant.llm.response finish=%s in=%d out=%d",
+            "assistant.llm.response finish=%s in=%d out=%d tool_calls=%d",
             choice.finish_reason,
             tokens_in,
             tokens_out,
+            len(tool_calls) if tool_calls else 0,
         )
         return CompletionResult(
-            content=content, tokens_in=tokens_in, tokens_out=tokens_out
+            content=content,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            tool_calls=tool_calls,
         )
