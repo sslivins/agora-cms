@@ -31,6 +31,7 @@ class _FakeResult:
     content: str
     tokens_in: int
     tokens_out: int
+    tool_calls: list[dict] | None = None
 
 
 class FakeLLMClient:
@@ -38,23 +39,89 @@ class FakeLLMClient:
 
     Records the messages it was called with so tests can assert against
     the prompt construction without mocking the OpenAI SDK.
+
+    In PR 3b a single instance can also be scripted with a sequence of
+    canned responses (``replies=[...]``) to exercise the tool-calling
+    loop without an LLM.  Each call pops the next response; once the
+    sequence is exhausted further calls return the trailing ``reply``
+    string with no tool_calls.
     """
 
     last_instance: "FakeLLMClient | None" = None
 
-    def __init__(self, settings=None, *, reply: str = "stub reply"):
+    def __init__(
+        self,
+        settings=None,
+        *,
+        reply: str = "stub reply",
+        replies: list[_FakeResult] | None = None,
+    ):
         self.calls: list[list[dict]] = []
+        self.tools_seen: list[list[dict] | None] = []
         self.reply = reply
+        self._scripted: list[_FakeResult] = list(replies or [])
         self.closed = False
         FakeLLMClient.last_instance = self
 
-    async def complete(self, messages, *, max_completion_tokens=None,
-                       temperature: float = 0.2):
+    async def complete(
+        self,
+        messages,
+        *,
+        max_completion_tokens=None,
+        temperature: float = 0.2,
+        tools=None,
+        tool_choice=None,
+    ):
         self.calls.append(list(messages))
+        self.tools_seen.append(list(tools) if tools else None)
+        if self._scripted:
+            return self._scripted.pop(0)
         return _FakeResult(content=self.reply, tokens_in=42, tokens_out=17)
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class FakeMcpClient:
+    """In-memory MCP stand-in used by the agent loop tests.
+
+    Returns a fixed (small) tool list from ``list_openai_tools`` and a
+    queue of canned results from ``call_tool``.  Records every call for
+    assertions.
+    """
+
+    last_instance: "FakeMcpClient | None" = None
+
+    def __init__(
+        self,
+        *,
+        settings=None,
+        user=None,
+        tools: list[dict] | None = None,
+        results: dict[str, str] | None = None,
+    ):
+        self._tools = tools if tools is not None else []
+        self._results = dict(results or {})
+        self.calls: list[tuple[str, dict]] = []
+        self.opened = False
+        self.closed = False
+        FakeMcpClient.last_instance = self
+
+    async def __aenter__(self) -> "FakeMcpClient":
+        self.opened = True
+        return self
+
+    async def __aexit__(self, *a) -> None:
+        self.closed = True
+
+    async def list_openai_tools(self) -> list[dict]:
+        return list(self._tools)
+
+    async def call_tool(self, name: str, arguments: dict) -> str:
+        self.calls.append((name, dict(arguments)))
+        if name in self._results:
+            return self._results[name]
+        return f'{{"ok": true, "tool": "{name}"}}'
 
 
 @pytest_asyncio.fixture
@@ -62,7 +129,10 @@ async def patched_llm(app, monkeypatch):
     """Force Azure OpenAI to look configured AND patch the LLMClient class.
 
     Tests using this fixture get a single shared FakeLLMClient instance
-    that can be inspected via ``FakeLLMClient.last_instance``.
+    that can be inspected via ``FakeLLMClient.last_instance``.  The MCP
+    client is also patched with a no-tool ``FakeMcpClient`` so tests
+    that don't care about the tool loop see the same single-shot
+    behaviour they had in PR 3a.
     """
     from cms.auth import get_settings
     from cms.routers import chat as chat_router
@@ -76,10 +146,13 @@ async def patched_llm(app, monkeypatch):
     # different name as well as the module-level reference.
     monkeypatch.setattr(chat_router, "assistant_llm_available", lambda s: True)
     monkeypatch.setattr(agent_mod, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(agent_mod, "AssistantMcpClient", FakeMcpClient)
 
     FakeLLMClient.last_instance = None
+    FakeMcpClient.last_instance = None
     yield
     FakeLLMClient.last_instance = None
+    FakeMcpClient.last_instance = None
 
 
 async def _create_thread(client, title: str = "") -> str:
@@ -372,3 +445,428 @@ def test_llm_client_is_available_helper():
     s.azure_openai_endpoint = "https://x.openai.azure.com"
     s.azure_openai_deployment = "gpt"
     assert is_available(s) is True
+
+
+# ── PR 3b: MCP tool-calling loop ──────────────────────────────────────
+
+
+def _tool_call(name: str, arguments: dict, call_id: str = "call_1") -> dict:
+    """Build an OpenAI-format tool_call dict (mirrors what the SDK
+    serialises from a real Azure response)."""
+    import json as _json
+
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": _json.dumps(arguments)},
+    }
+
+
+@pytest_asyncio.fixture
+async def scripted_agent(app, monkeypatch):
+    """Patch the agent with a FakeLLMClient + FakeMcpClient pair the
+    test can pre-script before posting a message.
+
+    Differs from ``patched_llm`` in that it returns a builder the test
+    uses to set the scripted ``replies`` and ``results`` _before_ the
+    fakes are constructed (the agent constructs them per turn)."""
+    from cms.auth import get_settings
+    from cms.routers import chat as chat_router
+    from cms.services.assistant import agent as agent_mod
+
+    settings = app.dependency_overrides[get_settings]()
+    settings.azure_openai_endpoint = "https://fake.openai.azure.com"
+    settings.azure_openai_deployment = "gpt-4o-fake"
+    monkeypatch.setattr(chat_router, "assistant_llm_available", lambda s: True)
+
+    state = {
+        "llm_replies": [],
+        "llm_reply": "stub reply",
+        "mcp_tools": [],
+        "mcp_results": {},
+    }
+
+    class _ScriptedLLM(FakeLLMClient):
+        def __init__(self, settings=None):
+            super().__init__(
+                settings,
+                reply=state["llm_reply"],
+                replies=list(state["llm_replies"]),
+            )
+
+    class _ScriptedMcp(FakeMcpClient):
+        def __init__(self, *, settings=None, user=None):
+            super().__init__(
+                settings=settings,
+                user=user,
+                tools=list(state["mcp_tools"]),
+                results=dict(state["mcp_results"]),
+            )
+
+    monkeypatch.setattr(agent_mod, "LLMClient", _ScriptedLLM)
+    monkeypatch.setattr(agent_mod, "AssistantMcpClient", _ScriptedMcp)
+    FakeLLMClient.last_instance = None
+    FakeMcpClient.last_instance = None
+    yield state
+    FakeLLMClient.last_instance = None
+    FakeMcpClient.last_instance = None
+
+
+@pytest.mark.asyncio
+class TestToolLoop:
+    async def test_tool_definitions_passed_to_llm(self, client, scripted_agent):
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_devices",
+                    "description": "list devices",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        resp = await client.post(
+            f"/api/chat/threads/{tid}/message",
+            json={"content": "list devices"},
+        )
+        assert resp.status_code == 201, resp.text
+        # The first LLM call should have received the tool list.
+        first_tools = FakeLLMClient.last_instance.tools_seen[0]
+        assert first_tools is not None
+        assert first_tools[0]["function"]["name"] == "list_devices"
+
+    async def test_single_tool_call_then_final_answer(
+        self, client, scripted_agent, app
+    ):
+        from cms.database import get_db
+        from cms.models.chat_message import ChatMessage
+
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_devices",
+                    "description": "list devices",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        scripted_agent["mcp_results"] = {"list_devices": '[{"id":"d1"}]'}
+        scripted_agent["llm_replies"] = [
+            # Turn 1: request the tool.
+            _FakeResult(
+                content="",
+                tokens_in=10,
+                tokens_out=5,
+                tool_calls=[_tool_call("list_devices", {})],
+            ),
+            # Turn 2: produce final answer using the tool result.
+            _FakeResult(content="You have 1 device.", tokens_in=20, tokens_out=8),
+        ]
+
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        resp = await client.post(
+            f"/api/chat/threads/{tid}/message",
+            json={"content": "how many devices"},
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["role"] == "assistant"
+        assert body["content"] == "You have 1 device."
+
+        # MCP got the call.
+        assert FakeMcpClient.last_instance.calls == [("list_devices", {})]
+
+        # Persisted rows: user → assistant(tool_calls) → tool → assistant(final).
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            rows = (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.thread_id == uuid.UUID(tid))
+                    .order_by(ChatMessage.created_at, ChatMessage.id)
+                )
+            ).scalars().all()
+            assert [r.role for r in rows] == [
+                "user",
+                "assistant",
+                "tool",
+                "assistant",
+            ]
+            assert rows[1].tool_calls is not None
+            assert rows[1].tool_calls[0]["function"]["name"] == "list_devices"
+            assert rows[2].tool_call_id == "call_1"
+            assert rows[2].content == '[{"id":"d1"}]'
+            assert rows[3].content == "You have 1 device."
+            break
+
+    async def test_history_with_tool_turns_replays_on_second_turn(
+        self, client, scripted_agent
+    ):
+        # Turn 1: one tool call, then final answer.
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_server_time",
+                    "description": "time",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        scripted_agent["llm_replies"] = [
+            _FakeResult(
+                content="",
+                tokens_in=1,
+                tokens_out=1,
+                tool_calls=[_tool_call("get_server_time", {})],
+            ),
+            _FakeResult(content="It is now.", tokens_in=1, tokens_out=1),
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        await client.post(
+            f"/api/chat/threads/{tid}/message", json={"content": "first"}
+        )
+
+        # Turn 2: scripted_agent rebuilds the LLM, no scripted replies →
+        # stub reply, no tool calls.  The point is the messages= list
+        # passed into the new LLM call must include the prior tool turn.
+        scripted_agent["llm_replies"] = []
+        scripted_agent["llm_reply"] = "second"
+        await client.post(
+            f"/api/chat/threads/{tid}/message", json={"content": "second"}
+        )
+
+        messages = FakeLLMClient.last_instance.calls[0]
+        roles = [m["role"] for m in messages]
+        # system + user(first) + assistant(tool_calls) + tool + assistant(final) + user(second)
+        assert roles == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "user",
+        ]
+
+    async def test_write_tool_blocked_via_whitelist(
+        self, client, scripted_agent, app
+    ):
+        from cms.database import get_db
+        from cms.models.chat_message import ChatMessage
+
+        # MCP exposes only the read tool, but the LLM hallucinates a
+        # write call name.  The agent must refuse, persist a synthetic
+        # error tool result, and let the LLM continue.
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_server_time",
+                    "description": "time",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        scripted_agent["llm_replies"] = [
+            _FakeResult(
+                content="",
+                tokens_in=1,
+                tokens_out=1,
+                tool_calls=[_tool_call("delete_device", {"id": "x"})],
+            ),
+            _FakeResult(content="I can't do that.", tokens_in=1, tokens_out=1),
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        resp = await client.post(
+            f"/api/chat/threads/{tid}/message",
+            json={"content": "delete dev x"},
+        )
+        assert resp.status_code == 201
+        # MCP should NOT have been called for the write.
+        assert FakeMcpClient.last_instance.calls == []
+
+        factory = app.dependency_overrides[get_db]
+        async for db in factory():
+            rows = (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.thread_id == uuid.UUID(tid))
+                    .order_by(ChatMessage.created_at, ChatMessage.id)
+                )
+            ).scalars().all()
+            tool_row = next(r for r in rows if r.role == "tool")
+            assert "tool_not_allowed" in tool_row.content
+            break
+
+    async def test_invalid_json_arguments_handled(self, client, scripted_agent):
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_devices",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        bad_call = {
+            "id": "call_x",
+            "type": "function",
+            "function": {"name": "list_devices", "arguments": "{not json"},
+        }
+        scripted_agent["llm_replies"] = [
+            _FakeResult(
+                content="",
+                tokens_in=1,
+                tokens_out=1,
+                tool_calls=[bad_call],
+            ),
+            _FakeResult(content="ok", tokens_in=1, tokens_out=1),
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        resp = await client.post(
+            f"/api/chat/threads/{tid}/message", json={"content": "hi"}
+        )
+        assert resp.status_code == 201
+        assert FakeMcpClient.last_instance.calls == []  # never reached MCP
+        # The error gets fed back to the LLM on turn 2.
+        second_call_msgs = FakeLLMClient.last_instance.calls[1]
+        tool_msg = next(m for m in second_call_msgs if m["role"] == "tool")
+        assert "bad_arguments" in tool_msg["content"]
+
+    async def test_max_iterations_returns_safe_message(
+        self, client, scripted_agent, app
+    ):
+        scripted_agent["mcp_tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_server_time",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        # Lower the cap so the test is fast.
+        settings = app.dependency_overrides[
+            __import__("cms.auth", fromlist=["get_settings"]).get_settings
+        ]()
+        settings.assistant_max_tool_iterations = 2
+
+        # Always returns a tool call → loop exhausts.
+        tc = _tool_call("get_server_time", {})
+        scripted_agent["llm_replies"] = [
+            _FakeResult(content="", tokens_in=1, tokens_out=1, tool_calls=[tc]),
+            _FakeResult(content="", tokens_in=1, tokens_out=1, tool_calls=[tc]),
+        ]
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        resp = await client.post(
+            f"/api/chat/threads/{tid}/message", json={"content": "loop forever"}
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "max tool iterations" in body["content"]
+
+    async def test_mcp_unavailable_returns_503(self, client, app, monkeypatch):
+        # LLM is configured, but the MCP client raises on enter.
+        from cms.auth import get_settings
+        from cms.routers import chat as chat_router
+        from cms.services.assistant import agent as agent_mod
+        from cms.services.assistant.mcp_client import McpUnavailableError
+
+        settings = app.dependency_overrides[get_settings]()
+        settings.azure_openai_endpoint = "https://fake.openai.azure.com"
+        settings.azure_openai_deployment = "gpt-4o-fake"
+        monkeypatch.setattr(
+            chat_router, "assistant_llm_available", lambda s: True
+        )
+        monkeypatch.setattr(agent_mod, "LLMClient", FakeLLMClient)
+
+        class _BrokenMcp:
+            def __init__(self, *, settings=None, user=None):
+                pass
+
+            async def __aenter__(self):
+                raise McpUnavailableError("simulated outage")
+
+            async def __aexit__(self, *a):
+                pass
+
+        monkeypatch.setattr(agent_mod, "AssistantMcpClient", _BrokenMcp)
+
+        tid = (await client.post("/api/chat/threads", json={"title": ""})).json()["id"]
+        resp = await client.post(
+            f"/api/chat/threads/{tid}/message", json={"content": "hi"}
+        )
+        assert resp.status_code == 503
+        assert "tool backend" in resp.json()["detail"].lower()
+
+
+# ── PR 3b: MCP client unit tests ──────────────────────────────────────
+
+
+class TestReadOnlyWhitelist:
+    def test_known_read_tools_present(self):
+        from cms.services.assistant.mcp_client import READ_ONLY_TOOLS
+
+        for name in (
+            "list_devices",
+            "get_device",
+            "list_groups",
+            "list_assets",
+            "list_schedules",
+            "get_server_time",
+            "list_audit_events",
+        ):
+            assert name in READ_ONLY_TOOLS, name
+
+    def test_known_write_tools_excluded(self):
+        from cms.services.assistant.mcp_client import READ_ONLY_TOOLS
+
+        for name in (
+            "delete_device",
+            "adopt_device",
+            "reboot_device",
+            "create_group",
+            "delete_group",
+            "create_schedule",
+            "delete_schedule",
+            "play_now",
+            "factory_reset_device",
+            "set_device_password",
+        ):
+            assert name not in READ_ONLY_TOOLS, name
+
+
+def test_read_service_key_missing_file(tmp_path):
+    from cms.services.assistant.mcp_client import (
+        McpUnavailableError,
+        _read_service_key,
+    )
+
+    with pytest.raises(McpUnavailableError):
+        _read_service_key(str(tmp_path / "nope.key"))
+
+
+def test_read_service_key_empty_file(tmp_path):
+    from cms.services.assistant.mcp_client import (
+        McpUnavailableError,
+        _read_service_key,
+    )
+
+    p = tmp_path / "k"
+    p.write_text("   \n")
+    with pytest.raises(McpUnavailableError):
+        _read_service_key(str(p))
+
+
+def test_read_service_key_ok(tmp_path):
+    from cms.services.assistant.mcp_client import _read_service_key
+
+    p = tmp_path / "k"
+    p.write_text("agora_svc_deadbeef\n")
+    assert _read_service_key(str(p)) == "agora_svc_deadbeef"
+
+

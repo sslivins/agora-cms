@@ -40,6 +40,7 @@ from cms.services.assistant.llm_client import (
     AssistantUnavailableError,
     is_available as assistant_llm_available,
 )
+from cms.services.assistant.mcp_client import McpUnavailableError
 from cms.services.assistant_flag import assistant_enabled_for
 
 
@@ -224,5 +225,12 @@ async def post_message(
         # Defensive — assistant_llm_available() should have caught this,
         # but a race against config changes is theoretically possible.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except McpUnavailableError as exc:
+        # The agent needs MCP for tool grounding; if the MCP backend is
+        # down we refuse rather than reply with an ungrounded answer.
+        raise HTTPException(
+            status_code=503,
+            detail=f"Assistant tool backend unavailable: {exc}",
+        ) from exc
 
     return ChatMessageOut.model_validate(assistant_row)

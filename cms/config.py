@@ -154,4 +154,9 @@ class Settings(SharedSettings):
     # through the daily budget in a single shot; PR 6 layers a real
     # budget cap on top of this.
     assistant_max_completion_tokens: int = 1024
+    # Hard cap on LLM ↔ MCP-tool round-trips per user turn.  Protects
+    # against a model that keeps requesting tools forever; once hit the
+    # agent injects a "(stopped: max tool iterations reached)" assistant
+    # message and returns.
+    assistant_max_tool_iterations: int = 10
 

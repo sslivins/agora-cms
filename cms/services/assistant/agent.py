@@ -1,29 +1,40 @@
 """Assistant agent: orchestrates a single chat turn.
 
-PR 3a flow (non-streaming, no tools):
+PR 3b flow (non-streaming, MCP tool-calling loop):
 
 1. Caller posts a user message to ``POST /api/chat/threads/{id}/message``.
 2. :func:`run_user_turn` is invoked:
    a. Persists the user's :class:`ChatMessage`.
-   b. Loads the thread's existing messages (chronological).
-   c. Builds the OpenAI-format conversation: system prompt + history +
-      the new user turn.
-   d. Calls :meth:`LLMClient.complete`.
-   e. Persists the assistant :class:`ChatMessage` with the response and
-      token usage.
-   f. Auto-titles the thread if this was the first user turn and the
-      thread title is empty.
-   g. Bumps the thread's ``updated_at`` so it sorts to the top of the
+   b. Opens an :class:`AssistantMcpClient` (SSE handshake + MCP
+      ``initialize``) using the CMS service key + ``X-On-Behalf-Of:
+      <user.id>`` header so per-user RBAC is preserved.
+   c. Loads the thread's existing messages (chronological) and builds
+      the OpenAI-format conversation: system prompt + history + the
+      new user turn.
+   d. Loops up to ``assistant_max_tool_iterations`` times:
+        i. Call the LLM with the current ``messages`` + read-only
+           tool list.
+       ii. If the model returns no ``tool_calls``: persist a final
+           ``assistant`` row with the text and break out of the loop.
+      iii. Otherwise persist an ``assistant`` row that carries the
+           ``tool_calls`` (text content may be empty), then execute
+           each tool call against MCP, persist a ``tool`` row per
+           result, append everything to ``messages``, and loop again.
+   e. If the loop hits its cap without a clean answer, persist a final
+      ``assistant`` row with a "(stopped: max tool iterations reached)"
+      message so the user sees something.
+   f. Auto-title untitled threads from the first user prompt.
+   g. Bump ``thread.updated_at`` so it sorts to the top of the
       sidebar.
-3. The router serialises the assistant message and returns it.
 
 The agent owns the DB transaction boundary — the router doesn't have
 to think about it.  Token-budget enforcement and approval gating land
-in later PRs; this module's signature is shaped so that adding them
-won't require a router change.
+in later PRs; this module's signature is shaped so adding them won't
+require a router change.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -38,6 +49,11 @@ from cms.models.user import User
 from cms.services.assistant.llm_client import (
     CompletionResult,
     LLMClient,
+)
+from cms.services.assistant.mcp_client import (
+    AssistantMcpClient,
+    McpUnavailableError,
+    READ_ONLY_TOOLS,
 )
 from cms.services.assistant.prompts import build_system_prompt
 
@@ -61,9 +77,10 @@ def _history_to_openai_messages(
 ) -> list[dict[str, Any]]:
     """Convert persisted :class:`ChatMessage` rows to OpenAI format.
 
-    PR 3a only emits ``user`` / ``assistant`` turns — ``tool`` /
-    ``system`` rows from later PRs are preserved transparently so the
-    same helper can be used after PR 3b lands.
+    Preserves ``tool_calls`` on assistant turns and ``tool_call_id`` on
+    tool turns so an interrupted multi-step turn (e.g. server restart
+    between tool result and final answer) replays correctly on the
+    next call.
     """
     out: list[dict[str, Any]] = []
     for row in history:
@@ -76,6 +93,62 @@ def _history_to_openai_messages(
     return out
 
 
+def _parse_tool_arguments(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Return ``(args, error)``.  ``error`` is non-None on bad JSON."""
+    if raw is None or raw == "":
+        return {}, None
+    if isinstance(raw, dict):
+        return raw, None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        return None, f"invalid_json_arguments: {exc}"
+    if not isinstance(parsed, dict):
+        return None, "tool arguments must be a JSON object"
+    return parsed, None
+
+
+async def _execute_tool_call(
+    *,
+    mcp: AssistantMcpClient,
+    tool_call: dict[str, Any],
+) -> str:
+    """Run a single OpenAI ``tool_call`` against MCP, returning a string.
+
+    Never raises — failures are encoded as JSON ``{"error": ...}`` so
+    the LLM can see the failure and reason about it on the next turn.
+    """
+    fn = tool_call.get("function", {}) or {}
+    name = fn.get("name", "")
+    args, err = _parse_tool_arguments(fn.get("arguments"))
+    if err is not None:
+        return json.dumps({"error": "bad_arguments", "message": err})
+    if name not in READ_ONLY_TOOLS:
+        return json.dumps(
+            {
+                "error": "tool_not_allowed",
+                "message": (
+                    f"Tool '{name}' is not in the read-only whitelist. "
+                    "Write/mutating tools require an approval flow that "
+                    "isn't built yet (PR 4)."
+                ),
+            }
+        )
+    try:
+        return await mcp.call_tool(name, args or {})
+    except PermissionError as exc:
+        # Should be unreachable (whitelist check above) but defensive.
+        return json.dumps({"error": "tool_not_allowed", "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001 — surface as tool result
+        logger.exception("assistant.tool.exec_failed tool=%s", name)
+        return json.dumps(
+            {
+                "error": "tool_execution_failed",
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+
 async def run_user_turn(
     *,
     db: AsyncSession,
@@ -84,12 +157,15 @@ async def run_user_turn(
     thread: ChatThread,
     user_message: str,
     llm_client: LLMClient | None = None,
+    mcp_client: AssistantMcpClient | None = None,
 ) -> ChatMessage:
     """Run one user → assistant turn against ``thread``.
 
-    Returns the persisted assistant :class:`ChatMessage`.  Caller-supplied
-    ``llm_client`` is used if provided (tests inject a mock); otherwise
-    a fresh client is constructed and closed at the end of the call.
+    Returns the persisted assistant :class:`ChatMessage` that the caller
+    should serialize back to the HTTP client (the final text reply, not
+    an intermediate tool-call turn).  Caller-supplied ``llm_client`` /
+    ``mcp_client`` are used if provided (tests inject fakes); otherwise
+    fresh ones are constructed and closed at the end of the call.
     """
     user_message = user_message.strip()
     if not user_message:
@@ -105,8 +181,9 @@ async def run_user_turn(
     await db.flush()
 
     # 2. Reload the full history (now including the row we just added)
-    #    in chronological order.  Single round-trip; threads in PR 3a
-    #    are bounded by user typing speed so no pagination needed.
+    #    in chronological order.  Single round-trip; threads in Phase 1
+    #    are bounded by the token budget cap (PR 6) so no pagination
+    #    needed.
     rows = (
         await db.execute(
             select(ChatMessage)
@@ -121,47 +198,124 @@ async def run_user_turn(
     ]
     openai_messages.extend(_history_to_openai_messages(list(rows)))
 
-    # 4. Call the LLM, owning the client lifecycle if the caller didn't
-    #    inject one.
-    owns_client = llm_client is None
-    client = llm_client if llm_client is not None else LLMClient(settings)
-    try:
-        result: CompletionResult = await client.complete(openai_messages)
-    finally:
-        if owns_client:
-            await client.aclose()
-
-    # 5. Persist the assistant turn with token accounting.
-    assistant_row = ChatMessage(
-        thread_id=thread.id,
-        role="assistant",
-        content=result.content,
-        tokens_in=result.tokens_in,
-        tokens_out=result.tokens_out,
+    # 4. Open clients.  Both raise *Unavailable / construction errors
+    #    BEFORE we mutate the DB further, so the router can return 503
+    #    cleanly with only the user turn persisted (which is correct —
+    #    the user typed it, it should appear in history).
+    owns_llm = llm_client is None
+    llm = llm_client if llm_client is not None else LLMClient(settings)
+    owns_mcp = mcp_client is None
+    mcp = mcp_client if mcp_client is not None else AssistantMcpClient(
+        settings=settings, user=user
     )
-    db.add(assistant_row)
+    if owns_mcp:
+        await mcp.__aenter__()
 
-    # 6. Auto-title untitled threads from the first user prompt.  We
-    #    check that the only persisted user row is this one rather than
-    #    relying on `not thread.title`, because the user may have
-    #    cleared the title in the UI.
+    final_assistant_row: ChatMessage | None = None
+    try:
+        tools = await mcp.list_openai_tools()
+        max_iters = max(1, int(settings.assistant_max_tool_iterations))
+
+        for iteration in range(max_iters):
+            result: CompletionResult = await llm.complete(
+                openai_messages, tools=tools or None
+            )
+
+            if not result.tool_calls:
+                # Final answer turn — persist text + token accounting.
+                final_assistant_row = ChatMessage(
+                    thread_id=thread.id,
+                    role="assistant",
+                    content=result.content,
+                    tokens_in=result.tokens_in,
+                    tokens_out=result.tokens_out,
+                )
+                db.add(final_assistant_row)
+                openai_messages.append(
+                    {"role": "assistant", "content": result.content}
+                )
+                break
+
+            # Intermediate tool-call turn — persist with tool_calls.
+            tc_row = ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content=result.content or "",
+                tool_calls=result.tool_calls,
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
+            )
+            db.add(tc_row)
+            openai_messages.append(
+                {
+                    "role": "assistant",
+                    "content": result.content or "",
+                    "tool_calls": result.tool_calls,
+                }
+            )
+
+            # Execute each tool call and persist its result.
+            for tool_call in result.tool_calls:
+                tool_content = await _execute_tool_call(
+                    mcp=mcp, tool_call=tool_call
+                )
+                tool_row = ChatMessage(
+                    thread_id=thread.id,
+                    role="tool",
+                    content=tool_content,
+                    tool_call_id=tool_call.get("id"),
+                )
+                db.add(tool_row)
+                openai_messages.append(
+                    {
+                        "role": "tool",
+                        "content": tool_content,
+                        "tool_call_id": tool_call.get("id"),
+                    }
+                )
+            await db.flush()
+        else:
+            # Hit the iteration cap without a tool_calls-free response.
+            logger.warning(
+                "assistant.turn.max_iters_hit thread=%s user=%s cap=%d",
+                thread.id,
+                user.id,
+                max_iters,
+            )
+            final_assistant_row = ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content=(
+                    "(stopped: max tool iterations reached. The assistant "
+                    "kept requesting more tools without producing a final "
+                    "answer. Try rephrasing the request.)"
+                ),
+            )
+            db.add(final_assistant_row)
+    finally:
+        if owns_mcp:
+            await mcp.__aexit__(None, None, None)
+        if owns_llm:
+            await llm.aclose()
+
+    # 5. Auto-title untitled threads from the first user prompt.
     user_turn_count = sum(1 for r in rows if r.role == "user")
     if user_turn_count == 1 and not thread.title.strip():
         thread.title = _auto_title(user_message)
 
-    # 7. Bump `updated_at` so this thread sorts to the top of the
-    #    sidebar.  We set it explicitly rather than relying on
-    #    `onupdate=` because SQLAlchemy only fires an UPDATE when at
-    #    least one mapped attribute is actually dirty.
+    # 6. Bump `updated_at` so this thread sorts to the top of the
+    #    sidebar.  Set it explicitly because SQLAlchemy only fires an
+    #    UPDATE when at least one mapped attribute is actually dirty.
     thread.updated_at = datetime.now(timezone.utc)
     await db.flush()
     await db.commit()
-    await db.refresh(assistant_row)
+    assert final_assistant_row is not None  # always set by either branch
+    await db.refresh(final_assistant_row)
     logger.info(
         "assistant.turn.complete thread=%s user=%s in=%d out=%d",
         thread.id,
         user.id,
-        result.tokens_in,
-        result.tokens_out,
+        final_assistant_row.tokens_in,
+        final_assistant_row.tokens_out,
     )
-    return assistant_row
+    return final_assistant_row
