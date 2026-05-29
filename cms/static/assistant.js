@@ -96,7 +96,8 @@
             del.textContent = "×";
             del.addEventListener("click", async (ev) => {
                 ev.stopPropagation();
-                if (!confirm("Delete this conversation?")) return;
+                const ok = await showConfirm("Delete this conversation?");
+                if (!ok) return;
                 await apiDelete(`/api/chat/threads/${t.id}`);
                 if (state.activeThreadId === t.id) {
                     state.activeThreadId = null;
@@ -246,9 +247,13 @@
     }
 
     async function decideApproval(approvalId, action, card) {
-        const note = action === "reject"
-            ? (prompt("Optional reason for rejecting:") || "")
-            : "";
+        let note = "";
+        if (action === "reject") {
+            const entered = await showPrompt("Optional reason for rejecting:");
+            // Null = cancel — bail without sending the decision.
+            if (entered === null) return;
+            note = entered;
+        }
         const buttons = card.querySelectorAll("button");
         buttons.forEach((b) => b.disabled = true);
         try {
@@ -264,7 +269,7 @@
                     : `✗ Rejected${note ? " — " + note : ""}`;
             }
         } catch (e) {
-            alert(`Decision failed: ${e.message}`);
+            showToast(`Decision failed: ${e.message}`, "error");
             buttons.forEach((b) => b.disabled = false);
         }
     }
