@@ -3,12 +3,29 @@
 {% block content %}
 <style>
 /* ── Assistant layout ─────────────────────────────────────────── */
+#assistant-app {
+    display: flex;
+    flex-direction: column;
+    /* Reserve room for the topbar (header + nav tabs + status lights
+       row + page padding).  Using viewport height anchors the
+       composer to the bottom of the window so the user never has to
+       scroll the page to reach it. */
+    height: calc(100vh - 150px);
+    min-height: 500px;
+}
+#assistant-app > h1 {
+    margin: 0 0 0.6rem 0;
+    flex-shrink: 0;
+}
 .assistant-page {
+    flex: 1;
     display: grid;
     grid-template-columns: 280px 1fr;
     gap: 1rem;
-    height: calc(100vh - 200px);
-    min-height: 500px;
+    /* Required so the grid children can shrink below their content
+       size — otherwise the messages area grows and pushes the
+       composer off-screen. */
+    min-height: 0;
 }
 .assistant-sidebar {
     background: var(--surface);
@@ -90,6 +107,7 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    min-height: 0;
 }
 .assistant-messages {
     flex: 1;
