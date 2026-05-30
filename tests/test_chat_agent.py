@@ -881,16 +881,19 @@ class TestReadOnlyWhitelist:
 
 
 def test_read_service_key_missing_file(tmp_path):
+    from cms.config import Settings
     from cms.services.assistant.mcp_client import (
         McpUnavailableError,
         _read_service_key,
     )
 
+    s = Settings(service_key_path=str(tmp_path / "nope.key"))
     with pytest.raises(McpUnavailableError):
-        _read_service_key(str(tmp_path / "nope.key"))
+        _read_service_key(s)
 
 
 def test_read_service_key_empty_file(tmp_path):
+    from cms.config import Settings
     from cms.services.assistant.mcp_client import (
         McpUnavailableError,
         _read_service_key,
@@ -898,16 +901,57 @@ def test_read_service_key_empty_file(tmp_path):
 
     p = tmp_path / "k"
     p.write_text("   \n")
+    s = Settings(service_key_path=str(p))
     with pytest.raises(McpUnavailableError):
-        _read_service_key(str(p))
+        _read_service_key(s)
 
 
 def test_read_service_key_ok(tmp_path):
+    from cms.config import Settings
     from cms.services.assistant.mcp_client import _read_service_key
 
     p = tmp_path / "k"
     p.write_text("agora_svc_deadbeef\n")
-    assert _read_service_key(str(p)) == "agora_svc_deadbeef"
+    s = Settings(service_key_path=str(p))
+    assert _read_service_key(s) == "agora_svc_deadbeef"
+
+
+def test_read_service_key_keyvault_fallback(tmp_path, monkeypatch):
+    """When the local file is missing but Key Vault is configured,
+    fall back to reading the key from KV (the Azure Container Apps
+    deployment shape — no shared volume between CMS and MCP)."""
+    from cms.config import Settings
+    from cms.services.assistant.mcp_client import _read_service_key
+
+    monkeypatch.setattr(
+        "cms.keyvault.read_key_from_keyvault",
+        lambda uri: "agora_svc_fromkv",
+    )
+    s = Settings(
+        service_key_path=str(tmp_path / "nope.key"),
+        azure_keyvault_uri="https://example-kv.vault.azure.net",
+    )
+    assert _read_service_key(s) == "agora_svc_fromkv"
+
+
+def test_read_service_key_keyvault_empty_raises(tmp_path, monkeypatch):
+    """Both file missing and KV returning empty → McpUnavailableError."""
+    from cms.config import Settings
+    from cms.services.assistant.mcp_client import (
+        McpUnavailableError,
+        _read_service_key,
+    )
+
+    monkeypatch.setattr(
+        "cms.keyvault.read_key_from_keyvault",
+        lambda uri: "",
+    )
+    s = Settings(
+        service_key_path=str(tmp_path / "nope.key"),
+        azure_keyvault_uri="https://example-kv.vault.azure.net",
+    )
+    with pytest.raises(McpUnavailableError):
+        _read_service_key(s)
 
 
 # ── PR 3c: SSE streaming endpoint ─────────────────────────────────────
