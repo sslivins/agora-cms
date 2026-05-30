@@ -36,6 +36,11 @@ azure-monitor-opentelemetry>=1.6,<2.0
 # provisioned by infra/modules/azureOpenAI.bicep.  Auth via managed
 # identity (DefaultAzureCredential) — no API keys.
 openai>=1.50,<2.0
+# MCP Python SDK — client side, used by cms/services/assistant/mcp_client.py
+# to call into the agora-cms-mcp container over SSE.  Same major version
+# as the MCP server pin in mcp/requirements.txt to avoid wire-protocol
+# drift between client and server.
+mcp>=1.0.0,<2.0
 # Server-Sent Events response helper for the chat-assistant streaming
 # endpoint (cms/routers/chat.py).  Pinned to a recent stable; the
 # library is tiny and stable.
