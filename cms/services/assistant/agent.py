@@ -330,6 +330,14 @@ async def run_user_turn(
         final_assistant_row.tokens_in,
         final_assistant_row.tokens_out,
     )
+    try:
+        from cms.metrics import (
+            ATTR_STREAMING,
+            assistant_message_sent_total,
+        )
+        assistant_message_sent_total.add(1, {ATTR_STREAMING: "false"})
+    except Exception:  # noqa: BLE001 - telemetry must never break the turn
+        logger.debug("assistant.message_sent metric emit failed", exc_info=True)
     return final_assistant_row
 
 
@@ -663,6 +671,14 @@ async def run_user_turn_streaming(
         final_row.tokens_in,
         final_row.tokens_out,
     )
+    try:
+        from cms.metrics import (
+            ATTR_STREAMING,
+            assistant_message_sent_total,
+        )
+        assistant_message_sent_total.add(1, {ATTR_STREAMING: "true"})
+    except Exception:  # noqa: BLE001 - telemetry must never break the turn
+        logger.debug("assistant.message_sent metric emit failed", exc_info=True)
     yield {
         "type": "done",
         "message_id": str(final_row.id),

@@ -223,3 +223,53 @@ presence_heartbeat_late_total: Final = _meter.create_counter(
 # Attribute key for the lease-loop name on presence counters.
 
 ATTR_LOOP_NAME: Final[str] = "loop_name"
+
+
+# ── Assistant (in-CMS LLM chat) ──────────────────────────────────────
+#
+# Three counters drive the App Insights view of Assistant adoption
+# and guardrails:
+#
+#   * agora.assistant.message_sent  — every successfully completed
+#     user turn (i.e. the LLM returned an answer).  Dimension:
+#     ``streaming`` ("true"/"false").  Forms the denominator for
+#     "approval rate" and "budget-exceeded rate" derived metrics.
+#
+#   * agora.assistant.budget_exceeded — fired inside
+#     ``services.assistant.budget.check_budget`` when a user is at
+#     or over their cap.  No dimensions; per-user attribution
+#     happens through the audit log.
+#
+#   * agora.assistant.approval_decided — increments when an admin
+#     approves or rejects a queued write tool.  Dimension:
+#     ``decision`` ("approve" / "reject").
+
+assistant_message_sent_total: Final = _meter.create_counter(
+    "agora.assistant.message_sent",
+    description=(
+        "User-initiated Assistant turns that completed successfully "
+        "(i.e. the LLM produced a reply).  Dimension: ``streaming`` "
+        "distinguishes /message from /stream callers."
+    ),
+)
+
+assistant_budget_exceeded_total: Final = _meter.create_counter(
+    "agora.assistant.budget_exceeded",
+    description=(
+        "Assistant turns refused because the user is at or over "
+        "their daily token cap.  Incremented in check_budget before "
+        "the BudgetExceededError is raised."
+    ),
+)
+
+assistant_approval_decided_total: Final = _meter.create_counter(
+    "agora.assistant.approval_decided",
+    description=(
+        "Write-tool approval decisions.  Dimension: ``decision`` "
+        "(``approve`` or ``reject``)."
+    ),
+)
+
+
+ATTR_STREAMING: Final[str] = "streaming"
+ATTR_DECISION: Final[str] = "decision"

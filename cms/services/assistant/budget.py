@@ -201,5 +201,12 @@ async def check_budget(
         )
         return used, cap
     if used >= cap:
+        try:
+            from cms.metrics import assistant_budget_exceeded_total
+            assistant_budget_exceeded_total.add(1)
+        except Exception:  # noqa: BLE001 - telemetry must never block enforcement
+            logger.debug(
+                "assistant.budget_exceeded metric emit failed", exc_info=True
+            )
         raise BudgetExceededError(daily_cap=cap, used=used)
     return used, cap

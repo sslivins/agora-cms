@@ -286,6 +286,16 @@ async def approve_approval(
         row.tool_name,
         user.id,
     )
+    try:
+        from cms.metrics import (
+            ATTR_DECISION,
+            assistant_approval_decided_total,
+        )
+        assistant_approval_decided_total.add(1, {ATTR_DECISION: "approve"})
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "assistant.approval_decided metric emit failed", exc_info=True
+        )
     return ChatPendingApprovalOut.model_validate(row)
 
 
@@ -331,4 +341,14 @@ async def reject_approval(
         row.tool_name,
         user.id,
     )
+    try:
+        from cms.metrics import (
+            ATTR_DECISION,
+            assistant_approval_decided_total,
+        )
+        assistant_approval_decided_total.add(1, {ATTR_DECISION: "reject"})
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "assistant.approval_decided metric emit failed", exc_info=True
+        )
     return ChatPendingApprovalOut.model_validate(row)

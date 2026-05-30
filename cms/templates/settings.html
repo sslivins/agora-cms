@@ -659,4 +659,189 @@ async function saveAlertSettings() {
 })();
 </script>
 
-{% endblock %}
+    {% if 'settings:write' in user_perms %}
+    <div class="card" id="assistant-card">
+        <h2>Assistant</h2>
+        <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+            Controls the in-CMS Assistant (chat + tool grounding via MCP). The
+            feature is gated by a per-user allowlist; admins always have access.
+            Daily token caps protect against runaway LLM spend.
+        </p>
+
+        <h3 style="margin-top: 1rem;">Allowlist</h3>
+        <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
+            Users who can see and use the Assistant. Admins (anyone with
+            <code>settings:write</code>) always have access regardless of this list.
+        </p>
+        <div id="assistant-allowlist" style="max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; margin-bottom: 0.5rem;">
+            <span class="text-muted">Loading…</span>
+        </div>
+        <button type="button" class="btn btn-primary" id="assistant-save-allowlist">Save allowlist</button>
+
+        <h3 style="margin-top: 1.5rem;">Daily token budget</h3>
+        <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
+            Cap on tokens (input + output) per user per UTC day. Negative = unlimited.
+            Zero = blocked. Defaults to <span id="assistant-cap-fallback">50000</span> when nothing is configured.
+        </p>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="assistant-default-cap">Global default (tokens/day)</label>
+                <input type="number" id="assistant-default-cap" min="-1" value="" style="max-width: 200px;">
+            </div>
+        </div>
+
+        <h4 style="margin-top: 1rem;">Per-user overrides</h4>
+        <p class="text-muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.5rem;">
+            Override the global cap for individual allowlisted users. Leave the cap
+            blank to remove an override (the user will fall back to the global default).
+        </p>
+        <div id="assistant-overrides" style="border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; margin-bottom: 0.5rem;">
+            <span class="text-muted">Loading…</span>
+        </div>
+        <button type="button" class="btn btn-primary" id="assistant-save-budget" style="margin-top: 0.5rem;">Save budget</button>
+    </div>
+
+    <script>
+    (function () {
+        const allowlistDiv = document.getElementById("assistant-allowlist");
+        const overridesDiv = document.getElementById("assistant-overrides");
+        const defaultCapInput = document.getElementById("assistant-default-cap");
+        const fallbackSpan = document.getElementById("assistant-cap-fallback");
+
+        let state = {users: [], allowlist: [], default_cap: 0, overrides: {}};
+
+        function userLabel(u) {
+            const name = u.display_name || u.username;
+            return u.email ? `${name} (${u.email})` : name;
+        }
+
+        function renderAllowlist() {
+            const allowSet = new Set(state.allowlist.map(String));
+            allowlistDiv.innerHTML = "";
+            state.users.forEach(u => {
+                const label = document.createElement("label");
+                label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; cursor: pointer;";
+                const cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.value = u.id;
+                cb.checked = allowSet.has(String(u.id));
+                cb.style.cssText = "width: auto; margin: 0;";
+                cb.dataset.userId = u.id;
+                cb.addEventListener("change", renderOverrides);
+                label.appendChild(cb);
+                const span = document.createElement("span");
+                span.textContent = userLabel(u);
+                label.appendChild(span);
+                allowlistDiv.appendChild(label);
+            });
+        }
+
+        function currentAllowlist() {
+            return Array.from(allowlistDiv.querySelectorAll("input[type=checkbox]:checked"))
+                .map(cb => cb.dataset.userId);
+        }
+
+        function renderOverrides() {
+            const allowed = new Set(currentAllowlist());
+            overridesDiv.innerHTML = "";
+            const visible = state.users.filter(u => allowed.has(String(u.id)));
+            if (visible.length === 0) {
+                const p = document.createElement("p");
+                p.className = "text-muted";
+                p.style.margin = "0";
+                p.textContent = "No allowlisted users — toggle some above to add per-user overrides.";
+                overridesDiv.appendChild(p);
+                return;
+            }
+            visible.forEach(u => {
+                const row = document.createElement("div");
+                row.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0;";
+                const lbl = document.createElement("span");
+                lbl.textContent = userLabel(u);
+                lbl.style.cssText = "flex: 1;";
+                const input = document.createElement("input");
+                input.type = "number";
+                input.min = "-1";
+                input.placeholder = "(use default)";
+                input.style.cssText = "max-width: 150px;";
+                input.dataset.userId = u.id;
+                const ovr = state.overrides[String(u.id)];
+                if (ovr !== undefined) input.value = ovr;
+                row.appendChild(lbl);
+                row.appendChild(input);
+                overridesDiv.appendChild(row);
+            });
+        }
+
+        async function loadState() {
+            try {
+                const resp = await fetch("/api/settings/assistant");
+                if (!resp.ok) throw new Error("Failed to load assistant settings");
+                state = await resp.json();
+                defaultCapInput.value = state.default_cap;
+                if (state.default_cap_fallback != null) {
+                    fallbackSpan.textContent = state.default_cap_fallback;
+                }
+                renderAllowlist();
+                renderOverrides();
+            } catch (err) {
+                allowlistDiv.innerHTML = `<span class="text-muted">${err.message || "Load failed"}</span>`;
+            }
+        }
+
+        document.getElementById("assistant-save-allowlist").addEventListener("click", async () => {
+            const user_ids = currentAllowlist();
+            try {
+                const resp = await fetch("/api/settings/assistant/allowlist", {
+                    method: "PUT",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({user_ids}),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error((data.detail && data.detail.message) || data.detail || "Save failed");
+                }
+                state = await resp.json();
+                showToast(`Allowlist saved (${user_ids.length} users)`);
+                renderOverrides();
+            } catch (err) {
+                showToast(err.message || "Failed to save allowlist", true);
+            }
+        });
+
+        document.getElementById("assistant-save-budget").addEventListener("click", async () => {
+            const default_cap = parseInt(defaultCapInput.value, 10);
+            if (Number.isNaN(default_cap)) {
+                showToast("Default cap must be a number", true);
+                return;
+            }
+            const overrides = {};
+            overridesDiv.querySelectorAll("input[type=number]").forEach(input => {
+                const v = input.value.trim();
+                if (v === "") return;
+                const n = parseInt(v, 10);
+                if (!Number.isNaN(n)) overrides[input.dataset.userId] = n;
+            });
+            try {
+                const resp = await fetch("/api/settings/assistant/budget", {
+                    method: "PUT",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({default_cap, overrides}),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error((data.detail && data.detail.message) || data.detail || "Save failed");
+                }
+                state = await resp.json();
+                showToast("Budget saved");
+            } catch (err) {
+                showToast(err.message || "Failed to save budget", true);
+            }
+        });
+
+        loadState();
+    })();
+    </script>
+    {% endif %}
+
+    {% endblock %}

@@ -2013,6 +2013,69 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/settings/assistant:
+    get:
+      tags:
+      - assistant-settings
+      summary: Get Assistant Settings
+      operationId: get_assistant_settings_api_settings_assistant_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistantSettingsOut'
+  /api/settings/assistant/allowlist:
+    put:
+      tags:
+      - assistant-settings
+      summary: Put Assistant Allowlist
+      operationId: put_assistant_allowlist_api_settings_assistant_allowlist_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistantAllowlistIn'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistantSettingsOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/settings/assistant/budget:
+    put:
+      tags:
+      - assistant-settings
+      summary: Put Assistant Budget
+      operationId: put_assistant_budget_api_settings_assistant_budget_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistantBudgetIn'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistantSettingsOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/profiles:
     get:
       summary: List Profiles
@@ -4469,6 +4532,30 @@ components:
       type: object
       title: AssetViewPatch
       description: Request body for ``PATCH /api/asset-views/{id}``. All fields optional.
+    AssistantAllowlistIn:
+      properties:
+        user_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: User Ids
+      type: object
+      title: AssistantAllowlistIn
+    AssistantBudgetIn:
+      properties:
+        default_cap:
+          type: integer
+          title: Default Cap
+        overrides:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Overrides
+      type: object
+      required:
+      - default_cap
+      title: AssistantBudgetIn
     AssistantFeatureStatus:
       properties:
         enabled:
@@ -4483,6 +4570,64 @@ components:
 
         Lets the frontend decide whether to render the Assistant tab without
         needing to probe a 404 from another endpoint.
+    AssistantSettingsOut:
+      properties:
+        allowlist:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Allowlist
+        default_cap:
+          type: integer
+          title: Default Cap
+        overrides:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Overrides
+        default_cap_fallback:
+          type: integer
+          title: Default Cap Fallback
+          description: The compiled-in fallback cap used when no global cap is configured.  Returned so the UI can show it
+            as the placeholder.
+          default: 50000
+        users:
+          items:
+            $ref: '#/components/schemas/AssistantUserCatalogEntry'
+          type: array
+          title: Users
+      type: object
+      required:
+      - allowlist
+      - default_cap
+      - overrides
+      - users
+      title: AssistantSettingsOut
+    AssistantUserCatalogEntry:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        username:
+          type: string
+          title: Username
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+      type: object
+      required:
+      - id
+      - username
+      title: AssistantUserCatalogEntry
     AuditLogRead:
       properties:
         id:
@@ -6690,6 +6835,7 @@ servers:
 security:
 - sessionCookie: []
 tags:
+- name: assistant-settings
 - name: bootstrap
   description: First-contact registration / adoption endpoints used during device onboarding.
 - name: devices (device-originated)
