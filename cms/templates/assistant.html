@@ -135,6 +135,71 @@
     font-size: 0.92rem;
     white-space: pre-wrap;
 }
+/* When the bubble holds rendered markdown (assistant turns), let the
+   inner block elements supply their own spacing instead of wrapping
+   on raw whitespace.  ``.is-markdown`` is set in JS so user/tool
+   bubbles keep the plain pre-wrap treatment. */
+.assistant-message-bubble.is-markdown {
+    white-space: normal;
+}
+.assistant-message-bubble.is-markdown > :first-child { margin-top: 0; }
+.assistant-message-bubble.is-markdown > :last-child  { margin-bottom: 0; }
+.assistant-message-bubble.is-markdown p { margin: 0.4em 0; }
+.assistant-message-bubble.is-markdown ul,
+.assistant-message-bubble.is-markdown ol { margin: 0.4em 0; padding-left: 1.4em; }
+.assistant-message-bubble.is-markdown li { margin: 0.15em 0; }
+.assistant-message-bubble.is-markdown h1,
+.assistant-message-bubble.is-markdown h2,
+.assistant-message-bubble.is-markdown h3,
+.assistant-message-bubble.is-markdown h4 {
+    margin: 0.6em 0 0.3em;
+    font-weight: 600;
+    line-height: 1.25;
+}
+.assistant-message-bubble.is-markdown h1 { font-size: 1.15rem; }
+.assistant-message-bubble.is-markdown h2 { font-size: 1.08rem; }
+.assistant-message-bubble.is-markdown h3 { font-size: 1.02rem; }
+.assistant-message-bubble.is-markdown h4 { font-size: 0.96rem; }
+.assistant-message-bubble.is-markdown code {
+    background: rgba(0,0,0,0.08);
+    padding: 0.05em 0.35em;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+}
+.assistant-message-bubble.is-markdown pre {
+    background: rgba(0,0,0,0.07);
+    border-radius: 6px;
+    padding: 0.55rem 0.7rem;
+    overflow-x: auto;
+    margin: 0.4em 0;
+}
+.assistant-message-bubble.is-markdown pre code {
+    background: transparent;
+    padding: 0;
+    font-size: 0.85em;
+}
+.assistant-message-bubble.is-markdown a {
+    color: inherit;
+    text-decoration: underline;
+}
+.assistant-message-bubble.is-markdown table {
+    border-collapse: collapse;
+    margin: 0.4em 0;
+    font-size: 0.88em;
+}
+.assistant-message-bubble.is-markdown th,
+.assistant-message-bubble.is-markdown td {
+    border: 1px solid var(--border);
+    padding: 0.25rem 0.5rem;
+    text-align: left;
+}
+.assistant-message-bubble.is-markdown blockquote {
+    margin: 0.4em 0;
+    padding-left: 0.6em;
+    border-left: 3px solid var(--border);
+    color: var(--text-muted);
+}
 .assistant-message.user .assistant-message-bubble {
     background: var(--accent, #4e8cff);
     color: white;
@@ -324,5 +389,7 @@
     <p style="font-size:0.85rem;">Ask an admin to add you to the allowlist in Settings.</p>
 </div>
 
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 <script src="/static/assistant.js?v={{ static_version }}"></script>
 {% endblock %}
