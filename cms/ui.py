@@ -602,7 +602,25 @@ async def setup_mcp(
         details={"enabled": bool(enabled)},
         request=request,
     )
+
+    service_key: str | None = None
+    if enabled:
+        # Auto-provision the MCP service key the same way the post-setup
+        # Settings → MCP toggle does. Without this the wizard leaves the
+        # MCP server unable to authenticate any CMS callbacks because no
+        # key was ever generated, hashed, or written to the shared volume
+        # / Key Vault.
+        existing = await get_setting(db, SETTING_MCP_SERVICE_KEY_HASH)
+        if not existing:
+            raw_key, _prefix = await provision_service_key(
+                db, settings.service_key_path, keyvault_uri=settings.azure_keyvault_uri
+            )
+            await _notify_mcp_reload(settings)
+            service_key = raw_key
+
     await db.commit()
+    if service_key is not None:
+        return {"status": "ok", "service_key": service_key}
     return {"status": "ok"}
 
 
