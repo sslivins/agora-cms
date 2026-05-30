@@ -275,6 +275,16 @@ def require_permission(*perms: str):
     ) -> User:
         user = await get_current_user(request, settings, db)
         request.state.user = user
+        # Mirror require_auth: stash the assistant allowlist flag so the
+        # topbar's "Assistant" tab still renders on permission-gated
+        # pages (e.g. /settings, which uses require_permission, not
+        # require_auth).  Without this, the tab disappears the moment
+        # you visit Settings even though the user is allowlisted.
+        try:
+            from cms.services.assistant_flag import assistant_enabled_for
+            request.state.assistant_enabled = await assistant_enabled_for(db, user)
+        except Exception:
+            request.state.assistant_enabled = False
         if user.role is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No role assigned")
         for perm in perms:
