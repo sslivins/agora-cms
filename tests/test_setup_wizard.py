@@ -11,6 +11,7 @@ from cms.auth import (
     SETTING_SMTP_HOST,
     SETTING_TIMEZONE,
     SETTING_MCP_ENABLED,
+    SETTING_MCP_SERVICE_KEY_HASH,
     get_setting,
     set_setting,
 )
@@ -305,6 +306,50 @@ async def test_mcp_save(setup_client, db_session):
     assert resp.status_code == 200
     val = await get_setting(db_session, SETTING_MCP_ENABLED)
     assert val == "true"
+
+
+@pytest.mark.asyncio
+async def test_mcp_enable_provisions_service_key(setup_client, db_session):
+    """Enabling MCP in the wizard must provision the service key.
+
+    Regression guard for the bug where /setup/mcp only flipped the
+    enabled flag without ever calling provision_service_key. That left
+    fresh deployments with mcp_enabled=true but no key hash in the DB
+    and no secret in Key Vault, so the MCP server had nothing to
+    authenticate against.
+    """
+    resp = await setup_client.post("/setup/mcp", json={"enabled": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("service_key"), "wizard should return the freshly minted key"
+
+    key_hash = await get_setting(db_session, SETTING_MCP_SERVICE_KEY_HASH)
+    assert key_hash, "service key hash should be persisted in settings"
+
+
+@pytest.mark.asyncio
+async def test_mcp_disable_does_not_provision(setup_client, db_session):
+    """Disabling MCP in the wizard must not mint a key."""
+    resp = await setup_client.post("/setup/mcp", json={"enabled": False})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "service_key" not in body
+    key_hash = await get_setting(db_session, SETTING_MCP_SERVICE_KEY_HASH)
+    assert not key_hash
+
+
+@pytest.mark.asyncio
+async def test_mcp_enable_is_idempotent_when_key_exists(setup_client, db_session):
+    """If a hash already exists, /setup/mcp must not rotate the key."""
+    await set_setting(db_session, SETTING_MCP_SERVICE_KEY_HASH, "preexisting-hash")
+    await db_session.commit()
+
+    resp = await setup_client.post("/setup/mcp", json={"enabled": True})
+    assert resp.status_code == 200
+    assert "service_key" not in resp.json()
+
+    key_hash = await get_setting(db_session, SETTING_MCP_SERVICE_KEY_HASH)
+    assert key_hash == "preexisting-hash"
 
 
 # ── Completion ──
