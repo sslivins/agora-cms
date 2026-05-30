@@ -83,24 +83,46 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
 )
 
 
-def _read_service_key(path: str) -> str:
-    """Read the MCP service key off the shared volume.
+def _read_service_key(settings: Settings) -> str:
+    """Read the MCP service key.
 
-    Returns the raw ``agora_svc_*`` string.  Raises
-    :class:`McpUnavailableError` if the file is missing or empty — both
-    are fatal: there is no fallback authentication path.
+    In local/Docker-Compose deployments CMS and MCP share a volume and
+    the key lives at ``settings.service_key_path``. In Azure Container
+    Apps there's no shared volume, so the key is exchanged via Key
+    Vault (see ``cms.keyvault.write_key_to_keyvault``).
+
+    Tries the local file first; if it's missing or empty and
+    ``azure_keyvault_uri`` is configured, falls back to Key Vault.
+    Raises :class:`McpUnavailableError` if neither path yields a key.
     """
+    file_err: str | None = None
     try:
-        raw = Path(path).read_text().strip()
-    except OSError as exc:
-        raise McpUnavailableError(
-            f"MCP service key file is not readable at {path}: {exc}"
-        ) from exc
-    if not raw:
-        raise McpUnavailableError(
-            f"MCP service key file at {path} is empty (key not provisioned?)"
+        raw = Path(settings.service_key_path).read_text().strip()
+        if raw:
+            return raw
+        file_err = (
+            f"MCP service key file at {settings.service_key_path} is "
+            "empty (key not provisioned?)"
         )
-    return raw
+    except OSError as exc:
+        file_err = (
+            f"MCP service key file is not readable at "
+            f"{settings.service_key_path}: {exc}"
+        )
+
+    if settings.azure_keyvault_uri:
+        from cms.keyvault import read_key_from_keyvault
+
+        kv_key = read_key_from_keyvault(settings.azure_keyvault_uri).strip()
+        if kv_key:
+            return kv_key
+        raise McpUnavailableError(
+            f"MCP service key not available: {file_err}; Key Vault "
+            f"{settings.azure_keyvault_uri} returned empty value for "
+            "'mcp-service-key' (key not provisioned?)"
+        )
+
+    raise McpUnavailableError(file_err or "MCP service key not available")
 
 
 class AssistantMcpClient:
@@ -123,7 +145,7 @@ class AssistantMcpClient:
         from mcp.client.session import ClientSession
         from mcp.client.sse import sse_client
 
-        raw_key = _read_service_key(self._settings.service_key_path)
+        raw_key = _read_service_key(self._settings)
         url = self._settings.mcp_server_url.rstrip("/") + "/sse"
         headers = {
             "Authorization": f"Bearer {raw_key}",
