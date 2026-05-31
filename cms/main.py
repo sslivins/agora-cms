@@ -269,13 +269,30 @@ async def service_key_rotation_loop() -> None:
                         has_key = await get_setting(
                             db, SETTING_MCP_SERVICE_KEY_HASH
                         )
-                        if enabled == "true" and has_key:
+                        if enabled == "true":
+                            # Two cases share one code path:
+                            # * bootstrap (has_key is empty) — newly
+                            #   deployed env where MCP was opted in via
+                            #   bicepparam but no operator has clicked
+                            #   the MCP toggle yet. Without this branch
+                            #   the assistant + every API key would
+                            #   fail until someone hits the UI.
+                            # * rotate (has_key set) — periodic cycle.
+                            # provision_service_key handles both: it
+                            # always generates a fresh key, overwrites
+                            # the DB hash, and pushes the raw key to
+                            # the configured KV.
                             await provision_service_key(
                                 db, settings.service_key_path,
                                 keyvault_uri=settings.azure_keyvault_uri,
                             )
                             await notify_mcp_reload(settings)
-                            logger.info("MCP service key rotated")
+                            if has_key:
+                                logger.info("MCP service key rotated")
+                            else:
+                                logger.info(
+                                    "MCP service key bootstrapped on startup"
+                                )
             except asyncio.CancelledError:
                 return
             except Exception:

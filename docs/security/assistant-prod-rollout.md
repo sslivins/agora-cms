@@ -26,6 +26,12 @@ steps below cannot be run from CI until that gap is closed — see
 
 ## Procedure
 
+After all the automation that landed in 2026-05-31's prod-readiness
+work, the operator-driven path on a fresh env collapses to: **deploy →
+grant 3 roles → burn in AOAI RBAC → use the feature**. Steps 3, 5,
+and 6 below are kept for reference but are now no-ops or one-line
+overrides.
+
 ### 1. Provision AOAI
 
 Run the bicep deploy with `deployAzureOpenAI=true` against the prod
@@ -79,21 +85,25 @@ az containerapp show -g <prod-rg> -n agoracms-cms      --query identity.principa
 az containerapp show -g <prod-rg> -n agora-cms-mcp     --query identity.principalId -o tsv
 ```
 
-### 3. Seed `mcp-service-key`
+### 3. Seed `mcp-service-key` *(automated as of 2026-05-31)*
 
-The MCP container creates this KV secret on its first startup IF its
-MI can write to KV. To trigger:
+`service_key_rotation_loop` in `cms/main.py` now self-heals this on
+every CMS startup: if MCP is enabled but no key hash exists in
+`cms_settings`, it generates one, writes the hash to the DB and the
+raw key to the configured KV, then notifies MCP to reload. **No
+operator action required** — the seed lands within ~60 s of the CMS
+container becoming ready.
 
-1. Open the CMS Settings page → MCP tab.
-2. Toggle MCP **off**, save.
-3. Toggle MCP **on** again, save.
-
-This restarts the MCP container, which re-reads its config, sees the
-key is missing, and creates it. Confirm with:
+If you want to verify:
 
 ```sh
 az keyvault secret show --vault-name <prod-kv> --name mcp-service-key --query attributes.created -o tsv
 ```
+
+Look for a log line `MCP service key bootstrapped on startup` on the
+first CMS revision after the deploy. Subsequent revisions will log
+`MCP service key rotated` instead (same code path, different log
+because the hash already existed).
 
 ### 4. Burn the AOAI RBAC propagation window
 
@@ -109,11 +119,15 @@ not yet ready — wait a minute, retry) or succeeds. Once you get two
 consecutive successes, the cascade is burned in and real users won't
 see it.
 
-### 5. Flip the allowlist
+### 5. Flip the allowlist *(skip for the canary operator)*
 
-Settings → Assistant card → paste the UUIDs of the users you want to
-enable. Start with one ("stesli@" or the Goodwill prod equivalent),
-verify end-to-end, then expand.
+Anyone with `settings:write` permission (the admin escape hatch in
+`assistant_enabled_for`) is **always** enabled regardless of the
+allowlist contents. The first operator running this runbook in prod
+is by definition an admin and does not need to add themselves.
+
+When you're ready to expand beyond admins: Settings → Assistant card
+→ paste the UUIDs of the users you want to enable.
 
 ```sql
 -- Look up a user UUID:
@@ -121,18 +135,13 @@ SELECT id, username, email FROM users WHERE email = 'stesli@example.com';
 ```
 
 The allowlist is a JSON array stored in `cms_settings` under key
-`assistant_enabled_user_ids`. The admin user (anyone with
-`settings:write`) is always enabled as a permanent escape hatch — you
-do not need to add yourself.
+`assistant_enabled_user_ids`.
 
-### 6. Set the monthly budget cap
+### 6. Set the monthly budget cap *(default is $5; skip unless changing)*
 
-Settings → Assistant card → **Monthly budget (USD)**. Defaults to $5
-per user per month if unset.
-
-* `cap > 0` — normal enforcement; HTTP 429 once exceeded
-* `cap = 0` — feature paused (sends respond with budget-exceeded error)
-* `cap < 0` — unlimited (for emergency / debug; record why in audit log)
+`budget.py` defaults to **$5 / user / month** when the setting is
+unset — matches the dev env. Override via Settings → Assistant card →
+**Monthly budget (USD)** only if you want a different cap.
 
 ### 7. Verify
 

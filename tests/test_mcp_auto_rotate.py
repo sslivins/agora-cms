@@ -107,16 +107,25 @@ class TestServiceKeyRotationLoop:
         mock_deps["notify"].assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_rotation_skips_when_no_key_hash(self, mock_deps):
-        """When no key hash exists (MCP never enabled), rotation skips."""
+    async def test_rotation_bootstraps_when_no_key_hash(self, mock_deps):
+        """When MCP is enabled but no key hash exists, the loop seeds one.
+
+        This is the bootstrap path: the operator opted MCP in via
+        bicepparam but never clicked the Settings → MCP toggle. Without
+        this branch, prod stays stuck — the assistant + every MCP API
+        key would 401 indefinitely. Pre-2026-05-31 the loop required
+        ``has_key`` truthy and would skip; the fix in
+        ``service_key_rotation_loop`` collapsed bootstrap and rotation
+        into one ``provision_service_key`` call.
+        """
         call_count = 0
 
         async def sleep_side_effect(seconds):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return
-            raise asyncio.CancelledError()
+                return  # initial 60s startup delay
+            raise asyncio.CancelledError()  # stop after first tick
 
         mock_deps["sleep"].side_effect = sleep_side_effect
         mock_deps["get_setting"].side_effect = lambda db, key: {
@@ -133,8 +142,8 @@ class TestServiceKeyRotationLoop:
             from cms.main import service_key_rotation_loop
             await service_key_rotation_loop()
 
-        mock_deps["provision"].assert_not_awaited()
-        mock_deps["notify"].assert_not_awaited()
+        mock_deps["provision"].assert_awaited_once()
+        mock_deps["notify"].assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_rotation_cancels_cleanly_during_startup(self, mock_deps):
