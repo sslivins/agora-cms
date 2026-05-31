@@ -182,6 +182,30 @@ async def get_user_today_usage(
     return int(total or 0)
 
 
+async def get_user_today_usage_split(
+    db: AsyncSession, user: User, *, now: datetime | None = None
+) -> tuple[int, int]:
+    """Return ``(tokens_in, tokens_out)`` for ``user``'s turns today.
+
+    Same scoping as :func:`get_user_today_usage`; split for callers
+    (e.g. the in-page usage strip) that want to feed input/output
+    counts into a $/M pricing table.
+    """
+    day_start = _utc_day_start(now)
+    stmt = (
+        select(
+            func.coalesce(func.sum(ChatMessage.tokens_in), 0),
+            func.coalesce(func.sum(ChatMessage.tokens_out), 0),
+        )
+        .select_from(ChatMessage)
+        .join(ChatThread, ChatThread.id == ChatMessage.thread_id)
+        .where(ChatThread.user_id == user.id)
+        .where(ChatMessage.created_at >= day_start)
+    )
+    row = (await db.execute(stmt)).one()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
 async def check_budget(
     db: AsyncSession, user: User, *, now: datetime | None = None
 ) -> tuple[int, int]:
