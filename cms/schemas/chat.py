@@ -115,6 +115,11 @@ class ChatPendingApprovalOut(BaseModel):
     tool_name: str
     tool_call_id: str
     tool_arguments: dict[str, Any]
+    # Optional snapshot of friendly names for UUID-shaped arg keys
+    # (e.g. ``{"device_id": "Pi100"}``).  NULL on legacy rows and on
+    # read-tool turns; missing keys mean "show the raw UUID".  See
+    # ``cms.services.assistant.approval_display`` for the resolver.
+    display_arguments: Optional[dict[str, Any]] = None
     status: str
     result_content: Optional[str] = None
     decision_note: Optional[str] = None

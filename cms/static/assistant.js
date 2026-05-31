@@ -9,7 +9,7 @@
 //   token             text delta
 //   tool_call         { id, name, arguments }     — about to invoke
 //   tool_result       { id, name, content }       — read tool finished
-//   approval_request  { approval_id, name, arguments, tool_call_id }
+//   approval_request  { approval_id, name, arguments, display_arguments, tool_call_id }
 //   done              { message_id, tokens_in, tokens_out }
 //   error             { message }
 (function () {
@@ -229,11 +229,19 @@
     }
 
     // ── Approval card ────────────────────────────────────────────────
-    function renderApprovalArgs(parent, toolArgs) {
+    function renderApprovalArgs(parent, toolArgs, displayArgs) {
         // Render the tool's arguments as a readable key/value list
         // instead of a raw JSON blob.  Most write tools take a flat
         // bag of scalars (name, start_time, asset_id, …); arrays and
         // nested objects collapse to a one-line pretty-printed form.
+        //
+        // ``displayArgs`` is the optional friendly-name snapshot
+        // produced server-side at write time (see
+        // ``cms.services.assistant.approval_display``).  When the
+        // backend resolves a UUID-shaped key to a name we render the
+        // friendly name as the primary value and demote the raw UUID
+        // to a small grey subscript so the audit trail is still
+        // visible.
         const wrap = document.createElement("div");
         wrap.className = "assistant-approval-args";
         const entries = toolArgs && typeof toolArgs === "object"
@@ -248,18 +256,74 @@
             return;
         }
         const dl = document.createElement("dl");
+        const display = (displayArgs && typeof displayArgs === "object")
+            ? displayArgs
+            : null;
         for (const [key, value] of entries) {
             const dt = document.createElement("dt");
             dt.textContent = key;
             const dd = document.createElement("dd");
-            const { text, multiline } = formatApprovalValue(value);
-            dd.textContent = text;
-            if (multiline) dd.classList.add("is-multiline");
+            const friendly = display ? display[key] : undefined;
+            if (renderFriendlyValue(dd, value, friendly)) {
+                dd.classList.add("has-friendly");
+            } else {
+                const { text, multiline } = formatApprovalValue(value);
+                dd.textContent = text;
+                if (multiline) dd.classList.add("is-multiline");
+            }
             dl.appendChild(dt);
             dl.appendChild(dd);
         }
         wrap.appendChild(dl);
         parent.appendChild(wrap);
+    }
+
+    function renderFriendlyValue(dd, raw, friendly) {
+        // Single ID → "Pi100  (af06ad30-…)"
+        if (typeof friendly === "string" && friendly.trim()) {
+            const name = document.createElement("span");
+            name.className = "approval-friendly";
+            name.textContent = friendly;
+            dd.appendChild(name);
+            if (typeof raw === "string" && raw && raw !== friendly) {
+                dd.appendChild(document.createTextNode(" "));
+                const uuid = document.createElement("span");
+                uuid.className = "approval-uuid";
+                uuid.textContent = raw;
+                dd.appendChild(uuid);
+            }
+            return true;
+        }
+        // Plural IDs → name list, with raw UUID under each unresolved slot.
+        if (Array.isArray(friendly) && Array.isArray(raw)) {
+            if (friendly.length === 0) return false;
+            const ul = document.createElement("ul");
+            ul.className = "approval-friendly-list";
+            for (let i = 0; i < raw.length; i++) {
+                const item = document.createElement("li");
+                const name = friendly[i];
+                const rawId = raw[i];
+                if (typeof name === "string" && name.trim()) {
+                    const nameSpan = document.createElement("span");
+                    nameSpan.className = "approval-friendly";
+                    nameSpan.textContent = name;
+                    item.appendChild(nameSpan);
+                    if (typeof rawId === "string" && rawId && rawId !== name) {
+                        item.appendChild(document.createTextNode(" "));
+                        const uuid = document.createElement("span");
+                        uuid.className = "approval-uuid";
+                        uuid.textContent = rawId;
+                        item.appendChild(uuid);
+                    }
+                } else {
+                    item.textContent = rawId == null ? "—" : String(rawId);
+                }
+                ul.appendChild(item);
+            }
+            dd.appendChild(ul);
+            return true;
+        }
+        return false;
     }
 
     function formatApprovalValue(v) {
@@ -295,7 +359,7 @@
         h.textContent = `⚠ Approval needed — ${approval.tool_name}`;
         card.appendChild(h);
 
-        renderApprovalArgs(card, approval.tool_arguments);
+        renderApprovalArgs(card, approval.tool_arguments, approval.display_arguments);
 
         const actions = document.createElement("div");
         actions.className = "assistant-approval-actions";
@@ -425,6 +489,7 @@
                             tool_call_id: evt.data.tool_call_id,
                             tool_name: evt.data.name,
                             tool_arguments: evt.data.arguments,
+                            display_arguments: evt.data.display_arguments,
                             status: "pending",
                         };
                         // Use a temporary card host BEFORE the indicator.
@@ -473,7 +538,7 @@
         h.textContent = `⚠ Approval needed — ${approval.tool_name}`;
         card.appendChild(h);
 
-        renderApprovalArgs(card, approval.tool_arguments);
+        renderApprovalArgs(card, approval.tool_arguments, approval.display_arguments);
 
         const actions = document.createElement("div");
         actions.className = "assistant-approval-actions";

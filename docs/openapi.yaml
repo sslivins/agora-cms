@@ -5093,6 +5093,12 @@ components:
           additionalProperties: true
           type: object
           title: Tool Arguments
+        display_arguments:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Display Arguments
         status:
           type: string
           title: Status

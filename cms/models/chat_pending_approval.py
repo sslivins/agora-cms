@@ -62,6 +62,15 @@ class ChatPendingApproval(Base):
     tool_arguments: Mapped[dict[str, Any]] = mapped_column(
         _JSON_TYPE, nullable=False
     )
+    # Snapshot of human-readable values for any UUID-shaped args we
+    # could resolve at write time (see ``approval_display``).  NULL on
+    # read-tool turns and on legacy rows written before this column
+    # existed; the frontend treats a missing key as "render the raw
+    # UUID".  Snapshotting keeps the approval card stable even if a
+    # device / asset is renamed between propose and approve.
+    display_arguments: Mapped[dict[str, Any] | None] = mapped_column(
+        _JSON_TYPE, nullable=True
+    )
 
     status: Mapped[str] = mapped_column(
         String(20),
