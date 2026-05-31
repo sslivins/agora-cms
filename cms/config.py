@@ -150,6 +150,14 @@ class Settings(SharedSettings):
     azure_openai_endpoint: str = ""
     azure_openai_deployment: str = ""
     azure_openai_api_version: str = "2024-10-21"
+    # Model behind the deployment.  Deployment names are user-chosen
+    # (we use "chat") and rarely contain the model name, so the pricing
+    # module can't reliably infer rates from the deployment string.
+    # Pass the model explicitly so /api/chat/usage shows real $$ and
+    # the right model label.  Keep in sync with the bicep
+    # ``azureOpenAIChatModel`` parameter; empty falls back to
+    # substring-matching on the deployment name.
+    azure_openai_model: str = "gpt-4o"
     # Per-turn completion cap.  Keeps a runaway response from blowing
     # through the daily budget in a single shot; PR 6 layers a real
     # budget cap on top of this.

@@ -71,7 +71,11 @@ FALLBACK_RATES_USD_PER_M_TOKENS: Final[tuple[float, float]] = (0.15, 0.60)
 PRICE_TABLE_VERSION: Final[int] = 1
 
 
-def _resolve_model(deployment: str) -> tuple[str, tuple[float, float]]:
+def _resolve_model(
+    deployment: str,
+    *,
+    model_override: str = "",
+) -> tuple[str, tuple[float, float]]:
     """Match a deployment name to a price-table entry.
 
     Azure OpenAI deployments are user-named (e.g. ``cms-chat-prod``)
@@ -80,10 +84,22 @@ def _resolve_model(deployment: str) -> tuple[str, tuple[float, float]]:
     match so that ``gpt-4o-mini-2024-07-18`` and ``my-gpt-4o-mini-v2``
     both resolve correctly.
 
+    When ``model_override`` is supplied (e.g. from the
+    ``AGORA_CMS_AZURE_OPENAI_MODEL`` env var) and matches a known
+    price-table key, it wins regardless of the deployment string.
+    This lets operators deploy under a generic name like ``chat`` —
+    which doesn't contain any model substring — and still get
+    accurate USD estimates.
+
     Returns ``(matched_key_or_'unknown', rates)``.  Use the matched
     key when emitting telemetry / UI strings so the operator can see
     which entry was chosen.
     """
+    if model_override:
+        ovr = model_override.lower()
+        rates = PRICE_TABLE_USD_PER_M_TOKENS.get(ovr)
+        if rates is not None:
+            return ovr, rates
     if not deployment:
         return "unknown", FALLBACK_RATES_USD_PER_M_TOKENS
     dep = deployment.lower()
@@ -101,24 +117,34 @@ def estimate_usd(
     deployment: str,
     tokens_in: int,
     tokens_out: int,
+    model_override: str = "",
 ) -> float:
     """Return an estimated cost in USD for the given token counts.
 
     The math is trivially ``(in * in_rate + out * out_rate) / 1e6``.
     Negative inputs are clamped to zero so a corrupt row in the
     summing query can't yield a negative cost.
+
+    ``model_override`` short-circuits the deployment-name heuristic
+    when the operator has configured ``AGORA_CMS_AZURE_OPENAI_MODEL``
+    (recommended; deployment names like ``chat`` don't contain a
+    model substring and would otherwise fall through to the fallback
+    rate).
     """
     tokens_in = max(0, int(tokens_in))
     tokens_out = max(0, int(tokens_out))
-    _key, (in_rate, out_rate) = _resolve_model(deployment)
+    _key, (in_rate, out_rate) = _resolve_model(
+        deployment, model_override=model_override
+    )
     return (tokens_in * in_rate + tokens_out * out_rate) / 1_000_000.0
 
 
-def model_for_deployment(deployment: str) -> str:
+def model_for_deployment(deployment: str, *, model_override: str = "") -> str:
     """Return the matched price-table model key (or ``"unknown"``).
 
     Useful for the ``/api/chat/usage`` payload so the UI can show
-    operators which rate row was applied to their numbers.
+    operators which rate row was applied to their numbers.  Honors
+    ``model_override`` for the same reason ``estimate_usd`` does.
     """
-    key, _ = _resolve_model(deployment)
+    key, _ = _resolve_model(deployment, model_override=model_override)
     return key
