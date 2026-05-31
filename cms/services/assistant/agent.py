@@ -56,9 +56,11 @@ from cms.services.assistant.llm_client import (
     LLMClient,
 )
 from cms.services.assistant.mcp_client import (
+    ALLOWED_TOOLS,
     AssistantMcpClient,
     McpUnavailableError,
     READ_ONLY_TOOLS,
+    WRITE_TOOLS,
 )
 from cms.services.assistant.prompts import build_system_prompt
 
@@ -129,13 +131,18 @@ async def _execute_tool_call(
     if err is not None:
         return json.dumps({"error": "bad_arguments", "message": err})
     if name not in READ_ONLY_TOOLS:
+        # Non-streaming agent path only invokes reads.  Write tools
+        # need the approval flow, which lives in the streaming agent.
+        # Tell the model so it doesn't keep retrying.
         return json.dumps(
             {
                 "error": "tool_not_allowed",
                 "message": (
-                    f"Tool '{name}' is not in the read-only whitelist. "
-                    "Write/mutating tools require an approval flow that "
-                    "isn't built yet (PR 4)."
+                    f"Tool '{name}' requires an approval click which "
+                    "isn't available in the non-streaming agent path. "
+                    "Try again over the SSE stream endpoint."
+                    if name in WRITE_TOOLS
+                    else f"Tool '{name}' is not exposed to the assistant."
                 ),
             }
         )
@@ -520,16 +527,56 @@ async def run_user_turn_streaming(
                     "arguments": fn.get("arguments", ""),
                 }
 
-                # PR 4: write-tool approval intercept.  Any tool name
-                # NOT in the read-only whitelist becomes an approval
-                # request instead of an MCP call.  We still persist a
+                # PR 4: write-tool approval intercept.  When the LLM
+                # picks a tool from WRITE_TOOLS we queue an approval
+                # request instead of calling MCP directly; the tool only
+                # runs after the user clicks Approve via the
+                # chat_approvals endpoint.  We still persist a
                 # placeholder ``role=tool`` row so the conversation
                 # history stays internally consistent (OpenAI rejects
                 # any assistant-with-tool_calls turn that isn't followed
                 # by matching tool rows on the next API call).  The
                 # approve / reject endpoint OVERWRITES this row's
                 # content with the real result once the user decides.
-                if tc_name and tc_name not in READ_ONLY_TOOLS:
+                #
+                # Anything outside the union of READ_ONLY_TOOLS and
+                # WRITE_TOOLS is treated as a hallucinated tool name
+                # and returned as a synthetic error so the LLM can
+                # recover (rather than queuing an approval the user
+                # would just have to reject).
+                if tc_name and tc_name not in ALLOWED_TOOLS:
+                    err = json.dumps(
+                        {
+                            "error": "tool_not_allowed",
+                            "message": (
+                                f"Tool '{tc_name}' is not exposed to "
+                                "the assistant."
+                            ),
+                        }
+                    )
+                    tool_row = ChatMessage(
+                        thread_id=thread.id,
+                        role="tool",
+                        content=err,
+                        tool_call_id=tc_id,
+                    )
+                    db.add(tool_row)
+                    await db.flush()
+                    openai_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": err,
+                        }
+                    )
+                    yield {
+                        "type": "tool_result",
+                        "id": tc_id,
+                        "name": tc_name,
+                        "content": err,
+                    }
+                    continue
+                if tc_name and tc_name in WRITE_TOOLS:
                     parsed_args, parse_err = _parse_tool_arguments(
                         fn.get("arguments")
                     )

@@ -83,6 +83,70 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
 )
 
 
+# Write/mutating tools exposed to the assistant.  Each one is gated by
+# the PR-4 approval flow: when the LLM calls one of these, the agent
+# loop intercepts, persists a ``ChatPendingApproval`` row, and emits
+# an ``approval_request`` SSE event so the UI can render an
+# Approve / Reject card.  The tool only runs after the user clicks
+# Approve, and it runs with ``bypass_whitelist=True`` from the
+# chat_approvals router.
+#
+# Truly destructive or security-sensitive operations are deliberately
+# left off this list and remain UI-only.  Add a tool here only after
+# confirming that a malicious-prompt-induced invocation, intercepted
+# by approval, would still be obviously wrong to the human reviewer
+# (i.e. the tool's name + arguments make its impact clear).
+WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        # devices — onboarding / lifecycle (NOT delete, factory-reset,
+        # set-password, ssh/local-api toggles)
+        "adopt_device",
+        "update_device",
+        "reboot_device",
+        "check_device_updates",
+        "upgrade_device",
+        # groups
+        "create_group",
+        "update_group",
+        "delete_group",
+        # assets (non-destructive + delete; webpage assets are user-authored)
+        "create_webpage_asset",
+        "update_asset",
+        "delete_asset",
+        "share_asset",
+        "unshare_asset",
+        "toggle_asset_global",
+        "recapture_stream",
+        # tags
+        "create_tag",
+        "update_tag",
+        "delete_tag",
+        # schedules
+        "create_schedule",
+        "update_schedule",
+        "delete_schedule",
+        "play_now",
+        "end_schedule_now",
+        # profiles
+        "create_profile",
+        "update_profile",
+        "copy_profile",
+        "enable_profile",
+        "disable_profile",
+        "reset_profile",
+        "delete_profile",
+        # asset views (per-user saved filters; low-risk)
+        "create_asset_view",
+        "update_asset_view",
+        "delete_asset_view",
+    }
+)
+
+# Combined set used both for tool exposure and for the approval gate
+# in :class:`cms.services.assistant.agent`.
+ALLOWED_TOOLS: frozenset[str] = READ_ONLY_TOOLS | WRITE_TOOLS
+
+
 def _read_service_key(settings: Settings) -> str:
     """Read the MCP service key.
 
@@ -197,14 +261,26 @@ class AssistantMcpClient:
         listing = await self._session.list_tools()
         out: list[dict[str, Any]] = []
         for tool in listing.tools:
-            if tool.name not in READ_ONLY_TOOLS:
+            if tool.name not in ALLOWED_TOOLS:
                 continue
+            description = tool.description or ""
+            if tool.name in WRITE_TOOLS:
+                # Surface the approval contract in the description the
+                # LLM sees so it can set expectations with the user
+                # ("I'll create that schedule — you'll see an approve
+                # button") rather than promising instant execution.
+                description = (
+                    f"{description}\n\n"
+                    "[Note: this is a write tool — calling it will queue "
+                    "an approval request that the user must explicitly "
+                    "click Approve on before it runs.]"
+                ).strip()
             out.append(
                 {
                     "type": "function",
                     "function": {
                         "name": tool.name,
-                        "description": tool.description or "",
+                        "description": description,
                         "parameters": tool.inputSchema
                         or {"type": "object", "properties": {}},
                     },
@@ -243,7 +319,18 @@ class AssistantMcpClient:
         if not bypass_whitelist and name not in READ_ONLY_TOOLS:
             raise PermissionError(
                 f"Tool '{name}' is not in the read-only whitelist "
-                "(writes require approval; see PR 4)."
+                "(writes require approval)."
+            )
+        if bypass_whitelist and name not in ALLOWED_TOOLS:
+            # Defence in depth: the approval router calls us with
+            # bypass=True only after a human clicked Approve, but we
+            # must still refuse anything outside the explicit
+            # WRITE_TOOLS allowlist so a hallucinated or out-of-scope
+            # tool name can't slip through just because someone hit
+            # the button on the card.
+            raise PermissionError(
+                f"Tool '{name}' is not in the assistant's allowlist "
+                "(read or write)."
             )
         logger.info(
             "assistant.mcp.call name=%s user=%s bypass=%s",
