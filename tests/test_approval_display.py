@@ -139,3 +139,47 @@ class TestSkipping:
         )
         # device resolves; asset_id has no matching row → skipped.
         assert out == {"device_id": "Pi100"}
+
+    async def test_device_with_uuid_shaped_string_id(self, db_session):
+        """Regression for prod bug: Device.id is String(64) but a Pi
+        serial that happens to look UUID-shaped used to be coerced to
+        uuid.UUID and bound against the varchar column, type-mismatching
+        and aborting the outer transaction.
+        """
+        uuid_shaped = "af06ad30-0c1e-45fe-a41c-f6b271396ded"
+        await _device(db_session, did=uuid_shaped, name="UUIDShapedPi")
+        out = await resolve_friendly_names(
+            db_session, {"device_id": uuid_shaped}
+        )
+        assert out == {"device_id": "UUIDShapedPi"}
+
+    async def test_resolver_failure_does_not_poison_transaction(self, db_session):
+        """If a SELECT inside the resolver errors, the outer transaction
+        must remain usable. We simulate by monkey-patching
+        ``db.execute`` for a single call, then prove the session can
+        still run further queries.
+        """
+        from cms.services.assistant.approval_display import _bulk_load
+
+        original_execute = db_session.execute
+        calls = {"n": 0}
+
+        async def boom(stmt, *a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated DB hiccup")
+            return await original_execute(stmt, *a, **kw)
+
+        db_session.execute = boom  # type: ignore[assignment]
+        with pytest.raises(RuntimeError):
+            await _bulk_load(db_session, Device, ["pi-100"])
+        db_session.execute = original_execute  # type: ignore[assignment]
+
+        # Outer transaction must still be usable — the SAVEPOINT
+        # absorbed the error.  Prove it by running a follow-up query.
+        await _device(db_session, did="pi-after-boom", name="AfterBoom")
+        out = await resolve_friendly_names(
+            db_session, {"device_id": "pi-after-boom"}
+        )
+        assert out == {"device_id": "AfterBoom"}
+
