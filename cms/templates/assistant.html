@@ -6,11 +6,15 @@
 #assistant-app {
     display: flex;
     flex-direction: column;
-    /* Reserve room for the topbar (header + nav tabs + status lights
-       row + page padding).  Using viewport height anchors the
-       composer to the bottom of the window so the user never has to
-       scroll the page to reach it. */
-    height: calc(100vh - 150px);
+    /* The JS fitAssistantHeight() helper (see bottom of this template)
+       measures the actual viewport offset of this element on load and
+       resize and sets --assistant-fit-height so the page fits exactly
+       the remaining viewport (minus a small bottom gutter). That
+       handles any navbar / tab-strip / page-padding height without
+       guessing constants. min-height keeps the layout usable on tiny
+       windows; below that floor we accept a body scrollbar rather
+       than collapsing the messages area. */
+    height: var(--assistant-fit-height, calc(100vh - 150px));
     min-height: 500px;
 }
 #assistant-app > h1 {
@@ -421,4 +425,53 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/assistant.js?v={{ static_version }}"></script>
+<script>
+    // Fit the assistant app to the viewport.  We don't know in advance
+    // how much "chrome" the surrounding layout adds (navbar height,
+    // ``<main>`` padding, future tweaks to the base template), so we
+    // MEASURE it: temporarily collapse the panel, read the body's
+    // intrinsic height (= everything above + everything below the
+    // panel + the panel's own min-height floor), then size the panel
+    // to fill the remaining viewport.  Below the min-height floor the
+    // body scrolls — that's the deliberate small-window fallback.
+    (function () {
+        var FLOOR_PX = 500; // must match #assistant-app min-height
+        function fit() {
+            var el = document.getElementById("assistant-app");
+            if (!el || el.style.display === "none") return;
+            var root = document.documentElement;
+            // Collapse first to expose the chrome height.
+            root.style.setProperty("--assistant-fit-height", "0px");
+            // Read AFTER the next layout pass.
+            requestAnimationFrame(function () {
+                // body.scrollHeight now equals (chrome_above + FLOOR_PX
+                // + chrome_below) because min-height keeps the panel
+                // at FLOOR_PX even when we asked for 0.  Add FLOOR_PX
+                // back to recover the pure chrome size.
+                var chromeOnly = document.body.scrollHeight - FLOOR_PX;
+                var available = window.innerHeight - chromeOnly;
+                var target = Math.max(FLOOR_PX, available);
+                root.style.setProperty(
+                    "--assistant-fit-height", target + "px"
+                );
+                // When we successfully filled the viewport, suppress
+                // the body scrollbar (Chrome on Windows reserves the
+                // gutter even when scrollHeight == innerHeight by a
+                // sub-pixel rounding margin).  When the floor wins
+                // (tiny window) restore the default so the user can
+                // still reach the composer.
+                document.body.style.overflowY =
+                    available >= FLOOR_PX ? "hidden" : "";
+            });
+        }
+        window.addEventListener("DOMContentLoaded", function () {
+            fit();
+            // The feature gate flips #assistant-app from display:none
+            // to flex after an async check; re-fit once it's visible.
+            setTimeout(fit, 50);
+            setTimeout(fit, 500);
+        });
+        window.addEventListener("resize", fit);
+    })();
+</script>
 {% endblock %}
