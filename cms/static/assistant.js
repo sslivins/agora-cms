@@ -24,6 +24,27 @@
     const $form = document.getElementById("assistant-composer");
     const $newThread = document.getElementById("assistant-new-thread");
 
+    // ── Markdown rendering ───────────────────────────────────────────
+    // The model emits Markdown by default; render it as sanitized HTML
+    // for assistant turns so headings / bullets / bold / code render
+    // properly.  We keep user + tool bubbles as plain text since their
+    // content isn't markdown-authored (tool output is JSON-ish).
+    const _hasMarkdown =
+        typeof window.marked !== "undefined" && typeof window.DOMPurify !== "undefined";
+    if (_hasMarkdown) {
+        // GFM on (tables, ~~strike~~), break on \n inside paragraphs.
+        window.marked.setOptions({ gfm: true, breaks: true });
+    }
+    function renderAssistantMarkdown(bubble, text) {
+        if (!_hasMarkdown) {
+            bubble.textContent = text || "";
+            return;
+        }
+        const html = window.marked.parse(text || "");
+        bubble.innerHTML = window.DOMPurify.sanitize(html);
+        bubble.classList.add("is-markdown");
+    }
+
     let state = {
         threads: [],
         activeThreadId: null,
@@ -198,6 +219,8 @@
             bubble.textContent = m.content
                 ? `${m.content}\n\n${list}`
                 : list;
+        } else if (m.role === "assistant") {
+            renderAssistantMarkdown(bubble, m.content || "");
         } else {
             bubble.textContent = m.content || "";
         }
@@ -293,6 +316,7 @@
         scrollToBottom();
 
         let assistantBubble = null;
+        let assistantBuffer = "";
         const ensureAssistantBubble = () => {
             if (assistantBubble) return assistantBubble;
             const wrap = document.createElement("div");
@@ -321,7 +345,8 @@
             await consumeSseStream(resp.body, (evt) => {
                 switch (evt.event) {
                     case "token":
-                        ensureAssistantBubble().textContent += evt.data.text || "";
+                        assistantBuffer += evt.data.text || "";
+                        renderAssistantMarkdown(ensureAssistantBubble(), assistantBuffer);
                         scrollToBottom();
                         break;
                     case "tool_call": {
