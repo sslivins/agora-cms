@@ -229,6 +229,62 @@
     }
 
     // ── Approval card ────────────────────────────────────────────────
+    function renderApprovalArgs(parent, toolArgs) {
+        // Render the tool's arguments as a readable key/value list
+        // instead of a raw JSON blob.  Most write tools take a flat
+        // bag of scalars (name, start_time, asset_id, …); arrays and
+        // nested objects collapse to a one-line pretty-printed form.
+        const wrap = document.createElement("div");
+        wrap.className = "assistant-approval-args";
+        const entries = toolArgs && typeof toolArgs === "object"
+            ? Object.entries(toolArgs)
+            : [];
+        if (entries.length === 0) {
+            const empty = document.createElement("span");
+            empty.className = "empty";
+            empty.textContent = "(no arguments)";
+            wrap.appendChild(empty);
+            parent.appendChild(wrap);
+            return;
+        }
+        const dl = document.createElement("dl");
+        for (const [key, value] of entries) {
+            const dt = document.createElement("dt");
+            dt.textContent = key;
+            const dd = document.createElement("dd");
+            const { text, multiline } = formatApprovalValue(value);
+            dd.textContent = text;
+            if (multiline) dd.classList.add("is-multiline");
+            dl.appendChild(dt);
+            dl.appendChild(dd);
+        }
+        wrap.appendChild(dl);
+        parent.appendChild(wrap);
+    }
+
+    function formatApprovalValue(v) {
+        if (v === null || v === undefined) return { text: "—", multiline: false };
+        if (typeof v === "boolean") return { text: v ? "yes" : "no", multiline: false };
+        if (typeof v === "number" || typeof v === "string") {
+            const s = String(v);
+            return { text: s, multiline: s.includes("\n") };
+        }
+        if (Array.isArray(v)) {
+            // Short arrays of scalars → "a, b, c"; everything else → JSON.
+            const allScalar = v.every(
+                (x) => x === null || ["string", "number", "boolean"].includes(typeof x)
+            );
+            if (allScalar && v.length <= 12) {
+                return { text: v.length === 0 ? "(none)" : v.join(", "), multiline: false };
+            }
+            const j = JSON.stringify(v, null, 2);
+            return { text: j, multiline: true };
+        }
+        // Object — pretty print on multiple lines.
+        const j = JSON.stringify(v, null, 2);
+        return { text: j, multiline: true };
+    }
+
     function renderApprovalCard(approval) {
         const card = document.createElement("div");
         card.className = "assistant-approval";
@@ -239,10 +295,7 @@
         h.textContent = `⚠ Approval needed — ${approval.tool_name}`;
         card.appendChild(h);
 
-        const args = document.createElement("pre");
-        args.className = "assistant-approval-args";
-        args.textContent = JSON.stringify(approval.tool_arguments, null, 2);
-        card.appendChild(args);
+        renderApprovalArgs(card, approval.tool_arguments);
 
         const actions = document.createElement("div");
         actions.className = "assistant-approval-actions";
@@ -416,10 +469,7 @@
         h.textContent = `⚠ Approval needed — ${approval.tool_name}`;
         card.appendChild(h);
 
-        const args = document.createElement("pre");
-        args.className = "assistant-approval-args";
-        args.textContent = JSON.stringify(approval.tool_arguments, null, 2);
-        card.appendChild(args);
+        renderApprovalArgs(card, approval.tool_arguments);
 
         const actions = document.createElement("div");
         actions.className = "assistant-approval-actions";
