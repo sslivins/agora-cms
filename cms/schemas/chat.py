@@ -67,6 +67,34 @@ class AssistantFeatureStatus(BaseModel):
     enabled: bool
 
 
+class AssistantUsageOut(BaseModel):
+    """Response body for ``GET /api/chat/usage``.
+
+    Lightweight snapshot of the caller's per-UTC-day token consumption
+    so the in-page usage strip can show "Today: 1,240 / 50,000 tok •
+    ~$0.0015" without the UI doing any pricing math.
+
+    ``cap_tokens`` is the cap that applies to *this* user (per-user
+    override beats the global default).  A negative cap means the
+    user has been granted unlimited use by an admin; ``unlimited`` is
+    surfaced as a discrete bool so the UI can hide the "of 50k"
+    fraction in that case.
+
+    ``model`` is the matched price-table key (e.g. ``"gpt-4o-mini"``)
+    or the string ``"unknown"`` if the configured AOAI deployment name
+    doesn't match any entry — surface it so the operator can spot a
+    mis-tagged deployment that's making the cost estimate suspect.
+    """
+
+    used_tokens: int
+    used_tokens_in: int
+    used_tokens_out: int
+    cap_tokens: int
+    unlimited: bool
+    used_usd_estimate: float
+    model: str
+
+
 # ── PR 4: write-tool approval flow ────────────────────────────────────
 
 

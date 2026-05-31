@@ -33,18 +33,25 @@ from cms.models.chat_thread import ChatThread
 from cms.models.user import User
 from cms.schemas.chat import (
     AssistantFeatureStatus,
+    AssistantUsageOut,
     ChatMessageCreate,
     ChatMessageOut,
     ChatThreadCreate,
     ChatThreadOut,
 )
 from cms.services.assistant.agent import run_user_turn, run_user_turn_streaming
-from cms.services.assistant.budget import BudgetExceededError, check_budget
+from cms.services.assistant.budget import (
+    BudgetExceededError,
+    check_budget,
+    get_user_daily_cap,
+    get_user_today_usage_split,
+)
 from cms.services.assistant.llm_client import (
     AssistantUnavailableError,
     is_available as assistant_llm_available,
 )
 from cms.services.assistant.mcp_client import McpUnavailableError
+from cms.services.assistant.pricing import estimate_usd, model_for_deployment
 from cms.services.assistant_flag import assistant_enabled_for
 
 logger = logging.getLogger(__name__)
@@ -106,6 +113,44 @@ async def get_feature_status(
 ):
     """Report whether the caller has the Assistant feature enabled."""
     return AssistantFeatureStatus(enabled=await assistant_enabled_for(db, user))
+
+
+@router.get("/usage", response_model=AssistantUsageOut)
+async def get_assistant_usage(
+    user: User = Depends(_current_user),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Return the caller's current-day token usage + cap + USD estimate.
+
+    Gated on the same feature flag as the rest of ``/api/chat/*`` so
+    non-allowlisted users get a 404 (consistent with the rule that the
+    feature shouldn't even appear to exist for them).
+
+    The USD figure is an **estimate** based on the configured AOAI
+    deployment's matched model row in
+    :data:`cms.services.assistant.pricing.PRICE_TABLE_USD_PER_M_TOKENS`.
+    Actual Azure billing can differ (EA discounts, cached-input rates,
+    etc.) — the UI labels it as "estimated" for that reason.
+    """
+    await _require_feature(user, db)
+    tokens_in, tokens_out = await get_user_today_usage_split(db, user)
+    cap = await get_user_daily_cap(db, user)
+    deployment = settings.azure_openai_deployment or ""
+    usd = estimate_usd(
+        deployment=deployment,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+    )
+    return AssistantUsageOut(
+        used_tokens=tokens_in + tokens_out,
+        used_tokens_in=tokens_in,
+        used_tokens_out=tokens_out,
+        cap_tokens=cap,
+        unlimited=cap < 0,
+        used_usd_estimate=usd,
+        model=model_for_deployment(deployment),
+    )
 
 
 # ── Thread CRUD ───────────────────────────────────────────────────────

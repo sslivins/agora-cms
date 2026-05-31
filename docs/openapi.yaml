@@ -1682,6 +1682,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssistantFeatureStatus'
+  /api/chat/usage:
+    get:
+      summary: Get Assistant Usage
+      description: |-
+        Return the caller's current-day token usage + cap + USD estimate.
+
+        Gated on the same feature flag as the rest of ``/api/chat/*`` so
+        non-allowlisted users get a 404 (consistent with the rule that the
+        feature shouldn't even appear to exist for them).
+
+        The USD figure is an **estimate** based on the configured AOAI
+        deployment's matched model row in
+        :data:`cms.services.assistant.pricing.PRICE_TABLE_USD_PER_M_TOKENS`.
+        Actual Azure billing can differ (EA discounts, cached-input rates,
+        etc.) — the UI labels it as "estimated" for that reason.
+      operationId: get_assistant_usage_api_chat_usage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistantUsageOut'
   /api/chat/threads:
     get:
       summary: List Threads
@@ -4604,6 +4627,56 @@ components:
       - overrides
       - users
       title: AssistantSettingsOut
+    AssistantUsageOut:
+      properties:
+        used_tokens:
+          type: integer
+          title: Used Tokens
+        used_tokens_in:
+          type: integer
+          title: Used Tokens In
+        used_tokens_out:
+          type: integer
+          title: Used Tokens Out
+        cap_tokens:
+          type: integer
+          title: Cap Tokens
+        unlimited:
+          type: boolean
+          title: Unlimited
+        used_usd_estimate:
+          type: number
+          title: Used Usd Estimate
+        model:
+          type: string
+          title: Model
+      type: object
+      required:
+      - used_tokens
+      - used_tokens_in
+      - used_tokens_out
+      - cap_tokens
+      - unlimited
+      - used_usd_estimate
+      - model
+      title: AssistantUsageOut
+      description: |-
+        Response body for ``GET /api/chat/usage``.
+
+        Lightweight snapshot of the caller's per-UTC-day token consumption
+        so the in-page usage strip can show "Today: 1,240 / 50,000 tok •
+        ~$0.0015" without the UI doing any pricing math.
+
+        ``cap_tokens`` is the cap that applies to *this* user (per-user
+        override beats the global default).  A negative cap means the
+        user has been granted unlimited use by an admin; ``unlimited`` is
+        surfaced as a discrete bool so the UI can hide the "of 50k"
+        fraction in that case.
+
+        ``model`` is the matched price-table key (e.g. ``"gpt-4o-mini"``)
+        or the string ``"unknown"`` if the configured AOAI deployment name
+        doesn't match any entry — surface it so the operator can spot a
+        mis-tagged deployment that's making the cost estimate suspect.
     AssistantUserCatalogEntry:
       properties:
         id:
