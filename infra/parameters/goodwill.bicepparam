@@ -39,6 +39,22 @@ param location = 'westus2'
 param postgresAdminLogin = 'agoraadmin'
 param cmsAdminUsername = 'admin'
 
+// Opt this environment into the Assistant feature backend.
+// Phase 1 (dev pilot) validated the budget caps + approval UX on
+// agoragwdev between 2026-05-29 and 2026-05-31; prod opts in here.
+//
+// AOAI account is pinned to westus (NOT the prod RG region of westus2)
+// because westus2 has zero standard gpt-4o TPM quota at the time of
+// writing, while westus has 970 units of headroom on a 1000 limit
+// (dev account uses 30). Cross-region AOAI is supported — the CMS
+// container app calls AOAI by FQDN, not via VNet, so colocating dev
+// + prod AOAI in westus simplifies quota tracking too.
+param deployAzureOpenAI = true
+param azureOpenAIRegion = 'westus'
+param azureOpenAIChatModel = 'gpt-4o'
+param azureOpenAIChatModelVersion = '2024-11-20'
+param azureOpenAIChatCapacity = 30
+
 // Secure params — passed via CLI or the deploy-goodwill workflow,
 // never commit values:
 // param postgresAdminPassword = '<set-via-cli>'
