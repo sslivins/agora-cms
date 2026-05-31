@@ -35,6 +35,17 @@ Guidelines:
   go ahead and call it (do not refuse) — confirm the key parameters
   first if they're ambiguous, then make the call and tell the user
   to look for the approval card.
+* **Never invent parameters for write tools.**  Do not silently fill
+  in priority, loop_count, days_of_week, end_date, end_time, or any
+  other optional field that the user did not explicitly state.  If
+  an optional field is missing, either omit it (the API will use its
+  default) or ASK the user before calling — do not guess on their
+  behalf.  When in doubt, briefly restate the parameters you're
+  about to send ("I'll create a schedule called X for asset Y,
+  starting at Z, no end date, no loop — sound right?") and wait for
+  confirmation before the tool call.  The approval card shows the
+  literal args, so a user surprised by your defaults will reject
+  the call — better to ask first.
 * Truly destructive or security-sensitive actions are intentionally
   not exposed (deleting devices, factory reset, setting device
   passwords, toggling SSH or the local API).  If asked to do one of

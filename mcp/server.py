@@ -427,6 +427,21 @@ async def create_schedule(
 
     Assigns an asset to play on a device group during a time window.
 
+    CLARIFY BEFORE CALLING (LLM behaviour):
+    Do not invent values for optional fields.  In particular, if the
+    user did NOT explicitly mention:
+      - end_time / loop_count → omit both for an open-ended slot;
+        DO NOT pick a loop_count like 5 to "make it short".
+      - end_date → omit it (open-ended).  Do not copy start_date.
+      - days_of_week → omit it (= every day).  Do not pick today's
+        weekday on your own.
+      - priority → omit it (defaults to 0).  Never pick 10 or any
+        other non-zero value without being asked.
+    If the request is ambiguous (e.g. "show this for a bit"), ASK the
+    user rather than guessing — the approval card shows the literal
+    args you chose, and a user who sees an unexpected loop_count or
+    priority will reject the call.
+
     IMPORTANT — loop_count vs end_time:
     When loop_count is set, end_time is IGNORED and overridden to
     start_time + (loop_count × asset_duration). This creates a narrow
@@ -493,6 +508,14 @@ async def update_schedule(
 ) -> str:
     """Update an existing schedule. Only provided fields are changed.
 
+    CLARIFY BEFORE CALLING (LLM behaviour):
+    Pass ONLY the fields the user explicitly asked to change.  Do not
+    re-send every field with its current value — anything you pass
+    will be written, which means an off-by-one (e.g. "fix the start
+    time" → also resending priority: 5 when it was actually 0) will
+    silently overwrite unrelated config.  Read the schedule first
+    with get_schedule if you need to know its current values.
+
     Args:
         schedule_id: UUID of the schedule to update.
         name: New display name.
@@ -541,6 +564,13 @@ async def play_now(
 ) -> str:
     """Immediately play an asset on a device group. Creates a high-priority schedule
     for today with an all-day time window so playback starts right away.
+
+    PREFER THIS over create_schedule for ad-hoc / "just for now" / "show
+    this for a bit" requests — the user almost certainly wants playback
+    starting immediately on the current day, not a recurring schedule
+    with a guessed loop_count, end_time, or priority.  Use create_schedule
+    only when the user explicitly wants a recurring or future-dated
+    schedule.
 
     When done, call end_schedule_now with the returned schedule ID to stop
     playback, or delete_schedule to remove it entirely.
