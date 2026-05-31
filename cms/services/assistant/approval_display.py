@@ -47,7 +47,9 @@ import uuid
 from typing import Any, Iterable, Mapping
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.types import Uuid as SA_Uuid
 
 from cms.models.asset_view import AssetView
 from cms.models.device import Device, DeviceGroup
@@ -57,6 +59,24 @@ from cms.models.tag import Tag
 from shared.models.asset import Asset
 
 logger = logging.getLogger(__name__)
+
+
+def _id_column_is_uuid(model: type) -> bool:
+    """True if ``model.id`` is a UUID-typed column.
+
+    The catalog is heterogeneous: ``Device.id`` is ``String(64)`` (Pi
+    serial), while the rest use UUID.  We use this to bind the right
+    Python type — passing a ``uuid.UUID`` to a varchar column or a
+    plain ``str`` to a UUID column will type-mismatch and **abort the
+    outer Postgres transaction** (asyncpg behaviour), poisoning every
+    subsequent statement in the same session including the actual
+    approval INSERT.  See ``_bulk_load``.
+    """
+    try:
+        col_type = model.__table__.c.id.type  # type: ignore[attr-defined]
+    except AttributeError:
+        return False
+    return isinstance(col_type, (PG_UUID, SA_Uuid))
 
 
 # (Model, attribute-chain) — the first attribute in the chain that
@@ -135,23 +155,43 @@ async def _bulk_load(
 ) -> dict[Any, Any]:
     """Return ``{id: row}`` for the given model + ids in one query.
 
+    Wrapped in a SAVEPOINT (``begin_nested``) so that a type-mismatch
+    or any other DB error during the friendly-name lookup can ONLY
+    poison the savepoint, never the outer transaction that's about to
+    insert the ``ChatPendingApproval`` row.
+
     Missing rows are simply absent from the output dict.  ``ids`` may
-    be a mix of ``str`` and :class:`uuid.UUID` — SQLAlchemy coerces to
-    the column type on the way out.
+    be a mix of ``str`` and :class:`uuid.UUID`; we normalise them to
+    match the model's id column type before binding so asyncpg doesn't
+    type-mismatch and abort the surrounding transaction.
     """
     seen: list[Any] = []
     dedup: set[str] = set()
+    use_uuid = _id_column_is_uuid(model)
     for i in ids:
         key = str(i)
         if key in dedup:
             continue
         dedup.add(key)
-        seen.append(i)
+        if use_uuid:
+            if isinstance(i, uuid.UUID):
+                seen.append(i)
+            else:
+                try:
+                    seen.append(uuid.UUID(str(i)))
+                except (ValueError, AttributeError):
+                    # Caller already coerced; non-UUID strings against
+                    # a UUID column would type-mismatch.  Skip silently.
+                    continue
+        else:
+            seen.append(str(i))
     if not seen:
         return {}
     stmt = select(model).where(model.id.in_(seen))  # type: ignore[attr-defined]
-    result = await db.execute(stmt)
-    return {str(row.id): row for row in result.scalars().all()}
+    async with db.begin_nested():
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+    return {str(row.id): row for row in rows}
 
 
 async def resolve_friendly_names(
