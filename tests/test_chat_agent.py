@@ -1149,12 +1149,12 @@ class TestStreamingApprovalIntercept:
             ChatPendingApproval,
         )
 
-        # ``delete_device`` is intentionally NOT in READ_ONLY_TOOLS.
+        # ``update_device`` is intentionally in WRITE_TOOLS (approval required).
         scripted_agent["mcp_tools"] = [
             {
                 "type": "function",
                 "function": {
-                    "name": "delete_device",
+                    "name": "update_device",
                     "description": "delete a device",
                     "parameters": {"type": "object", "properties": {}},
                 },
@@ -1166,7 +1166,7 @@ class TestStreamingApprovalIntercept:
                 tokens_in=12,
                 tokens_out=4,
                 tool_calls=[
-                    _tool_call("delete_device", {"id": "dev-1"})
+                    _tool_call("update_device", {"id": "dev-1"})
                 ],
             ),
             # Should NOT be consumed — the loop must stop on the
@@ -1191,7 +1191,7 @@ class TestStreamingApprovalIntercept:
         import json as _json
 
         ar = _json.loads(frames[1][1])
-        assert ar["name"] == "delete_device"
+        assert ar["name"] == "update_device"
         assert ar["arguments"] == {"id": "dev-1"}
         assert "approval_id" in ar
 
@@ -1206,7 +1206,7 @@ class TestStreamingApprovalIntercept:
                 )
             ).scalars().all()
             assert len(rows) == 1
-            assert rows[0].tool_name == "delete_device"
+            assert rows[0].tool_name == "update_device"
             assert rows[0].status == STATUS_PENDING
             assert rows[0].tool_arguments == {"id": "dev-1"}
 
@@ -1223,7 +1223,7 @@ class TestStreamingApprovalIntercept:
             assert roles == ["user", "assistant", "tool", "assistant"]
             placeholder = _json.loads(msgs[2].content)
             assert placeholder["status"] == "awaiting_approval"
-            assert placeholder["tool"] == "delete_device"
+            assert placeholder["tool"] == "update_device"
             # Final assistant message explains the pause.
             assert "awaiting your approval" in msgs[3].content
             break
@@ -1251,7 +1251,7 @@ class TestStreamingApprovalIntercept:
             {
                 "type": "function",
                 "function": {
-                    "name": "delete_device",
+                    "name": "update_device",
                     "description": "",
                     "parameters": {"type": "object", "properties": {}},
                 },
@@ -1276,7 +1276,7 @@ class TestStreamingApprovalIntercept:
                         "id": "call_write",
                         "type": "function",
                         "function": {
-                            "name": "delete_device",
+                            "name": "update_device",
                             "arguments": '{"id": "dev-1"}',
                         },
                     },
@@ -1316,7 +1316,7 @@ class TestStreamingApprovalIntercept:
                 )
             ).scalars().all()
             assert len(approvals) == 1
-            assert approvals[0].tool_name == "delete_device"
+            assert approvals[0].tool_name == "update_device"
             break
 
 
