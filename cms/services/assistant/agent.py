@@ -51,6 +51,7 @@ from cms.models.chat_pending_approval import (
 )
 from cms.models.chat_thread import ChatThread
 from cms.models.user import User
+from cms.services.assistant.approval_display import resolve_friendly_names
 from cms.services.assistant.llm_client import (
     CompletionResult,
     LLMClient,
@@ -585,12 +586,17 @@ async def run_user_turn_streaming(
                         if parse_err is None
                         else {"_unparsed_arguments": fn.get("arguments")}
                     )
+                    display_args = await resolve_friendly_names(
+                        db, approval_args
+                    )
+                    display_args_for_persist = display_args or None
                     approval = ChatPendingApproval(
                         thread_id=thread.id,
                         proposed_by_message_id=tc_row.id,
                         tool_name=tc_name,
                         tool_call_id=tc_id,
                         tool_arguments=approval_args,
+                        display_arguments=display_args_for_persist,
                         status=STATUS_PENDING,
                     )
                     db.add(approval)
@@ -623,6 +629,7 @@ async def run_user_turn_streaming(
                             "id": str(approval.id),
                             "tool": tc_name,
                             "arguments": approval_args,
+                            "display_arguments": display_args_for_persist,
                             "tool_call_id": tc_id,
                         }
                     )
@@ -632,6 +639,7 @@ async def run_user_turn_streaming(
                         "tool_call_id": tc_id,
                         "name": tc_name,
                         "arguments": approval_args,
+                        "display_arguments": display_args_for_persist,
                     }
                     continue
 
