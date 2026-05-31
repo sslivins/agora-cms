@@ -69,6 +69,9 @@ param azureOpenAIEndpoint string = ''
 @description('Azure OpenAI deployment name to use for chat completions (matches the deployment provisioned in azureOpenAI.bicep, default "chat"). Empty when the Assistant feature is not deployed in this environment.')
 param azureOpenAIDeployment string = ''
 
+@description('Model name behind the chat deployment (e.g. "gpt-4o"). Pricing/telemetry use this to label the model and compute USD; deployment names like "chat" do not contain a model substring so the runtime cannot infer it. Empty when the Assistant feature is not deployed in this environment.')
+param azureOpenAIModel string = ''
+
 // ── Blue/green deploy controls (Multiple revision mode) ──
 @description('Revision suffix for the CMS Container App. Each deploy MUST pass a unique value (e.g. "v1-12-34") so a brand-new revision is created at 0% traffic. The workflow flips traffic to it after smoke probes pass.')
 param cmsRevisionSuffix string = ''
@@ -327,6 +330,14 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AGORA_CMS_AZURE_OPENAI_DEPLOYMENT'
               value: azureOpenAIDeployment
+            }
+            {
+              // Pricing / usage display reads this so /api/chat/usage
+              // can report real USD and the model label.  Deployment
+              // names are operator-chosen ("chat") and don't contain
+              // a model substring, so the runtime can't infer it.
+              name: 'AGORA_CMS_AZURE_OPENAI_MODEL'
+              value: azureOpenAIModel
             }
             {
               // Tag every emitted record so we can distinguish prod from

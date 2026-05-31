@@ -128,6 +128,57 @@ class TestEstimateUsd:
         assert model_for_deployment("") == "unknown"
 
 
+class TestModelOverride:
+    """The ``model_override`` arg is the fix for deployments whose
+    *name* doesn't embed the model (e.g. our bicep names the AOAI
+    deployment ``chat``, so the substring matcher would return
+    ``"unknown"`` and the USD estimate would always be 0)."""
+
+    def test_override_wins_over_unknown_deployment(self):
+        from cms.services.assistant.pricing import _resolve_model
+
+        key, rates = _resolve_model("chat", model_override="gpt-4o")
+        assert key == "gpt-4o"
+        # gpt-4o rates: 2.50 / 10.00 per million
+        assert rates == (2.50, 10.00)
+
+    def test_override_case_insensitive(self):
+        from cms.services.assistant.pricing import _resolve_model
+
+        key, _ = _resolve_model("chat", model_override="GPT-4O")
+        assert key == "gpt-4o"
+
+    def test_unknown_override_falls_back_to_deployment_match(self):
+        from cms.services.assistant.pricing import _resolve_model
+
+        key, _ = _resolve_model("cms-gpt-4o-mini", model_override="madeup")
+        assert key == "gpt-4o-mini"
+
+    def test_estimate_usd_uses_override(self):
+        from cms.services.assistant.pricing import estimate_usd
+
+        cost = estimate_usd(
+            deployment="chat",
+            tokens_in=1_000_000,
+            tokens_out=1_000_000,
+            model_override="gpt-4o",
+        )
+        assert cost == pytest.approx(12.50)
+
+    def test_model_for_deployment_uses_override(self):
+        from cms.services.assistant.pricing import model_for_deployment
+
+        assert (
+            model_for_deployment("chat", model_override="gpt-4o") == "gpt-4o"
+        )
+
+    def test_empty_override_keeps_substring_behaviour(self):
+        from cms.services.assistant.pricing import _resolve_model
+
+        key, _ = _resolve_model("cms-gpt-4o-mini", model_override="")
+        assert key == "gpt-4o-mini"
+
+
 # ── Endpoint tests ────────────────────────────────────────────────────
 
 

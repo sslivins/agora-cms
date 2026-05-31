@@ -137,10 +137,12 @@ async def get_assistant_usage(
     tokens_in, tokens_out = await get_user_today_usage_split(db, user)
     cap = await get_user_daily_cap(db, user)
     deployment = settings.azure_openai_deployment or ""
+    model_override = settings.azure_openai_model or ""
     usd = estimate_usd(
         deployment=deployment,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
+        model_override=model_override,
     )
     return AssistantUsageOut(
         used_tokens=tokens_in + tokens_out,
@@ -149,7 +151,7 @@ async def get_assistant_usage(
         cap_tokens=cap,
         unlimited=cap < 0,
         used_usd_estimate=usd,
-        model=model_for_deployment(deployment),
+        model=model_for_deployment(deployment, model_override=model_override),
     )
 
 

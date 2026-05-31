@@ -284,6 +284,7 @@ module containerApps 'modules/containerApps.bicep' = {
     // CMS treats empty endpoint as "feature disabled" at runtime.
     azureOpenAIEndpoint: deployAzureOpenAI ? azureOpenAI.outputs.endpoint : ''
     azureOpenAIDeployment: deployAzureOpenAI ? azureOpenAI.outputs.deploymentName : ''
+    azureOpenAIModel: deployAzureOpenAI ? azureOpenAIChatModel : ''
   }
 }
 

@@ -235,6 +235,16 @@ class LLMClient:
         response = await self._client.chat.completions.create(**kwargs)
         tokens_in = 0
         tokens_out = 0
+        finish_reason: str | None = None
+        # Azure OpenAI emits the final ``usage`` block in a *separate*
+        # chunk after the chunk that carries ``finish_reason``.  That
+        # usage chunk has ``choices == []``.  If we yield ``finish``
+        # the moment we see ``finish_reason`` we capture tokens_in/out
+        # as zeros and the agent then persists ``ChatMessage`` rows
+        # with 0/0 — which makes the per-user usage strip on the
+        # Assistant page read "0 tokens today" forever.  Defer the
+        # single ``finish`` yield to after the stream completes so it
+        # carries both the finish_reason and the real usage.
         async for chunk in response:
             usage = getattr(chunk, "usage", None)
             if usage is not None:
@@ -265,10 +275,11 @@ class LLMClient:
                             ),
                         }
             if getattr(choice, "finish_reason", None):
-                yield {
-                    "type": "finish",
-                    "reason": choice.finish_reason,
-                    "tokens_in": tokens_in,
-                    "tokens_out": tokens_out,
-                }
+                finish_reason = choice.finish_reason
+        yield {
+            "type": "finish",
+            "reason": finish_reason,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
 
