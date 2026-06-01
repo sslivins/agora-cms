@@ -327,8 +327,11 @@ async def download_log_request(
 #
 # Kept on its own APIRouter so the user-auth ``require_auth`` dep on the
 # one above doesn't also apply here.  Device auth is the X-Device-API-Key
-# header (same header as the asset-download path) + a path-match check
-# so a device can't upload on another device's behalf.
+# header (same header as the asset-download path); ownership is enforced
+# by checking the authenticated device against the outbox row's owner,
+# not against the path's ``device_id`` (which is a Pi-supplied identifier
+# — historically the Pi's CPU serial — that does not necessarily equal
+# the CMS-canonical ``Device.id`` for UUID-adopted devices).
 
 device_upload_router = APIRouter(prefix="/api/devices")
 
@@ -363,19 +366,18 @@ async def upload_log_bundle(
 ):
     """Accept a Pi-originated tar.gz log bundle for ``request_id``.
 
-    The authenticated device must match the path ``device_id`` so a
+    The path ``device_id`` is informational only — historically the Pi
+    sends its CPU serial here, which does **not** equal the CMS-canonical
+    ``Device.id`` for UUID-adopted devices.  Ownership is enforced by
+    comparing the authenticated ``device.id`` to ``row.device_id`` so a
     compromised Pi can't poison another device's row.
     """
-    if device.id != device_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Authenticated device does not match path device_id",
-        )
+    del device_id  # unused — see docstring
 
     row = await log_outbox.get(db, request_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Log request not found")
-    if row.device_id != device_id:
+    if row.device_id != device.id:
         raise HTTPException(
             status_code=404,
             detail="Log request not found for this device",
@@ -393,7 +395,7 @@ async def upload_log_bundle(
         # don't overwrite an in-flight bundle.
         raise HTTPException(status_code=409, detail=f"Unexpected status {row.status}")
 
-    blob_path = f"{device_id}/{request_id}.tar.gz"
+    blob_path = f"{device.id}/{request_id}.tar.gz"
 
     # Stream → blob with the bounded body iterator.  HTTPException from
     # the limiter bubbles up as a 413 before any partial blob is left
