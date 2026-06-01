@@ -156,7 +156,12 @@ jobs:
               mcpRevisionSuffix='${{ steps.revisions.outputs.revision_suffix }}' \
               previousMcpRevisionName='${{ steps.revisions.outputs.previous_mcp_revision }}' \
               alertEmail='${{ vars.ALERT_EMAIL }}' \
-              cmsBaseUrlOverride='${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}'
+              cmsBaseUrlOverride='${{ vars.CMS_CUSTOM_DOMAIN != '' && format('https://{0}', vars.CMS_CUSTOM_DOMAIN) || '' }}' \
+              deployAzureOpenAI=true \
+              azureOpenAIRegion='westus' \
+              azureOpenAIChatModel='gpt-4o' \
+              azureOpenAIChatModelVersion='2024-11-20' \
+              azureOpenAIChatCapacity=30
 
       - name: Bind custom domains (if configured)
         if: vars.CMS_CUSTOM_DOMAIN != '' || vars.MCP_CUSTOM_DOMAIN != ''
