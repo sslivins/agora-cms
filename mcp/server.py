@@ -43,6 +43,7 @@ mcp = FastMCP(
 _ctx_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("api_key")
 _ctx_permissions: contextvars.ContextVar[list[str]] = contextvars.ContextVar("permissions", default=[])
 _ctx_user_name: contextvars.ContextVar[str] = contextvars.ContextVar("user_name", default="unknown")
+_ctx_on_behalf_of: contextvars.ContextVar[str] = contextvars.ContextVar("on_behalf_of", default="")
 
 # Tool → required permission mapping
 TOOL_PERMISSIONS: dict[str, str | None] = {
@@ -104,10 +105,14 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
 
 def _get_client() -> CMSClient:
     """Return a CMSClient using the service key and current user's identity."""
+    # Prefer the on-behalf-of UUID so CMS can run the request under the
+    # real caller's permissions; fall back to the display name for
+    # personal-MCP-key auth (where no UUID is returned).
+    obo = _ctx_on_behalf_of.get() or _ctx_user_name.get()
     return CMSClient(
         base_url=CMS_BASE_URL,
         api_key=_service_key,
-        on_behalf_of=_ctx_user_name.get(),
+        on_behalf_of=obo,
     )
 
 
@@ -1377,6 +1382,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         _ctx_api_key.set(raw_key)
         _ctx_permissions.set(auth_data.get("permissions", []))
         _ctx_user_name.set(auth_data.get("user", "unknown"))
+        _ctx_on_behalf_of.set(auth_data.get("on_behalf_of", ""))
 
         logger.info(
             "Authenticated MCP user: %s (role: %s, %d permissions, auth=%s)",

@@ -91,15 +91,19 @@ async def _resolve_user_from_api_key(
     from datetime import datetime, timezone
     key_row.last_used_at = datetime.now(timezone.utc)
     await db.commit()
-    # Legacy keys without a user_id: fall back to admin user
+    # Legacy keys without a user_id: fall back to *any* active admin.
+    # Use ``.first()`` not ``scalar_one_or_none()`` — multi-admin envs
+    # are normal in prod and the latter raises ``MultipleResultsFound``.
     if key_row.user is None:
         admin = await db.execute(
             select(User)
             .options(selectinload(User.role))
             .join(User.role)
             .where(Role.name == "Admin", User.is_active.is_(True))
+            .order_by(User.id)
+            .limit(1)
         )
-        admin_user = admin.scalar_one_or_none()
+        admin_user = admin.scalars().first()
         if admin_user is None:
             return None
         return admin_user, key_row
@@ -164,9 +168,11 @@ async def get_current_user(
     """Return the authenticated User or raise 401.
 
     Checks API key header first, then session cookie.
-    Service keys (agora_svc_) get special handling — they authenticate as
-    an admin user with the real user recorded via X-On-Behalf-Of header.
-    MCP-type keys are blocked from REST API (MCP server uses the service key).
+    Service keys (``agora_svc_``) get special handling: when
+    ``X-On-Behalf-Of`` carries a user UUID the request runs under that
+    user's real permissions; otherwise it falls back to an arbitrary
+    active Admin (legacy direct-service-key callers).  MCP-type keys
+    are blocked from REST API (MCP server uses the service key).
     """
     # API key auth
     api_key = request.headers.get("X-API-Key")
@@ -178,15 +184,48 @@ async def get_current_user(
                 on_behalf_of = request.headers.get("X-On-Behalf-Of", "MCP Service")
                 request.state.auth_method = "mcp_service"
                 request.state.on_behalf_of = on_behalf_of
-                # Return admin user for permission checks
+
+                # Preferred path: ``X-On-Behalf-Of`` carries the real
+                # caller's UUID, so resolve to that user and run the
+                # request under their real permissions (not a synthetic
+                # Admin).  This matches the ``/api/mcp/auth`` contract
+                # documented in ``cms/routers/mcp.py``.
+                try:
+                    user_id = uuid.UUID(on_behalf_of)
+                except (ValueError, TypeError):
+                    user_id = None
+                if user_id is not None:
+                    result = await db.execute(
+                        select(User)
+                        .options(selectinload(User.role),
+                                 selectinload(User.groups).selectinload(UserGroup.group))
+                        .where(User.id == user_id, User.is_active.is_(True))
+                    )
+                    obo_user = result.scalar_one_or_none()
+                    if obo_user is not None:
+                        return obo_user
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="On-behalf-of user not found or inactive",
+                    )
+
+                # Legacy fallback for direct service-key callers that
+                # don't send a UUID (e.g. older MCP builds that send a
+                # display name, or ad-hoc tooling).  Return an arbitrary
+                # active Admin so permission checks succeed.  Multiple
+                # admins are valid (and normal in prod), so explicitly
+                # ``.first()`` rather than ``.scalar_one_or_none()`` —
+                # the latter raises ``MultipleResultsFound``.
                 admin = await db.execute(
                     select(User)
                     .options(selectinload(User.role),
                              selectinload(User.groups).selectinload(UserGroup.group))
                     .join(User.role)
                     .where(Role.name == "Admin", User.is_active.is_(True))
+                    .order_by(User.id)
+                    .limit(1)
                 )
-                admin_user = admin.scalar_one_or_none()
+                admin_user = admin.scalars().first()
                 if admin_user is None:
                     raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                                         detail="No admin user available for service key")
