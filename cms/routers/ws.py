@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import get_settings
 from cms.database import get_db
 from cms.models.device import Device, DeviceStatus
+from cms.models.device_event import DeviceEvent, DeviceEventType
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -36,6 +37,11 @@ from cms.services.alert_service import alert_service
 from cms.services.log_chunk_assembler import (
     handle_frame as handle_log_chunk_frame,
     is_chunk_frame,
+)
+from cms.services.ota_progress import (
+    OTA_PROJECTION_FIELD_NAMES,
+    OTA_STUCK_PHASE,
+    version_bumped,
 )
 from cms.services.scheduler import build_device_sync
 
@@ -172,6 +178,10 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             pre_register_fw = device.firmware_version or ""
             pre_register_os = device.os_version or ""
             pre_register_upgrade_claim = device.upgrade_started_at
+            # Snapshots for the auto-recover-stuck-OTA path below — see
+            # the OTA-clear UPDATE block after register_known_device.
+            pre_register_ota_phase = device.ota_phase
+            pre_register_ota_updated_at = device.ota_updated_at
             reg_result = await register_known_device(device, raw, db)
             if reg_result.orphaned:
                 await websocket.send_json({
@@ -240,6 +250,56 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                     .execution_options(synchronize_session=False)
                 )
                 await db.commit()
+        # Auto-recover the "Upgrade stalled" badge for devices whose
+        # firmware never emits the terminal lifecycle event (legacy
+        # updater + incomplete-split shims).  Mirrors the WPS-webhook
+        # block — see wps_webhook.py for the full rationale.  Note this
+        # is intentionally NOT gated on the upgrade claim: a Mia-class
+        # row has the claim already TTL'd out, so the existing claim
+        # block above skips it but the OTA projection is still stuck.
+        # Gate strictly on ``OTA_STUCK_PHASE`` (not just non-NULL) so a
+        # mid-OTA register doesn't clear live progress; reapply the
+        # phase predicate in the SQL WHERE so the UPDATE is a true
+        # no-op when raced against a concurrent lifecycle event on
+        # another replica.
+        if (
+            not is_new_device
+            and pre_register_ota_phase == OTA_STUCK_PHASE
+            and pre_register_ota_updated_at is not None
+            and version_bumped(
+                pre_register_os,
+                pre_register_fw,
+                raw.get("os_version"),
+                raw.get("firmware_version"),
+            )
+        ):
+            clear_result = await db.execute(
+                update(Device)
+                .where(
+                    Device.id == device_id,
+                    Device.ota_updated_at == pre_register_ota_updated_at,
+                    Device.ota_phase == OTA_STUCK_PHASE,
+                )
+                .values(**{f: None for f in OTA_PROJECTION_FIELD_NAMES})
+                .execution_options(synchronize_session=False)
+            )
+            if clear_result.rowcount:
+                db.add(
+                    DeviceEvent(
+                        device_id=device_id,
+                        device_name=device.name or device_id,
+                        event_type=DeviceEventType.OTA_AUTO_CLEARED,
+                        details={
+                            "reason": "register_version_bump",
+                            "prior_phase": pre_register_ota_phase,
+                            "prior_firmware": (pre_register_fw or "").strip(),
+                            "prior_os": (pre_register_os or "").strip(),
+                            "reported_firmware": (raw.get("firmware_version") or "").strip(),
+                            "reported_os": (raw.get("os_version") or "").strip(),
+                        },
+                    )
+                )
+            await db.commit()
 
         # ── 3b. Notify alert service of reconnection ──
         _group_id = str(device.group_id) if device.group_id else None

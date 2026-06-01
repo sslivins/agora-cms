@@ -1,5 +1,12 @@
 """OTA progress projection — lifecycle events → ``devices.ota_*`` columns.
 
+The six projection columns are also single-sourced via
+``OTA_PROJECTION_FIELD_NAMES`` so the register-path auto-recovery
+clear in ``ws.py`` / ``wps_webhook.py`` and the startup backfill in
+``main.py`` use the same field list as the terminal-event branch
+below.
+
+
 Issue agora-cms#574 (companion to ``sslivins/agora#215``).  Devices on
 firmware that ships the WPS lifecycle event sender (see agora#215) push
 a stream of ``lifecycle_event`` messages over WPS during every OTA.
@@ -74,6 +81,59 @@ _PHASE_ORDER: dict[str, int] = {
 _TERMINAL: frozenset[str] = frozenset(
     {"ota_promoted", "ota_migration_complete", "ota_failed", "ota_declined"}
 )
+
+# Single-source list of the six projection columns.  Used by
+# ``handle_event``'s terminal-event branch (via ``setattr`` loop), by
+# the register-path auto-recovery clear in ``ws.py`` / ``wps_webhook.py``,
+# and by the startup backfill in ``main.py`` so any future projection
+# column added here is automatically cleared by all three call sites.
+OTA_PROJECTION_FIELD_NAMES: tuple[str, ...] = (
+    "ota_phase",
+    "ota_label",
+    "ota_pct",
+    "ota_bytes_done",
+    "ota_bytes_total",
+    "ota_updated_at",
+)
+
+# The only OTA phase that can stay "stuck" indefinitely on legacy /
+# incomplete-split firmware: the device reboots into the tryboot slot
+# but never emits ``ota_slot_confirmed`` → ``ota_promoted``, so the
+# row never hits the terminal-event clear above.  Auto-recovery
+# (register path + startup backfill) uses this constant as the gate
+# so we never clear a row mid-download/extract.
+OTA_STUCK_PHASE: str = "ota_tryboot_initiated"
+
+
+def version_bumped(
+    prior_os: str | None,
+    prior_fw: str | None,
+    incoming_os: str | None,
+    incoming_fw: str | None,
+) -> bool:
+    """Did this register represent a real version change?
+
+    Devices may omit one of the two version fields in a given register;
+    ``register_known_device`` preserves the existing value when a field
+    is empty.  The auto-recovery clear must mirror that semantic — only
+    count non-empty incoming fields, otherwise a register that reports
+    "same firmware, no os_version" would look like a bump
+    (``("old-os", "fw") != ("", "fw")``) and prematurely clear live OTA
+    progress.
+
+    Returns True only when at least one version field is non-empty
+    AND the effective post-register tuple (incoming-or-prior per
+    field) differs from the prior tuple.
+    """
+    prior_os_s = (prior_os or "").strip()
+    prior_fw_s = (prior_fw or "").strip()
+    incoming_os_s = (incoming_os or "").strip()
+    incoming_fw_s = (incoming_fw or "").strip()
+    if not (incoming_os_s or incoming_fw_s):
+        return False
+    effective_os = incoming_os_s or prior_os_s
+    effective_fw = incoming_fw_s or prior_fw_s
+    return (effective_os, effective_fw) != (prior_os_s, prior_fw_s)
 
 # Stable label strings for the UI.  The bare ``ota_phase`` is also kept
 # on the row so the front end can branch on it (a tooltip, a colour, an
@@ -212,12 +272,8 @@ def handle_event(device: "Device", event_type: str, payload: dict) -> bool:
         return False
 
     if event_type in _TERMINAL:
-        device.ota_phase = None
-        device.ota_label = None
-        device.ota_pct = None
-        device.ota_bytes_done = None
-        device.ota_bytes_total = None
-        device.ota_updated_at = None
+        for _f in OTA_PROJECTION_FIELD_NAMES:
+            setattr(device, _f, None)
         # Release the atomic upgrade claim immediately.  This is what
         # makes the badge fall off the moment ``promoted`` arrives,
         # rather than waiting for the device to reboot + re-register

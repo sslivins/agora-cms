@@ -911,6 +911,333 @@ class TestUserEvents:
             f"omitted both version fields, got {update_stmts}"
         )
 
+    # ---- OTA stuck-badge auto-recovery (register path) -------------------
+    #
+    # See ``cms/routers/wps_webhook.py`` OTA-clear block (around line 333).
+    # Triggered by Mia's Pi5 on Goodwill prod (2026-06-01): legacy firmware
+    # completed the OTA at the hardware level but never emitted
+    # ``ota_slot_confirmed`` → ``ota_promoted``, so the projection row
+    # stayed pinned at ``ota_tryboot_initiated`` indefinitely and
+    # ``_is_upgrade_stuck`` (devices.py) flipped the "Upgrade stalled"
+    # badge 15 minutes later.  Fix: on next register, if the version
+    # bumped AND phase is still ``OTA_STUCK_PHASE``, clear the six
+    # projection columns and emit a ``DeviceEvent`` of type
+    # ``OTA_AUTO_CLEARED`` for forensics.
+
+    async def test_register_over_wps_clears_stuck_ota_on_version_bump(
+        self, client, app_and_session,
+    ):
+        """Mia's case: claim already TTL'd to NULL, ota_phase pinned at
+        ``ota_tryboot_initiated`` from an old OTA, version bumps on this
+        register → the six OTA projection columns are cleared and a
+        ``DeviceEvent(event_type=OTA_AUTO_CLEARED)`` is appended with
+        ``details`` (not ``payload``) and the correct ``device_name``.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+
+        app, session = app_and_session
+        stale_ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+        device = MagicMock(
+            id="pi-mia", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.7",
+            os_version="0.0.16-test",
+            upgrade_started_at=None,
+            ota_phase="ota_tryboot_initiated",
+            ota_updated_at=stale_ts,
+        )
+        device.name = "Mia's Pi5"
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-mia-stuck"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-mia",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.12.0",
+                    "os_version": "1.0.0",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-mia",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        ota_clear_stmts = [
+            str(s) for s in session.executed
+            if str(s).strip().upper().startswith("UPDATE ") and "ota_phase" in str(s)
+        ]
+        assert ota_clear_stmts, (
+            f"Expected UPDATE clearing ota_phase projection columns, "
+            f"got {[str(s) for s in session.executed]}"
+        )
+        # DeviceEvent for forensics — verify field names and content.
+        events = [a for a in session.added if isinstance(a, DeviceEvent)]
+        auto_cleared = [
+            e for e in events
+            if e.event_type == DeviceEventType.OTA_AUTO_CLEARED
+        ]
+        assert len(auto_cleared) == 1, (
+            f"Expected one OTA_AUTO_CLEARED event, got "
+            f"{[(e.event_type, e.details) for e in events]}"
+        )
+        evt = auto_cleared[0]
+        assert evt.device_id == "pi-mia"
+        assert evt.device_name == "Mia's Pi5"
+        assert evt.details["reason"] == "register_version_bump"
+        assert evt.details["prior_phase"] == "ota_tryboot_initiated"
+        assert evt.details["prior_firmware"] == "1.11.7"
+        assert evt.details["prior_os"] == "0.0.16-test"
+        assert evt.details["reported_firmware"] == "1.12.0"
+        assert evt.details["reported_os"] == "1.0.0"
+
+    async def test_register_over_wps_does_not_clear_ota_mid_download(
+        self, client, app_and_session,
+    ):
+        """Phase gate: a register that lands while ``ota_phase`` is a
+        live in-progress phase (download / extract / stage) must NOT
+        clear live OTA progress, even if the version appears to have
+        bumped.  Only ``OTA_STUCK_PHASE`` ('ota_tryboot_initiated')
+        triggers the auto-recovery clear.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from cms.models.device_event import DeviceEvent
+
+        app, session = app_and_session
+        recent_ts = datetime.now(timezone.utc) - timedelta(seconds=30)
+        device = MagicMock(
+            id="pi-mid", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.7",
+            os_version="0.0.16-test",
+            upgrade_started_at=None,
+            ota_phase="ota_download_progress",
+            ota_updated_at=recent_ts,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-mid-dl"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-mid",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.12.0",
+                    "os_version": "1.0.0",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-mid",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        ota_clear_stmts = [
+            str(s) for s in session.executed
+            if str(s).strip().upper().startswith("UPDATE ") and "ota_phase" in str(s)
+        ]
+        assert not ota_clear_stmts, (
+            f"Did not expect ota_phase UPDATE for non-stuck phase, "
+            f"got {ota_clear_stmts}"
+        )
+        events = [a for a in session.added if isinstance(a, DeviceEvent)]
+        assert not any(
+            e.event_type == "ota_auto_cleared" for e in events
+        ), f"Did not expect OTA_AUTO_CLEARED event, got {[e.event_type for e in events]}"
+
+    async def test_register_over_wps_omitted_version_field_is_not_a_bump(
+        self, client, app_and_session,
+    ):
+        """``version_bumped()`` mirrors ``register_known_device``: an
+        omitted (empty) incoming field means "preserve prior".  A
+        register that reports the same firmware and omits ``os_version``
+        therefore evaluates to (effective_os, effective_fw) ==
+        (prior_os, prior_fw) → not a bump → no OTA clear.
+
+        Without this guard, ``("0.0.16", "1.11.20") != ("", "1.11.20")``
+        would look like a bump and prematurely clear a row that's
+        actually just sitting in tryboot waiting for the slot-confirm
+        event that's seconds away.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from cms.models.device_event import DeviceEvent
+
+        app, session = app_and_session
+        stale_ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+        device = MagicMock(
+            id="pi-omit", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.20",
+            os_version="0.0.16-test",
+            upgrade_started_at=None,
+            ota_phase="ota_tryboot_initiated",
+            ota_updated_at=stale_ts,
+        )
+        session.device_row = device
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-omit-os"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-omit",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.11.20",
+                    # os_version intentionally omitted
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-omit",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        ota_clear_stmts = [
+            str(s) for s in session.executed
+            if str(s).strip().upper().startswith("UPDATE ") and "ota_phase" in str(s)
+        ]
+        assert not ota_clear_stmts, (
+            f"Did not expect ota_phase UPDATE when omitted field is "
+            f"effectively the same version, got {ota_clear_stmts}"
+        )
+        events = [a for a in session.added if isinstance(a, DeviceEvent)]
+        assert not any(
+            getattr(e, "event_type", None) == "ota_auto_cleared" for e in events
+        )
+
+    async def test_register_over_wps_cas_race_skips_audit_event(
+        self, client, app_and_session,
+    ):
+        """Concurrent replica race: a terminal lifecycle event landed on
+        another replica between snapshot and clear, so the CAS UPDATE's
+        WHERE no longer matches (``ota_updated_at`` moved AND/OR
+        ``ota_phase`` is no longer ``OTA_STUCK_PHASE``).  The UPDATE
+        returns ``rowcount == 0``; the audit ``DeviceEvent`` must NOT
+        be emitted (otherwise we'd log a phantom clear).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from cms.models.device_event import DeviceEvent
+
+        app, session = app_and_session
+        stale_ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+        device = MagicMock(
+            id="pi-race", name="Kiosk", group_id=None,
+            status=MagicMock(value="adopted"),
+            firmware_version="1.11.7",
+            os_version="0.0.16-test",
+            upgrade_started_at=None,
+            ota_phase="ota_tryboot_initiated",
+            ota_updated_at=stale_ts,
+        )
+        session.device_row = device
+
+        # Force rowcount=0 for any UPDATE that touches ota_phase.
+        original_execute = session.execute
+        async def execute_with_zero_ota_rowcount(stmt, *args, **kwargs):
+            result = await original_execute(stmt, *args, **kwargs)
+            stmt_str = str(stmt)
+            if stmt_str.strip().upper().startswith("UPDATE ") and "ota_phase" in stmt_str:
+                result.rowcount = 0
+            return result
+        session.execute = execute_with_zero_ota_rowcount
+
+        fake_transport = MagicMock()
+        fake_transport.send_to_device = AsyncMock(return_value=True)
+
+        cid = "conn-race"
+        with patch(
+            "cms.routers.wps_webhook.register_known_device",
+            new=AsyncMock(return_value=MagicMock(
+                orphaned=False, auth_assigned=None,
+            )),
+        ), patch(
+            "cms.routers.wps_webhook.get_transport",
+            new=lambda: fake_transport,
+        ):
+            r = await client.post(
+                "/internal/wps/events",
+                content=json.dumps({
+                    "type": "register", "device_id": "pi-race",
+                    "auth_token": "valid-token",
+                    "firmware_version": "1.12.0",
+                    "os_version": "1.0.0",
+                }).encode(),
+                headers={
+                    "content-type": "application/json",
+                    "ce-type": "azure.webpubsub.user.message",
+                    "ce-connectionId": cid,
+                    "ce-userId": "pi-race",
+                    "ce-eventName": "register",
+                    "ce-signature": _sig(cid),
+                },
+            )
+        assert r.status_code == 204
+        # UPDATE was attempted (CAS form) — that's expected and harmless.
+        ota_clear_stmts = [
+            str(s) for s in session.executed
+            if str(s).strip().upper().startswith("UPDATE ") and "ota_phase" in str(s)
+        ]
+        assert ota_clear_stmts, "Expected CAS UPDATE to be attempted"
+        # But NO audit event should be appended since rowcount was 0.
+        events = [a for a in session.added if isinstance(a, DeviceEvent)]
+        assert not any(
+            e.event_type == "ota_auto_cleared" for e in events
+        ), (
+            f"Did not expect OTA_AUTO_CLEARED event when CAS race "
+            f"caused rowcount=0, got {[e.event_type for e in events]}"
+        )
+
     async def test_register_over_wps_orphaned_device(self, client, app_and_session):
         """Orphaned result returns 204 without pushing — direct-WS path
         would close 4004 but over WPS we can't close from here."""
