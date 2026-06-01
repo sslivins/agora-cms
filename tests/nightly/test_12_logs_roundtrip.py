@@ -5,12 +5,16 @@ multi-replica-safe async outbox introduced in PR #345:
 
 1. Happy-ish path — ``POST /api/logs/requests`` enqueues an outbox row,
    CMS forwards the ``request_logs`` command over WS, and the simulator
-   records it with ``services`` and ``since`` as sent. The simulator
-   container has no ``journalctl`` binary, so the device eventually
-   responds with an error that flips the row to ``failed``; we poll
-   ``GET /api/logs/requests/{id}`` until the row reaches a terminal
-   state (ready or failed). Proof of delivery is the recorded command
-   on the sim, which is independent of the terminal row status.
+   records it with ``services`` and ``since`` as sent. The fixture
+   installs a small ``logs_synth`` profile on the device so the sim's
+   journalctl shim returns synthetic bytes promptly (instead of
+   blocking on a real ``journalctl`` subprocess that hangs without
+   dbus inside the smoke container — see notes on the prior flake of
+   this test). The device replies with ``logs_response`` which flips
+   the row to ``ready``; we poll ``GET /api/logs/requests/{id}`` until
+   the row reaches a terminal state (ready or failed). Proof of
+   delivery is the recorded command on the sim, which is independent
+   of the terminal row status.
 
 2. Unknown device — ``POST /api/logs/requests`` returns 404 from the
    access-check guard that loads the device row.
@@ -37,6 +41,13 @@ LOGS_POLL_TIMEOUT_S = 45.0
 OFFLINE_DURATION_S = 20.0
 OFFLINE_DETECT_TIMEOUT_S = 30.0
 ONLINE_DETECT_TIMEOUT_S = 45.0
+
+# Small per-service synthetic payload installed on the sim so that
+# ``_handle_request_logs`` short-circuits the real journalctl
+# subprocess (which can block ~30s per service in the smoke container
+# where dbus is unavailable). 5 KB × 2 services keeps us comfortably
+# under the WS JSON-path frame ceiling.
+SYNTH_BYTES_PER_SERVICE = 5 * 1024
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -104,7 +115,24 @@ def logs_device(
     dev_id = ids[0]
     _wait_for_online(authenticated_page, dev_id, True, timeout=30.0)
     simulator.reset_recording(dev_id)
-    return dev_id
+    # Install a small synthetic-logs profile so the sim's
+    # ``_handle_request_logs`` skips the real journalctl subprocess
+    # (which can block ~30s per service inside the smoke container).
+    # Without this, the row can stay at ``sent`` past LOGS_POLL_TIMEOUT_S
+    # and the test flakes.
+    simulator.set_logs(
+        dev_id,
+        {svc: SYNTH_BYTES_PER_SERVICE for svc in
+         ("agora-player", "agora-cms-client")},
+    )
+    try:
+        yield dev_id
+    finally:
+        # Always clear so downstream tests see vanilla sim behaviour.
+        try:
+            simulator.clear_logs(dev_id)
+        except Exception:
+            pass
 
 
 # ── tests ────────────────────────────────────────────────────────────────
@@ -154,9 +182,10 @@ def test_request_logs_delivers_request_logs_command_to_device(
     assert payload.get("since") == since
     assert payload.get("request_id") == request_id
 
-    # The row should eventually reach a terminal state. Simulator has no
-    # journalctl, so "failed" is the most likely terminal status; a
-    # sufficiently-rigged sim could return "ready". Either is fine.
+    # The row should eventually reach a terminal state. The fixture
+    # installs a small logs_synth profile so the sim returns synthetic
+    # logs promptly and the row goes "ready"; we still accept "failed"
+    # to keep this test resilient to changes in the sim's error path.
     final = _poll_log_request(page, request_id, timeout=LOGS_POLL_TIMEOUT_S)
     assert final.get("status") in ("ready", "failed"), (
         f"log request {request_id} did not reach terminal status in "
