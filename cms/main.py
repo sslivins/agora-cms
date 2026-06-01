@@ -5,6 +5,7 @@ import logging
 import socket
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 
 def _replica_id() -> str:
@@ -199,6 +200,119 @@ async def _backfill_media_metadata(settings):
         raise
     except Exception as e:
         logger.warning("Metadata backfill failed: %s", e)
+
+
+async def _backfill_stuck_ota_projection(settings):
+    """One-shot: clear OTA projection rows stuck on terminal-event-less devices.
+
+    Fix for the "Upgrade stalled" badge on devices whose firmware
+    completes the OTA at the hardware level (slot promoted, services
+    healthy) but never emits the terminal lifecycle event (legacy
+    updater or an incomplete split that ships only some of the
+    SLOT_CONFIRMED → PROMOTED chain).  ``ota_progress.handle_event``
+    can only clear the projection columns on receipt of a terminal
+    event, so those rows stay pinned at ``ota_tryboot_initiated``
+    indefinitely until the next OTA replaces them — and
+    ``_is_upgrade_stuck`` (devices.py) flips the badge 15 minutes
+    after ``ota_updated_at``.
+
+    Heuristic for "definitely recovered":
+      - ``ota_phase = 'ota_tryboot_initiated'`` (where stuck-rows pile up),
+      - ``ota_updated_at`` older than 15 min (matches stuck-badge threshold),
+      - ``last_seen`` advanced 5+ min past ``ota_updated_at`` (every WPS
+        event refreshes last_seen, so this means the device has been
+        talking to us — either the new slot booted, or the bootloader
+        auto-reverted to the old slot; either way it's no longer in
+        the in-flight reboot window).
+
+    Truly dead-mid-tryboot devices (network gone, no traffic since the
+    reboot) keep the stuck badge, which is correct — they really did
+    fail to come back.
+
+    Companion to the register-path auto-recovery in ``ws.py`` and
+    ``wps_webhook.py``: that path catches FUTURE post-OTA reconnects;
+    this backfill catches rows that already TTL'd their upgrade claim
+    out 24h ago so the register path would have skipped them.
+
+    Gated by a Postgres advisory lock so only one replica runs the
+    sweep per startup, same shape as ``_backfill_media_metadata``.
+    """
+    from sqlalchemy import select, update
+    from cms.models.device import Device
+    from cms.models.device_event import DeviceEvent, DeviceEventType
+    from cms.services.leader import session_advisory_lock
+    from cms.services.ota_progress import OTA_PROJECTION_FIELD_NAMES, OTA_STUCK_PHASE
+
+    _BACKFILL_LOCK_ID = 0x4147_4F52_41_02  # 'AGORA' + 02 (distinct from media backfill)
+
+    try:
+        async with session_advisory_lock(_BACKFILL_LOCK_ID) as got_lock:
+            if not got_lock:
+                logger.info(
+                    "Stuck-OTA backfill: another replica holds the lock, skipping"
+                )
+                return
+            async for db in get_db():
+                now = datetime.now(timezone.utc)
+                stuck_cutoff = now - timedelta(minutes=15)
+                recover_window = timedelta(minutes=5)
+                # Two-step: SELECT candidates with the SQL-portable subset
+                # of the predicate, then filter the timedelta gap in
+                # Python (SQLAlchemy's ``col + timedelta`` doesn't
+                # round-trip on SQLite, so we can't push that comparison
+                # into the WHERE clause).  Snapshot the prior values for
+                # the audit event before the UPDATE blanks them out
+                # (PostgreSQL ``RETURNING`` would give the NEW values).
+                candidates = (await db.execute(
+                    select(
+                        Device.id,
+                        Device.name,
+                        Device.ota_updated_at,
+                        Device.last_seen,
+                    ).where(
+                        Device.ota_phase == OTA_STUCK_PHASE,
+                        Device.ota_updated_at.is_not(None),
+                        Device.ota_updated_at < stuck_cutoff,
+                        Device.last_seen.is_not(None),
+                    )
+                )).all()
+                to_clear = [
+                    row for row in candidates
+                    if row.last_seen > row.ota_updated_at + recover_window
+                ]
+                if not to_clear:
+                    return
+                await db.execute(
+                    update(Device)
+                    .where(Device.id.in_([row.id for row in to_clear]))
+                    .values(**{f: None for f in OTA_PROJECTION_FIELD_NAMES})
+                    .execution_options(synchronize_session=False)
+                )
+                for row in to_clear:
+                    db.add(
+                        DeviceEvent(
+                            device_id=row.id,
+                            device_name=row.name or str(row.id),
+                            event_type=DeviceEventType.OTA_AUTO_CLEARED,
+                            details={
+                                "reason": "startup_backfill",
+                                "prior_phase": OTA_STUCK_PHASE,
+                                "prior_ota_updated_at": row.ota_updated_at.isoformat()
+                                    if row.ota_updated_at else None,
+                                "last_seen": row.last_seen.isoformat()
+                                    if row.last_seen else None,
+                            },
+                        )
+                    )
+                await db.commit()
+                logger.info(
+                    "Stuck-OTA backfill: cleared projection for %d device(s)",
+                    len(to_clear),
+                )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Stuck-OTA backfill failed: %s", e)
 
 
 async def _seed_roles(db):
@@ -545,6 +659,7 @@ async def lifespan(app: FastAPI):
     # "always leader" / "always got lock" so the loops run identically.
     scheduler_task = asyncio.create_task(scheduler_loop())
     backfill_task = asyncio.create_task(_backfill_media_metadata(settings))
+    ota_backfill_task = asyncio.create_task(_backfill_stuck_ota_projection(settings))
     bundle_check_task = asyncio.create_task(bundle_check_loop())
     device_purge_task = asyncio.create_task(device_purge_loop())
     pending_reg_reaper_task = asyncio.create_task(
@@ -664,6 +779,7 @@ async def lifespan(app: FastAPI):
 
     scheduler_task.cancel()
     backfill_task.cancel()
+    ota_backfill_task.cancel()
     bundle_check_task.cancel()
     device_purge_task.cancel()
     pending_reg_reaper_task.cancel()
@@ -682,6 +798,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await backfill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await ota_backfill_task
     except asyncio.CancelledError:
         pass
     try:

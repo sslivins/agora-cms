@@ -304,6 +304,108 @@ class TestWebSocket:
 
                 ws.close()
 
+    async def test_register_clears_stuck_ota_projection_on_version_bump(self, app, db_session):
+        """Direct-WS mirror of Mia's case: legacy firmware completed an
+        OTA at the hardware level but never emitted
+        ``ota_slot_confirmed`` → ``ota_promoted``, so the projection
+        row stayed pinned at ``OTA_STUCK_PHASE`` ('ota_tryboot_initiated')
+        indefinitely.  On next register with a bumped version, the
+        register path must clear the six projection columns AND emit a
+        ``DeviceEvent(event_type=OTA_AUTO_CLEARED)``.  Full guard-matrix
+        (mid-phase, omitted-version, CAS race) is covered in
+        test_wps_webhook.py — this just locks down that the duplicate
+        block in ws.py also fires.
+        """
+        from datetime import datetime, timedelta, timezone
+        import hashlib
+
+        from cms.models.device import Device, DeviceStatus
+        from cms.models.device_event import DeviceEvent, DeviceEventType
+
+        token = "ws-stuck-ota-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        stale_ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+
+        device = Device(
+            id="ws-test-stuck-ota",
+            name="ws-test-stuck-ota",
+            status=DeviceStatus.ADOPTED,
+            device_auth_token_hash=token_hash,
+            firmware_version="1.11.7",
+            os_version="0.0.16-test",
+            upgrade_started_at=None,
+            ota_phase="ota_tryboot_initiated",
+            ota_label="Rebooting into new slot",
+            ota_updated_at=stale_ts,
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await db_session.close()
+
+        from starlette.testclient import TestClient
+        with TestClient(app) as tc:
+            with tc.websocket_connect("/ws/device") as ws:
+                ws.send_json({
+                    "type": "register",
+                    "protocol_version": 1,
+                    "device_id": "ws-test-stuck-ota",
+                    "auth_token": token,
+                    "firmware_version": "1.12.0",
+                    "os_version": "1.0.0",
+                    "storage_capacity_mb": 500,
+                })
+
+                msg = ws.receive_json()
+                assert msg["type"] == "sync"
+                msg = ws.receive_json()
+                assert msg["type"] == "config"
+
+                # Poll until projection clears AND audit row appears.
+                from sqlalchemy import select
+                from cms.models.device import Device as _Device
+                from shared.database import get_session_factory
+                factory = get_session_factory()
+                deadline = time.time() + 5.0
+                cleared = False
+                audit_event = None
+                while time.time() < deadline:
+                    async with factory() as probe_db:
+                        result = (await probe_db.execute(
+                            select(
+                                _Device.ota_phase,
+                                _Device.ota_label,
+                                _Device.ota_updated_at,
+                                _Device.os_version,
+                                _Device.firmware_version,
+                            ).where(_Device.id == "ws-test-stuck-ota")
+                        )).first()
+                        if result is not None and result.ota_phase is None:
+                            assert result.ota_label is None
+                            assert result.ota_updated_at is None
+                            assert result.os_version == "1.0.0"
+                            assert result.firmware_version == "1.12.0"
+                            cleared = True
+                            audit_event = (await probe_db.execute(
+                                select(DeviceEvent).where(
+                                    DeviceEvent.device_id == "ws-test-stuck-ota",
+                                    DeviceEvent.event_type == DeviceEventType.OTA_AUTO_CLEARED,
+                                )
+                            )).scalar_one_or_none()
+                            break
+                    time.sleep(0.05)
+
+                assert cleared, "ota_phase projection should have been cleared by ws.py auto-recovery"
+                assert audit_event is not None, "Expected an OTA_AUTO_CLEARED DeviceEvent"
+                assert audit_event.device_name == "ws-test-stuck-ota"
+                assert audit_event.details["reason"] == "register_version_bump"
+                assert audit_event.details["prior_phase"] == "ota_tryboot_initiated"
+                assert audit_event.details["prior_firmware"] == "1.11.7"
+                assert audit_event.details["prior_os"] == "0.0.16-test"
+                assert audit_event.details["reported_firmware"] == "1.12.0"
+                assert audit_event.details["reported_os"] == "1.0.0"
+
+                ws.close()
+
     async def test_known_device_wrong_nonmempty_token_rejected(self, app, db_session):
         """A known device that sends a WRONG (non-empty) token should still
         be rejected as orphaned — this is a security measure."""

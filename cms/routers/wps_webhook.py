@@ -34,10 +34,16 @@ from cms.auth import get_settings
 from cms.config import Settings
 from cms.database import get_db
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_event import DeviceEvent, DeviceEventType
 from cms.services.alert_service import alert_service
 from cms.services.device_inbound import InboundContext, dispatch_device_message, rotate_api_key
 from cms.services.device_manager import device_manager
 from cms.services.device_register import register_known_device
+from cms.services.ota_progress import (
+    OTA_PROJECTION_FIELD_NAMES,
+    OTA_STUCK_PHASE,
+    version_bumped,
+)
 from cms.services.transport import get_transport
 from shared.wps_signature import verify_signature
 
@@ -211,6 +217,15 @@ async def events_receiver(
             pre_register_fw = device.firmware_version or ""
             pre_register_os = device.os_version or ""
             pre_register_upgrade_claim = device.upgrade_started_at
+            # Snapshots for the auto-recover-stuck-OTA path below.
+            # ``pre_register_ota_phase`` is the "did this row even have
+            # projection state to clear" gate; ``pre_register_ota_updated_at``
+            # is the CAS guard so a concurrent lifecycle event landing
+            # on another replica between snapshot and clear isn't
+            # stomped.  See the second UPDATE block after
+            # ``register_known_device`` returns.
+            pre_register_ota_phase = device.ota_phase
+            pre_register_ota_updated_at = device.ota_updated_at
             reg_result = await register_known_device(device, msg, db)
             # Persist the device's LAN IP from the register payload.
             # ``sys.connected`` (handled above) has no body, so it can't
@@ -290,6 +305,68 @@ async def events_receiver(
                         .execution_options(synchronize_session=False)
                     )
                     await db.commit()
+            # Auto-recover the "Upgrade stalled" badge for devices whose
+            # firmware doesn't ship the lifecycle event sender (or shipped
+            # an incomplete split that never emits ``ota_slot_confirmed``
+            # → ``ota_promoted``).  These devices complete the OTA at the
+            # hardware level — slot promoted, services healthy — but the
+            # CMS-side projection columns stay pinned at
+            # ``OTA_STUCK_PHASE`` (``"ota_tryboot_initiated"``)
+            # indefinitely, and 15 minutes later ``_is_upgrade_stuck``
+            # (see devices.py) flips the badge.
+            #
+            # Gate strictly on ``pre_register_ota_phase == OTA_STUCK_PHASE``
+            # (not just non-NULL) so a register that lands mid-download /
+            # mid-extract — when ``ota_phase`` is some other in-progress
+            # value — doesn't prematurely clear live OTA progress.
+            #
+            # Intentionally NOT gated on
+            # ``pre_register_upgrade_claim is not None`` — a Mia-class
+            # row has already had its claim TTL'd out by the upgrade
+            # endpoint (24h timeout) so the claim is NULL and the OLD
+            # claim-clear block would skip it.  CAS on
+            # ``Device.ota_updated_at == pre_register_ota_updated_at``
+            # so a concurrent terminal lifecycle event landing on
+            # another replica between snapshot and clear isn't stomped;
+            # the SQL WHERE also reapplies the phase predicate so the
+            # update is a true no-op when raced.
+            if (
+                pre_register_ota_phase == OTA_STUCK_PHASE
+                and pre_register_ota_updated_at is not None
+                and version_bumped(
+                    pre_register_os,
+                    pre_register_fw,
+                    msg.get("os_version"),
+                    msg.get("firmware_version"),
+                )
+            ):
+                clear_result = await db.execute(
+                    update(Device)
+                    .where(
+                        Device.id == ce_user_id,
+                        Device.ota_updated_at == pre_register_ota_updated_at,
+                        Device.ota_phase == OTA_STUCK_PHASE,
+                    )
+                    .values(**{f: None for f in OTA_PROJECTION_FIELD_NAMES})
+                    .execution_options(synchronize_session=False)
+                )
+                if clear_result.rowcount:
+                    db.add(
+                        DeviceEvent(
+                            device_id=ce_user_id,
+                            device_name=device.name or ce_user_id,
+                            event_type=DeviceEventType.OTA_AUTO_CLEARED,
+                            details={
+                                "reason": "register_version_bump",
+                                "prior_phase": pre_register_ota_phase,
+                                "prior_firmware": (pre_register_fw or "").strip(),
+                                "prior_os": (pre_register_os or "").strip(),
+                                "reported_firmware": (msg.get("firmware_version") or "").strip(),
+                                "reported_os": (msg.get("os_version") or "").strip(),
+                            },
+                        )
+                    )
+                await db.commit()
             # Notify alert service of reconnection — mirrors ws.py's
             # direct-WS register path.  This is what emits the ONLINE
             # device_event, clears ``offline_notified`` on

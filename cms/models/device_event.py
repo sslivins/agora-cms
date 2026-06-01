@@ -39,6 +39,12 @@ class DeviceEventType(str, PyEnum):
     OTA_MIGRATION_COMPLETE = "ota_migration_complete"
     OTA_FAILED = "ota_failed"
     OTA_DECLINED = "ota_declined"
+    # Synthetic CMS-side event emitted when the OTA projection columns
+    # are auto-cleared after detecting a successful upgrade for which
+    # we never received the terminal lifecycle event.  Two emit sites:
+    # the register-path auto-recovery in ws.py / wps_webhook.py and
+    # the startup backfill in main.py.  Not produced by any wire event.
+    OTA_AUTO_CLEARED = "ota_auto_cleared"
 
 
 class DeviceEvent(Base):
