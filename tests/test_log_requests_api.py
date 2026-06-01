@@ -494,11 +494,14 @@ class TestUploadLogBundle:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_wrong_device_key_is_403(
+    async def test_wrong_device_key_is_404(
         self, app, unauthed_client, seeded,
     ):
         # Create another device with its own key and try to upload
-        # against DEVICE_ID using that other key.
+        # against DEVICE_ID's row using that other key.  The anti-
+        # poison check is "row.device_id != device.id" (we no longer
+        # trust the path device_id), so this surfaces as a 404 "not
+        # found for this device" rather than a 403 path-mismatch.
         other_key = "key-other-dev"
         factory = get_session_factory()
         async with factory() as db:
@@ -517,4 +520,66 @@ class TestUploadLogBundle:
             content=b"x",
             headers={"X-Device-API-Key": other_key},
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_path_device_id_may_differ_from_canonical_id(
+        self, app, unauthed_client, seeded,
+    ):
+        """Regression for the download-logs 403 bug.
+
+        UUID-adopted devices send their CPU serial in the URL but the
+        CMS-canonical ``Device.id`` is a server-generated UUID.  The
+        endpoint must accept the upload as long as the authenticated
+        device owns the outbox row — the path ``device_id`` is
+        informational only.  Blob is stored under the canonical id so
+        the prefix is stable regardless of what the Pi puts in the URL.
+        """
+        from cms.services.log_blob import (
+            LocalLogBlobBackend, init_log_storage, set_log_backend,
+        )
+        from cms.auth import get_settings
+
+        settings = app.dependency_overrides[get_settings]()
+        set_log_backend(LocalLogBlobBackend(base_path=settings.asset_storage_path))
+        await init_log_storage(settings)
+
+        # ``DEVICE_ID`` is the canonical row id (think: CMS-generated
+        # UUID).  ``pi_serial_path`` is what the Pi would put in the
+        # URL (its CPU serial) — deliberately not equal to DEVICE_ID.
+        pi_serial_path = "00000000abcd1234"
+        assert pi_serial_path != DEVICE_ID
+
+        factory = get_session_factory()
+        async with factory() as db:
+            row = await log_outbox.create(db, device_id=DEVICE_ID)
+            await db.commit()
+            rid = row.id
+
+        payload = b"divergent-id-upload"
+        resp = await unauthed_client.post(
+            f"/api/devices/{pi_serial_path}/logs/{rid}/upload",
+            content=payload,
+            headers={"X-Device-API-Key": DEVICE_API_KEY},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "ready"
+
+        # Blob is stored under the canonical id (DEVICE_ID), NOT the
+        # serial path the Pi posted to.
+        canonical_blob = (
+            Path(settings.asset_storage_path)
+            / "device-logs" / DEVICE_ID / f"{rid}.tar.gz"
+        )
+        serial_blob = (
+            Path(settings.asset_storage_path)
+            / "device-logs" / pi_serial_path / f"{rid}.tar.gz"
+        )
+        assert canonical_blob.is_file()
+        assert not serial_blob.exists()
+        assert canonical_blob.read_bytes() == payload
+
+        async with factory() as db:
+            row = await log_outbox.get(db, rid)
+            assert row.status == STATUS_READY
+            assert row.blob_path == f"{DEVICE_ID}/{rid}.tar.gz"

@@ -2478,7 +2478,10 @@ paths:
       description: |-
         Accept a Pi-originated tar.gz log bundle for ``request_id``.
 
-        The authenticated device must match the path ``device_id`` so a
+        The path ``device_id`` is informational only — historically the Pi
+        sends its CPU serial here, which does **not** equal the CMS-canonical
+        ``Device.id`` for UUID-adopted devices.  Ownership is enforced by
+        comparing the authenticated ``device.id`` to ``row.device_id`` so a
         compromised Pi can't poison another device's row.
       operationId: upload_log_bundle_api_devices__device_id__logs__request_id__upload_post
       parameters:
