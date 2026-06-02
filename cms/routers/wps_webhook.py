@@ -443,6 +443,22 @@ async def events_receiver(
                 ce_user_id, ce_connection_id,
             )
 
+        # Snapshot the device's group name so DeviceEvent rows persist a
+        # human-readable Group column (the event_log template renders
+        # ``event.group_name or '—'``).  Mirrors the lookup the
+        # ``device_reconnected`` register branch above does — without
+        # this, every WPS-delivered event (i.e. the entire Pi fleet)
+        # lands with ``group_name=''`` even when ``group_id`` is set,
+        # leaving the Group column permanently blank.
+        _ctx_group_name = ""
+        if device.group_id:
+            _grp_q = await db.execute(
+                select(DeviceGroup.name).where(
+                    DeviceGroup.id == device.group_id,
+                )
+            )
+            _ctx_group_name = _grp_q.scalar_one_or_none() or ""
+
         ctx = InboundContext(
             device_id=ce_user_id,
             device=device,
@@ -451,7 +467,7 @@ async def events_receiver(
             group_id=str(device.group_id) if device.group_id else None,
             device_name=device.name or ce_user_id,
             device_status=device.status.value if device.status else "pending",
-            group_name="",
+            group_name=_ctx_group_name,
             received_at=received_at,
         )
 

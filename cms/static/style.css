@@ -407,6 +407,17 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-muted { background: #555; color: #ccc; }
 .badge-offline { background: var(--warning); color: #000; }
 .badge-usage { background: var(--primary); color: #fff; }
+
+/* Event log table: badges can otherwise overflow the fixed-width Event
+ * column and run into the Device column.  Allow wrap inside the badge
+ * pill so the column width is respected on narrow viewports. */
+.event-log-table .badge {
+    white-space: normal;
+    max-width: 100%;
+    line-height: 1.2;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
 .text-success { color: var(--success); }
 .text-muted { color: var(--text-muted); }
 
