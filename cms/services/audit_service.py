@@ -86,6 +86,17 @@ def build_description(action: str, details: dict | None = None) -> str:
         key_name = d.get("key_name", "unknown")
         return f"Revoked API key '{key_name}'"
 
+    if action == "assistant.message":
+        tokens_in = d.get("tokens_in") or 0
+        tokens_out = d.get("tokens_out") or 0
+        total = int(tokens_in) + int(tokens_out)
+        cost = d.get("est_cost_usd")
+        parts = [f"Assistant chat ({total:,} tokens"]
+        if isinstance(cost, (int, float)) and cost > 0:
+            parts.append(f", ~${cost:.4f}")
+        parts.append(")")
+        return "".join(parts)
+
     if action == "auth.login_failed":
         login_id = d.get("login_id") or "unknown"
         reason = d.get("reason")
