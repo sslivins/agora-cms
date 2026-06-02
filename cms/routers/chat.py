@@ -53,6 +53,7 @@ from cms.services.assistant.llm_client import (
 from cms.services.assistant.mcp_client import McpUnavailableError
 from cms.services.assistant.pricing import estimate_usd, model_for_deployment
 from cms.services.assistant_flag import assistant_enabled_for
+from cms.services.audit_service import audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,62 @@ async def _get_owned_thread(
     if not thread or thread.user_id != user.id:
         raise HTTPException(status_code=404, detail="Thread not found")
     return thread
+
+
+async def _emit_assistant_audit(
+    *,
+    db: AsyncSession,
+    settings: Settings,
+    user: User,
+    thread: ChatThread,
+    tokens_in: int,
+    tokens_out: int,
+    message_id: str | None,
+    streaming: bool,
+    request: Request | None = None,
+) -> None:
+    """Record one ``assistant.message`` audit-log entry for a chat turn.
+
+    Wrapped in a broad try/except: audit emission must never break the
+    user's turn.  Cost estimation uses the same pricing helper as the
+    `/api/chat/usage` endpoint so the audit row matches what the user
+    sees in the budget UI.
+    """
+    try:
+        deployment = settings.azure_openai_deployment or ""
+        model_override = getattr(settings, "azure_openai_model", "") or ""
+        model = model_for_deployment(deployment, model_override=model_override)
+        cost_usd = estimate_usd(
+            deployment=deployment,
+            tokens_in=int(tokens_in or 0),
+            tokens_out=int(tokens_out or 0),
+            model_override=model_override,
+        )
+        details: dict = {
+            "model": model,
+            "deployment": deployment,
+            "tokens_in": int(tokens_in or 0),
+            "tokens_out": int(tokens_out or 0),
+            "streaming": streaming,
+            "thread_title": thread.title or "",
+        }
+        if message_id:
+            details["message_id"] = str(message_id)
+        if isinstance(cost_usd, (int, float)) and cost_usd > 0:
+            details["est_cost_usd"] = round(float(cost_usd), 6)
+
+        await audit_log(
+            db,
+            user=user,
+            action="assistant.message",
+            resource_type="chat_thread",
+            resource_id=str(thread.id),
+            details=details,
+            request=request,
+        )
+        await db.commit()
+    except Exception:  # noqa: BLE001 — telemetry must never break the turn
+        logger.exception("assistant.audit.emit_failed")
 
 
 # ── Feature flag introspection ────────────────────────────────────────
@@ -246,6 +303,7 @@ async def list_thread_messages(
 async def post_message(
     thread_id: uuid.UUID,
     payload: ChatMessageCreate,
+    request: Request,
     user: User = Depends(_current_user),
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
@@ -309,6 +367,18 @@ async def post_message(
             detail=f"Assistant tool backend unavailable: {exc}",
         ) from exc
 
+    await _emit_assistant_audit(
+        db=db,
+        settings=settings,
+        user=user,
+        thread=thread,
+        tokens_in=getattr(assistant_row, "tokens_in", 0) or 0,
+        tokens_out=getattr(assistant_row, "tokens_out", 0) or 0,
+        message_id=str(assistant_row.id) if getattr(assistant_row, "id", None) else None,
+        streaming=False,
+        request=request,
+    )
+
     return ChatMessageOut.model_validate(assistant_row)
 
 
@@ -330,6 +400,7 @@ async def _stream_agent_events(
     user: User,
     thread: ChatThread,
     content: str,
+    request: Request | None = None,
 ):
     """Adapt :func:`run_user_turn_streaming` events into sse-starlette
     ``{event, data}`` dicts.
@@ -339,6 +410,7 @@ async def _stream_agent_events(
     connection is already open at this point so an HTTP 503 wouldn't
     actually reach the client.
     """
+    done_evt: dict | None = None
     try:
         async for evt in run_user_turn_streaming(
             db=db,
@@ -347,6 +419,8 @@ async def _stream_agent_events(
             thread=thread,
             user_message=content,
         ):
+            if evt.get("type") == "done":
+                done_evt = evt
             yield {"event": evt["type"], "data": json.dumps(evt)}
     except AssistantUnavailableError as exc:
         logger.warning("assistant.stream.llm_unavailable: %s", exc)
@@ -357,12 +431,26 @@ async def _stream_agent_events(
     except Exception as exc:  # noqa: BLE001 — last-resort error frame
         logger.exception("assistant.stream.unexpected_error")
         yield _format_sse_error(f"{type(exc).__name__}: {exc}")
+    finally:
+        if done_evt is not None:
+            await _emit_assistant_audit(
+                db=db,
+                settings=settings,
+                user=user,
+                thread=thread,
+                tokens_in=done_evt.get("tokens_in") or 0,
+                tokens_out=done_evt.get("tokens_out") or 0,
+                message_id=done_evt.get("message_id"),
+                streaming=True,
+                request=request,
+            )
 
 
 @router.post("/threads/{thread_id}/stream")
 async def post_message_stream(
     thread_id: uuid.UUID,
     payload: ChatMessageCreate,
+    request: Request,
     user: User = Depends(_current_user),
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
@@ -416,6 +504,7 @@ async def post_message_stream(
             user=user,
             thread=thread,
             content=payload.content,
+            request=request,
         ),
         # ``ping`` keeps intermediate proxies (Container Apps front-door,
         # browsers) from closing the connection during long LLM waits.
