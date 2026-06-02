@@ -2536,6 +2536,29 @@ async def event_log_page(
     result = await db.execute(query)
     events = result.scalars().all()
 
+    # Attach a precomputed, human-readable ``description`` to each
+    # event so the template (and the auto-refresh polling JS, via the
+    # /api/device-events DTO) never has to dump raw JSON into the
+    # Details column.
+    from cms.services.device_event_descriptions import (
+        EVENT_TYPE_BADGE,
+        build_event_description,
+        event_type_label,
+    )
+    from cms.models.device_event import DeviceEventType
+    for ev in events:
+        ev.description = build_event_description(ev.event_type, ev.details)
+        ev.badge_class = EVENT_TYPE_BADGE.get(ev.event_type, "badge-muted")
+        ev.label = event_type_label(ev.event_type)
+
+    # All known event types for the filter dropdown — generated from
+    # the enum so adding a new ``DeviceEventType`` value automatically
+    # picks up filter support without a separate template edit.
+    all_event_types = [
+        (et.value, event_type_label(et.value))
+        for et in DeviceEventType
+    ]
+
     # Distinct devices for filter dropdown (RBAC-filtered, excludes system events)
     dev_q = (
         select(DeviceEvent.device_id, DeviceEvent.device_name)
@@ -2573,6 +2596,8 @@ async def event_log_page(
         "filter_until": until.strip(),
         "available_devices": available_devices,
         "available_groups": available_groups,
+        "all_event_types": all_event_types,
+        "event_type_badge": EVENT_TYPE_BADGE,
     })
 
 

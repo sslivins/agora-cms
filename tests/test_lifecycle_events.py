@@ -87,9 +87,16 @@ async def _read_events(_device, event_type=None):
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_download_progress_updates_device_and_writes_audit(
+async def test_lifecycle_download_progress_updates_device_but_skips_audit_row(
     app, _device,
 ):
+    """Progress events project to the device but DO NOT persist a DeviceEvent.
+
+    Progress messages arrive every few seconds during an OTA and add
+    no audit value over the surrounding ``*_STARTED`` / ``STAGED`` /
+    ``SLOT_CONFIRMED`` rows — they would just spam the event log.
+    The live progress badge still updates via the projection.
+    """
     msg = {
         "type": MessageType.LIFECYCLE_EVENT.value,
         "event_id": 42,
@@ -110,15 +117,10 @@ async def test_lifecycle_download_progress_updates_device_and_writes_audit(
     # The atomic upgrade claim is NOT cleared (still in flight).
     assert dev.upgrade_started_at is not None
 
+    # No audit row for progress events — explicitly suppressed.
     events = await _read_events(_device,
                                 DeviceEventType.OTA_DOWNLOAD_PROGRESS.value)
-    assert len(events) == 1
-    detail = events[0].details
-    assert detail["event_id"] == 42
-    assert detail["payload"]["bytes_done"] == 250
-    assert detail["release_id"] == "rel-v0.0.30-test"
-    assert detail["target_version"] == "0.0.30-test"
-    assert detail["projection_applied"] is True
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -188,7 +190,14 @@ async def test_lifecycle_terminal_event_clears_upgrade_claim(app, _device):
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_regression_dropped_event_still_audits(app, _device):
+async def test_lifecycle_regression_dropped_event_audit_policy(app, _device):
+    """Non-progress regression events still write an audit row.
+
+    A regression-dropped transition event still persists with
+    ``projection_applied=False`` so the audit trail is complete.
+    Progress events are suppressed regardless — see
+    ``test_lifecycle_download_progress_updates_device_but_skips_audit_row``.
+    """
     # First event lands.
     forward = {
         "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 10,
@@ -199,28 +208,37 @@ async def test_lifecycle_regression_dropped_event_still_audits(app, _device):
     dev_after_forward = await _read_device(_device)
     assert dev_after_forward.ota_phase == DeviceEventType.OTA_SLOT_CONFIRMED.value
 
-    # A regression event arrives (download_progress, ordinal much
-    # lower than slot_confirmed).  Projection refuses the regression
-    # but we MUST still write an audit row so the device's monotonic
-    # event_id is accounted for in the event log.
+    # A regression non-progress event arrives (staged, ordinal lower
+    # than slot_confirmed).  Projection refuses the regression but we
+    # still write an audit row so the device's monotonic event_id is
+    # accounted for in the event log.
     regression = {
         "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 11,
-        "event_type": "download_progress",
-        "payload": {"bytes_done": 50, "bytes_total": 1000},
+        "event_type": "staged",
+        "payload": {},
     }
     await _dispatch(_device, regression, app)
 
     dev_after = await _read_device(_device)
     # Device state unchanged — slot_confirmed still wins.
     assert dev_after.ota_phase == DeviceEventType.OTA_SLOT_CONFIRMED.value
-    assert dev_after.ota_bytes_done is None  # never set by slot_confirmed
 
-    # But the audit row landed with projection_applied=False so the
-    # event-log surface can still display the dropped event for
-    # debugging.
     regr_events = await _read_events(
-        _device, DeviceEventType.OTA_DOWNLOAD_PROGRESS.value,
+        _device, DeviceEventType.OTA_STAGED.value,
     )
     assert len(regr_events) == 1
     assert regr_events[0].details["event_id"] == 11
     assert regr_events[0].details["projection_applied"] is False
+
+    # And a regression progress event is suppressed — no audit row.
+    progress_regression = {
+        "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 12,
+        "event_type": "download_progress",
+        "payload": {"bytes_done": 50, "bytes_total": 1000},
+    }
+    await _dispatch(_device, progress_regression, app)
+
+    prog_events = await _read_events(
+        _device, DeviceEventType.OTA_DOWNLOAD_PROGRESS.value,
+    )
+    assert prog_events == []
