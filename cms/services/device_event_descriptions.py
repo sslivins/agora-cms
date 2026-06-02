@@ -35,19 +35,23 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     DeviceEventType.ERROR_CLEARED.value:           "Error Cleared",
     DeviceEventType.CMS_STARTED.value:             "CMS Started",
     DeviceEventType.CMS_STOPPED.value:             "CMS Stopped",
-    DeviceEventType.OTA_DOWNLOAD_STARTED.value:    "OTA Download Started",
-    DeviceEventType.OTA_DOWNLOAD_PROGRESS.value:   "OTA Downloading",
-    DeviceEventType.OTA_SIGNATURE_VERIFIED.value:  "OTA Signature Verified",
-    DeviceEventType.OTA_STAGED.value:              "OTA Staged",
-    DeviceEventType.OTA_STAGE_PROGRESS.value:      "OTA Staging",
-    DeviceEventType.OTA_EXTRACT_PROGRESS.value:    "OTA Extracting",
-    DeviceEventType.OTA_TRYBOOT_INITIATED.value:   "OTA Tryboot",
-    DeviceEventType.OTA_SLOT_CONFIRMED.value:      "OTA Slot Confirmed",
-    DeviceEventType.OTA_PROMOTED.value:            "OTA Promoted",
-    DeviceEventType.OTA_MIGRATION_COMPLETE.value:  "OTA Migration Complete",
-    DeviceEventType.OTA_FAILED.value:              "OTA Failed",
-    DeviceEventType.OTA_DECLINED.value:            "OTA Declined",
-    DeviceEventType.OTA_AUTO_CLEARED.value:        "OTA Auto-Cleared",
+    # OTA event badge labels use "Upgrade" terminology to match the
+    # "Upgrade" button users click in the device page UI.  Internal
+    # event_type strings still say ``ota_*`` (those are the protocol /
+    # storage layer), but the visible UI label says "Upgrade".
+    DeviceEventType.OTA_DOWNLOAD_STARTED.value:    "Upgrade Started",
+    DeviceEventType.OTA_DOWNLOAD_PROGRESS.value:   "Upgrade Downloading",
+    DeviceEventType.OTA_SIGNATURE_VERIFIED.value:  "Upgrade Verified",
+    DeviceEventType.OTA_STAGED.value:              "Upgrade Staged",
+    DeviceEventType.OTA_STAGE_PROGRESS.value:      "Upgrade Staging",
+    DeviceEventType.OTA_EXTRACT_PROGRESS.value:    "Upgrade Extracting",
+    DeviceEventType.OTA_TRYBOOT_INITIATED.value:   "Upgrade Rebooting",
+    DeviceEventType.OTA_SLOT_CONFIRMED.value:      "Upgrade Slot Confirmed",
+    DeviceEventType.OTA_PROMOTED.value:            "Upgrade Promoted",
+    DeviceEventType.OTA_MIGRATION_COMPLETE.value:  "Upgrade Complete",
+    DeviceEventType.OTA_FAILED.value:              "Upgrade Failed",
+    DeviceEventType.OTA_DECLINED.value:            "Upgrade Declined",
+    DeviceEventType.OTA_AUTO_CLEARED.value:        "Upgrade Cleared",
 }
 
 
@@ -188,60 +192,60 @@ def build_event_description(event_type: str, details: dict | None = None) -> str
     suffix = f" — {version}" if version else ""
 
     if event_type == DeviceEventType.OTA_DOWNLOAD_STARTED.value:
-        return f"Started downloading update{suffix}"
+        return f"Upgrade started{suffix}"
 
     if event_type == DeviceEventType.OTA_DOWNLOAD_PROGRESS.value:
         pct = _ota_pct(payload)
         if pct:
-            return f"Downloading update{suffix}: {pct}"
-        return f"Downloading update{suffix}"
+            return f"Downloading upgrade{suffix}: {pct}"
+        return f"Downloading upgrade{suffix}"
 
     if event_type == DeviceEventType.OTA_SIGNATURE_VERIFIED.value:
-        return f"Signature verified{suffix}"
+        return f"Upgrade signature verified{suffix}"
 
     if event_type == DeviceEventType.OTA_STAGED.value:
-        return f"Update staged{suffix}"
+        return f"Upgrade staged{suffix}"
 
     if event_type == DeviceEventType.OTA_STAGE_PROGRESS.value:
         phase = payload.get("phase")
         if phase:
-            return f"Staging update{suffix} ({phase.replace('_', ' ')})"
-        return f"Staging update{suffix}"
+            return f"Staging upgrade{suffix} ({phase.replace('_', ' ')})"
+        return f"Staging upgrade{suffix}"
 
     if event_type == DeviceEventType.OTA_EXTRACT_PROGRESS.value:
         pct = _ota_pct(payload)
         if pct:
-            return f"Extracting update{suffix}: {pct}"
-        return f"Extracting update{suffix}"
+            return f"Extracting upgrade{suffix}: {pct}"
+        return f"Extracting upgrade{suffix}"
 
     if event_type == DeviceEventType.OTA_TRYBOOT_INITIATED.value:
-        return f"Rebooting into new slot{suffix}"
+        return f"Rebooting for upgrade{suffix}"
 
     if event_type == DeviceEventType.OTA_SLOT_CONFIRMED.value:
-        return f"New slot confirmed{suffix}"
+        return f"Upgrade slot confirmed{suffix}"
 
     if event_type == DeviceEventType.OTA_PROMOTED.value:
-        return f"Update promoted{suffix}"
+        return f"Upgrade promoted{suffix}"
 
     if event_type == DeviceEventType.OTA_MIGRATION_COMPLETE.value:
-        return f"Migration complete{suffix}"
+        return f"Upgrade complete{suffix}"
 
     if event_type == DeviceEventType.OTA_FAILED.value:
         reason = d.get("reason") or payload.get("reason") or payload.get("error")
         if reason and version:
-            return f"OTA failed{suffix} — {reason}"
+            return f"Upgrade failed{suffix} — {reason}"
         if reason:
-            return f"OTA failed — {reason}"
-        return f"OTA failed{suffix}" if version else "OTA failed"
+            return f"Upgrade failed — {reason}"
+        return f"Upgrade failed{suffix}" if version else "Upgrade failed"
 
     if event_type == DeviceEventType.OTA_DECLINED.value:
         reason = d.get("reason") or payload.get("reason")
         if reason:
-            return f"OTA declined{suffix} — {reason}"
-        return f"OTA declined{suffix}" if version else "OTA declined"
+            return f"Upgrade declined{suffix} — {reason}"
+        return f"Upgrade declined{suffix}" if version else "Upgrade declined"
 
     if event_type == DeviceEventType.OTA_AUTO_CLEARED.value:
-        return f"OTA state auto-cleared{suffix}"
+        return f"Upgrade state cleared{suffix}"
 
     # Unknown event type — never dump raw JSON.  The titlecased label
     # is always at least readable; ops can click the row to see the
