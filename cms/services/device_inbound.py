@@ -581,6 +581,21 @@ async def dispatch_device_message(
 
         mutated = ota_progress.handle_event(device, cms_type.value, payload)
 
+        # Drop noisy progress events from the persisted event log — they
+        # arrive every few seconds during an OTA (download/stage/extract
+        # bytes_done ticks) and add zero audit value over the
+        # surrounding ``*_STARTED`` / ``STAGED`` / ``SLOT_CONFIRMED``
+        # rows.  Live progress badges still update via the projection
+        # call above; we just skip the DeviceEvent insert.
+        PROGRESS_EVENT_TYPES = {
+            DeviceEventType.OTA_DOWNLOAD_PROGRESS.value,
+            DeviceEventType.OTA_STAGE_PROGRESS.value,
+            DeviceEventType.OTA_EXTRACT_PROGRESS.value,
+        }
+        if cms_type.value in PROGRESS_EVENT_TYPES:
+            await db.commit()
+            return
+
         # Audit row.  We write this even when ``mutated`` is False
         # (regression-dropped or unknown sub-payload) so the event log
         # still shows that the device's monotonic event_id was

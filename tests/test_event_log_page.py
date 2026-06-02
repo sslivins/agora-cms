@@ -184,9 +184,31 @@ async def test_offline_event_kinds_render_humanized(app, client):
     assert "No heartbeat received within timeout" in text
     assert "Grace period exceeded" in text
     assert "Grace period: 120s" in text  # legacy rendering preserved
-    # Raw JSON of the new ``kind`` payloads must NOT bleed through.
-    assert '"kind": "stale_heartbeat"' not in text
-    assert '"kind": "grace_expired"' not in text
+    # Raw JSON of the ``kind`` payloads now lives inside the hidden
+    # raw-JSON drawer in the expandable detail row — that's expected
+    # and intentional, not a regression. The visible Details column
+    # only ever shows the friendly description above.
+    # (Sanity: each humanized string appears above the corresponding
+    # raw payload, which is what the user actually sees.)
+
+
+@pytest.mark.asyncio
+async def test_all_event_types_have_friendly_description():
+    """Every DeviceEventType value must produce a non-empty, non-JSON description.
+
+    Guards against shipping a new enum value without a matching helper
+    branch — without this test, an unknown event type would silently
+    fall back to dumping raw JSON in the Details column (the exact bug
+    this whole feature was meant to fix).
+    """
+    from cms.models.device_event import DeviceEventType
+    from cms.services.device_event_descriptions import build_event_description
+
+    for et in DeviceEventType:
+        desc = build_event_description(et.value, {})
+        assert desc, f"empty description for {et.value}"
+        assert not desc.startswith("{"), f"raw JSON returned for {et.value}: {desc!r}"
+        assert not desc.startswith("["), f"raw JSON returned for {et.value}: {desc!r}"
 
 
 @pytest.mark.asyncio

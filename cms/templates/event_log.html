@@ -16,12 +16,9 @@
                 <label style="font-size:0.75rem;">Event Type</label>
                 <select name="event_type" onchange="this.form.submit()" style="padding:0.4rem 0.6rem; font-size:0.85rem;">
                     <option value="">All Events</option>
-                    <option value="online" {% if filter_event_type == 'online' %}selected{% endif %}>Online</option>
-                    <option value="offline" {% if filter_event_type == 'offline' %}selected{% endif %}>Offline</option>
-                    <option value="temp_high" {% if filter_event_type == 'temp_high' %}selected{% endif %}>Temperature High</option>
-                    <option value="temp_cleared" {% if filter_event_type == 'temp_cleared' %}selected{% endif %}>Temperature Cleared</option>
-                    <option value="cms_started" {% if filter_event_type == 'cms_started' %}selected{% endif %}>CMS Started</option>
-                    <option value="cms_stopped" {% if filter_event_type == 'cms_stopped' %}selected{% endif %}>CMS Stopped</option>
+                    {% for ev_value, ev_label in all_event_types %}
+                    <option value="{{ ev_value }}" {% if filter_event_type == ev_value %}selected{% endif %}>{{ ev_label }}</option>
+                    {% endfor %}
                 </select>
             </div>
             <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
@@ -65,61 +62,115 @@
 {%- endmacro %}
 
 <div class="card">
-    <table>
+    <table style="table-layout: fixed; width: 100%;">
         <thead>
             <tr>
-                <th>Time</th>
-                <th>Event</th>
-                <th>Device</th>
-                <th>Group</th>
-                <th>Details</th>
+                <th style="width:2rem;"></th>
+                <th style="width:14%;">Time</th>
+                <th style="width:12%;">Event</th>
+                <th style="width:14%;">Device</th>
+                <th style="width:12%;">Group</th>
+                <th style="width:46%;">Details</th>
             </tr>
         </thead>
         <tbody id="event-log-tbody">
             {% for event in events %}
-            <tr data-event-id="{{ event.id }}">
+            <tr class="event-row" onclick="toggleEventRow(this)" data-event-id="{{ event.id }}">
+                <td class="expand-toggle">▶</td>
                 <td style="white-space:nowrap;" data-utc="{{ event.created_at.isoformat() }}">{{ event.created_at.astimezone(tz).strftime('%b %d, %Y %I:%M:%S %p') }}</td>
-                <td>
-                    {% if event.event_type == 'online' %}
-                    <span class="badge badge-online">Online</span>
-                    {% elif event.event_type == 'offline' %}
-                    <span class="badge badge-offline">Offline</span>
-                    {% elif event.event_type == 'temp_high' %}
-                    <span class="badge badge-warning">Temp High</span>
-                    {% elif event.event_type == 'temp_cleared' %}
-                    <span class="badge badge-success">Temp Cleared</span>
-                    {% elif event.event_type == 'cms_started' %}
-                    <span class="badge badge-online">CMS Started</span>
-                    {% elif event.event_type == 'cms_stopped' %}
-                    <span class="badge badge-offline">CMS Stopped</span>
-                    {% else %}
-                    <span class="badge badge-muted">{{ event.event_type }}</span>
-                    {% endif %}
-                </td>
+                <td><span class="badge {{ event.badge_class }}">{{ event.label }}</span></td>
                 <td>{% if event.device_id %}{{ event.device_name }}{% else %}<span class="text-muted">— System —</span>{% endif %}</td>
                 <td>{{ event.group_name or '—' }}</td>
-                <td>
-                    {% if event.event_type == 'temp_high' and event.details %}
-                    {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
-                    {% elif event.event_type == 'temp_cleared' and event.details %}
-                    {{ event.details.temperature | default('?') }}°C (threshold: {{ event.details.threshold | default('?') }}°C)
-                    {% elif event.event_type == 'offline' and event.details and event.details.kind == 'stale_heartbeat' %}
-                    No heartbeat received within timeout
-                    {% elif event.event_type == 'offline' and event.details and event.details.kind == 'grace_expired' %}
-                    Grace period exceeded — device declared offline
-                    {% elif event.event_type == 'offline' and event.details and event.details.grace_period is defined %}
-                    Grace period: {{ event.details.grace_period }}s
-                    {% elif event.event_type == 'online' %}
-                    Back online
-                    {% elif event.event_type in ['cms_started', 'cms_stopped'] and event.details and event.details.version %}
-                    Version {{ event.details.version }}{% if event.details.replica_id %} (replica {{ event.details.replica_id }}){% endif %}
-                    {% else %}
-                    {{ event.details | tojson if event.details else '—' }}
+                <td class="event-description"><div title="{{ event.description }}">{{ event.description or '—' }}</div></td>
+            </tr>
+            <tr class="event-detail" data-detail-for="{{ event.id }}" style="display: none;">
+                <td></td>
+                <td colspan="5">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Description</span>
+                            <span class="detail-value" style="white-space:normal; word-break:break-word;">{{ event.description or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Event</span>
+                            <span class="detail-value"><span class="badge {{ event.badge_class }}">{{ event.label }}</span></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Device</span>
+                            <span class="detail-value">{% if event.device_id %}{{ event.device_name }}{% else %}— System —{% endif %}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Device ID</span>
+                            <span class="detail-value monospace">{{ event.device_id or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Group</span>
+                            <span class="detail-value">{{ event.group_name or '—' }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Timestamp</span>
+                            <span class="detail-value">{{ event.created_at.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S %Z') }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Event ID</span>
+                            <span class="detail-value monospace" style="font-size:0.75rem;">{{ event.id }}</span>
+                        </div>
+                    </div>
+                    {% if event.details %}
+                    {# ── Friendly key-value details ── #}
+                    {% set label_map = {
+                        'event_id': 'Wire Event ID',
+                        'target_version': 'Target Version',
+                        'release_id': 'Release ID',
+                        'occurred_at': 'Occurred At',
+                        'reason': 'Reason',
+                        'projection_applied': 'Projection Applied',
+                        'kind': 'Kind',
+                        'grace_period': 'Grace Period (s)',
+                        'temperature': 'Temperature',
+                        'threshold': 'Threshold',
+                        'version': 'Version',
+                        'replica_id': 'Replica ID',
+                        'display_name': 'Display Name',
+                        'name': 'Name',
+                        'message': 'Message',
+                        'error': 'Error',
+                    } %}
+                    {% set detail_items = [] %}
+                    {% for key, val in event.details.items() %}
+                        {% if val is not none and val != '' %}
+                            {% if val is iterable and val is not string and val is not mapping %}
+                                {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val | join(', '))) %}
+                            {% elif val is mapping %}
+                                {# Nested dict (e.g. OTA ``payload``) — skip in the friendly grid; raw JSON below covers it. #}
+                            {% else %}
+                                {% set _ = detail_items.append((label_map.get(key, key | replace('_', ' ') | title), val)) %}
+                            {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                    {% if detail_items %}
+                    <div style="margin-top:0.75rem;">
+                        <span class="detail-label" style="display:block; margin-bottom:0.25rem;">Details</span>
+                        <div class="detail-grid">
+                            {% for label, value in detail_items %}
+                            <div class="detail-item">
+                                <span class="detail-label">{{ label }}</span>
+                                <span class="detail-value">{{ value }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {# ── Raw JSON toggle ── #}
+                    <div style="margin-top:0.5rem;">
+                        <a href="javascript:void(0)" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.textContent = this.nextElementSibling.style.display === 'none' ? 'Show raw JSON' : 'Hide raw JSON';" class="text-muted" style="font-size:0.75rem; text-decoration:underline;">Show raw JSON</a>
+                        <pre class="audit-json" style="display:none; margin-top:0.25rem;">{{ event.details | tojson(indent=2) }}</pre>
+                    </div>
                     {% endif %}
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="5" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No events match the current filters.{% else %}No device events yet. Events will appear here as devices connect, disconnect, or report temperature issues.{% endif %}</td></tr>
+            <tr><td colspan="6" class="text-muted" style="text-align:center; padding:2rem;">{% if has_filters %}No events match the current filters.{% else %}No device events yet. Events will appear here as devices connect, disconnect, or report temperature issues.{% endif %}</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -181,9 +232,16 @@
     const PER_PAGE = {{ per_page }};
     const POLL_INTERVAL_MS = 15000;
 
+    // event_type -> [badge_class, friendly_label], generated server-side
+    // so adding a DeviceEventType value Just Works without touching JS.
+    const EVENT_TYPE_META = {
+        {% for ev_value, ev_label in all_event_types -%}
+        {{ ev_value | tojson }}: [{{ event_type_badge.get(ev_value, 'badge-muted') | tojson }}, {{ ev_label | tojson }}],
+        {% endfor %}
+    };
+
     const EMPTY_ROW_SELECTOR = "tr td[colspan]";
 
-    // Format ISO timestamp to local tz — matches the global [data-utc] formatter in app.js
     function formatTime(iso) {
         try {
             const d = new Date(iso);
@@ -195,63 +253,137 @@
         }
     }
 
-    function badge(eventType) {
-        const map = {
-            online: ["badge-online", "Online"],
-            offline: ["badge-offline", "Offline"],
-            temp_high: ["badge-warning", "Temp High"],
-            temp_cleared: ["badge-success", "Temp Cleared"],
-            cms_started: ["badge-online", "CMS Started"],
-            cms_stopped: ["badge-offline", "CMS Stopped"],
-        };
-        const [cls, label] = map[eventType] || ["badge-muted", eventType];
-        return `<span class="badge ${cls}">${label}</span>`;
-    }
-
-    function renderDetails(ev) {
-        const d = ev.details || {};
-        if (ev.event_type === "temp_high" || ev.event_type === "temp_cleared") {
-            return `${d.temperature ?? "?"}°C (threshold: ${d.threshold ?? "?"}°C)`;
-        }
-        if (ev.event_type === "offline" && d.kind === "stale_heartbeat") {
-            return "No heartbeat received within timeout";
-        }
-        if (ev.event_type === "offline" && d.kind === "grace_expired") {
-            return "Grace period exceeded — device declared offline";
-        }
-        if (ev.event_type === "offline" && d.grace_period !== undefined) {
-            return `Grace period: ${d.grace_period}s`;
-        }
-        if (ev.event_type === "online") return "Back online";
-        if ((ev.event_type === "cms_started" || ev.event_type === "cms_stopped") && d.version) {
-            return d.replica_id
-                ? `Version ${d.version} (replica ${d.replica_id})`
-                : `Version ${d.version}`;
-        }
-        return ev.details ? JSON.stringify(ev.details) : "—";
-    }
-
     function escapeHtml(s) {
         return String(s ?? "").replace(/[&<>"']/g, c => (
             {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
         ));
     }
 
-    function rowHtml(ev) {
-        const deviceCell = ev.device_id
+    function badge(eventType) {
+        const meta = EVENT_TYPE_META[eventType] || ["badge-muted", eventType];
+        return `<span class="badge ${meta[0]}">${escapeHtml(meta[1])}</span>`;
+    }
+
+    function labelFor(eventType) {
+        const meta = EVENT_TYPE_META[eventType] || ["badge-muted", eventType];
+        return meta[1];
+    }
+
+    function deviceCell(ev) {
+        return ev.device_id
             ? escapeHtml(ev.device_name)
             : '<span class="text-muted">— System —</span>';
+    }
+
+    // Build the friendly key/value list from ev.details, skipping nested
+    // dicts/empty values to match the server-side render.
+    function detailItemsHtml(details) {
+        if (!details) return "";
+        const labelMap = {
+            event_id: "Wire Event ID",
+            target_version: "Target Version",
+            release_id: "Release ID",
+            occurred_at: "Occurred At",
+            reason: "Reason",
+            projection_applied: "Projection Applied",
+            kind: "Kind",
+            grace_period: "Grace Period (s)",
+            temperature: "Temperature",
+            threshold: "Threshold",
+            version: "Version",
+            replica_id: "Replica ID",
+            display_name: "Display Name",
+            name: "Name",
+            message: "Message",
+            error: "Error",
+        };
+        const titlecase = k => k.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        const items = [];
+        for (const [k, v] of Object.entries(details)) {
+            if (v === null || v === undefined || v === "") continue;
+            if (Array.isArray(v)) {
+                items.push([labelMap[k] || titlecase(k), v.join(", ")]);
+            } else if (typeof v === "object") {
+                continue; // skip nested dicts; raw JSON below covers them
+            } else {
+                items.push([labelMap[k] || titlecase(k), v]);
+            }
+        }
+        if (items.length === 0) return "";
         return `
-            <td style="white-space:nowrap;" data-utc="${escapeHtml(ev.created_at)}">${formatTime(ev.created_at)}</td>
-            <td>${badge(ev.event_type)}</td>
-            <td>${deviceCell}</td>
-            <td>${escapeHtml(ev.group_name) || "—"}</td>
-            <td>${escapeHtml(renderDetails(ev))}</td>
+            <div style="margin-top:0.75rem;">
+                <span class="detail-label" style="display:block; margin-bottom:0.25rem;">Details</span>
+                <div class="detail-grid">
+                    ${items.map(([l, v]) => `
+                        <div class="detail-item">
+                            <span class="detail-label">${escapeHtml(l)}</span>
+                            <span class="detail-value">${escapeHtml(v)}</span>
+                        </div>
+                    `).join("")}
+                </div>
+            </div>
+        `;
+    }
+
+    function rowsHtml(ev) {
+        const desc = ev.description || "—";
+        const ts = formatTime(ev.created_at);
+        const detailsBlock = ev.details ? `
+            ${detailItemsHtml(ev.details)}
+            <div style="margin-top:0.5rem;">
+                <a href="javascript:void(0)" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.textContent = this.nextElementSibling.style.display === 'none' ? 'Show raw JSON' : 'Hide raw JSON';" class="text-muted" style="font-size:0.75rem; text-decoration:underline;">Show raw JSON</a>
+                <pre class="audit-json" style="display:none; margin-top:0.25rem;">${escapeHtml(JSON.stringify(ev.details, null, 2))}</pre>
+            </div>
+        ` : "";
+        return `
+            <tr class="event-row" onclick="toggleEventRow(this)" data-event-id="${escapeHtml(ev.id)}">
+                <td class="expand-toggle">▶</td>
+                <td style="white-space:nowrap;" data-utc="${escapeHtml(ev.created_at)}">${ts}</td>
+                <td>${badge(ev.event_type)}</td>
+                <td>${deviceCell(ev)}</td>
+                <td>${escapeHtml(ev.group_name) || "—"}</td>
+                <td class="event-description"><div title="${escapeHtml(desc)}">${escapeHtml(desc)}</div></td>
+            </tr>
+            <tr class="event-detail" data-detail-for="${escapeHtml(ev.id)}" style="display:none;">
+                <td></td>
+                <td colspan="5">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Description</span>
+                            <span class="detail-value" style="white-space:normal; word-break:break-word;">${escapeHtml(desc)}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Event</span>
+                            <span class="detail-value">${badge(ev.event_type)}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Device</span>
+                            <span class="detail-value">${ev.device_id ? escapeHtml(ev.device_name) : "— System —"}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Device ID</span>
+                            <span class="detail-value monospace">${escapeHtml(ev.device_id) || "—"}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Group</span>
+                            <span class="detail-value">${escapeHtml(ev.group_name) || "—"}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Timestamp</span>
+                            <span class="detail-value">${ts}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Event ID</span>
+                            <span class="detail-value monospace" style="font-size:0.75rem;">${escapeHtml(ev.id)}</span>
+                        </div>
+                    </div>
+                    ${detailsBlock}
+                </td>
+            </tr>
         `;
     }
 
     async function poll() {
-        // Skip polling when tab is hidden to avoid wasted traffic
         if (document.hidden) return;
 
         const params = new URLSearchParams();
@@ -265,35 +397,36 @@
             if (!resp.ok) return;
             const events = await resp.json();
 
-            // Collect existing IDs to detect new ones
             const existingIds = new Set(
-                Array.from(tbody.querySelectorAll("tr[data-event-id]"))
+                Array.from(tbody.querySelectorAll("tr.event-row[data-event-id]"))
                     .map(tr => tr.dataset.eventId)
             );
 
-            // API returns newest first — iterate in reverse so oldest new event
-            // is inserted first and newest ends up at the very top
             const newEvents = events.filter(e => !existingIds.has(e.id));
             if (newEvents.length === 0) return;
 
-            // Remove the empty-state row if present
             const emptyRow = tbody.querySelector(EMPTY_ROW_SELECTOR);
             if (emptyRow) emptyRow.parentElement.remove();
 
+            // API returns newest first; iterate in reverse so newest ends up on top.
             for (let i = newEvents.length - 1; i >= 0; i--) {
-                const ev = newEvents[i];
-                const tr = document.createElement("tr");
-                tr.dataset.eventId = ev.id;
-                tr.innerHTML = rowHtml(ev);
-                tr.style.background = "rgba(46, 204, 113, 0.08)"; // subtle highlight
-                tbody.insertBefore(tr, tbody.firstChild);
-                // Fade the highlight out after a moment
-                setTimeout(() => { tr.style.transition = "background 2s"; tr.style.background = ""; }, 50);
+                const wrapper = document.createElement("tbody");
+                wrapper.innerHTML = rowsHtml(newEvents[i]).trim();
+                const newRow = wrapper.querySelector("tr.event-row");
+                const newDetail = wrapper.querySelector("tr.event-detail");
+                newRow.style.background = "rgba(46, 204, 113, 0.08)";
+                tbody.insertBefore(newDetail, tbody.firstChild);
+                tbody.insertBefore(newRow, tbody.firstChild);
+                setTimeout(() => { newRow.style.transition = "background 2s"; newRow.style.background = ""; }, 50);
             }
 
-            // Trim to PER_PAGE rows (don't let the page grow unbounded)
-            const rows = tbody.querySelectorAll("tr[data-event-id]");
-            for (let i = PER_PAGE; i < rows.length; i++) rows[i].remove();
+            // Trim row pairs to PER_PAGE total events to keep the page bounded.
+            const rows = tbody.querySelectorAll("tr.event-row[data-event-id]");
+            for (let i = PER_PAGE; i < rows.length; i++) {
+                const next = rows[i].nextElementSibling;
+                rows[i].remove();
+                if (next && next.classList.contains("event-detail")) next.remove();
+            }
         } catch {
             // Silent — don't spam toasts on transient network errors
         }

@@ -68,7 +68,7 @@ async def list_device_events(
 
     q = q.order_by(DeviceEvent.created_at.desc()).limit(limit)
     result = await db.execute(q)
-    return result.scalars().all()
+    return [DeviceEventOut.from_orm_event(ev) for ev in result.scalars().all()]
 
 
 @router.get("/count")

@@ -928,6 +928,18 @@ tr.highlight-new td {
 }
 .audit-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
 .audit-detail td:first-child { padding: 0; }
+/* Event log table — same expand/detail pattern as audit log. */
+.event-row { cursor: pointer; }
+.event-row:hover td { background: rgba(255,255,255,0.04); }
+.event-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
+.event-description { overflow: hidden; }
+.event-description > div {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.event-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.event-detail td:first-child { padding: 0; }
 /* Diff table inside the expand panel — field | from → to */
 .audit-changes {
     width: 100%;

@@ -5281,6 +5281,10 @@ components:
             type: object
           - type: 'null'
           title: Details
+        description:
+          type: string
+          title: Description
+          default: ''
         created_at:
           type: string
           format: date-time
