@@ -581,18 +581,33 @@ async def dispatch_device_message(
 
         mutated = ota_progress.handle_event(device, cms_type.value, payload)
 
-        # Drop noisy progress events from the persisted event log — they
-        # arrive every few seconds during an OTA (download/stage/extract
-        # bytes_done ticks) and add zero audit value over the
-        # surrounding ``*_STARTED`` / ``STAGED`` / ``SLOT_CONFIRMED``
-        # rows.  Live progress badges still update via the projection
-        # call above; we just skip the DeviceEvent insert.
-        PROGRESS_EVENT_TYPES = {
+        # Drop noisy intermediate OTA events from the persisted event
+        # log.  Two categories:
+        #
+        # * Progress ticks (``download_progress`` / ``stage_progress`` /
+        #   ``extract_progress``) arrive every few seconds during an OTA
+        #   and add zero audit value over the surrounding milestones.
+        # * Intermediate phase events (``signature_verified``, ``staged``,
+        #   ``tryboot_initiated``, ``slot_confirmed``, ``promoted``) are
+        #   debugging-grade detail — a user scanning the event log only
+        #   cares about "upgrade started", "upgrade completed"
+        #   (``migration_complete``), and failure modes (``failed`` /
+        #   ``declined`` / ``auto_cleared``).  When something goes wrong,
+        #   the ``ota_failed`` payload already records which phase died.
+        #
+        # Live progress badges still update via the projection call
+        # above; we just skip the DeviceEvent insert.
+        SUPPRESSED_OTA_EVENT_TYPES = {
             DeviceEventType.OTA_DOWNLOAD_PROGRESS.value,
             DeviceEventType.OTA_STAGE_PROGRESS.value,
             DeviceEventType.OTA_EXTRACT_PROGRESS.value,
+            DeviceEventType.OTA_SIGNATURE_VERIFIED.value,
+            DeviceEventType.OTA_STAGED.value,
+            DeviceEventType.OTA_TRYBOOT_INITIATED.value,
+            DeviceEventType.OTA_SLOT_CONFIRMED.value,
+            DeviceEventType.OTA_PROMOTED.value,
         }
-        if cms_type.value in PROGRESS_EVENT_TYPES:
+        if cms_type.value in SUPPRESSED_OTA_EVENT_TYPES:
             await db.commit()
             return
 

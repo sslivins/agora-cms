@@ -15,9 +15,10 @@ Covers:
     the dispatch path (this is the failure-path UX fix — without it
     a failed OTA would leave the "Upgrading…" badge stuck for the
     full ``UPGRADE_TTL=15min``).
-  - regression-dropped event STILL writes an audit row with
-    ``projection_applied: false`` so the device's monotonic event_id
-    is accounted for in the event log.
+  - intermediate OTA phase events (signature_verified / staged /
+    tryboot_initiated / slot_confirmed / promoted) project to the
+    device but skip the audit row — the event log only surfaces
+    "upgrade started", "upgrade completed", and failure modes.
 """
 
 from __future__ import annotations
@@ -190,55 +191,51 @@ async def test_lifecycle_terminal_event_clears_upgrade_claim(app, _device):
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_regression_dropped_event_audit_policy(app, _device):
-    """Non-progress regression events still write an audit row.
+async def test_lifecycle_intermediate_phase_events_skip_audit_row(
+    app, _device,
+):
+    """Intermediate OTA phase events project to the device but skip audit.
 
-    A regression-dropped transition event still persists with
-    ``projection_applied=False`` so the audit trail is complete.
-    Progress events are suppressed regardless — see
-    ``test_lifecycle_download_progress_updates_device_but_skips_audit_row``.
+    ``signature_verified`` / ``staged`` / ``tryboot_initiated`` /
+    ``slot_confirmed`` / ``promoted`` are debugging-grade detail — a
+    user scanning the event log only cares about "upgrade started",
+    "upgrade completed" (``migration_complete``), and failure modes.
+    The projection still runs so the live device badge updates.
     """
-    # First event lands.
-    forward = {
-        "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 10,
-        "event_type": "slot_confirmed", "payload": {},
+    intermediate_types = [
+        ("signature_verified", DeviceEventType.OTA_SIGNATURE_VERIFIED),
+        ("staged", DeviceEventType.OTA_STAGED),
+        ("tryboot_initiated", DeviceEventType.OTA_TRYBOOT_INITIATED),
+        ("slot_confirmed", DeviceEventType.OTA_SLOT_CONFIRMED),
+        ("promoted", DeviceEventType.OTA_PROMOTED),
+    ]
+
+    for idx, (wire, _cms) in enumerate(intermediate_types, start=20):
+        msg = {
+            "type": MessageType.LIFECYCLE_EVENT.value, "event_id": idx,
+            "event_type": wire, "payload": {},
+        }
+        await _dispatch(_device, msg, app)
+
+    # No audit rows for any intermediate phase.
+    for _wire, cms_type in intermediate_types:
+        rows = await _read_events(_device, cms_type.value)
+        assert rows == [], (
+            f"{cms_type.value} should be suppressed but found {len(rows)} row(s)"
+        )
+
+    # ``promoted`` is terminal so the projection clears ota_phase.  Verify
+    # the projection actually ran for at least one intermediate event by
+    # checking a non-terminal one mid-sequence — re-drive ``staged`` and
+    # confirm the projection lands.
+    msg = {
+        "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 50,
+        "event_type": "staged", "payload": {},
     }
-    await _dispatch(_device, forward, app)
+    await _dispatch(_device, msg, app)
+    dev = await _read_device(_device)
+    assert dev.ota_phase == DeviceEventType.OTA_STAGED.value
 
-    dev_after_forward = await _read_device(_device)
-    assert dev_after_forward.ota_phase == DeviceEventType.OTA_SLOT_CONFIRMED.value
-
-    # A regression non-progress event arrives (staged, ordinal lower
-    # than slot_confirmed).  Projection refuses the regression but we
-    # still write an audit row so the device's monotonic event_id is
-    # accounted for in the event log.
-    regression = {
-        "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 11,
-        "event_type": "staged",
-        "payload": {},
-    }
-    await _dispatch(_device, regression, app)
-
-    dev_after = await _read_device(_device)
-    # Device state unchanged — slot_confirmed still wins.
-    assert dev_after.ota_phase == DeviceEventType.OTA_SLOT_CONFIRMED.value
-
-    regr_events = await _read_events(
-        _device, DeviceEventType.OTA_STAGED.value,
-    )
-    assert len(regr_events) == 1
-    assert regr_events[0].details["event_id"] == 11
-    assert regr_events[0].details["projection_applied"] is False
-
-    # And a regression progress event is suppressed — no audit row.
-    progress_regression = {
-        "type": MessageType.LIFECYCLE_EVENT.value, "event_id": 12,
-        "event_type": "download_progress",
-        "payload": {"bytes_done": 50, "bytes_total": 1000},
-    }
-    await _dispatch(_device, progress_regression, app)
-
-    prog_events = await _read_events(
-        _device, DeviceEventType.OTA_DOWNLOAD_PROGRESS.value,
-    )
-    assert prog_events == []
+    # Still no audit row even after re-dispatch.
+    rows = await _read_events(_device, DeviceEventType.OTA_STAGED.value)
+    assert rows == []
