@@ -981,11 +981,13 @@ from cms.routers.roles import router as roles_router  # noqa: E402
 from cms.routers.stream_probe import router as stream_probe_router  # noqa: E402
 from cms.routers.users import router as users_router  # noqa: E402
 from cms.routers.bootstrap import router as bootstrap_router  # noqa: E402
+from cms.routers.composed import router as composed_router  # noqa: E402
 from cms.routers.issue_report import router as issue_report_router  # noqa: E402
 from cms.routers.imager import router as imager_router  # noqa: E402
 from cms.ui import router as ui_router  # noqa: E402
 
 app.include_router(bootstrap_router)
+app.include_router(composed_router)
 app.include_router(devices_router)
 app.include_router(devices_device_router)
 app.include_router(assets_router)

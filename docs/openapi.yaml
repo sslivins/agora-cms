@@ -198,6 +198,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /composed/{asset_id}/preview:
+    get:
+      tags:
+      - composed
+      summary: Preview Composed Slide
+      description: |-
+        Live-render the composed slide bound to ``asset_id`` as HTML.
+
+        Returns 404 if the asset doesn't exist or isn't a composed slide.
+        Returns 422 if the saved layout fails Pydantic shape validation
+        or the bundle builder's semantic validation. No disk writes;
+        no asset row mutations.
+      operationId: preview_composed_slide_composed__asset_id__preview_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/html:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/check-updates:
     post:
       summary: Check For Updates
@@ -6925,6 +6959,7 @@ tags:
 - name: assistant-settings
 - name: bootstrap
   description: First-contact registration / adoption endpoints used during device onboarding.
+- name: composed
 - name: devices (device-originated)
   description: Endpoints called by the device firmware itself.
 - name: system
