@@ -64,7 +64,6 @@ def upgrade() -> None:
             _uuid_type(bind),
             sa.ForeignKey("assets.id", ondelete="CASCADE"),
             nullable=False,
-            unique=True,
         ),
         sa.Column("layout_json", _json_type(bind), nullable=False),
         sa.Column(
