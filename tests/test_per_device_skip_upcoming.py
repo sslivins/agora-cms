@@ -115,12 +115,12 @@ class TestPerDeviceSkipHidesSchedule:
         assert len(result) == 1
         assert result[0]["starting"] is True
 
-    def test_targets_only_pending_devices_does_not_hide(self):
-        """If ADOPTED target set is empty (e.g. all devices pending),
-        ``target_devices_by_schedule`` maps to an empty set — the
-        per-device branch's ``all(...)`` on empty is True, but the
-        helper returns an empty set only when group has no ADOPTED
-        devices.  Guard: we only filter when ``targets`` is truthy."""
+    def test_empty_target_set_emits_no_targets_entry(self):
+        """When a schedule's group has no adopted devices,
+        ``target_devices_by_schedule`` maps to an empty set.  The
+        dashboard should surface this as a "No Targets" badge instead
+        of getting stuck on "Starting…" forever (issue #618).
+        """
         gid = uuid.uuid4()
         s = _make_schedule(time(8, 0), time(17, 0), group_id=gid, name="empty-targets")
         now = _noon_utc()
@@ -129,6 +129,23 @@ class TestPerDeviceSkipHidesSchedule:
             per_device_skipped=set(),
             target_devices_by_schedule={str(s.id): set()},
         )
-        # Empty targets → per-device branch skipped → legacy "starting"
         assert len(result) == 1
-        assert result[0]["starting"] is True
+        assert result[0]["no_targets"] is True
+        assert result[0]["starting"] is False
+        assert result[0]["countdown"] == "no_targets"
+
+    def test_empty_target_set_no_per_device_arg(self):
+        """No per-device skip arg, just empty targets — still emits
+        no_targets so callers that only pass target_devices_by_schedule
+        (e.g. the dashboard JSON endpoint) get the right entry.
+        """
+        gid = uuid.uuid4()
+        s = _make_schedule(time(8, 0), time(17, 0), group_id=gid, name="empty-targets-2")
+        now = _noon_utc()
+        result = get_upcoming_schedules(
+            [s], now, UTC, now_playing=[],
+            target_devices_by_schedule={str(s.id): set()},
+        )
+        assert len(result) == 1
+        assert result[0]["no_targets"] is True
+

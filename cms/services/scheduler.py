@@ -526,8 +526,17 @@ def get_upcoming_schedules(
             # so a single-target schedule ends up here rather than in
             # schedule_wide.)
             sid_str = str(s.id)
-            targets = _targets_by_sched.get(sid_str)
-            if targets:
+            # Empty-group / no-adopted-targets check.  When the caller
+            # supplies ``target_devices_by_schedule`` and this schedule
+            # resolves to zero adopted targets (group has no devices,
+            # only non-adopted devices, or schedule has no group at
+            # all), the schedule cannot start.  Surface explicitly so
+            # the dashboard doesn't sit on "Starting…" forever (#618).
+            if target_devices_by_schedule is not None:
+                targets = _targets_by_sched.get(sid_str, set())
+                if not targets:
+                    results.append(_no_targets_entry(s, local_now))
+                    continue
                 if all((sid_str, did) in _per_device_skipped for did in targets):
                     continue
             # Check if genuinely preempted (higher-priority schedule active on same target)
@@ -710,6 +719,41 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
         "starts_in_seconds": 0,
         "day_label": "today",
         "starting": True,
+    }
+
+
+def _no_targets_entry(s: Schedule, local_now: datetime) -> dict:
+    """Build an entry for a schedule whose group has no adopted devices.
+
+    Same shape as :func:`_starting_entry` so the dashboard can render
+    it in the Coming Up section, but marked ``no_targets=True`` (and
+    ``starting=False``) so the template surfaces a "No Targets" badge
+    instead of the pulsing "Starting…" badge that implies imminent
+    playback.  See #618.
+    """
+    start_dt = datetime.combine(local_now.date(), s.start_time)
+    end_dt = datetime.combine(local_now.date(), s.end_time)
+    if s.end_time <= s.start_time:
+        end_dt += timedelta(days=1)
+    duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+    duration_secs = int((end_dt - start_dt).total_seconds())
+
+    target_name = s.group.name if s.group else None
+
+    return {
+        "schedule_name": s.name,
+        "asset_filename": _asset_display_name(s.asset),
+        "target_name": target_name or "—",
+        "target_type": "group",
+        "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
+        "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
+        "duration_mins": duration_mins,
+        "duration_secs": duration_secs,
+        "countdown": "no_targets",
+        "starts_in_seconds": 0,
+        "day_label": "today",
+        "starting": False,
+        "no_targets": True,
     }
 
 
