@@ -484,8 +484,19 @@ async def update_device(
     await db.commit()
     await db.refresh(device, ["group", "default_asset"])
 
+    # If group_id changed, push a full sync immediately.  The new group
+    # may carry schedules that newly target this device (or no longer
+    # do), and the inherited group-default asset may change.  Without
+    # this push the device would wait up to ~15s for the next scheduler
+    # tick to pick up the change.  A full sync covers both schedules and
+    # the effective default in one message, so it subsumes the
+    # default_asset_id / timezone branches below when group_id is also
+    # in this PATCH.
+    if "group_id" in updates:
+        await push_sync_to_device(device_id, db)
+
     # If default_asset_id was changed, resolve effective default and push
-    if "default_asset_id" in updates:
+    elif "default_asset_id" in updates:
         from cms.routers.ws import get_asset_base_url
         base_url = get_asset_base_url(request)
         # Resolve: device default → group default → none (splash)
