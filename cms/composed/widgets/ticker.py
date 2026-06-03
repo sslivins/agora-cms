@@ -45,6 +45,11 @@ class TickerWidgetConfig(BaseModel):
     # ticker" without giving the editor a footgun.
     speed_px_per_sec: int = Field(default=100, ge=20, le=500)
     direction: Literal["left", "right"] = "left"
+    # Round-2 extensibility addition — ``scroll`` (default) is the
+    # classic infinite marquee.  ``bounce`` reverses every cycle so
+    # the text oscillates instead of looping.  Pure config addition;
+    # no core changes required.
+    mode: Literal["scroll", "bounce"] = "scroll"
     color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
     background: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
     font_family: str = Field(default="sans")
@@ -76,6 +81,7 @@ class TickerWidget(Widget):
             "text": "Breaking news goes here",
             "speed_px_per_sec": 100,
             "direction": "left",
+            "mode": "scroll",
             "color": "#ffffff",
             "background": "#000000",
             "font_family": "sans",
@@ -141,7 +147,16 @@ class TickerWidget(Widget):
         # Direction: ``left`` scrolls content right-to-left (track
         # moves in negative X), ``right`` is the reverse via
         # ``animation-direction``.
-        anim_dir = "normal" if config.direction == "left" else "reverse"
+        # In bounce mode the animation alternates every cycle so the
+        # text oscillates between the two end points instead of
+        # looping.  We combine direction + bounce via the
+        # ``alternate`` / ``alternate-reverse`` keywords.
+        if config.mode == "bounce":
+            anim_dir = (
+                "alternate" if config.direction == "left" else "alternate-reverse"
+            )
+        else:
+            anim_dir = "normal" if config.direction == "left" else "reverse"
 
         css_out = (
             f".{wrapper_class} {{\n"
