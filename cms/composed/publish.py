@@ -23,10 +23,10 @@ one.
 
 from __future__ import annotations
 
+import mimetypes
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,8 +112,68 @@ async def publish_composed_slide(
     import cms.composed.widgets  # noqa: F401
 
     registry = get_registry()
+
+    # Pre-fetch every asset declared by any widget in the layout.
+    # ``build_bundle`` runs sync, so we resolve all (bytes, mime) pairs
+    # here (async-friendly DB + disk reads) and hand the builder a
+    # dict-backed synchronous closure.  Widgets that declare an asset
+    # they can't legitimately reference will be caught by validation
+    # before we get here, but missing-on-disk slips through to this
+    # loop and surfaces as a PublishError.
+    from cms.auth import get_settings as _get_settings
+
+    storage_dir = _get_settings().asset_storage_path
+
+    declared_ids: list[uuid.UUID] = []
+    seen_declared: set[uuid.UUID] = set()
+    for inst in layout.widgets:
+        widget = registry.get(inst.type)
+        if widget is None:
+            # validate_layout (run inside build_bundle) will reject
+            # this with a clearer error; skip here so we don't crash
+            # before that gets a chance to run.
+            continue
+        cfg = widget.ConfigSchema.model_validate(inst.config)
+        for aid in widget.declared_asset_ids(cfg):
+            if aid not in seen_declared:
+                seen_declared.add(aid)
+                declared_ids.append(aid)
+
+    asset_payloads: dict[uuid.UUID, tuple[bytes, str]] = {}
+    if declared_ids:
+        rows = await db.execute(
+            select(Asset).where(Asset.id.in_(declared_ids)),
+        )
+        by_id = {a.id: a for a in rows.scalars().all()}
+        for aid in declared_ids:
+            ref = by_id.get(aid)
+            if ref is None:
+                raise PublishError(
+                    f"Composed slide references missing asset {aid}",
+                )
+            ref_path = storage_dir / ref.filename
+            try:
+                blob = ref_path.read_bytes()
+            except FileNotFoundError as e:
+                raise PublishError(
+                    f"Asset {aid} file missing on disk: {ref.filename}",
+                ) from e
+            mime, _ = mimetypes.guess_type(ref.filename)
+            asset_payloads[aid] = (blob, mime or "application/octet-stream")
+
+    def _asset_loader(aid: uuid.UUID) -> tuple[bytes, str]:
+        # build_bundle only calls this for IDs in ``declared_ids``,
+        # which is exactly what we pre-fetched above; a KeyError here
+        # would mean a widget bypassed declared_asset_ids() and is a
+        # programming error worth surfacing loudly.
+        return asset_payloads[aid]
+
     try:
-        built = build_bundle(layout, registry)
+        built = build_bundle(
+            layout,
+            registry,
+            asset_loader=_asset_loader if declared_ids else None,
+        )
     except BundleValidationError as e:
         raise PublishError(
             "Layout failed validation: "
@@ -122,8 +182,6 @@ async def publish_composed_slide(
 
     filename = _bundle_filename(asset_id, built.sha256_hex)
     storage = get_storage()
-    from cms.auth import get_settings as _get_settings
-    storage_dir = _get_settings().asset_storage_path
     storage_dir.mkdir(parents=True, exist_ok=True)
     dest = storage_dir / filename
 

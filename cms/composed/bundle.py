@@ -23,9 +23,11 @@ import base64
 import hashlib
 import html
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from cms.composed.registry import (
+    BundleContext,
     Widget,
     WidgetRegistry,
     WidgetRender,
@@ -63,6 +65,38 @@ class BuiltBundle:
     html_bytes: bytes
     sha256_hex: str
     source_asset_ids: list[uuid.UUID]
+
+
+# Callable that resolves an asset ID to ``(bytes, mime_type)``.  The
+# publish service builds one of these from a DB-bound closure (reads
+# the Asset row, opens the on-disk blob); tests pass a synchronous
+# dict-backed stub.
+AssetLoader = Callable[[uuid.UUID], tuple[bytes, str]]
+
+
+class MissingAssetLoaderError(BundleValidationError):
+    """Raised when a layout's widgets declared asset deps but the caller
+    didn't supply an :data:`AssetLoader`.
+
+    Subclasses :class:`BundleValidationError` so existing publish-side
+    error handling still catches it; the message specifically tells
+    the caller they forgot to wire the loader, which is a code bug
+    rather than a layout issue.
+    """
+
+    def __init__(self, missing_ids: list[uuid.UUID]) -> None:
+        ids = ", ".join(str(i) for i in missing_ids)
+        super().__init__(
+            [
+                ValidationError(
+                    code="missing_asset_loader",
+                    message=(
+                        f"layout references asset IDs {ids} but no "
+                        "asset_loader was supplied to build_bundle"
+                    ),
+                )
+            ]
+        )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -120,8 +154,16 @@ def _resolve_widget(reg: WidgetRegistry, inst: WidgetInstance) -> Widget:
 def build_bundle(
     layout: Layout,
     registry: WidgetRegistry | None = None,
+    asset_loader: AssetLoader | None = None,
 ) -> BuiltBundle:
     """Render ``layout`` to a self-contained HTML bundle.
+
+    ``asset_loader``, if supplied, is called once per unique asset ID
+    declared by any widget (via :meth:`Widget.declared_asset_ids`) and
+    must return ``(bytes, mime_type)``.  Widgets receive the resolved
+    bytes through :class:`BundleContext`.  A layout whose widgets
+    declare any asset IDs but is built without a loader raises
+    :class:`MissingAssetLoaderError`.
 
     Raises :class:`BundleValidationError` if the layout fails
     :func:`~cms.composed.validate.validate_layout`.  The check is
@@ -136,23 +178,80 @@ def build_bundle(
     if errors:
         raise BundleValidationError(errors)
 
-    # 2. Render each widget, collecting css/js/static assets +
-    #    accumulated referenced asset IDs for staleness tracking.
-    rendered: list[tuple[WidgetInstance, WidgetRender]] = []
-    source_asset_ids: list[uuid.UUID] = []
-    seen_asset_ids: set[uuid.UUID] = set()
-
+    # 2a. Collect each widget's typed config + declared asset IDs in
+    #     a single pre-render pass.  Doing this first means we know
+    #     the full set of bytes we need before we render anything —
+    #     loader failures surface as one error block, not per-widget.
+    prepped: list[tuple[WidgetInstance, Widget, object, list[uuid.UUID]]] = []
+    all_declared_ids: list[uuid.UUID] = []
+    seen_declared: set[uuid.UUID] = set()
     for inst in layout.widgets:
         widget = _resolve_widget(reg, inst)
         # The validator already constructed + checked the config; re-do
         # it here so render_html gets a typed config object rather than
         # a raw dict.  Cheap (Pydantic is fast for small models).
         config = widget.ConfigSchema.model_validate(inst.config)
+        declared = list(widget.declared_asset_ids(config))
+        prepped.append((inst, widget, config, declared))
+        for aid in declared:
+            if aid not in seen_declared:
+                seen_declared.add(aid)
+                all_declared_ids.append(aid)
+
+    if all_declared_ids and asset_loader is None:
+        raise MissingAssetLoaderError(all_declared_ids)
+
+    # 2b. Pre-fetch every declared asset exactly once.
+    asset_bytes: dict[uuid.UUID, bytes] = {}
+    asset_mimes: dict[uuid.UUID, str] = {}
+    if asset_loader is not None:
+        for aid in all_declared_ids:
+            blob, mime = asset_loader(aid)
+            asset_bytes[aid] = blob
+            asset_mimes[aid] = mime
+
+    # 2c. Render each widget with a context scoped to *just* the assets
+    #     it declared.  Scoping (rather than handing every widget the
+    #     whole map) is the enforcement mechanism for the
+    #     "declare-before-reference" rule — a widget that tries to read
+    #     an undeclared ID gets a KeyError instead of silently working
+    #     because some other widget happened to declare the same asset.
+    rendered: list[tuple[WidgetInstance, WidgetRender]] = []
+    source_asset_ids: list[uuid.UUID] = []
+    seen_asset_ids: set[uuid.UUID] = set()
+
+    for inst, widget, config, declared in prepped:
+        ctx = BundleContext(
+            asset_bytes={aid: asset_bytes[aid] for aid in declared},
+            asset_mimes={aid: asset_mimes[aid] for aid in declared},
+        )
         render: WidgetRender = widget.render_html(
             config=config,
             cell=inst.cell,
             instance_id=_instance_id_str(inst),
+            ctx=ctx,
         )
+
+        # Enforce the declare-before-reference invariant: every ID a
+        # widget reports in WidgetRender.referenced_asset_ids must
+        # have been declared up front.
+        declared_set = set(declared)
+        for aid in render.referenced_asset_ids:
+            if aid not in declared_set:
+                raise BundleValidationError(
+                    [
+                        ValidationError(
+                            code="undeclared_referenced_asset",
+                            message=(
+                                f"widget {inst.id} ({inst.type}) referenced "
+                                f"asset {aid} in WidgetRender but did not "
+                                "return it from declared_asset_ids()"
+                            ),
+                            widget_id=str(inst.id),
+                        )
+                    ]
+                )
+
         rendered.append((inst, render))
 
         for aid in render.referenced_asset_ids:
