@@ -91,6 +91,7 @@ _ASSET_ICONS = {
     "stream": "📡",
     "saved_stream": "📼",
     "slideshow": "🎞️",
+    "composed": "🧩",
 }
 
 
