@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel, Field
@@ -208,7 +209,8 @@ class _StaticAssetWidget(Widget):
     def editor_template(self):
         return "n/a"
 
-    def render_html(self, config, cell, instance_id):
+    def render_html(self, config, cell, instance_id, ctx=None):
+        del ctx
         return WidgetRender(
             html=f'<span id="x-{instance_id}">x</span>',
             css=f"#x-{instance_id} {{color:red;}}",
@@ -274,3 +276,261 @@ class TestRegistryWiring:
         # And it actually works end-to-end (regression).
         result = build_bundle(_text_layout())
         assert b"cw-text-" in result.html_bytes
+
+
+# ── Tests: BundleContext / asset_loader contract (Phase 1B) ──────────
+
+
+class _AssetConfig(BaseModel):
+    """Synthetic 'declares-an-asset' widget config."""
+
+    asset_id: uuid.UUID
+
+
+class _AssetWidget(Widget):
+    """Synthetic widget that both declares AND references an asset id.
+
+    Lets us drive the bundle's pre-fetch / scoped-context plumbing
+    without depending on the real ImageWidget implementation.
+    """
+
+    slug = "asset_test"
+    display_name = "Asset Test"
+    icon = "x"
+    ConfigSchema = _AssetConfig
+    config_version = 1
+
+    def default_config(self):
+        return {"asset_id": "00000000-0000-0000-0000-000000000000"}
+
+    def editor_template(self):
+        return "n/a"
+
+    def declared_asset_ids(self, config):
+        return [config.asset_id]
+
+    def render_html(self, config, cell, instance_id, ctx=None):
+        assert ctx is not None, "_AssetWidget requires a BundleContext"
+        blob = ctx.asset_bytes[config.asset_id]
+        mime = ctx.asset_mimes[config.asset_id]
+        return WidgetRender(
+            html=f'<span id="a-{instance_id}" data-mime="{mime}" data-len="{len(blob)}">x</span>',
+            referenced_asset_ids=[config.asset_id],
+        )
+
+
+class _BadReferenceWidget(Widget):
+    """Synthetic widget that 'forgets' to declare what it references.
+
+    Used to verify the bundle builder catches the contract violation.
+    """
+
+    slug = "bad_ref_test"
+    display_name = "Bad Ref"
+    icon = "x"
+    ConfigSchema = _AssetConfig
+    config_version = 1
+
+    def default_config(self):
+        return {"asset_id": "00000000-0000-0000-0000-000000000000"}
+
+    def editor_template(self):
+        return "n/a"
+
+    def declared_asset_ids(self, config):
+        # Intentionally does NOT declare config.asset_id even though
+        # render_html references it below.
+        return []
+
+    def render_html(self, config, cell, instance_id, ctx=None):
+        del ctx
+        return WidgetRender(
+            html=f'<span id="bad-{instance_id}">x</span>',
+            referenced_asset_ids=[config.asset_id],
+        )
+
+
+class _LeakyContextWidget(Widget):
+    """Widget that records which asset ids it can see in its context.
+
+    Lets the scoping test assert that a widget's BundleContext only
+    contains assets *this* widget declared, not ones declared by
+    neighbouring widgets in the same layout.
+    """
+
+    slug = "leaky_ctx_test"
+    display_name = "Leaky Ctx"
+    icon = "x"
+    ConfigSchema = _AssetConfig
+    config_version = 1
+
+    # Class-level capture point so test code can inspect what the
+    # builder handed each instance.
+    seen: ClassVar = []  # type: ignore[var-annotated]
+
+    def default_config(self):
+        return {"asset_id": "00000000-0000-0000-0000-000000000000"}
+
+    def editor_template(self):
+        return "n/a"
+
+    def declared_asset_ids(self, config):
+        return [config.asset_id]
+
+    def render_html(self, config, cell, instance_id, ctx=None):
+        assert ctx is not None
+        self.__class__.seen.append((instance_id, sorted(ctx.asset_bytes.keys())))
+        return WidgetRender(
+            html=f'<span id="leaky-{instance_id}">x</span>',
+            referenced_asset_ids=[config.asset_id],
+        )
+
+
+class TestBundleAssetLoaderContract:
+    def test_missing_loader_raises_when_widgets_declare_assets(self):
+        from cms.composed.bundle import MissingAssetLoaderError
+
+        reg = WidgetRegistry()
+        reg.register(_AssetWidget())
+        aid = uuid.uuid4()
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.uuid4(),
+                    type="asset_test",
+                    cell=Cell(row=1, col=1),
+                    config={"asset_id": str(aid)},
+                ),
+            ],
+        )
+        with pytest.raises(MissingAssetLoaderError):
+            build_bundle(layout, registry=reg)  # no asset_loader
+
+    def test_no_loader_needed_when_no_assets_declared(self):
+        # The text-only layout never declares any assets; building
+        # without a loader must keep working (1A regression check).
+        result = build_bundle(_text_layout())
+        assert isinstance(result, BuiltBundle)
+
+    def test_loader_called_once_per_unique_id(self):
+        reg = WidgetRegistry()
+        reg.register(_AssetWidget())
+        aid = uuid.uuid4()
+        # Same asset referenced by two widgets.
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.uuid4(),
+                    type="asset_test",
+                    cell=Cell(row=1, col=1),
+                    config={"asset_id": str(aid)},
+                ),
+                WidgetInstance(
+                    id=uuid.uuid4(),
+                    type="asset_test",
+                    cell=Cell(row=2, col=1),
+                    config={"asset_id": str(aid)},
+                ),
+            ],
+        )
+        calls: list[uuid.UUID] = []
+
+        def loader(asset_id):
+            calls.append(asset_id)
+            return (b"BYTES", "image/png")
+
+        result = build_bundle(layout, registry=reg, asset_loader=loader)
+        assert calls == [aid]  # exactly one call, despite two widgets
+        # Both widgets still received the bytes (rendered with the
+        # data-len attribute) — verify both spans are present.
+        html_text = result.html_bytes.decode("utf-8")
+        assert html_text.count('data-len="5"') == 2
+
+    def test_undeclared_referenced_asset_raises(self):
+        reg = WidgetRegistry()
+        reg.register(_BadReferenceWidget())
+        aid = uuid.uuid4()
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.uuid4(),
+                    type="bad_ref_test",
+                    cell=Cell(row=1, col=1),
+                    config={"asset_id": str(aid)},
+                ),
+            ],
+        )
+
+        # No loader needed because the widget declares nothing — the
+        # builder catches the violation in pass 2.
+        with pytest.raises(BundleValidationError) as ei:
+            build_bundle(layout, registry=reg)
+        assert any(
+            e.code == "undeclared_referenced_asset" for e in ei.value.errors
+        )
+
+    def test_each_widget_only_sees_its_own_declared_assets(self):
+        _LeakyContextWidget.seen.clear()
+        reg = WidgetRegistry()
+        reg.register(_LeakyContextWidget())
+
+        aid_a = uuid.uuid4()
+        aid_b = uuid.uuid4()
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    type="leaky_ctx_test",
+                    cell=Cell(row=1, col=1),
+                    config={"asset_id": str(aid_a)},
+                ),
+                WidgetInstance(
+                    id=uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                    type="leaky_ctx_test",
+                    cell=Cell(row=2, col=1),
+                    config={"asset_id": str(aid_b)},
+                ),
+            ],
+        )
+
+        def loader(asset_id):
+            return (b"x", "image/png")
+
+        build_bundle(layout, registry=reg, asset_loader=loader)
+
+        # Two widgets rendered, each saw only its own asset id.
+        assert len(_LeakyContextWidget.seen) == 2
+        for _instance_id, seen_ids in _LeakyContextWidget.seen:
+            assert len(seen_ids) == 1
+        # And the two widgets' contexts were genuinely different.
+        sets = {tuple(s) for _, s in _LeakyContextWidget.seen}
+        assert sets == {(aid_a,), (aid_b,)}
+
+    def test_source_asset_ids_flow_through_to_built_bundle(self):
+        reg = WidgetRegistry()
+        reg.register(_AssetWidget())
+        aid_a = uuid.uuid4()
+        aid_b = uuid.uuid4()
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.uuid4(),
+                    type="asset_test",
+                    cell=Cell(row=1, col=1),
+                    config={"asset_id": str(aid_a)},
+                ),
+                WidgetInstance(
+                    id=uuid.uuid4(),
+                    type="asset_test",
+                    cell=Cell(row=2, col=1),
+                    config={"asset_id": str(aid_b)},
+                ),
+            ],
+        )
+
+        def loader(asset_id):
+            return (b"x", "image/png")
+
+        result = build_bundle(layout, registry=reg, asset_loader=loader)
+        # Both ids surface in source_asset_ids (order = first-appearance).
+        assert set(result.source_asset_ids) == {aid_a, aid_b}

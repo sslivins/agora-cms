@@ -22,7 +22,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from cms.composed.registry import Widget, WidgetRender
+from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
 
 
@@ -84,7 +84,10 @@ class TextWidget(Widget):
         config: BaseModel,
         cell: Cell,
         instance_id: str,
+        ctx: BundleContext | None = None,
     ) -> WidgetRender:
+        # text widget has no asset dependencies; ctx is ignored.
+        del ctx
         # The base class typing uses BaseModel; narrow for attr access.
         # validate_layout always calls ConfigSchema.model_validate before
         # forwarding, so this assertion guards against direct misuse.

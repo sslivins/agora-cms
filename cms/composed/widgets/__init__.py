@@ -19,14 +19,18 @@ global one.
 from __future__ import annotations
 
 from cms.composed.registry import get_registry
+from cms.composed.widgets.clock import ClockWidget
+from cms.composed.widgets.image import ImageWidget
 from cms.composed.widgets.text import TextWidget
+from cms.composed.widgets.ticker import TickerWidget
 
 _reg = get_registry()
 
 # Idempotent — guards against re-import edge cases (importlib.reload,
 # test session re-import) double-registering and tripping the
 # registry's "already registered" guard.
-if not _reg.has(TextWidget.slug):
-    _reg.register(TextWidget())
+for _widget_cls in (TextWidget, ImageWidget, ClockWidget, TickerWidget):
+    if not _reg.has(_widget_cls.slug):
+        _reg.register(_widget_cls())
 
-__all__ = ["TextWidget"]
+__all__ = ["ClockWidget", "ImageWidget", "TextWidget", "TickerWidget"]

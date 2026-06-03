@@ -29,6 +29,29 @@ from cms.composed.schema import Cell
 
 
 @dataclass
+class BundleContext:
+    """Per-build context passed into every widget's ``render_html``.
+
+    The bundle builder pre-fetches all bytes a layout needs (via the
+    asset loader supplied to :func:`cms.composed.bundle.build_bundle`)
+    and surfaces them here so widgets stay pure — they don't open files,
+    don't hit the DB, don't talk to the network.
+
+    ``asset_bytes`` and ``asset_mimes`` are keyed by the
+    ``uuid.UUID`` IDs the widget declared via
+    :meth:`Widget.declared_asset_ids`.  A widget that references an
+    asset MUST also declare it; the bundle builder rejects layouts
+    whose widgets reference undeclared assets at render time.
+
+    Empty default is intentional: trivial widgets (text, clock) that
+    never touch assets can ignore the parameter entirely.
+    """
+
+    asset_bytes: dict[uuid.UUID, bytes] = field(default_factory=dict)
+    asset_mimes: dict[uuid.UUID, str] = field(default_factory=dict)
+
+
+@dataclass
 class WidgetStaticAsset:
     """A binary or text asset the widget needs in the bundle.
 
@@ -84,7 +107,21 @@ class Widget:
         config: BaseModel,
         cell: Cell,
         instance_id: str,
+        ctx: BundleContext | None = None,
     ) -> WidgetRender:
+        """Render a single widget instance.
+
+        ``ctx`` is the per-build :class:`BundleContext` populated by
+        the bundle builder.  Widgets that don't need pre-fetched
+        bytes can ignore it; widgets that do (image, video) read
+        from ``ctx.asset_bytes`` / ``ctx.asset_mimes`` keyed by the
+        IDs they returned from :meth:`declared_asset_ids`.
+
+        The parameter defaults to ``None`` so unit tests and trivial
+        widgets can call ``render_html(cfg, cell, "id")`` directly;
+        production calls from the bundle builder always pass a real
+        :class:`BundleContext`.
+        """
         raise NotImplementedError
 
     def editor_template(self) -> str:
@@ -107,6 +144,25 @@ class Widget:
         renames, removals, or required-field additions.
         """
         return raw
+
+    def declared_asset_ids(self, config: BaseModel) -> list[uuid.UUID]:
+        """Asset IDs this widget instance will reference at render time.
+
+        Returning an ID here means the bundle builder will pre-fetch
+        the asset's bytes + MIME and stash them in :class:`BundleContext`
+        before calling :meth:`render_html`.  Used both to populate the
+        render context AND as the canonical staleness-tracking input
+        (the bundle records the union of declared IDs as
+        ``bundle_source_asset_ids``).
+
+        Default: no asset dependencies.
+
+        IMPORTANT: a widget that emits ``referenced_asset_ids`` in its
+        :class:`WidgetRender` MUST also have declared those same IDs
+        here.  The bundle builder asserts this invariant so it can't be
+        silently broken by a copy-paste bug.
+        """
+        return []
 
     def validate_semantic(self, config: BaseModel) -> list[str]:
         """Cross-field / external checks beyond Pydantic shape.
