@@ -193,3 +193,110 @@ class TestSplashFix:
                 mock_sync.assert_called()
         finally:
             device_manager.disconnect("splash-002")
+
+
+@pytest.mark.asyncio
+class TestGroupChangePushSync:
+    """Changing a device's group_id should trigger an immediate full sync
+    so the device picks up the new group's schedules and inherited default
+    asset without waiting ~15s for the next scheduler tick."""
+
+    async def test_setting_group_id_pushes_sync(self, client, db_session):
+        from cms.models.device import Device, DeviceGroup
+
+        group = DeviceGroup(id=uuid.uuid4(), name="Lobby")
+        db_session.add(group)
+        device = Device(id="grp-001", name="Test", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
+            resp = await client.patch(
+                "/api/devices/grp-001",
+                json={"group_id": str(group.id)},
+            )
+            assert resp.status_code == 200
+            mock_sync.assert_called_once()
+            assert mock_sync.call_args[0][0] == "grp-001"
+
+    async def test_clearing_group_id_pushes_sync(self, client, db_session):
+        from cms.models.device import Device, DeviceGroup
+
+        group = DeviceGroup(id=uuid.uuid4(), name="Lobby")
+        db_session.add(group)
+        device = Device(
+            id="grp-002", name="Test", status=DeviceStatus.ADOPTED, group_id=group.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
+            resp = await client.patch(
+                "/api/devices/grp-002",
+                json={"group_id": None},
+            )
+            assert resp.status_code == 200
+            mock_sync.assert_called_once()
+            assert mock_sync.call_args[0][0] == "grp-002"
+
+    async def test_changing_group_id_pushes_sync(self, client, db_session):
+        from cms.models.device import Device, DeviceGroup
+
+        old_group = DeviceGroup(id=uuid.uuid4(), name="Lobby")
+        new_group = DeviceGroup(id=uuid.uuid4(), name="Cafeteria")
+        db_session.add_all([old_group, new_group])
+        device = Device(
+            id="grp-003", name="Test", status=DeviceStatus.ADOPTED, group_id=old_group.id,
+        )
+        db_session.add(device)
+        await db_session.commit()
+
+        with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
+            resp = await client.patch(
+                "/api/devices/grp-003",
+                json={"group_id": str(new_group.id)},
+            )
+            assert resp.status_code == 200
+            mock_sync.assert_called_once()
+            assert mock_sync.call_args[0][0] == "grp-003"
+
+    async def test_unrelated_patch_does_not_push_sync(self, client, db_session):
+        """PATCH that doesn't touch group_id/default_asset_id/timezone
+        should NOT push a sync (preserves existing behavior)."""
+        from cms.models.device import Device
+
+        device = Device(id="grp-004", name="OldName", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
+            resp = await client.patch(
+                "/api/devices/grp-004",
+                json={"name": "NewName"},
+            )
+            assert resp.status_code == 200
+            mock_sync.assert_not_called()
+
+    async def test_group_and_default_asset_together_single_full_sync(self, client, db_session):
+        """When both group_id and default_asset_id are in one PATCH, the
+        group_id branch wins (single full sync covers both)."""
+        from cms.models.asset import Asset
+        from cms.models.device import Device, DeviceGroup
+
+        group = DeviceGroup(id=uuid.uuid4(), name="Lobby")
+        asset_id = uuid.uuid4()
+        asset = Asset(id=asset_id, filename="t.mp4", asset_type="video", size_bytes=1, checksum="x")
+        db_session.add_all([group, asset])
+        device = Device(id="grp-005", name="Test", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync, \
+             patch("cms.routers.devices._push_default_asset", new_callable=AsyncMock) as mock_push_default:
+            resp = await client.patch(
+                "/api/devices/grp-005",
+                json={"group_id": str(group.id), "default_asset_id": str(asset_id)},
+            )
+            assert resp.status_code == 200
+            mock_sync.assert_called_once()
+            mock_push_default.assert_not_called()
