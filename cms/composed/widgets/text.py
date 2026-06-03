@@ -33,6 +33,10 @@ _FONT_STACKS: dict[str, str] = {
     "sans": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
     "serif": "Georgia, Cambria, 'Times New Roman', serif",
     "mono": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    # Round-2 extensibility additions — proving new font slugs can be
+    # added purely via this allowlist, no core changes required.
+    "display": "'Impact', 'Haettenschweiler', 'Arial Narrow Bold', sans-serif",
+    "handwritten": "'Comic Sans MS', 'Bradley Hand', cursive",
 }
 
 
@@ -45,6 +49,10 @@ class TextWidgetConfig(BaseModel):
     color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
     font_size_px: int = Field(default=48, ge=8, le=512)
     font_family: str = Field(default="sans")
+    # Round-2 extensibility additions — bold / italic are pure CSS
+    # output toggles, no core contract changes.
+    bold: bool = False
+    italic: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -72,6 +80,8 @@ class TextWidget(Widget):
             "color": "#ffffff",
             "font_size_px": 48,
             "font_family": "sans",
+            "bold": False,
+            "italic": False,
         }
 
     def editor_template(self) -> str:
@@ -101,6 +111,9 @@ class TextWidget(Widget):
 
         html_out = f'<div class="{css_class}">{escaped_text}</div>'
 
+        font_weight = "700" if config.bold else "400"
+        font_style = "italic" if config.italic else "normal"
+
         css_out = (
             f".{css_class} {{\n"
             f"  width: 100%;\n"
@@ -112,6 +125,8 @@ class TextWidget(Widget):
             f"  color: {config.color};\n"
             f"  font-size: {config.font_size_px}px;\n"
             f"  font-family: {font_stack};\n"
+            f"  font-weight: {font_weight};\n"
+            f"  font-style: {font_style};\n"
             f"  overflow: hidden;\n"
             f"  word-wrap: break-word;\n"
             f"}}"
