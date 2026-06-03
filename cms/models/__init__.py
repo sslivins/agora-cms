@@ -25,6 +25,7 @@ from cms.models.asset_view import AssetView  # noqa: F401
 from cms.models.chat_message import ChatMessage  # noqa: F401
 from cms.models.chat_pending_approval import ChatPendingApproval  # noqa: F401
 from cms.models.chat_thread import ChatThread  # noqa: F401
+from cms.models.composed_slide import ComposedSlide  # noqa: F401
 from cms.models.user import Role, User, UserGroup  # noqa: F401
 
 # ── CMS-only relationships ──
