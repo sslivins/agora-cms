@@ -287,6 +287,12 @@
                         {% else %}
                         <a role="menuitem" href="/assets/{{ a.id }}/slideshow">View slides</a>
                         {% endif %}
+                    {% elif a.asset_type.value == 'composed' %}
+                        {% if 'assets:write' in user_perms and is_owner %}
+                        <a role="menuitem" href="/assets/{{ a.id }}/composed">Edit composed</a>
+                        {% else %}
+                        <a role="menuitem" href="/assets/{{ a.id }}/composed">View composed</a>
+                        {% endif %}
                     {% else %}
                         <button type="button" role="menuitem" onclick="previewAsset('{{ a.id }}', {{ a.filename | tojson | forceescape }}, '{{ a.asset_type.value }}')">Preview</button>
                     {% endif %}
