@@ -182,8 +182,12 @@ async def publish_composed_slide(
                 # produce a valid src attribute.
                 import urllib.parse as _urlparse
 
+                # ``safe=""`` so '/' in a hypothetical filename gets
+                # percent-encoded too — without it, urllib leaves '/'
+                # alone (the default ``safe="/"``) and a malicious or
+                # buggy filename could break out of the videos/ dir.
                 sibling_asset_urls[aid] = (
-                    f"/assets/videos/{_urlparse.quote(ref.filename)}"
+                    f"/assets/videos/{_urlparse.quote(ref.filename, safe='')}"
                 )
                 video_count += 1
             else:

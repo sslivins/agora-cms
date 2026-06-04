@@ -28,9 +28,11 @@ from cms.models.device_event import DeviceEventType
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLogEvent
 from cms.schemas.protocol import (
+    CAPABILITY_COMPOSED_SIBLINGS_V1,
     ConfigMessage,
     FetchAssetMessage,
     MessageType,
+    Sibling,
 )
 from cms.services.alert_service import alert_service
 from cms.services.scheduler import (
@@ -92,37 +94,26 @@ class InboundContext:
     received_at: datetime | None = None
 
 
-async def _resolve_asset_for_device(
-    asset: Asset, device: Device, base_url: str, db: AsyncSession,
-) -> FetchAssetMessage | None:
-    """Build a FetchAssetMessage using the best variant for the device's profile.
+async def _resolve_variant_or_source(
+    asset: Asset, device: Device, base_url: str, db: AsyncSession, storage,
+) -> tuple[str, str, int, str] | None:
+    """Resolve one asset to (download_url, checksum, size_bytes, asset_type_value).
 
-    For video and image assets with a profile:
-      - If a READY variant exists → use variant download URL
-      - If variant exists but not ready → return None (not available yet)
-    For devices without a profile → use source asset directly.
-    For slideshow assets → resolve the slide list to a manifest; return
-    None if any slide source can't be served (see
-    :mod:`cms.services.slideshow_resolver`).
+    "Latest-READY-wins" variant lookup for VIDEO / IMAGE / SAVED_STREAM
+    when the device has a profile; falls back to the source asset
+    otherwise.  Returns ``None`` when a non-terminal variant exists for
+    this (asset, profile) pair but no READY variant is available yet —
+    the caller MUST treat that as "skip this fetch for now" (mirrors the
+    in-flight short-circuit in :func:`_resolve_asset_for_device`).
+
+    Extracted so both the top-level single-asset path and the composed
+    siblings path can share the same variant selection rules.
     """
-    if asset.asset_type == AssetType.SLIDESHOW:
-        # Lazy import — avoids a circular reference at module import time.
-        from cms.services.slideshow_resolver import build_fetch_for_slideshow
-        return await build_fetch_for_slideshow(asset, device, base_url, db)
-
-    storage = get_storage()
-
-    # Saved streams behave like videos for download purposes
-    is_file_asset = asset.asset_type in (AssetType.VIDEO, AssetType.IMAGE, AssetType.SAVED_STREAM)
+    is_file_asset = asset.asset_type in (
+        AssetType.VIDEO, AssetType.IMAGE, AssetType.SAVED_STREAM,
+    )
 
     if is_file_asset and device.profile_id:
-        # "Latest-READY-wins": with the variant-swap model multiple variant
-        # rows may exist transiently for the same (asset, profile) pair.
-        # Pick the most recently created READY non-deleted variant so devices
-        # always get the freshest completed transcode.  If no READY variant
-        # exists yet, we must still signal "not available" (rather than
-        # falling through to the untranscoded source) when there IS a
-        # non-terminal variant in flight.
         ready_result = await db.execute(
             select(AssetVariant)
             .where(
@@ -140,15 +131,13 @@ async def _resolve_asset_for_device(
             download_url = await storage.get_device_download_url(
                 f"variants/{variant.filename}", api_url,
             )
-            return FetchAssetMessage(
-                asset_name=asset.filename,
-                download_url=download_url,
-                checksum=variant.checksum,
-                size_bytes=variant.size_bytes,
-                asset_type=asset.asset_type.value,
+            return (
+                download_url,
+                variant.checksum,
+                variant.size_bytes,
+                asset.asset_type.value,
             )
 
-        # No READY variant — check if any non-deleted variant is in flight.
         inflight = await db.execute(
             select(AssetVariant.id)
             .where(
@@ -159,18 +148,146 @@ async def _resolve_asset_for_device(
             .limit(1)
         )
         if inflight.scalar_one_or_none() is not None:
-            # Variant exists but not ready — skip for now
             return None
 
-    # No profile or no variant → use source
     api_url = f"{base_url}/api/assets/{asset.id}/download"
     download_url = await storage.get_device_download_url(asset.filename, api_url)
+    return (
+        download_url,
+        asset.checksum,
+        asset.size_bytes,
+        asset.asset_type.value,
+    )
+
+
+async def _build_composed_siblings(
+    composed_asset: Asset, device: Device, base_url: str, db: AsyncSession, storage,
+) -> list[Sibling] | None:
+    """Build the per-device ``siblings`` payload for a Composed Slide.
+
+    Returns:
+      * ``None`` if the bundle declares no source assets (e.g. an
+        all-text composed slide, or a draft with an empty
+        ``bundle_source_asset_ids``).  The caller emits a
+        ``FetchAssetMessage`` with ``siblings=None`` — equivalent on the
+        wire to "no siblings field" for v1.0 firmware.
+      * ``None`` (sentinel via second-arm) if any sibling has an
+        in-flight variant — caller MUST treat as "skip whole fetch for
+        now", same as the single-asset in-flight rule.  Distinguished
+        from the empty-bundle case by returning the string sentinel
+        ``"INFLIGHT"`` (callers branch on identity).
+      * A list of :class:`Sibling` entries otherwise; missing (deleted)
+        siblings are logged and skipped per spec — the bundle plays
+        with a broken <video> tag on the device, same as today's
+        pre-sibling behaviour.
+    """
+    # Lazy import — avoids module-import cycle with cms.composed.
+    from cms.models.composed_slide import ComposedSlide
+
+    cs_row = (
+        await db.execute(
+            select(ComposedSlide).where(ComposedSlide.asset_id == composed_asset.id)
+        )
+    ).scalars().first()
+
+    raw_declared = list(cs_row.bundle_source_asset_ids or []) if cs_row else []
+    if not raw_declared:
+        return None
+
+    # publish.py stores these as str(uuid) so the value round-trips through
+    # both PG UUID[] and the SQLite JSON fallback.  Coerce back to uuid.UUID
+    # so the IN clause and the by_id dict lookup hit the same Asset.id type.
+    declared: list[uuid.UUID] = [
+        aid if isinstance(aid, uuid.UUID) else uuid.UUID(str(aid))
+        for aid in raw_declared
+    ]
+
+    rows = await db.execute(
+        select(Asset).where(
+            Asset.id.in_(declared),
+            Asset.deleted_at.is_(None),
+        )
+    )
+    by_id = {a.id: a for a in rows.scalars().all()}
+
+    siblings: list[Sibling] = []
+    for aid in declared:
+        ref = by_id.get(aid)
+        if ref is None:
+            logger.warning(
+                "Composed asset %s references missing/deleted sibling asset %s; "
+                "device will play bundle with broken media reference",
+                composed_asset.id, aid,
+            )
+            continue
+        resolved = await _resolve_variant_or_source(ref, device, base_url, db, storage)
+        if resolved is None:
+            # Sibling has a non-terminal variant in flight — skip the
+            # whole FetchAssetMessage same as the single-asset path.
+            return "INFLIGHT"  # type: ignore[return-value]
+        download_url, checksum, size_bytes, type_value = resolved
+        siblings.append(
+            Sibling(
+                name=ref.filename,
+                asset_type=type_value,
+                download_url=download_url,
+                checksum=checksum,
+                size_bytes=size_bytes,
+            )
+        )
+
+    return siblings
+
+
+async def _resolve_asset_for_device(
+    asset: Asset, device: Device, base_url: str, db: AsyncSession,
+) -> FetchAssetMessage | None:
+    """Build a FetchAssetMessage using the best variant for the device's profile.
+
+    For video and image assets with a profile:
+      - If a READY variant exists → use variant download URL
+      - If variant exists but not ready → return None (not available yet)
+    For devices without a profile → use source asset directly.
+    For slideshow assets → resolve the slide list to a manifest; return
+    None if any slide source can't be served (see
+    :mod:`cms.services.slideshow_resolver`).
+    For composed assets, if the device advertises
+    ``composed_siblings_v1`` (Phase 1D, agora#253), additionally resolve
+    every asset referenced by the bundle into a ``siblings[]`` list so
+    the device can pre-fetch them into the local cache before the
+    bundle swap.  Returns None if any sibling variant is still in
+    flight.
+    """
+    if asset.asset_type == AssetType.SLIDESHOW:
+        # Lazy import — avoids a circular reference at module import time.
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+        return await build_fetch_for_slideshow(asset, device, base_url, db)
+
+    storage = get_storage()
+
+    resolved = await _resolve_variant_or_source(asset, device, base_url, db, storage)
+    if resolved is None:
+        # In-flight variant — caller must skip this FetchAssetMessage.
+        return None
+    download_url, checksum, size_bytes, type_value = resolved
+
+    siblings: list[Sibling] | None = None
+    if (
+        asset.asset_type == AssetType.COMPOSED
+        and CAPABILITY_COMPOSED_SIBLINGS_V1 in (device.capabilities or [])
+    ):
+        built = await _build_composed_siblings(asset, device, base_url, db, storage)
+        if built == "INFLIGHT":
+            return None
+        siblings = built
+
     return FetchAssetMessage(
         asset_name=asset.filename,
         download_url=download_url,
-        checksum=asset.checksum,
-        size_bytes=asset.size_bytes,
-        asset_type=asset.asset_type.value,
+        checksum=checksum,
+        size_bytes=size_bytes,
+        asset_type=type_value,
+        siblings=siblings,
     )
 
 

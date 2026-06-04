@@ -35,6 +35,17 @@ SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
 # is gated out of slideshow scheduling / default-asset assignment.
 CAPABILITY_SLIDESHOW_V1 = "slideshow_v1"
 
+# ``composed_siblings_v1`` indicates the device's os_updater pre-fetches
+# the source assets (videos / images) embedded in a Composed Slide bundle
+# before swapping the bundle into the active cache.  When the CMS sends a
+# ``FETCH_ASSET`` for a COMPOSED asset and the device advertises this
+# capability, the message carries an extra ``siblings`` list of resolved
+# per-device variants for every asset referenced by the bundle.  Older
+# firmware never sees ``siblings`` and just renders the bundle on top of
+# whatever the local /assets cache already contains.  Pairs with agora
+# firmware PR #253 (APT 1.11.95).
+CAPABILITY_COMPOSED_SIBLINGS_V1 = "composed_siblings_v1"
+
 # Slideshow manifest schema version (semver, additive minor bumps).  The
 # wire format of the slideshow manifest is independent of the
 # higher-level ``PROTOCOL_VERSION``: protocol bumps describe the WS
@@ -279,6 +290,15 @@ class FetchAssetMessage(BaseMessage):
     # the CMS having to tell each device a different start time.
     # Optional / additive; v1.0 devices ignore it.
     started_at: Optional[str] = None
+    # Composed-slide sibling dependencies (Phase 1D of agora#253).  Only
+    # present (non-None) when ``asset_type`` is ``composed`` AND the device
+    # advertises ``composed_siblings_v1``.  Each entry describes one
+    # source asset (video / image / saved_stream) embedded in the bundle
+    # so the device's os_updater can pre-fetch it into the local
+    # /assets/<dir>/<filename> cache before swapping the bundle in.  Empty
+    # / None means "no siblings declared" (e.g. a composed slide that is
+    # all text + clock widgets, or a draft with no referenced assets).
+    siblings: Optional[list["Sibling"]] = None
 
 
 class SlideDescriptor(BaseModel):
@@ -328,7 +348,50 @@ class SlideDescriptor(BaseModel):
         return self
 
 
-# Resolve forward reference now that ``SlideDescriptor`` is defined.
+class Sibling(BaseModel):
+    """One source-asset dependency of a Composed Slide bundle.
+
+    The device uses ``name`` as the on-disk filename under
+    ``/opt/agora/assets/<videos|images>/`` (matching the ``src``
+    attributes baked into the bundle HTML by
+    :mod:`cms.composed.publish`), and downloads from ``download_url``
+    verifying against ``checksum`` and ``size_bytes``.  When the source
+    asset has a profile-matched READY :class:`AssetVariant`, the CMS
+    populates the variant's URL / checksum / size here so the device
+    receives an already-transcoded file; ``name`` always stays as the
+    source asset filename so it lines up with the bundle's HTML refs.
+    """
+
+    name: str
+    asset_type: str  # "video" | "image" | "saved_stream"
+    download_url: str
+    checksum: str
+    size_bytes: int
+
+    @model_validator(mode="after")
+    def _validate_invariants(self) -> "Sibling":
+        if self.asset_type not in ("video", "image", "saved_stream"):
+            raise ValueError(
+                "Sibling.asset_type must be one of "
+                "('video', 'image', 'saved_stream'), got "
+                f"{self.asset_type!r}"
+            )
+        # ``name`` lands on the device filesystem under /opt/agora/assets/<dir>/<name>;
+        # reject path-traversal shapes outright so a compromised CMS row
+        # (or future migration bug) can't escape the cache directory.
+        if not self.name or self.name in (".", "..") or "/" in self.name or "\\" in self.name:
+            raise ValueError(
+                f"Sibling.name must be a bare filename (no path separators); got {self.name!r}"
+            )
+        if self.size_bytes < 0:
+            raise ValueError(
+                f"Sibling.size_bytes must be non-negative, got {self.size_bytes}"
+            )
+        return self
+
+
+# Resolve forward references now that ``SlideDescriptor`` and ``Sibling``
+# are defined.
 FetchAssetMessage.model_rebuild()
 
 
