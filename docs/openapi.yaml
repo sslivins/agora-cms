@@ -232,6 +232,132 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /composed/:
+    post:
+      tags:
+      - composed
+      summary: Create Composed Slide
+      description: |-
+        Create a new draft composed-slide asset with an empty layout.
+
+        Body:
+            ``name`` (str, required): user-facing display name; also used as
+                the unique ``Asset.filename`` (with a numeric suffix if a
+                conflict exists).
+            ``group_ids`` (list[str] | str, optional): group UUIDs to share
+                the asset with. Empty list + admin → global.
+
+        Returns the created asset's id and a redirect-friendly editor URL.
+      operationId: create_composed_slide_composed__post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Body
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Create Composed Slide Composed  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /composed/{asset_id}/layout:
+    patch:
+      tags:
+      - composed
+      summary: Patch Composed Layout
+      description: |-
+        Replace the layout JSON for a composed slide.
+
+        Body must be the full canonical ``Layout`` JSON (Pydantic shape).
+        The endpoint:
+
+        1. Validates Pydantic shape — 422 on failure.
+        2. Runs ``validate_layout`` (semantic: bounds, overlaps, unknown
+           widget types, per-widget ``validate_semantic``) — 422 on failure.
+        3. Checks referenced-asset ACL (audience widening) — 400 on failure.
+        4. Persists the canonical JSON via ``layout.model_dump(mode="json")``.
+        5. Sets ``is_draft=True`` so any previously-published bundle is
+           flagged stale until ``/publish`` is called again.
+      operationId: patch_composed_layout_composed__asset_id__layout_patch
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Patch Composed Layout Composed  Asset Id  Layout Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /composed/{asset_id}/publish:
+    post:
+      tags:
+      - composed
+      summary: Publish Composed Endpoint
+      description: |-
+        Build the bundle for the composed slide and clear ``is_draft``.
+
+        Returns the bundle filename, size, and sha256. Errors map to:
+
+        * 422 — empty layout (need at least one widget).
+        * 422 — bundle/validation error (``PublishError``).
+      operationId: publish_composed_endpoint_composed__asset_id__publish_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Publish Composed Endpoint Composed  Asset Id  Publish Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/check-updates:
     post:
       summary: Check For Updates
