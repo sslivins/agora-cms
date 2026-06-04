@@ -139,7 +139,20 @@ async def publish_composed_slide(
                 seen_declared.add(aid)
                 declared_ids.append(aid)
 
+    # Bucket each declared asset by its AssetType:
+    #   IMAGE → inline as base64 data URI (bytes channel, asset_loader)
+    #   VIDEO → ship as a sibling cache entry; bundle's <video src>
+    #           points at the device-local /assets/videos/<filename>
+    #           URL.  Phase 1C scope: no firmware sibling-fetch wiring
+    #           yet (deferred to Phase 1D) — until that ships, videos
+    #           used in composed slides must be independently assigned
+    #           to the same device groups so they land in the device's
+    #           video cache through the existing per-asset sync path.
+    #   anything else → reject (e.g. a composed slide can't embed
+    #           another composed slide, a webpage asset, or a slideshow)
     asset_payloads: dict[uuid.UUID, tuple[bytes, str]] = {}
+    sibling_asset_urls: dict[uuid.UUID, str] = {}
+    video_count = 0
     if declared_ids:
         rows = await db.execute(
             select(Asset).where(Asset.id.in_(declared_ids)),
@@ -151,20 +164,54 @@ async def publish_composed_slide(
                 raise PublishError(
                     f"Composed slide references missing asset {aid}",
                 )
-            ref_path = storage_dir / ref.filename
-            try:
-                blob = ref_path.read_bytes()
-            except FileNotFoundError as e:
+            if ref.asset_type == AssetType.IMAGE:
+                ref_path = storage_dir / ref.filename
+                try:
+                    blob = ref_path.read_bytes()
+                except FileNotFoundError as e:
+                    raise PublishError(
+                        f"Asset {aid} file missing on disk: {ref.filename}",
+                    ) from e
+                mime, _ = mimetypes.guess_type(ref.filename)
+                asset_payloads[aid] = (blob, mime or "application/octet-stream")
+            elif ref.asset_type == AssetType.VIDEO:
+                # Device-local URL served by the Pi shell's HTTP server
+                # (port 8780, FastAPI StaticFiles mount on /assets →
+                # /opt/agora/assets/).  URL-encode the filename so files
+                # with spaces / special chars (e.g. "my video (final).mp4")
+                # produce a valid src attribute.
+                import urllib.parse as _urlparse
+
+                sibling_asset_urls[aid] = (
+                    f"/assets/videos/{_urlparse.quote(ref.filename)}"
+                )
+                video_count += 1
+            else:
                 raise PublishError(
-                    f"Asset {aid} file missing on disk: {ref.filename}",
-                ) from e
-            mime, _ = mimetypes.guess_type(ref.filename)
-            asset_payloads[aid] = (blob, mime or "application/octet-stream")
+                    f"Composed slide references asset {aid} of type "
+                    f"{ref.asset_type.value!r}; only IMAGE and VIDEO "
+                    "assets can be embedded in a composed slide",
+                )
+
+    if video_count > 1:
+        # No hard cap — multiple muted autoplay videos technically work
+        # on Chromium, but on a Pi Zero 2 W the H.264 decoder can
+        # struggle with concurrent streams.  Leave a breadcrumb in the
+        # publish log so it's findable if a slide misbehaves on-device.
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "composed slide %s declares %d video widgets; multiple "
+            "concurrent decodes may stutter on lower-end Pi hardware",
+            asset_id,
+            video_count,
+        )
 
     def _asset_loader(aid: uuid.UUID) -> tuple[bytes, str]:
-        # build_bundle only calls this for IDs in ``declared_ids``,
-        # which is exactly what we pre-fetched above; a KeyError here
-        # would mean a widget bypassed declared_asset_ids() and is a
+        # build_bundle only calls this for IDs in the bytes channel
+        # (IMAGE assets we pre-fetched above); a KeyError here would
+        # mean a widget bypassed declared_asset_ids() or the bundle
+        # builder ignored the sibling-URLs channel — either is a
         # programming error worth surfacing loudly.
         return asset_payloads[aid]
 
@@ -172,7 +219,8 @@ async def publish_composed_slide(
         built = build_bundle(
             layout,
             registry,
-            asset_loader=_asset_loader if declared_ids else None,
+            asset_loader=_asset_loader if asset_payloads else None,
+            sibling_asset_urls=sibling_asset_urls or None,
         )
     except BundleValidationError as e:
         raise PublishError(
@@ -197,7 +245,12 @@ async def publish_composed_slide(
     now = datetime.now(timezone.utc)
     composed.is_draft = False
     composed.bundle_built_at = now
-    composed.bundle_source_asset_ids = list(built.source_asset_ids)
+    # Stringify for storage portability: on Postgres prod the column is
+    # ARRAY(UUID) and accepts string-form UUIDs (cast), and on the
+    # SQLite test variant it degrades to JSON which can't serialize raw
+    # UUID objects.  Stringifying here gives both backends a working
+    # value without a custom type decorator.
+    composed.bundle_source_asset_ids = [str(aid) for aid in built.source_asset_ids]
 
     await db.flush()
 

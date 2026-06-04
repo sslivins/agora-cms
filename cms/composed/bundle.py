@@ -155,15 +155,24 @@ def build_bundle(
     layout: Layout,
     registry: WidgetRegistry | None = None,
     asset_loader: AssetLoader | None = None,
+    sibling_asset_urls: dict[uuid.UUID, str] | None = None,
 ) -> BuiltBundle:
     """Render ``layout`` to a self-contained HTML bundle.
 
     ``asset_loader``, if supplied, is called once per unique asset ID
     declared by any widget (via :meth:`Widget.declared_asset_ids`) and
     must return ``(bytes, mime_type)``.  Widgets receive the resolved
-    bytes through :class:`BundleContext`.  A layout whose widgets
-    declare any asset IDs but is built without a loader raises
-    :class:`MissingAssetLoaderError`.
+    bytes through :class:`BundleContext`.
+
+    ``sibling_asset_urls`` maps declared asset IDs to *device-local*
+    URLs (e.g. ``/assets/videos/foo.mp4``) for assets that are
+    shipped to the device as siblings rather than inlined.  Used for
+    video assets — the bundle's ``<video src>`` points at these URLs
+    and the device cache layer fetches them separately.
+
+    A declared asset ID must be resolvable through *either* the
+    ``asset_loader`` path *or* the ``sibling_asset_urls`` mapping; if
+    it's in neither, :class:`MissingAssetLoaderError` is raised.
 
     Raises :class:`BundleValidationError` if the layout fails
     :func:`~cms.composed.validate.validate_layout`.  The check is
@@ -172,6 +181,9 @@ def build_bundle(
     """
 
     reg = registry if registry is not None else get_registry()
+    sib_urls: dict[uuid.UUID, str] = (
+        dict(sibling_asset_urls) if sibling_asset_urls else {}
+    )
 
     # 1. Defensive validation.
     errors = validate_layout(layout, reg)
@@ -198,14 +210,23 @@ def build_bundle(
                 seen_declared.add(aid)
                 all_declared_ids.append(aid)
 
-    if all_declared_ids and asset_loader is None:
-        raise MissingAssetLoaderError(all_declared_ids)
+    # An ID counts as "satisfied" if we have either bytes-channel
+    # coverage (asset_loader) OR a sibling-URL mapping for it.  Only
+    # IDs with no coverage from either channel are missing.
+    needs_loader = [aid for aid in all_declared_ids if aid not in sib_urls]
+    if needs_loader and asset_loader is None:
+        raise MissingAssetLoaderError(needs_loader)
 
-    # 2b. Pre-fetch every declared asset exactly once.
+    # 2b. Pre-fetch every declared asset exactly once.  Skip IDs
+    #     that the publish layer routed to the sibling-URLs channel
+    #     (videos, etc.) — those don't get inlined and don't need
+    #     bytes loaded.
     asset_bytes: dict[uuid.UUID, bytes] = {}
     asset_mimes: dict[uuid.UUID, str] = {}
     if asset_loader is not None:
         for aid in all_declared_ids:
+            if aid in sib_urls:
+                continue
             blob, mime = asset_loader(aid)
             asset_bytes[aid] = blob
             asset_mimes[aid] = mime
@@ -222,8 +243,15 @@ def build_bundle(
 
     for inst, widget, config, declared in prepped:
         ctx = BundleContext(
-            asset_bytes={aid: asset_bytes[aid] for aid in declared},
-            asset_mimes={aid: asset_mimes[aid] for aid in declared},
+            asset_bytes={
+                aid: asset_bytes[aid] for aid in declared if aid in asset_bytes
+            },
+            asset_mimes={
+                aid: asset_mimes[aid] for aid in declared if aid in asset_mimes
+            },
+            sibling_asset_urls={
+                aid: sib_urls[aid] for aid in declared if aid in sib_urls
+            },
         )
         render: WidgetRender = widget.render_html(
             config=config,

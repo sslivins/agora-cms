@@ -71,6 +71,7 @@
                 Click a widget below, then click a grid cell to place it.
             </p>
             <button type="button" class="palette-btn" data-type="text" onclick="selectPaletteType('text')">🅰 Text</button>
+            <button type="button" class="palette-btn" data-type="media" onclick="selectPaletteType('media')">🎬 Media</button>
             <button type="button" class="palette-btn" data-type="clock" onclick="selectPaletteType('clock')">🕒 Clock</button>
             <button type="button" class="palette-btn" data-type="ticker" onclick="selectPaletteType('ticker')">📰 Ticker</button>
             <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
@@ -251,9 +252,12 @@ let selectedPaletteType = null;
 let selectedWidgetId = null;
 
 const FONT_OPTIONS = ["sans","serif","mono","display"];
+const MEDIA_ASSETS = {{ media_assets|tojson }};
+const NULL_UUID = "00000000-0000-0000-0000-000000000000";
 
 const DEFAULTS = {
     text: {text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false},
+    media: {asset_id: NULL_UUID, object_fit:"cover", alt:""},
     clock: {format:"24h", show_seconds:true, show_date:false, color:"#ffffff", font_family:"sans", font_size_px:96},
     ticker: {text:"Breaking news...", speed_px_per_sec:100, direction:"left", mode:"scroll",
              color:"#ffffff", background:"#000000", font_family:"sans", font_size_px:48, gap_px:100},
@@ -409,6 +413,12 @@ function summarize(w) {
     if (w.type === "text") return (w.config.text || "").slice(0, 24);
     if (w.type === "clock") return w.config.format || "24h";
     if (w.type === "ticker") return (w.config.text || "").slice(0, 24);
+    if (w.type === "media") {
+        const aid = w.config.asset_id;
+        if (!aid || aid === NULL_UUID) return "(no asset)";
+        const a = MEDIA_ASSETS.find(x => x.id === aid);
+        return a ? a.name : "(missing)";
+    }
     return "";
 }
 
@@ -507,6 +517,30 @@ function renderSettings() {
                         oninput="updateSelected(x=>x.config.italic=this.checked)"> Italic
                 </label>
             </div>`;
+    } else if (w.type === "media") {
+        const currentId = w.config.asset_id || NULL_UUID;
+        const opts = [`<option value="${NULL_UUID}" ${currentId===NULL_UUID?"selected":""}>— pick an image or video —</option>`]
+            .concat(MEDIA_ASSETS.map(a => {
+                const label = `${a.asset_type === "video" ? "🎞" : "🖼"} ${escapeHtml(a.name)}`;
+                return `<option value="${a.id}" ${a.id===currentId?"selected":""}>${label}</option>`;
+            }))
+            .join("");
+        configHtml = `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Media widget</h4>
+            <label>Asset</label>
+            <select oninput="updateSelected(x=>x.config.asset_id=this.value)">${opts}</select>
+            <label style="margin-top:0.5rem;">Fit</label>
+            <select oninput="updateSelected(x=>x.config.object_fit=this.value)">
+                <option value="cover" ${w.config.object_fit==="cover"?"selected":""}>Cover (crop to fill)</option>
+                <option value="contain" ${w.config.object_fit==="contain"?"selected":""}>Contain (letterbox)</option>
+                <option value="fill" ${w.config.object_fit==="fill"?"selected":""}>Fill (stretch)</option>
+            </select>
+            <label style="margin-top:0.5rem;">Alt text</label>
+            <input type="text" maxlength="512" value="${escapeHtml(w.config.alt||"")}"
+                   oninput="updateSelected(x=>x.config.alt=this.value)">
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                For videos: assign the asset to the same device groups so it lands in the device's video cache.
+            </p>`;
     } else if (w.type === "clock") {
         configHtml = `
             <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Clock widget</h4>

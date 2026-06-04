@@ -1803,6 +1803,49 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         groups_q = None
     user_groups = groups_q.scalars().all() if groups_q else []
 
+    # Query IMAGE + VIDEO assets the user can pick in the editor's
+    # media-widget asset picker.  Visibility filter mirrors the
+    # schedules-page pattern: globals + group-assigned + own uploads
+    # (not yet assigned to any group).  Admins see everything.
+    media_q = (
+        select(Asset)
+        .where(Asset.deleted_at.is_(None))
+        .where(Asset.asset_type.in_((AssetType.IMAGE, AssetType.VIDEO)))
+        .order_by(Asset.filename)
+    )
+    if not is_admin:
+        global_ids = set(
+            (await db.execute(select(Asset.id).where(Asset.is_global.is_(True)))).scalars().all()
+        )
+        ga_ids = set()
+        if group_ids:
+            ga_ids = set(
+                (await db.execute(
+                    select(GroupAsset.asset_id).where(GroupAsset.group_id.in_(group_ids))
+                )).scalars().all()
+            )
+        own_ids = set()
+        if user:
+            own_ids = set(
+                (await db.execute(
+                    select(Asset.id)
+                    .where(Asset.uploaded_by_user_id == user.id)
+                    .where(~Asset.id.in_(select(GroupAsset.asset_id)))
+                )).scalars().all()
+            )
+        visible = list(global_ids | ga_ids | own_ids)
+        media_q = media_q.where(Asset.id.in_(visible))
+    media_rows = (await db.execute(media_q)).scalars().all()
+    media_assets = [
+        {
+            "id": str(a.id),
+            "name": a.display_name or a.original_filename or a.filename,
+            "asset_type": a.asset_type.value,
+            "filename": a.filename,
+        }
+        for a in media_rows
+    ]
+
     ctx = {
         "active_tab": "assets",
         "is_admin": is_admin,
@@ -1823,6 +1866,7 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         "schema_version": 1,
         "asset_groups": [],
         "asset_is_global": False,
+        "media_assets": media_assets,
     }
 
     if asset_id is not None:
