@@ -207,9 +207,15 @@ paths:
         Live-render the composed slide bound to ``asset_id`` as HTML.
 
         Returns 404 if the asset doesn't exist or isn't a composed slide.
-        Returns 422 if the saved layout fails Pydantic shape validation
-        or the bundle builder's semantic validation. No disk writes;
-        no asset row mutations.
+        Returns 403 if the caller can't see the slide (or any asset it
+        references). Returns 422 if the saved layout fails validation, a
+        referenced asset is missing / the wrong type, or an inlined video
+        exceeds the preview size cap. No disk writes; no row mutations.
+
+        Unlike the publish path (which ships videos as device-local sibling
+        cache files), preview inlines every referenced image *and* video as
+        a base64 ``data:`` URI so the render works in an editor ``<iframe>``
+        under the locked-down preview CSP.
       operationId: preview_composed_slide_composed__asset_id__preview_get
       parameters:
       - name: asset_id
