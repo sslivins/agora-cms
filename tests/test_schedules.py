@@ -710,6 +710,81 @@ class TestEndNowClearedOnEdit:
         )).scalar_one()
         assert row is None
 
+    async def test_patch_clears_per_device_end_now_skip(self, client, db_session):
+        """Regression (per-device End Now): editing a schedule must also delete
+        any ``ScheduleDeviceSkip`` rows, not just the schedule-wide
+        ``skipped_until``.
+
+        Previously, clicking End Now on a single device's dashboard tile wrote
+        a per-device skip row, and editing the schedule (e.g. "set time to now"
+        to restart it) cleared only the schedule-wide skip.  The orphaned
+        per-device row kept ``build_device_sync`` dropping the schedule from
+        that device's payload until the original end_time, so the restarted
+        schedule silently never appeared on the device.
+        """
+        from sqlalchemy import select
+        from cms.models.schedule import Schedule
+        from cms.models.schedule_device_skip import ScheduleDeviceSkip
+        from cms.services.scheduler import build_device_sync
+        import uuid
+
+        group_id, asset_id = await self._seed(db_session)
+        device_id = "end-now-pi"  # the device seeded into the group
+
+        create = await client.post("/api/schedules", json={
+            "name": "Per-Device End Now",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "00:00",
+            "end_time": "23:59",
+        })
+        assert create.status_code == 201
+        sched_id = create.json()["id"]
+
+        # End it now for THIS device only (per-device skip → ScheduleDeviceSkip).
+        resp = await client.post(
+            f"/api/schedules/{sched_id}/end-now", json={"device_id": device_id},
+        )
+        assert resp.status_code == 200
+
+        # The per-device skip row must exist, and the device's sync must drop
+        # the schedule while the skip is active.
+        db_session.expire_all()
+        skip = (await db_session.execute(
+            select(ScheduleDeviceSkip).where(
+                ScheduleDeviceSkip.schedule_id == uuid.UUID(sched_id)
+            )
+        )).scalar_one_or_none()
+        assert skip is not None, "per-device End Now should write a skip row"
+
+        sync = await build_device_sync(device_id, db_session)
+        assert sync is not None
+        assert all(s.name != "Per-Device End Now" for s in sync.schedules), (
+            "schedule should be suppressed for the device while skip is active"
+        )
+
+        # Restart the schedule by editing it (mirrors "set time to now").
+        resp = await client.patch(
+            f"/api/schedules/{sched_id}", json={"start_time": "00:00"},
+        )
+        assert resp.status_code == 200
+
+        # The per-device skip row must be gone...
+        db_session.expire_all()
+        skip = (await db_session.execute(
+            select(ScheduleDeviceSkip).where(
+                ScheduleDeviceSkip.schedule_id == uuid.UUID(sched_id)
+            )
+        )).scalar_one_or_none()
+        assert skip is None, "PATCH must delete orphaned per-device skip rows"
+
+        # ...and the schedule must be back in the device's sync payload.
+        sync = await build_device_sync(device_id, db_session)
+        assert sync is not None
+        assert any(s.name == "Per-Device End Now" for s in sync.schedules), (
+            "schedule should reappear for the device after edit clears the skip"
+        )
+
 
 @pytest.mark.asyncio
 class TestEndNowPerDevice:
