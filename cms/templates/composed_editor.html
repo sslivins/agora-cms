@@ -1,22 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Edit Composed Slide — Agora CMS{% endblock %}
 {% block content %}
-<h1>Assets</h1>
+<h1>{% if is_draft %}Edit Composed Slide{% else %}Composed Slide{% endif %} — {{ asset_name }}</h1>
 <div class="sub-tabs">
-    <a href="/assets" class="sub-tab active">Library</a>
-    <a href="/assets/new" class="sub-tab">Create</a>
-    <a href="/profiles" class="sub-tab">Playback Profiles</a>
+    <a href="/assets" class="sub-tab">← Back to Assets</a>
 </div>
 
 <div class="card">
     <div style="display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap;">
-        <h2 style="margin:0;">{{ asset_name }}</h2>
         <span id="status-pill"
               style="font-size:0.8rem; padding:0.15rem 0.55rem; border-radius:999px;
-                     background:{% if is_draft %}#fef3c7;color:#92400e{% else %}#dcfce7;color:#166534{% endif %};">
+                     background:{% if is_draft %}#f39c12;color:#1a1a2e{% else %}#2ecc71;color:#1a1a2e{% endif %};">
             {% if is_draft %}Draft{% else %}Published{% endif %}
         </span>
-        <span style="font-size:0.8rem; color:var(--text-muted,#57606a);">
+        <span style="font-size:0.8rem; color:var(--text-muted);">
             {% if bundle_built_at %}Bundle built {{ bundle_built_at.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}Never published{% endif %}
         </span>
         <div style="margin-left:auto; display:flex; gap:0.5rem;">
@@ -37,7 +34,7 @@
             <button type="button" class="palette-btn" data-type="text" onclick="selectPaletteType('text')">🅰 Text</button>
             <button type="button" class="palette-btn" data-type="clock" onclick="selectPaletteType('clock')">🕒 Clock</button>
             <button type="button" class="palette-btn" data-type="ticker" onclick="selectPaletteType('ticker')">📰 Ticker</button>
-            <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted,#57606a);">
+            <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
                 None selected.
             </div>
 
@@ -70,26 +67,30 @@
     }
     .palette, .settings {
         padding: 0.75rem;
-        border: 1px solid var(--border-color,#d0d7de);
-        border-radius: 6px;
-        background: var(--card-bg,#fff);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
     }
-    .palette h3, .settings h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .palette h3, .settings h3 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--text); }
     .palette-btn {
         display: block;
         width: 100%;
         text-align: left;
         padding: 0.45rem 0.65rem;
         margin-bottom: 0.35rem;
-        border: 1px solid var(--border-color,#d0d7de);
-        border-radius: 6px;
-        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-alt);
+        color: var(--text);
         cursor: pointer;
         font-size: 0.9rem;
     }
+    .palette-btn:hover { border-color: var(--accent); }
     .palette-btn.active {
-        border-color: var(--accent-color,#0969da);
-        background: #ddebff;
+        border-color: var(--accent);
+        background: var(--primary);
+        color: var(--text);
     }
     .canvas-wrap {
         min-width: 0;
@@ -144,10 +145,17 @@
     .settings select {
         width: 100%;
         padding: 0.35rem 0.45rem;
-        border: 1px solid var(--border-color,#d0d7de);
+        border: 1px solid var(--border);
         border-radius: 4px;
+        background: var(--bg);
+        color: var(--text);
         font-size: 0.85rem;
         box-sizing: border-box;
+    }
+    .settings input[type=color] {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
     }
     .settings textarea { min-height: 60px; resize: vertical; }
     .settings .row { display: flex; gap: 0.5rem; }
@@ -155,13 +163,14 @@
     .settings .delete-btn {
         margin-top: 1rem;
         padding: 0.4rem 0.6rem;
-        border: 1px solid #dc2626;
-        background: #fff;
-        color: #dc2626;
+        border: 1px solid var(--danger);
+        background: transparent;
+        color: var(--danger);
         border-radius: 4px;
         cursor: pointer;
         font-size: 0.85rem;
     }
+    .settings .delete-btn:hover { background: var(--danger); color: #fff; }
 </style>
 
 <script>
