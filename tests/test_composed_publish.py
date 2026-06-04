@@ -316,7 +316,7 @@ async def test_publish_image_via_media_widget_inlines_bytes(db_session, mock_sto
     assert "/assets/videos/" not in bundle_html
 
     await db_session.refresh(cs)
-    assert str(img.id) in cs.bundle_source_asset_ids
+    assert str(img.id) in [str(x) for x in cs.bundle_source_asset_ids]
     assert result.rebuilt is True
 
 
@@ -335,7 +335,7 @@ async def test_publish_video_via_media_widget_emits_sibling_url(db_session, mock
     assert "data:video" not in bundle_html
 
     await db_session.refresh(cs)
-    assert str(vid.id) in cs.bundle_source_asset_ids
+    assert str(vid.id) in [str(x) for x in cs.bundle_source_asset_ids]
 
 
 @pytest.mark.asyncio
@@ -452,4 +452,4 @@ async def test_publish_mixed_image_and_video_uses_both_channels(
     assert "/assets/videos/clip.mp4" in bundle_html
 
     await db_session.refresh(cs)
-    assert set(cs.bundle_source_asset_ids) == {str(img.id), str(vid.id)}
+    assert {str(x) for x in cs.bundle_source_asset_ids} == {str(img.id), str(vid.id)}
