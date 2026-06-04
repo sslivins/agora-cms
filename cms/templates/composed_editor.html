@@ -146,6 +146,12 @@
         border: 2px solid #1a1a1a;
         border-radius: 4px;
         overflow: hidden;
+        /* Establish a query container so widget previews can size their
+           fonts in cqw units (1cqw = 1% of canvas width), keeping the
+           preview proportional to the 1920x1080 design space at any
+           rendered canvas size. inline-size containment does not contain
+           block-size, so the 16/9 aspect-ratio height is preserved. */
+        container-type: inline-size;
     }
     .grid-cell {
         background: rgba(255,255,255,0.04);
@@ -175,6 +181,100 @@
         outline-offset: -2px;
     }
     .placed-widget.dragging { opacity: 0.7; }
+    /* When a widget shows a live content preview, drop the generic blue
+       placeholder fill so the real content reads clearly; keep a faint
+       border for bounds. Selection still adds the green outline below. */
+    .placed-widget.has-preview {
+        background: transparent;
+        padding: 0;
+        border: 1px solid rgba(255,255,255,0.18);
+    }
+    .widget-preview {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .cw-prev-text {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        overflow: hidden;
+        word-wrap: break-word;
+        line-height: 1.1;
+    }
+    .cw-prev-clock {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        font-variant-numeric: tabular-nums;
+    }
+    .cw-prev-clock-time { line-height: 1; white-space: nowrap; }
+    .cw-prev-clock-date { opacity: 0.8; margin-top: 0.25em; white-space: nowrap; }
+    .cw-prev-ticker {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        white-space: nowrap;
+    }
+    .cw-prev-ticker-text {
+        display: inline-block;
+        white-space: nowrap;
+        padding-left: 100%;
+        will-change: transform;
+        animation-name: cw-ticker-scroll;
+        animation-timing-function: linear;
+        animation-iteration-count: infinite;
+    }
+    @keyframes cw-ticker-scroll {
+        from { transform: translateX(0); }
+        to   { transform: translateX(-100%); }
+    }
+    .cw-prev-media { width: 100%; height: 100%; position: relative; }
+    .cw-prev-media img { width: 100%; height: 100%; display: block; }
+    .cw-prev-media-badge {
+        position: absolute;
+        left: 50%; top: 50%;
+        transform: translate(-50%, -50%);
+        width: 1.6rem; height: 1.6rem;
+        background: rgba(0,0,0,0.55);
+        color: #fff;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8rem;
+        pointer-events: none;
+    }
+    .cw-prev-placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.15rem;
+        color: rgba(255,255,255,0.8);
+        font-size: 0.7rem;
+        text-align: center;
+        overflow: hidden;
+        padding: 0.2rem;
+        box-sizing: border-box;
+    }
+    .cw-prev-placeholder .icon { font-size: 1.2rem; line-height: 1; }
     .resize-handle {
         position: absolute;
         background: #22c55e;
@@ -252,6 +352,22 @@ let selectedPaletteType = null;
 let selectedWidgetId = null;
 
 const FONT_OPTIONS = ["sans","serif","mono","display"];
+// Mirror of the server-side _FONT_STACKS (cms/composed/widgets/*.py) so
+// in-editor previews use the same font stacks the device bundle will.
+const FONT_STACKS = {
+    sans: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+    serif: "Georgia, Cambria, 'Times New Roman', serif",
+    mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    display: "'Impact', 'Haettenschweiler', 'Arial Narrow Bold', sans-serif",
+    handwritten: "'Comic Sans MS', 'Bradley Hand', cursive",
+};
+function fontStack(slug) { return FONT_STACKS[slug] || FONT_STACKS.sans; }
+// font_size_px values are in 1920x1080 design space. The canvas is a
+// query container, so 1cqw = 1% of canvas width = 19.2 design px.
+function cqwFont(px) {
+    const n = Number(px);
+    return ((isFinite(n) ? n : 48) / 19.2).toFixed(3) + "cqw";
+}
 const MEDIA_ASSETS = {{ media_assets|tojson }};
 const NULL_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -341,10 +457,10 @@ function renderCanvas() {
         el.style.gridColumn = w.cell.col + " / span " + cs;
         el.style.gridRow = w.cell.row + " / span " + rs;
         el.dataset.widgetId = w.id;
-        const label = document.createElement("div");
-        label.textContent = w.type + ": " + summarize(w);
-        label.style.pointerEvents = "none";
-        el.appendChild(label);
+        const content = renderWidgetContent(w);
+        content.style.pointerEvents = "none";
+        el.classList.add("has-preview");
+        el.appendChild(content);
         el.onclick = (e) => { e.stopPropagation(); selectWidget(w.id); };
         el.addEventListener("pointerdown", (e) => beginDrag(e, w.id, "move"));
         for (const dir of ["n","s","e","w","ne","nw","se","sw"]) {
@@ -355,6 +471,163 @@ function renderCanvas() {
         }
         canvas.appendChild(el);
     }
+}
+
+// ── Live in-editor widget previews ──────────────────────────────────
+// Render a DOM node that approximates how each widget will look on the
+// device, scaled to the canvas via cqw font units. Returns a node that
+// fills the placed widget; the caller sets pointer-events:none so drag,
+// resize and select keep working on the parent .placed-widget.
+function renderWidgetContent(w) {
+    const root = document.createElement("div");
+    root.className = "widget-preview";
+    const cfg = w.config || {};
+    try {
+        if (w.type === "text") {
+            const d = document.createElement("div");
+            d.className = "cw-prev-text";
+            d.textContent = cfg.text || "";
+            d.style.color = cfg.color || "#ffffff";
+            d.style.fontFamily = fontStack(cfg.font_family);
+            d.style.fontSize = cqwFont(cfg.font_size_px);
+            d.style.fontWeight = cfg.bold ? "700" : "400";
+            d.style.fontStyle = cfg.italic ? "italic" : "normal";
+            root.appendChild(d);
+        } else if (w.type === "clock") {
+            const c = document.createElement("div");
+            c.className = "cw-prev-clock";
+            c.style.color = cfg.color || "#ffffff";
+            c.style.fontFamily = fontStack(cfg.font_family);
+            const timeEl = document.createElement("div");
+            timeEl.className = "cw-prev-clock-time";
+            timeEl.style.fontSize = cqwFont(cfg.font_size_px);
+            timeEl.dataset.format = cfg.format || "24h";
+            timeEl.dataset.showSeconds = cfg.show_seconds ? "1" : "0";
+            c.appendChild(timeEl);
+            if (cfg.show_date) {
+                const dateEl = document.createElement("div");
+                dateEl.className = "cw-prev-clock-date";
+                dateEl.style.fontSize = cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
+                c.appendChild(dateEl);
+            }
+            root.appendChild(c);
+            updateClockEl(timeEl);
+            if (cfg.show_date) updateClockDateEl(c.querySelector(".cw-prev-clock-date"));
+        } else if (w.type === "ticker") {
+            const strip = document.createElement("div");
+            strip.className = "cw-prev-ticker";
+            strip.style.background = cfg.background || "#000000";
+            const span = document.createElement("span");
+            span.className = "cw-prev-ticker-text";
+            span.textContent = cfg.text || "";
+            span.style.color = cfg.color || "#ffffff";
+            span.style.fontFamily = fontStack(cfg.font_family);
+            span.style.fontSize = cqwFont(cfg.font_size_px);
+            // Representative duration: faster speed -> shorter cycle.
+            const speed = Math.max(Number(cfg.speed_px_per_sec) || 100, 1);
+            const dur = Math.max(2, Math.min(40, 2000 / speed));
+            span.style.animationDuration = dur.toFixed(2) + "s";
+            span.style.animationDirection =
+                cfg.direction === "right" ? "reverse" : "normal";
+            if (cfg.mode === "bounce") {
+                span.style.animationName = "cw-ticker-scroll";
+                span.style.animationDirection = "alternate";
+            }
+            strip.appendChild(span);
+            root.appendChild(strip);
+        } else if (w.type === "media") {
+            root.appendChild(renderMediaPreview(cfg));
+        } else {
+            root.textContent = w.type;
+        }
+    } catch (e) {
+        root.textContent = w.type;
+    }
+    return root;
+}
+
+function renderMediaPreview(cfg) {
+    const aid = cfg.asset_id;
+    if (!aid || aid === NULL_UUID) {
+        return mediaPlaceholder("🖼", "No asset selected");
+    }
+    const a = MEDIA_ASSETS.find(x => String(x.id) === String(aid));
+    if (!a) return mediaPlaceholder("⚠", "Missing asset");
+    const wrap = document.createElement("div");
+    wrap.className = "cw-prev-media";
+    const isVideo = a.asset_type === "video";
+    if (a.thumbnail_url) {
+        const img = document.createElement("img");
+        img.src = a.thumbnail_url;
+        img.alt = cfg.alt || a.name || "";
+        img.style.objectFit = cfg.object_fit || "cover";
+        img.onerror = () => {
+            wrap.replaceChildren(
+                mediaPlaceholder(isVideo ? "🎬" : "🖼", a.name || "")
+            );
+        };
+        wrap.appendChild(img);
+        if (isVideo) {
+            const badge = document.createElement("div");
+            badge.className = "cw-prev-media-badge";
+            badge.textContent = "▶";
+            wrap.appendChild(badge);
+        }
+    } else {
+        wrap.appendChild(mediaPlaceholder(isVideo ? "🎬" : "🖼", a.name || ""));
+    }
+    return wrap;
+}
+
+function mediaPlaceholder(icon, label) {
+    const p = document.createElement("div");
+    p.className = "cw-prev-placeholder";
+    const i = document.createElement("div");
+    i.className = "icon";
+    i.textContent = icon;
+    const t = document.createElement("div");
+    t.textContent = label;
+    p.appendChild(i);
+    p.appendChild(t);
+    return p;
+}
+
+function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
+function updateClockEl(el) {
+    const d = new Date();
+    const fmt = el.dataset.format || "24h";
+    const showSeconds = el.dataset.showSeconds === "1";
+    let hours = d.getHours();
+    let suffix = "";
+    if (fmt === "12h") {
+        suffix = hours >= 12 ? " PM" : " AM";
+        hours = hours % 12;
+        if (hours === 0) hours = 12;
+    }
+    let t = (fmt === "24h" ? pad2(hours) : ("" + hours)) + ":" + pad2(d.getMinutes());
+    if (showSeconds) t += ":" + pad2(d.getSeconds());
+    t += suffix;
+    el.textContent = t;
+}
+
+function updateClockDateEl(el) {
+    if (!el) return;
+    el.textContent = new Date().toLocaleDateString(undefined, {
+        weekday: "long", year: "numeric", month: "long", day: "numeric"
+    });
+}
+
+function tickClocks() {
+    document.querySelectorAll(".cw-prev-clock-time").forEach(updateClockEl);
+    document.querySelectorAll(".cw-prev-clock-date").forEach(updateClockDateEl);
+}
+
+let _clockTimerStarted = false;
+function startClockTimer() {
+    if (_clockTimerStarted) return;
+    _clockTimerStarted = true;
+    setInterval(tickClocks, 1000);
 }
 
 function beginDrag(ev, widgetId, mode) {
@@ -789,5 +1062,6 @@ function markPublished() {
 ensureLayoutShape();
 renderCanvas();
 renderSettings();
+startClockTimer();
 </script>
 {% endblock %}

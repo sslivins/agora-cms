@@ -1836,12 +1836,22 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         visible = list(global_ids | ga_ids | own_ids)
         media_q = media_q.where(Asset.id.in_(visible))
     media_rows = (await db.execute(media_q)).scalars().all()
+    # Thumbnail/poster URLs so the editor canvas can show a live preview
+    # of each image/video widget (videos get a poster frame once they've
+    # been transcoded).  Assets without a ready thumbnail variant are
+    # simply absent from the map -> thumbnail_url=None, and the editor
+    # falls back to a type-icon placeholder.
+    from cms.routers.assets import _thumbnail_urls_for
+
+    thumb_map = await _thumbnail_urls_for([a.id for a in media_rows], db)
+    thumb_by_str = {str(aid): url for aid, url in thumb_map.items()}
     media_assets = [
         {
             "id": str(a.id),
             "name": a.display_name or a.original_filename or a.filename,
             "asset_type": a.asset_type.value,
             "filename": a.filename,
+            "thumbnail_url": thumb_by_str.get(str(a.id)),
         }
         for a in media_rows
     ]
