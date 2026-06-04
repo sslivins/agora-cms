@@ -1782,6 +1782,94 @@ async def slideshow_builder_edit(
     return templates.TemplateResponse(request, "slideshow_builder.html", ctx)
 
 
+@router.get(
+    "/assets/new/composed",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
+)
+async def composed_builder_new(request: Request, db: AsyncSession = Depends(get_db)):
+    """Show the 'create composed slide' form (name + group picker).
+
+    The form POSTs to ``/composed/`` which creates the asset + an empty
+    draft layout and returns the editor URL.
+    """
+    user: User | None = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+    if group_ids is None:
+        groups_q = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    elif group_ids:
+        groups_q = await db.execute(
+            select(DeviceGroup).where(DeviceGroup.id.in_(group_ids)).order_by(DeviceGroup.name)
+        )
+    else:
+        groups_q = None
+    user_groups = groups_q.scalars().all() if groups_q else []
+    return templates.TemplateResponse(request, "composed_new.html", {
+        "active_tab": "assets",
+        "is_admin": is_admin,
+        "user_groups": user_groups,
+    })
+
+
+@router.get(
+    "/assets/{asset_id}/composed",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission(ASSETS_WRITE))],
+)
+async def composed_builder_edit(
+    asset_id: str, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Open the composed-slide editor for an existing asset.
+
+    Loads the asset + the backing composed-slide row's
+    ``layout_json`` and hands them to the editor template. The editor
+    is HTMX-driven and talks to ``/composed/{id}/layout`` (PATCH),
+    ``/composed/{id}/publish`` (POST), and
+    ``/composed/{id}/preview`` (iframe GET) for round-trips.
+    """
+    import uuid as _uuid
+
+    try:
+        aid = _uuid.UUID(asset_id)
+    except ValueError:
+        return RedirectResponse("/assets", status_code=303)
+
+    asset = (await db.execute(
+        select(Asset).where(
+            Asset.id == aid,
+            Asset.deleted_at.is_(None),
+            Asset.asset_type == AssetType.COMPOSED,
+        )
+    )).scalar_one_or_none()
+    if asset is None:
+        return RedirectResponse("/assets", status_code=303)
+
+    from cms.models.composed_slide import ComposedSlide
+
+    composed = (await db.execute(
+        select(ComposedSlide).where(ComposedSlide.asset_id == aid)
+    )).scalar_one_or_none()
+    if composed is None:
+        return RedirectResponse("/assets", status_code=303)
+
+    user: User | None = getattr(request.state, "user", None)
+    group_ids = await get_user_group_ids(user, db) if user else []
+    is_admin = group_ids is None
+
+    return templates.TemplateResponse(request, "composed_editor.html", {
+        "active_tab": "assets",
+        "is_admin": is_admin,
+        "asset": asset,
+        "asset_id": str(asset.id),
+        "asset_name": asset.display_name or asset.original_filename or asset.filename,
+        "layout_json": composed.layout_json,
+        "is_draft": composed.is_draft,
+        "bundle_built_at": composed.bundle_built_at,
+        "schema_version": composed.schema_version,
+    })
+
+
 # ── Schedules ──
 
 
