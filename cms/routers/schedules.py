@@ -16,6 +16,7 @@ from cms.permissions import SCHEDULES_READ, SCHEDULES_WRITE
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceStatus
 from cms.models.schedule import Schedule
+from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, schedules_conflict, evaluate_schedules
@@ -443,8 +444,20 @@ async def update_schedule(
 
     for field, value in updates.items():
         setattr(schedule, field, value)
-    # Clear any active "End Now" skip so the schedule is re-evaluated
+    # Clear any active "End Now" skip so the schedule is re-evaluated.
+    # Editing a schedule is a deliberate "run this" action, so BOTH skip
+    # scopes must be cleared: the schedule-wide ``skipped_until`` AND any
+    # per-device ``ScheduleDeviceSkip`` rows.  Previously only the
+    # schedule-wide skip was cleared, so a per-device End Now (the
+    # dashboard tile button) left an orphaned skip row that kept the
+    # schedule suppressed for that device until its original end_time —
+    # making a restarted schedule silently fail to appear on the device.
     schedule.skipped_until = None
+    await db.execute(
+        ScheduleDeviceSkip.__table__.delete().where(
+            ScheduleDeviceSkip.schedule_id == schedule_id
+        )
+    )
     await _check_conflicts(schedule, db, exclude_id=schedule_id)
     # NB: compute diff against the CURRENT (post-mutation) schedule by
     # comparing against the old snapshot is messier here because end_time
