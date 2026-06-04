@@ -169,6 +169,35 @@ class TestComposedUI:
         assert resp.status_code in (302, 303)
         assert resp.headers["location"] == "/assets"
 
+    async def test_media_assets_carry_thumbnail_url_key(self, client, db_session):
+        # The editor canvas renders live media previews from a
+        # ``thumbnail_url`` field injected per media asset. The key must
+        # always be present (value may be null when no ready thumbnail
+        # variant exists) so the client can fall back to a type icon.
+        img = Asset(
+            filename=f"pic-{uuid.uuid4()}.jpg",
+            display_name="Lobby photo",
+            asset_type=AssetType.IMAGE,
+            size_bytes=10,
+            checksum="abc",
+            is_global=True,
+        )
+        db_session.add(img)
+        await db_session.commit()
+
+        resp = await client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        assert "thumbnail_url" in resp.text
+        assert str(img.id) in resp.text
+
+    async def test_editor_ships_live_preview_renderer(self, client, db_session):
+        asset, _ = await _make_composed(db_session)
+        resp = await client.get(f"/assets/{asset.id}/composed")
+        assert resp.status_code == 200
+        # Live in-editor widget previews replaced the old generic label.
+        assert "renderWidgetContent" in resp.text
+        assert "container-type: inline-size" in resp.text
+
     async def test_unauth_ui_redirects_to_login(self, unauthed_client):
         resp = await unauthed_client.get(
             "/assets/new/composed", follow_redirects=False
