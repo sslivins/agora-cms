@@ -43,12 +43,25 @@ class BundleContext:
     asset MUST also declare it; the bundle builder rejects layouts
     whose widgets reference undeclared assets at render time.
 
-    Empty default is intentional: trivial widgets (text, clock) that
+    ``sibling_asset_urls`` is the parallel channel for assets the
+    bundle should *reference by URL* rather than inline as bytes.
+    Used for VIDEO assets in Phase 1C onward — videos are way too big
+    to inline as data URIs, so the publish layer registers them as
+    sibling assets on the device cache and the bundle's ``<video>``
+    tag just points at the device-local URL (e.g.
+    ``/assets/videos/foo.mp4``).  Keyed by the same declared asset ID.
+
+    A given asset ID appears in *either* the bytes channel *or* the
+    sibling-URLs channel, never both — the publish layer buckets by
+    ``asset_type``.
+
+    Empty defaults are intentional: trivial widgets (text, clock) that
     never touch assets can ignore the parameter entirely.
     """
 
     asset_bytes: dict[uuid.UUID, bytes] = field(default_factory=dict)
     asset_mimes: dict[uuid.UUID, str] = field(default_factory=dict)
+    sibling_asset_urls: dict[uuid.UUID, str] = field(default_factory=dict)
 
 
 @dataclass

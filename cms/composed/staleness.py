@@ -121,9 +121,16 @@ def compute_staleness(
         )
 
     current_ids = _compute_current_asset_ids(layout, registry)
-    bundle_ids = set(slide.bundle_source_asset_ids or [])
-    added = current_ids - bundle_ids
-    removed = bundle_ids - current_ids
+    # Normalize both sides to strings: on Postgres prod the column is
+    # ARRAY(UUID) and reads back as UUID objects; on the SQLite test
+    # variant it degrades to JSON and reads back as strings.  Compare
+    # by string form so set arithmetic is correct on either backend.
+    current_str = {str(x) for x in current_ids}
+    bundle_str = {str(x) for x in (slide.bundle_source_asset_ids or [])}
+    added_str = current_str - bundle_str
+    removed_str = bundle_str - current_str
+    added = {uuid.UUID(s) for s in added_str}
+    removed = {uuid.UUID(s) for s in removed_str}
 
     if added or removed:
         return StaleBundleReport(

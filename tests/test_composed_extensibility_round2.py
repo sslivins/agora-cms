@@ -304,7 +304,7 @@ class TestExtensibilityContractGuardrail:
     def test_bundle_context_fields_pinned(self):
         assert is_dataclass(BundleContext)
         names = {f.name for f in fields(BundleContext)}
-        assert names == {"asset_bytes", "asset_mimes"}, (
+        assert names == {"asset_bytes", "asset_mimes", "sibling_asset_urls"}, (
             f"BundleContext fields drifted: {names!r}. Adding fields "
             "may be OK — explicitly update this pin and the contract docs."
         )

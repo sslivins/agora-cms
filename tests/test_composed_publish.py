@@ -246,3 +246,210 @@ async def test_publish_raises_on_validation_failure(db_session, mock_storage_and
 
     with pytest.raises(PublishError, match="failed validation"):
         await publish_composed_slide(asset.id, db_session)
+
+
+# ---------------------------------------------------------------------------
+# MediaWidget bucketing tests (Phase 1C)
+# ---------------------------------------------------------------------------
+#
+# These exercise the publish-layer split: each declared asset is routed
+# to one of three fates based on its AssetType.  IMAGE → inlined as a
+# data URI (bytes channel).  VIDEO → emitted as a sibling URL the device
+# resolves against its local /assets cache.  Anything else → PublishError.
+
+
+def _media_layout(asset_id: uuid.UUID, *, cell: Cell | None = None) -> Layout:
+    layout = empty_layout()
+    layout.widgets.append(
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="media",
+            cell=cell or Cell(row=1, col=1, rowspan=2, colspan=4),
+            config={"asset_id": str(asset_id), "object_fit": "cover", "alt": ""},
+            config_version=1,
+        )
+    )
+    return layout
+
+
+async def _make_image_asset(db_session, tmp_path, filename: str = "pic.png") -> Asset:
+    # MediaWidget's image branch inlines the file bytes — the publish
+    # layer reads from disk via asset_storage_path, so the file must
+    # actually exist at tmp_path / filename.
+    img = Asset(
+        filename=filename,
+        asset_type=AssetType.IMAGE,
+        size_bytes=8,
+        checksum="x",
+    )
+    db_session.add(img)
+    await db_session.flush()
+    (tmp_path / filename).write_bytes(b"\x89PNG\r\n\x1a\n")
+    return img
+
+
+async def _make_video_asset(db_session, filename: str = "clip.mp4") -> Asset:
+    # Videos go through the sibling-URL channel — publish doesn't touch
+    # the file bytes, so we don't need to write anything to disk.
+    vid = Asset(
+        filename=filename,
+        asset_type=AssetType.VIDEO,
+        size_bytes=1024,
+        checksum="y",
+    )
+    db_session.add(vid)
+    await db_session.flush()
+    return vid
+
+
+@pytest.mark.asyncio
+async def test_publish_image_via_media_widget_inlines_bytes(db_session, mock_storage_and_dir):
+    _, tmp_path = mock_storage_and_dir
+    img = await _make_image_asset(db_session, tmp_path)
+    asset, cs = await _make_composed(db_session, layout=_media_layout(img.id))
+
+    result = await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    # IMAGE went through the bytes channel — emitted as a data URI
+    assert "data:image/png;base64," in bundle_html
+    assert "/assets/videos/" not in bundle_html
+
+    await db_session.refresh(cs)
+    assert str(img.id) in [str(x) for x in cs.bundle_source_asset_ids]
+    assert result.rebuilt is True
+
+
+@pytest.mark.asyncio
+async def test_publish_video_via_media_widget_emits_sibling_url(db_session, mock_storage_and_dir):
+    _, tmp_path = mock_storage_and_dir
+    vid = await _make_video_asset(db_session, "clip.mp4")
+    asset, cs = await _make_composed(db_session, layout=_media_layout(vid.id))
+
+    await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    # VIDEO went through the sibling URL channel — no inlined bytes
+    assert "<video " in bundle_html
+    assert "/assets/videos/clip.mp4" in bundle_html
+    assert "data:video" not in bundle_html
+
+    await db_session.refresh(cs)
+    assert str(vid.id) in [str(x) for x in cs.bundle_source_asset_ids]
+
+
+@pytest.mark.asyncio
+async def test_publish_video_filename_is_url_encoded(db_session, mock_storage_and_dir):
+    _, tmp_path = mock_storage_and_dir
+    # Spaces, parens, ampersand — all need URL-encoding to form a valid
+    # src attribute.  The HTML attribute value still needs to round-trip
+    # safely (no double-escape that breaks the path on-device).
+    vid = await _make_video_asset(db_session, "my video (final) & cut.mp4")
+    asset, _ = await _make_composed(db_session, layout=_media_layout(vid.id))
+
+    await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    # urllib.parse.quote default-safe set leaves "/" alone; everything
+    # else interesting gets percent-encoded.
+    assert "my%20video%20%28final%29%20%26%20cut.mp4" in bundle_html
+    # Sanity: the raw form did NOT leak through
+    assert "my video (final)" not in bundle_html
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_non_media_asset_type(db_session, mock_storage_and_dir):
+    # A webpage asset has no business being targeted by MediaWidget —
+    # the publish layer is the second line of defense (the first being
+    # the UI filter on the editor).
+    web = Asset(
+        filename="page.url",
+        asset_type=AssetType.WEBPAGE,
+        size_bytes=0,
+        checksum="",
+    )
+    db_session.add(web)
+    await db_session.flush()
+    asset, _ = await _make_composed(db_session, layout=_media_layout(web.id))
+
+    with pytest.raises(PublishError, match="only IMAGE and VIDEO"):
+        await publish_composed_slide(asset.id, db_session)
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_missing_asset_reference(db_session, mock_storage_and_dir):
+    # User deleted the asset between save and publish — publish must
+    # surface this as a clean PublishError, not a 500.
+    ghost = uuid.uuid4()
+    asset, _ = await _make_composed(db_session, layout=_media_layout(ghost))
+
+    with pytest.raises(PublishError, match="missing asset"):
+        await publish_composed_slide(asset.id, db_session)
+
+
+@pytest.mark.asyncio
+async def test_publish_warns_when_multiple_video_widgets_declared(
+    db_session, mock_storage_and_dir, caplog
+):
+    vid1 = await _make_video_asset(db_session, "a.mp4")
+    vid2 = await _make_video_asset(db_session, "b.mp4")
+    layout = empty_layout()
+    layout.widgets.extend([
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="media",
+            cell=Cell(row=1, col=1, rowspan=2, colspan=4),
+            config={"asset_id": str(vid1.id), "object_fit": "cover", "alt": ""},
+            config_version=1,
+        ),
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="media",
+            cell=Cell(row=3, col=1, rowspan=2, colspan=4),
+            config={"asset_id": str(vid2.id), "object_fit": "cover", "alt": ""},
+            config_version=1,
+        ),
+    ])
+    asset, _ = await _make_composed(db_session, layout=layout)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="cms.composed.publish"):
+        await publish_composed_slide(asset.id, db_session)
+
+    assert any("video widgets" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_publish_mixed_image_and_video_uses_both_channels(
+    db_session, mock_storage_and_dir
+):
+    _, tmp_path = mock_storage_and_dir
+    img = await _make_image_asset(db_session, tmp_path, "pic.png")
+    vid = await _make_video_asset(db_session, "clip.mp4")
+    layout = empty_layout()
+    layout.widgets.extend([
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="media",
+            cell=Cell(row=1, col=1, rowspan=2, colspan=4),
+            config={"asset_id": str(img.id), "object_fit": "cover", "alt": ""},
+            config_version=1,
+        ),
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="media",
+            cell=Cell(row=3, col=1, rowspan=2, colspan=4),
+            config={"asset_id": str(vid.id), "object_fit": "cover", "alt": ""},
+            config_version=1,
+        ),
+    ])
+    asset, cs = await _make_composed(db_session, layout=layout)
+
+    await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    assert "data:image/png;base64," in bundle_html
+    assert "/assets/videos/clip.mp4" in bundle_html
+
+    await db_session.refresh(cs)
+    assert {str(x) for x in cs.bundle_source_asset_ids} == {str(img.id), str(vid.id)}
