@@ -399,8 +399,19 @@ async def preview_composed_slide(
             ),
         ) from e
 
+    # The weather widget is the only widget that makes a runtime network
+    # call (a keyless Open-Meteo forecast fetch). The locked-down preview
+    # CSP (default-src 'none', no connect-src) blocks that fetch, so the
+    # preview would show the widget's offline "Weather unavailable"
+    # fallback instead of live values. Allow exactly that one origin —
+    # and only when the slide actually contains a weather widget, so a
+    # plain text/image slide keeps the fully-locked CSP.
+    csp = _PREVIEW_CSP
+    if any(inst.type == "weather" for inst in layout.widgets):
+        csp = csp + "; connect-src https://api.open-meteo.com"
+
     headers = {
-        "Content-Security-Policy": _PREVIEW_CSP,
+        "Content-Security-Policy": csp,
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     }
