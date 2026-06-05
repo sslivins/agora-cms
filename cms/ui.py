@@ -1856,6 +1856,15 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         for a in media_rows
     ]
 
+    # Seed the create-mode editor from the canonical schema default rather
+    # than a hand-written literal. A stale literal here previously seeded
+    # ``canvas: {w, h}`` (legacy keys), so the very first save of a brand-new
+    # slide PATCHed ``{w, h}`` and was rejected 422 ``extra_forbidden`` — the
+    # JS ``|| {width,height}`` fallback never heals it because the seeded
+    # canvas is already truthy. Sourcing from ``empty_layout`` keeps this in
+    # lock-step with ``cms.composed.schema`` forever.
+    from cms.composed.schema import empty_layout
+
     ctx = {
         "active_tab": "assets",
         "is_admin": is_admin,
@@ -1864,13 +1873,7 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         "asset": None,
         "asset_id": None,
         "asset_name": "",
-        "layout_json": {
-            "schema_version": 1,
-            "grid": {"rows": 8, "cols": 12},
-            "canvas": {"w": 1920, "h": 1080},
-            "background": {"color": "#000000"},
-            "widgets": [],
-        },
+        "layout_json": empty_layout().model_dump(mode="json"),
         "is_draft": True,
         "bundle_built_at": None,
         "schema_version": 1,
