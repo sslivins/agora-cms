@@ -133,10 +133,12 @@ def test_colspan_extending_past_grid_is_rejected():
     assert any(e.code == "cell_out_of_bounds" for e in errors)
 
 
-# ── Overlap detection ────────────────────────────────────────────────
+# ── Overlap is now allowed (z-order = array order) ───────────────────
 
 
-def test_overlap_reports_both_widget_ids():
+def test_overlapping_widgets_are_allowed():
+    """Overlap is a feature: stacking order is the widgets array order,
+    so the validator must NOT report a cells_overlap error."""
     a = uuid.uuid4()
     b = uuid.uuid4()
     layout = Layout(
@@ -145,14 +147,19 @@ def test_overlap_reports_both_widget_ids():
             _wi(wid=b, cell=Cell(row=2, col=2, rowspan=2, colspan=2)),
         ]
     )
-    errors = [e for e in validate_layout(layout, _registry()) if e.code == "cells_overlap"]
-    assert errors, "expected cells_overlap"
-    msg = errors[0].message
-    assert str(a) in msg
-    assert str(b) in msg
+    errors = validate_layout(layout, _registry())
+    assert not any(e.code == "cells_overlap" for e in errors)
+    # Fully-overlapping (identical) cells are fine too.
+    layout2 = Layout(
+        widgets=[
+            _wi(wid=a, cell=Cell(row=1, col=1, rowspan=2, colspan=2)),
+            _wi(wid=b, cell=Cell(row=1, col=1, rowspan=2, colspan=2)),
+        ]
+    )
+    assert validate_layout(layout2, _registry()) == []
 
 
-def test_adjacent_widgets_do_not_overlap():
+def test_adjacent_widgets_validate_clean():
     layout = Layout(
         widgets=[
             _wi(cell=Cell(row=1, col=1, colspan=6)),

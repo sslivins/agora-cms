@@ -6,7 +6,6 @@ AI generate endpoint, and (defensively) the bundle builder all need:
 
 * Cells fit within grid bounds (also enforced by Pydantic for single
   cells, but rowspan/colspan can still push past the edge).
-* No overlapping cells (v1 has no z-index).
 * Every widget instance's ``type`` is in the registry.
 * Per-widget config validates against ``ConfigSchema`` and the
   widget's own ``validate_semantic`` hook.
@@ -32,21 +31,12 @@ class ValidationError:
     """One human-readable layout problem.
 
     ``widget_id`` is set when the problem is scoped to a specific
-    widget instance; ``None`` for layout-wide issues (e.g. overlaps).
+    widget instance; ``None`` for layout-wide issues.
     """
 
     code: str
     message: str
     widget_id: str | None = None
-
-
-def _cell_cells(cell: Cell) -> set[tuple[int, int]]:
-    """Expand a Cell into the set of (row, col) tuples it occupies."""
-    return {
-        (r, c)
-        for r in range(cell.row, cell.row + cell.rowspan)
-        for c in range(cell.col, cell.col + cell.colspan)
-    }
 
 
 def _cell_out_of_bounds(cell: Cell) -> bool:
@@ -113,10 +103,11 @@ def validate_layout(
             )
         seen_ids.add(wid)
 
-    # ── Per-widget bounds + per-cell ownership ──────────────────
-    # Map every occupied (row,col) → widget id so we can report
-    # *which* two widgets collide instead of just "something overlaps".
-    occupied: dict[tuple[int, int], str] = {}
+    # ── Per-widget bounds ───────────────────────────────────────
+    # Widgets MAY overlap: stacking order is the ``layout.widgets``
+    # array order (later = painted on top), mirrored by an explicit
+    # ``z-index`` in the bundle.  So the only cell-geometry rule left
+    # is that a widget must fit inside the grid.
     for inst in layout.widgets:
         wid = str(inst.id)
 
@@ -133,25 +124,6 @@ def validate_layout(
                     widget_id=wid,
                 )
             )
-            # Don't try to mark cells for an out-of-bounds widget —
-            # we'd just generate noise.  Move on.
-            continue
-
-        for rc in _cell_cells(inst.cell):
-            existing = occupied.get(rc)
-            if existing is not None and existing != wid:
-                errors.append(
-                    ValidationError(
-                        code="cells_overlap",
-                        message=(
-                            f"widgets {existing} and {wid} both occupy "
-                            f"cell ({rc[0]},{rc[1]})"
-                        ),
-                        widget_id=wid,
-                    )
-                )
-            else:
-                occupied[rc] = wid
 
     # ── Per-widget config validation via registry ───────────────
     for inst in layout.widgets:

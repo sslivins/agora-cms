@@ -290,7 +290,7 @@ paths:
         The endpoint:
 
         1. Validates Pydantic shape — 422 on failure.
-        2. Runs ``validate_layout`` (semantic: bounds, overlaps, unknown
+        2. Runs ``validate_layout`` (semantic: bounds, unknown
            widget types, per-widget ``validate_semantic``) — 422 on failure.
         3. Checks referenced-asset ACL (audience widening) — 400 on failure.
         4. Persists the canonical JSON via ``layout.model_dump(mode="json")``.

@@ -10,8 +10,10 @@ v1 constraints (locked in 2026-06-03, see ``plan.md``):
 * Canvas is fixed at 1920×1080 (16:9).  Per-device profiles are
   deferred to a future major schema bump.
 * Grid is fixed at 12 columns × 8 rows.  Snap-to-cell editor.
-* No layering / z-index.  Cells must not overlap; the semantic
-  validator (:mod:`cms.composed.validate`) enforces this.
+* Widgets MAY overlap.  Stacking order is the ``widgets`` array
+  order (later entries paint on top), which the bundle builder
+  mirrors with an explicit ``z-index``.  The editor exposes
+  "Bring to Front / Send to Back" controls that reorder the array.
 
 The actual content of a widget's ``config`` dict is opaque at this
 layer — each widget defines its own ``ConfigSchema``.  The
