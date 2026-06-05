@@ -9,6 +9,13 @@ to non-``data:`` URLs.  This is the file we ship to devices: the
 existing per-asset cache layer downloads it once and replays it
 offline-tolerantly.
 
+(The one bounded exception is the weather widget, which performs a
+runtime ``fetch()`` to Open-Meteo from its ``init_js``.  That URL lives
+only as a JS string literal — never as an HTML ``src=`` / ``href=``
+attribute — so the no-external-reference invariant above still holds
+for the static markup, and the widget degrades to a cached / "Weather
+unavailable" state when offline.  See :mod:`cms.composed.widgets.weather`.)
+
 Determinism: building the same layout twice yields byte-identical
 output (so :func:`hashlib.sha256` is a stable cache key).  We achieve
 this by iterating widgets in their layout order and de-duplicating
