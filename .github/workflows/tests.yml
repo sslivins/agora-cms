@@ -123,6 +123,13 @@ jobs:
             requirements.txt
             requirements-shared.txt
 
+      # See the ``test`` job for why Node is pinned here (inline-JS
+      # template syntax guard runs ``node --check``).
+      - uses: actions/setup-node@v4
+        if: steps.changed.outputs.files != ''
+        with:
+          node-version: "20"
+
       - name: Cache FFmpeg
         if: steps.changed.outputs.files != ''
         id: ffmpeg-cache
@@ -191,6 +198,14 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-shared.txt
+
+      # Needed by tests/test_template_inline_js_syntax.py, which runs
+      # ``node --check`` on every template's inline <script>. Pinned
+      # rather than relying on the runner's bundled Node so the guard
+      # can't silently skip if that default changes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: Cache FFmpeg
         id: ffmpeg-cache
