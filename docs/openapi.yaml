@@ -328,6 +328,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - composed
+      summary: Get Composed Layout
+      description: |-
+        Return the current draft layout in the friendly widget shape.
+
+        Read-only. Widget ``id``s are included so an AI edit can preserve
+        widget identity by sending them back unchanged. The locked canvas
+        and grid are reported for context but are not editable.
+      operationId: get_composed_layout_composed__asset_id__layout_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Composed Layout Composed  Asset Id  Layout Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /composed/{asset_id}/publish:
     post:
       tags:
@@ -358,6 +392,77 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Publish Composed Endpoint Composed  Asset Id  Publish Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /composed/widget-types:
+    get:
+      tags:
+      - composed
+      summary: List Composed Widget Types
+      description: |-
+        Return the catalog of available composed-slide widget types.
+
+        Read-only registry introspection. Each entry has the widget's config
+        JSON-schema, default config, required fields, and whether it
+        references an asset. Powers the AI assistant's widget discovery so
+        it never invents a widget type or config field.
+      operationId: list_composed_widget_types_composed_widget_types_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response List Composed Widget Types Composed Widget Types Get
+  /composed/{asset_id}/layout-friendly:
+    put:
+      tags:
+      - composed
+      summary: Put Composed Layout Friendly
+      description: |-
+        Replace a draft's layout from the friendly widget shape.
+
+        Body: ``{widgets: [...], background_color?: "#rrggbb"}`` where each
+        widget is ``{type, row, col, rowspan?, colspan?, config?, id?}``.
+        The server assigns/preserves widget UUIDs and pins the locked
+        canvas/grid, then runs the exact same shape + semantic + asset-ACL
+        validation as the canonical PATCH endpoint. Sets ``is_draft=True``.
+
+        This is the AI-assistant write path: the LLM never has to spell out
+        the locked canvas/grid or manage widget UUIDs, which is the source
+        of the "extra inputs not permitted" failures it would otherwise hit.
+      operationId: put_composed_layout_friendly_composed__asset_id__layout_friendly_put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Put Composed Layout Friendly Composed  Asset Id  Layout Friendly Put
         '422':
           description: Validation Error
           content:

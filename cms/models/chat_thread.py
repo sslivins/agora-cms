@@ -39,6 +39,12 @@ class ChatThread(Base):
     title: Mapped[str] = mapped_column(
         String(200), nullable=False, default="", server_default=""
     )
+    mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="general",
+        server_default="general",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
