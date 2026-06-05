@@ -64,6 +64,25 @@
 
     <div id="msg-box" style="margin-top:0.5rem; display:none; padding:0.5rem 0.75rem; border-radius:6px;"></div>
 
+    <!-- Persistent publish-state banner. Non-flashing (no animation) so it's
+         clearly visible without being annoying. Server renders the initial
+         state; markDraft()/markPublished() update it live as the user edits. -->
+    <div id="publish-banner" role="status"
+         style="margin-top:0.5rem; display:{% if edit_mode and is_draft %}block{% else %}none{% endif %};
+                padding:0.6rem 0.85rem; border-radius:8px; font-size:0.9rem;
+                border-left:5px solid
+                {% if edit_mode and is_draft and not bundle_built_at %}#dc2626{% else %}#f59e0b{% endif %};
+                background:
+                {% if edit_mode and is_draft and not bundle_built_at %}#fef2f2;color:#991b1b{% else %}#fffbeb;color:#92400e{% endif %};">
+        {% if edit_mode and is_draft and not bundle_built_at %}
+        <strong>⚠ Not published.</strong> This slide will <strong>not appear on any device</strong>
+        until you click <strong>Publish</strong>. Saving only stores a draft.
+        {% elif edit_mode and is_draft %}
+        <strong>⚠ Unpublished changes.</strong> Devices are still showing the
+        <strong>last published version</strong>. Click <strong>Publish</strong> to push your edits.
+        {% endif %}
+    </div>
+
     <div class="composed-editor">
         <aside class="palette">
             <h3>Palette</h3>
@@ -459,6 +478,9 @@
 <script>
 let ASSET_ID = {% if asset_id %}"{{ asset_id }}"{% else %}null{% endif %};
 const EDIT_MODE = {% if edit_mode %}true{% else %}false{% endif %};
+// Whether a published bundle has ever been built for this slide. Drives the
+// "never published" (red) vs "unpublished changes" (amber) banner variant.
+let BUNDLE_EVER_BUILT = {% if bundle_built_at %}true{% else %}false{% endif %};
 const SCHEMA_VERSION = {{ schema_version|tojson }};
 let LAYOUT = {{ layout_json|tojson }};
 let selectedPaletteType = null;
@@ -1452,7 +1474,7 @@ async function saveLayout(opts) {
             flash(msg, false);
             return false;
         }
-        flash("Saved.", true);
+        flash("Saved as draft — not live on devices yet. Click Publish to push it.", true);
         markDraft();
         clearDirty();
         if (isCreate && !opts.skipRedirect) {
@@ -1502,11 +1524,40 @@ async function publishLayout() {
     }
 }
 
+function setPublishBanner(state) {
+    // state: "never" (red, no bundle yet), "stale" (amber, edited since
+    // publish), or "published" (hidden).
+    const banner = document.getElementById("publish-banner");
+    if (!banner) return;
+    if (state === "published") {
+        banner.style.display = "none";
+        return;
+    }
+    if (state === "never") {
+        banner.style.display = "block";
+        banner.style.borderLeft = "5px solid #dc2626";
+        banner.style.background = "#fef2f2";
+        banner.style.color = "#991b1b";
+        banner.innerHTML = "<strong>\u26a0 Not published.</strong> This slide will " +
+            "<strong>not appear on any device</strong> until you click " +
+            "<strong>Publish</strong>. Saving only stores a draft.";
+    } else {
+        banner.style.display = "block";
+        banner.style.borderLeft = "5px solid #f59e0b";
+        banner.style.background = "#fffbeb";
+        banner.style.color = "#92400e";
+        banner.innerHTML = "<strong>\u26a0 Unpublished changes.</strong> Devices are " +
+            "still showing the <strong>last published version</strong>. Click " +
+            "<strong>Publish</strong> to push your edits.";
+    }
+}
+
 function markDraft() {
     const pill = document.getElementById("status-pill");
     pill.textContent = "Draft";
     pill.style.background = "#fef3c7";
     pill.style.color = "#92400e";
+    setPublishBanner(BUNDLE_EVER_BUILT ? "stale" : "never");
 }
 
 function markPublished() {
@@ -1514,6 +1565,8 @@ function markPublished() {
     pill.textContent = "Published";
     pill.style.background = "#dcfce7";
     pill.style.color = "#166534";
+    BUNDLE_EVER_BUILT = true;
+    setPublishBanner("published");
 }
 
 // ── Unsaved-changes navigation guard ────────────────────────────────

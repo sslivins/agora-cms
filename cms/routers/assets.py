@@ -42,6 +42,7 @@ from cms.schemas.asset import (
 )
 from cms.schemas.tag import TagOut
 from cms.services.audit_service import audit_log, compute_diff
+from cms.services.asset_readiness import composed_unpublished_reason
 from cms.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -496,6 +497,7 @@ def _asset_out_with_thumb(
     usage: dict[uuid.UUID, AssetUsage] | None = None,
 ) -> AssetOut:
     out = AssetOut.model_validate(asset)
+    out.unpublished = composed_unpublished_reason(asset) is not None
     if asset.id in thumbs:
         out.thumbnail_url = thumbs[asset.id]
     if tags is not None and asset.id in tags:
