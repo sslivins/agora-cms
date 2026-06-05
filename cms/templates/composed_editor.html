@@ -384,7 +384,42 @@
     @media (max-width: 800px) {
         .composed-toolbar { grid-template-columns: 1fr; }
     }
+    /* Unsaved-changes guard modal */
+    .cw-modal-backdrop {
+        position: fixed; inset: 0; z-index: 9999;
+        background: rgba(0,0,0,0.5);
+        display: none; align-items: center; justify-content: center;
+    }
+    .cw-modal-backdrop.show { display: flex; }
+    .cw-modal {
+        background: var(--surface, #1a1a2e);
+        color: var(--text, #e6e6e6);
+        border: 1px solid var(--border, rgba(255,255,255,0.18));
+        border-radius: 10px;
+        padding: 1.25rem 1.4rem;
+        max-width: 420px; width: 90%;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    }
+    .cw-modal h3 { margin: 0 0 0.5rem; }
+    .cw-modal p { margin: 0 0 1rem; font-size: 0.9rem; color: var(--text-muted, #b3b3c0); }
+    .cw-modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; flex-wrap: wrap; }
+    .cw-modal-actions button { padding: 0.45rem 0.9rem; border-radius: 6px; cursor: pointer; border: 1px solid var(--border, rgba(255,255,255,0.18)); }
+    .cw-modal-actions .danger { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+    .cw-modal-actions .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .cw-modal-actions .ghost { background: transparent; color: var(--text, #e6e6e6); }
 </style>
+
+<div id="cw-leave-modal" class="cw-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="cw-leave-title">
+    <div class="cw-modal">
+        <h3 id="cw-leave-title">Unsaved changes</h3>
+        <p>You have unsaved changes to this composed slide. What would you like to do?</p>
+        <div class="cw-modal-actions">
+            <button type="button" class="ghost" onclick="cwLeaveCancel()">Cancel</button>
+            <button type="button" class="danger" onclick="cwLeaveDiscard()">Leave without saving</button>
+            <button type="button" class="primary" onclick="cwLeaveSave()">Save &amp; leave</button>
+        </div>
+    </div>
+</div>
 
 <script>
 let ASSET_ID = {% if asset_id %}"{{ asset_id }}"{% else %}null{% endif %};
@@ -393,6 +428,13 @@ const SCHEMA_VERSION = {{ schema_version|tojson }};
 let LAYOUT = {{ layout_json|tojson }};
 let selectedPaletteType = null;
 let selectedWidgetId = null;
+
+// ── Unsaved-changes tracking ────────────────────────────────────────
+// _dirty flips true on any layout/metadata mutation and is cleared
+// after a successful save. Used by the beforeunload + in-app nav guard.
+let _dirty = false;
+function markDirty() { _dirty = true; }
+function clearDirty() { _dirty = false; }
 
 const FONT_OPTIONS = ["sans","serif","mono","display"];
 // Mirror of the server-side _FONT_STACKS (cms/composed/widgets/*.py) so
@@ -456,6 +498,7 @@ function selectPaletteType(t) {
 function setBgColor(c) {
     ensureLayoutShape();
     LAYOUT.background.color = c;
+    markDirty();
     renderCanvas();
 }
 
@@ -697,7 +740,9 @@ function beginDrag(ev, widgetId, mode) {
     const widgetEl = ev.currentTarget.classList.contains("placed-widget")
         ? ev.currentTarget : ev.currentTarget.parentElement;
     if (widgetEl) widgetEl.classList.add("dragging");
+    let moved = false;
     const onMove = (e) => {
+        moved = true;
         const dCol = Math.round((e.clientX - start.x) / cellW);
         const dRow = Math.round((e.clientY - start.y) / cellH);
         let row = start.row, col = start.col, rs = start.rs, cs = start.cs;
@@ -725,6 +770,7 @@ function beginDrag(ev, widgetId, mode) {
     const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        if (moved) markDirty();
         renderSettings();
     };
     window.addEventListener("pointermove", onMove);
@@ -760,6 +806,7 @@ function placeAt(row, col) {
         config_version: 1,
     });
     selectedWidgetId = id;
+    markDirty();
     renderCanvas();
     renderSettings();
 }
@@ -778,6 +825,7 @@ function updateSelected(patcher) {
     const w = getSelected();
     if (!w) return;
     patcher(w);
+    markDirty();
     renderCanvas();
 }
 
@@ -797,6 +845,7 @@ function moveSelectedZ(op) {
     else if (op === "forward") j = Math.min(LAYOUT.widgets.length, i + 1);
     else j = Math.max(0, i - 1); // backward
     LAYOUT.widgets.splice(j, 0, w);
+    markDirty();
     renderCanvas();
     renderSettings();
 }
@@ -1027,6 +1076,7 @@ function deleteSelected() {
     if (!selectedWidgetId) return;
     LAYOUT.widgets = LAYOUT.widgets.filter(w => w.id !== selectedWidgetId);
     selectedWidgetId = null;
+    markDirty();
     renderCanvas();
     renderSettings();
 }
@@ -1102,6 +1152,7 @@ async function saveLayout(opts) {
         }
         flash("Saved.", true);
         markDraft();
+        clearDirty();
         if (isCreate && !opts.skipRedirect) {
             window.location.href = "/assets/" + ASSET_ID + "/composed";
             return true;
@@ -1162,6 +1213,80 @@ function markPublished() {
     pill.style.background = "#dcfce7";
     pill.style.color = "#166534";
 }
+
+// ── Unsaved-changes navigation guard ────────────────────────────────
+// Two layers:
+//  1. Native beforeunload — covers tab close, refresh, typed URL, and
+//     browser back/forward.
+//  2. A capture-phase click interceptor on same-tab in-app links —
+//     shows a friendly modal ("Save & leave" / "Leave" / "Cancel")
+//     since beforeunload can't offer a save action.
+let _pendingLeaveHref = null;
+
+window.addEventListener("beforeunload", (e) => {
+    if (!_dirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+    return "";
+});
+
+function _isInAppLeavingLink(a) {
+    if (!a || !a.getAttribute) return false;
+    const href = a.getAttribute("href");
+    if (!href) return false;
+    if (href.startsWith("#")) return false;
+    if (/^(mailto:|tel:|javascript:)/i.test(href)) return false;
+    if (a.target && a.target !== "" && a.target !== "_self") return false;
+    if (a.hasAttribute("download")) return false;
+    if (a.dataset && a.dataset.cwNoGuard === "1") return false;
+    return true;
+}
+
+document.addEventListener("click", (e) => {
+    if (!_dirty) return;
+    if (e.defaultPrevented) return;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest ? e.target.closest("a[href]") : null;
+    if (!a || !_isInAppLeavingLink(a)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _pendingLeaveHref = a.href;
+    document.getElementById("cw-leave-modal").classList.add("show");
+}, true);
+
+function cwLeaveCancel() {
+    _pendingLeaveHref = null;
+    document.getElementById("cw-leave-modal").classList.remove("show");
+}
+
+function cwLeaveDiscard() {
+    const href = _pendingLeaveHref;
+    clearDirty();
+    document.getElementById("cw-leave-modal").classList.remove("show");
+    if (href) window.location.href = href;
+}
+
+async function cwLeaveSave() {
+    const href = _pendingLeaveHref;
+    const ok = await saveLayout({skipRedirect: true});
+    if (!ok) return; // keep modal open; error already flashed
+    document.getElementById("cw-leave-modal").classList.remove("show");
+    if (href) window.location.href = href;
+}
+
+// New-slide metadata edits (name / groups / global) also count as
+// unsaved changes.
+(function wireMetadataDirty() {
+    const ids = ["composed-name", "composed-global"];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("input", markDirty);
+        if (el) el.addEventListener("change", markDirty);
+    });
+    document.querySelectorAll("input[name='composed_group_ids']").forEach((el) => {
+        el.addEventListener("change", markDirty);
+    });
+})();
 
 ensureLayoutShape();
 renderCanvas();
