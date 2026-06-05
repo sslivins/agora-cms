@@ -25,6 +25,20 @@ def _text_layout(text: str = "hello preview") -> Layout:
     return layout
 
 
+def _weather_layout() -> Layout:
+    layout = empty_layout()
+    layout.widgets.append(
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="weather",
+            cell=Cell(row=1, col=1, rowspan=2, colspan=4),
+            config={},  # all-default (Seattle) config is valid
+            config_version=1,
+        )
+    )
+    return layout
+
+
 async def _make_composed(
     db_session, *, layout: Layout | None = None
 ) -> tuple[Asset, ComposedSlide]:
@@ -105,6 +119,25 @@ class TestComposedPreview:
         # No external script/style/img origins allowed.
         assert "http:" not in csp
         assert "https:" not in csp
+
+    async def test_csp_allows_open_meteo_for_weather_slide(
+        self, client, db_session
+    ):
+        # The weather widget fetches live conditions from Open-Meteo at
+        # runtime. A weather slide's preview must permit exactly that one
+        # connect-src so the preview shows live values instead of the
+        # offline "Weather unavailable" fallback — while every other
+        # directive stays locked down.
+        asset, _cs = await _make_composed(db_session, layout=_weather_layout())
+
+        resp = await client.get(f"/composed/{asset.id}/preview")
+        assert resp.status_code == 200
+        csp = resp.headers.get("content-security-policy", "")
+        assert "connect-src https://api.open-meteo.com" in csp
+        # Still locked down everywhere else; api.open-meteo.com is the
+        # only https origin that leaks into the policy.
+        assert "default-src 'none'" in csp
+        assert csp.count("https://") == 1
 
     async def test_no_cache_header_set(self, client, db_session):
         asset, _cs = await _make_composed(db_session)

@@ -588,11 +588,14 @@ function renderCanvas() {
         el.style.gridColumn = w.cell.col + " / span " + cs;
         el.style.gridRow = w.cell.row + " / span " + rs;
         // Stacking order == LAYOUT.widgets array order (later = on top),
-        // matching the published bundle. The selected widget is lifted
-        // above everything so its resize handles stay reachable even when
-        // it sits on a lower layer (editor-only; the Layers panel shows
-        // the true published order).
-        el.style.zIndex = (w.id === selectedWidgetId) ? 1000 : (i + 1);
+        // matching the published bundle and the live preview. We do NOT
+        // lift the selected widget above its true layer: doing so made
+        // bring-to-front / send-to-back appear to do nothing in the editor
+        // (the moved widget stays selected, so it stayed pinned on top
+        // until a reload cleared the selection). A covered widget is still
+        // selectable via the Layers panel and editable via the numeric
+        // Position/size inputs.
+        el.style.zIndex = i + 1;
         el.dataset.widgetId = w.id;
         const content = renderWidgetContent(w);
         content.style.pointerEvents = "none";
@@ -871,10 +874,6 @@ function buildWeatherPreview(cfg) {
         cond.style.fontSize = cqwFont((Number(cfg.font_size_px) || 64) * 0.45);
         wrap.appendChild(cond);
     }
-    const note = document.createElement("div");
-    note.className = "cw-prev-weather-note";
-    note.textContent = "Live on device";
-    wrap.appendChild(note);
     return wrap;
 }
 
