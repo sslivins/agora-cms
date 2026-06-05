@@ -4487,6 +4487,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/AssetUsage'
           - type: 'null'
+        unpublished:
+          type: boolean
+          title: Unpublished
+          default: false
       type: object
       required:
       - id
