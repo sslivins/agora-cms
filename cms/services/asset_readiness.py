@@ -20,6 +20,35 @@ from sqlalchemy.orm import selectinload
 
 from cms.models.asset import Asset
 from cms.services.variant_view import is_asset_ready
+from shared.models.asset import AssetType
+
+# Reason string surfaced when a composed slide has never been published
+# (no rendered bundle / checksum yet). Kept as a module constant so the UI
+# annotation (scheduler dropdown) and the server-side gate share one phrase.
+COMPOSED_UNPUBLISHED_REASON = "not published yet"
+
+
+def composed_unpublished_reason(asset: Asset | None) -> str | None:
+    """Return a reason when ``asset`` is a composed slide with no bundle yet.
+
+    A composed slide only becomes device-deliverable after **Publish**, which
+    renders the HTML bundle and stamps the bound Asset's ``checksum`` /
+    ``filename``. Until then there is no blob for the device to download, so
+    scheduling it 404s the device in a retry loop.
+
+    The check intentionally gates on the **checksum** (i.e. "has a published
+    bundle"), not on ``ComposedSlide.is_draft``. A slide that was published and
+    then edited is flagged ``is_draft=True`` but still has a valid checksum and
+    bundle, so the device can keep playing the last published version — that
+    case stays schedulable. Only *never-published* slides are blocked here.
+
+    Returns the reason string, or ``None`` when the asset is fine to schedule.
+    """
+    if asset is None:
+        return None
+    if getattr(asset, "asset_type", None) != AssetType.COMPOSED:
+        return None
+    return COMPOSED_UNPUBLISHED_REASON if not getattr(asset, "checksum", None) else None
 
 
 async def require_asset_ready(db: AsyncSession, asset_id: uuid.UUID) -> Asset:
@@ -48,5 +77,15 @@ async def require_asset_ready(db: AsyncSession, asset_id: uuid.UUID) -> Asset:
         raise HTTPException(
             status_code=422,
             detail=f"Asset is not ready for assignment ({reason}).",
+        )
+
+    # Composed slides must be published before they can be scheduled — an
+    # unpublished slide has no bundle for the device to download (404 loop).
+    composed_reason = composed_unpublished_reason(asset)
+    if composed_reason:
+        raise HTTPException(
+            status_code=422,
+            detail="This composed slide hasn't been published yet. "
+            "Open it in the editor and click Publish before scheduling it.",
         )
     return asset

@@ -216,7 +216,9 @@
                     {% endif %}
                 </td>
                 <td data-live-variants="{{ a.id }}">
-                    {% if a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
+                    {% if a.asset_type.value == 'composed' and not a.checksum %}
+                    <span class="has-tooltip"><span class="badge badge-failed">⚠ Unpublished</span><span class="tooltip">This composed slide has not been published — it will not appear on devices until you open it and click Publish.</span></span>
+                    {% elif a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
                     —
                     {% elif a.asset_type.value == 'slideshow' %}
                         {% if a.slide_count is defined and a.slide_count > 0 %}

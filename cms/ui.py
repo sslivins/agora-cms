@@ -1172,8 +1172,12 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     # Annotate each asset with a readiness flag for the splash dropdowns
     # (issue #201). Assets that aren't fully ready are shown but disabled.
     from cms.services.variant_view import is_asset_ready as _is_asset_ready
+    from cms.services.asset_readiness import composed_unpublished_reason as _composed_unpub
     for a in assets_early:
         ready, reason = _is_asset_ready(a.variants)
+        composed_reason = _composed_unpub(a)
+        if ready and composed_reason:
+            ready, reason = False, composed_reason
         a.ready_for_selection = ready
         a.not_ready_reason = reason
     for d in devices:
@@ -2033,8 +2037,12 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         a._group_ids_json = asset_group_map.get(str(a.id), [])
     # Readiness flag for schedule asset picker (issue #201).
     from cms.services.variant_view import is_asset_ready as _is_asset_ready
+    from cms.services.asset_readiness import composed_unpublished_reason as _composed_unpub
     for a in assets:
         ready, reason = _is_asset_ready(a.variants)
+        composed_reason = _composed_unpub(a)
+        if ready and composed_reason:
+            ready, reason = False, composed_reason
         a.ready_for_selection = ready
         a.not_ready_reason = reason
 

@@ -21,7 +21,7 @@ from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, schedules_conflict, evaluate_schedules
 from cms.services.audit_service import audit_log, compute_diff
-from cms.services.asset_readiness import require_asset_ready
+from cms.services.asset_readiness import require_asset_ready, composed_unpublished_reason
 
 logger = logging.getLogger("agora.cms.schedules")
 
@@ -409,6 +409,18 @@ async def update_schedule(
         enabled=updates.get("enabled", schedule.enabled),
         end_date=updates.get("end_date", schedule.end_date),
     )
+
+    # Block landing on an unpublished composed slide whenever the resulting
+    # schedule would be enabled — covers re-enabling an existing schedule whose
+    # composed asset was never published (the asset-swap case is already gated
+    # by require_asset_ready above). Stale-but-published slides have a checksum
+    # and are not blocked.
+    if updates.get("enabled", schedule.enabled) and composed_unpublished_reason(target_asset):
+        raise HTTPException(
+            status_code=422,
+            detail="This composed slide hasn't been published yet. "
+            "Open it in the editor and click Publish before scheduling it.",
+        )
 
     # Webpage/live-stream assets cannot use loop_count
     if is_url_asset and updates.get("loop_count") is not None:

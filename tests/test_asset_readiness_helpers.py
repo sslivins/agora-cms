@@ -12,7 +12,11 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from cms.services.variant_view import collapse_to_ready, is_asset_ready
-from shared.models.asset import VariantStatus
+from cms.services.asset_readiness import (
+    COMPOSED_UNPUBLISHED_REASON,
+    composed_unpublished_reason,
+)
+from shared.models.asset import AssetType, VariantStatus
 
 
 @dataclass
@@ -177,3 +181,48 @@ class TestIsAssetReady:
             _mk(p2, VariantStatus.PROCESSING, deleted=True),
         ]
         assert is_asset_ready(vs) == (True, None)
+
+
+@dataclass
+class _FakeAsset:
+    """Minimal stand-in for Asset — only the columns the composed gate reads."""
+
+    asset_type: AssetType
+    checksum: str | None = None
+
+
+class TestComposedUnpublishedReason:
+    """``composed_unpublished_reason`` gates scheduling/sync of composed slides
+    that have never been published (no rendered bundle → device 404 loop).
+
+    The gate keys on the **checksum**, not ``is_draft``: a published-then-edited
+    slide keeps its old bundle/checksum and stays schedulable (devices play the
+    last published version), so only never-published slides are blocked.
+    """
+
+    def test_none_asset_is_ok(self):
+        assert composed_unpublished_reason(None) is None
+
+    def test_non_composed_is_ok(self):
+        # A video asset with no checksum is not our concern here.
+        a = _FakeAsset(asset_type=AssetType.VIDEO, checksum=None)
+        assert composed_unpublished_reason(a) is None
+
+    def test_composed_without_checksum_is_blocked(self):
+        a = _FakeAsset(asset_type=AssetType.COMPOSED, checksum=None)
+        assert composed_unpublished_reason(a) == COMPOSED_UNPUBLISHED_REASON
+
+    def test_composed_empty_string_checksum_is_blocked(self):
+        a = _FakeAsset(asset_type=AssetType.COMPOSED, checksum="")
+        assert composed_unpublished_reason(a) == COMPOSED_UNPUBLISHED_REASON
+
+    def test_published_composed_is_ok(self):
+        # Has a bundle checksum → published at least once → schedulable.
+        a = _FakeAsset(asset_type=AssetType.COMPOSED, checksum="abc123")
+        assert composed_unpublished_reason(a) is None
+
+    def test_stale_but_published_composed_is_ok(self):
+        """Published-then-edited slide: checksum still present (old bundle),
+        so it must stay schedulable even though it's a draft again."""
+        a = _FakeAsset(asset_type=AssetType.COMPOSED, checksum="oldbundle")
+        assert composed_unpublished_reason(a) is None

@@ -102,6 +102,10 @@ class AssetOut(BaseModel):
     capture_duration: Optional[int] = None
     tags: list[TagOut] = Field(default_factory=list)
     usage: Optional[AssetUsage] = None
+    # True for a composed slide that has never been published (no rendered
+    # bundle / checksum yet). Drives the "UNPUBLISHED" badge in the asset
+    # library so users see — before scheduling — that the slide isn't live.
+    unpublished: bool = False
 
 
 class AssetPageOut(BaseModel):

@@ -1104,6 +1104,23 @@ async def build_device_sync(
                 # Pre-resolve slideshow checksum so the entry's
                 # asset_checksum reflects per-profile variant choice.
                 await _get_slideshow_checksum(s.asset)
+            # Backstop: never emit a composed slide that has no published
+            # bundle (no checksum). Without a bundle the device 404s in a
+            # fetch loop. The UI/API gates should prevent this from ever
+            # being scheduled, but this guarantees a bad row can't reach the
+            # device's schedule.json regardless of how it got enabled. Shares
+            # the predicate with the scheduling gate (single source of truth).
+            from cms.services.asset_readiness import composed_unpublished_reason
+            if composed_unpublished_reason(s.asset):
+                logger.warning(
+                    "Skipping composed schedule %s (asset %s '%s') for device %s: "
+                    "no published bundle (checksum is empty); slide must be published first",
+                    s.id,
+                    s.asset.id,
+                    s.asset.filename,
+                    device_id,
+                )
+                continue
             entries.append(_schedule_to_entry(s, variant_checksums, slideshow_checksums))
 
     # Per-device timezone overrides the CMS global timezone
