@@ -73,7 +73,9 @@
             <button type="button" class="palette-btn" data-type="text" onclick="selectPaletteType('text')">🅰 Text</button>
             <button type="button" class="palette-btn" data-type="media" onclick="selectPaletteType('media')">🎬 Media</button>
             <button type="button" class="palette-btn" data-type="clock" onclick="selectPaletteType('clock')">🕒 Clock</button>
+            <button type="button" class="palette-btn" data-type="analog_clock" onclick="selectPaletteType('analog_clock')">🕧 Analog Clock</button>
             <button type="button" class="palette-btn" data-type="ticker" onclick="selectPaletteType('ticker')">📰 Ticker</button>
+            <button type="button" class="palette-btn" data-type="weather" onclick="selectPaletteType('weather')">⛅ Weather</button>
             <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
                 None selected.
             </div>
@@ -243,6 +245,39 @@
         from { transform: translateX(0); }
         to   { transform: translateX(-100%); }
     }
+    .cw-prev-aclock { width: 100%; height: 100%; display: block; }
+    .cw-prev-weather {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        text-align: center;
+        line-height: 1.05;
+    }
+    .cw-prev-weather-temp { line-height: 1; white-space: nowrap; }
+    .cw-prev-weather-loc { opacity: 0.85; white-space: nowrap; }
+    .cw-prev-weather-cond { opacity: 0.85; margin-top: 0.1em; }
+    .cw-prev-weather-note {
+        margin-top: 0.35em;
+        font-size: 0.6rem;
+        opacity: 0.55;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .wx-results { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
+    .wx-result {
+        text-align: left;
+        background: var(--bg-subtle, #f6f8fa);
+        border: 1px solid var(--border, #d0d7de);
+        border-radius: 5px;
+        padding: 0.3rem 0.5rem;
+        font-size: 0.8rem;
+        cursor: pointer;
+    }
+    .wx-result:hover { background: var(--bg-hover, #eaeef2); }
     .cw-prev-media { width: 100%; height: 100%; position: relative; }
     .cw-prev-media img { width: 100%; height: 100%; display: block; }
     .cw-prev-media-badge {
@@ -437,6 +472,11 @@ function markDirty() { _dirty = true; }
 function clearDirty() { _dirty = false; }
 
 const FONT_OPTIONS = ["sans","serif","mono","display"];
+// New widgets (analog clock, weather) only support the three font
+// stacks the server actually ships (_FONT_STACKS in the widget .py).
+// FONT_OPTIONS keeps "display"/"handwritten" for legacy widgets whose
+// server side historically tolerated them; do not extend that here.
+const SAFE_FONT_OPTIONS = ["sans","serif","mono"];
 // Mirror of the server-side _FONT_STACKS (cms/composed/widgets/*.py) so
 // in-editor previews use the same font stacks the device bundle will.
 const FONT_STACKS = {
@@ -460,8 +500,13 @@ const DEFAULTS = {
     text: {text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false},
     media: {asset_id: NULL_UUID, object_fit:"cover", alt:""},
     clock: {format:"24h", show_seconds:true, show_date:false, color:"#ffffff", font_family:"sans", font_size_px:96},
+    analog_clock: {face_color:"#111827", hand_color:"#ffffff", second_color:"#ef4444",
+             show_seconds:true, show_ticks:true, show_numerals:false},
     ticker: {text:"Breaking news...", speed_px_per_sec:100, direction:"left", mode:"scroll",
              color:"#ffffff", background:"#000000", font_family:"sans", font_size_px:48, gap_px:100},
+    weather: {latitude:47.6062, longitude:-122.3321, location_label:"Seattle", units:"imperial",
+             show_condition:true, show_location:true, color:"#ffffff", font_family:"sans",
+             font_size_px:64, refresh_seconds:900},
 };
 
 function flash(msg, ok) {
@@ -605,6 +650,10 @@ function renderWidgetContent(w) {
             root.appendChild(c);
             updateClockEl(timeEl);
             if (cfg.show_date) updateClockDateEl(c.querySelector(".cw-prev-clock-date"));
+        } else if (w.type === "analog_clock") {
+            root.appendChild(buildAnalogSvg(cfg));
+        } else if (w.type === "weather") {
+            root.appendChild(buildWeatherPreview(cfg));
         } else if (w.type === "ticker") {
             const strip = document.createElement("div");
             strip.className = "cw-prev-ticker";
@@ -713,6 +762,7 @@ function updateClockDateEl(el) {
 function tickClocks() {
     document.querySelectorAll(".cw-prev-clock-time").forEach(updateClockEl);
     document.querySelectorAll(".cw-prev-clock-date").forEach(updateClockDateEl);
+    document.querySelectorAll(".cw-prev-aclock").forEach(updateAnalogEl);
 }
 
 let _clockTimerStarted = false;
@@ -720,6 +770,178 @@ function startClockTimer() {
     if (_clockTimerStarted) return;
     _clockTimerStarted = true;
     setInterval(tickClocks, 1000);
+}
+
+// ── Analog clock preview ────────────────────────────────────────────
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(name, attrs) {
+    const e = document.createElementNS(SVGNS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+}
+function buildAnalogSvg(cfg) {
+    const hand = cfg.hand_color || "#ffffff";
+    const sec = cfg.second_color || "#ef4444";
+    const svg = svgEl("svg", {
+        viewBox: "0 0 100 100", preserveAspectRatio: "xMidYMid meet",
+        class: "cw-prev-aclock",
+    });
+    svg.dataset.showSeconds = cfg.show_seconds ? "1" : "0";
+    svg.appendChild(svgEl("circle", {
+        cx: 50, cy: 50, r: 48, fill: cfg.face_color || "#111827",
+        stroke: hand, "stroke-width": 1, "stroke-opacity": 0.35,
+    }));
+    if (cfg.show_ticks) {
+        for (let i = 0; i < 12; i++) {
+            svg.appendChild(svgEl("line", {
+                x1: 50, y1: 2, x2: 50, y2: 8, stroke: hand, "stroke-width": 1.4,
+                transform: `rotate(${i * 30} 50 50)`,
+            }));
+        }
+        for (let i = 0; i < 60; i++) {
+            if (i % 5 === 0) continue;
+            svg.appendChild(svgEl("line", {
+                x1: 50, y1: 2, x2: 50, y2: 6, stroke: hand,
+                "stroke-width": 0.5, "stroke-opacity": 0.5,
+                transform: `rotate(${i * 6} 50 50)`,
+            }));
+        }
+    }
+    if (cfg.show_numerals) {
+        for (let n = 1; n <= 12; n++) {
+            const a = (n * 30) * Math.PI / 180;
+            const t = svgEl("text", {
+                x: (50 + 38 * Math.sin(a)).toFixed(2),
+                y: (50 - 38 * Math.cos(a)).toFixed(2),
+                fill: hand, "font-size": 7, "text-anchor": "middle",
+                "dominant-baseline": "central",
+            });
+            t.textContent = n;
+            svg.appendChild(t);
+        }
+    }
+    const gh = svgEl("g", {class: "cw-prev-aclock-hour"});
+    gh.appendChild(svgEl("line", {x1:50,y1:52,x2:50,y2:26,stroke:hand,"stroke-width":3,"stroke-linecap":"round"}));
+    const gm = svgEl("g", {class: "cw-prev-aclock-min"});
+    gm.appendChild(svgEl("line", {x1:50,y1:53,x2:50,y2:16,stroke:hand,"stroke-width":2,"stroke-linecap":"round"}));
+    svg.appendChild(gh); svg.appendChild(gm);
+    if (cfg.show_seconds) {
+        const gs = svgEl("g", {class: "cw-prev-aclock-sec"});
+        gs.appendChild(svgEl("line", {x1:50,y1:54,x2:50,y2:14,stroke:sec,"stroke-width":1,"stroke-linecap":"round"}));
+        svg.appendChild(gs);
+    }
+    svg.appendChild(svgEl("circle", {cx:50,cy:50,r:2.2,fill:sec}));
+    updateAnalogEl(svg);
+    return svg;
+}
+function updateAnalogEl(svg) {
+    const d = new Date();
+    const s = d.getSeconds(), m = d.getMinutes(), h = d.getHours() % 12;
+    const setRot = (sel, deg) => {
+        const g = svg.querySelector(sel);
+        if (g) g.setAttribute("transform", `rotate(${deg} 50 50)`);
+    };
+    setRot(".cw-prev-aclock-hour", h * 30 + m * 0.5);
+    setRot(".cw-prev-aclock-min", m * 6 + s * 0.1);
+    if (svg.dataset.showSeconds === "1") setRot(".cw-prev-aclock-sec", s * 6);
+}
+
+// ── Weather preview (static mock; live values only render on device) ─
+function buildWeatherPreview(cfg) {
+    const wrap = document.createElement("div");
+    wrap.className = "cw-prev-weather";
+    wrap.style.color = cfg.color || "#ffffff";
+    wrap.style.fontFamily = fontStack(cfg.font_family);
+    if (cfg.show_location) {
+        const loc = document.createElement("div");
+        loc.className = "cw-prev-weather-loc";
+        loc.textContent = cfg.location_label || "";
+        loc.style.fontSize = cqwFont((Number(cfg.font_size_px) || 64) * 0.4);
+        wrap.appendChild(loc);
+    }
+    const temp = document.createElement("div");
+    temp.className = "cw-prev-weather-temp";
+    temp.textContent = "72" + (cfg.units === "metric" ? "°C" : "°F");
+    temp.style.fontSize = cqwFont(cfg.font_size_px);
+    wrap.appendChild(temp);
+    if (cfg.show_condition) {
+        const cond = document.createElement("div");
+        cond.className = "cw-prev-weather-cond";
+        cond.textContent = "⛅ Partly cloudy";
+        cond.style.fontSize = cqwFont((Number(cfg.font_size_px) || 64) * 0.45);
+        wrap.appendChild(cond);
+    }
+    const note = document.createElement("div");
+    note.className = "cw-prev-weather-note";
+    note.textContent = "Live on device";
+    wrap.appendChild(note);
+    return wrap;
+}
+
+// ── Weather city search → Open-Meteo geocoding (editor-only) ─────────
+// Coordinates are baked into config here so the device never needs the
+// geocoding endpoint. Debounced + abortable; failures are non-blocking
+// and never clear the widget's existing coords.
+let _wxAbort = null;
+let _wxTimer = null;
+function weatherSearchDebounced(q) {
+    if (_wxTimer) clearTimeout(_wxTimer);
+    _wxTimer = setTimeout(() => weatherGeocode(q), 400);
+}
+function weatherGeocode(q) {
+    const status = document.getElementById("wx-status");
+    const results = document.getElementById("wx-results");
+    if (!results || !status) return;
+    const query = String(q || "").trim();
+    results.replaceChildren();
+    if (query.length < 2) { status.textContent = ""; return; }
+    if (_wxAbort) { try { _wxAbort.abort(); } catch (e) {} }
+    _wxAbort = new AbortController();
+    const ctrl = _wxAbort;
+    const to = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 8000);
+    status.textContent = "Searching…";
+    const url = "https://geocoding-api.open-meteo.com/v1/search?count=5&name="
+        + encodeURIComponent(query);
+    fetch(url, {signal: ctrl.signal})
+        .then(r => { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+        .then(d => {
+            if (ctrl !== _wxAbort) return; // superseded
+            const list = (d && Array.isArray(d.results)) ? d.results : [];
+            if (!list.length) { status.textContent = "No matches."; return; }
+            status.textContent = "";
+            list.forEach(item => {
+                const parts = [item.name, item.admin1, item.country].filter(Boolean);
+                const label = parts.join(", ");
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "wx-result";
+                btn.textContent = label;
+                btn.onclick = () => pickWeatherLocation(
+                    item.latitude, item.longitude, item.name || label);
+                results.appendChild(btn);
+            });
+        })
+        .catch(() => {
+            if (ctrl !== _wxAbort) return;
+            status.textContent = "Search failed — keeping current location.";
+        })
+        .then(() => { clearTimeout(to); });
+}
+function pickWeatherLocation(lat, lon, label) {
+    updateSelected(x => {
+        x.config.latitude = Number(lat);
+        x.config.longitude = Number(lon);
+        x.config.location_label = label;
+    });
+    const cur = document.getElementById("wx-current");
+    if (cur) cur.textContent = label + "  (" + Number(lat).toFixed(3)
+        + ", " + Number(lon).toFixed(3) + ")";
+    const results = document.getElementById("wx-results");
+    if (results) results.replaceChildren();
+    const status = document.getElementById("wx-status");
+    if (status) status.textContent = "Location set.";
+    const labelInput = document.getElementById("wx-label");
+    if (labelInput) labelInput.value = label;
 }
 
 function beginDrag(ev, widgetId, mode) {
@@ -780,7 +1002,9 @@ function beginDrag(ev, widgetId, mode) {
 function summarize(w) {
     if (w.type === "text") return (w.config.text || "").slice(0, 24);
     if (w.type === "clock") return w.config.format || "24h";
+    if (w.type === "analog_clock") return "analog";
     if (w.type === "ticker") return (w.config.text || "").slice(0, 24);
+    if (w.type === "weather") return (w.config.location_label || "weather").slice(0, 24);
     if (w.type === "media") {
         const aid = w.config.asset_id;
         if (!aid || aid === NULL_UUID) return "(no asset)";
@@ -850,7 +1074,7 @@ function moveSelectedZ(op) {
     renderSettings();
 }
 
-const LAYER_ICONS = {text:"🅰", media:"🎬", clock:"🕒", ticker:"📰"};
+const LAYER_ICONS = {text:"🅰", media:"🎬", clock:"🕒", analog_clock:"🕧", ticker:"📰", weather:"⛅"};
 
 // Build the always-visible layer list (front → back). This is the
 // authoritative way to select a widget that is fully covered by
@@ -1043,9 +1267,86 @@ function renderSettings() {
                     </select>
                 </div>
             </div>`;
+    } else if (w.type === "analog_clock") {
+        configHtml = `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Analog clock widget</h4>
+            <div class="row">
+                <div>
+                    <label>Face color</label>
+                    <input type="color" value="${w.config.face_color||"#111827"}"
+                           oninput="updateSelected(x=>x.config.face_color=this.value)">
+                </div>
+                <div>
+                    <label>Hand color</label>
+                    <input type="color" value="${w.config.hand_color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.hand_color=this.value)">
+                </div>
+            </div>
+            <label>Second-hand color</label>
+            <input type="color" value="${w.config.second_color||"#ef4444"}"
+                   oninput="updateSelected(x=>x.config.second_color=this.value)">
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_seconds?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Show second hand
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_ticks?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_ticks=this.checked)"> Show tick marks
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_numerals?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_numerals=this.checked)"> Show numerals
+            </label>`;
+    } else if (w.type === "weather") {
+        const lat = Number(w.config.latitude), lon = Number(w.config.longitude);
+        const curTxt = `${escapeHtml(w.config.location_label||"")}  (${lat.toFixed(3)}, ${lon.toFixed(3)})`;
+        configHtml = `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Weather widget</h4>
+            <label>Search city</label>
+            <input id="wx-q" type="text" placeholder="e.g. Seattle"
+                   oninput="weatherSearchDebounced(this.value)">
+            <div id="wx-status" style="font-size:0.75rem; color:var(--text-muted); min-height:1rem;"></div>
+            <div id="wx-results" class="wx-results"></div>
+            <label style="margin-top:0.5rem;">Location label</label>
+            <input id="wx-label" type="text" maxlength="80" value="${escapeHtml(w.config.location_label||"")}"
+                   oninput="updateSelected(x=>x.config.location_label=this.value)">
+            <div id="wx-current" style="font-size:0.72rem; color:var(--text-muted); margin-top:0.25rem; word-break:break-all;">${curTxt}</div>
+            <label style="margin-top:0.5rem;">Units</label>
+            <select oninput="updateSelected(x=>x.config.units=this.value)">
+                <option value="imperial" ${w.config.units==="imperial"?"selected":""}>Fahrenheit (°F)</option>
+                <option value="metric" ${w.config.units==="metric"?"selected":""}>Celsius (°C)</option>
+            </select>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_location?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_location=this.checked)"> Show location label
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_condition?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_condition=this.checked)"> Show condition
+            </label>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||64}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <label>Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${SAFE_FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>
+            <label style="margin-top:0.5rem;">Refresh (seconds, 600–86400)</label>
+            <input type="number" min="600" max="86400" value="${w.config.refresh_seconds||900}"
+                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,600,86400))">
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                Live temperature is fetched on the device. The preview shows placeholder values.
+            </p>`;
     }
-
-    panel.innerHTML = `<h3>Settings</h3>
         ${renderLayersHtml()}
         <h4 class="cw-sec">Arrange</h4>
         <div class="cw-zorder">

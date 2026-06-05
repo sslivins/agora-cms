@@ -133,6 +133,27 @@ class TestNoExternalReferences:
         html = build_bundle(empty_layout()).html_bytes.decode("utf-8")
         assert self.EXTERNAL_RE.search(html) is None
 
+    def test_weather_widget_bundle_has_no_external_attr_refs(self):
+        # The weather widget makes a runtime fetch, but the Open-Meteo
+        # URL must only ever exist as a JS string literal — never as a
+        # src=/href= attribute that a strict offline check would flag.
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+                    type="weather",
+                    cell=Cell(row=1, col=1, rowspan=2, colspan=3),
+                    config={},
+                ),
+            ],
+        )
+        html = build_bundle(layout).html_bytes.decode("utf-8")
+        # The forecast endpoint is present (baked into init_js)…
+        assert "open-meteo.com/v1/forecast" in html
+        # …but never as an external src=/href= attribute.
+        match = self.EXTERNAL_RE.search(html)
+        assert match is None, f"unexpected external reference: {match!r}"
+
 
 class TestDeterminism:
     def test_same_layout_produces_same_sha_and_bytes(self):
