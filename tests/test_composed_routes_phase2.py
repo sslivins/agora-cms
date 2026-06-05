@@ -172,6 +172,25 @@ class TestComposedUI:
         text = resp.text.lower()
         assert "name" in text
 
+    async def test_new_page_seeds_schema_valid_layout(self, client):
+        # Regression: the create-mode page seeds ``let LAYOUT = {...}``
+        # straight from the server context. Earlier this hard-coded a legacy
+        # ``canvas: {w, h}`` literal, so the FIRST save of a brand-new slide
+        # PATCHed ``{w, h}`` and was rejected 422 ``extra_forbidden``. The JS
+        # ``|| {width,height}`` fallback (covered by TestEditorDefaultsMatch
+        # Schema) never fires here because the seeded canvas is already
+        # truthy — so the server seed itself must use schema keys.
+        resp = await client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        m = re.search(r"let LAYOUT = (\{.*\});", resp.text)
+        assert m, "could not find seeded `let LAYOUT` object in new page"
+        seeded = json.loads(m.group(1))
+        assert seeded["canvas"] == {"width": 1920, "height": 1080}, seeded
+        assert "w" not in seeded["canvas"]
+        assert "h" not in seeded["canvas"]
+        # Exactly what the editor PATCHes before any widget is dropped.
+        Layout.model_validate(seeded)
+
     async def test_editor_renders_for_existing_composed(self, client, db_session):
         asset, _ = await _make_composed(db_session)
         resp = await client.get(f"/assets/{asset.id}/composed")
