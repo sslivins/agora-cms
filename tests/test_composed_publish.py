@@ -222,23 +222,15 @@ async def test_publish_raises_on_invalid_layout(db_session, mock_storage_and_dir
 
 @pytest.mark.asyncio
 async def test_publish_raises_on_validation_failure(db_session, mock_storage_and_dir):
-    # Two overlapping widgets — passes Pydantic shape, fails validate_layout.
+    # Out-of-bounds widget — passes Pydantic shape, fails validate_layout.
+    # (Overlap is allowed now, so it can no longer be the failure trigger.)
     layout = empty_layout()
     layout.widgets.append(
         WidgetInstance(
             id=uuid.uuid4(),
             type="text",
-            cell=Cell(row=1, col=1, rowspan=2, colspan=4),
+            cell=Cell(row=2, col=1, rowspan=8, colspan=1),
             config={"text": "a"},
-            config_version=1,
-        )
-    )
-    layout.widgets.append(
-        WidgetInstance(
-            id=uuid.uuid4(),
-            type="text",
-            cell=Cell(row=2, col=2, rowspan=2, colspan=2),
-            config={"text": "b"},
             config_version=1,
         )
     )

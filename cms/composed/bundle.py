@@ -354,11 +354,15 @@ def build_bundle(
         )
 
     widget_html_blocks: list[str] = []
-    for inst, render in rendered:
+    for z_index, (inst, render) in enumerate(rendered):
         wid = _instance_id_str(inst)
+        # Stacking order == layout.widgets array order.  Emitting an
+        # explicit z-index (rather than relying on DOM paint order)
+        # makes overlap deterministic and stops a child widget's own
+        # z-index from interleaving with sibling cells.
         widget_html_blocks.append(
             f'<div class="cw-cell" data-widget-instance="{html.escape(wid)}" '
-            f'style="{_grid_area_style(inst)}">{render.html}</div>'
+            f'style="{_grid_area_style(inst)} z-index: {z_index};">{render.html}</div>'
         )
 
     doc = _DOC_TEMPLATE.format(

@@ -151,6 +151,47 @@ class TestDeterminism:
         assert a.sha256_hex != b.sha256_hex
 
 
+class TestZIndexStacking:
+    """Overlapping widgets stack by ``layout.widgets`` array order:
+    later entries paint on top via an explicit z-index."""
+
+    def _two_overlapping(self) -> Layout:
+        return Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    type="text",
+                    cell=Cell(row=1, col=1, rowspan=2, colspan=2),
+                    config={"text": "back"},
+                ),
+                WidgetInstance(
+                    id=uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                    type="text",
+                    cell=Cell(row=1, col=1, rowspan=2, colspan=2),
+                    config={"text": "front"},
+                ),
+            ],
+        )
+
+    def test_overlapping_widgets_build_without_error(self):
+        # Overlap used to fail validation; it must now succeed.
+        result = build_bundle(self._two_overlapping())
+        assert isinstance(result, BuiltBundle)
+
+    def test_array_order_maps_to_ascending_z_index(self):
+        html = build_bundle(self._two_overlapping()).html_bytes.decode("utf-8")
+        i_back = html.index("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        i_front = html.index("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        # First array entry renders first and gets the lower z-index.
+        assert i_back < i_front
+        assert "z-index: 0;" in html
+        assert "z-index: 1;" in html
+        # The lower z-index belongs to the earlier (back) widget.
+        z0 = html.index("z-index: 0;")
+        z1 = html.index("z-index: 1;")
+        assert z0 < z1
+
+
 # ── Tests: validation handoff ───────────────────────────────────────
 
 

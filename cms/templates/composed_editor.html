@@ -275,6 +275,49 @@
         box-sizing: border-box;
     }
     .cw-prev-placeholder .icon { font-size: 1.2rem; line-height: 1; }
+    .cw-sec { margin:0.9rem 0 0.3rem; font-size:0.85rem; }
+    .cw-hint { font-size:0.78rem; color:var(--text-muted); margin:0.25rem 0; }
+    .cw-layers {
+        display:flex;
+        flex-direction:column;
+        gap:2px;
+        max-height:9rem;
+        overflow-y:auto;
+        border:1px solid var(--border, rgba(255,255,255,0.12));
+        border-radius:6px;
+        padding:3px;
+    }
+    .cw-layer {
+        display:flex;
+        align-items:center;
+        gap:0.4rem;
+        width:100%;
+        text-align:left;
+        background:transparent;
+        border:1px solid transparent;
+        border-radius:4px;
+        color:var(--text, #e6e6e6);
+        font-size:0.78rem;
+        padding:0.25rem 0.4rem;
+        cursor:pointer;
+        overflow:hidden;
+    }
+    .cw-layer:hover { background:rgba(99,179,237,0.18); }
+    .cw-layer.sel { background:rgba(34,197,94,0.22); border-color:#22c55e; }
+    .cw-layer-icon { flex:0 0 auto; }
+    .cw-layer-label { flex:1 1 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cw-zorder { display:flex; gap:4px; flex-wrap:wrap; }
+    .cw-zorder button {
+        flex:1 1 auto;
+        font-size:0.75rem;
+        padding:0.3rem 0.2rem;
+        background:var(--bg, #1a1a2e);
+        color:var(--text, #e6e6e6);
+        border:1px solid var(--border, rgba(255,255,255,0.18));
+        border-radius:5px;
+        cursor:pointer;
+    }
+    .cw-zorder button:hover { background:rgba(99,179,237,0.2); }
     .resize-handle {
         position: absolute;
         background: #22c55e;
@@ -449,13 +492,19 @@ function renderCanvas() {
         }
     }
 
-    for (const w of LAYOUT.widgets) {
+    LAYOUT.widgets.forEach((w, i) => {
         const el = document.createElement("div");
         el.className = "placed-widget" + (w.id === selectedWidgetId ? " selected" : "");
         const cs = (w.cell && w.cell.colspan) || 1;
         const rs = (w.cell && w.cell.rowspan) || 1;
         el.style.gridColumn = w.cell.col + " / span " + cs;
         el.style.gridRow = w.cell.row + " / span " + rs;
+        // Stacking order == LAYOUT.widgets array order (later = on top),
+        // matching the published bundle. The selected widget is lifted
+        // above everything so its resize handles stay reachable even when
+        // it sits on a lower layer (editor-only; the Layers panel shows
+        // the true published order).
+        el.style.zIndex = (w.id === selectedWidgetId) ? 1000 : (i + 1);
         el.dataset.widgetId = w.id;
         const content = renderWidgetContent(w);
         content.style.pointerEvents = "none";
@@ -470,7 +519,7 @@ function renderCanvas() {
             el.appendChild(h);
         }
         canvas.appendChild(el);
-    }
+    });
 }
 
 // ── Live in-editor widget previews ──────────────────────────────────
@@ -732,11 +781,58 @@ function updateSelected(patcher) {
     renderCanvas();
 }
 
+// ── Z-order (stacking) ──────────────────────────────────────────────
+// Stacking order is simply the LAYOUT.widgets array order: the last
+// entry paints on top (matches the published bundle). These ops move
+// the selected widget within that array.
+function moveSelectedZ(op) {
+    const w = getSelected();
+    if (!w) return;
+    const i = LAYOUT.widgets.indexOf(w);
+    if (i < 0) return;
+    LAYOUT.widgets.splice(i, 1);
+    let j;
+    if (op === "front") j = LAYOUT.widgets.length;
+    else if (op === "back") j = 0;
+    else if (op === "forward") j = Math.min(LAYOUT.widgets.length, i + 1);
+    else j = Math.max(0, i - 1); // backward
+    LAYOUT.widgets.splice(j, 0, w);
+    renderCanvas();
+    renderSettings();
+}
+
+const LAYER_ICONS = {text:"🅰", media:"🎬", clock:"🕒", ticker:"📰"};
+
+// Build the always-visible layer list (front → back). This is the
+// authoritative way to select a widget that is fully covered by
+// another on the canvas.
+function renderLayersHtml() {
+    if (!LAYOUT.widgets.length) {
+        return "<h4 class='cw-sec'>Layers</h4>" +
+            "<p class='cw-hint'>No widgets yet.</p>";
+    }
+    // End of the array is the front-most widget, so reverse for display.
+    const rows = LAYOUT.widgets.slice().reverse().map((w) => {
+        const sel = w.id === selectedWidgetId;
+        const icon = LAYER_ICONS[w.type] || "▪";
+        const sum = summarize(w);
+        const label = escapeHtml(w.type + (sum ? " · " + sum : ""));
+        return `<button type="button" class="cw-layer${sel ? " sel" : ""}"
+            onclick="selectWidget('${w.id}')" title="${label}">
+            <span class="cw-layer-icon">${icon}</span>
+            <span class="cw-layer-label">${label}</span></button>`;
+    }).join("");
+    return "<h4 class='cw-sec'>Layers (front → back)</h4>" +
+        `<div class="cw-layers">${rows}</div>`;
+}
+
 function renderSettings() {
     const panel = document.getElementById("settings-panel");
     const w = getSelected();
     if (!w) {
-        panel.innerHTML = "<h3>Settings</h3><p class='text-muted' style='font-size:0.85rem;'>Click a placed widget to edit it.</p>";
+        panel.innerHTML = "<h3>Settings</h3>" + renderLayersHtml() +
+            "<p class='text-muted' style='font-size:0.85rem; margin-top:0.5rem;'>" +
+            "Click a placed widget (or a layer above) to edit it.</p>";
         return;
     }
 
@@ -901,7 +997,15 @@ function renderSettings() {
     }
 
     panel.innerHTML = `<h3>Settings</h3>
-        <div style="font-size:0.75rem; color:var(--text-muted,#57606a); word-break:break-all;">${w.id}</div>
+        ${renderLayersHtml()}
+        <h4 class="cw-sec">Arrange</h4>
+        <div class="cw-zorder">
+            <button type="button" onclick="moveSelectedZ('front')" title="Bring to front">⤒ Front</button>
+            <button type="button" onclick="moveSelectedZ('forward')" title="Bring forward">↑ Fwd</button>
+            <button type="button" onclick="moveSelectedZ('backward')" title="Send backward">↓ Back</button>
+            <button type="button" onclick="moveSelectedZ('back')" title="Send to back">⤓ Bottom</button>
+        </div>
+        <div style="font-size:0.75rem; color:var(--text-muted,#57606a); word-break:break-all; margin-top:0.5rem;">${w.id}</div>
         ${cellHtml}
         ${configHtml}
         <button type="button" class="delete-btn" onclick="deleteSelected()">Delete widget</button>`;
