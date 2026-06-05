@@ -527,7 +527,7 @@ function ensureLayoutShape() {
     if (!LAYOUT || typeof LAYOUT !== "object") LAYOUT = {};
     LAYOUT.schema_version = LAYOUT.schema_version || SCHEMA_VERSION || 1;
     LAYOUT.grid = LAYOUT.grid || {rows: 8, cols: 12};
-    LAYOUT.canvas = LAYOUT.canvas || {w: 1920, h: 1080};
+    LAYOUT.canvas = LAYOUT.canvas || {width: 1920, height: 1080};
     LAYOUT.background = LAYOUT.background || {color: "#000000"};
     LAYOUT.widgets = LAYOUT.widgets || [];
 }

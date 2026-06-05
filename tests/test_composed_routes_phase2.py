@@ -16,13 +16,29 @@ Scope:
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
+from pathlib import Path
 
 import pytest
 
-from cms.composed.schema import Cell, Layout, WidgetInstance, empty_layout
+from cms.composed.schema import (
+    SCHEMA_VERSION,
+    Cell,
+    Layout,
+    WidgetInstance,
+    empty_layout,
+)
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
+
+EDITOR_TEMPLATE = (
+    Path(__file__).resolve().parents[1]
+    / "cms"
+    / "templates"
+    / "composed_editor.html"
+)
 
 
 def _text_widget(text: str = "hi") -> WidgetInstance:
@@ -204,3 +220,73 @@ class TestComposedUI:
         )
         # The UI requires auth — accept either a redirect or a 401.
         assert resp.status_code in (302, 303, 401)
+
+
+# ───────────────── Editor ↔ schema contract (regression) ─────────────────
+
+
+def _js_object_literal_to_dict(literal: str) -> dict:
+    """Convert a simple JS object literal (identifier keys, int/string
+    values) into a Python dict via JSON. Only handles the flat literals
+    the editor's ``ensureLayoutShape`` emits."""
+    quoted = re.sub(r"([{,]\s*)([A-Za-z_]\w*)\s*:", r'\1"\2":', literal)
+    return json.loads(quoted)
+
+
+def _extract_default(field: str) -> dict:
+    """Pull the ``LAYOUT.<field> = LAYOUT.<field> || {...}`` default
+    object literal out of the editor template."""
+    src = EDITOR_TEMPLATE.read_text(encoding="utf-8")
+    m = re.search(
+        rf"LAYOUT\.{re.escape(field)}\s*=\s*LAYOUT\.{re.escape(field)}\s*\|\|\s*(\{{.*?\}})",
+        src,
+    )
+    assert m, f"could not find editor default literal for LAYOUT.{field}"
+    return _js_object_literal_to_dict(m.group(1))
+
+
+class TestEditorDefaultsMatchSchema:
+    """The empty-slide defaults the editor JS injects via
+    ``ensureLayoutShape`` MUST validate against the Pydantic ``Layout``
+    contract. This guards the canvas ``{w,h}`` vs ``{width,height}``
+    regression (a mismatch made every save fail with 422
+    ``extra_forbidden``) and any future drift in the editor's grid /
+    background / canvas key names.
+    """
+
+    def test_editor_canvas_default_uses_schema_keys(self):
+        canvas = _extract_default("canvas")
+        # Direct guard against the `{w, h}` regression.
+        assert set(canvas) == {"width", "height"}, canvas
+
+    def test_editor_empty_layout_validates_against_schema(self):
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "grid": _extract_default("grid"),
+            "canvas": _extract_default("canvas"),
+            "background": _extract_default("background"),
+            "widgets": [],
+        }
+        # Must not raise — this is exactly what the editor PATCHes on a
+        # brand-new slide before any widget is dropped.
+        Layout.model_validate(payload)
+
+
+@pytest.mark.asyncio
+class TestEditorEmptyLayoutSaves:
+    """End-to-end: the literal empty-slide shape the editor emits is
+    accepted by the save endpoint (200, not 422)."""
+
+    async def test_patch_editor_empty_layout_returns_200(
+        self, client, db_session
+    ):
+        asset, _ = await _make_composed(db_session)
+        body = {
+            "schema_version": SCHEMA_VERSION,
+            "grid": _extract_default("grid"),
+            "canvas": _extract_default("canvas"),
+            "background": _extract_default("background"),
+            "widgets": [],
+        }
+        resp = await client.patch(f"/composed/{asset.id}/layout", json=body)
+        assert resp.status_code == 200, resp.text
