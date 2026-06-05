@@ -134,6 +134,19 @@ class CMSClient:
     async def create_webpage_asset(self, data: dict) -> dict:
         return await self._post("/api/assets/webpage", json=data)
 
+    # ── Composed slides (AI editor) ──
+
+    async def list_composed_widget_types(self) -> dict:
+        return await self._get("/composed/widget-types")
+
+    async def get_composed_layout(self, asset_id: str) -> dict:
+        return await self._get(f"/composed/{asset_id}/layout")
+
+    async def set_composed_widgets(self, asset_id: str, payload: dict) -> dict:
+        return await self._put(
+            f"/composed/{asset_id}/layout-friendly", json=payload
+        )
+
     # ── Schedules ──
 
     async def list_schedules(self) -> list:

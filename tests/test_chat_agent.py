@@ -154,10 +154,13 @@ class FakeMcpClient:
     async def __aexit__(self, *a) -> None:
         self.closed = True
 
-    async def list_openai_tools(self) -> list[dict]:
+    async def list_openai_tools(self, mode: str = "general") -> list[dict]:
+        self.last_mode = mode
         return list(self._tools)
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
+    async def call_tool(
+        self, name: str, arguments: dict, *, bypass_whitelist: bool = False
+    ) -> str:
         self.calls.append((name, dict(arguments)))
         if name in self._results:
             return self._results[name]

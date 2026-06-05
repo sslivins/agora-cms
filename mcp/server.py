@@ -100,6 +100,9 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "get_server_time": None,  # any authenticated user
     "get_dashboard": None,    # any authenticated user
     "list_audit_events": "audit:read",
+    "list_composed_widget_types": "assets:read",
+    "get_composed_layout": "assets:read",
+    "set_composed_widgets": "assets:write",
 }
 
 
@@ -386,6 +389,82 @@ async def create_webpage_asset(
     if group_id:
         data["group_id"] = group_id
     result = await _call_api("create_webpage_asset", data)
+    return _json_result(result)
+
+
+# ── Composed slides (AI editor) ──
+
+
+@mcp.tool()
+async def list_composed_widget_types() -> str:
+    """List the widget types available for building a composed slide.
+
+    Returns each widget's slug (``type``), display name, config
+    JSON-schema, default config, required fields, and a
+    ``references_asset`` flag. Call this before placing widgets so you
+    use real widget types and valid config keys. Widgets whose
+    ``references_asset`` is true (image, media) need a real ``asset_id``
+    from ``list_assets``.
+    """
+    if err := _check_permission("list_composed_widget_types"):
+        return err
+    result = await _call_api("list_composed_widget_types")
+    return _json_result(result)
+
+
+@mcp.tool()
+async def get_composed_layout(asset_id: str) -> str:
+    """Get the current draft layout of a composed slide.
+
+    Returns the slide's background color, the locked canvas/grid, and
+    the placed widgets in friendly form
+    (``{id, type, row, col, rowspan, colspan, config}``). When editing
+    an existing slide, pass each widget's ``id`` back to
+    ``set_composed_widgets`` to preserve its identity.
+
+    Args:
+        asset_id: UUID of the composed-slide asset being edited.
+    """
+    if err := _check_permission("get_composed_layout"):
+        return err
+    result = await _call_api("get_composed_layout", asset_id)
+    return _json_result(result)
+
+
+@mcp.tool()
+async def set_composed_widgets(
+    asset_id: str,
+    widgets: list[dict],
+    background_color: str | None = None,
+) -> str:
+    """Replace the widgets on a composed-slide draft.
+
+    This writes the draft directly (the canvas is on a fixed 8-row x
+    12-column grid, 1-indexed and inclusive). The human reviews and
+    clicks Publish themselves — this tool never publishes. ``widgets``
+    is the FULL replacement list, so include every widget you want kept.
+
+    Each widget is ``{type, row, col, rowspan?, colspan?, config?,
+    id?}``:
+      - ``type``: a slug from ``list_composed_widget_types``.
+      - ``row``/``col``: top-left cell (row 1-8, col 1-12).
+      - ``rowspan``/``colspan``: default 1; must stay within the grid.
+      - ``config``: the widget's config (see its config_schema).
+      - ``id``: omit for a new widget; pass the existing id (from
+        ``get_composed_layout``) to keep a widget's identity on edit.
+
+    On invalid input the call returns structured per-widget errors —
+    fix and retry. Args:
+        asset_id: UUID of the composed-slide asset being edited.
+        widgets: full replacement list of friendly widget objects.
+        background_color: optional slide background hex (e.g. "#101010").
+    """
+    if err := _check_permission("set_composed_widgets"):
+        return err
+    payload: dict = {"widgets": widgets}
+    if background_color is not None:
+        payload["background_color"] = background_color
+    result = await _call_api("set_composed_widgets", asset_id, payload)
     return _json_result(result)
 
 

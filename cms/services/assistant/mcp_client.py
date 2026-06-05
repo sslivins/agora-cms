@@ -147,6 +147,80 @@ WRITE_TOOLS: frozenset[str] = frozenset(
 ALLOWED_TOOLS: frozenset[str] = READ_ONLY_TOOLS | WRITE_TOOLS
 
 
+# ── Composed-slide editor mode ────────────────────────────────────────
+#
+# The composed-slide editor embeds an assistant whose job is to build
+# the *draft* layout of the one slide the user is editing.  It runs in a
+# dedicated thread ``mode`` ("composed_editor") that exposes a small,
+# purpose-built tool profile and NEVER the general device/schedule/
+# profile fleet-management tools.
+#
+# These tools are deliberately kept OUT of ``READ_ONLY_TOOLS`` /
+# ``WRITE_TOOLS`` / ``ALLOWED_TOOLS`` so the general chat tab can neither
+# advertise nor execute them.  They are only reachable when the thread's
+# mode selects the editor profile below.
+MODE_GENERAL = "general"
+MODE_COMPOSED_EDITOR = "composed_editor"
+VALID_MODES: frozenset[str] = frozenset({MODE_GENERAL, MODE_COMPOSED_EDITOR})
+
+# Composed reads — safe to run inline like any other read.
+COMPOSED_READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_composed_widget_types",
+        "get_composed_layout",
+    }
+)
+
+# Composed draft writes — these mutate ONLY the unpublished draft layout
+# of a composed slide.  Publishing a slide to devices is a separate,
+# human-only UI button (never an MCP tool), so a draft write is fully
+# reversible and carries no fleet impact.  They therefore run inline
+# WITHOUT an approval click, exactly like reads.
+COMPOSED_DRAFT_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "set_composed_widgets",
+    }
+)
+
+# Tools the agent may execute immediately, with no approval click.
+# Reads are inherently safe; composed draft writes are reversible and
+# device-invisible (see above).
+NO_APPROVAL_TOOLS: frozenset[str] = (
+    READ_ONLY_TOOLS | COMPOSED_READ_TOOLS | COMPOSED_DRAFT_WRITE_TOOLS
+)
+
+# The editor-mode tool profile: just enough to discover/select assets
+# and read+write the current slide's draft layout.  No device, schedule,
+# profile, log, or audit tools.
+COMPOSED_EDITOR_TOOLS: frozenset[str] = (
+    frozenset({"list_assets", "get_asset"})
+    | COMPOSED_READ_TOOLS
+    | COMPOSED_DRAFT_WRITE_TOOLS
+)
+
+
+def tools_for_mode(mode: str | None) -> frozenset[str]:
+    """Return the set of tools advertised/callable for a thread ``mode``.
+
+    Unknown or ``None`` modes fall back to the general profile so a
+    malformed mode value can never *widen* access.
+    """
+    if mode == MODE_COMPOSED_EDITOR:
+        return COMPOSED_EDITOR_TOOLS
+    return ALLOWED_TOOLS
+
+
+def executable_tools_for_mode(mode: str | None) -> frozenset[str]:
+    """No-approval tools the agent may run directly in ``mode``.
+
+    Intersection of the mode's profile with the global no-approval
+    floor — so editor mode runs its composed tools inline, and general
+    mode keeps running only its reads inline (writes still go through
+    the approval flow).
+    """
+    return NO_APPROVAL_TOOLS & tools_for_mode(mode)
+
+
 def _read_service_key(settings: Settings) -> str:
     """Read the MCP service key.
 
@@ -249,8 +323,15 @@ class AssistantMcpClient:
         except Exception:  # pragma: no cover — defensive
             logger.exception("assistant.mcp.close_failed")
 
-    async def list_openai_tools(self) -> list[dict[str, Any]]:
-        """Return MCP tools filtered to the read-only whitelist, in OpenAI format.
+    async def list_openai_tools(
+        self, mode: str = MODE_GENERAL
+    ) -> list[dict[str, Any]]:
+        """Return MCP tools filtered to the ``mode`` profile, in OpenAI format.
+
+        ``mode`` selects which tool profile is advertised to the LLM:
+        ``"general"`` (default) exposes the full read + approval-gated
+        write fleet tools; ``"composed_editor"`` exposes only the small
+        composed-slide editor profile.
 
         OpenAI's tool schema is:
         ``{"type":"function", "function":{"name":..., "description":..., "parameters":{...}}}``
@@ -258,10 +339,11 @@ class AssistantMcpClient:
         """
         if self._session is None:  # pragma: no cover
             raise RuntimeError("AssistantMcpClient not entered")
+        exposed = tools_for_mode(mode)
         listing = await self._session.list_tools()
         out: list[dict[str, Any]] = []
         for tool in listing.tools:
-            if tool.name not in ALLOWED_TOOLS:
+            if tool.name not in exposed:
                 continue
             description = tool.description or ""
             if tool.name in WRITE_TOOLS:
@@ -316,10 +398,10 @@ class AssistantMcpClient:
         """
         if self._session is None:  # pragma: no cover
             raise RuntimeError("AssistantMcpClient not entered")
-        if not bypass_whitelist and name not in READ_ONLY_TOOLS:
+        if not bypass_whitelist and name not in NO_APPROVAL_TOOLS:
             raise PermissionError(
-                f"Tool '{name}' is not in the read-only whitelist "
-                "(writes require approval)."
+                f"Tool '{name}' is not in the no-approval whitelist "
+                "(fleet writes require approval)."
             )
         if bypass_whitelist and name not in ALLOWED_TOOLS:
             # Defence in depth: the approval router calls us with

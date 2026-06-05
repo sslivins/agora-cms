@@ -42,7 +42,14 @@ from cms.auth import (
 )
 from cms.composed.bundle import BundleValidationError, build_bundle
 from cms.composed.registry import get_registry
-from cms.composed.schema import Layout, empty_layout
+from cms.composed.schema import (
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
+    GRID_COLS,
+    GRID_ROWS,
+    Layout,
+    empty_layout,
+)
 from cms.composed.validate import validate_layout
 from cms.database import get_db
 from cms.models.asset import Asset, AssetType
@@ -122,20 +129,35 @@ async def _load_composed_for_write(
 async def _check_referenced_asset_acl(
     layout: Layout,
     composed_asset: Asset,
+    request: Request,
     db: AsyncSession,
 ) -> None:
     """Reject layouts that reference an asset the audience can't see.
 
-    Mirrors :func:`cms.routers.assets._validate_slideshow_acl` for the
-    composed case. Every asset declared by any widget in the layout
-    must be visible to a superset of the composed slide's audience:
+    Two independent checks are applied to every asset declared by any
+    widget in the layout:
 
-    * Composed slide is global → every referenced asset must also be global.
-    * Composed slide is group-scoped → every referenced asset must be
-      global, or shared with a superset of the composed slide's group set.
-    * Composed slide is personal (no groups, not global) → no extra
-      audience-widening check; visibility is already enforced via
-      ``_verify_asset_access``.
+    1. **Caller visibility.** The current user must be able to see each
+       referenced asset (global, shared with one of their groups, or
+       their own unshared upload). A referenced asset the caller cannot
+       see is reported indistinguishably from a missing one so we don't
+       disclose the existence of another user's private asset. This is
+       what stops a personal composed slide from inlining someone
+       else's private asset by guessing its UUID.
+
+    2. **Audience widening.** Mirrors
+       :func:`cms.routers.assets._validate_slideshow_acl` for the
+       composed case — a referenced asset must be visible to a superset
+       of the composed slide's *delivery* audience:
+
+       * Composed slide is global → every referenced asset must also be
+         global.
+       * Composed slide is group-scoped → every referenced asset must be
+         global, or shared with a superset of the composed slide's group
+         set.
+       * Composed slide is personal (no groups, not global) → no extra
+         audience-widening check (it isn't delivered to a wider audience
+         than the author).
     """
     # Trigger widget registration so we can ask each widget for declared IDs.
     import cms.composed.widgets  # noqa: F401, WPS433
@@ -161,12 +183,24 @@ async def _check_referenced_asset_acl(
     if not referenced:
         return
 
+    # Caller-visibility gate: scope the existence query to the assets the
+    # current user can actually see. A referenced asset that exists but
+    # isn't visible to the caller then falls into ``missing`` below and is
+    # reported as "not found" — closing the cross-user private-asset leak
+    # without disclosing that the asset exists.
+    from cms.routers.assets import _visible_asset_ids  # noqa: WPS433
+
+    user = getattr(request.state, "user", None)
+    visible = await _visible_asset_ids(user, db) if user is not None else None
+
+    asset_query = select(Asset).where(
+        Asset.id.in_(referenced), Asset.deleted_at.is_(None),
+    )
+    if visible is not None:
+        asset_query = asset_query.where(Asset.id.in_(visible))
+
     # Load each referenced asset + the groups it's shared with.
-    asset_rows = (await db.execute(
-        select(Asset).where(
-            Asset.id.in_(referenced), Asset.deleted_at.is_(None),
-        )
-    )).scalars().all()
+    asset_rows = (await db.execute(asset_query)).scalars().all()
     found_ids = {a.id for a in asset_rows}
     missing = referenced - found_ids
     if missing:
@@ -205,7 +239,9 @@ async def _check_referenced_asset_acl(
         return
 
     if not composed_groups:
-        # Personal slide — visibility was already enforced upstream.
+        # Personal slide — caller-visibility was enforced by the gate
+        # above; no audience-widening check needed (it isn't delivered to
+        # a wider audience than the author).
         return
 
     failures: list[str] = []
@@ -224,6 +260,191 @@ async def _check_referenced_asset_acl(
                 "mark global) first."
             ),
         )
+
+
+def _build_widget_types() -> list[dict[str, Any]]:
+    """Introspect the widget registry into LLM-friendly type descriptors.
+
+    Each entry carries the widget's config JSON-schema, defaults, the
+    required field names, and a ``references_asset`` flag so an AI
+    caller knows which widgets need a real ``asset_id`` from the asset
+    library. This is the source of truth the assistant consults before
+    placing widgets, preventing hallucinated types / config fields.
+    """
+    import cms.composed.widgets  # noqa: F401, WPS433
+
+    registry = get_registry()
+    out: list[dict[str, Any]] = []
+    for widget in registry.all():
+        schema = widget.ConfigSchema.model_json_schema()
+        props = schema.get("properties", {})
+        out.append(
+            {
+                "type": widget.slug,
+                "display_name": widget.display_name,
+                "icon": widget.icon,
+                "config_version": widget.config_version,
+                "references_asset": "asset_id" in props,
+                "required_fields": schema.get("required", []),
+                "default_config": widget.default_config(),
+                "config_schema": schema,
+            }
+        )
+    return out
+
+
+def _friendly_to_layout_dict(
+    widgets_in: Any,
+    background_color: str | None,
+    current_layout: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Translate the friendly widget list into a canonical Layout dict.
+
+    The friendly shape hides the parts of the canonical ``Layout`` that
+    are either locked (canvas 1920x1080, grid 12x8) or machine-managed
+    (per-widget UUID ``id``, ``config_version``). Each friendly widget
+    is ``{type, row, col, rowspan?, colspan?, config?, id?}``. A missing
+    ``id`` gets a fresh ``uuid4``; a supplied ``id`` is preserved so
+    edits keep widget identity. ``config_version`` is taken from the
+    registered widget when the type is known.
+
+    The returned dict is fed straight to ``Layout.model_validate`` so
+    all shape/bounds errors surface through the same 422 path as the
+    canonical PATCH endpoint. Raises 422 only for structurally
+    impossible input (non-list widgets, non-object entries, malformed
+    ``id``).
+    """
+    import cms.composed.widgets  # noqa: F401, WPS433
+
+    registry = get_registry()
+
+    if not isinstance(widgets_in, list):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_widgets",
+                "message": "widgets must be a list",
+            },
+        )
+
+    widgets_out: list[dict[str, Any]] = []
+    for idx, w in enumerate(widgets_in):
+        if not isinstance(w, dict):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "invalid_widget",
+                    "message": f"widget at index {idx} must be an object",
+                },
+            )
+        raw_id = w.get("id")
+        if raw_id is not None:
+            try:
+                widget_id = str(uuid.UUID(str(raw_id)))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_widget_id",
+                        "message": (
+                            f"widget at index {idx} has a malformed id: "
+                            f"{raw_id!r}"
+                        ),
+                    },
+                ) from exc
+        else:
+            widget_id = str(uuid.uuid4())
+
+        wtype = w.get("type")
+        known = registry.get(wtype) if isinstance(wtype, str) else None
+        config_version = known.config_version if known is not None else 1
+
+        widgets_out.append(
+            {
+                "id": widget_id,
+                "type": wtype,
+                "cell": {
+                    "row": w.get("row"),
+                    "col": w.get("col"),
+                    "rowspan": w.get("rowspan", 1),
+                    "colspan": w.get("colspan", 1),
+                },
+                "config": w.get("config", {}),
+                "config_version": config_version,
+            }
+        )
+
+    if background_color is not None:
+        bg_color = background_color
+    elif current_layout:
+        bg_color = (current_layout.get("background") or {}).get(
+            "color", "#000000"
+        )
+    else:
+        bg_color = "#000000"
+
+    return {
+        "background": {"color": bg_color},
+        "widgets": widgets_out,
+    }
+
+
+async def _validate_persist_layout(
+    asset: Asset,
+    composed: ComposedSlide,
+    layout: Layout,
+    user: User,
+    request: Request,
+    db: AsyncSession,
+    *,
+    action: str,
+) -> dict[str, Any]:
+    """Run semantic + ACL validation, then persist the layout as a draft.
+
+    Shared by the canonical PATCH endpoint and the friendly PUT endpoint
+    so the validate -> ACL -> persist -> audit sequence lives in one
+    place. Raises 422 (semantic) / 400 (ACL) exactly as the PATCH path.
+    """
+    registry = get_registry()
+    errors = validate_layout(layout, registry)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_layout",
+                "errors": [
+                    {
+                        "code": err.code,
+                        "message": err.message,
+                        "widget_id": err.widget_id,
+                    }
+                    for err in errors
+                ],
+            },
+        )
+
+    await _check_referenced_asset_acl(layout, asset, request, db)
+
+    composed.layout_json = layout.model_dump(mode="json")
+    composed.schema_version = layout.schema_version
+    composed.is_draft = True
+
+    await audit_log(
+        db,
+        user=user,
+        action=action,
+        resource_type="asset",
+        resource_id=str(asset.id),
+        description=f"Updated composed-slide layout for '{asset.filename}'",
+        details={"widget_count": len(layout.widgets)},
+        request=request,
+    )
+    await db.commit()
+    return {
+        "id": str(asset.id),
+        "is_draft": True,
+        "widget_count": len(layout.widgets),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -613,46 +834,15 @@ async def patch_composed_layout(
             detail={"error": "invalid_layout_shape", "message": str(e)},
         ) from e
 
-    registry = get_registry()
-    errors = validate_layout(layout, registry)
-    if errors:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "invalid_layout",
-                "errors": [
-                    {
-                        "code": err.code,
-                        "message": err.message,
-                        "widget_id": err.widget_id,
-                    }
-                    for err in errors
-                ],
-            },
-        )
-
-    await _check_referenced_asset_acl(layout, asset, db)
-
-    composed.layout_json = layout.model_dump(mode="json")
-    composed.schema_version = layout.schema_version
-    composed.is_draft = True
-
-    await audit_log(
+    return await _validate_persist_layout(
+        asset,
+        composed,
+        layout,
+        user,
+        request,
         db,
-        user=user,
         action="asset.update_composed_layout",
-        resource_type="asset",
-        resource_id=str(asset.id),
-        description=f"Updated composed-slide layout for '{asset.filename}'",
-        details={"widget_count": len(layout.widgets)},
-        request=request,
     )
-    await db.commit()
-    return {
-        "id": str(asset.id),
-        "is_draft": True,
-        "widget_count": len(layout.widgets),
-    }
 
 
 @router.post("/{asset_id}/publish")
@@ -726,3 +916,108 @@ async def publish_composed_endpoint(
         "rebuilt": result.rebuilt,
         "is_draft": False,
     }
+
+
+@router.get("/widget-types")
+async def list_composed_widget_types() -> dict[str, Any]:
+    """Return the catalog of available composed-slide widget types.
+
+    Read-only registry introspection. Each entry has the widget's config
+    JSON-schema, default config, required fields, and whether it
+    references an asset. Powers the AI assistant's widget discovery so
+    it never invents a widget type or config field.
+    """
+    return {"widget_types": _build_widget_types()}
+
+
+@router.get("/{asset_id}/layout")
+async def get_composed_layout(
+    asset_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the current draft layout in the friendly widget shape.
+
+    Read-only. Widget ``id``s are included so an AI edit can preserve
+    widget identity by sending them back unchanged. The locked canvas
+    and grid are reported for context but are not editable.
+    """
+    asset, composed = await _load_composed_for_write(asset_id, request, db)
+    raw = composed.layout_json or {}
+    bg = (raw.get("background") or {}).get("color", "#000000")
+
+    widgets_out: list[dict[str, Any]] = []
+    for w in raw.get("widgets", []):
+        cell = w.get("cell") or {}
+        widgets_out.append(
+            {
+                "id": w.get("id"),
+                "type": w.get("type"),
+                "row": cell.get("row"),
+                "col": cell.get("col"),
+                "rowspan": cell.get("rowspan", 1),
+                "colspan": cell.get("colspan", 1),
+                "config": w.get("config", {}),
+                "config_version": w.get("config_version", 1),
+            }
+        )
+
+    return {
+        "id": str(asset.id),
+        "is_draft": composed.is_draft,
+        "background_color": bg,
+        "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
+        "grid": {"rows": GRID_ROWS, "cols": GRID_COLS},
+        "widgets": widgets_out,
+    }
+
+
+@router.put("/{asset_id}/layout-friendly")
+async def put_composed_layout_friendly(
+    asset_id: uuid.UUID,
+    request: Request,
+    body: dict[str, Any] = Body(...),
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Replace a draft's layout from the friendly widget shape.
+
+    Body: ``{widgets: [...], background_color?: "#rrggbb"}`` where each
+    widget is ``{type, row, col, rowspan?, colspan?, config?, id?}``.
+    The server assigns/preserves widget UUIDs and pins the locked
+    canvas/grid, then runs the exact same shape + semantic + asset-ACL
+    validation as the canonical PATCH endpoint. Sets ``is_draft=True``.
+
+    This is the AI-assistant write path: the LLM never has to spell out
+    the locked canvas/grid or manage widget UUIDs, which is the source
+    of the "extra inputs not permitted" failures it would otherwise hit.
+    """
+    asset, composed = await _load_composed_for_write(asset_id, request, db)
+
+    # Trigger widget registration before validate_layout uses the registry.
+    import cms.composed.widgets  # noqa: F401, WPS433
+
+    layout_dict = _friendly_to_layout_dict(
+        body.get("widgets", []),
+        body.get("background_color"),
+        composed.layout_json,
+    )
+    try:
+        layout = Layout.model_validate(layout_dict)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_layout_shape", "message": str(e)},
+        ) from e
+
+    return await _validate_persist_layout(
+        asset,
+        composed,
+        layout,
+        user,
+        request,
+        db,
+        action="asset.update_composed_layout",
+    )

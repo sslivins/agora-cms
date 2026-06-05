@@ -57,11 +57,12 @@ from cms.services.assistant.llm_client import (
     LLMClient,
 )
 from cms.services.assistant.mcp_client import (
-    ALLOWED_TOOLS,
     AssistantMcpClient,
     McpUnavailableError,
-    READ_ONLY_TOOLS,
+    MODE_GENERAL,
     WRITE_TOOLS,
+    executable_tools_for_mode,
+    tools_for_mode,
 )
 from cms.services.assistant.prompts import build_system_prompt
 
@@ -120,8 +121,13 @@ async def _execute_tool_call(
     *,
     mcp: AssistantMcpClient,
     tool_call: dict[str, Any],
+    executable_tools: frozenset[str],
 ) -> str:
     """Run a single OpenAI ``tool_call`` against MCP, returning a string.
+
+    ``executable_tools`` is the set of tools the current thread mode may
+    run inline without an approval click (see
+    :func:`cms.services.assistant.mcp_client.executable_tools_for_mode`).
 
     Never raises — failures are encoded as JSON ``{"error": ...}`` so
     the LLM can see the failure and reason about it on the next turn.
@@ -131,9 +137,9 @@ async def _execute_tool_call(
     args, err = _parse_tool_arguments(fn.get("arguments"))
     if err is not None:
         return json.dumps({"error": "bad_arguments", "message": err})
-    if name not in READ_ONLY_TOOLS:
-        # Non-streaming agent path only invokes reads.  Write tools
-        # need the approval flow, which lives in the streaming agent.
+    if name not in executable_tools:
+        # Either a fleet write tool (needs the approval flow, which lives
+        # in the streaming agent) or a tool not exposed in this mode.
         # Tell the model so it doesn't keep retrying.
         return json.dumps(
             {
@@ -233,7 +239,9 @@ async def run_user_turn(
 
     final_assistant_row: ChatMessage | None = None
     try:
-        tools = await mcp.list_openai_tools()
+        mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
+        executable_tools = executable_tools_for_mode(mode)
+        tools = await mcp.list_openai_tools(mode=mode)
         max_iters = max(1, int(settings.assistant_max_tool_iterations))
 
         for iteration in range(max_iters):
@@ -277,7 +285,9 @@ async def run_user_turn(
             # Execute each tool call and persist its result.
             for tool_call in result.tool_calls:
                 tool_content = await _execute_tool_call(
-                    mcp=mcp, tool_call=tool_call
+                    mcp=mcp,
+                    tool_call=tool_call,
+                    executable_tools=executable_tools,
                 )
                 tool_row = ChatMessage(
                     thread_id=thread.id,
@@ -450,7 +460,10 @@ async def run_user_turn_streaming(
 
     final_row: ChatMessage | None = None
     try:
-        tools = await mcp.list_openai_tools()
+        mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
+        mode_tools = tools_for_mode(mode)
+        executable_tools = executable_tools_for_mode(mode)
+        tools = await mcp.list_openai_tools(mode=mode)
         max_iters = max(1, int(settings.assistant_max_tool_iterations))
 
         for iteration in range(max_iters):
@@ -540,12 +553,12 @@ async def run_user_turn_streaming(
                 # approve / reject endpoint OVERWRITES this row's
                 # content with the real result once the user decides.
                 #
-                # Anything outside the union of READ_ONLY_TOOLS and
-                # WRITE_TOOLS is treated as a hallucinated tool name
-                # and returned as a synthetic error so the LLM can
-                # recover (rather than queuing an approval the user
-                # would just have to reject).
-                if tc_name and tc_name not in ALLOWED_TOOLS:
+                # Anything outside the current mode's tool profile is
+                # treated as a hallucinated or out-of-mode tool name and
+                # returned as a synthetic error so the LLM can recover
+                # (rather than queuing an approval the user would just
+                # have to reject).
+                if tc_name and tc_name not in mode_tools:
                     err = json.dumps(
                         {
                             "error": "tool_not_allowed",
@@ -644,7 +657,9 @@ async def run_user_turn_streaming(
                     continue
 
                 tool_content = await _execute_tool_call(
-                    mcp=mcp, tool_call=tool_call
+                    mcp=mcp,
+                    tool_call=tool_call,
+                    executable_tools=executable_tools,
                 )
                 tool_row = ChatMessage(
                     thread_id=thread.id,
