@@ -290,6 +290,7 @@
                         <a role="menuitem" href="/assets/{{ a.id }}/slideshow">View slides</a>
                         {% endif %}
                     {% elif a.asset_type.value == 'composed' %}
+                        <button type="button" role="menuitem" onclick="previewComposed('{{ a.id }}', {{ (a.display_name or a.original_filename or a.filename) | tojson | forceescape }})">Preview</button>
                         {% if 'assets:write' in user_perms and is_owner %}
                         <a role="menuitem" href="/assets/{{ a.id }}/composed">Edit composed</a>
                         {% else %}
