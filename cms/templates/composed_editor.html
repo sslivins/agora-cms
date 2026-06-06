@@ -116,13 +116,13 @@
             <p class="text-muted" style="font-size:0.85rem;">Click a placed widget to edit it.</p>
         </aside>
     </div>
-{% if edit_mode and assistant_enabled %}
+{% if assistant_enabled %}
     <!-- AI assistant chat drawer. Floating launcher + slide-up panel.
-         Gated on the Assistant feature flag (edit mode only). The
-         drawer talks to the editor via window.composedEditorBridge and
-         drives the bound composed_editor chat thread; see
-         /static/composed_editor_chat.js. -->
-    <div id="cw-ai" data-asset-id="{{ asset_id }}">
+         Gated on the Assistant feature flag. Available in BOTH create and
+         edit mode: in create mode the drawer mints the draft asset on the
+         first message (via window.composedEditorBridge) so the chat can
+         bind to it. See /static/composed_editor_chat.js. -->
+    <div id="cw-ai" data-asset-id="{{ asset_id or '' }}">
         <button type="button" id="cw-ai-launcher" onclick="cwAiToggle()"
                 aria-expanded="false" aria-controls="cw-ai-panel"
                 title="Build this slide with AI">✨ AI Assistant</button>
@@ -534,6 +534,18 @@
     .cw-ai-msg.assistant { align-self: flex-start; background: var(--surface-alt, #16213e); border: 1px solid var(--border, rgba(255,255,255,0.18)); }
     .cw-ai-msg.tool { align-self: flex-start; font-size: 0.78rem; color: var(--text-muted, #b3b3c0); font-style: italic; padding: 0.2rem 0.5rem; }
     .cw-ai-msg.error { align-self: flex-start; background: #fee2e2; color: #991b1b; }
+    /* Rendered Markdown (assistant replies). Drop pre-wrap so marked's
+       <br> handling doesn't double up blank lines, and tame block margins
+       inside the bubble. */
+    .cw-ai-msg.is-markdown { white-space: normal; }
+    .cw-ai-msg.is-markdown > :first-child { margin-top: 0; }
+    .cw-ai-msg.is-markdown > :last-child { margin-bottom: 0; }
+    .cw-ai-msg.is-markdown p { margin: 0 0 0.5rem; }
+    .cw-ai-msg.is-markdown ul, .cw-ai-msg.is-markdown ol { margin: 0 0 0.5rem 1.15rem; padding: 0; }
+    .cw-ai-msg.is-markdown li { margin: 0.1rem 0; }
+    .cw-ai-msg.is-markdown strong { font-weight: 700; }
+    .cw-ai-msg.is-markdown code { background: rgba(255,255,255,0.12); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
+    .cw-ai-msg.is-markdown a { color: var(--accent, #60a5fa); }
     #cw-ai-form {
         display: flex; gap: 0.5rem; padding: 0.6rem;
         border-top: 1px solid var(--border, rgba(255,255,255,0.18));
@@ -1780,7 +1792,12 @@ window.composedEditorBridge = {
     async refreshFromServer() { return await refreshLayoutFromServer(); },
 };
 </script>
-{% if edit_mode and assistant_enabled %}
+{% if assistant_enabled %}
+<!-- marked + DOMPurify render the assistant's Markdown replies as HTML
+     (bold, lists, code). Non-deferred so they're ready before the
+     deferred drawer IIFE runs. -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 <script src="/static/composed_editor_chat.js" defer></script>
 {% endif %}
 {% endblock %}

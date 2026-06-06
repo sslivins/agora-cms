@@ -94,6 +94,50 @@
         return div;
     }
 
+    // The model emits Markdown; render assistant replies as sanitized HTML
+    // (bold, lists, code) when marked + DOMPurify are present. User/tool/
+    // error bubbles stay plain text. Mirrors cms/static/assistant.js.
+    const _hasMarkdown =
+        typeof window.marked !== "undefined" && typeof window.DOMPurify !== "undefined";
+    if (_hasMarkdown) {
+        window.marked.setOptions({ gfm: true, breaks: true });
+    }
+    function renderAssistantMarkdown(bubble, text) {
+        if (!_hasMarkdown) {
+            bubble.textContent = text || "";
+            return;
+        }
+        bubble.innerHTML = window.DOMPurify.sanitize(window.marked.parse(text || ""));
+        bubble.classList.add("is-markdown");
+    }
+
+    // ── Create-mode mint ─────────────────────────────────────────────
+    // On a brand-new slide there's no asset yet, so the chat can't bind to
+    // one. Mint the draft via the editor bridge (which POSTs /composed/ and
+    // PATCHes the seeded layout, no redirect), then proceed as in edit mode.
+    async function mintDraft() {
+        if (!bridge || typeof bridge.save !== "function") return false;
+        let ok = false;
+        try { ok = await bridge.save(); } catch (_) { ok = false; }
+        const id = assetId();
+        if (!ok || !id) return false;
+        // Keep the URL + manual-save behavior consistent with a normal first
+        // save, and lock the create-only config inputs (name/global/groups)
+        // now that the asset exists — they're read once at mint time and
+        // would otherwise silently no-op on later manual saves.
+        try {
+            history.replaceState(null, "", "/assets/" + encodeURIComponent(id) + "/composed");
+        } catch (_) { /* non-fatal */ }
+        ["composed-name", "composed-global"].forEach((cid) => {
+            const el = document.getElementById(cid);
+            if (el) el.disabled = true;
+        });
+        document.querySelectorAll("input[name='composed_group_ids']").forEach((el) => {
+            el.disabled = true;
+        });
+        return true;
+    }
+
     // ── Submit / stream ──────────────────────────────────────────────
     window.cwAiSubmit = function (e) {
         if (e) e.preventDefault();
@@ -105,32 +149,51 @@
     };
 
     async function sendMessage(content) {
-        const threadId = await ensureThread();
-        if (!threadId) return;
-
+        if (state.sending) return;
+        // Lock the UI up-front so a rapid double-submit can't mint the draft
+        // twice or kick off two concurrent streams.
         state.sending = true;
         sendBtn.disabled = true;
         input.disabled = true;
         input.value = "";
         addMsg("user", content);
 
-        // The assistant reads server-side draft state, so flush any
-        // unsaved manual edits first — otherwise the post-turn refresh
-        // (which clears the dirty flag) would silently drop them.
-        if (bridge && bridge.isDirty && bridge.isDirty()) {
-            try { await bridge.save(); } catch (_) { /* flashed by editor */ }
-        }
-
-        let assistantBubble = null;
-        let assistantText = "";
         let sawSuccessfulWrite = false;
-
-        const ensureBubble = () => {
-            if (!assistantBubble) assistantBubble = addMsg("assistant", "");
-            return assistantBubble;
-        };
-
         try {
+            // Create mode: mint the draft asset so the chat can bind to it.
+            if (!assetId()) {
+                const minted = await mintDraft();
+                if (!minted) {
+                    addMsg(
+                        "error",
+                        "Couldn't save the draft — check the message at the top of "
+                        + "the page (a slide name is required), then send again."
+                    );
+                    return;
+                }
+            }
+
+            // The assistant reads server-side draft state, so flush any
+            // unsaved manual edits first — otherwise the post-turn refresh
+            // (which clears the dirty flag) would silently drop them.
+            if (bridge && bridge.isDirty && bridge.isDirty()) {
+                const ok = await bridge.save();
+                if (!ok) {
+                    addMsg("error", "Couldn't save your latest changes — fix the error above and try again.");
+                    return;
+                }
+            }
+
+            const threadId = await ensureThread();
+            if (!threadId) return; // ensureThread already surfaced the error
+
+            let assistantBubble = null;
+            let assistantText = "";
+            const ensureBubble = () => {
+                if (!assistantBubble) assistantBubble = addMsg("assistant", "");
+                return assistantBubble;
+            };
+
             const resp = await fetch(
                 "/api/chat/threads/" + encodeURIComponent(threadId) + "/stream",
                 {
@@ -147,7 +210,7 @@
                 switch (evt.event) {
                     case "token":
                         assistantText += (evt.data && evt.data.text) || "";
-                        ensureBubble().textContent = assistantText;
+                        renderAssistantMarkdown(ensureBubble(), assistantText);
                         log.scrollTop = log.scrollHeight;
                         break;
                     case "tool_call":
