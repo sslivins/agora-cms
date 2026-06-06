@@ -304,3 +304,41 @@ class TestVerifyComposedEditorThread:
         with pytest.raises(HTTPException) as ei:
             await _verify_composed_editor_thread(thread, viewer, None, None)
         assert ei.value.status_code == 403
+
+# ── create-mode drawer gating (PR 3) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestCreateModeDrawer:
+    """The AI assistant drawer must be available on a brand-new composed
+    slide (``/assets/new/composed``), not just after the first save. The
+    drawer mints the draft on the first message client-side, so the
+    server only needs to render it (with an empty asset id) whenever the
+    Assistant feature flag is on for the user."""
+
+    async def test_new_page_shows_drawer_for_enabled_user(self, client):
+        # ``client`` is an admin (settings:write), so the assistant flag is
+        # always on regardless of the allowlist.
+        resp = await client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'id="cw-ai"' in text
+        assert '<script src="/static/composed_editor_chat.js"' in text
+        # Create mode has no asset yet — the drawer must render an EMPTY
+        # data-asset-id (not the string "None"), so the client treats it as
+        # unbound and mints on first send.
+        assert 'data-asset-id=""' in text
+        assert 'data-asset-id="None"' not in text
+
+    async def test_new_page_hides_drawer_for_disabled_user(
+        self, operator_client, app
+    ):
+        # A non-admin Operator with the allowlist cleared has the assistant
+        # disabled, so the drawer (and its scripts) must not render. The
+        # Operator still has ASSETS_WRITE, so the page itself loads.
+        await _disable_all(app)
+        resp = await operator_client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'id="cw-ai"' not in text
+        assert '<script src="/static/composed_editor_chat.js"' not in text

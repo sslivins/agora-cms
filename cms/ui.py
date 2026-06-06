@@ -1869,6 +1869,13 @@ async def _composed_builder_context(request, db, *, asset_id=None):
     # lock-step with ``cms.composed.schema`` forever.
     from cms.composed.schema import empty_layout
 
+    # The AI assistant drawer is available in BOTH create and edit mode for
+    # an enabled user. In create mode the drawer mints the draft asset on the
+    # first message (client-side via the editor bridge), so the chat can bind
+    # to it — there's no longer a "save first to see the assistant" gap.
+    from cms.services.assistant_flag import assistant_enabled_for
+    assistant_on = bool(user) and await assistant_enabled_for(db, user)
+
     ctx = {
         "active_tab": "assets",
         "is_admin": is_admin,
@@ -1884,7 +1891,7 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         "asset_groups": [],
         "asset_is_global": False,
         "media_assets": media_assets,
-        "assistant_enabled": False,
+        "assistant_enabled": assistant_on,
     }
 
     if asset_id is not None:
@@ -1914,9 +1921,8 @@ async def _composed_builder_context(request, db, *, asset_id=None):
             select(GroupAsset.group_id).where(GroupAsset.asset_id == aid)
         )).scalars().all()
 
-        from cms.services.assistant_flag import assistant_enabled_for
-        assistant_on = bool(user) and await assistant_enabled_for(db, user)
-
+        # ``assistant_enabled`` is already computed in the base ctx above
+        # (same value for create + edit mode), so no recompute here.
         ctx.update({
             "edit_mode": True,
             "asset": asset,
@@ -1928,7 +1934,6 @@ async def _composed_builder_context(request, db, *, asset_id=None):
             "schema_version": composed.schema_version,
             "asset_groups": [str(g) for g in asset_group_rows],
             "asset_is_global": bool(asset.is_global),
-            "assistant_enabled": assistant_on,
         })
     return ctx
 
