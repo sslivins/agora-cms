@@ -54,9 +54,12 @@ from cms.composed.validate import validate_layout
 from cms.database import get_db
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
+from cms.models.chat_thread import ChatThread
 from cms.models.group_asset import GroupAsset
 from cms.models.user import User
 from cms.permissions import ASSETS_WRITE
+from cms.services.assistant.mcp_client import MODE_COMPOSED_EDITOR
+from cms.services.assistant_flag import assistant_enabled_for
 from cms.services.audit_service import audit_log
 
 logger = logging.getLogger(__name__)
@@ -1021,3 +1024,61 @@ async def put_composed_layout_friendly(
         db,
         action="asset.update_composed_layout",
     )
+
+
+@router.post("/{asset_id}/assistant/thread")
+async def composed_assistant_thread(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get-or-create the editor-scoped AI chat thread for this slide.
+
+    Powers the embedded chat panel in the composed-slide editor. The
+    thread is bound to ``asset_id`` and runs in ``composed_editor`` mode,
+    which scopes the assistant to the composed read/draft-write tools and
+    forces every composed tool call onto *this* slide.
+
+    Reuses the caller's newest existing ``composed_editor`` thread for the
+    slide if one exists (so reopening the editor resumes the same
+    conversation); otherwise creates one. Returns ``{thread_id, created}``.
+
+    Gated identically to the editor itself: requires ``ASSETS_WRITE``,
+    that the slide exists and is visible to the caller, and that the
+    Assistant feature is enabled for the caller (404 otherwise, to keep
+    the hidden feature invisible).
+    """
+    asset, _composed = await _load_composed_for_write(asset_id, request, db)
+
+    if not await assistant_enabled_for(db, user):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    existing = (
+        await db.execute(
+            select(ChatThread)
+            .where(
+                ChatThread.user_id == user.id,
+                ChatThread.composed_asset_id == asset_id,
+                ChatThread.mode == MODE_COMPOSED_EDITOR,
+            )
+            .order_by(ChatThread.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {"thread_id": str(existing.id), "created": False}
+
+    asset_name = (
+        asset.display_name or asset.original_filename or asset.filename or "slide"
+    )
+    thread = ChatThread(
+        user_id=user.id,
+        mode=MODE_COMPOSED_EDITOR,
+        composed_asset_id=asset_id,
+        title=f"Editing {asset_name}"[:200],
+    )
+    db.add(thread)
+    await db.commit()
+    await db.refresh(thread)
+    return {"thread_id": str(thread.id), "created": True}
