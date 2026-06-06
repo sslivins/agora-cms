@@ -469,6 +469,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /composed/{asset_id}/assistant/thread:
+    post:
+      tags:
+      - composed
+      summary: Composed Assistant Thread
+      description: |-
+        Get-or-create the editor-scoped AI chat thread for this slide.
+
+        Powers the embedded chat panel in the composed-slide editor. The
+        thread is bound to ``asset_id`` and runs in ``composed_editor`` mode,
+        which scopes the assistant to the composed read/draft-write tools and
+        forces every composed tool call onto *this* slide.
+
+        Reuses the caller's newest existing ``composed_editor`` thread for the
+        slide if one exists (so reopening the editor resumes the same
+        conversation); otherwise creates one. Returns ``{thread_id, created}``.
+
+        Gated identically to the editor itself: requires ``ASSETS_WRITE``,
+        that the slide exists and is visible to the caller, and that the
+        Assistant feature is enabled for the caller (404 otherwise, to keep
+        the hidden feature invisible).
+      operationId: composed_assistant_thread_composed__asset_id__assistant_thread_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Composed Assistant Thread Composed  Asset Id  Assistant Thread Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/check-updates:
     post:
       summary: Check For Updates
@@ -1979,7 +2024,13 @@ paths:
   /api/chat/threads:
     get:
       summary: List Threads
-      description: List the caller's threads, newest-updated first.
+      description: |-
+        List the caller's general threads, newest-updated first.
+
+        Composed-editor threads (``mode == "composed_editor"``) are excluded:
+        they're asset-scoped ephemera owned by the slide editor's embedded
+        chat panel, not standalone conversations, so they must never appear
+        in the general assistant sidebar.
       operationId: list_threads_api_chat_threads_get
       responses:
         '200':

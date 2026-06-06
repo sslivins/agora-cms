@@ -1884,6 +1884,7 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         "asset_groups": [],
         "asset_is_global": False,
         "media_assets": media_assets,
+        "assistant_enabled": False,
     }
 
     if asset_id is not None:
@@ -1913,6 +1914,9 @@ async def _composed_builder_context(request, db, *, asset_id=None):
             select(GroupAsset.group_id).where(GroupAsset.asset_id == aid)
         )).scalars().all()
 
+        from cms.services.assistant_flag import assistant_enabled_for
+        assistant_on = bool(user) and await assistant_enabled_for(db, user)
+
         ctx.update({
             "edit_mode": True,
             "asset": asset,
@@ -1924,6 +1928,7 @@ async def _composed_builder_context(request, db, *, asset_id=None):
             "schema_version": composed.schema_version,
             "asset_groups": [str(g) for g in asset_group_rows],
             "asset_is_global": bool(asset.is_global),
+            "assistant_enabled": assistant_on,
         })
     return ctx
 

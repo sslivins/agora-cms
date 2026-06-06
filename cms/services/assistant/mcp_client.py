@@ -182,6 +182,20 @@ COMPOSED_DRAFT_WRITE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# Composed tools that operate on one specific composed-slide asset
+# (their MCP signature takes an ``asset_id``).  In ``composed_editor``
+# mode the agent FORCES the thread's bound asset id onto these so the
+# editor assistant can never read or write a slide other than the one
+# the user has open.  ``list_assets`` / ``get_asset`` are deliberately
+# excluded — they legitimately read *other* assets (e.g. an image to
+# embed) and are not slide-mutating.
+COMPOSED_ASSET_SCOPED_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_composed_layout",
+        "set_composed_widgets",
+    }
+)
+
 # Tools the agent may execute immediately, with no approval click.
 # Reads are inherently safe; composed draft writes are reversible and
 # device-invisible (see above).

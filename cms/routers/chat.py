@@ -31,6 +31,7 @@ from cms.database import get_db
 from cms.models.chat_message import ChatMessage
 from cms.models.chat_thread import ChatThread
 from cms.models.user import User
+from cms.permissions import ASSETS_WRITE, has_permission
 from cms.schemas.chat import (
     AssistantFeatureStatus,
     AssistantUsageOut,
@@ -50,7 +51,10 @@ from cms.services.assistant.llm_client import (
     AssistantUnavailableError,
     is_available as assistant_llm_available,
 )
-from cms.services.assistant.mcp_client import McpUnavailableError
+from cms.services.assistant.mcp_client import (
+    McpUnavailableError,
+    MODE_COMPOSED_EDITOR,
+)
 from cms.services.assistant.pricing import estimate_usd, model_for_deployment
 from cms.services.assistant_flag import assistant_enabled_for
 from cms.services.audit_service import audit_log
@@ -99,6 +103,46 @@ async def _get_owned_thread(
     if not thread or thread.user_id != user.id:
         raise HTTPException(status_code=404, detail="Thread not found")
     return thread
+
+
+async def _verify_composed_editor_thread(
+    thread: ChatThread,
+    user: User,
+    request: Request,
+    db: AsyncSession,
+) -> None:
+    """Re-validate a ``composed_editor`` thread at turn start.
+
+    No-op for general threads. For an editor-bound thread this defends
+    against state drift between the moment the editor opened the thread
+    and the moment a message is sent:
+
+    * orphaned thread (no bound asset) → 409 — never run the agent with a
+      composed-editor prompt but no slide to scope it to;
+    * the caller lost ``ASSETS_WRITE`` since the thread was created → 403;
+    * the bound slide was deleted, or is no longer visible to the caller
+      → 404 / 403, surfaced by ``_load_composed_for_write``.
+
+    Without this, a stale editor thread could let the assistant attempt
+    draft writes against a slide the user can no longer edit or see.
+    """
+    if thread.mode != MODE_COMPOSED_EDITOR:
+        return
+    if thread.composed_asset_id is None:
+        raise HTTPException(
+            status_code=409, detail="Editor thread is not bound to a slide"
+        )
+    if user.role is None or not has_permission(
+        user.role.permissions, ASSETS_WRITE
+    ):
+        raise HTTPException(
+            status_code=403, detail=f"Missing permission: {ASSETS_WRITE}"
+        )
+    # Existence + visibility (raises 404 / 403). Lazy import avoids a
+    # router import cycle (composed imports nothing from chat).
+    from cms.routers.composed import _load_composed_for_write  # noqa: WPS433
+
+    await _load_composed_for_write(thread.composed_asset_id, request, db)
 
 
 async def _emit_assistant_audit(
@@ -219,12 +263,21 @@ async def list_threads(
     user: User = Depends(_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List the caller's threads, newest-updated first."""
+    """List the caller's general threads, newest-updated first.
+
+    Composed-editor threads (``mode == "composed_editor"``) are excluded:
+    they're asset-scoped ephemera owned by the slide editor's embedded
+    chat panel, not standalone conversations, so they must never appear
+    in the general assistant sidebar.
+    """
     await _require_feature(user, db)
     rows = (
         await db.execute(
             select(ChatThread)
-            .where(ChatThread.user_id == user.id)
+            .where(
+                ChatThread.user_id == user.id,
+                ChatThread.mode != MODE_COMPOSED_EDITOR,
+            )
             .order_by(ChatThread.updated_at.desc())
         )
     ).scalars().all()
@@ -317,6 +370,7 @@ async def post_message(
     """
     await _require_feature(user, db)
     thread = await _get_owned_thread(thread_id, user, db)
+    await _verify_composed_editor_thread(thread, user, request, db)
 
     try:
         await check_budget(db, user)
@@ -473,6 +527,7 @@ async def post_message_stream(
     """
     await _require_feature(user, db)
     thread = await _get_owned_thread(thread_id, user, db)
+    await _verify_composed_editor_thread(thread, user, request, db)
 
     # Budget pre-check.  Runs BEFORE EventSourceResponse so a user
     # over their cap gets a clean 429 instead of a half-open SSE

@@ -58,7 +58,9 @@ from cms.services.assistant.llm_client import (
 )
 from cms.services.assistant.mcp_client import (
     AssistantMcpClient,
+    COMPOSED_ASSET_SCOPED_TOOLS,
     McpUnavailableError,
+    MODE_COMPOSED_EDITOR,
     MODE_GENERAL,
     WRITE_TOOLS,
     executable_tools_for_mode,
@@ -122,12 +124,21 @@ async def _execute_tool_call(
     mcp: AssistantMcpClient,
     tool_call: dict[str, Any],
     executable_tools: frozenset[str],
+    bound_asset_id: uuid.UUID | str | None = None,
 ) -> str:
     """Run a single OpenAI ``tool_call`` against MCP, returning a string.
 
     ``executable_tools`` is the set of tools the current thread mode may
     run inline without an approval click (see
     :func:`cms.services.assistant.mcp_client.executable_tools_for_mode`).
+
+    ``bound_asset_id`` is set for ``composed_editor``-mode threads: it is
+    the composed slide the thread is bound to.  For the composed
+    asset-scoped tools (``get_composed_layout`` / ``set_composed_widgets``)
+    the agent OVERRIDES any model-supplied ``asset_id`` with this bound id,
+    so the editor assistant can only ever read/write the slide the user
+    actually has open — never another asset, even if the model is coaxed
+    into emitting a different id.
 
     Never raises — failures are encoded as JSON ``{"error": ...}`` so
     the LLM can see the failure and reason about it on the next turn.
@@ -137,6 +148,10 @@ async def _execute_tool_call(
     args, err = _parse_tool_arguments(fn.get("arguments"))
     if err is not None:
         return json.dumps({"error": "bad_arguments", "message": err})
+    if bound_asset_id is not None and name in COMPOSED_ASSET_SCOPED_TOOLS:
+        # Force the thread's bound slide id; ignore whatever the model sent.
+        args = dict(args or {})
+        args["asset_id"] = str(bound_asset_id)
     if name not in executable_tools:
         # Either a fleet write tool (needs the approval flow, which lives
         # in the streaming agent) or a tool not exposed in this mode.
@@ -218,9 +233,25 @@ async def run_user_turn(
         )
     ).scalars().all()
 
-    # 3. Build the OpenAI-format payload.
+    # 3. Build the OpenAI-format payload.  Compute the thread mode +
+    #    bound composed asset up front so the system prompt can render
+    #    the right variant (general fleet helper vs. composed-slide
+    #    editor scoped to one slide).
+    mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
+    bound_asset_id = (
+        getattr(thread, "composed_asset_id", None)
+        if mode == MODE_COMPOSED_EDITOR
+        else None
+    )
     openai_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(user)},
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                user,
+                mode=mode,
+                composed_asset_id=str(bound_asset_id) if bound_asset_id else None,
+            ),
+        },
     ]
     openai_messages.extend(_history_to_openai_messages(list(rows)))
 
@@ -239,7 +270,6 @@ async def run_user_turn(
 
     final_assistant_row: ChatMessage | None = None
     try:
-        mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
         executable_tools = executable_tools_for_mode(mode)
         tools = await mcp.list_openai_tools(mode=mode)
         max_iters = max(1, int(settings.assistant_max_tool_iterations))
@@ -288,6 +318,7 @@ async def run_user_turn(
                     mcp=mcp,
                     tool_call=tool_call,
                     executable_tools=executable_tools,
+                    bound_asset_id=bound_asset_id,
                 )
                 tool_row = ChatMessage(
                     thread_id=thread.id,
@@ -444,8 +475,21 @@ async def run_user_turn_streaming(
         )
     ).scalars().all()
 
+    mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
+    bound_asset_id = (
+        getattr(thread, "composed_asset_id", None)
+        if mode == MODE_COMPOSED_EDITOR
+        else None
+    )
     openai_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(user)},
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                user,
+                mode=mode,
+                composed_asset_id=str(bound_asset_id) if bound_asset_id else None,
+            ),
+        },
     ]
     openai_messages.extend(_history_to_openai_messages(list(rows)))
 
@@ -460,7 +504,6 @@ async def run_user_turn_streaming(
 
     final_row: ChatMessage | None = None
     try:
-        mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
         mode_tools = tools_for_mode(mode)
         executable_tools = executable_tools_for_mode(mode)
         tools = await mcp.list_openai_tools(mode=mode)
@@ -660,6 +703,7 @@ async def run_user_turn_streaming(
                     mcp=mcp,
                     tool_call=tool_call,
                     executable_tools=executable_tools,
+                    bound_asset_id=bound_asset_id,
                 )
                 tool_row = ChatMessage(
                     thread_id=thread.id,
