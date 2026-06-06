@@ -6,3 +6,8 @@
 
 # Azure Storage Queue — used by _drain_queue() to consume KEDA trigger messages
 azure-storage-queue>=12.9,<13.0
+
+# Headless Chromium snapshots of composed slides (worker/composed_render.py).
+# The matching browser binary + OS deps are installed in Dockerfile.worker
+# via `playwright install --with-deps chromium`.
+playwright>=1.44,<2.0

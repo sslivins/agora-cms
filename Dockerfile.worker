@@ -35,6 +35,16 @@ COPY worker/requirements.txt worker/requirements.txt
 RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 pip install --no-cache-dir --progress-bar off \
     -r worker/requirements.txt
 
+# Headless Chromium + its OS deps, for composed-slide snapshot thumbnails
+# (worker/composed_render.py). Deterministic fonts (DejaVu + Noto, incl.
+# colour emoji) keep snapshots reproducible across builds and arches.
+# `playwright install --with-deps chromium` pulls the matching browser
+# binary and the apt libraries Chromium needs to run headless.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji \
+    && python -m playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY shared/ shared/
 COPY cms/ cms/
 COPY worker/ worker/

@@ -521,6 +521,94 @@ async def _mark_failed(variant: AssetVariant, source: Asset, message: str, db: A
     except SQLAlchemyError:
         logger.warning("Variant %s deleted before failure recorded", variant.id)
 
+async def _render_composed_thumbnail(
+    variant: AssetVariant,
+    source: Asset,
+    profile: DeviceProfile,
+    output_path: Path,
+    asset_dir: Path,
+    db: AsyncSession,
+) -> None:
+    """Render a composed slide's HTML to a JPEG thumbnail snapshot.
+
+    Builds the same self-contained HTML the live preview serves (shared
+    ``cms.composed.render.build_composed_html``), rasterises it in headless
+    Chromium with all network blocked, then downscales the PNG to the
+    profile's JPEG thumbnail via :func:`convert_image`. Marks the variant
+    READY on success or FAILED on any error (mirrors the image/video
+    thumbnail tail).
+    """
+    from types import SimpleNamespace
+
+    variant.status = VariantStatus.PROCESSING
+    variant.progress = 0.0
+    await db.commit()
+
+    # Distinct temp name per variant (no collision with the .jpg output).
+    tmp_png = output_path.parent / f"{output_path.stem}.src.png"
+    try:
+        from cms.composed.render import build_composed_html
+        from worker.composed_render import render_composed_to_png
+
+        # build_composed_html only reads settings.asset_storage_path, which
+        # in the worker is exactly the asset_dir it transcodes from.
+        settings_shim = SimpleNamespace(asset_storage_path=asset_dir)
+        rendered = await build_composed_html(db, settings_shim, source.id)
+
+        png_bytes = await render_composed_to_png(rendered.html_bytes)
+        tmp_png.write_bytes(png_bytes)
+
+        ok = await convert_image(
+            tmp_png, output_path,
+            max_width=profile.max_width,
+            max_height=profile.max_height,
+        )
+        if not ok:
+            await _mark_failed(
+                variant, source, "Composed thumbnail conversion failed", db,
+            )
+            return
+
+        file_size = output_path.stat().st_size
+        sha = hashlib.sha256()
+        with open(output_path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                sha.update(chunk)
+
+        if await _source_asset_is_deleted(db, variant.source_asset_id):
+            await _abort_on_deleted(variant, output_path, db)
+            return
+
+        variant.checksum = sha.hexdigest()
+        variant.size_bytes = file_size
+        variant.status = VariantStatus.READY
+        variant.progress = 100.0
+        variant.completed_at = datetime.now(timezone.utc)
+        try:
+            await db.commit()
+        except SQLAlchemyError:
+            logger.warning(
+                "Variant %s deleted before composed thumbnail recorded",
+                variant.id,
+            )
+            return
+
+        logger.info(
+            "Composed thumbnail complete: %s (%d bytes)",
+            variant.filename, variant.size_bytes,
+        )
+        storage = get_storage()
+        await storage.on_file_stored(f"variants/{variant.filename}")
+    except Exception as e:  # noqa: BLE001
+        await _mark_failed(variant, source, str(e)[:500], db)
+        logger.exception("Composed thumbnail error for %s", variant.filename)
+    finally:
+        try:
+            tmp_png.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("composed thumbnail temp cleanup failed", exc_info=True)
+
+
 async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Path) -> None:
     """Transcode a single variant using ffmpeg."""
     await db.refresh(variant, ["source_asset", "profile"])
@@ -553,6 +641,26 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
         output_path = variants_dir / (variant.filename.rsplit(".", 1)[0] + correct_ext)
     else:
         output_path = variants_dir / variant.filename
+
+    # ── Composed-slide snapshot branch ─────────────────────────
+    # Composed slides have no source media file on disk — their thumbnail
+    # is a static snapshot rendered from the slide's self-contained HTML in
+    # a headless browser. Handle this BEFORE the source-file guard below,
+    # which would otherwise fail every composed slide.
+    if source.asset_type == AssetType.COMPOSED:
+        if not is_thumbnail:
+            # A device-purpose profile must never enqueue a composed slide
+            # (CMS-side filtering prevents it); fail loudly if one slips
+            # through rather than trying to ffmpeg a missing file.
+            await _mark_failed(
+                variant, source,
+                "Composed slides only support thumbnail variants", db,
+            )
+            return
+        await _render_composed_thumbnail(
+            variant, source, profile, output_path, asset_dir, db,
+        )
+        return
 
     if not source_path.is_file():
         await _mark_failed(variant, source, "Source file not found", db)

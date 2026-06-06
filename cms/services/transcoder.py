@@ -78,6 +78,21 @@ def _variant_ext_for(asset: Asset, profile: DeviceProfile) -> str:
     return ".mp4"
 
 
+def _profile_emits_for_asset(profile: DeviceProfile, asset: Asset) -> bool:
+    """Whether ``profile`` should produce a variant for ``asset``.
+
+    Composed slides have no source media file — the only meaningful
+    variant for them is a thumbnail snapshot the worker renders from the
+    slide HTML. A device-purpose profile would try to ffmpeg a
+    non-existent source and emit a useless ``.mp4``, so composed assets
+    are restricted to thumbnail-purpose profiles. All other asset types
+    are emitted by every profile as before.
+    """
+    if asset.asset_type == AssetType.COMPOSED:
+        return getattr(profile, "purpose", "device") == "thumbnail"
+    return True
+
+
 def cancel_profile_transcodes(profile_id: uuid.UUID) -> bool:
     """No-op — transcoding runs in the worker container."""
     return False
@@ -283,19 +298,17 @@ async def notify_worker(db, count: int = 1) -> None:
 async def enqueue_for_new_profile(
     profile_id, db: AsyncSession
 ) -> list[uuid.UUID]:
-    """Create pending variants for all video + image assets for a new profile.
+    """Create pending variants for all applicable assets for a new profile.
+
+    Device-purpose profiles cover VIDEO + IMAGE assets (as before). A
+    thumbnail-purpose profile additionally covers COMPOSED slides, whose
+    only meaningful variant is the rendered snapshot — but a *device*
+    profile must never enqueue a composed slide (it has no source file
+    and would emit a useless ``.mp4``).
 
     Returns the list of newly-created variant ids (caller may pass these to
     :func:`enqueue_variants`).
     """
-    result = await db.execute(
-        select(Asset).where(
-            Asset.asset_type.in_([AssetType.VIDEO, AssetType.IMAGE]),
-            Asset.deleted_at.is_(None),
-        )
-    )
-    assets = result.scalars().all()
-
     profile_result = await db.execute(
         select(DeviceProfile).where(DeviceProfile.id == profile_id)
     )
@@ -309,6 +322,18 @@ async def enqueue_for_new_profile(
             profile_id, profile.name,
         )
         return []
+
+    wanted_types = [AssetType.VIDEO, AssetType.IMAGE]
+    if getattr(profile, "purpose", "device") == "thumbnail":
+        wanted_types.append(AssetType.COMPOSED)
+
+    result = await db.execute(
+        select(Asset).where(
+            Asset.asset_type.in_(wanted_types),
+            Asset.deleted_at.is_(None),
+        )
+    )
+    assets = result.scalars().all()
 
     new_variant_ids: list[uuid.UUID] = []
     for asset in assets:
@@ -335,6 +360,159 @@ async def enqueue_for_new_profile(
 
     await db.commit()
     return new_variant_ids
+
+
+async def enqueue_composed_thumbnail(
+    asset: Asset, db: AsyncSession
+) -> list[uuid.UUID]:
+    """Queue a fresh snapshot render for a composed slide.
+
+    Mirrors the latest-READY-wins flow used for profile changes: any
+    existing thumbnail variant rows are left in place (the grid keeps
+    showing the previous snapshot) while a new PENDING variant is added
+    per enabled thumbnail-purpose profile. The worker renders the slide
+    HTML to a JPEG; when the new variant reaches READY the reaper sweep
+    supersedes the older sibling.
+
+    Self-contained: creates the variant rows, commits, and enqueues the
+    transcode jobs. Designed to be called best-effort from the layout
+    save hook (caller wraps in try/except so a transient failure never
+    blocks a save). Returns the new variant ids.
+    """
+    if asset.asset_type != AssetType.COMPOSED:
+        return []
+
+    profiles = (
+        await db.execute(
+            select(DeviceProfile).where(DeviceProfile.purpose == "thumbnail")
+        )
+    ).scalars().all()
+    enabled = [p for p in profiles if getattr(p, "enabled", True)]
+    if not enabled:
+        return []
+
+    # Coalesce rapid saves: if a render is already PENDING for this slide
+    # under a profile, don't pile on another — the queued job reads the
+    # current layout at render time, so it will already snapshot the latest
+    # save. Profiles whose only variants are PROCESSING/READY/older still get
+    # a fresh PENDING (the in-flight one may have captured stale HTML).
+    pending_profile_ids = set(
+        (
+            await db.execute(
+                select(AssetVariant.profile_id).where(
+                    AssetVariant.source_asset_id == asset.id,
+                    AssetVariant.profile_id.in_([p.id for p in enabled]),
+                    AssetVariant.status == VariantStatus.PENDING,
+                    AssetVariant.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+    )
+
+    new_variant_ids: list[uuid.UUID] = []
+    for profile in enabled:
+        if profile.id in pending_profile_ids:
+            continue
+        variant_id = uuid.uuid4()
+        ext = _variant_ext_for(asset, profile)
+        db.add(
+            AssetVariant(
+                id=variant_id,
+                source_asset_id=asset.id,
+                profile_id=profile.id,
+                filename=f"{variant_id}{ext}",
+                status=VariantStatus.PENDING,
+            )
+        )
+        new_variant_ids.append(variant_id)
+
+    if new_variant_ids:
+        # enqueue_variants -> enqueue_jobs commits the new variant rows and
+        # their job/outbox rows in one transaction, so a variant is never
+        # left PENDING without a job to render it.
+        await enqueue_variants(db, new_variant_ids)
+        logger.info(
+            "enqueue_composed_thumbnail: queued %d snapshot render(s) for "
+            "composed asset %s", len(new_variant_ids), asset.id,
+        )
+    return new_variant_ids
+
+
+async def enqueue_missing_composed_thumbnails(db: AsyncSession) -> int:
+    """Idempotent startup backfill: ensure every composed slide has a thumbnail.
+
+    For each non-deleted COMPOSED asset that has no live thumbnail variant
+    (PENDING / PROCESSING / READY) under any enabled thumbnail-purpose
+    profile, enqueue a fresh snapshot render. Slides that already have one
+    — or have one in flight — are skipped, so this is safe to run on every
+    boot. Returns the number of slides for which a render was enqueued.
+    """
+    profiles = (
+        await db.execute(
+            select(DeviceProfile).where(DeviceProfile.purpose == "thumbnail")
+        )
+    ).scalars().all()
+    enabled_profiles = [p for p in profiles if getattr(p, "enabled", True)]
+    if not enabled_profiles:
+        return 0
+    enabled_ids = [p.id for p in enabled_profiles]
+
+    assets = (
+        await db.execute(
+            select(Asset).where(
+                Asset.asset_type == AssetType.COMPOSED,
+                Asset.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    if not assets:
+        return 0
+
+    new_variant_ids: list[uuid.UUID] = []
+    enqueued = 0
+    for asset in assets:
+        # Only a *live* variant (queued, rendering, or done) counts as
+        # "already has a thumbnail". A FAILED/CANCELLED snapshot must not
+        # block a fresh render on the next boot.
+        existing = await db.execute(
+            select(AssetVariant.id).where(
+                AssetVariant.source_asset_id == asset.id,
+                AssetVariant.profile_id.in_(enabled_ids),
+                AssetVariant.status.in_(
+                    [
+                        VariantStatus.PENDING,
+                        VariantStatus.PROCESSING,
+                        VariantStatus.READY,
+                    ]
+                ),
+                AssetVariant.deleted_at.is_(None),
+            ).limit(1)
+        )
+        if existing.scalar_one_or_none() is not None:
+            continue
+        for profile in enabled_profiles:
+            variant_id = uuid.uuid4()
+            ext = _variant_ext_for(asset, profile)
+            db.add(
+                AssetVariant(
+                    id=variant_id,
+                    source_asset_id=asset.id,
+                    profile_id=profile.id,
+                    filename=f"{variant_id}{ext}",
+                    status=VariantStatus.PENDING,
+                )
+            )
+            new_variant_ids.append(variant_id)
+        enqueued += 1
+
+    if new_variant_ids:
+        # enqueue_variants commits the variant + job/outbox rows atomically.
+        await enqueue_variants(db, new_variant_ids)
+        logger.info(
+            "enqueue_missing_composed_thumbnails: enqueued snapshot render(s) "
+            "for %d composed slide(s)", enqueued,
+        )
+    return enqueued
 
 
 async def fix_image_variant_extensions(db: AsyncSession) -> int:
@@ -391,6 +569,10 @@ async def _enqueue_transcoding_for_asset(
     for profile in profiles:
         # Skip disabled profiles — no new variants until re-enabled.
         if not getattr(profile, "enabled", True):
+            continue
+        # Composed slides only get thumbnail-purpose variants (no source
+        # file to ffmpeg under a device profile).
+        if not _profile_emits_for_asset(profile, asset):
             continue
         existing = await db.execute(
             select(AssetVariant.id).where(
