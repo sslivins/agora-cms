@@ -1568,6 +1568,38 @@ function previewAsset(assetId, filename, assetType) {
     }
 }
 
+function previewComposed(assetId, name) {
+    // Composed slides have no raster image -- show the live HTML render,
+    // sized to its true 1920x1080 canvas and scaled to fit via CSS
+    // container-query units (.composed-preview-frame).
+    const { box, close } = createModal({
+        closeOnBackdrop: true,
+        closeOnEsc: true,
+    });
+    box.classList.add("preview-box");
+    const header = document.createElement("div");
+    header.className = "preview-header";
+    const title = document.createElement("span");
+    title.textContent = name || "Composed slide";
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "btn btn-secondary btn-sm";
+    closeBtn.textContent = "Close";
+    closeBtn.onclick = () => close();
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    box.appendChild(header);
+
+    const wrap = document.createElement("div");
+    wrap.className = "composed-preview composed-preview-modal";
+    const frame = document.createElement("iframe");
+    frame.className = "composed-preview-frame";
+    frame.src = "/composed/" + encodeURIComponent(assetId) + "/preview";
+    frame.setAttribute("scrolling", "no");
+    frame.setAttribute("tabindex", "-1");
+    wrap.appendChild(frame);
+    box.appendChild(wrap);
+}
+
 function previewVariant(variantId, filename, assetType, profileName) {
     // Lightbox: backdrop dismiss is the expected pattern.
     const { box, close } = createModal({

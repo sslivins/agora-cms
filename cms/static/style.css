@@ -370,6 +370,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-stream { background: #e67e22; color: var(--text); }
 .badge-saved_stream { background: #d35400; color: var(--text); }
 .badge-slideshow { background: #16a085; color: var(--text); }
+.badge-composed { background: #6366f1; color: var(--text); }
 .badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
 .badge-processing { background: #3498db; color: #fff; margin-left: 0.4rem; }
 /* Progress-fill badge: darker "filled" region on the left grows to the
@@ -763,6 +764,32 @@ select.inline-edit:hover { border-color: var(--accent); }
     display: block;
     margin: 0 auto;
     background: #000;
+}
+
+/* Composed-slide live preview.  A composed slide has no raster image, only
+   a live HTML render (GET /composed/{id}/preview).  Widgets use fixed px
+   font sizes, so we render the iframe at the true 1920x1080 canvas size and
+   scale it down with CSS container-query units -- (container width / canvas
+   width) -- so the layout stays proportional at any thumbnail size. No JS. */
+.composed-preview {
+    position: relative;
+    overflow: hidden;
+    container-type: size;
+}
+.composed-preview-frame {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1920px;
+    height: 1080px;
+    border: 0;
+    transform-origin: top left;
+    transform: scale(calc(100cqw / 1920px));
+    background: #000;
+}
+.composed-preview-modal {
+    width: min(90vw, 1280px);
+    aspect-ratio: 16 / 9;
 }
 
 /* Toast notification */

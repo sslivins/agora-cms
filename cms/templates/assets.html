@@ -1218,6 +1218,22 @@ function fallbackCopy(text, onSuccess) {
         return Math.round(bytes / 1024) + ' KB';
     }
 
+    // Composed slides have no raster thumbnail -- their grid preview is a
+    // live HTML render (/composed/{id}/preview) framed at true canvas size
+    // and CSS-scaled.  That render inlines base64 media, so defer loading
+    // each iframe until its card nears the viewport; a grid of many
+    // composed slides would otherwise fetch them all at once.
+    const _composedThumbObserver = ('IntersectionObserver' in window)
+        ? new IntersectionObserver(function (entries, obs) {
+            entries.forEach(function (e) {
+                if (!e.isIntersecting) return;
+                const f = e.target;
+                if (f.dataset.src && !f.src) f.src = f.dataset.src;
+                obs.unobserve(f);
+            });
+        }, { rootMargin: '300px' })
+        : null;
+
     function _renderGridCard(a) {
         const card = document.createElement('div');
         card.className = 'asset-grid-card';
@@ -1245,12 +1261,16 @@ function fallbackCopy(text, onSuccess) {
         // (full-res) here -- a 2MB image per card is wasteful and there
         // is no equivalent for video sources.
         let previewSrc = a.thumbnail_url || null;
+        const isComposed = a.asset_type === 'composed';
+        const thumbInner = isComposed
+            ? '<iframe class="composed-preview-frame composed-thumb-lazy" data-src="/composed/' + encodeURIComponent(a.id) + '/preview" loading="lazy" scrolling="no" tabindex="-1" aria-hidden="true" style="pointer-events:none;"></iframe>'
+            : (previewSrc
+                ? '<img loading="lazy" src="' + previewSrc + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.replaceWith(document.createTextNode(\'' + _typeIcon(a.asset_type) + '\'))">'
+                : _typeIcon(a.asset_type));
 
         card.innerHTML =
-            '<div class="asset-grid-thumb" style="aspect-ratio:16/9; background:#0a0a0a; display:flex; align-items:center; justify-content:center; font-size:2rem; color:#666; position:relative;">' +
-                (previewSrc
-                    ? '<img loading="lazy" src="' + previewSrc + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.replaceWith(document.createTextNode(\'' + _typeIcon(a.asset_type) + '\'))">'
-                    : _typeIcon(a.asset_type)) +
+            '<div class="asset-grid-thumb' + (isComposed ? ' composed-preview' : '') + '" style="aspect-ratio:16/9; background:#0a0a0a; display:flex; align-items:center; justify-content:center; font-size:2rem; color:#666; position:relative;">' +
+                thumbInner +
                 '<input type="checkbox" class="bulk-select-grid" data-asset-id="' + a.id + '" onclick="event.stopPropagation()" style="position:absolute; top:6px; left:6px; transform:scale(1.2);">' +
                 (a.is_global ? '<span class="badge badge-ready" style="position:absolute; top:6px; right:6px; font-size:0.7rem;">Global</span>' : '') +
                 (a.unpublished ? '<span title="This composed slide has not been published — it will not appear on devices until you open it and click Publish." style="position:absolute; bottom:6px; left:6px; background:#dc2626; color:#fff; font-size:0.65rem; font-weight:700; letter-spacing:0.03em; padding:0.15rem 0.4rem; border-radius:4px;">⚠ UNPUBLISHED</span>' : '') +
@@ -1275,6 +1295,15 @@ function fallbackCopy(text, onSuccess) {
             const tableCb = tbody.querySelector('.bulk-select-row[data-asset-id="' + a.id + '"]');
             if (tableCb) tableCb.checked = cb.checked;
         });
+
+        // Lazy-load the composed-slide preview iframe when it nears view.
+        if (isComposed) {
+            const frame = card.querySelector('.composed-thumb-lazy');
+            if (frame) {
+                if (_composedThumbObserver) _composedThumbObserver.observe(frame);
+                else frame.src = frame.dataset.src;
+            }
+        }
 
         // Card body itself is non-interactive in Phase 1 — only the
         // checkbox is wired. (Earlier prototype flipped to table view
