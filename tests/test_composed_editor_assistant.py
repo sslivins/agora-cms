@@ -329,6 +329,9 @@ class TestCreateModeDrawer:
         # unbound and mints on first send.
         assert 'data-asset-id=""' in text
         assert 'data-asset-id="None"' not in text
+        # The name field advertises that it's optional with the assistant
+        # (mintDraft auto-names an unnamed slide).
+        assert "leave blank and it'll be auto-named" in text.lower()
 
     async def test_new_page_hides_drawer_for_disabled_user(
         self, operator_client, app
