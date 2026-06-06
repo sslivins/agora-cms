@@ -115,25 +115,51 @@
     // On a brand-new slide there's no asset yet, so the chat can't bind to
     // one. Mint the draft via the editor bridge (which POSTs /composed/ and
     // PATCHes the seeded layout, no redirect), then proceed as in edit mode.
+
+    // A friendly, sortable default name for slides the user starts via the
+    // assistant without typing one. Built from local Date parts (not
+    // toLocaleString) so it's locale-stable and lexically sortable.
+    function defaultSlideName() {
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, "0");
+        return "Untitled slide " + d.getFullYear() + "-" + p(d.getMonth() + 1)
+            + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    }
+
     async function mintDraft() {
         if (!bridge || typeof bridge.save !== "function") return false;
+        // The create endpoint requires a name. If the user jumped straight to
+        // the assistant without typing one, auto-fill a sensible default so the
+        // first prompt actually mints a draft. Display names need not be unique
+        // (the server uniquifies the filename); the user can rename later from
+        // the Assets page.
+        const nameEl = document.getElementById("composed-name");
+        if (nameEl && !(nameEl.value || "").trim()) {
+            nameEl.value = defaultSlideName();
+        }
         let ok = false;
         try { ok = await bridge.save(); } catch (_) { ok = false; }
         const id = assetId();
         if (!ok || !id) return false;
         // Keep the URL + manual-save behavior consistent with a normal first
-        // save, and lock the create-only config inputs (name/global/groups)
+        // save, and lock the create-only config inputs (name + group picker)
         // now that the asset exists — they're read once at mint time and
         // would otherwise silently no-op on later manual saves.
         try {
             history.replaceState(null, "", "/assets/" + encodeURIComponent(id) + "/composed");
         } catch (_) { /* non-fatal */ }
-        ["composed-name", "composed-global"].forEach((cid) => {
-            const el = document.getElementById(cid);
-            if (el) el.disabled = true;
-        });
-        document.querySelectorAll("input[name='composed_group_ids']").forEach((el) => {
-            el.disabled = true;
+        const nameEl2 = document.getElementById("composed-name");
+        if (nameEl2) nameEl2.disabled = true;
+        const addGroupBtn = document.querySelector("#composed-groups-badges .btn-add-group");
+        if (addGroupBtn) addGroupBtn.disabled = true;
+        const groupPopup = document.getElementById("composed-group-popup");
+        if (groupPopup) {
+            try { if (groupPopup.hidePopover) groupPopup.hidePopover(); } catch (_) { /* not open */ }
+            groupPopup.querySelectorAll(".group-popup-item").forEach((el) => { el.disabled = true; });
+        }
+        document.querySelectorAll("#composed-groups-badges .group-badge").forEach((el) => {
+            el.style.pointerEvents = "none";
+            el.style.opacity = "0.7";
         });
         return true;
     }
@@ -166,8 +192,8 @@
                 if (!minted) {
                     addMsg(
                         "error",
-                        "Couldn't save the draft — check the message at the top of "
-                        + "the page (a slide name is required), then send again."
+                        "Couldn't create the slide — see the message at the top of "
+                        + "the page, then send again."
                     );
                     return;
                 }

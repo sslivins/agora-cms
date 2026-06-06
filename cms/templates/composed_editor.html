@@ -14,29 +14,32 @@
             <input type="text" id="composed-name" class="form-control" maxlength="255" required
                    placeholder="e.g. Lobby welcome"
                    style="width:100%; padding:0.5rem; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);">
+            {% if assistant_enabled %}
+            <small class="text-muted" style="display:block; margin-top:0.25rem; font-size:0.78rem;">
+                Optional when using the AI assistant — leave blank and it'll be auto-named (rename later from the Assets page).
+            </small>
+            {% endif %}
         </div>
-
-        {% if is_admin %}
-        <div class="form-group" style="margin-bottom:0;">
-            <label style="display:block; font-weight:600;">Visibility</label>
-            <label style="display:inline-flex; align-items:center; gap:0.4rem; padding-top:0.4rem;">
-                <input type="checkbox" id="composed-global" checked>
-                Visible to everyone (global)
-            </label>
-        </div>
-        {% endif %}
 
         {% if user_groups | length > 0 %}
         <div class="form-group" style="margin-bottom:0;">
-            <label style="display:block; font-weight:600;">{% if is_admin %}Or share with specific groups{% else %}Share with groups{% endif %}</label>
-            <div id="composed-groups-list"
-                 style="display:flex; flex-direction:column; gap:0.2rem; max-height:120px; overflow:auto; padding:0.35rem; border:1px solid var(--border); border-radius:6px; background:var(--bg);">
-                {% for g in user_groups %}
-                <label style="display:flex; align-items:center; gap:0.35rem; font-weight:normal; margin:0;">
-                    <input type="checkbox" name="composed_group_ids" value="{{ g.id }}"> {{ g.name }}
-                </label>
-                {% endfor %}
+            <label style="display:block; font-weight:600;">Assign to groups</label>
+            <div id="composed-groups-badges" style="display:flex; gap:0.35rem; flex-wrap:wrap; min-height:1.6rem; align-items:center;">
+                <span class="group-picker-wrap" style="position:relative; display:inline-flex;">
+                    <button class="btn-add-group" type="button" onclick="event.stopPropagation(); openGroupPopup('composed-group-popup')" title="Add group">+</button>
+                    <div id="composed-group-popup" popover class="group-popup">
+                        {% for g in user_groups %}
+                        <button type="button" class="group-popup-item" data-group-id="{{ g.id }}" data-group-name="{{ g.name }}"
+                                onclick="event.stopPropagation(); pickComposedGroup('{{ g.id }}', {{ g.name | tojson | forceescape }})">{{ g.name }}</button>
+                        {% endfor %}
+                    </div>
+                </span>
             </div>
+            {% if is_admin %}
+            <p class="text-muted" style="margin-top:0.25rem; font-size:0.8rem;">
+                Leave empty to make Global.
+            </p>
+            {% endif %}
         </div>
         {% endif %}
     </div>
@@ -1509,13 +1512,10 @@ async function ensureAssetExists() {
         if (nameEl) nameEl.focus();
         return false;
     }
-    const globalEl = document.getElementById("composed-global");
-    const isGlobal = globalEl ? globalEl.checked : false;
-    const groupIds = Array.from(
-        document.querySelectorAll("input[name='composed_group_ids']:checked")
-    ).map(el => el.value);
+    const groupIds = (window.composedSelectedGroupIds || []).slice();
     const body = {name: name};
-    if (!isGlobal && groupIds.length > 0) body.group_ids = groupIds;
+    // Empty groups → Global (matches the slideshow builder).
+    if (groupIds.length > 0) body.group_ids = groupIds;
     try {
         const resp = await fetch("/composed/", {
             method: "POST",
@@ -1724,19 +1724,62 @@ async function cwLeaveSave() {
     if (href) window.location.href = href;
 }
 
-// New-slide metadata edits (name / groups / global) also count as
-// unsaved changes.
+// New-slide metadata edits (name) also count as unsaved changes.
+// Group-picker edits flag dirty from inside pickComposedGroup / badge
+// removal below.
 (function wireMetadataDirty() {
-    const ids = ["composed-name", "composed-global"];
-    ids.forEach((id) => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener("input", markDirty);
-        if (el) el.addEventListener("change", markDirty);
-    });
-    document.querySelectorAll("input[name='composed_group_ids']").forEach((el) => {
+    const el = document.getElementById("composed-name");
+    if (el) {
+        el.addEventListener("input", markDirty);
         el.addEventListener("change", markDirty);
-    });
+    }
 })();
+
+// ── Group picker (create mode) — mirrors the slideshow builder ──────
+window.composedSelectedGroupIds = window.composedSelectedGroupIds || [];
+
+function openGroupPopup(id) {
+    const el = document.getElementById(id);
+    if (el && el.showPopover) el.showPopover();
+}
+
+function pickComposedGroup(id, name) {
+    // After the draft is minted the groups are already committed (read once
+    // at create time), so ignore late edits to avoid silent no-ops.
+    if (ASSET_ID) return;
+    if (!window.composedSelectedGroupIds.includes(id)) {
+        window.composedSelectedGroupIds.push(id);
+        markDirty();
+    }
+    renderComposedGroupBadges();
+    const popup = document.getElementById("composed-group-popup");
+    if (popup && popup.hidePopover) popup.hidePopover();
+}
+
+function renderComposedGroupBadges() {
+    const wrap = document.getElementById("composed-groups-badges");
+    if (!wrap) return;
+    [...wrap.querySelectorAll(".group-badge")].forEach((n) => n.remove());
+    const popupWrap = wrap.querySelector(".group-picker-wrap");
+    window.composedSelectedGroupIds.forEach((gid) => {
+        const btn = document.querySelector(
+            `#composed-group-popup .group-popup-item[data-group-id="${gid}"]`
+        );
+        if (!btn) return;
+        const span = document.createElement("span");
+        span.className = "group-badge";
+        span.style.cssText =
+            "background:#444;color:#fff;padding:0.15rem 0.5rem;border-radius:0.5rem;font-size:0.8rem;cursor:pointer;";
+        span.textContent = btn.dataset.groupName + " ✕";
+        span.onclick = () => {
+            window.composedSelectedGroupIds =
+                window.composedSelectedGroupIds.filter((x) => x !== gid);
+            markDirty();
+            renderComposedGroupBadges();
+        };
+        wrap.insertBefore(span, popupWrap);
+    });
+}
 
 ensureLayoutShape();
 renderCanvas();
