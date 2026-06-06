@@ -1702,6 +1702,10 @@ async function deleteAsset(assetId, filename) {
         const detail = document.querySelector(`tr.asset-detail[data-detail-for="${assetId}"]`);
         if (row) row.remove();
         if (detail) detail.remove();
+        // The grid view renders separate cards; remove the matching one too so
+        // a delete triggered from the grid kebab doesn't leave a stale card.
+        const gridCard = document.querySelector(`[data-grid-card="${assetId}"]`);
+        if (gridCard) gridCard.remove();
     }
     else if (resp) {
         const err = await resp.json().catch(() => null);

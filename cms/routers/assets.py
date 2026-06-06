@@ -343,6 +343,10 @@ async def assets_status_json(
             ],
             "slide_count": slide_counts.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
             "thumbnail_url": thumb_map.get(a.id),
+            # Mirror the main-list AssetOut.unpublished so the status poller's
+            # buildVariantBadge() keeps the "Unpublished" badge instead of
+            # overwriting it with "none" on the first reconcile.
+            "unpublished": composed_unpublished_reason(a) is not None,
         })
 
     # Compute a hash of group-asset assignments so the poller can detect scope changes
