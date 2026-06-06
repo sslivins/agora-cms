@@ -22,10 +22,7 @@ embedded elsewhere.
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import logging
-import mimetypes
 import uuid
 from typing import Any
 
@@ -40,8 +37,8 @@ from cms.auth import (
     require_auth,
     require_permission,
 )
-from cms.composed.bundle import BundleValidationError, build_bundle
 from cms.composed.registry import get_registry
+from cms.composed.render import build_composed_html
 from cms.composed.schema import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
@@ -82,20 +79,6 @@ _PREVIEW_CSP = (
     "base-uri 'none'; "
     "form-action 'none'"
 )
-
-
-# Widgets allowed to render a VIDEO asset. The ImageWidget only knows
-# how to emit an <img> from inline bytes, so routing a video to it would
-# raise at render time (HTTP 500); restrict video to the media widget.
-_VIDEO_CAPABLE_SLUGS = {"media"}
-
-# Hard cap on a video inlined as a base64 data: URI in the *preview*
-# response. The locked-down preview CSP only permits ``media-src data:``,
-# so the device-local /assets/videos sibling URL the publish path uses
-# can't load in a browser — preview must inline the bytes. To avoid
-# reading an arbitrarily large file into memory (and base64-bloating it
-# by ~33%), refuse anything over this size with a clean 422.
-_MAX_INLINE_VIDEO_BYTES = 32 * 1024 * 1024
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -443,6 +426,21 @@ async def _validate_persist_layout(
         request=request,
     )
     await db.commit()
+
+    # Best-effort: queue a fresh snapshot thumbnail render for the grid.
+    # Snapshots are generated on every save (drafts included) so the grid
+    # always reflects the latest layout. A transient enqueue failure must
+    # never block a save — the startup backfill repairs any miss.
+    try:
+        from cms.services.transcoder import enqueue_composed_thumbnail
+
+        await enqueue_composed_thumbnail(asset, db)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to enqueue snapshot thumbnail for composed asset %s",
+            asset.id, exc_info=True,
+        )
+
     return {
         "id": str(asset.id),
         "is_draft": True,
@@ -483,145 +481,19 @@ async def preview_composed_slide(
     ):
         raise HTTPException(status_code=404, detail="Composed slide not found")
 
-    # Visibility / ownership gate for the slide itself (was missing —
-    # preview previously had no per-asset access check at all).
+    # Per-asset visibility gate for the slide itself and every asset it
+    # references — a viewer who can see the slide must not be able to
+    # inline an asset they can't see. Enforced inside build_composed_html
+    # via this callback so the worker (trusted infra) can render the same
+    # HTML without ACL checks.
     from cms.routers.assets import _verify_asset_access  # noqa: WPS433
 
-    await _verify_asset_access(asset_id, request, db)
+    async def _verify(aid: uuid.UUID) -> None:
+        await _verify_asset_access(aid, request, db)
 
-    cs_result = await db.execute(
-        select(ComposedSlide).where(ComposedSlide.asset_id == asset_id),
+    rendered = await build_composed_html(
+        db, settings, asset_id, verify_asset=_verify,
     )
-    composed = cs_result.scalar_one_or_none()
-    if composed is None:
-        raise HTTPException(status_code=404, detail="Composed slide not found")
-
-    try:
-        layout = Layout.model_validate(composed.layout_json)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(
-            status_code=422, detail=f"Invalid layout JSON: {e}",
-        ) from e
-
-    # Trigger auto-registration of all built-in widgets.
-    import cms.composed.widgets  # noqa: F401
-
-    registry = get_registry()
-
-    # Run the semantic validator first so unknown widgets / bad configs
-    # surface a clean 422 before we start touching assets.
-    layout_errors = validate_layout(layout, registry)
-    if layout_errors:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Layout failed validation: "
-                + "; ".join(f"{err.code}: {err.message}" for err in layout_errors)
-            ),
-        )
-
-    # Collect every asset declared by the layout, tracking which widget
-    # slug(s) declared each so we can enforce type compatibility.
-    declared_ids: list[uuid.UUID] = []
-    seen: set[uuid.UUID] = set()
-    declaring_slugs: dict[uuid.UUID, set[str]] = {}
-    for inst in layout.widgets:
-        widget = registry.get(inst.type)
-        if widget is None:
-            continue
-        try:
-            cfg = widget.ConfigSchema.model_validate(inst.config)
-        except Exception:  # noqa: BLE001 — shape errors already 422'd above
-            continue
-        for aid in widget.declared_asset_ids(cfg):
-            if aid not in seen:
-                seen.add(aid)
-                declared_ids.append(aid)
-            declaring_slugs.setdefault(aid, set()).add(inst.type)
-
-    asset_payloads: dict[uuid.UUID, tuple[bytes, str]] = {}
-    sibling_asset_urls: dict[uuid.UUID, str] = {}
-
-    if declared_ids:
-        storage_dir = settings.asset_storage_path
-        rows = await db.execute(
-            select(Asset).where(
-                Asset.id.in_(declared_ids), Asset.deleted_at.is_(None),
-            ),
-        )
-        by_id = {a.id: a for a in rows.scalars().all()}
-
-        for aid in declared_ids:
-            ref = by_id.get(aid)
-            if ref is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Composed slide references missing asset {aid}",
-                )
-
-            # Per-referenced-asset visibility check — a viewer who can see
-            # the slide must not be able to inline an asset they can't see.
-            await _verify_asset_access(aid, request, db)
-
-            if ref.asset_type == AssetType.IMAGE:
-                blob = await _read_inline_asset(storage_dir, ref)
-                mime, _ = mimetypes.guess_type(ref.filename)
-                asset_payloads[aid] = (blob, mime or "application/octet-stream")
-            elif ref.asset_type == AssetType.VIDEO:
-                slugs = declaring_slugs.get(aid, set())
-                if not slugs.issubset(_VIDEO_CAPABLE_SLUGS):
-                    bad = sorted(slugs - _VIDEO_CAPABLE_SLUGS)
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"Asset {aid} is a video but is used by widget(s) "
-                            f"{', '.join(bad)} that cannot render video"
-                        ),
-                    )
-                # Fast reject on recorded size before reading anything.
-                if (ref.size_bytes or 0) > _MAX_INLINE_VIDEO_BYTES:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"Video asset {aid} is too large to preview "
-                            f"({ref.size_bytes} bytes; cap "
-                            f"{_MAX_INLINE_VIDEO_BYTES})"
-                        ),
-                    )
-                blob = await _read_inline_asset(
-                    storage_dir, ref, max_bytes=_MAX_INLINE_VIDEO_BYTES,
-                )
-                mime, _ = mimetypes.guess_type(ref.filename)
-                b64 = base64.b64encode(blob).decode("ascii")
-                sibling_asset_urls[aid] = f"data:{mime or 'video/mp4'};base64,{b64}"
-            else:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Composed slide references asset {aid} of type "
-                        f"{ref.asset_type.value!r}; only IMAGE and VIDEO "
-                        "assets can be embedded in a composed slide"
-                    ),
-                )
-
-    def _asset_loader(aid: uuid.UUID) -> tuple[bytes, str]:
-        return asset_payloads[aid]
-
-    try:
-        built = build_bundle(
-            layout,
-            registry,
-            asset_loader=_asset_loader if asset_payloads else None,
-            sibling_asset_urls=sibling_asset_urls or None,
-        )
-    except BundleValidationError as e:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Layout failed validation: "
-                + "; ".join(f"{err.code}: {err.message}" for err in e.errors)
-            ),
-        ) from e
 
     # The weather widget is the only widget that makes a runtime network
     # call (a keyless Open-Meteo forecast fetch). The locked-down preview
@@ -631,7 +503,7 @@ async def preview_composed_slide(
     # and only when the slide actually contains a weather widget, so a
     # plain text/image slide keeps the fully-locked CSP.
     csp = _PREVIEW_CSP
-    if any(inst.type == "weather" for inst in layout.widgets):
+    if rendered.has_weather:
         csp = csp + "; connect-src https://api.open-meteo.com"
 
     headers = {
@@ -639,67 +511,7 @@ async def preview_composed_slide(
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     }
-    return HTMLResponse(content=built.html_bytes, headers=headers)
-
-
-async def _read_inline_asset(
-    storage_dir, ref: Asset, *, max_bytes: int | None = None,
-) -> bytes:
-    """Read a referenced asset's bytes for inlining into a preview.
-
-    Enforces that the resolved path stays under ``storage_dir``
-    (defense-in-depth against a crafted filename) and, for videos, that
-    the on-disk size — checked via ``stat`` *before* reading — is within
-    ``max_bytes``. Raises 422 on any read / size problem.
-    """
-    base = storage_dir.resolve()
-    path = (storage_dir / ref.filename).resolve()
-    if not path.is_relative_to(base):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Asset {ref.id} has an invalid storage path",
-        )
-    try:
-        if max_bytes is not None:
-            actual = path.stat().st_size
-            if actual > max_bytes:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Video asset {ref.id} is too large to preview "
-                        f"({actual} bytes; cap {max_bytes})"
-                    ),
-                )
-            # Bounded read closes the stat→read TOCTOU window: if the file
-            # grew/was swapped after the stat, refuse rather than inline
-            # more than the cap.
-            blob = await asyncio.to_thread(_read_capped, path, max_bytes)
-            if blob is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Video asset {ref.id} is too large to preview "
-                        f"(exceeds cap {max_bytes})"
-                    ),
-                )
-            return blob
-        return await asyncio.to_thread(path.read_bytes)
-    except HTTPException:
-        raise
-    except OSError as e:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Asset {ref.id} file missing or unreadable: {ref.filename}",
-        ) from e
-
-
-def _read_capped(path, max_bytes: int) -> bytes | None:
-    """Read up to ``max_bytes``; return None if the file is larger."""
-    with path.open("rb") as fh:
-        data = fh.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        return None
-    return data
+    return HTMLResponse(content=rendered.html_bytes, headers=headers)
 
 
 @router.post("/", status_code=201)
