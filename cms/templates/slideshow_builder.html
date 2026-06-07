@@ -73,6 +73,16 @@
     border-radius: 0.25rem;
     pointer-events: none;
 }
+.ssb-composed-warning {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    background: rgba(241, 196, 15, 0.12);
+    border: 1px solid rgba(241, 196, 15, 0.5);
+    border-radius: 0.4rem;
+    color: #f1c40f;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
 
 /* --- Film-strip timeline --- */
 .ssb-timeline-wrap {
@@ -514,6 +524,12 @@
         <!-- Hidden table marker preserved for tests / future fallback -->
         <div id="ss-slides-table" hidden></div>
 
+        <div id="ss-composed-warning" class="ssb-composed-warning" hidden>
+            ⚠ This slideshow contains a composed slide. Devices running
+            firmware without composed-slideshow support will skip this
+            slideshow until they are updated.
+        </div>
+
         <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
             <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
@@ -560,13 +576,19 @@ function thumbHtml(asset) {
         // <video> with preload=metadata typically renders the first frame as poster
         return `<video class="ssb-lib-thumb" src="${url}" preload="metadata" muted playsinline></video>`;
     }
+    if (asset.asset_type === 'composed') {
+        // Composed slides render via their snapshot thumbnail_url (handled
+        // above). If the snapshot isn't baked yet, show a labelled placeholder
+        // rather than the full asset URL (which isn't a renderable image).
+        return `<div class="ssb-lib-thumb" style="display:flex;align-items:center;justify-content:center;color:#666;">🧩 Composed</div>`;
+    }
     return `<div class="ssb-lib-thumb" style="display:flex;align-items:center;justify-content:center;color:#666;">No preview</div>`;
 }
 
 function renderLibrary() {
     const root = document.getElementById('ss-library');
     if (!availableAssets.length) {
-        root.innerHTML = '<div class="ssb-lib-empty">No images or videos in your library yet. Upload some on the Assets page first.</div>';
+        root.innerHTML = '<div class="ssb-lib-empty">No images, videos, or published composed slides in your library yet. Upload some on the Assets page first.</div>';
         return;
     }
     root.innerHTML = '';
@@ -579,7 +601,7 @@ function renderLibrary() {
         tile.title = `${name}\nClick to append, or drag onto the timeline`;
         tile.innerHTML = `
             ${thumbHtml(a)}
-            <div class="ssb-type-icon">${a.asset_type === 'video' ? '▶' : '🖼'}</div>
+            <div class="ssb-type-icon">${a.asset_type === 'video' ? '▶' : (a.asset_type === 'composed' ? '🧩' : '🖼')}</div>
             <div class="ssb-lib-meta">
                 <div class="ssb-lib-name">${escapeHtml(name)}</div>
                 <div class="ssb-lib-type">${a.asset_type}${a.duration_seconds ? ' · ' + fmtDur(a.duration_seconds) : ''}</div>
@@ -864,6 +886,13 @@ function updateTotals() {
     });
     document.getElementById('ss-total').textContent = fmtDur(totalMs / 1000);
     document.getElementById('ss-counter').textContent = slides.length + ' / ' + SS_MAX_SLIDES + ' slides';
+    updateCapabilityWarning();
+}
+
+function updateCapabilityWarning() {
+    const banner = document.getElementById('ss-composed-warning');
+    if (!banner) return;
+    banner.hidden = !slides.some(s => s.source_asset_type === 'composed');
 }
 
 function updateSlideDuration(i, v) {
@@ -957,13 +986,21 @@ async function loadAvailableAssets() {
         if (!params.has('type')) {
             params.append('type', 'image');
             params.append('type', 'video');
+            params.append('type', 'composed');
         }
         const r = await fetch('/api/assets/page?' + params.toString());
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
         const items = Array.isArray(data) ? data : (data.items || data.assets || []);
         availableAssets = items.filter(a =>
-            (a.asset_type === 'image' || a.asset_type === 'video') && !a.deleted_at
+            !a.deleted_at && (
+                a.asset_type === 'image' ||
+                a.asset_type === 'video' ||
+                // Only published composed slides have a rendered bundle the
+                // device can fetch; the backend rejects unpublished ones as
+                // slideshow members, so don't offer them in the library.
+                (a.asset_type === 'composed' && !a.unpublished)
+            )
         );
         renderLibrary();
         if (data && data.next_cursor) {
@@ -1092,7 +1129,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.AssetFilter) {
         ssFilter = new AssetFilter({
             prefix: 'ssfilter',
-            fixedTypes: ['image', 'video'],
+            fixedTypes: ['image', 'video', 'composed'],
             syncUrl: false,
             debounceMs: 300,
             onChange: () => { loadAvailableAssets(); },

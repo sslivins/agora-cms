@@ -57,6 +57,17 @@ class TestSlideshowBuilderRoutes:
         assert "ss-slides-table" in body
         assert "/api/assets/slideshow" in body  # JS POST endpoint baked in
 
+    async def test_builder_supports_composed_members(self, client):
+        """Builder must offer composed slides in the library and warn about
+        the device capability requirement (Phase 5 composed-in-slideshow)."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Library filter + fetch pull composed assets alongside image/video.
+        assert "'image', 'video', 'composed'" in body
+        # Capability warning banner is present (toggled client-side).
+        assert "ss-composed-warning" in body
+
     async def test_new_page_requires_write_permission(self, app, db_session):
         """Direct nav to /assets/new/slideshow must be gated on assets:write."""
         from tests.test_ui_overhaul import _create_user, _login_as
