@@ -251,7 +251,8 @@ class TestSlideshowCreate:
             },
         )
         assert resp.status_code == 400
-        assert "image and video" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"].lower()
+        assert "image, video and composed" in detail
 
     async def test_rejects_play_to_end_on_image(self, client, db_session):
         img = await _seed_image(db_session, is_global=True)
