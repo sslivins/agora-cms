@@ -438,6 +438,16 @@
 
 {% block scripts %}
 <script>
+// Page-global user context. Declared at the script's top level (NOT inside
+// an IIFE) so every IIFE in this script — including the grid-render helpers
+// further down — can see these via lexical scope. (Regression history: these
+// once lived inside the first IIFE; the grid kebab in a later IIFE then threw
+// "__currentUserId is not defined".)
+const __userGroups = [{% for g in user_groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}];
+const __isAdmin = {{ 'true' if is_admin else 'false' }};
+const __hasAssetsWrite = {{ 'true' if "assets:write" in user_perms else 'false' }};
+const __currentUserId = {{ (current_user_id | string) | tojson if current_user_id else 'null' }};
+
 (function() {
     // Tab switching for add-asset panel
     window.switchAddTab = function(tab) {
@@ -449,11 +459,7 @@
         tabs.forEach(t => { if (t.textContent.trim() === labels[tab]) t.classList.add('active'); });
     };
 
-    // User context for scope rebuilds
-    const __userGroups = [{% for g in user_groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}];
-    const __isAdmin = {{ 'true' if is_admin else 'false' }};
-    const __hasAssetsWrite = {{ 'true' if "assets:write" in user_perms else 'false' }};
-    const __currentUserId = {{ (current_user_id | string) | tojson if current_user_id else 'null' }};
+    // (user context hoisted to script top level — see top of this <script>)
 
     function _escHtml(s) {
         const d = document.createElement('div');
