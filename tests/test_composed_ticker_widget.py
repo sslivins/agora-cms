@@ -94,17 +94,33 @@ class TestTickerWidgetRender:
         assert "ticker-scroll-inst-B" not in r1.css
         assert "ticker-scroll-inst-A" not in r2.css
 
-    def test_text_is_html_escaped_and_duplicated(self):
+    def test_text_is_html_escaped_single_copy(self):
         w = TickerWidget()
         cfg = TickerWidgetConfig(text="<b>hi</b> & bye")
         r = w.render_html(cfg, _cell(), "abc")
 
         assert "<b>hi</b>" not in r.html
-        # The duplicate-content marquee trick: text appears twice
-        assert r.html.count("&lt;b&gt;hi&lt;/b&gt;") == 2
+        # Single-copy wrap marquee: the text appears exactly once.
+        assert r.html.count("&lt;b&gt;hi&lt;/b&gt;") == 1
         assert "&amp;" in r.html
-        # Second copy is aria-hidden to avoid duplicate-announcement
-        assert 'aria-hidden="true"' in r.html
+        # No duplicate copy, so no aria-hidden mirror span.
+        assert 'aria-hidden="true"' not in r.html
+
+    def test_single_copy_wrap_uses_padding_offset(self):
+        # The text scrolls fully off the left, then re-enters from the
+        # right after a one-viewport gap — a single-copy wrap loop, not
+        # the old back-to-back two-copy marquee that showed a duplicate
+        # mid-screen for short text.  Achieved with
+        # padding-left:calc(100% + gap) + translateX(0 -> -100%),
+        # mirroring the editor's live preview.
+        w = TickerWidget()
+        r = w.render_html(TickerWidgetConfig(text="hello"), _cell(), "a")
+        css = r.css
+        assert "translateX(-100%)" in css
+        assert "translateX(-50%)" not in css
+        assert "padding-left: calc(100% +" in css
+        # Exactly one copy of the text in the markup.
+        assert r.html.count("hello") == 1
 
     def test_direction_left_is_normal_anim(self):
         w = TickerWidget()
@@ -148,8 +164,7 @@ class TestTickerWidgetRender:
             _cell(),
             "a",
         )
-        assert "gap: 250px" in r.css
-        assert "padding-right: 250px" in r.css
+        assert "padding-left: calc(100% + 250px)" in r.css
 
     def test_color_and_background_propagate(self):
         w = TickerWidget()
