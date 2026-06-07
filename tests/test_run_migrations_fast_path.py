@@ -105,9 +105,20 @@ def _install(monkeypatch, *, tables, versions, heads):
     _FakeScriptDirectory._heads = list(heads)
     import alembic.script
 
-    monkeypatch.setattr(alembic.script, "ScriptDirectory", _FakeScriptDirectory)
-
+    # Import ``alembic.command`` *before* patching ``alembic.script`` so that
+    # command.py's module-level ``from .script import ScriptDirectory`` (run
+    # once, at first import) captures the *real* class. Otherwise, if this is
+    # the first import of ``alembic.command`` in the process and it happens
+    # while ``alembic.script.ScriptDirectory`` is patched, command.py would
+    # permanently bind the fake — and monkeypatch can't revert a binding it
+    # never recorded, leaking the fake into later real-alembic tests.
     import alembic.command
+
+    monkeypatch.setattr(alembic.script, "ScriptDirectory", _FakeScriptDirectory)
+    # Also patch command.py's own binding so the fast path's ScriptDirectory
+    # use is consistent regardless of import order. This is monkeypatch-tracked
+    # and therefore reverted on teardown, unlike the import-time capture above.
+    monkeypatch.setattr(alembic.command, "ScriptDirectory", _FakeScriptDirectory)
 
     def _fake_upgrade(cfg, _rev):
         calls["upgrade"] += 1
