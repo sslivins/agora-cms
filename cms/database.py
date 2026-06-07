@@ -70,14 +70,6 @@ async def run_migrations() -> None:
     DB is safe.
     """
 
-    async with _shared_db._engine.begin() as conn:
-        has_alembic = await conn.run_sync(
-            lambda c: sa_inspect(c).has_table("alembic_version")
-        )
-        has_legacy_assets = await conn.run_sync(
-            lambda c: sa_inspect(c).has_table("assets")
-        )
-
     # Alembic's env.py sets up its own async engine from SharedSettings,
     # so all we pass through is the Config pointing at alembic.ini.
     #
@@ -86,8 +78,55 @@ async def run_migrations() -> None:
     # inside a running event loop, so we hand off to a worker thread,
     # which gets its own loop.
     from alembic import command as alembic_command  # lazy: see _alembic_config
+    from alembic.script import ScriptDirectory  # lazy: see _alembic_config
 
     cfg = _alembic_config()
+
+    # Inspect the DB on the application's *primary* engine — the same one
+    # the app already proved it can reach via ``wait_for_db()``.  While we
+    # hold that connection, also read the current Alembic revision(s) so we
+    # can short-circuit the no-op case below.
+    async with _shared_db._engine.begin() as conn:
+        def _inspect(c):
+            insp = sa_inspect(c)
+            has_alembic = insp.has_table("alembic_version")
+            has_legacy = insp.has_table("assets")
+            revs: list[str] = []
+            if has_alembic:
+                res = c.exec_driver_sql("SELECT version_num FROM alembic_version")
+                revs = [row[0] for row in res.fetchall()]
+            return has_alembic, has_legacy, revs
+
+        has_alembic, has_legacy_assets, current_rev_list = await conn.run_sync(
+            _inspect
+        )
+
+    current_revs = set(current_rev_list)
+
+    # Fast path: the DB is already at head, so ``alembic upgrade head`` would
+    # be a no-op.  Skip it.  This is not just a perf win: Alembic's env.py
+    # runs the upgrade on its *own* async engine inside a nested
+    # ``asyncio.run()`` in a worker thread (see ``alembic/env.py``), and that
+    # second engine's connect has been observed to hang indefinitely on
+    # freshly-scheduled Azure Container Apps replicas even though the app's
+    # primary engine (used just above) connects fine.  A hung migration step
+    # blocks uvicorn's lifespan, so the replica never reports startup-complete
+    # and ACA's activation health gate fails — wedging every new revision.
+    # Skipping the redundant upgrade lets the replica boot and the revision
+    # activate.  Real pending migrations still take the upgrade path below.
+    if has_alembic and current_revs:
+        heads = set(ScriptDirectory.from_config(cfg).get_heads())
+        if current_revs == heads:
+            logger.info(
+                "Database already at head (%s); skipping alembic upgrade.",
+                ", ".join(sorted(current_revs)),
+            )
+            return
+        logger.info(
+            "Database revisions %s differ from alembic heads %s; running upgrade.",
+            sorted(current_revs),
+            sorted(heads),
+        )
 
     if not has_alembic and has_legacy_assets:
         logger.info(
