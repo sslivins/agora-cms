@@ -51,8 +51,8 @@ class _FakeAsyncConn:
     def __init__(self, sync_conn):
         self._sync = sync_conn
 
-    async def run_sync(self, fn):
-        return fn(self._sync)
+    async def run_sync(self, fn, *args):
+        return fn(self._sync, *args)
 
 
 class _FakeBegin:
@@ -73,6 +73,9 @@ class _FakeEngine:
     def begin(self):
         return _FakeBegin(self._conn)
 
+    def connect(self):
+        return _FakeBegin(self._conn)
+
 
 class _FakeScriptDirectory:
     _heads: list[str] = []
@@ -91,24 +94,39 @@ class _FakeScriptDirectory:
 
 def _install(monkeypatch, *, tables, versions, heads):
     """Wire up the fakes and return a dict recording alembic command calls."""
-    calls: dict[str, int] = {"upgrade": 0, "stamp": 0}
+    calls: dict = {"upgrade": 0, "stamp": 0, "injected": []}
 
-    engine = _FakeEngine(_FakeAsyncConn(_FakeSyncConn(versions)))
+    sync_conn = _FakeSyncConn(versions)
+    engine = _FakeEngine(_FakeAsyncConn(sync_conn))
+    calls["sync_conn"] = sync_conn
     monkeypatch.setattr(dbmod._shared_db, "_engine", engine)
     monkeypatch.setattr(dbmod, "sa_inspect", lambda _c: _FakeInspector(tables))
 
     _FakeScriptDirectory._heads = list(heads)
     import alembic.script
 
-    monkeypatch.setattr(alembic.script, "ScriptDirectory", _FakeScriptDirectory)
-
+    # Import ``alembic.command`` *before* patching ``alembic.script`` so that
+    # command.py's module-level ``from .script import ScriptDirectory`` (run
+    # once, at first import) captures the *real* class. Otherwise, if this is
+    # the first import of ``alembic.command`` in the process and it happens
+    # while ``alembic.script.ScriptDirectory`` is patched, command.py would
+    # permanently bind the fake — and monkeypatch can't revert a binding it
+    # never recorded, leaking the fake into later real-alembic tests.
     import alembic.command
 
-    def _fake_upgrade(_cfg, _rev):
-        calls["upgrade"] += 1
+    monkeypatch.setattr(alembic.script, "ScriptDirectory", _FakeScriptDirectory)
+    # Also patch command.py's own binding so the fast path's ScriptDirectory
+    # use is consistent regardless of import order. This is monkeypatch-tracked
+    # and therefore reverted on teardown, unlike the import-time capture above.
+    monkeypatch.setattr(alembic.command, "ScriptDirectory", _FakeScriptDirectory)
 
-    def _fake_stamp(_cfg, _rev):
+    def _fake_upgrade(cfg, _rev):
+        calls["upgrade"] += 1
+        calls["injected"].append(cfg.attributes.get("connection"))
+
+    def _fake_stamp(cfg, _rev):
         calls["stamp"] += 1
+        calls["injected"].append(cfg.attributes.get("connection"))
 
     monkeypatch.setattr(alembic.command, "upgrade", _fake_upgrade)
     monkeypatch.setattr(alembic.command, "stamp", _fake_stamp)
@@ -127,7 +145,8 @@ async def test_skips_upgrade_when_already_at_head(monkeypatch):
         heads=["0040_head"],
     )
     await dbmod.run_migrations()
-    assert calls == {"upgrade": 0, "stamp": 0}
+    assert calls["upgrade"] == 0
+    assert calls["stamp"] == 0
 
 
 @pytest.mark.asyncio
@@ -141,6 +160,9 @@ async def test_runs_upgrade_when_behind_head(monkeypatch):
     await dbmod.run_migrations()
     assert calls["upgrade"] == 1
     assert calls["stamp"] == 0
+    # The app's primary connection is injected so alembic does NOT build a
+    # second engine (the historical ACA activation hang).
+    assert calls["injected"] == [calls["sync_conn"]]
 
 
 @pytest.mark.asyncio
@@ -154,7 +176,8 @@ async def test_multi_head_order_independent(monkeypatch):
         heads=["a_head", "b_head"],
     )
     await dbmod.run_migrations()
-    assert calls == {"upgrade": 0, "stamp": 0}
+    assert calls["upgrade"] == 0
+    assert calls["stamp"] == 0
 
 
 @pytest.mark.asyncio
@@ -182,6 +205,7 @@ async def test_legacy_schema_is_stamped(monkeypatch):
     await dbmod.run_migrations()
     assert calls["stamp"] == 1
     assert calls["upgrade"] == 0
+    assert calls["injected"] == [calls["sync_conn"]]
 
 
 @pytest.mark.asyncio
