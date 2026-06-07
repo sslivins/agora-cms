@@ -83,6 +83,39 @@ class TestAssetStatus:
         assert ready_variant["video_codec"] == "h264"
         assert ready_variant["size_bytes"] == 3000
 
+    async def test_status_includes_unpublished_flag_for_composed(self, client, db_session):
+        """``/api/assets/status`` must echo ``unpublished`` so the status
+        poller's buildVariantBadge() keeps the "Unpublished" badge instead of
+        flipping a never-published composed slide to "none" on first reconcile.
+        """
+        from cms.models.asset import Asset, AssetType
+
+        # Never-published composed slide → empty checksum → unpublished.
+        composed_unpub = Asset(
+            filename="composed_unpub.html", asset_type=AssetType.COMPOSED,
+            size_bytes=0, checksum="",
+        )
+        # Published composed slide → has checksum → NOT unpublished.
+        composed_pub = Asset(
+            filename="composed_pub.html", asset_type=AssetType.COMPOSED,
+            size_bytes=1234, checksum="deadbeef",
+        )
+        # A plain video → unpublished must be False regardless.
+        video = Asset(
+            filename="plain.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=5000, checksum="vid123",
+        )
+        db_session.add_all([composed_unpub, composed_pub, video])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        assert resp.status_code == 200
+        by_id = {a["id"]: a for a in resp.json()["assets"]}
+
+        assert by_id[str(composed_unpub.id)]["unpublished"] is True
+        assert by_id[str(composed_pub.id)]["unpublished"] is False
+        assert by_id[str(video.id)]["unpublished"] is False
+
 
 @pytest.mark.asyncio
 class TestAssetStatusCollapse:

@@ -453,6 +453,7 @@
     const __userGroups = [{% for g in user_groups %}{"id":"{{ g.id }}","name":"{{ g.name }}"}{% if not loop.last %},{% endif %}{% endfor %}];
     const __isAdmin = {{ 'true' if is_admin else 'false' }};
     const __hasAssetsWrite = {{ 'true' if "assets:write" in user_perms else 'false' }};
+    const __currentUserId = {{ (current_user_id | string) | tojson if current_user_id else 'null' }};
 
     function _escHtml(s) {
         const d = document.createElement('div');
@@ -581,16 +582,18 @@
         const grid = document.getElementById('assets-grid');
         const newRow = tbody.querySelector(`tr.asset-row[data-asset-id="${id}"]`);
         if (grid && newRow && typeof window._renderGridCard === 'function') {
-            const a = {
-                id: newRow.dataset.assetId,
-                asset_type: newRow.dataset.assetType,
-                size_bytes: parseInt(newRow.dataset.sizeBytes || '0', 10),
-                is_global: newRow.dataset.isGlobal === '1',
-                thumbnail_url: newRow.dataset.thumbnailUrl || null,
-                display_name: (newRow.querySelector('.asset-filename-truncate') || {}).textContent || '',
-                original_filename: '',
-                filename: '',
-            };
+            const a = typeof window._assetObjFromRow === 'function'
+                ? window._assetObjFromRow(newRow)
+                : {
+                    id: newRow.dataset.assetId,
+                    asset_type: newRow.dataset.assetType,
+                    size_bytes: parseInt(newRow.dataset.sizeBytes || '0', 10),
+                    is_global: newRow.dataset.isGlobal === '1',
+                    thumbnail_url: newRow.dataset.thumbnailUrl || null,
+                    display_name: (newRow.querySelector('.asset-filename-truncate') || {}).textContent || '',
+                    original_filename: '',
+                    filename: '',
+                };
             grid.insertBefore(window._renderGridCard(a), grid.firstChild);
         }
     }
@@ -851,19 +854,19 @@
                 if (card) {
                     const thumbDiv = card.querySelector('.asset-grid-thumb');
                     if (thumbDiv && !thumbDiv.querySelector('img')) {
-                        // Placeholder icon present -- replace with <img>.
-                        const checkbox = thumbDiv.querySelector('.bulk-select-grid');
-                        const badge = thumbDiv.querySelector('.badge');
+                        // Placeholder icon present -- replace with <img> while
+                        // preserving every overlay element (checkbox, Global
+                        // badge, and the composed UNPUBLISHED tag, which is a
+                        // plain span -- not a .badge -- and was being dropped).
+                        const overlays = Array.from(thumbDiv.children);
                         const img = document.createElement('img');
                         img.loading = 'lazy';
                         img.src = a.thumbnail_url;
                         img.alt = '';
                         img.style.cssText = 'width:100%; height:100%; object-fit:cover;';
-                        // Wipe icon text + re-insert img + preserved overlays.
                         thumbDiv.textContent = '';
                         thumbDiv.appendChild(img);
-                        if (checkbox) thumbDiv.appendChild(checkbox);
-                        if (badge) thumbDiv.appendChild(badge);
+                        overlays.forEach(el => thumbDiv.appendChild(el));
                     }
                 }
             }
@@ -1208,7 +1211,68 @@ function fallbackCopy(text, onSuccess) {
 
     function _typeIcon(t) {
         return { video: '▶', image: '🖼', webpage: '🌐', stream: '📡',
-                 saved_stream: '🎞', slideshow: '🗂' }[t] || '📄';
+                 saved_stream: '🎞', slideshow: '🗂', composed: '🧩' }[t] || '📄';
+    }
+
+    // HTML-escape a value for safe use inside a double-quoted attribute.
+    // Unlike _escHtml (textContent->innerHTML, which does NOT escape quotes),
+    // this escapes " and ' so attribute values can't break out.
+    function _escAttr(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[ch]));
+    }
+
+    // Escape a JSON-encoded value for an inline on* attribute -- mirrors the
+    // server-side `value | tojson | forceescape` used by the list-view kebab,
+    // so names containing quotes can't break out of the handler string.
+    function _kebabArg(s) { return _escAttr(JSON.stringify(s == null ? '' : s)); }
+
+    // Build the grid-card action kebab (button + native popover menu),
+    // mirroring the list-view kebab in _macros.html. Returns markup; the
+    // delegated `toggle` listener in app.js positions/opens it.
+    function _gridKebabHtml(a) {
+        const isOwner = (__currentUserId && a.uploaded_by_user_id === __currentUserId) || __isAdmin;
+        const canWrite = __hasAssetsWrite;
+        const name = a.display_name || a.original_filename || a.filename;
+        const t = a.asset_type;
+        const items = [];
+
+        if (t === 'webpage') {
+            if (a.url) items.push('<a role="menuitem" href="' + _escAttr(a.url) + '" target="_blank" rel="noopener">Open URL</a>');
+            if (canWrite && isOwner) items.push('<button type="button" role="menuitem" onclick="editWebpageUrl(' + _kebabArg(a.id) + ', ' + _kebabArg(a.url || '') + ')">Edit URL</button>');
+        } else if (t === 'stream') {
+            if (a.url) items.push('<a role="menuitem" href="' + _escAttr(a.url) + '" target="_blank" rel="noopener">Open Stream</a>');
+        } else if (t === 'slideshow') {
+            items.push('<a role="menuitem" href="/assets/' + _escAttr(a.id) + '/slideshow">' + ((canWrite && isOwner) ? 'Edit slides' : 'View slides') + '</a>');
+        } else if (t === 'composed') {
+            items.push('<button type="button" role="menuitem" onclick="previewComposed(' + _kebabArg(a.id) + ', ' + _kebabArg(name) + ')">Preview</button>');
+            items.push('<a role="menuitem" href="/assets/' + _escAttr(a.id) + '/composed">' + ((canWrite && isOwner) ? 'Edit composed' : 'View composed') + '</a>');
+        } else {
+            items.push('<button type="button" role="menuitem" onclick="previewAsset(' + _kebabArg(a.id) + ', ' + _kebabArg(a.filename) + ', ' + _kebabArg(t) + ')">Preview</button>');
+        }
+
+        if (canWrite && t === 'saved_stream' && isOwner) {
+            items.push('<button type="button" role="menuitem" onclick="recaptureStream(' + _kebabArg(a.id) + ', ' + _kebabArg(name) + ')" title="Re-run the stream capture">Re-capture</button>');
+        }
+
+        if (canWrite && isOwner) {
+            // DOM-derived cards carry schedule_count; /api/assets/page cards
+            // carry the richer usage object. Use whichever is present.
+            let sched = 0;
+            if (typeof a.schedule_count === 'number') sched = a.schedule_count;
+            else if (a.usage) sched = (a.usage.schedules ? a.usage.schedules.length : 0) + (a.usage.extra_schedules || 0);
+            if (sched > 0) {
+                items.push('<button type="button" role="menuitem" class="kebab-item-danger" disabled title="Used by ' + sched + ' schedule' + (sched !== 1 ? 's' : '') + '. Remove from all schedules before deleting.">Delete</button>');
+            } else {
+                items.push('<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset(' + _kebabArg(a.id) + ', ' + _kebabArg(a.filename) + ')">Delete</button>');
+            }
+        }
+
+        if (!items.length) return '';
+        const mid = 'gk-' + a.id;
+        return '<button type="button" class="btn-kebab" popovertarget="' + _escAttr(mid) + '" aria-haspopup="menu" aria-label="Actions" onclick="event.stopPropagation()">⋮</button>' +
+               '<div id="' + _escAttr(mid) + '" popover class="kebab-menu" role="menu">' + items.join('') + '</div>';
     }
 
     function _formatSize(bytes) {
@@ -1216,6 +1280,30 @@ function fallbackCopy(text, onSuccess) {
         const mb = bytes / 1048576;
         if (mb >= 1) return mb.toFixed(1) + ' MB';
         return Math.round(bytes / 1024) + ' KB';
+    }
+
+    // Build a grid-card asset object from a server-rendered table row's data
+    // attributes. Used by the table->grid toggle and the new-upload mirror so
+    // grid cards (and their kebab menus) have the same fields the JSON path
+    // (/api/assets/page) provides: ownership, url, filename, schedule count.
+    function _assetObjFromRow(row) {
+        let parsedTags = [];
+        try { if (row.dataset.tags) parsedTags = JSON.parse(row.dataset.tags); } catch (e) { parsedTags = []; }
+        const nameCell = row.querySelector('.asset-filename-truncate');
+        return {
+            id: row.dataset.assetId,
+            asset_type: row.dataset.assetType,
+            size_bytes: parseInt(row.dataset.sizeBytes || '0', 10),
+            is_global: row.dataset.isGlobal === '1',
+            thumbnail_url: row.dataset.thumbnailUrl || null,
+            display_name: nameCell ? nameCell.textContent : '',
+            original_filename: '',
+            filename: row.dataset.filename || '',
+            url: row.dataset.url || '',
+            uploaded_by_user_id: row.dataset.uploaderId || null,
+            schedule_count: parseInt(row.dataset.scheduleCount || '0', 10),
+            tags: parsedTags,
+        };
     }
 
     function _renderGridCard(a) {
@@ -1257,7 +1345,10 @@ function fallbackCopy(text, onSuccess) {
                 (a.unpublished ? '<span title="This composed slide has not been published — it will not appear on devices until you open it and click Publish." style="position:absolute; bottom:6px; left:6px; background:#dc2626; color:#fff; font-size:0.65rem; font-weight:700; letter-spacing:0.03em; padding:0.15rem 0.4rem; border-radius:4px;">⚠ UNPUBLISHED</span>' : '') +
             '</div>' +
             '<div style="padding:0.5rem;">' +
-                '<div class="asset-grid-name" title="' + _escHtml(name) + '" style="font-size:0.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + _escHtml(name) + '</div>' +
+                '<div style="display:flex; align-items:flex-start; gap:0.25rem;">' +
+                    '<div class="asset-grid-name" title="' + _escHtml(name) + '" style="flex:1; min-width:0; font-size:0.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + _escHtml(name) + '</div>' +
+                    _gridKebabHtml(a) +
+                '</div>' +
                 tagChipsHtml +
                 '<div class="text-muted" style="font-size:0.75rem; display:flex; justify-content:space-between; gap:0.5rem; margin-top:0.25rem;">' +
                     '<span>' + _typeIcon(a.asset_type) + ' ' + a.asset_type + '</span>' +
@@ -1767,22 +1858,7 @@ function fallbackCopy(text, onSuccess) {
         // Pull what we have from the DOM (the table rows have all the
         // attributes we need for grid card rendering).
         tbody.querySelectorAll('tr.asset-row').forEach(row => {
-            let parsedTags = [];
-            try {
-                if (row.dataset.tags) parsedTags = JSON.parse(row.dataset.tags);
-            } catch (e) { parsedTags = []; }
-            const a = {
-                id: row.dataset.assetId,
-                asset_type: row.dataset.assetType,
-                size_bytes: parseInt(row.dataset.sizeBytes || '0', 10),
-                is_global: row.dataset.isGlobal === '1',
-                thumbnail_url: row.dataset.thumbnailUrl || null,
-                display_name: (row.querySelector('.asset-filename-truncate') || {}).textContent || '',
-                original_filename: '',
-                filename: '',
-                tags: parsedTags,
-            };
-            grid.appendChild(_renderGridCard(a));
+            grid.appendChild(_renderGridCard(_assetObjFromRow(row)));
         });
     }
 
@@ -1830,6 +1906,7 @@ function fallbackCopy(text, onSuccess) {
     // lives in the upload/poll IIFE and needs to mirror new uploads
     // into the grid without re-declaring this builder).
     window._renderGridCard = _renderGridCard;
+    window._assetObjFromRow = _assetObjFromRow;
 
     _setView(state.view);
 
