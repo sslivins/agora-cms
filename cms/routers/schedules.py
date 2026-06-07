@@ -186,15 +186,27 @@ async def _validate_webpage_group(group_id: uuid.UUID, db: AsyncSession) -> None
         )
 
 
-async def _validate_slideshow_group(group_id: uuid.UUID, db: AsyncSession) -> None:
+async def _validate_slideshow_group(
+    group_id: uuid.UUID,
+    db: AsyncSession,
+    slideshow_asset_id: uuid.UUID | None = None,
+) -> None:
     """Validate every adopted device in ``group_id`` advertises slideshow_v1.
 
     Mirrors the Pi5/webpage gate.  Older firmware that doesn't include the
     capabilities field on register has an empty list, which fails the
     check — exactly the desired behaviour (block the schedule until the
     fleet is upgraded).
+
+    When ``slideshow_asset_id`` is supplied and the slideshow contains at
+    least one COMPOSED member, every device must additionally advertise
+    ``slideshow_composed_v1`` — pre-feature firmware can't render a
+    composed slide inside a slideshow.
     """
-    from cms.schemas.protocol import CAPABILITY_SLIDESHOW_V1
+    from cms.schemas.protocol import (
+        CAPABILITY_SLIDESHOW_V1,
+        CAPABILITY_SLIDESHOW_COMPOSED_V1,
+    )
 
     result = await db.execute(
         select(Device).where(
@@ -218,6 +230,43 @@ async def _validate_slideshow_group(group_id: uuid.UUID, db: AsyncSession) -> No
                 f"are not compatible: {names}{suffix}"
             ),
         )
+
+    if slideshow_asset_id is not None and await _slideshow_has_composed_member(
+        slideshow_asset_id, db
+    ):
+        needs_composed = [
+            d for d in devices
+            if CAPABILITY_SLIDESHOW_COMPOSED_V1 not in (d.capabilities or [])
+        ]
+        if needs_composed:
+            names = ", ".join(d.name or d.id for d in needs_composed[:3])
+            suffix = (
+                f" and {len(needs_composed) - 3} more"
+                if len(needs_composed) > 3
+                else ""
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "This slideshow contains a composed slide, which requires "
+                    "firmware advertising the 'slideshow_composed_v1' capability. "
+                    f"These devices in the group are not compatible: {names}{suffix}"
+                ),
+            )
+
+
+async def _slideshow_has_composed_member(
+    slideshow_asset_id: uuid.UUID, db: AsyncSession
+) -> bool:
+    """Return True if any slide source of the slideshow is a COMPOSED asset."""
+    from shared.models.slideshow_slide import SlideshowSlide
+
+    result = await db.execute(
+        select(Asset.asset_type)
+        .join(SlideshowSlide, SlideshowSlide.source_asset_id == Asset.id)
+        .where(SlideshowSlide.slideshow_asset_id == slideshow_asset_id)
+    )
+    return any(t == AssetType.COMPOSED for t in result.scalars().all())
 
 
 async def _resolve_loop_end_time(
@@ -282,7 +331,7 @@ async def create_schedule(data: ScheduleCreate, request: Request, db: AsyncSessi
 
     # Slideshow assets require firmware advertising slideshow_v1
     if is_slideshow and data.group_id:
-        await _validate_slideshow_group(data.group_id, db)
+        await _validate_slideshow_group(data.group_id, db, data.asset_id)
 
     # Auto-compute end_time when loop_count is set
     if not is_url_asset:
@@ -440,7 +489,9 @@ async def update_schedule(
     if is_slideshow and ("asset_id" in updates or "group_id" in updates):
         target_group_id = updates.get("group_id", schedule.group_id)
         if target_group_id:
-            await _validate_slideshow_group(target_group_id, db)
+            await _validate_slideshow_group(
+                target_group_id, db, updates.get("asset_id", schedule.asset_id)
+            )
 
     # Recompute end_time when loop_count changes (or when asset/start_time
     # change on a schedule that already has loop_count set).

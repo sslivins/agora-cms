@@ -46,6 +46,20 @@ CAPABILITY_SLIDESHOW_V1 = "slideshow_v1"
 # firmware PR #253 (APT 1.11.95).
 CAPABILITY_COMPOSED_SIBLINGS_V1 = "composed_siblings_v1"
 
+# ``slideshow_composed_v1`` indicates the device can render a COMPOSED
+# slide *as a member of a slideshow* — i.e. a slide whose
+# ``SlideDescriptor.asset_type`` is ``"composed"``, delivered with the
+# bundle HTML as ``download_url`` and the bundle's referenced source
+# assets in the per-slide ``siblings`` list.  The slideshow player loop
+# routes such a slide to ``show_html(bundle)`` (iframe) instead of
+# show_image/show_video.  The CMS only includes composed members in a
+# slideshow manifest sent to a device advertising this capability (see
+# the capability gate in :mod:`cms.services.slideshow_resolver`); older
+# firmware never receives a composed slide and so never chokes on the
+# unknown type.  Pairs with the agora firmware PR that lights up the
+# slideshow-loop composed branch.
+CAPABILITY_SLIDESHOW_COMPOSED_V1 = "slideshow_composed_v1"
+
 # Slideshow manifest schema version (semver, additive minor bumps).  The
 # wire format of the slideshow manifest is independent of the
 # higher-level ``PROTOCOL_VERSION``: protocol bumps describe the WS
@@ -63,11 +77,20 @@ CAPABILITY_COMPOSED_SIBLINGS_V1 = "composed_siblings_v1"
 #           Devices that don't understand 1.1 ignore the extras and
 #           keep playing the deck with the legacy relative-timer chain.
 #           Not yet emitted by the CMS — Phase 1a/1b lights it up.
+#   "1.2" — adds COMPOSED slide members: a ``SlideDescriptor`` may now
+#           carry ``asset_type="composed"`` with ``download_url`` set to
+#           the published bundle HTML and an optional per-slide
+#           ``siblings`` list (resolved source-asset dependencies of the
+#           bundle, same shape as the standalone-composed
+#           ``FetchAssetMessage.siblings``).  Gated by the
+#           ``slideshow_composed_v1`` capability — a slideshow containing
+#           composed members is only sent to devices that advertise it,
+#           so a 1.0/1.1 player never sees an unknown slide type.
 #
 # Rule for future bumps: minor bumps are additive (old players ignore
 # unknown fields).  A breaking change bumps the *major* and is gated
 # via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
-SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.1"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.2"
 SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
@@ -305,7 +328,7 @@ class SlideDescriptor(BaseModel):
     """One slide in a resolved slideshow manifest, sent inside FetchAssetMessage."""
 
     asset_name: str
-    asset_type: str  # "image" or "video"
+    asset_type: str  # "image", "video", or "composed"
     download_url: str
     checksum: str
     size_bytes: int
@@ -317,12 +340,21 @@ class SlideDescriptor(BaseModel):
     # behaviour (``cut`` / 600 ms) matches the pre-versioning era.
     transition: str = "cut"
     transition_ms: int = 600
+    # Composed-slide sibling dependencies (manifest schema 1.2).  Only
+    # present (non-None) when ``asset_type`` is ``"composed"``: the
+    # resolved source assets (video / image / saved_stream) embedded in
+    # the bundle so the device can pre-fetch them into the local cache
+    # before showing the bundle, exactly like a standalone composed
+    # asset's ``FetchAssetMessage.siblings``.  Empty / None means the
+    # composed slide has no media siblings (all-text/clock bundle).
+    siblings: Optional[list["Sibling"]] = None
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> "SlideDescriptor":
-        if self.asset_type not in ("image", "video"):
+        if self.asset_type not in ("image", "video", "composed"):
             raise ValueError(
-                f"SlideDescriptor.asset_type must be 'image' or 'video', got {self.asset_type!r}"
+                "SlideDescriptor.asset_type must be 'image', 'video' or "
+                f"'composed', got {self.asset_type!r}"
             )
         if self.duration_ms <= 0:
             raise ValueError(
@@ -331,6 +363,10 @@ class SlideDescriptor(BaseModel):
         if self.play_to_end and self.asset_type != "video":
             raise ValueError(
                 "SlideDescriptor.play_to_end=True is only valid for video sources"
+            )
+        if self.siblings is not None and self.asset_type != "composed":
+            raise ValueError(
+                "SlideDescriptor.siblings is only valid for composed slides"
             )
         # Keep this allow-list in sync with cms.schemas.asset.SLIDE_TRANSITIONS
         # and the JS shell's KNOWN_TRANSITIONS in agora/player/shell/player.js.
@@ -392,6 +428,7 @@ class Sibling(BaseModel):
 
 # Resolve forward references now that ``SlideDescriptor`` and ``Sibling``
 # are defined.
+SlideDescriptor.model_rebuild()
 FetchAssetMessage.model_rebuild()
 
 

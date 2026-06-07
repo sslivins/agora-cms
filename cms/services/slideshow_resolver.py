@@ -31,15 +31,21 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import logging
+
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
 from cms.schemas.protocol import (
     FetchAssetMessage,
     SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST,
+    Sibling,
     SlideDescriptor,
 )
+from cms.services.asset_readiness import composed_unpublished_reason
 from cms.services.storage import get_storage
 from shared.models.slideshow_slide import SlideshowSlide
+
+logger = logging.getLogger("agora.cms.slideshow")
 
 
 # Blocker statuses returned by the planner — exposed via API so the UI
@@ -48,6 +54,30 @@ BLOCKER_SOURCE_DELETED = "source_deleted"
 BLOCKER_VARIANT_PROCESSING = "variant_processing"
 BLOCKER_VARIANT_FAILED = "variant_failed"
 BLOCKER_VARIANT_CANCELLED = "variant_cancelled"
+# A composed-slide member that has never been published (no rendered
+# bundle / checksum) — the device would 404 trying to download it.
+BLOCKER_SOURCE_UNPUBLISHED = "source_unpublished"
+
+
+@dataclass
+class _SiblingPlan:
+    """One resolved composed-slide sibling (referenced image/video).
+
+    Mirrors the standalone-composed sibling contract
+    (:func:`cms.services.device_inbound._build_composed_siblings`) but
+    carries the storage *path* pieces rather than a baked download URL so
+    the device-profile-specific URL can be built in
+    :func:`build_fetch_for_slideshow` (which has ``storage``/``base_url``)
+    while the planner stays device-light.
+    """
+
+    source_asset_id: uuid.UUID
+    filename: str
+    asset_type_value: str  # "image" / "video" / "saved_stream"
+    checksum: str
+    size_bytes: int
+    download_path: str  # storage path for get_device_download_url
+    api_url_path: str  # CMS-relative API URL for fallback
 
 
 @dataclass
@@ -70,6 +100,10 @@ class _SlidePlan:
     api_url_path: Optional[str] = None  # CMS-relative API URL for fallback
     checksum: Optional[str] = None
     size_bytes: Optional[int] = None
+    # Composed-slide members (Phase 5) carry their referenced media as
+    # siblings the device pre-fetches before showing the bundle.  Empty
+    # for image/video slides.
+    siblings: list[_SiblingPlan] = field(default_factory=list)
 
 
 @dataclass
@@ -90,6 +124,148 @@ class SlideshowPlan:
     @property
     def ready(self) -> bool:
         return not self.blockers
+
+
+# Sentinel returned by :func:`_plan_composed_siblings` when at least one
+# referenced sibling has a non-terminal (in-flight) variant for the
+# device profile.  Distinguished from an empty/None sibling set so the
+# caller can raise a ``variant_processing`` blocker for the whole slide.
+_SIBLINGS_INFLIGHT = "INFLIGHT"
+
+
+async def _resolve_composed_sibling(
+    ref: Asset, profile_id: Optional[uuid.UUID], db: AsyncSession
+) -> Optional[_SiblingPlan]:
+    """Resolve one referenced sibling asset to a :class:`_SiblingPlan`.
+
+    Latest-READY-wins for the device profile (matching
+    :func:`cms.services.device_inbound._resolve_variant_or_source`);
+    falls back to the source asset when the device has no profile or no
+    variant exists.  Returns ``None`` when a variant exists for this
+    (asset, profile) pair but none is READY yet — the caller MUST treat
+    that as "sibling in flight, skip the whole slideshow fetch".
+    """
+    is_file_asset = ref.asset_type in (
+        AssetType.VIDEO,
+        AssetType.IMAGE,
+        AssetType.SAVED_STREAM,
+    )
+    type_value = ref.asset_type.value
+    if is_file_asset and profile_id is not None:
+        ready = (
+            await db.execute(
+                select(AssetVariant)
+                .where(
+                    AssetVariant.source_asset_id == ref.id,
+                    AssetVariant.profile_id == profile_id,
+                    AssetVariant.status == VariantStatus.READY,
+                    AssetVariant.deleted_at.is_(None),
+                )
+                .order_by(
+                    AssetVariant.created_at.desc(),
+                    AssetVariant.id.desc(),
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        if ready is not None:
+            return _SiblingPlan(
+                source_asset_id=ref.id,
+                filename=ref.filename,
+                asset_type_value=type_value,
+                checksum=ready.checksum or "",
+                size_bytes=ready.size_bytes or 0,
+                download_path=f"variants/{ready.filename}",
+                api_url_path=f"/api/assets/variants/{ready.id}/download",
+            )
+        inflight = (
+            await db.execute(
+                select(AssetVariant.id)
+                .where(
+                    AssetVariant.source_asset_id == ref.id,
+                    AssetVariant.profile_id == profile_id,
+                    AssetVariant.deleted_at.is_(None),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if inflight is not None:
+            return None  # in-flight — caller raises a blocker
+
+    return _SiblingPlan(
+        source_asset_id=ref.id,
+        filename=ref.filename,
+        asset_type_value=type_value,
+        checksum=ref.checksum or "",
+        size_bytes=ref.size_bytes or 0,
+        download_path=ref.filename,
+        api_url_path=f"/api/assets/{ref.id}/download",
+    )
+
+
+async def _plan_composed_siblings(
+    composed_asset: Asset, profile_id: Optional[uuid.UUID], db: AsyncSession
+) -> "list[_SiblingPlan] | str | None":
+    """Resolve the referenced media of a composed-slide member.
+
+    Returns:
+      * ``None`` when the bundle declares no source assets (all-text
+        slide) — the slide ships with no siblings.
+      * the string :data:`_SIBLINGS_INFLIGHT` when any sibling has a
+        non-terminal variant for ``profile_id`` — caller raises a
+        ``variant_processing`` blocker for the whole slide.
+      * a list of :class:`_SiblingPlan` otherwise.  Missing (deleted)
+        siblings are logged and skipped, matching the standalone-composed
+        contract (the bundle plays with a broken media reference).
+    """
+    # Lazy import — avoids a module-import cycle with cms.composed / models.
+    from cms.models.composed_slide import ComposedSlide
+
+    cs_row = (
+        await db.execute(
+            select(ComposedSlide).where(
+                ComposedSlide.asset_id == composed_asset.id
+            )
+        )
+    ).scalars().first()
+
+    raw_declared = list(cs_row.bundle_source_asset_ids or []) if cs_row else []
+    if not raw_declared:
+        return None
+
+    # publish.py stores these as str(uuid); coerce back so the IN clause
+    # and the by_id lookup hit the same Asset.id type.
+    declared: list[uuid.UUID] = [
+        aid if isinstance(aid, uuid.UUID) else uuid.UUID(str(aid))
+        for aid in raw_declared
+    ]
+
+    rows = await db.execute(
+        select(Asset).where(
+            Asset.id.in_(declared),
+            Asset.deleted_at.is_(None),
+        )
+    )
+    by_id = {a.id: a for a in rows.scalars().all()}
+
+    siblings: list[_SiblingPlan] = []
+    for aid in declared:
+        ref = by_id.get(aid)
+        if ref is None:
+            logger.warning(
+                "Composed slideshow member %s references missing/deleted "
+                "sibling asset %s; device will play bundle with broken "
+                "media reference",
+                composed_asset.id,
+                aid,
+            )
+            continue
+        resolved = await _resolve_composed_sibling(ref, profile_id, db)
+        if resolved is None:
+            return _SIBLINGS_INFLIGHT
+        siblings.append(resolved)
+
+    return siblings
 
 
 async def plan_slideshow(
@@ -177,7 +353,39 @@ async def plan_slideshow(
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
-        if profile_id is not None and src.asset_type in (
+        if src.asset_type == AssetType.COMPOSED:
+            # Composed member (Phase 5): the published bundle HTML *is*
+            # the Asset's own file; there is no transcode variant.  Block
+            # if never published (no bundle to download), then resolve the
+            # referenced media as siblings the device pre-fetches.
+            if composed_unpublished_reason(src) is not None:
+                plan.blockers.append(
+                    SlideshowBlocker(
+                        slide_position=slide_row.position,
+                        source_asset_id=sid,
+                        source_filename=src.filename,
+                        status=BLOCKER_SOURCE_UNPUBLISHED,
+                    )
+                )
+                continue
+            sib = await _plan_composed_siblings(src, profile_id, db)
+            if sib == _SIBLINGS_INFLIGHT:
+                plan.blockers.append(
+                    SlideshowBlocker(
+                        slide_position=slide_row.position,
+                        source_asset_id=sid,
+                        source_filename=src.filename,
+                        status=BLOCKER_VARIANT_PROCESSING,
+                    )
+                )
+                continue
+            sp.download_path = src.filename
+            sp.api_url_path = f"/api/assets/{src.id}/download"
+            sp.checksum = src.checksum
+            sp.size_bytes = src.size_bytes
+            if sib:
+                sp.siblings = sib  # type: ignore[assignment]
+        elif profile_id is not None and src.asset_type in (
             AssetType.VIDEO,
             AssetType.IMAGE,
             AssetType.SAVED_STREAM,
@@ -240,6 +448,12 @@ def _compute_resolved_manifest_checksum(
             f"|{s.position}|{s.source_asset_id}|{s.checksum or ''}|"
             f"{s.duration_ms}|{int(s.play_to_end)}|{s.transition}|{s.transition_ms}".encode()
         )
+        # Fold each composed sibling's checksum so a re-transcoded sibling
+        # video flips the resolved hash and prompts a device refetch.
+        # (Stricter than the standalone-composed path, which doesn't fold
+        # siblings — intentional, avoids serving a stale cached bundle.)
+        for sib in s.siblings:
+            h.update(f"|sib|{sib.source_asset_id}|{sib.checksum or ''}".encode())
     return h.hexdigest()
 
 
@@ -280,15 +494,37 @@ async def build_fetch_for_slideshow(
         download_url = await storage.get_device_download_url(
             sp.download_path or "", api_url
         )
+        # Pick the wire asset_type.  Composed members ship the bundle HTML
+        # plus their referenced media as siblings.
+        if sp.source_asset_type == AssetType.COMPOSED:
+            wire_type = "composed"
+        elif sp.source_asset_type in (AssetType.VIDEO, AssetType.SAVED_STREAM):
+            wire_type = "video"
+        else:
+            wire_type = "image"
+
+        wire_siblings: Optional[list[Sibling]] = None
+        if sp.siblings:
+            wire_siblings = []
+            for sib in sp.siblings:
+                sib_api_url = f"{base_url}{sib.api_url_path}"
+                sib_download_url = await storage.get_device_download_url(
+                    sib.download_path, sib_api_url
+                )
+                wire_siblings.append(
+                    Sibling(
+                        name=sib.filename,
+                        asset_type=sib.asset_type_value,
+                        download_url=sib_download_url,
+                        checksum=sib.checksum,
+                        size_bytes=sib.size_bytes,
+                    )
+                )
+
         descriptors.append(
             SlideDescriptor(
                 asset_name=sp.source_filename,
-                asset_type=(
-                    "video"
-                    if sp.source_asset_type
-                    in (AssetType.VIDEO, AssetType.SAVED_STREAM)
-                    else "image"
-                ),
+                asset_type=wire_type,
                 download_url=download_url,
                 checksum=sp.checksum or "",
                 size_bytes=sp.size_bytes or 0,
@@ -296,6 +532,7 @@ async def build_fetch_for_slideshow(
                 play_to_end=sp.play_to_end,
                 transition=sp.transition,
                 transition_ms=sp.transition_ms,
+                siblings=wire_siblings,
             )
         )
 

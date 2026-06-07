@@ -1432,19 +1432,33 @@ async def _load_and_validate_slide_sources(
 
     for s in slides:
         src = sources_by_id[s.source_asset_id]
-        if src.asset_type not in (AssetType.IMAGE, AssetType.VIDEO):
+        if src.asset_type not in (AssetType.IMAGE, AssetType.VIDEO, AssetType.COMPOSED):
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"Slide source '{src.filename}' has type "
-                    f"{src.asset_type.value}; only image and video are allowed"
+                    f"{src.asset_type.value}; only image, video and composed "
+                    "slides are allowed"
                 ),
             )
-        if s.play_to_end and src.asset_type == AssetType.IMAGE:
+        # A composed slide member must already be published — an
+        # unpublished composed slide has no rendered bundle for the device
+        # to download (it would 404 in a retry loop). Mirror the same gate
+        # the scheduler/splash path applies via composed_unpublished_reason.
+        if src.asset_type == AssetType.COMPOSED and composed_unpublished_reason(src):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Slide source '{src.filename}' is an image; "
+                    f"Slide source '{src.filename}' is a composed slide that "
+                    "hasn't been published yet. Open it in the editor and click "
+                    "Publish before adding it to a slideshow."
+                ),
+            )
+        if s.play_to_end and src.asset_type != AssetType.VIDEO:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Slide source '{src.filename}' is a {src.asset_type.value}; "
                     "play_to_end is only valid for video sources"
                 ),
             )
