@@ -15,7 +15,6 @@ was adopted.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -51,6 +50,23 @@ def _alembic_config():
     return AlembicConfig(str(_ALEMBIC_INI))
 
 
+def _run_alembic_to_head(sync_connection, cfg, op: str) -> None:
+    """Run an Alembic command against an already-open (sync) Connection.
+
+    Designed to be called via ``AsyncConnection.run_sync`` so that Alembic's
+    ``env.py`` reuses this connection (passed through
+    ``cfg.attributes['connection']``) instead of constructing its own engine.
+    ``op`` is ``"upgrade"`` or ``"stamp"``; both target ``head``.
+    """
+    from alembic import command as alembic_command  # local import
+
+    cfg.attributes["connection"] = sync_connection
+    if op == "stamp":
+        alembic_command.stamp(cfg, "head")
+    else:
+        alembic_command.upgrade(cfg, "head")
+
+
 async def run_migrations() -> None:
     """Bring the database schema up to date with the latest Alembic revision.
 
@@ -70,14 +86,12 @@ async def run_migrations() -> None:
     DB is safe.
     """
 
-    # Alembic's env.py sets up its own async engine from SharedSettings,
-    # so all we pass through is the Config pointing at alembic.ini.
-    #
-    # alembic.command.upgrade/stamp are synchronous and — via our env.py —
-    # internally call ``asyncio.run()``.  We can't call asyncio.run from
-    # inside a running event loop, so we hand off to a worker thread,
-    # which gets its own loop.
-    from alembic import command as alembic_command  # lazy: see _alembic_config
+    # We run Alembic on the application's *primary* engine connection (via
+    # ``run_sync`` + ``config.attributes['connection']``; see ``alembic/env.py``)
+    # rather than letting env.py build its own second async engine.  That
+    # second engine's connect has been observed to hang indefinitely on
+    # freshly scheduled Azure Container Apps replicas, wedging revision
+    # activation.  The primary engine is already proven reachable here.
     from alembic.script import ScriptDirectory  # lazy: see _alembic_config
 
     cfg = _alembic_config()
@@ -104,16 +118,10 @@ async def run_migrations() -> None:
     current_revs = set(current_rev_list)
 
     # Fast path: the DB is already at head, so ``alembic upgrade head`` would
-    # be a no-op.  Skip it.  This is not just a perf win: Alembic's env.py
-    # runs the upgrade on its *own* async engine inside a nested
-    # ``asyncio.run()`` in a worker thread (see ``alembic/env.py``), and that
-    # second engine's connect has been observed to hang indefinitely on
-    # freshly-scheduled Azure Container Apps replicas even though the app's
-    # primary engine (used just above) connects fine.  A hung migration step
-    # blocks uvicorn's lifespan, so the replica never reports startup-complete
-    # and ACA's activation health gate fails — wedging every new revision.
-    # Skipping the redundant upgrade lets the replica boot and the revision
-    # activate.  Real pending migrations still take the upgrade path below.
+    # be a no-op.  Skip it entirely — no need to import/run Alembic's env at
+    # all on a healthy boot.  (When there IS pending work, the upgrade below
+    # runs on the primary connection, so it no longer risks the second-engine
+    # hang that historically wedged ACA revision activation.)
     if has_alembic and current_revs:
         heads = set(ScriptDirectory.from_config(cfg).get_heads())
         if current_revs == heads:
@@ -133,8 +141,10 @@ async def run_migrations() -> None:
             "Legacy pre-Alembic schema detected; stamping as baseline "
             "without running DDL."
         )
-        await asyncio.to_thread(alembic_command.stamp, cfg, "head")
+        async with _shared_db._engine.connect() as conn:
+            await conn.run_sync(_run_alembic_to_head, cfg, "stamp")
         return
 
     logger.info("Running alembic upgrade head")
-    await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
+    async with _shared_db._engine.connect() as conn:
+        await conn.run_sync(_run_alembic_to_head, cfg, "upgrade")

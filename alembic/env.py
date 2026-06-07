@@ -123,7 +123,21 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    # When a caller (the app's startup path in ``cms.database.run_migrations``)
+    # injects an already-open Connection via ``config.attributes['connection']``,
+    # run the migrations on it directly.  This avoids building Alembic's own
+    # second async engine inside a nested ``asyncio.run()`` — that second
+    # engine's connect has been observed to hang indefinitely on freshly
+    # scheduled Azure Container Apps replicas, wedging revision activation.
+    #
+    # The Alembic CLI (and CI's ``alembic`` invocations) set no such
+    # attribute, so they fall through to the self-managed async engine and
+    # behave exactly as before.
+    connectable = config.attributes.get("connection", None)
+    if connectable is None:
+        asyncio.run(run_async_migrations())
+    else:
+        do_run_migrations(connectable)
 
 
 if context.is_offline_mode():
