@@ -23,7 +23,10 @@ from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.slideshow_slide import SlideshowSlide
-from cms.schemas.protocol import CAPABILITY_SLIDESHOW_V1
+from cms.schemas.protocol import (
+    CAPABILITY_SLIDESHOW_COMPOSED_V1,
+    CAPABILITY_SLIDESHOW_V1,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +59,43 @@ async def _seed_video(db, *, filename, is_global=True, checksum="vid-sha", durat
     db.add(a)
     await db.commit()
     await db.refresh(a)
+    return a
+
+
+async def _seed_composed(
+    db, *, filename, checksum="cmp-sha", size=4096,
+    is_global=True, source_asset_ids=None,
+):
+    """Seed a COMPOSED asset (+ its ComposedSlide row).
+
+    ``checksum`` set => published (a bundle exists).  Pass ``checksum=None``
+    to model an unpublished composed slide.  ``source_asset_ids`` populates
+    the bundle's referenced media (siblings) — stored stringified, matching
+    the publish layer.
+    """
+    from cms.models.composed_slide import ComposedSlide
+
+    a = Asset(
+        filename=filename,
+        asset_type=AssetType.COMPOSED,
+        size_bytes=size,
+        checksum=checksum,
+        is_global=is_global,
+    )
+    db.add(a)
+    await db.commit()
+    await db.refresh(a)
+    cs = ComposedSlide(
+        asset_id=a.id,
+        layout_json={"widgets": []},
+        is_draft=False,
+        bundle_source_asset_ids=(
+            None if source_asset_ids is None
+            else [str(aid) for aid in source_asset_ids]
+        ),
+    )
+    db.add(cs)
+    await db.commit()
     return a
 
 
@@ -365,7 +405,7 @@ class TestSlideshowResolver:
             ss, device, "https://cms.example", db_session,
         )
         assert fetch is not None
-        assert fetch.manifest_schema_version == "1.1"
+        assert fetch.manifest_schema_version == "1.2"
         assert fetch.cycle_duration_ms == 7500
         assert fetch.started_at is not None
         assert fetch.started_at.endswith("Z")
@@ -566,3 +606,254 @@ class TestReadinessApi:
         body = resp.json()
         assert body["readiness"]["ready"] is False
         assert body["readiness"]["blockers"][0]["status"] == "variant_processing"
+
+
+# ---------------------------------------------------------------------------
+# Composed-in-slideshow tests (Phase 5 / PR A)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestComposedSlideshowMember:
+    async def test_published_composed_member_emits_descriptor_with_siblings(
+        self, db_session, app
+    ):
+        """A published composed member resolves to a ``composed``
+        SlideDescriptor whose ``siblings`` carry the referenced video
+        (resolved to its READY variant for the device profile)."""
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "p-cmp")
+        vid = await _seed_video(
+            db_session, filename="cmp-sib.mp4", checksum="sibsrc",
+        )
+        await _seed_variant(
+            db_session, source=vid, profile=profile,
+            status=VariantStatus.READY, checksum="sibvar",
+        )
+        cmp_asset = await _seed_composed(
+            db_session, filename="cmp-mem.html", checksum="cmpsha",
+            source_asset_ids=[vid.id],
+        )
+        ss = await _seed_slideshow(
+            db_session, name="ss-cmp",
+            slides_data=[(cmp_asset, 8000, False)], checksum="mcmp",
+        )
+        device = await _seed_device(
+            db_session, did="dev-cmp", profile=profile,
+            capabilities=[
+                CAPABILITY_SLIDESHOW_V1, CAPABILITY_SLIDESHOW_COMPOSED_V1,
+            ],
+        )
+
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        assert len(fetch.slides) == 1
+        slide = fetch.slides[0]
+        assert slide.asset_type == "composed"
+        assert slide.download_url
+        assert slide.checksum == "cmpsha"
+        assert slide.siblings is not None and len(slide.siblings) == 1
+        sib = slide.siblings[0]
+        assert sib.name == "cmp-sib.mp4"
+        assert sib.asset_type == "video"
+        assert sib.checksum == "sibvar"
+        assert sib.download_url
+
+    async def test_published_composed_member_no_siblings(
+        self, db_session, app
+    ):
+        """An all-text composed member (no referenced media) ships a
+        composed descriptor with empty/None siblings."""
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "p-cmp2")
+        cmp_asset = await _seed_composed(
+            db_session, filename="cmp-text.html", checksum="cmptext",
+            source_asset_ids=None,
+        )
+        ss = await _seed_slideshow(
+            db_session, name="ss-cmp2",
+            slides_data=[(cmp_asset, 6000, False)], checksum="mcmp2",
+        )
+        device = await _seed_device(
+            db_session, did="dev-cmp2", profile=profile,
+            capabilities=[
+                CAPABILITY_SLIDESHOW_V1, CAPABILITY_SLIDESHOW_COMPOSED_V1,
+            ],
+        )
+
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        slide = fetch.slides[0]
+        assert slide.asset_type == "composed"
+        assert not slide.siblings
+
+    async def test_unpublished_composed_member_blocks(
+        self, db_session, app
+    ):
+        """A composed member with no bundle (checksum=None) makes the
+        slideshow not-ready with a ``source_unpublished`` blocker."""
+        from cms.services.slideshow_resolver import (
+            BLOCKER_SOURCE_UNPUBLISHED,
+            plan_slideshow,
+        )
+
+        profile = await _seed_profile(db_session, "p-cmp3")
+        cmp_asset = await _seed_composed(
+            db_session, filename="cmp-draft.html", checksum=None,
+        )
+        ss = await _seed_slideshow(
+            db_session, name="ss-cmp3",
+            slides_data=[(cmp_asset, 5000, False)], checksum="mcmp3",
+        )
+
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready is False
+        assert any(
+            b.status == BLOCKER_SOURCE_UNPUBLISHED for b in plan.blockers
+        )
+
+    async def test_inflight_sibling_blocks(self, db_session, app):
+        """A composed member whose referenced video has a non-READY
+        variant for the device profile blocks with ``variant_processing``."""
+        from cms.services.slideshow_resolver import (
+            BLOCKER_VARIANT_PROCESSING,
+            plan_slideshow,
+        )
+
+        profile = await _seed_profile(db_session, "p-cmp4")
+        vid = await _seed_video(
+            db_session, filename="cmp-inflight.mp4", checksum="srcq",
+        )
+        await _seed_variant(
+            db_session, source=vid, profile=profile,
+            status=VariantStatus.PROCESSING, checksum="",
+        )
+        cmp_asset = await _seed_composed(
+            db_session, filename="cmp-mem4.html", checksum="cmp4",
+            source_asset_ids=[vid.id],
+        )
+        ss = await _seed_slideshow(
+            db_session, name="ss-cmp4",
+            slides_data=[(cmp_asset, 5000, False)], checksum="mcmp4",
+        )
+
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready is False
+        assert any(
+            b.status == BLOCKER_VARIANT_PROCESSING for b in plan.blockers
+        )
+
+    async def test_sibling_checksum_change_flips_manifest_hash(
+        self, db_session, app
+    ):
+        """Re-transcoding a composed member's sibling (new variant
+        checksum) flips the resolved manifest hash so the device refetches."""
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "p-cmp5")
+        vid = await _seed_video(
+            db_session, filename="cmp-fold.mp4", checksum="srcf",
+        )
+        var = await _seed_variant(
+            db_session, source=vid, profile=profile,
+            status=VariantStatus.READY, checksum="foldA",
+        )
+        cmp_asset = await _seed_composed(
+            db_session, filename="cmp-mem5.html", checksum="cmp5",
+            source_asset_ids=[vid.id],
+        )
+        ss = await _seed_slideshow(
+            db_session, name="ss-cmp5",
+            slides_data=[(cmp_asset, 5000, False)], checksum="mcmp5",
+        )
+        device = await _seed_device(
+            db_session, did="dev-cmp5", profile=profile,
+            capabilities=[
+                CAPABILITY_SLIDESHOW_V1, CAPABILITY_SLIDESHOW_COMPOSED_V1,
+            ],
+        )
+
+        fetch1 = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        var.checksum = "foldB"
+        db_session.add(var)
+        await db_session.commit()
+        fetch2 = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch1.checksum and fetch2.checksum
+        assert fetch1.checksum != fetch2.checksum
+
+
+# ---------------------------------------------------------------------------
+# Composed capability gate (slideshow_composed_v1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestComposedCapabilityGate:
+    async def test_schedule_create_blocks_device_without_composed_cap(
+        self, client, db_session
+    ):
+        """A slideshow containing a composed member must be rejected for a
+        device that has ``slideshow_v1`` but not ``slideshow_composed_v1``."""
+        cmp_asset = await _seed_composed(
+            db_session, filename="capc-mem.html", checksum="capc",
+        )
+        ss = await _seed_slideshow(
+            db_session, name="capc-ss",
+            slides_data=[(cmp_asset, 5000, False)], checksum="m",
+        )
+        g = await _seed_group(db_session, "capc-g")
+        await _seed_device(
+            db_session, did="capc-d", group=g,
+            capabilities=[CAPABILITY_SLIDESHOW_V1],
+        )
+        resp = await client.post(
+            "/api/schedules",
+            json={
+                "name": "capc-sched",
+                "asset_id": str(ss.id),
+                "group_id": str(g.id),
+                "start_time": "08:00:00",
+                "end_time": "09:00:00",
+            },
+        )
+        assert resp.status_code == 422
+        assert "slideshow_composed_v1" in resp.text
+
+    async def test_schedule_create_allows_device_with_composed_cap(
+        self, client, db_session
+    ):
+        """Same slideshow is allowed when the device advertises both
+        ``slideshow_v1`` and ``slideshow_composed_v1``."""
+        cmp_asset = await _seed_composed(
+            db_session, filename="capc2-mem.html", checksum="capc2",
+        )
+        ss = await _seed_slideshow(
+            db_session, name="capc2-ss",
+            slides_data=[(cmp_asset, 5000, False)], checksum="m",
+        )
+        g = await _seed_group(db_session, "capc2-g")
+        await _seed_device(
+            db_session, did="capc2-d", group=g,
+            capabilities=[
+                CAPABILITY_SLIDESHOW_V1, CAPABILITY_SLIDESHOW_COMPOSED_V1,
+            ],
+        )
+        resp = await client.post(
+            "/api/schedules",
+            json={
+                "name": "capc2-sched",
+                "asset_id": str(ss.id),
+                "group_id": str(g.id),
+                "start_time": "08:00:00",
+                "end_time": "09:00:00",
+            },
+        )
+        assert resp.status_code == 201, resp.text
