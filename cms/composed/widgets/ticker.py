@@ -113,27 +113,24 @@ class TickerWidget(Widget):
 
         escaped_text = html.escape(config.text)
 
-        # Two copies of the text inside the track so we can translate
-        # the track by exactly -50% and have the next copy appear
-        # seamlessly in the gap.  The animation duration is computed
-        # from a *symbolic* viewport-width approximation; for the Pi's
-        # fixed 1920px canvas this lands in the same pixels/sec ballpark
-        # the editor advertises (close enough for v1).
+        # Single copy of the text — the same model the live editor
+        # preview uses.  ``padding-left: calc(100% + gap)`` pushes the
+        # text fully off the right edge of the viewport; animating
+        # ``translateX`` from 0 to -100% (of the element's own width,
+        # which includes that padding) carries the text all the way off
+        # the left.  The result is a clean wrap loop: the text scrolls
+        # across, exits left, then re-enters from the right after a
+        # one-viewport (+gap) gap.
         #
-        # The classic CSS-only marquee trick: copy the content N times
-        # in markup so the track is wider than the viewport, then
-        # translateX it cyclically.  Two copies is sufficient when each
-        # copy is at least as wide as the viewport (and our cells are
-        # 160px wide at minimum on the 12-col grid, so even short text
-        # at 48px is fine for the demo; long text trivially fits).
-        track_html = (
-            f'<span class="{item_class}">{escaped_text}</span>'
-            f'<span class="{item_class}" aria-hidden="true">{escaped_text}</span>'
-        )
-
+        # The old two-copy ``translateX(-50%)`` trick produced a
+        # seamless back-to-back repeat, which for text shorter than the
+        # viewport showed a visible duplicate mid-screen.  A single copy
+        # never duplicates.
         html_out = (
             f'<div class="{wrapper_class}">'
-            f'<div class="{track_class}">{track_html}</div>'
+            f'<div class="{track_class}">'
+            f'<span class="{item_class}">{escaped_text}</span>'
+            f"</div>"
             f"</div>"
         )
 
@@ -144,8 +141,8 @@ class TickerWidget(Widget):
         # Phase 5+ (per-device canvas sizes) will revisit this.
         duration_s = max(1.0, 1920.0 / max(1, config.speed_px_per_sec))
 
-        # Direction: ``left`` scrolls content right-to-left (track
-        # moves in negative X), ``right`` is the reverse via
+        # Direction: ``left`` scrolls content right-to-left (text moves
+        # in negative X), ``right`` is the reverse via
         # ``animation-direction``.
         # In bounce mode the animation alternates every cycle so the
         # text oscillates between the two end points instead of
@@ -172,19 +169,20 @@ class TickerWidget(Widget):
             f"  white-space: nowrap;\n"
             f"}}\n"
             f".{track_class} {{\n"
-            f"  display: inline-flex;\n"
-            f"  flex-wrap: nowrap;\n"
-            f"  gap: {config.gap_px}px;\n"
+            f"  display: block;\n"
+            f"  width: 100%;\n"
+            f"  overflow: hidden;\n"
+            f"}}\n"
+            f".{item_class} {{\n"
+            f"  display: inline-block;\n"
+            f"  white-space: nowrap;\n"
+            f"  padding-left: calc(100% + {config.gap_px}px);\n"
             f"  animation: {kf_name} {duration_s:.3f}s linear infinite {anim_dir};\n"
             f"  will-change: transform;\n"
             f"}}\n"
-            f".{item_class} {{\n"
-            f"  flex: 0 0 auto;\n"
-            f"  padding-right: {config.gap_px}px;\n"
-            f"}}\n"
             f"@keyframes {kf_name} {{\n"
             f"  from {{ transform: translateX(0); }}\n"
-            f"  to {{ transform: translateX(-50%); }}\n"
+            f"  to {{ transform: translateX(-100%); }}\n"
             f"}}"
         )
 
