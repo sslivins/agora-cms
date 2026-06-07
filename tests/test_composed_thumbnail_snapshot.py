@@ -158,6 +158,38 @@ class TestEnqueueForNewProfile:
         assert len(rows) == 1
         assert rows[0].filename.endswith(".jpg")
 
+    async def test_skips_asset_with_multiple_existing_variants(self, db_session):
+        """Regression: the latest-READY-wins thumbnail flow legitimately
+        leaves >1 non-deleted variant per (asset, profile). The
+        "already has a variant?" guard must treat that as existence, not
+        uniqueness — ``scalar_one_or_none`` raised ``MultipleResultsFound``
+        and crashed ``_seed_profiles`` at startup (dev deploy blocker)."""
+        asset, _ = await _make_composed(db_session)
+        prof = _thumb_profile("thumb-dupes")
+        db_session.add(prof)
+        await db_session.flush()
+        for _ in range(2):
+            db_session.add(AssetVariant(
+                id=uuid.uuid4(),
+                source_asset_id=asset.id,
+                profile_id=prof.id,
+                filename=f"{uuid.uuid4()}.jpg",
+                status=VariantStatus.PENDING,
+            ))
+        await db_session.commit()
+
+        # Must not raise MultipleResultsFound; existing variants => skip.
+        new_ids = await enqueue_for_new_profile(prof.id, db_session)
+        assert new_ids == []
+
+        rows = (await db_session.execute(
+            select(AssetVariant).where(
+                AssetVariant.source_asset_id == asset.id,
+                AssetVariant.profile_id == prof.id,
+            )
+        )).scalars().all()
+        assert len(rows) == 2, "must not add a third variant"
+
 
 @pytest.mark.asyncio
 class TestEnqueueComposedThumbnail:

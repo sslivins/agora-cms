@@ -338,13 +338,17 @@ async def enqueue_for_new_profile(
     new_variant_ids: list[uuid.UUID] = []
     for asset in assets:
         existing = await db.execute(
-            select(AssetVariant).where(
+            select(AssetVariant.id).where(
                 AssetVariant.source_asset_id == asset.id,
                 AssetVariant.profile_id == profile_id,
                 AssetVariant.deleted_at.is_(None),
-            )
+            ).limit(1)
         )
-        if existing.scalar_one_or_none():
+        # The latest-READY-wins thumbnail flow can leave more than one
+        # non-deleted variant per (asset, profile); we only care whether
+        # *any* already exists, so never use scalar_one_or_none here
+        # (it raises MultipleResultsFound and crashed startup seeding).
+        if existing.first() is not None:
             continue
 
         variant_id = uuid.uuid4()
