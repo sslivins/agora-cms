@@ -713,6 +713,13 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
             return '<span class="has-tooltip"><span class="badge badge-failed">⚠ Unpublished</span>' +
                 '<span class="tooltip">This composed slide has not been published — it will not appear on devices until you open it and click Publish.</span></span>';
         }
+        if (a.asset_type === 'composed') {
+            // Published composed slide. It has no transcode variants, so the
+            // generic variant_total branch below would render a misleading
+            // "none". A published slide is ready to play on assigned devices.
+            return '<span class="has-tooltip"><span class="badge badge-ready">Ready</span>' +
+                '<span class="tooltip">Published — live on assigned devices.</span></span>';
+        }
         if (a.asset_type === 'slideshow') {
             const n = a.slide_count || 0;
             if (n > 0) {

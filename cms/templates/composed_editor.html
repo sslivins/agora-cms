@@ -59,9 +59,9 @@
             {% if edit_mode %}{% if bundle_built_at %}Bundle built {{ bundle_built_at.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}Never published{% endif %}{% else %}Not saved yet{% endif %}
         </span>
         <div style="margin-left:auto; display:flex; gap:0.5rem;">
-            <button type="button" class="btn" onclick="saveLayout()">Save</button>
+            <button type="button" class="btn" id="save-btn" onclick="saveLayout()">Save</button>
             <button type="button" class="btn" onclick="openPreview()" {% if not edit_mode %}title="Save first to enable preview"{% endif %}>Preview</button>
-            <button type="button" class="btn btn-primary" onclick="publishLayout()" {% if not edit_mode %}title="Save first to enable publish"{% endif %}>Publish</button>
+            <button type="button" class="btn btn-primary" id="publish-btn" onclick="publishLayout()" {% if not edit_mode %}title="Save first to enable publish"{% endif %}>Publish</button>
         </div>
     </div>
 
@@ -155,6 +155,11 @@
 </div>
 
 <style>
+    /* Gate Save/Publish when there is nothing to save/publish. */
+    .btn:disabled, .btn[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
     .composed-editor {
         display: grid;
         grid-template-columns: 200px 1fr 280px;
@@ -586,10 +591,25 @@ let selectedWidgetId = null;
 
 // ── Unsaved-changes tracking ────────────────────────────────────────
 // _dirty flips true on any layout/metadata mutation and is cleared
-// after a successful save. Used by the beforeunload + in-app nav guard.
+// after a successful save. Used by the beforeunload + in-app nav guard,
+// and to gate the Save/Publish buttons (see updateActionButtons).
 let _dirty = false;
-function markDirty() { _dirty = true; }
-function clearDirty() { _dirty = false; }
+// Mirror of the publish banner state: "never" (no bundle yet), "stale"
+// (saved draft with unpublished edits), or "published" (devices are up
+// to date). Drives whether Publish is actionable even when not _dirty
+// (e.g. after saving a draft, before publishing it).
+let _publishState = "{{ 'stale' if (edit_mode and is_draft and bundle_built_at) else ('never' if (edit_mode and is_draft) else 'published') }}";
+function markDirty() { _dirty = true; updateActionButtons(); }
+function clearDirty() { _dirty = false; updateActionButtons(); }
+
+// Enable Save only when there are unsaved edits; enable Publish when
+// there are unsaved edits OR a saved-but-unpublished draft (never/stale).
+function updateActionButtons() {
+    const saveBtn = document.getElementById("save-btn");
+    const pubBtn = document.getElementById("publish-btn");
+    if (saveBtn) saveBtn.disabled = !_dirty;
+    if (pubBtn) pubBtn.disabled = !(_dirty || _publishState !== "published");
+}
 
 const FONT_OPTIONS = ["sans","serif","mono","display"];
 // New widgets (analog clock, weather) only support the three font
@@ -1172,6 +1192,14 @@ function updateSelected(patcher) {
     renderCanvas();
 }
 
+// Toggle a ticker's background between a solid color and "transparent".
+// Re-renders the settings panel so the color input reflects its disabled
+// state. On un-toggle we fall back to opaque black.
+function setTickerTransparent(on) {
+    updateSelected(x => x.config.background = on ? "transparent" : "#000000");
+    renderSettings();
+}
+
 // ── Z-order (stacking) ──────────────────────────────────────────────
 // Stacking order is simply the LAYOUT.widgets array order: the last
 // entry paints on top (matches the published bundle). These ops move
@@ -1369,8 +1397,14 @@ function renderSettings() {
                 </div>
                 <div>
                     <label>Background</label>
-                    <input type="color" value="${w.config.background||"#000000"}"
+                    <input type="color" value="${w.config.background && w.config.background!=="transparent" ? w.config.background : "#000000"}"
+                           ${w.config.background==="transparent"?"disabled":""}
                            oninput="updateSelected(x=>x.config.background=this.value)">
+                    <label style="display:flex; align-items:center; gap:0.35rem; margin-top:0.35rem; font-weight:normal;">
+                        <input type="checkbox" ${w.config.background==="transparent"?"checked":""}
+                               onchange="setTickerTransparent(this.checked)">
+                        Transparent
+                    </label>
                 </div>
             </div>
             <div class="row">
@@ -1622,6 +1656,8 @@ async function publishLayout() {
 function setPublishBanner(state) {
     // state: "never" (red, no bundle yet), "stale" (amber, edited since
     // publish), or "published" (hidden).
+    _publishState = state;
+    updateActionButtons();
     const banner = document.getElementById("publish-banner");
     if (!banner) return;
     if (state === "published") {
@@ -1785,6 +1821,23 @@ ensureLayoutShape();
 renderCanvas();
 renderSettings();
 startClockTimer();
+updateActionButtons();
+
+// ── Keyboard: Backspace/Delete removes the selected widget ──────────
+// Only fires when a widget is selected AND focus is not in a text-entry
+// control (so editing a ticker's text with Backspace never nukes it).
+document.addEventListener("keydown", (e) => {
+    if (e.key !== "Backspace" && e.key !== "Delete") return;
+    if (!selectedWidgetId) return;
+    const t = e.target;
+    const tag = t && t.tagName ? t.tagName.toLowerCase() : "";
+    if (tag === "input" || tag === "textarea" || tag === "select" ||
+        (t && t.isContentEditable)) {
+        return;
+    }
+    e.preventDefault();
+    deleteSelected();
+});
 
 // ── AI assistant bridge ─────────────────────────────────────────────
 // Re-loads LAYOUT from the server's friendly GET after the AI writes
