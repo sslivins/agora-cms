@@ -19,6 +19,7 @@ keyframe name (``ticker-scroll-{instance_id}``) include the UUID.
 from __future__ import annotations
 
 import html
+import re
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,7 +52,10 @@ class TickerWidgetConfig(BaseModel):
     # no core changes required.
     mode: Literal["scroll", "bounce"] = "scroll"
     color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
-    background: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    # Background accepts either a #RRGGBB hex color or the literal
+    # "transparent" so a ticker can overlay another widget / image
+    # without painting an opaque strip behind it.
+    background: str = Field(default="#000000")
     font_family: str = Field(default="sans")
     font_size_px: int = Field(default=48, ge=8, le=512)
     # Spacing (px) between the end of one copy and the start of the
@@ -64,6 +68,17 @@ class TickerWidgetConfig(BaseModel):
         if v not in _FONT_STACKS:
             allowed = ", ".join(sorted(_FONT_STACKS))
             raise ValueError(f"font_family must be one of: {allowed}")
+        return v
+
+    @field_validator("background")
+    @classmethod
+    def _bg_color_or_transparent(cls, v: str) -> str:
+        if v == "transparent":
+            return v
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            raise ValueError(
+                "background must be a #RRGGBB hex color or 'transparent'"
+            )
         return v
 
 
