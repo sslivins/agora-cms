@@ -20,6 +20,13 @@ Raising ``HTTPException`` from here is intentional: the preview route
 relies on FastAPI translating these into the same 404/403/422 responses
 it produced before the extraction. The worker wraps the call in
 try/except and marks the variant failed on any error.
+
+``fastapi`` is a CMS-only dependency and is **not** installed in the
+worker image. So that the worker can import this module to render
+thumbnails, ``HTTPException`` is imported lazily with a lightweight,
+API-compatible fallback (same ``status_code`` / ``detail`` attributes)
+when fastapi is absent. In the CMS the real ``fastapi.HTTPException`` is
+used, so the preview route's response translation is unchanged.
 """
 
 from __future__ import annotations
@@ -31,7 +38,24 @@ import uuid
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from fastapi import HTTPException
+try:  # fastapi is a CMS-only dep; the worker image does not install it.
+    from fastapi import HTTPException
+except ModuleNotFoundError:  # pragma: no cover - exercised only in the worker image
+
+    class HTTPException(Exception):  # type: ignore[no-redef]
+        """Minimal stand-in for ``fastapi.HTTPException``.
+
+        Mirrors the ``status_code`` / ``detail`` attributes so the raise
+        sites below behave identically. The worker catches any exception
+        from this module and marks the variant failed, so the concrete
+        type does not matter there.
+        """
+
+        def __init__(self, status_code: int = 500, detail: object = None) -> None:
+            self.status_code = status_code
+            self.detail = detail
+            super().__init__(detail)
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
