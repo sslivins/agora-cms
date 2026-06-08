@@ -102,6 +102,7 @@
             <button type="button" class="palette-btn" data-type="ticker" onclick="selectPaletteType('ticker')">📰 Ticker</button>
             <button type="button" class="palette-btn" data-type="weather" onclick="selectPaletteType('weather')">⛅ Weather</button>
             <button type="button" class="palette-btn" data-type="qr" onclick="selectPaletteType('qr')">▦ QR Code</button>
+            <button type="button" class="palette-btn" data-type="shape" onclick="selectPaletteType('shape')">⬛ Shape</button>
             <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
                 None selected.
             </div>
@@ -673,6 +674,8 @@ const DEFAULTS = {
              font_size_px:64, refresh_seconds:900},
     qr: {url:"https://example.com", error_correction:"M", foreground:"#000000",
          background:"#ffffff", quiet_zone:true},
+    shape: {shape:"rectangle", fill:"#3b82f6", border_width:0, border_color:"#000000",
+            corner_radius:0, thickness:8, orientation:"horizontal"},
 };
 
 function flash(msg, ok) {
@@ -850,6 +853,8 @@ function renderWidgetContent(w) {
             root.appendChild(renderMediaPreview(cfg));
         } else if (w.type === "qr") {
             root.appendChild(buildQrPreview(cfg));
+        } else if (w.type === "shape") {
+            root.appendChild(buildShapePreview(cfg));
         } else {
             root.textContent = w.type;
         }
@@ -879,6 +884,44 @@ function buildQrPreview(cfg) {
     label.textContent = cfg.url || "";
     wrap.appendChild(box);
     wrap.appendChild(label);
+    return wrap;
+}
+
+function buildShapePreview(cfg) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText =
+        "width:100%;height:100%;display:flex;align-items:center;" +
+        "justify-content:center;box-sizing:border-box;";
+    const fill = cfg.fill || "#3b82f6";
+    if (cfg.shape === "line") {
+        const rule = document.createElement("div");
+        const thick = cqwLen(Number(cfg.thickness) || 8);
+        const radius = Number(cfg.corner_radius) > 0 ? cqwLen(cfg.corner_radius) : "0";
+        if (cfg.orientation === "vertical") {
+            rule.style.cssText =
+                "width:" + thick + ";height:100%;background:" + fill +
+                ";border-radius:" + radius + ";";
+        } else {
+            rule.style.cssText =
+                "width:100%;height:" + thick + ";background:" + fill +
+                ";border-radius:" + radius + ";";
+        }
+        wrap.appendChild(rule);
+        return wrap;
+    }
+    const box = document.createElement("div");
+    let css = "width:100%;height:100%;box-sizing:border-box;background:" + fill + ";";
+    if (cfg.shape === "ellipse") {
+        css += "border-radius:50%;";
+    } else if (Number(cfg.corner_radius) > 0) {
+        css += "border-radius:" + cqwLen(cfg.corner_radius) + ";";
+    }
+    if (Number(cfg.border_width) > 0) {
+        css += "border:" + cqwLen(cfg.border_width) + " solid " +
+               (cfg.border_color || "#000000") + ";";
+    }
+    box.style.cssText = css;
+    wrap.appendChild(box);
     return wrap;
 }
 
@@ -1274,7 +1317,7 @@ function moveSelectedZ(op) {
     renderSettings();
 }
 
-const LAYER_ICONS = {text:"🅰", media:"🎬", clock:"🕒", analog_clock:"🕧", ticker:"📰", weather:"⛅"};
+const LAYER_ICONS = {text:"🅰", media:"🎬", clock:"🕒", analog_clock:"🕧", ticker:"📰", weather:"⛅", qr:"▦", shape:"⬛"};
 
 // Build the always-visible layer list (front → back). This is the
 // authoritative way to select a widget that is fully covered by
@@ -1584,6 +1627,70 @@ function renderSettings() {
             </label>
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 The QR code is generated when the slide is published. The editor shows a placeholder.
+            </p>`;
+    } else if (w.type === "shape") {
+        const sh = w.config.shape || "rectangle";
+        const isLine = sh === "line";
+        const isEllipse = sh === "ellipse";
+        const boxControls = `
+            <div class="row">
+                <div>
+                    <label>Fill</label>
+                    <input type="color" value="${w.config.fill||"#3b82f6"}"
+                           oninput="updateSelected(x=>x.config.fill=this.value)">
+                </div>
+                <div>
+                    <label>Corner radius</label>
+                    <input type="number" min="0" max="500" ${isEllipse?"disabled":""}
+                           value="${clampInt(w.config.corner_radius,0,500)}"
+                           oninput="updateSelected(x=>x.config.corner_radius=clampInt(this.value,0,500))">
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <label>Border width</label>
+                    <input type="number" min="0" max="100" value="${clampInt(w.config.border_width,0,100)}"
+                           oninput="updateSelected(x=>x.config.border_width=clampInt(this.value,0,100))">
+                </div>
+                <div>
+                    <label>Border color</label>
+                    <input type="color" value="${w.config.border_color||"#000000"}"
+                           oninput="updateSelected(x=>x.config.border_color=this.value)">
+                </div>
+            </div>`;
+        const lineControls = `
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.fill||"#3b82f6"}"
+                           oninput="updateSelected(x=>x.config.fill=this.value)">
+                </div>
+                <div>
+                    <label>Thickness (px)</label>
+                    <input type="number" min="1" max="500" value="${clampInt(w.config.thickness,1,500)}"
+                           oninput="updateSelected(x=>x.config.thickness=clampInt(this.value,1,500))">
+                </div>
+            </div>
+            <label style="margin-top:0.5rem;">Orientation</label>
+            <select oninput="updateSelected(x=>x.config.orientation=this.value)">
+                <option value="horizontal" ${w.config.orientation==="horizontal"?"selected":""}>Horizontal</option>
+                <option value="vertical" ${w.config.orientation==="vertical"?"selected":""}>Vertical</option>
+            </select>
+            <label style="margin-top:0.5rem;">End-cap radius</label>
+            <input type="number" min="0" max="500" value="${clampInt(w.config.corner_radius,0,500)}"
+                   oninput="updateSelected(x=>x.config.corner_radius=clampInt(this.value,0,500))">`;
+        configHtml = `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Shape widget</h4>
+            <label>Shape</label>
+            <select oninput="updateSelected(x=>x.config.shape=this.value)">
+                <option value="rectangle" ${sh==="rectangle"?"selected":""}>Rectangle</option>
+                <option value="ellipse" ${sh==="ellipse"?"selected":""}>Ellipse</option>
+                <option value="line" ${sh==="line"?"selected":""}>Line / Divider</option>
+            </select>
+            ${isLine ? lineControls : boxControls}
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                Tip: use a rectangle behind other widgets as a color block, or the
+                Appearance panel below to add opacity, inset, or a matte frame.
             </p>`;
     }
 
