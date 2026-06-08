@@ -113,6 +113,11 @@ class Widget:
     icon: ClassVar[str]
     ConfigSchema: ClassVar[type[BaseModel]]
     config_version: ClassVar[int] = 1
+    # Legacy/internal widgets that should not be offered to the AI
+    # assistant as a placeable type. The publish/render path still
+    # supports them (for slides that already use them), but the
+    # assistant must not mint new instances. Defaults to visible.
+    assistant_hidden: ClassVar[bool] = False
 
     # ── Mandatory overrides ──────────────────────────────────────
     def render_html(

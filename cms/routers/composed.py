@@ -262,6 +262,10 @@ def _build_widget_types() -> list[dict[str, Any]]:
     registry = get_registry()
     out: list[dict[str, Any]] = []
     for widget in registry.all():
+        if getattr(widget, "assistant_hidden", False):
+            # Legacy/internal widgets (e.g. the image-only widget) are
+            # never offered to the assistant — it must use "media".
+            continue
         schema = widget.ConfigSchema.model_json_schema()
         props = schema.get("properties", {})
         out.append(

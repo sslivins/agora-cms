@@ -104,6 +104,16 @@ class TestWidgetTypes:
         # supply a real asset reference.
         assert by_type["media"]["references_asset"] is True
 
+    async def test_legacy_image_widget_is_hidden_from_assistant(self, client):
+        # The legacy image-only widget (slug "image") is superseded by
+        # the "media" tile, which the editor renders richly (preview +
+        # swap). The assistant must never mint "image" widgets — they
+        # show as a degraded black box with no rich settings panel.
+        resp = await client.get("/composed/widget-types")
+        types = {w["type"] for w in resp.json()["widget_types"]}
+        assert "image" not in types
+        assert "media" in types
+
     async def test_unauth_is_401(self, unauthed_client):
         resp = await unauthed_client.get("/composed/widget-types")
         assert resp.status_code in (401, 403)

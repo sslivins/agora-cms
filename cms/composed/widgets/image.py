@@ -64,6 +64,11 @@ class ImageWidget(Widget):
     icon: ClassVar[str] = "🖼"
     ConfigSchema: ClassVar[type[BaseModel]] = ImageWidgetConfig
     config_version: ClassVar[int] = 1
+    # Legacy image-only widget. Superseded by MediaWidget (slug
+    # "media"), which the editor UI renders richly (preview + swap)
+    # and which handles both images and videos. Hidden from the AI
+    # assistant so it always mints "media" tiles instead.
+    assistant_hidden: ClassVar[bool] = True
 
     def default_config(self) -> dict:
         # The editor will replace ``asset_id`` immediately upon drop;
