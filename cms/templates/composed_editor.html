@@ -101,6 +101,7 @@
             <button type="button" class="palette-btn" data-type="analog_clock" onclick="selectPaletteType('analog_clock')">🕧 Analog Clock</button>
             <button type="button" class="palette-btn" data-type="ticker" onclick="selectPaletteType('ticker')">📰 Ticker</button>
             <button type="button" class="palette-btn" data-type="weather" onclick="selectPaletteType('weather')">⛅ Weather</button>
+            <button type="button" class="palette-btn" data-type="qr" onclick="selectPaletteType('qr')">▦ QR Code</button>
             <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
                 None selected.
             </div>
@@ -658,6 +659,8 @@ const DEFAULTS = {
     weather: {latitude:47.6062, longitude:-122.3321, location_label:"Seattle", units:"imperial",
              show_condition:true, show_location:true, color:"#ffffff", font_family:"sans",
              font_size_px:64, refresh_seconds:900},
+    qr: {url:"https://example.com", error_correction:"M", foreground:"#000000",
+         background:"#ffffff", quiet_zone:true},
 };
 
 function flash(msg, ok) {
@@ -832,6 +835,8 @@ function renderWidgetContent(w) {
             root.appendChild(strip);
         } else if (w.type === "media") {
             root.appendChild(renderMediaPreview(cfg));
+        } else if (w.type === "qr") {
+            root.appendChild(buildQrPreview(cfg));
         } else {
             root.textContent = w.type;
         }
@@ -839,6 +844,29 @@ function renderWidgetContent(w) {
         root.textContent = w.type;
     }
     return root;
+}
+
+function buildQrPreview(cfg) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText =
+        "width:100%;height:100%;display:flex;flex-direction:column;" +
+        "align-items:center;justify-content:center;gap:0.4rem;box-sizing:border-box;" +
+        "padding:0.5rem;background:" + (cfg.background || "#ffffff") + ";";
+    const box = document.createElement("div");
+    box.style.cssText =
+        "width:60%;aspect-ratio:1/1;max-width:140px;border:2px solid " +
+        (cfg.foreground || "#000000") +
+        ";display:flex;align-items:center;justify-content:center;" +
+        "font-size:0.8rem;font-weight:600;color:" + (cfg.foreground || "#000000") + ";";
+    box.textContent = "QR";
+    const label = document.createElement("div");
+    label.style.cssText =
+        "font-size:0.7rem;color:" + (cfg.foreground || "#000000") +
+        ";max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    label.textContent = cfg.url || "";
+    wrap.appendChild(box);
+    wrap.appendChild(label);
+    return wrap;
 }
 
 function renderMediaPreview(cfg) {
@@ -1155,6 +1183,7 @@ function summarize(w) {
     if (w.type === "analog_clock") return "analog";
     if (w.type === "ticker") return (w.config.text || "").slice(0, 24);
     if (w.type === "weather") return (w.config.location_label || "weather").slice(0, 24);
+    if (w.type === "qr") return (w.config.url || "").slice(0, 24);
     if (w.type === "media") {
         const aid = w.config.asset_id;
         if (!aid || aid === NULL_UUID) return "(no asset)";
@@ -1509,6 +1538,39 @@ function renderSettings() {
                    oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,600,86400))">
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 Live temperature is fetched on the device. The preview shows placeholder values.
+            </p>`;
+    } else if (w.type === "qr") {
+        configHtml = `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">QR Code widget</h4>
+            <label>URL</label>
+            <input type="text" maxlength="1000" value="${escapeHtml(w.config.url||"")}"
+                   placeholder="https://example.com"
+                   oninput="updateSelected(x=>x.config.url=this.value)">
+            <label style="margin-top:0.5rem;">Error correction</label>
+            <select oninput="updateSelected(x=>x.config.error_correction=this.value)">
+                <option value="L" ${w.config.error_correction==="L"?"selected":""}>L — Low (7%)</option>
+                <option value="M" ${w.config.error_correction==="M"?"selected":""}>M — Medium (15%)</option>
+                <option value="Q" ${w.config.error_correction==="Q"?"selected":""}>Q — Quartile (25%)</option>
+                <option value="H" ${w.config.error_correction==="H"?"selected":""}>H — High (30%)</option>
+            </select>
+            <div class="row">
+                <div>
+                    <label>Foreground</label>
+                    <input type="color" value="${w.config.foreground||"#000000"}"
+                           oninput="updateSelected(x=>x.config.foreground=this.value)">
+                </div>
+                <div>
+                    <label>Background</label>
+                    <input type="color" value="${w.config.background||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.background=this.value)">
+                </div>
+            </div>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.quiet_zone?"checked":""}
+                    oninput="updateSelected(x=>x.config.quiet_zone=this.checked)"> Quiet zone (border)
+            </label>
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                The QR code is generated when the slide is published. The editor shows a placeholder.
             </p>`;
     }
 

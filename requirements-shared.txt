@@ -13,3 +13,9 @@ httpx>=0.27,<1.0
 # Azure Blob Storage (only needed when AGORA_CMS_STORAGE_BACKEND=azure)
 azure-storage-blob>=12.20,<13.0
 aiohttp>=3.9,<4.0
+
+# segno — pure-Python QR code generation for the composed-slide QR
+# widget.  Both the CMS (publish/preview) and the worker (Playwright
+# thumbnail render) execute the widget's render_html, so segno must be
+# present in both images.
+segno>=1.6,<2.0
