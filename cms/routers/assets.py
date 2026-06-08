@@ -474,6 +474,61 @@ async def _thumbnail_urls_for(
     (pending, failed, deleted, or asset type that can't produce one)
     are simply absent from the result -- callers should treat that as
     ``thumbnail_url=None``.
+
+    SLIDESHOW assets own no thumbnail variant of their own, so they fall
+    back to the first slide's (lowest ``position``) source-asset
+    thumbnail. This makes a slideshow render as the deck it represents
+    everywhere ``thumbnail_url`` is consumed (table + grid views).
+    """
+    if not asset_ids:
+        return {}
+
+    out = await _direct_thumbnail_urls(asset_ids, db)
+
+    # SLIDESHOW assets have no thumbnail variant of their own. Fall back
+    # to the first slide's (lowest ``position``) source-asset thumbnail so
+    # a slideshow reads visually as the deck it represents. Any requested
+    # id that resolved directly above is left untouched.
+    missing = [aid for aid in asset_ids if aid not in out]
+    if missing:
+        slide_rows = (await db.execute(
+            select(
+                SlideshowSlide.slideshow_asset_id,
+                SlideshowSlide.source_asset_id,
+                SlideshowSlide.position,
+            )
+            .where(SlideshowSlide.slideshow_asset_id.in_(missing))
+            .order_by(
+                SlideshowSlide.slideshow_asset_id,
+                SlideshowSlide.position.asc(),
+            )
+        )).all()
+        # First (lowest-position) source per slideshow.
+        first_source: dict[uuid.UUID, uuid.UUID] = {}
+        for ss_id, src_id, _pos in slide_rows:
+            first_source.setdefault(ss_id, src_id)
+        if first_source:
+            # Resolve the source thumbnails directly (no recursion into
+            # ``_thumbnail_urls_for`` -- a source is never itself a
+            # slideshow, and the direct helper sidesteps any cycle risk).
+            src_thumbs = await _direct_thumbnail_urls(
+                list(set(first_source.values())), db
+            )
+            for ss_id, src_id in first_source.items():
+                url = src_thumbs.get(src_id)
+                if url is not None:
+                    out[ss_id] = url
+    return out
+
+
+async def _direct_thumbnail_urls(
+    asset_ids: list[uuid.UUID], db: AsyncSession
+) -> dict[uuid.UUID, str]:
+    """Return a {asset_id -> thumbnail variant URL} map for assets that
+    own a READY ``purpose='thumbnail'`` variant directly.
+
+    This is the raw variant lookup that backs :func:`_thumbnail_urls_for`;
+    it does NOT apply the slideshow first-slide fallback.
     """
     if not asset_ids:
         return {}

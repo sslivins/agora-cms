@@ -229,3 +229,120 @@ class TestAssetOutThumbnailUrl:
         resp = await client.get(f"/api/assets/{a.id}")
         assert resp.status_code == 200
         assert resp.json()["thumbnail_url"] == f"/api/assets/variants/{v.id}/preview"
+
+
+@pytest.mark.asyncio
+class TestSlideshowThumbnailFallback:
+    """A SLIDESHOW owns no thumbnail variant of its own. ``_thumbnail_urls_for``
+    falls back to the first slide's (lowest ``position``) source-asset
+    thumbnail so a slideshow renders as the deck it represents."""
+
+    async def _thumb_profile(self, db_session) -> DeviceProfile:
+        p = DeviceProfile(
+            name=f"thumb-{uuid.uuid4().hex[:6]}",
+            video_codec="h264", video_profile="main",
+            max_width=480, max_height=480, max_fps=1,
+            builtin=True, purpose="thumbnail",
+        )
+        db_session.add(p)
+        await db_session.flush()
+        return p
+
+    async def _source_with_thumb(self, db_session, profile, *, ready=True):
+        """An IMAGE source asset, optionally with a READY thumbnail variant.
+        Returns ``(asset, variant_or_None)``."""
+        src = Asset(
+            id=uuid.uuid4(),
+            filename=f"src-{uuid.uuid4().hex[:6]}.jpg",
+            asset_type=AssetType.IMAGE, size_bytes=1, checksum=uuid.uuid4().hex,
+        )
+        db_session.add(src)
+        await db_session.flush()
+        v = None
+        if ready:
+            v = AssetVariant(
+                id=uuid.uuid4(),
+                source_asset_id=src.id,
+                profile_id=profile.id,
+                filename=f"{uuid.uuid4()}.jpg",
+                status=VariantStatus.READY,
+            )
+            db_session.add(v)
+            await db_session.flush()
+        return src, v
+
+    async def _slideshow(self, db_session) -> Asset:
+        ss = Asset(
+            id=uuid.uuid4(),
+            filename=f"show-{uuid.uuid4().hex[:6]}",
+            asset_type=AssetType.SLIDESHOW, size_bytes=0, checksum="s",
+        )
+        db_session.add(ss)
+        await db_session.flush()
+        return ss
+
+    async def test_slideshow_uses_first_slide_thumbnail(self, db_session):
+        from cms.models.slideshow_slide import SlideshowSlide
+        from cms.routers.assets import _thumbnail_urls_for
+
+        prof = await self._thumb_profile(db_session)
+        src0, v0 = await self._source_with_thumb(db_session, prof)
+        src1, _v1 = await self._source_with_thumb(db_session, prof)
+        ss = await self._slideshow(db_session)
+        # Insert the higher position first to prove order_by, not insert order.
+        db_session.add(SlideshowSlide(
+            slideshow_asset_id=ss.id, source_asset_id=src1.id,
+            position=1, duration_ms=5000,
+        ))
+        db_session.add(SlideshowSlide(
+            slideshow_asset_id=ss.id, source_asset_id=src0.id,
+            position=0, duration_ms=5000,
+        ))
+        await db_session.commit()
+
+        out = await _thumbnail_urls_for([ss.id], db_session)
+        assert out.get(ss.id) == f"/api/assets/variants/{v0.id}/preview"
+
+    async def test_empty_slideshow_yields_no_thumbnail(self, db_session):
+        from cms.routers.assets import _thumbnail_urls_for
+
+        ss = await self._slideshow(db_session)
+        await db_session.commit()
+
+        out = await _thumbnail_urls_for([ss.id], db_session)
+        assert ss.id not in out
+
+    async def test_first_source_missing_thumbnail_yields_none(self, db_session):
+        from cms.models.slideshow_slide import SlideshowSlide
+        from cms.routers.assets import _thumbnail_urls_for
+
+        prof = await self._thumb_profile(db_session)
+        # First slide's source has NO thumbnail; a later slide's does. Only the
+        # lowest-position source is consulted, so the slideshow stays absent.
+        src0, _ = await self._source_with_thumb(db_session, prof, ready=False)
+        src1, _v1 = await self._source_with_thumb(db_session, prof)
+        ss = await self._slideshow(db_session)
+        db_session.add(SlideshowSlide(
+            slideshow_asset_id=ss.id, source_asset_id=src0.id,
+            position=0, duration_ms=5000,
+        ))
+        db_session.add(SlideshowSlide(
+            slideshow_asset_id=ss.id, source_asset_id=src1.id,
+            position=1, duration_ms=5000,
+        ))
+        await db_session.commit()
+
+        out = await _thumbnail_urls_for([ss.id], db_session)
+        assert ss.id not in out
+
+    async def test_image_thumbnail_still_resolves_directly(self, db_session):
+        """Regression: a non-slideshow asset with its own thumbnail variant
+        still resolves directly (the slideshow fallback doesn't break it)."""
+        from cms.routers.assets import _thumbnail_urls_for
+
+        prof = await self._thumb_profile(db_session)
+        src, v = await self._source_with_thumb(db_session, prof)
+        await db_session.commit()
+
+        out = await _thumbnail_urls_for([src.id], db_session)
+        assert out.get(src.id) == f"/api/assets/variants/{v.id}/preview"
