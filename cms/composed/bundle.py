@@ -367,9 +367,12 @@ def build_bundle(
         # explicit z-index (rather than relying on DOM paint order)
         # makes overlap deterministic and stops a child widget's own
         # z-index from interleaving with sibling cells.
+        frame_style = _frame_style(inst)
+        if frame_style:
+            frame_style = " " + frame_style
         widget_html_blocks.append(
             f'<div class="cw-cell" data-widget-instance="{html.escape(wid)}" '
-            f'style="{_grid_area_style(inst)} z-index: {z_index};">{render.html}</div>'
+            f'style="{_grid_area_style(inst)} z-index: {z_index};{frame_style}">{render.html}</div>'
         )
 
     doc = _DOC_TEMPLATE.format(
@@ -387,6 +390,41 @@ def build_bundle(
         sha256_hex=sha,
         source_asset_ids=source_asset_ids,
     )
+
+
+def _frame_style(inst: WidgetInstance) -> str:
+    """Emit inline CSS declarations for a widget's optional appearance frame.
+
+    Only non-default declarations are emitted, and an empty string is
+    returned when the widget has no frame (or an all-default frame).  A
+    cell that emits no frame style is therefore byte-identical to a
+    pre-appearance bundle, so existing slide bundle hashes are unchanged
+    and devices don't needlessly re-cache.
+
+    Lengths are in 1920x1080 design-space pixels, matching the units the
+    widget renderers use for font sizes (the v1 canvas is a fixed
+    1920x1080 surface, so design px == device px).
+    """
+    frame = inst.frame
+    if frame is None:
+        return ""
+    parts: list[str] = []
+    if frame.inset:
+        parts.append(f"padding: {frame.inset}px;")
+    if frame.background is not None:
+        parts.append(f"background: {frame.background};")
+    if frame.border_width:
+        parts.append(f"border: {frame.border_width}px solid {frame.border_color};")
+    if frame.corner_radius:
+        parts.append(f"border-radius: {frame.corner_radius}px;")
+    if frame.opacity < 1.0:
+        parts.append(f"opacity: {frame.opacity:g};")
+    if not parts:
+        return ""
+    # box-sizing keeps padding + border inside the grid-track footprint so
+    # a framed cell never overflows its cell.  Scoped to framed cells only
+    # (not the shared .cw-cell rule) to avoid churning every slide's hash.
+    return "box-sizing: border-box; " + " ".join(parts)
 
 
 # ── Templates / boilerplate ──────────────────────────────────────────

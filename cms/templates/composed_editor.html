@@ -645,6 +645,18 @@ function cqwFont(px) {
     const n = Number(px);
     return ((isFinite(n) ? n : 48) / 19.2).toFixed(3) + "cqw";
 }
+// Appearance frame lengths (corner radius / border / inset) are also in
+// 1920x1080 design-space px; convert to cqw so the editor preview scales
+// the same way the published bundle does on the device.
+function cqwLen(px) {
+    const n = Number(px);
+    return ((isFinite(n) ? n : 0) / 19.2).toFixed(3) + "cqw";
+}
+// Default appearance frame (matches cms/composed/schema.py WidgetFrame).
+const FRAME_DEFAULTS = {
+    corner_radius: 0, border_width: 0, border_color: "#000000",
+    opacity: 1.0, inset: 0, background: null,
+};
 const MEDIA_ASSETS = {{ media_assets|tojson }};
 const NULL_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -755,6 +767,7 @@ function renderCanvas() {
         content.style.pointerEvents = "none";
         el.classList.add("has-preview");
         el.appendChild(content);
+        applyFramePreview(el, content, w.frame);
         el.onclick = (e) => { e.stopPropagation(); selectWidget(w.id); };
         el.addEventListener("pointerdown", (e) => beginDrag(e, w.id, "move"));
         for (const dir of ["n","s","e","w","ne","nw","se","sw"]) {
@@ -1574,6 +1587,49 @@ function renderSettings() {
             </p>`;
     }
 
+    const fr = w.frame || FRAME_DEFAULTS;
+    const frBgOn = fr.background != null;
+    const frBgColor = frBgOn ? fr.background : "#000000";
+    const appearanceHtml = `
+        <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Appearance</h4>
+        <p style="font-size:0.75rem; color:var(--text-muted); margin:0.25rem 0 0.5rem;">
+            Frame styling applied to this widget. Rounded corners clip images and video.
+        </p>
+        <div class="row">
+            <div>
+                <label>Corner radius</label>
+                <input type="number" min="0" max="500" value="${clampInt(fr.corner_radius,0,500)}"
+                       oninput="updateSelected(x=>frameSet(x,'corner_radius',clampInt(this.value,0,500)))">
+            </div>
+            <div>
+                <label>Inset (padding)</label>
+                <input type="number" min="0" max="500" value="${clampInt(fr.inset,0,500)}"
+                       oninput="updateSelected(x=>frameSet(x,'inset',clampInt(this.value,0,500)))">
+            </div>
+        </div>
+        <div class="row">
+            <div>
+                <label>Border width</label>
+                <input type="number" min="0" max="50" value="${clampInt(fr.border_width,0,50)}"
+                       oninput="updateSelected(x=>frameSet(x,'border_width',clampInt(this.value,0,50)))">
+            </div>
+            <div>
+                <label>Border color</label>
+                <input type="color" value="${escapeHtml(fr.border_color || '#000000')}"
+                       oninput="updateSelected(x=>frameSet(x,'border_color',this.value))">
+            </div>
+        </div>
+        <label style="margin-top:0.5rem;">Opacity: <span id="frame-op-val">${Math.round((fr.opacity ?? 1)*100)}</span>%</label>
+        <input type="range" min="0" max="100" value="${Math.round((fr.opacity ?? 1)*100)}" style="width:100%;"
+               oninput="document.getElementById('frame-op-val').textContent=this.value; updateSelected(x=>frameSet(x,'opacity',clampInt(this.value,0,100)/100))">
+        <label style="display:block; margin-top:0.5rem;">
+            <input type="checkbox" id="frame-bg-toggle" ${frBgOn ? "checked" : ""}
+                   oninput="updateSelected(x=>frameSet(x,'background', this.checked ? (document.getElementById('frame-bg-color').value || '#000000') : null))">
+            Background fill
+        </label>
+        <input type="color" id="frame-bg-color" value="${escapeHtml(frBgColor)}"
+               oninput="updateSelected(x=>{ if (document.getElementById('frame-bg-toggle').checked) frameSet(x,'background',this.value); })">`;
+
     panel.innerHTML = `
         ${renderLayersHtml()}
         <h4 class="cw-sec">Arrange</h4>
@@ -1586,6 +1642,7 @@ function renderSettings() {
         <div style="font-size:0.75rem; color:var(--text-muted,#57606a); word-break:break-all; margin-top:0.5rem;">${w.id}</div>
         ${cellHtml}
         ${configHtml}
+        ${appearanceHtml}
         <button type="button" class="delete-btn" onclick="deleteSelected()">Delete widget</button>`;
 }
 
@@ -1599,6 +1656,36 @@ function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
         "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
     }[c]));
+}
+
+// ── Appearance frame helpers ────────────────────────────────────────
+function ensureFrame(w) {
+    if (!w.frame) w.frame = Object.assign({}, FRAME_DEFAULTS);
+    return w.frame;
+}
+function frameSet(w, k, v) { ensureFrame(w)[k] = v; }
+
+// Mirror the published bundle's .cw-cell frame onto the editor preview.
+// el (.placed-widget) gets padding/border/background/radius; the inner
+// content node gets the radius + overflow clip + opacity. We deliberately
+// keep overflow OFF el and opacity OFF el so the resize handles stay
+// visible and fully opaque.
+function applyFramePreview(el, content, frame) {
+    if (!frame) return;
+    const f = Object.assign({}, FRAME_DEFAULTS, frame);
+    const active = f.inset > 0 || f.background != null || f.border_width > 0 ||
+                   f.corner_radius > 0 || f.opacity < 1;
+    if (!active) return;
+    el.style.boxSizing = "border-box";
+    if (f.inset > 0) el.style.padding = cqwLen(f.inset);
+    if (f.background != null) el.style.background = f.background;
+    if (f.border_width > 0) el.style.border = cqwLen(f.border_width) + " solid " + f.border_color;
+    if (f.corner_radius > 0) {
+        el.style.borderRadius = cqwLen(f.corner_radius);
+        content.style.borderRadius = cqwLen(f.corner_radius);
+        content.style.overflow = "hidden";
+    }
+    if (f.opacity < 1) content.style.opacity = String(f.opacity);
 }
 
 function deleteSelected() {
@@ -2025,6 +2112,7 @@ async function refreshLayoutFromServer() {
         },
         config: w.config || {},
         config_version: w.config_version,
+        frame: w.frame || null,
     }));
     selectedWidgetId = null;
     ensureLayoutShape();
