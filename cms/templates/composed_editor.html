@@ -58,7 +58,7 @@
                      background:{% if is_draft %}#f39c12;color:#1a1a2e{% else %}#2ecc71;color:#1a1a2e{% endif %};">
             {% if edit_mode %}{% if is_draft %}Draft{% else %}Published{% endif %}{% else %}New{% endif %}
         </span>
-        <span style="font-size:0.8rem; color:var(--text-muted);">
+        <span id="bundle-info" style="font-size:0.8rem; color:var(--text-muted);">
             {% if edit_mode %}{% if bundle_built_at %}Bundle built {{ bundle_built_at.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}Never published{% endif %}{% else %}Not saved yet{% endif %}
         </span>
         <div style="margin-left:auto; display:flex; gap:0.5rem;">
@@ -1773,6 +1773,15 @@ function markDraft() {
     pill.style.background = "#fef3c7";
     pill.style.color = "#92400e";
     setPublishBanner(BUNDLE_EVER_BUILT ? "stale" : "never");
+    // New-mode page: once the draft is minted (e.g. by the AI assistant or
+    // a manual save that skips the redirect) the static "Not saved yet"
+    // placeholder is stale — the slide IS persisted, just not published.
+    if (!EDIT_MODE && ASSET_ID) {
+        const info = document.getElementById("bundle-info");
+        if (info && info.textContent.trim() === "Not saved yet") {
+            info.textContent = BUNDLE_EVER_BUILT ? "Unpublished changes" : "Never published";
+        }
+    }
 }
 
 function markPublished() {
