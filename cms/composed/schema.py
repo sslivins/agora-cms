@@ -56,6 +56,31 @@ class Cell(BaseModel):
     colspan: int = Field(default=1, ge=1, le=GRID_COLS)
 
 
+class WidgetFrame(BaseModel):
+    """Optional per-widget appearance styling applied to the cell wrapper.
+
+    Purely cosmetic — applied to the ``.cw-cell`` div that wraps every
+    widget's rendered HTML in the bundle.  Lets any widget (image,
+    video, text, …) get rounded corners, a border, reduced opacity, an
+    inset/padding gutter, and an optional background-fill matte without
+    each widget needing to know about styling.
+
+    All fields default to a no-op, so ``frame=None`` and a frame whose
+    fields are all default produce byte-identical bundle output (see
+    :func:`cms.composed.bundle._frame_style`).  Lengths are in 1920x1080
+    design-space pixels (the same space widget font sizes use).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    corner_radius: int = Field(default=0, ge=0, le=500)
+    border_width: int = Field(default=0, ge=0, le=50)
+    border_color: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    inset: int = Field(default=0, ge=0, le=500)
+    background: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+
 class WidgetInstance(BaseModel):
     """One placed widget in a composed-slide layout.
 
@@ -84,6 +109,7 @@ class WidgetInstance(BaseModel):
     cell: Cell
     config: dict = Field(default_factory=dict)
     config_version: int = Field(default=1, ge=1)
+    frame: WidgetFrame | None = None
 
     @field_validator("type")
     @classmethod

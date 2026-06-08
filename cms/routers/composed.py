@@ -361,6 +361,7 @@ def _friendly_to_layout_dict(
                 },
                 "config": w.get("config", {}),
                 "config_version": config_version,
+                "frame": w.get("frame"),
             }
         )
 
@@ -778,6 +779,7 @@ async def get_composed_layout(
                 "colspan": cell.get("colspan", 1),
                 "config": w.get("config", {}),
                 "config_version": w.get("config_version", 1),
+                "frame": w.get("frame"),
             }
         )
 
