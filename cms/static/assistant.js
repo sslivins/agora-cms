@@ -614,63 +614,15 @@
     }
 
     // ── Per-user usage strip ─────────────────────────────────────────
-    // Refreshed on init and after every turn completes.  Failures are
-    // swallowed: the strip is informational, not critical, and we'd
-    // rather hide it than block the assistant on a transient 5xx.
-    const $usage = document.getElementById("assistant-usage");
-    const $usageText = document.getElementById("assistant-usage-text");
-    const $usageFill = document.getElementById("assistant-usage-fill");
-
-    function formatTokens(n) {
-        // Compact form for the strip — keeps "1,240 / 50,000" readable.
-        return Number(n || 0).toLocaleString();
-    }
-    function formatUsd(n) {
-        const v = Number(n || 0);
-        // Sub-cent: 4 decimals so $0.0015 isn't reported as $0.00.
-        if (v < 0.01) return `$${v.toFixed(4)}`;
-        if (v < 1) return `$${v.toFixed(3)}`;
-        return `$${v.toFixed(2)}`;
-    }
-    async function refreshUsage() {
-        if (!$usage) return;
-        try {
-            const r = await fetch("/api/chat/usage");
-            if (!r.ok) {
-                $usage.style.display = "none";
-                return;
-            }
-            const u = await r.json();
-            const used = u.used_tokens || 0;
-            const cap = u.cap_tokens || 0;
-            const usd = formatUsd(u.used_usd_estimate);
-            if (u.unlimited) {
-                $usage.dataset.unlimited = "true";
-                $usageText.textContent =
-                    `Today: ${formatTokens(used)} tok • ~${usd} (no cap)`;
-                $usageFill.style.width = "0%";
-            } else if (cap === 0) {
-                // Admin-paused user.  Keep the strip but make it obvious.
-                $usage.dataset.unlimited = "false";
-                $usageText.textContent =
-                    `Today: ${formatTokens(used)} tok • ~${usd} (cap 0 — disabled)`;
-                $usageFill.style.width = "100%";
-                $usageFill.classList.remove("warn");
-                $usageFill.classList.add("danger");
-            } else {
-                $usage.dataset.unlimited = "false";
-                const pct = Math.min(100, (used / cap) * 100);
-                $usageText.textContent =
-                    `Today: ${formatTokens(used)} / ${formatTokens(cap)} tok • ~${usd}`;
-                $usageFill.style.width = pct.toFixed(1) + "%";
-                $usageFill.classList.remove("warn", "danger");
-                if (pct >= 90) $usageFill.classList.add("danger");
-                else if (pct >= 70) $usageFill.classList.add("warn");
-            }
-            $usage.style.display = "";
-        } catch (e) {
-            $usage.style.display = "none";
-        }
+    // Refreshed on init and after every turn completes.  Backed by the
+    // shared window.AssistantUsage component (cms/static/assistant_usage.js)
+    // so the main page and the composed-slide editor drawer stay in sync.
+    const usageStrip =
+        (window.AssistantUsage && document.getElementById("assistant-usage"))
+            ? window.AssistantUsage.create(document.getElementById("assistant-usage"))
+            : null;
+    function refreshUsage() {
+        if (usageStrip) usageStrip.refresh();
     }
 
     // ── Init ─────────────────────────────────────────────────────────

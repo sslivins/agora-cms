@@ -146,6 +146,7 @@
                     when you're happy with it.
                 </div>
             </div>
+            <div id="cw-ai-usage" style="display:none;"></div>
             <form id="cw-ai-form" onsubmit="return cwAiSubmit(event)">
                 <textarea id="cw-ai-input" rows="2"
                           placeholder="Describe a change…"
@@ -1987,6 +1988,7 @@ window.composedEditorBridge = {
      deferred drawer IIFE runs. -->
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
+<script src="/static/assistant_usage.js" defer></script>
 <script src="/static/composed_editor_chat.js" defer></script>
 {% endif %}
 {% endblock %}
