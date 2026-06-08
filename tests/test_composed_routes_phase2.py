@@ -214,6 +214,38 @@ class TestComposedUI:
         # The old deferred-rename note must be gone.
         assert "rename are managed via the Assets page" not in body
 
+    async def test_editor_edit_mode_exposes_group_picker(
+        self, client, db_session
+    ):
+        # Edit mode must let users change group assignments inline (parity
+        # with create mode), not just from the Assets page. The editor should
+        # render the group picker and pre-seed the asset's current groups
+        # into both the live selection and the diff baseline so Save can
+        # share/unshare deltas.
+        from cms.models.device import DeviceGroup
+        from cms.models.group_asset import GroupAsset
+
+        asset, _ = await _make_composed(db_session)
+        group = DeviceGroup(name="Lobby Screens", description="")
+        db_session.add(group)
+        await db_session.flush()
+        db_session.add(GroupAsset(asset_id=asset.id, group_id=group.id))
+        await db_session.commit()
+
+        resp = await client.get(f"/assets/{asset.id}/composed")
+        assert resp.status_code == 200
+        body = resp.text
+        # Picker markup present in edit mode.
+        assert 'id="composed-groups-badges"' in body
+        assert "Lobby Screens" in body
+        assert "pickComposedGroup(" in body
+        # Both the live selection and the diff baseline are seeded with the
+        # asset's current group id.
+        gid = str(group.id)
+        assert f'COMPOSED_ORIG_GROUPS = ["{gid}"]' in body
+        # The stale "managed from the Assets page" note must be gone.
+        assert "Group assignments are managed from the Assets page" not in body
+
     async def test_editor_redirects_for_missing_asset(self, client):
         resp = await client.get(
             f"/assets/{uuid.uuid4()}/composed", follow_redirects=False
