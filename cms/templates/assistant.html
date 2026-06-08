@@ -378,51 +378,9 @@
     cursor: not-allowed;
 }
 
-/* ── Per-user usage strip (PR: usage display) ─────────────────────
-   Sits below the composer, in the right-hand column only.  Token +
-   USD figures are refreshed after every turn completes; the bar fill
-   tracks ``used / cap`` so users can see at a glance how close they
-   are to their daily ceiling. */
-.assistant-usage {
-    border-top: 1px solid var(--border);
-    padding: 0.4rem 0.75rem;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    flex-shrink: 0;
-}
-.assistant-usage-text {
-    white-space: nowrap;
-}
-.assistant-usage-bar {
-    flex: 1;
-    height: 6px;
-    background: var(--surface-2, rgba(0,0,0,0.06));
-    border-radius: 3px;
-    overflow: hidden;
-    min-width: 60px;
-}
-.assistant-usage-fill {
-    height: 100%;
-    width: 0%;
-    background: var(--accent, #4e8cff);
-    transition: width 0.3s ease, background-color 0.3s ease;
-}
-.assistant-usage-fill.warn {
-    background: var(--warning, #e6a817);
-}
-.assistant-usage-fill.danger {
-    background: var(--danger, #c93434);
-}
-.assistant-usage[data-unlimited="true"] .assistant-usage-bar {
-    display: none;
-}
-.assistant-usage .assistant-usage-hint {
-    cursor: help;
-    border-bottom: 1px dotted var(--text-muted);
-}
+/* The per-user usage strip styles now live in cms/static/style.css
+   (.assistant-usage*) so they're shared with the composed-slide editor
+   AI drawer and any future popup assistant. */
 
 .assistant-streaming-indicator {
     align-self: flex-start;
@@ -480,14 +438,7 @@
                     disabled></textarea>
                 <button type="submit" id="assistant-send" disabled>Send</button>
             </form>
-            <div class="assistant-usage" id="assistant-usage" style="display:none;">
-                <span class="assistant-usage-text" id="assistant-usage-text">Today: …</span>
-                <div class="assistant-usage-bar" aria-hidden="true">
-                    <div class="assistant-usage-fill" id="assistant-usage-fill"></div>
-                </div>
-                <span class="assistant-usage-hint" id="assistant-usage-hint"
-                      title="USD figure is an estimate based on the configured Azure OpenAI model's list price. Actual billing may differ slightly.">est.</span>
-            </div>
+            <div class="assistant-usage" id="assistant-usage" style="display:none;"></div>
         </section>
     </div>
 </div>
@@ -499,6 +450,7 @@
 
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
+<script src="/static/assistant_usage.js?v={{ static_version }}"></script>
 <script src="/static/assistant.js?v={{ static_version }}"></script>
 <script>
     // Fit the assistant app to the viewport.  We don't know in advance

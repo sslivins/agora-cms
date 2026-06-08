@@ -30,6 +30,17 @@
     const input = document.getElementById("cw-ai-input");
     const sendBtn = document.getElementById("cw-ai-send");
 
+    // Shared per-user usage strip (cms/static/assistant_usage.js). Mirrors
+    // the main Assistant page: refreshed when the drawer opens and after
+    // every completed turn. Hidden if the component or host is missing.
+    const usageStrip =
+        (window.AssistantUsage && document.getElementById("cw-ai-usage"))
+            ? window.AssistantUsage.create(document.getElementById("cw-ai-usage"))
+            : null;
+    function refreshUsage() {
+        if (usageStrip) usageStrip.refresh();
+    }
+
     const state = {
         threadId: null,
         threadPromise: null, // de-dupe concurrent get-or-create
@@ -53,6 +64,7 @@
         launcher.style.display = open ? "none" : "";
         if (open) {
             ensureThread();
+            refreshUsage();
             input.focus();
         }
     }
@@ -259,6 +271,7 @@
             sendBtn.disabled = false;
             input.disabled = false;
             input.focus();
+            refreshUsage();
         }
     }
 
