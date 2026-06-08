@@ -866,20 +866,33 @@ const __currentUserId = {{ (current_user_id | string) | tojson if current_user_i
                 const card = document.querySelector('[data-grid-card="' + a.id + '"]');
                 if (card) {
                     const thumbDiv = card.querySelector('.asset-grid-thumb');
-                    if (thumbDiv && !thumbDiv.querySelector('img')) {
-                        // Placeholder icon present -- replace with <img> while
-                        // preserving every overlay element (checkbox, Global
-                        // badge, and the composed UNPUBLISHED tag, which is a
-                        // plain span -- not a .badge -- and was being dropped).
-                        const overlays = Array.from(thumbDiv.children);
-                        const img = document.createElement('img');
-                        img.loading = 'lazy';
-                        img.src = a.thumbnail_url;
-                        img.alt = '';
-                        img.style.cssText = 'width:100%; height:100%; object-fit:cover;';
-                        thumbDiv.textContent = '';
-                        thumbDiv.appendChild(img);
-                        overlays.forEach(el => thumbDiv.appendChild(el));
+                    if (thumbDiv) {
+                        const existingImg = thumbDiv.querySelector('img');
+                        if (!existingImg) {
+                            // Placeholder icon present -- replace with <img> while
+                            // preserving every overlay element (checkbox, Global
+                            // badge, and the composed UNPUBLISHED tag, which is a
+                            // plain span -- not a .badge -- and was being dropped).
+                            const overlays = Array.from(thumbDiv.children);
+                            const img = document.createElement('img');
+                            img.loading = 'lazy';
+                            img.src = a.thumbnail_url;
+                            img.alt = '';
+                            img.style.cssText = 'width:100%; height:100%; object-fit:cover;';
+                            thumbDiv.textContent = '';
+                            thumbDiv.appendChild(img);
+                            overlays.forEach(el => thumbDiv.appendChild(el));
+                        } else if (existingImg.getAttribute('src') !== a.thumbnail_url) {
+                            // Thumbnail re-rendered: an edited composed slide or a
+                            // re-captured webpage mints a NEW thumbnail variant
+                            // (new variant id -> new URL), so the card already has
+                            // an <img> showing the stale thumbnail. Swap the src so
+                            // the grid updates live without a manual refresh.
+                            // Compare the raw attribute (relative) rather than
+                            // existingImg.src (resolved absolute) so we don't reset
+                            // it every poll.
+                            existingImg.setAttribute('src', a.thumbnail_url);
+                        }
                     }
                 }
             }
