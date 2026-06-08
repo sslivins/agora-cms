@@ -174,3 +174,63 @@ class TestFrameBackwardCompat:
         framed = build_bundle(_text_layout(WidgetFrame(corner_radius=10)))
         assert plain.html_bytes != framed.html_bytes
         assert plain.sha256_hex != framed.sha256_hex
+
+
+# ── Inset + corner-radius inner wrapper (rounded inset content) ──────
+
+
+class TestFrameInnerWrap:
+    """corner_radius + inset must round the *inset content*, not just clip
+    at the outer padding box (which leaves inset images square-cornered).
+    """
+
+    def _inner_div(self, html: str) -> str | None:
+        idx = html.find('class="cw-cell-inner"')
+        if idx == -1:
+            return None
+        start = html.index('style="', idx) + len('style="')
+        end = html.index('"', start)
+        return html[start:end]
+
+    def test_radius_with_inset_emits_inner_wrapper(self):
+        frame = WidgetFrame(corner_radius=40, inset=10)
+        html = build_bundle(_text_layout(frame)).html_bytes.decode("utf-8")
+        inner = self._inner_div(html)
+        assert inner is not None
+        # Reduced concentric radius: 40 - 10 inset - 0 border = 30.
+        assert "border-radius: 30px;" in inner
+        assert "overflow: hidden;" in inner
+
+    def test_inner_radius_also_reduced_by_border(self):
+        frame = WidgetFrame(corner_radius=40, inset=10, border_width=5)
+        html = build_bundle(_text_layout(frame)).html_bytes.decode("utf-8")
+        inner = self._inner_div(html)
+        assert inner is not None
+        # 40 - 10 inset - 5 border = 25.
+        assert "border-radius: 25px;" in inner
+
+    def test_inner_radius_clamped_at_zero(self):
+        # Inset larger than the radius can't make a negative radius.
+        frame = WidgetFrame(corner_radius=10, inset=40)
+        html = build_bundle(_text_layout(frame)).html_bytes.decode("utf-8")
+        inner = self._inner_div(html)
+        assert inner is not None
+        assert "border-radius: 0px;" in inner
+
+    def test_radius_without_inset_has_no_inner_wrapper(self):
+        # No inset → outer clip rounds the content correctly; no wrapper,
+        # so these bundles stay byte-identical to the pre-fix output.
+        html = build_bundle(
+            _text_layout(WidgetFrame(corner_radius=24))
+        ).html_bytes.decode("utf-8")
+        assert "cw-cell-inner" not in html
+
+    def test_inset_without_radius_has_no_inner_wrapper(self):
+        html = build_bundle(
+            _text_layout(WidgetFrame(inset=20))
+        ).html_bytes.decode("utf-8")
+        assert "cw-cell-inner" not in html
+
+    def test_no_frame_has_no_inner_wrapper(self):
+        html = build_bundle(_text_layout(None)).html_bytes.decode("utf-8")
+        assert "cw-cell-inner" not in html

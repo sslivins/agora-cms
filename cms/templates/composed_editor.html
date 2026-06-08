@@ -1789,7 +1789,12 @@ function applyFramePreview(el, content, frame) {
     if (f.border_width > 0) el.style.border = cqwLen(f.border_width) + " solid " + f.border_color;
     if (f.corner_radius > 0) {
         el.style.borderRadius = cqwLen(f.corner_radius);
-        content.style.borderRadius = cqwLen(f.corner_radius);
+        // Round the inner content concentrically. The published bundle
+        // clips the inset content with a reduced radius (outer radius
+        // minus border + inset), so mirror that here — otherwise an inset
+        // image looks rounded in the editor but ships with square corners.
+        const innerR = Math.max(0, f.corner_radius - f.inset - f.border_width);
+        content.style.borderRadius = cqwLen(innerR);
         content.style.overflow = "hidden";
     }
     if (f.opacity < 1) content.style.opacity = String(f.opacity);

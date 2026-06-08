@@ -370,9 +370,11 @@ def build_bundle(
         frame_style = _frame_style(inst)
         if frame_style:
             frame_style = " " + frame_style
+        inner_open, inner_close = _frame_inner_wrap(inst)
         widget_html_blocks.append(
             f'<div class="cw-cell" data-widget-instance="{html.escape(wid)}" '
-            f'style="{_grid_area_style(inst)} z-index: {z_index};{frame_style}">{render.html}</div>'
+            f'style="{_grid_area_style(inst)} z-index: {z_index};{frame_style}">'
+            f"{inner_open}{render.html}{inner_close}</div>"
         )
 
     doc = _DOC_TEMPLATE.format(
@@ -425,6 +427,39 @@ def _frame_style(inst: WidgetInstance) -> str:
     # a framed cell never overflows its cell.  Scoped to framed cells only
     # (not the shared .cw-cell rule) to avoid churning every slide's hash.
     return "box-sizing: border-box; " + " ".join(parts)
+
+
+def _frame_inner_wrap(inst: WidgetInstance) -> tuple[str, str]:
+    """Optional inner content wrapper that actually rounds inset content.
+
+    The outer ``.cw-cell`` has ``overflow:hidden`` and carries the frame's
+    ``border-radius``, but CSS rounds the overflow clip at the cell's
+    *padding box* (the outer edge).  When the frame also has an ``inset``
+    (padding), the real content is pushed inward by that padding, so its
+    square corners sit *inside* the rounded clip region and never get
+    rounded — e.g. an inset image keeps square corners inside a rounded
+    matte frame.
+
+    To fix this we wrap the content in a concentric inner box that carries
+    its own (reduced) ``border-radius`` + ``overflow:hidden``, so the
+    content itself is clipped to the rounded shape.  The inner radius is
+    the outer radius minus the distance from the outer edge to the inner
+    content box (border + inset), clamped at zero.
+
+    Only emitted when both ``corner_radius`` and ``inset`` are non-zero —
+    every other case (no frame, no rounding, or rounding with no inset)
+    is correctly handled by the outer clip alone, so those cells stay
+    byte-identical and their bundle hashes don't change.
+    """
+    frame = inst.frame
+    if frame is None or not frame.corner_radius or not frame.inset:
+        return "", ""
+    inner_radius = max(0, frame.corner_radius - frame.inset - frame.border_width)
+    style = (
+        f"width: 100%; height: 100%; "
+        f"border-radius: {inner_radius}px; overflow: hidden;"
+    )
+    return f'<div class="cw-cell-inner" style="{style}">', "</div>"
 
 
 # ── Templates / boilerplate ──────────────────────────────────────────
