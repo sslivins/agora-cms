@@ -73,17 +73,6 @@
     border-radius: 0.25rem;
     pointer-events: none;
 }
-.ssb-composed-warning {
-    margin-top: 0.75rem;
-    padding: 0.6rem 0.8rem;
-    background: rgba(241, 196, 15, 0.12);
-    border: 1px solid rgba(241, 196, 15, 0.5);
-    border-radius: 0.4rem;
-    color: #f1c40f;
-    font-size: 0.85rem;
-    line-height: 1.4;
-}
-
 /* --- Film-strip timeline --- */
 .ssb-timeline-wrap {
     margin-top: 0.5rem;
@@ -524,12 +513,6 @@
         <!-- Hidden table marker preserved for tests / future fallback -->
         <div id="ss-slides-table" hidden></div>
 
-        <div id="ss-composed-warning" class="ssb-composed-warning" hidden>
-            ⚠ This slideshow contains a composed slide. Devices running
-            firmware without composed-slideshow support will skip this
-            slideshow until they are updated.
-        </div>
-
         <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
             <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
@@ -886,13 +869,6 @@ function updateTotals() {
     });
     document.getElementById('ss-total').textContent = fmtDur(totalMs / 1000);
     document.getElementById('ss-counter').textContent = slides.length + ' / ' + SS_MAX_SLIDES + ' slides';
-    updateCapabilityWarning();
-}
-
-function updateCapabilityWarning() {
-    const banner = document.getElementById('ss-composed-warning');
-    if (!banner) return;
-    banner.hidden = !slides.some(s => s.source_asset_type === 'composed');
 }
 
 function updateSlideDuration(i, v) {

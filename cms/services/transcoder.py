@@ -42,6 +42,19 @@ logger = logging.getLogger("agora.cms.transcoder")
 # issue #302-ish (image-supersede-over-eager).
 IMAGE_RELEVANT_FIELDS: frozenset[str] = frozenset({"max_width", "max_height"})
 
+# Asset types that have no source media file and whose ONLY meaningful
+# variant is a rendered thumbnail snapshot:
+#   - COMPOSED slides are snapshotted from their generated bundle HTML.
+#   - WEBPAGE assets are snapshotted by navigating headless Chromium to
+#     their live URL.
+# Both must be restricted to thumbnail-purpose profiles — a device-purpose
+# profile would try to ffmpeg a non-existent source file and emit a useless
+# ``.mp4``.
+THUMBNAIL_ONLY_ASSET_TYPES: tuple[AssetType, ...] = (
+    AssetType.COMPOSED,
+    AssetType.WEBPAGE,
+)
+
 # ── Monitor loop intervals ──────────────────────────────────────
 _MONITOR_INTERVAL = int(os.environ.get("AGORA_MONITOR_INTERVAL", "30"))
 _STALE_PROCESSING_TIMEOUT = int(os.environ.get("AGORA_STALE_TIMEOUT", "1800"))  # 30 min
@@ -81,14 +94,15 @@ def _variant_ext_for(asset: Asset, profile: DeviceProfile) -> str:
 def _profile_emits_for_asset(profile: DeviceProfile, asset: Asset) -> bool:
     """Whether ``profile`` should produce a variant for ``asset``.
 
-    Composed slides have no source media file — the only meaningful
-    variant for them is a thumbnail snapshot the worker renders from the
-    slide HTML. A device-purpose profile would try to ffmpeg a
-    non-existent source and emit a useless ``.mp4``, so composed assets
-    are restricted to thumbnail-purpose profiles. All other asset types
-    are emitted by every profile as before.
+    Composed slides and webpage assets have no source media file — the
+    only meaningful variant for them is a thumbnail snapshot the worker
+    renders (from the slide HTML, or by navigating to the webpage URL). A
+    device-purpose profile would try to ffmpeg a non-existent source and
+    emit a useless ``.mp4``, so these asset types are restricted to
+    thumbnail-purpose profiles. All other asset types are emitted by every
+    profile as before.
     """
-    if asset.asset_type == AssetType.COMPOSED:
+    if asset.asset_type in THUMBNAIL_ONLY_ASSET_TYPES:
         return getattr(profile, "purpose", "device") == "thumbnail"
     return True
 
@@ -325,7 +339,7 @@ async def enqueue_for_new_profile(
 
     wanted_types = [AssetType.VIDEO, AssetType.IMAGE]
     if getattr(profile, "purpose", "device") == "thumbnail":
-        wanted_types.append(AssetType.COMPOSED)
+        wanted_types.extend(THUMBNAIL_ONLY_ASSET_TYPES)
 
     result = await db.execute(
         select(Asset).where(
@@ -369,21 +383,26 @@ async def enqueue_for_new_profile(
 async def enqueue_composed_thumbnail(
     asset: Asset, db: AsyncSession
 ) -> list[uuid.UUID]:
-    """Queue a fresh snapshot render for a composed slide.
+    """Queue a fresh snapshot render for a thumbnail-only asset.
+
+    Handles both composed slides (snapshotted from the bundle HTML) and
+    webpage assets (snapshotted from the live URL) — any asset type in
+    :data:`THUMBNAIL_ONLY_ASSET_TYPES`. Other asset types are a no-op.
 
     Mirrors the latest-READY-wins flow used for profile changes: any
     existing thumbnail variant rows are left in place (the grid keeps
     showing the previous snapshot) while a new PENDING variant is added
-    per enabled thumbnail-purpose profile. The worker renders the slide
-    HTML to a JPEG; when the new variant reaches READY the reaper sweep
+    per enabled thumbnail-purpose profile. The worker renders the snapshot
+    to a JPEG; when the new variant reaches READY the reaper sweep
     supersedes the older sibling.
 
     Self-contained: creates the variant rows, commits, and enqueues the
     transcode jobs. Designed to be called best-effort from the layout
-    save hook (caller wraps in try/except so a transient failure never
-    blocks a save). Returns the new variant ids.
+    save hook / webpage create+URL-edit hooks (caller wraps in try/except
+    so a transient failure never blocks a save). Returns the new variant
+    ids.
     """
-    if asset.asset_type != AssetType.COMPOSED:
+    if asset.asset_type not in THUMBNAIL_ONLY_ASSET_TYPES:
         return []
 
     profiles = (
@@ -437,19 +456,28 @@ async def enqueue_composed_thumbnail(
         await enqueue_variants(db, new_variant_ids)
         logger.info(
             "enqueue_composed_thumbnail: queued %d snapshot render(s) for "
-            "composed asset %s", len(new_variant_ids), asset.id,
+            "%s asset %s", len(new_variant_ids), asset.asset_type.value,
+            asset.id,
         )
     return new_variant_ids
 
 
-async def enqueue_missing_composed_thumbnails(db: AsyncSession) -> int:
-    """Idempotent startup backfill: ensure every composed slide has a thumbnail.
+# Clearer generic alias — both composed slides and webpage assets enqueue
+# the same thumbnail snapshot render. New callers (webpage create / URL-edit
+# hooks) should prefer this name.
+enqueue_thumbnail = enqueue_composed_thumbnail
 
-    For each non-deleted COMPOSED asset that has no live thumbnail variant
-    (PENDING / PROCESSING / READY) under any enabled thumbnail-purpose
-    profile, enqueue a fresh snapshot render. Slides that already have one
-    — or have one in flight — are skipped, so this is safe to run on every
-    boot. Returns the number of slides for which a render was enqueued.
+
+async def enqueue_missing_composed_thumbnails(db: AsyncSession) -> int:
+    """Idempotent startup backfill: ensure every thumbnail-only asset has one.
+
+    For each non-deleted asset whose type is in
+    :data:`THUMBNAIL_ONLY_ASSET_TYPES` (composed slides + webpage assets)
+    that has no live thumbnail variant (PENDING / PROCESSING / READY)
+    under any enabled thumbnail-purpose profile, enqueue a fresh snapshot
+    render. Assets that already have one — or have one in flight — are
+    skipped, so this is safe to run on every boot. Returns the number of
+    assets for which a render was enqueued.
     """
     profiles = (
         await db.execute(
@@ -464,7 +492,7 @@ async def enqueue_missing_composed_thumbnails(db: AsyncSession) -> int:
     assets = (
         await db.execute(
             select(Asset).where(
-                Asset.asset_type == AssetType.COMPOSED,
+                Asset.asset_type.in_(THUMBNAIL_ONLY_ASSET_TYPES),
                 Asset.deleted_at.is_(None),
             )
         )
@@ -514,9 +542,13 @@ async def enqueue_missing_composed_thumbnails(db: AsyncSession) -> int:
         await enqueue_variants(db, new_variant_ids)
         logger.info(
             "enqueue_missing_composed_thumbnails: enqueued snapshot render(s) "
-            "for %d composed slide(s)", enqueued,
+            "for %d asset(s)", enqueued,
         )
     return enqueued
+
+
+# Clearer generic alias for the backfill (covers composed + webpage).
+enqueue_missing_thumbnails = enqueue_missing_composed_thumbnails
 
 
 async def fix_image_variant_extensions(db: AsyncSession) -> int:
