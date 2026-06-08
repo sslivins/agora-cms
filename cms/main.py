@@ -599,18 +599,18 @@ async def lifespan(app: FastAPI):
         from cms.services.transcoder import fix_image_variant_extensions
         await fix_image_variant_extensions(db)
 
-    # Backfill snapshot thumbnails for any composed slides that don't have
-    # one yet (idempotent — slides with a live/in-flight thumbnail are
-    # skipped). Repairs slides created before snapshots shipped, plus any
-    # save that failed to enqueue best-effort.
+    # Backfill snapshot thumbnails for any composed slides or webpage assets
+    # that don't have one yet (idempotent — assets with a live/in-flight
+    # thumbnail are skipped). Repairs assets created before snapshots shipped,
+    # plus any save that failed to enqueue best-effort.
     async for db in get_db():
-        from cms.services.transcoder import enqueue_missing_composed_thumbnails
+        from cms.services.transcoder import enqueue_missing_thumbnails
 
         try:
-            await enqueue_missing_composed_thumbnails(db)
+            await enqueue_missing_thumbnails(db)
         except Exception:  # noqa: BLE001
             logger.warning(
-                "composed thumbnail backfill failed at startup", exc_info=True,
+                "thumbnail backfill failed at startup", exc_info=True,
             )
 
     # Device transport selection (issue #344 Stage 2b.2).

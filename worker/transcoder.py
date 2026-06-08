@@ -521,41 +521,24 @@ async def _mark_failed(variant: AssetVariant, source: Asset, message: str, db: A
     except SQLAlchemyError:
         logger.warning("Variant %s deleted before failure recorded", variant.id)
 
-async def _render_composed_thumbnail(
+async def _render_thumbnail_from_png(
     variant: AssetVariant,
     source: Asset,
     profile: DeviceProfile,
     output_path: Path,
-    asset_dir: Path,
+    png_bytes: bytes,
     db: AsyncSession,
 ) -> None:
-    """Render a composed slide's HTML to a JPEG thumbnail snapshot.
+    """Shared tail: PNG snapshot bytes → profile JPEG thumbnail → READY.
 
-    Builds the same self-contained HTML the live preview serves (shared
-    ``cms.composed.render.build_composed_html``), rasterises it in headless
-    Chromium with all network blocked, then downscales the PNG to the
-    profile's JPEG thumbnail via :func:`convert_image`. Marks the variant
-    READY on success or FAILED on any error (mirrors the image/video
-    thumbnail tail).
+    Common to composed-slide and webpage thumbnails (the only difference
+    is how the PNG is produced). Downscales the PNG to the profile's JPEG
+    via :func:`convert_image`, hashes + sizes it, and marks the variant
+    READY — or FAILED on any error. Cleans up the temp PNG in ``finally``.
+    Assumes the caller has already set the variant PROCESSING.
     """
-    from types import SimpleNamespace
-
-    variant.status = VariantStatus.PROCESSING
-    variant.progress = 0.0
-    await db.commit()
-
-    # Distinct temp name per variant (no collision with the .jpg output).
     tmp_png = output_path.parent / f"{output_path.stem}.src.png"
     try:
-        from cms.composed.render import build_composed_html
-        from worker.composed_render import render_composed_to_png
-
-        # build_composed_html only reads settings.asset_storage_path, which
-        # in the worker is exactly the asset_dir it transcodes from.
-        settings_shim = SimpleNamespace(asset_storage_path=asset_dir)
-        rendered = await build_composed_html(db, settings_shim, source.id)
-
-        png_bytes = await render_composed_to_png(rendered.html_bytes)
         tmp_png.write_bytes(png_bytes)
 
         ok = await convert_image(
@@ -565,7 +548,7 @@ async def _render_composed_thumbnail(
         )
         if not ok:
             await _mark_failed(
-                variant, source, "Composed thumbnail conversion failed", db,
+                variant, source, "Thumbnail conversion failed", db,
             )
             return
 
@@ -588,25 +571,100 @@ async def _render_composed_thumbnail(
             await db.commit()
         except SQLAlchemyError:
             logger.warning(
-                "Variant %s deleted before composed thumbnail recorded",
-                variant.id,
+                "Variant %s deleted before thumbnail recorded", variant.id,
             )
             return
 
         logger.info(
-            "Composed thumbnail complete: %s (%d bytes)",
+            "Thumbnail complete: %s (%d bytes)",
             variant.filename, variant.size_bytes,
         )
         storage = get_storage()
         await storage.on_file_stored(f"variants/{variant.filename}")
     except Exception as e:  # noqa: BLE001
         await _mark_failed(variant, source, str(e)[:500], db)
-        logger.exception("Composed thumbnail error for %s", variant.filename)
+        logger.exception("Thumbnail error for %s", variant.filename)
     finally:
         try:
             tmp_png.unlink(missing_ok=True)
         except OSError:
-            logger.debug("composed thumbnail temp cleanup failed", exc_info=True)
+            logger.debug("thumbnail temp cleanup failed", exc_info=True)
+
+
+async def _render_composed_thumbnail(
+    variant: AssetVariant,
+    source: Asset,
+    profile: DeviceProfile,
+    output_path: Path,
+    asset_dir: Path,
+    db: AsyncSession,
+) -> None:
+    """Render a composed slide's HTML to a JPEG thumbnail snapshot.
+
+    Builds the same self-contained HTML the live preview serves (shared
+    ``cms.composed.render.build_composed_html``), rasterises it in headless
+    Chromium with all network blocked, then hands the PNG to the shared
+    :func:`_render_thumbnail_from_png` tail.
+    """
+    from types import SimpleNamespace
+
+    variant.status = VariantStatus.PROCESSING
+    variant.progress = 0.0
+    await db.commit()
+
+    try:
+        from cms.composed.render import build_composed_html
+        from worker.composed_render import render_composed_to_png
+
+        # build_composed_html only reads settings.asset_storage_path, which
+        # in the worker is exactly the asset_dir it transcodes from.
+        settings_shim = SimpleNamespace(asset_storage_path=asset_dir)
+        rendered = await build_composed_html(db, settings_shim, source.id)
+        png_bytes = await render_composed_to_png(rendered.html_bytes)
+    except Exception as e:  # noqa: BLE001
+        await _mark_failed(variant, source, str(e)[:500], db)
+        logger.exception("Composed thumbnail render error for %s", variant.filename)
+        return
+
+    await _render_thumbnail_from_png(
+        variant, source, profile, output_path, png_bytes, db,
+    )
+
+
+async def _render_webpage_thumbnail(
+    variant: AssetVariant,
+    source: Asset,
+    profile: DeviceProfile,
+    output_path: Path,
+    db: AsyncSession,
+) -> None:
+    """Render a webpage asset's live URL to a JPEG thumbnail snapshot.
+
+    Navigates headless Chromium to ``source.url`` (network allowed, but
+    SSRF-guarded inside :func:`render_url_to_png`), then hands the PNG to
+    the shared :func:`_render_thumbnail_from_png` tail.
+    """
+    variant.status = VariantStatus.PROCESSING
+    variant.progress = 0.0
+    await db.commit()
+
+    url = (source.url or "").strip()
+    if not url:
+        await _mark_failed(variant, source, "Webpage asset has no URL", db)
+        return
+
+    try:
+        from worker.composed_render import render_url_to_png
+
+        png_bytes = await render_url_to_png(url)
+    except Exception as e:  # noqa: BLE001
+        await _mark_failed(variant, source, str(e)[:500], db)
+        logger.exception("Webpage thumbnail render error for %s", variant.filename)
+        return
+
+    await _render_thumbnail_from_png(
+        variant, source, profile, output_path, png_bytes, db,
+    )
 
 
 async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Path) -> None:
@@ -659,6 +717,22 @@ async def _transcode_one(variant: AssetVariant, db: AsyncSession, asset_dir: Pat
             return
         await _render_composed_thumbnail(
             variant, source, profile, output_path, asset_dir, db,
+        )
+        return
+
+    # ── Webpage snapshot branch ────────────────────────────────
+    # Webpage assets have no source media file on disk either — their
+    # thumbnail is a static snapshot of the live URL rendered in a headless
+    # browser. Same shape as the composed branch above.
+    if source.asset_type == AssetType.WEBPAGE:
+        if not is_thumbnail:
+            await _mark_failed(
+                variant, source,
+                "Webpage assets only support thumbnail variants", db,
+            )
+            return
+        await _render_webpage_thumbnail(
+            variant, source, profile, output_path, db,
         )
         return
 

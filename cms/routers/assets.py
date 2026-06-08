@@ -1242,6 +1242,15 @@ async def create_webpage_asset(
     )
     await db.commit()
     await db.refresh(asset)
+
+    # Best-effort: kick off a thumbnail snapshot of the live page. Never let
+    # a thumbnail failure block asset creation.
+    try:
+        from cms.services.transcoder import enqueue_thumbnail
+        await enqueue_thumbnail(asset, db)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to enqueue webpage thumbnail for %s", asset.id, exc_info=True)
+
     return asset
 
 
@@ -1988,6 +1997,18 @@ async def update_asset(
         )
     await db.commit()
     await db.refresh(asset)
+
+    # If a webpage asset's URL changed, re-snapshot its thumbnail. Best-effort.
+    if "url" in changes and asset.asset_type == AssetType.WEBPAGE:
+        try:
+            from cms.services.transcoder import enqueue_thumbnail
+            await enqueue_thumbnail(asset, db)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to re-enqueue webpage thumbnail for %s", asset.id,
+                exc_info=True,
+            )
+
     return asset
 
 
