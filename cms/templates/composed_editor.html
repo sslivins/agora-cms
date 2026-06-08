@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if edit_mode %}Edit{% else %}New{% endif %} Composed Slide — Agora CMS{% endblock %}
 {% block content %}
-<h1>{% if edit_mode %}{% if is_draft %}Edit Composed Slide{% else %}Composed Slide{% endif %} — {{ asset_name }}{% else %}New Composed Slide{% endif %}</h1>
+<h1>{% if edit_mode %}{% if is_draft %}Edit Composed Slide{% else %}Composed Slide{% endif %} — <span id="composed-title-name">{{ asset_name }}</span>{% else %}New Composed Slide{% endif %}</h1>
 <div class="sub-tabs">
     <a href="{% if edit_mode %}/assets{% else %}/assets/new{% endif %}" class="sub-tab">← Back to Assets</a>
 </div>
@@ -44,9 +44,17 @@
         {% endif %}
     </div>
     {% else %}
-    <p class="text-muted" style="font-size:0.85rem; margin:0 0 0.75rem;">
-        Group assignments and rename are managed via the Assets page actions.
-    </p>
+    <div class="composed-toolbar">
+        <div class="form-group" style="margin-bottom:0;">
+            <label for="composed-name" style="display:block; font-weight:600;">Name</label>
+            <input type="text" id="composed-name" class="form-control" maxlength="255" required
+                   value="{{ asset_name }}"
+                   style="width:100%; max-width:420px; padding:0.5rem; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);">
+            <small class="text-muted" style="display:block; margin-top:0.25rem; font-size:0.78rem;">
+                Renames the slide when you Save. Group assignments are managed from the Assets page.
+            </small>
+        </div>
+    </div>
     {% endif %}
 
     <div style="display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap;">
@@ -586,6 +594,9 @@ const EDIT_MODE = {% if edit_mode %}true{% else %}false{% endif %};
 let BUNDLE_EVER_BUILT = {% if bundle_built_at %}true{% else %}false{% endif %};
 const SCHEMA_VERSION = {{ schema_version|tojson }};
 let LAYOUT = {{ layout_json|tojson }};
+// Original display name (edit mode only) so saveLayout can detect a rename
+// and PATCH /api/assets/{id} {display_name}. Empty in create mode.
+let COMPOSED_ORIG_NAME = {% if edit_mode %}{{ asset_name|tojson }}{% else %}""{% endif %};
 let selectedPaletteType = null;
 let selectedWidgetId = null;
 
@@ -1610,10 +1621,37 @@ async function saveLayout(opts) {
             window.location.href = "/assets/" + ASSET_ID + "/composed";
             return true;
         }
+        if (!isCreate) await maybeRenameSlide();
         return true;
     } catch (e) {
         flash("Network error: " + e, false);
         return false;
+    }
+}
+
+async function maybeRenameSlide() {
+    // Edit mode only: if the name field changed, PATCH the asset's
+    // display_name. Reuses the same endpoint as the Assets-page rename.
+    if (!ASSET_ID) return;
+    const el = document.getElementById("composed-name");
+    if (!el) return;
+    const name = el.value.trim();
+    if (!name || name === COMPOSED_ORIG_NAME) return;
+    try {
+        const resp = await fetch("/api/assets/" + ASSET_ID, {
+            method: "PATCH",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({display_name: name}),
+        });
+        if (!resp.ok) {
+            flash("Saved, but rename failed.", false);
+            return;
+        }
+        COMPOSED_ORIG_NAME = name;
+        const titleName = document.getElementById("composed-title-name");
+        if (titleName) titleName.textContent = name;
+    } catch (e) {
+        flash("Saved, but rename failed: " + e, false);
     }
 }
 

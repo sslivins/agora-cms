@@ -197,6 +197,23 @@ class TestComposedUI:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
 
+    async def test_editor_edit_mode_exposes_rename_field(
+        self, client, db_session
+    ):
+        # The editor must let users rename the slide inline (not only
+        # from the Assets-page table). Edit mode should render an
+        # editable name input pre-filled with the current name plus a
+        # title span the JS updates after a successful rename.
+        asset, _ = await _make_composed(db_session)
+        resp = await client.get(f"/assets/{asset.id}/composed")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'id="composed-name"' in body
+        assert 'value="Test composed"' in body
+        assert 'id="composed-title-name"' in body
+        # The old deferred-rename note must be gone.
+        assert "rename are managed via the Assets page" not in body
+
     async def test_editor_redirects_for_missing_asset(self, client):
         resp = await client.get(
             f"/assets/{uuid.uuid4()}/composed", follow_redirects=False
