@@ -141,26 +141,13 @@
         try { ok = await bridge.save(); } catch (_) { ok = false; }
         const id = assetId();
         if (!ok || !id) return false;
-        // Keep the URL + manual-save behavior consistent with a normal first
-        // save, and lock the create-only config inputs (name + group picker)
-        // now that the asset exists — they're read once at mint time and
-        // would otherwise silently no-op on later manual saves.
+        // Keep the URL consistent with a normal first save. The name + group
+        // picker stay editable after mint (unified create/edit UX); the editor
+        // diffs them against the persisted baseline on later manual saves, so
+        // post-mint renames and group changes are honored instead of no-oping.
         try {
             history.replaceState(null, "", "/assets/" + encodeURIComponent(id) + "/composed");
         } catch (_) { /* non-fatal */ }
-        const nameEl2 = document.getElementById("composed-name");
-        if (nameEl2) nameEl2.disabled = true;
-        const addGroupBtn = document.querySelector("#composed-groups-badges .btn-add-group");
-        if (addGroupBtn) addGroupBtn.disabled = true;
-        const groupPopup = document.getElementById("composed-group-popup");
-        if (groupPopup) {
-            try { if (groupPopup.hidePopover) groupPopup.hidePopover(); } catch (_) { /* not open */ }
-            groupPopup.querySelectorAll(".group-popup-item").forEach((el) => { el.disabled = true; });
-        }
-        document.querySelectorAll("#composed-groups-badges .group-badge").forEach((el) => {
-            el.style.pointerEvents = "none";
-            el.style.opacity = "0.7";
-        });
         return true;
     }
 
