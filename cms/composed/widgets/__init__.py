@@ -23,6 +23,7 @@ from cms.composed.widgets.analog_clock import AnalogClockWidget
 from cms.composed.widgets.clock import ClockWidget
 from cms.composed.widgets.countdown import CountdownWidget
 from cms.composed.widgets.datebanner import DateBannerWidget
+from cms.composed.widgets.iframe import IframeWidget
 from cms.composed.widgets.image import ImageWidget
 from cms.composed.widgets.media import MediaWidget
 from cms.composed.widgets.qr import QrWidget
@@ -51,6 +52,7 @@ for _widget_cls in (
     QrWidget,
     RssWidget,
     ShapeWidget,
+    IframeWidget,
     StoreHoursWidget,
 ):
     if not _reg.has(_widget_cls.slug):
@@ -61,6 +63,7 @@ __all__ = [
     "ClockWidget",
     "CountdownWidget",
     "DateBannerWidget",
+    "IframeWidget",
     "ImageWidget",
     "MediaWidget",
     "QrWidget",

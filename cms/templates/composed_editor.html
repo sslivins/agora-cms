@@ -1315,6 +1315,76 @@ registerWidget("rss", {
             </p>`,
 });
 
+registerWidget("iframe", {
+    label: "Web Embed", icon: "🌐", category: "Live Data",
+    keywords: ["web", "iframe", "embed", "url", "page", "site", "dashboard"],
+    defaults: () => ({url:"https://example.com/", allow_scripts:true, refresh_seconds:0,
+             background_color:"#000000", unavailable_text:"Content unavailable"}),
+    summary: (w) => {
+        try { return new URL(w.config.url||"").hostname || "web page"; }
+        catch (e) { return "web page"; }
+    },
+    preview: (root, cfg) => {
+        const wrap = document.createElement("div");
+        wrap.className = "cw-prev-iframe";
+        wrap.style.width = "100%";
+        wrap.style.height = "100%";
+        wrap.style.display = "flex";
+        wrap.style.flexDirection = "column";
+        wrap.style.alignItems = "center";
+        wrap.style.justifyContent = "center";
+        wrap.style.textAlign = "center";
+        wrap.style.padding = "0.5em";
+        wrap.style.boxSizing = "border-box";
+        wrap.style.background = cfg.background_color || "#000000";
+        wrap.style.color = "rgba(255,255,255,0.7)";
+        wrap.style.fontFamily = "system-ui, sans-serif";
+        const icon = document.createElement("div");
+        icon.textContent = "🌐";
+        icon.style.fontSize = cqwFont(48);
+        wrap.appendChild(icon);
+        const host = document.createElement("div");
+        let label = "web page";
+        try { label = new URL(cfg.url||"").hostname || "web page"; } catch (e) {}
+        host.textContent = label;
+        host.style.fontSize = cqwFont(22);
+        host.style.marginTop = "0.3em";
+        host.style.wordBreak = "break-all";
+        wrap.appendChild(host);
+        root.appendChild(wrap);
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Web Embed widget</h4>
+            <label>Page URL</label>
+            <input type="text" maxlength="2048" value="${escapeHtml(w.config.url||"")}"
+                   placeholder="https://example.com/"
+                   oninput="updateSelected(x=>x.config.url=this.value)">
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.allow_scripts!==false?"checked":""}
+                    oninput="updateSelected(x=>x.config.allow_scripts=this.checked)"> Allow scripts in page
+            </label>
+            <div class="row" style="margin-top:0.5rem;">
+                <div>
+                    <label>Refresh (sec, 0=off)</label>
+                    <input type="number" min="0" max="86400" value="${w.config.refresh_seconds||0}"
+                           oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,0,86400))">
+                </div>
+                <div>
+                    <label>Background</label>
+                    <input type="color" value="${w.config.background_color||"#000000"}"
+                           oninput="updateSelected(x=>x.config.background_color=this.value)">
+                </div>
+            </div>
+            <label style="margin-top:0.5rem;">Offline message</label>
+            <input type="text" maxlength="120" value="${escapeHtml(w.config.unavailable_text||"Content unavailable")}"
+                   oninput="updateSelected(x=>x.config.unavailable_text=this.value)">
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                The page loads live on the device. Some sites block embedding
+                (X-Frame-Options / CSP) and will show the offline message instead.
+                Refresh of 0 disables auto-reload; otherwise the minimum is 60 seconds.
+            </p>`,
+});
+
 // ── Store Hours widget editor helpers ──────────────────────────────
 // The settings panel is the most structural in the editor: it edits
 // per-day open intervals and a holiday-override list. Mutating those
