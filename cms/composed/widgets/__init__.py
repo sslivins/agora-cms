@@ -29,6 +29,7 @@ from cms.composed.widgets.media import MediaWidget
 from cms.composed.widgets.qr import QrWidget
 from cms.composed.widgets.rss import RssWidget
 from cms.composed.widgets.shape import ShapeWidget
+from cms.composed.widgets.store_hours import StoreHoursWidget
 from cms.composed.widgets.text import TextWidget
 from cms.composed.widgets.ticker import TickerWidget
 from cms.composed.widgets.weather import WeatherWidget
@@ -52,6 +53,7 @@ for _widget_cls in (
     RssWidget,
     ShapeWidget,
     IframeWidget,
+    StoreHoursWidget,
 ):
     if not _reg.has(_widget_cls.slug):
         _reg.register(_widget_cls())
@@ -67,6 +69,7 @@ __all__ = [
     "QrWidget",
     "RssWidget",
     "ShapeWidget",
+    "StoreHoursWidget",
     "TextWidget",
     "TickerWidget",
     "WeatherWidget",
