@@ -95,14 +95,9 @@
             <p class="text-muted" style="font-size:0.85rem;">
                 Click a widget below, then click a grid cell to place it.
             </p>
-            <button type="button" class="palette-btn" data-type="text" onclick="selectPaletteType('text')">🅰 Text</button>
-            <button type="button" class="palette-btn" data-type="media" onclick="selectPaletteType('media')">🎬 Media</button>
-            <button type="button" class="palette-btn" data-type="clock" onclick="selectPaletteType('clock')">🕒 Clock</button>
-            <button type="button" class="palette-btn" data-type="analog_clock" onclick="selectPaletteType('analog_clock')">🕧 Analog Clock</button>
-            <button type="button" class="palette-btn" data-type="ticker" onclick="selectPaletteType('ticker')">📰 Ticker</button>
-            <button type="button" class="palette-btn" data-type="weather" onclick="selectPaletteType('weather')">⛅ Weather</button>
-            <button type="button" class="palette-btn" data-type="qr" onclick="selectPaletteType('qr')">▦ QR Code</button>
-            <button type="button" class="palette-btn" data-type="shape" onclick="selectPaletteType('shape')">⬛ Shape</button>
+            <input type="search" id="palette-search" placeholder="Search widgets…"
+                   oninput="renderPalette(this.value)" autocomplete="off">
+            <div id="palette-list"></div>
             <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
                 None selected.
             </div>
@@ -199,6 +194,32 @@
         border-color: var(--accent);
         background: var(--primary);
         color: var(--text);
+    }
+    #palette-search {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.4rem 0.6rem;
+        margin-bottom: 0.6rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-alt);
+        color: var(--text);
+        font-size: 0.9rem;
+    }
+    .palette-cat {
+        margin: 0.6rem 0 0.3rem;
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+    }
+    .palette-cat:first-child { margin-top: 0; }
+    .palette-empty {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        padding: 0.4rem 0;
     }
     .canvas-wrap {
         min-width: 0;
@@ -661,22 +682,482 @@ const FRAME_DEFAULTS = {
 const MEDIA_ASSETS = {{ media_assets|tojson }};
 const NULL_UUID = "00000000-0000-0000-0000-000000000000";
 
-const DEFAULTS = {
-    text: {text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false},
-    media: {asset_id: NULL_UUID, object_fit:"cover", alt:""},
-    clock: {format:"24h", show_seconds:true, show_date:false, color:"#ffffff", font_family:"sans", font_size_px:96},
-    analog_clock: {face_color:"#111827", hand_color:"#ffffff", second_color:"#ef4444",
-             show_seconds:true, show_ticks:true, show_numerals:false},
-    ticker: {text:"Breaking news...", speed_px_per_sec:100, direction:"left", mode:"scroll",
-             color:"#ffffff", background:"#000000", font_family:"sans", font_size_px:48, gap_px:100},
-    weather: {latitude:47.6062, longitude:-122.3321, location_label:"Seattle", units:"imperial",
-             show_condition:true, show_location:true, color:"#ffffff", font_family:"sans",
-             font_size_px:64, refresh_seconds:900},
-    qr: {url:"https://example.com", error_correction:"M", foreground:"#000000",
-         background:"#ffffff", quiet_zone:true},
-    shape: {shape:"rectangle", fill:"#3b82f6", border_width:0, border_color:"#000000",
-            corner_radius:0, thickness:8, orientation:"horizontal"},
+// ── Widget registry ───────────────────────────────────────────────
+// Single source of truth for every composed-slide widget, mirroring
+// the backend WidgetRegistry (cms/composed/registry.py). Each widget
+// is ONE descriptor carrying its palette metadata (label/icon/
+// category/keywords), default config, and editor hooks (summary,
+// preview, settings). The palette, preview renderer, layer summaries
+// and settings panel all read from here, so adding a widget = adding
+// one descriptor below (no scattered `if (w.type === ...)` chains).
+const WIDGET_LIST = [];
+const WIDGET_MAP = {};
+function registerWidget(type, desc) {
+    desc.type = type;
+    WIDGET_LIST.push(desc);
+    WIDGET_MAP[type] = desc;
+}
+const WIDGETS = {
+    get: (t) => WIDGET_MAP[t] || null,
+    all: () => WIDGET_LIST,
+    // Fresh deep copy of a widget's default config for placement.
+    defaults: (t) => {
+        const d = WIDGET_MAP[t];
+        return d ? JSON.parse(JSON.stringify(d.defaults())) : {};
+    },
+    // Distinct categories in registration order.
+    categories: () => {
+        const seen = [];
+        for (const w of WIDGET_LIST) if (!seen.includes(w.category)) seen.push(w.category);
+        return seen;
+    },
 };
+
+registerWidget("text", {
+    label: "Text", icon: "🅰", category: "Text & Media",
+    keywords: ["text", "label", "heading", "caption", "title", "words"],
+    defaults: () => ({text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false}),
+    summary: (w) => (w.config.text || "").slice(0, 24),
+    preview: (root, cfg) => {
+        const d = document.createElement("div");
+        d.className = "cw-prev-text";
+        d.textContent = cfg.text || "";
+        d.style.color = cfg.color || "#ffffff";
+        d.style.fontFamily = fontStack(cfg.font_family);
+        d.style.fontSize = cqwFont(cfg.font_size_px);
+        d.style.fontWeight = cfg.bold ? "700" : "400";
+        d.style.fontStyle = cfg.italic ? "italic" : "normal";
+        root.appendChild(d);
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Text widget</h4>
+            <label>Text</label>
+            <textarea oninput="updateSelected(x=>x.config.text=this.value)">${escapeHtml(w.config.text||"")}</textarea>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||48}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <label>Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>
+            <div class="row" style="margin-top:0.5rem;">
+                <label style="font-weight:400;">
+                    <input type="checkbox" ${w.config.bold?"checked":""}
+                        oninput="updateSelected(x=>x.config.bold=this.checked)"> Bold
+                </label>
+                <label style="font-weight:400;">
+                    <input type="checkbox" ${w.config.italic?"checked":""}
+                        oninput="updateSelected(x=>x.config.italic=this.checked)"> Italic
+                </label>
+            </div>`,
+});
+
+registerWidget("media", {
+    label: "Media", icon: "🎬", category: "Text & Media",
+    keywords: ["media", "image", "photo", "picture", "video", "movie", "asset"],
+    defaults: () => ({asset_id: NULL_UUID, object_fit:"cover", alt:""}),
+    summary: (w) => {
+        const aid = w.config.asset_id;
+        if (!aid || aid === NULL_UUID) return "(no asset)";
+        const a = MEDIA_ASSETS.find(x => x.id === aid);
+        return a ? a.name : "(missing)";
+    },
+    preview: (root, cfg) => { root.appendChild(renderMediaPreview(cfg)); },
+    settings: (w) => {
+        const currentId = w.config.asset_id || NULL_UUID;
+        const opts = [`<option value="${NULL_UUID}" ${currentId===NULL_UUID?"selected":""}>— pick an image or video —</option>`]
+            .concat(MEDIA_ASSETS.map(a => {
+                const label = `${a.asset_type === "video" ? "🎞" : "🖼"} ${escapeHtml(a.name)}`;
+                return `<option value="${a.id}" ${a.id===currentId?"selected":""}>${label}</option>`;
+            }))
+            .join("");
+        return `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Media widget</h4>
+            <label>Asset</label>
+            <select oninput="updateSelected(x=>x.config.asset_id=this.value)">${opts}</select>
+            <label style="margin-top:0.5rem;">Fit</label>
+            <select oninput="updateSelected(x=>x.config.object_fit=this.value)">
+                <option value="cover" ${w.config.object_fit==="cover"?"selected":""}>Cover (crop to fill)</option>
+                <option value="contain" ${w.config.object_fit==="contain"?"selected":""}>Contain (letterbox)</option>
+                <option value="fill" ${w.config.object_fit==="fill"?"selected":""}>Fill (stretch)</option>
+            </select>
+            <label style="margin-top:0.5rem;">Alt text</label>
+            <input type="text" maxlength="512" value="${escapeHtml(w.config.alt||"")}"
+                   oninput="updateSelected(x=>x.config.alt=this.value)">
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                For videos: assign the asset to the same device groups so it lands in the device's video cache.
+            </p>`;
+    },
+});
+
+registerWidget("qr", {
+    label: "QR Code", icon: "▦", category: "Text & Media",
+    keywords: ["qr", "qr code", "link", "url", "scan", "barcode"],
+    defaults: () => ({url:"https://example.com", error_correction:"M", foreground:"#000000",
+         background:"#ffffff", quiet_zone:true}),
+    summary: (w) => (w.config.url || "").slice(0, 24),
+    preview: (root, cfg) => { root.appendChild(buildQrPreview(cfg)); },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">QR Code widget</h4>
+            <label>URL</label>
+            <input type="text" maxlength="1000" value="${escapeHtml(w.config.url||"")}"
+                   placeholder="https://example.com"
+                   oninput="updateSelected(x=>x.config.url=this.value)">
+            <label style="margin-top:0.5rem;">Error correction</label>
+            <select oninput="updateSelected(x=>x.config.error_correction=this.value)">
+                <option value="L" ${w.config.error_correction==="L"?"selected":""}>L — Low (7%)</option>
+                <option value="M" ${w.config.error_correction==="M"?"selected":""}>M — Medium (15%)</option>
+                <option value="Q" ${w.config.error_correction==="Q"?"selected":""}>Q — Quartile (25%)</option>
+                <option value="H" ${w.config.error_correction==="H"?"selected":""}>H — High (30%)</option>
+            </select>
+            <div class="row">
+                <div>
+                    <label>Foreground</label>
+                    <input type="color" value="${w.config.foreground||"#000000"}"
+                           oninput="updateSelected(x=>x.config.foreground=this.value)">
+                </div>
+                <div>
+                    <label>Background</label>
+                    <input type="color" value="${w.config.background||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.background=this.value)">
+                </div>
+            </div>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.quiet_zone?"checked":""}
+                    oninput="updateSelected(x=>x.config.quiet_zone=this.checked)"> Quiet zone (border)
+            </label>
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                The QR code is generated when the slide is published. The editor shows a placeholder.
+            </p>`,
+});
+
+registerWidget("clock", {
+    label: "Clock", icon: "🕒", category: "Time & Date",
+    keywords: ["clock", "time", "digital", "hour", "date"],
+    defaults: () => ({format:"24h", show_seconds:true, show_date:false, color:"#ffffff", font_family:"sans", font_size_px:96}),
+    summary: (w) => w.config.format || "24h",
+    preview: (root, cfg) => {
+        const c = document.createElement("div");
+        c.className = "cw-prev-clock";
+        c.style.color = cfg.color || "#ffffff";
+        c.style.fontFamily = fontStack(cfg.font_family);
+        const timeEl = document.createElement("div");
+        timeEl.className = "cw-prev-clock-time";
+        timeEl.style.fontSize = cqwFont(cfg.font_size_px);
+        timeEl.dataset.format = cfg.format || "24h";
+        timeEl.dataset.showSeconds = cfg.show_seconds ? "1" : "0";
+        c.appendChild(timeEl);
+        if (cfg.show_date) {
+            const dateEl = document.createElement("div");
+            dateEl.className = "cw-prev-clock-date";
+            dateEl.style.fontSize = cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
+            c.appendChild(dateEl);
+        }
+        root.appendChild(c);
+        updateClockEl(timeEl);
+        if (cfg.show_date) updateClockDateEl(c.querySelector(".cw-prev-clock-date"));
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Clock widget</h4>
+            <label>Format</label>
+            <select oninput="updateSelected(x=>x.config.format=this.value)">
+                <option value="24h" ${w.config.format==="24h"?"selected":""}>24-hour</option>
+                <option value="12h" ${w.config.format==="12h"?"selected":""}>12-hour</option>
+            </select>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_seconds?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Show seconds
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_date?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_date=this.checked)"> Show date
+            </label>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <label>Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>`,
+});
+
+registerWidget("analog_clock", {
+    label: "Analog Clock", icon: "🕧", category: "Time & Date",
+    keywords: ["analog", "clock", "time", "dial", "hands", "round"],
+    defaults: () => ({face_color:"#111827", hand_color:"#ffffff", second_color:"#ef4444",
+             show_seconds:true, show_ticks:true, show_numerals:false}),
+    summary: () => "analog",
+    preview: (root, cfg) => { root.appendChild(buildAnalogSvg(cfg)); },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Analog clock widget</h4>
+            <div class="row">
+                <div>
+                    <label>Face color</label>
+                    <input type="color" value="${w.config.face_color||"#111827"}"
+                           oninput="updateSelected(x=>x.config.face_color=this.value)">
+                </div>
+                <div>
+                    <label>Hand color</label>
+                    <input type="color" value="${w.config.hand_color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.hand_color=this.value)">
+                </div>
+            </div>
+            <label>Second-hand color</label>
+            <input type="color" value="${w.config.second_color||"#ef4444"}"
+                   oninput="updateSelected(x=>x.config.second_color=this.value)">
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_seconds?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Show second hand
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_ticks?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_ticks=this.checked)"> Show tick marks
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_numerals?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_numerals=this.checked)"> Show numerals
+            </label>`,
+});
+
+registerWidget("weather", {
+    label: "Weather", icon: "⛅", category: "Live Data",
+    keywords: ["weather", "temperature", "forecast", "climate", "degrees"],
+    defaults: () => ({latitude:47.6062, longitude:-122.3321, location_label:"Seattle", units:"imperial",
+             show_condition:true, show_location:true, color:"#ffffff", font_family:"sans",
+             font_size_px:64, refresh_seconds:900}),
+    summary: (w) => (w.config.location_label || "weather").slice(0, 24),
+    preview: (root, cfg) => { root.appendChild(buildWeatherPreview(cfg)); },
+    settings: (w) => {
+        const lat = Number(w.config.latitude), lon = Number(w.config.longitude);
+        const curTxt = `${escapeHtml(w.config.location_label||"")}  (${lat.toFixed(3)}, ${lon.toFixed(3)})`;
+        return `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Weather widget</h4>
+            <label>Search city</label>
+            <input id="wx-q" type="text" placeholder="e.g. Seattle"
+                   oninput="weatherSearchDebounced(this.value)">
+            <div id="wx-status" style="font-size:0.75rem; color:var(--text-muted); min-height:1rem;"></div>
+            <div id="wx-results" class="wx-results"></div>
+            <label style="margin-top:0.5rem;">Location label</label>
+            <input id="wx-label" type="text" maxlength="80" value="${escapeHtml(w.config.location_label||"")}"
+                   oninput="updateSelected(x=>x.config.location_label=this.value)">
+            <div id="wx-current" style="font-size:0.72rem; color:var(--text-muted); margin-top:0.25rem; word-break:break-all;">${curTxt}</div>
+            <label style="margin-top:0.5rem;">Units</label>
+            <select oninput="updateSelected(x=>x.config.units=this.value)">
+                <option value="imperial" ${w.config.units==="imperial"?"selected":""}>Fahrenheit (°F)</option>
+                <option value="metric" ${w.config.units==="metric"?"selected":""}>Celsius (°C)</option>
+            </select>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_location?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_location=this.checked)"> Show location label
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_condition?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_condition=this.checked)"> Show condition
+            </label>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||64}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <label>Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${SAFE_FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>
+            <label style="margin-top:0.5rem;">Refresh (seconds, 600–86400)</label>
+            <input type="number" min="600" max="86400" value="${w.config.refresh_seconds||900}"
+                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,600,86400))">
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                Live temperature is fetched on the device. The preview shows placeholder values.
+            </p>`;
+    },
+});
+
+registerWidget("ticker", {
+    label: "Ticker", icon: "📰", category: "Live Data",
+    keywords: ["ticker", "scroll", "marquee", "news", "banner", "crawl"],
+    defaults: () => ({text:"Breaking news...", speed_px_per_sec:100, direction:"left", mode:"scroll",
+             color:"#ffffff", background:"#000000", font_family:"sans", font_size_px:48, gap_px:100}),
+    summary: (w) => (w.config.text || "").slice(0, 24),
+    preview: (root, cfg) => {
+        const strip = document.createElement("div");
+        strip.className = "cw-prev-ticker";
+        strip.style.background = cfg.background || "#000000";
+        const span = document.createElement("span");
+        span.className = "cw-prev-ticker-text";
+        span.textContent = cfg.text || "";
+        span.style.color = cfg.color || "#ffffff";
+        span.style.fontFamily = fontStack(cfg.font_family);
+        span.style.fontSize = cqwFont(cfg.font_size_px);
+        // Representative duration: faster speed -> shorter cycle.
+        const speed = Math.max(Number(cfg.speed_px_per_sec) || 100, 1);
+        const dur = Math.max(2, Math.min(40, 2000 / speed));
+        span.style.animationDuration = dur.toFixed(2) + "s";
+        span.style.animationDirection =
+            cfg.direction === "right" ? "reverse" : "normal";
+        if (cfg.mode === "bounce") {
+            span.style.animationName = "cw-ticker-scroll";
+            span.style.animationDirection = "alternate";
+        }
+        strip.appendChild(span);
+        root.appendChild(strip);
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Ticker widget</h4>
+            <label>Text</label>
+            <textarea oninput="updateSelected(x=>x.config.text=this.value)">${escapeHtml(w.config.text||"")}</textarea>
+            <div class="row">
+                <div>
+                    <label>Speed (px/s)</label>
+                    <input type="number" min="20" max="500" value="${w.config.speed_px_per_sec||100}"
+                           oninput="updateSelected(x=>x.config.speed_px_per_sec=clampInt(this.value,20,500))">
+                </div>
+                <div>
+                    <label>Gap (px)</label>
+                    <input type="number" min="0" max="2000" value="${w.config.gap_px||100}"
+                           oninput="updateSelected(x=>x.config.gap_px=clampInt(this.value,0,2000))">
+                </div>
+            </div>
+            <label>Direction</label>
+            <select oninput="updateSelected(x=>x.config.direction=this.value)">
+                <option value="left" ${w.config.direction==="left"?"selected":""}>Left</option>
+                <option value="right" ${w.config.direction==="right"?"selected":""}>Right</option>
+            </select>
+            <label>Mode</label>
+            <select oninput="updateSelected(x=>x.config.mode=this.value)">
+                <option value="scroll" ${w.config.mode==="scroll"?"selected":""}>Scroll (loop)</option>
+                <option value="bounce" ${w.config.mode==="bounce"?"selected":""}>Bounce</option>
+            </select>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Background</label>
+                    <input type="color" value="${w.config.background && w.config.background!=="transparent" ? w.config.background : "#000000"}"
+                           ${w.config.background==="transparent"?"disabled":""}
+                           oninput="updateSelected(x=>x.config.background=this.value)">
+                    <label style="display:flex; align-items:center; gap:0.35rem; margin-top:0.35rem; font-weight:normal;">
+                        <input type="checkbox" ${w.config.background==="transparent"?"checked":""}
+                               onchange="setTickerTransparent(this.checked)">
+                        Transparent
+                    </label>
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||48}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+                <div>
+                    <label>Font</label>
+                    <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                        ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+                    </select>
+                </div>
+            </div>`,
+});
+
+registerWidget("shape", {
+    label: "Shape", icon: "⬛", category: "Decoration",
+    keywords: ["shape", "rectangle", "ellipse", "circle", "line", "divider", "block", "background"],
+    defaults: () => ({shape:"rectangle", fill:"#3b82f6", border_width:0, border_color:"#000000",
+            corner_radius:0, thickness:8, orientation:"horizontal"}),
+    summary: () => "",
+    preview: (root, cfg) => { root.appendChild(buildShapePreview(cfg)); },
+    settings: (w) => {
+        const sh = w.config.shape || "rectangle";
+        const isLine = sh === "line";
+        const isEllipse = sh === "ellipse";
+        const boxControls = `
+            <div class="row">
+                <div>
+                    <label>Fill</label>
+                    <input type="color" value="${w.config.fill||"#3b82f6"}"
+                           oninput="updateSelected(x=>x.config.fill=this.value)">
+                </div>
+                <div>
+                    <label>Corner radius</label>
+                    <input type="number" min="0" max="500" ${isEllipse?"disabled":""}
+                           value="${clampInt(w.config.corner_radius,0,500)}"
+                           oninput="updateSelected(x=>x.config.corner_radius=clampInt(this.value,0,500))">
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <label>Border width</label>
+                    <input type="number" min="0" max="100" value="${clampInt(w.config.border_width,0,100)}"
+                           oninput="updateSelected(x=>x.config.border_width=clampInt(this.value,0,100))">
+                </div>
+                <div>
+                    <label>Border color</label>
+                    <input type="color" value="${w.config.border_color||"#000000"}"
+                           oninput="updateSelected(x=>x.config.border_color=this.value)">
+                </div>
+            </div>`;
+        const lineControls = `
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.fill||"#3b82f6"}"
+                           oninput="updateSelected(x=>x.config.fill=this.value)">
+                </div>
+                <div>
+                    <label>Thickness (px)</label>
+                    <input type="number" min="1" max="500" value="${clampInt(w.config.thickness,1,500)}"
+                           oninput="updateSelected(x=>x.config.thickness=clampInt(this.value,1,500))">
+                </div>
+            </div>
+            <label style="margin-top:0.5rem;">Orientation</label>
+            <select oninput="updateSelected(x=>x.config.orientation=this.value)">
+                <option value="horizontal" ${w.config.orientation==="horizontal"?"selected":""}>Horizontal</option>
+                <option value="vertical" ${w.config.orientation==="vertical"?"selected":""}>Vertical</option>
+            </select>
+            <label style="margin-top:0.5rem;">End-cap radius</label>
+            <input type="number" min="0" max="500" value="${clampInt(w.config.corner_radius,0,500)}"
+                   oninput="updateSelected(x=>x.config.corner_radius=clampInt(this.value,0,500))">`;
+        return `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Shape widget</h4>
+            <label>Shape</label>
+            <select oninput="updateSelected(x=>x.config.shape=this.value)">
+                <option value="rectangle" ${sh==="rectangle"?"selected":""}>Rectangle</option>
+                <option value="ellipse" ${sh==="ellipse"?"selected":""}>Ellipse</option>
+                <option value="line" ${sh==="line"?"selected":""}>Line / Divider</option>
+            </select>
+            ${isLine ? lineControls : boxControls}
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                Tip: use a rectangle behind other widgets as a color block, or the
+                Appearance panel below to add opacity, inset, or a matte frame.
+            </p>`;
+    },
+});
 
 function flash(msg, ok) {
     const box = document.getElementById("msg-box");
@@ -699,6 +1180,49 @@ function ensureLayoutShape() {
     LAYOUT.canvas = LAYOUT.canvas || {width: 1920, height: 1080};
     LAYOUT.background = LAYOUT.background || {color: "#000000"};
     LAYOUT.widgets = LAYOUT.widgets || [];
+}
+
+function matchesPaletteQuery(d, q) {
+    if (!q) return true;
+    q = q.trim().toLowerCase();
+    if (!q) return true;
+    if (d.type.toLowerCase().includes(q)) return true;
+    if ((d.label || "").toLowerCase().includes(q)) return true;
+    const kw = d.keywords || [];
+    return kw.some(k => String(k).toLowerCase().includes(q));
+}
+
+function renderPalette(filter) {
+    const list = document.getElementById("palette-list");
+    if (!list) return;
+    list.innerHTML = "";
+    let shown = 0;
+    WIDGETS.categories().forEach(cat => {
+        const items = WIDGETS.all()
+            .filter(d => d.category === cat && matchesPaletteQuery(d, filter));
+        if (!items.length) return;
+        const h = document.createElement("div");
+        h.className = "palette-cat";
+        h.textContent = cat;
+        list.appendChild(h);
+        items.forEach(d => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "palette-btn";
+            b.dataset.type = d.type;
+            b.textContent = (d.icon ? d.icon + " " : "") + (d.label || d.type);
+            b.onclick = () => selectPaletteType(d.type);
+            if (d.type === selectedPaletteType) b.classList.add("active");
+            list.appendChild(b);
+            shown++;
+        });
+    });
+    if (!shown) {
+        const e = document.createElement("div");
+        e.className = "palette-empty";
+        e.textContent = "No widgets match your search.";
+        list.appendChild(e);
+    }
 }
 
 function selectPaletteType(t) {
@@ -793,68 +1317,9 @@ function renderWidgetContent(w) {
     root.className = "widget-preview";
     const cfg = w.config || {};
     try {
-        if (w.type === "text") {
-            const d = document.createElement("div");
-            d.className = "cw-prev-text";
-            d.textContent = cfg.text || "";
-            d.style.color = cfg.color || "#ffffff";
-            d.style.fontFamily = fontStack(cfg.font_family);
-            d.style.fontSize = cqwFont(cfg.font_size_px);
-            d.style.fontWeight = cfg.bold ? "700" : "400";
-            d.style.fontStyle = cfg.italic ? "italic" : "normal";
-            root.appendChild(d);
-        } else if (w.type === "clock") {
-            const c = document.createElement("div");
-            c.className = "cw-prev-clock";
-            c.style.color = cfg.color || "#ffffff";
-            c.style.fontFamily = fontStack(cfg.font_family);
-            const timeEl = document.createElement("div");
-            timeEl.className = "cw-prev-clock-time";
-            timeEl.style.fontSize = cqwFont(cfg.font_size_px);
-            timeEl.dataset.format = cfg.format || "24h";
-            timeEl.dataset.showSeconds = cfg.show_seconds ? "1" : "0";
-            c.appendChild(timeEl);
-            if (cfg.show_date) {
-                const dateEl = document.createElement("div");
-                dateEl.className = "cw-prev-clock-date";
-                dateEl.style.fontSize = cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
-                c.appendChild(dateEl);
-            }
-            root.appendChild(c);
-            updateClockEl(timeEl);
-            if (cfg.show_date) updateClockDateEl(c.querySelector(".cw-prev-clock-date"));
-        } else if (w.type === "analog_clock") {
-            root.appendChild(buildAnalogSvg(cfg));
-        } else if (w.type === "weather") {
-            root.appendChild(buildWeatherPreview(cfg));
-        } else if (w.type === "ticker") {
-            const strip = document.createElement("div");
-            strip.className = "cw-prev-ticker";
-            strip.style.background = cfg.background || "#000000";
-            const span = document.createElement("span");
-            span.className = "cw-prev-ticker-text";
-            span.textContent = cfg.text || "";
-            span.style.color = cfg.color || "#ffffff";
-            span.style.fontFamily = fontStack(cfg.font_family);
-            span.style.fontSize = cqwFont(cfg.font_size_px);
-            // Representative duration: faster speed -> shorter cycle.
-            const speed = Math.max(Number(cfg.speed_px_per_sec) || 100, 1);
-            const dur = Math.max(2, Math.min(40, 2000 / speed));
-            span.style.animationDuration = dur.toFixed(2) + "s";
-            span.style.animationDirection =
-                cfg.direction === "right" ? "reverse" : "normal";
-            if (cfg.mode === "bounce") {
-                span.style.animationName = "cw-ticker-scroll";
-                span.style.animationDirection = "alternate";
-            }
-            strip.appendChild(span);
-            root.appendChild(strip);
-        } else if (w.type === "media") {
-            root.appendChild(renderMediaPreview(cfg));
-        } else if (w.type === "qr") {
-            root.appendChild(buildQrPreview(cfg));
-        } else if (w.type === "shape") {
-            root.appendChild(buildShapePreview(cfg));
+        const d = WIDGETS.get(w.type);
+        if (d && d.preview) {
+            d.preview(root, cfg, w);
         } else {
             root.textContent = w.type;
         }
@@ -1234,19 +1699,8 @@ function beginDrag(ev, widgetId, mode) {
 }
 
 function summarize(w) {
-    if (w.type === "text") return (w.config.text || "").slice(0, 24);
-    if (w.type === "clock") return w.config.format || "24h";
-    if (w.type === "analog_clock") return "analog";
-    if (w.type === "ticker") return (w.config.text || "").slice(0, 24);
-    if (w.type === "weather") return (w.config.location_label || "weather").slice(0, 24);
-    if (w.type === "qr") return (w.config.url || "").slice(0, 24);
-    if (w.type === "media") {
-        const aid = w.config.asset_id;
-        if (!aid || aid === NULL_UUID) return "(no asset)";
-        const a = MEDIA_ASSETS.find(x => x.id === aid);
-        return a ? a.name : "(missing)";
-    }
-    return "";
+    const d = WIDGETS.get(w.type);
+    return d && d.summary ? d.summary(w) : "";
 }
 
 function placeAt(row, col) {
@@ -1256,7 +1710,7 @@ function placeAt(row, col) {
     }
     ensureLayoutShape();
     const id = uuid4();
-    const cfg = JSON.parse(JSON.stringify(DEFAULTS[selectedPaletteType]));
+    const cfg = WIDGETS.defaults(selectedPaletteType);
     LAYOUT.widgets.push({
         id,
         type: selectedPaletteType,
@@ -1371,328 +1825,8 @@ function renderSettings() {
         </div>`;
 
     let configHtml = "";
-    if (w.type === "text") {
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Text widget</h4>
-            <label>Text</label>
-            <textarea oninput="updateSelected(x=>x.config.text=this.value)">${escapeHtml(w.config.text||"")}</textarea>
-            <div class="row">
-                <div>
-                    <label>Color</label>
-                    <input type="color" value="${w.config.color||"#ffffff"}"
-                           oninput="updateSelected(x=>x.config.color=this.value)">
-                </div>
-                <div>
-                    <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||48}"
-                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
-                </div>
-            </div>
-            <label>Font</label>
-            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
-                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
-            </select>
-            <div class="row" style="margin-top:0.5rem;">
-                <label style="font-weight:400;">
-                    <input type="checkbox" ${w.config.bold?"checked":""}
-                        oninput="updateSelected(x=>x.config.bold=this.checked)"> Bold
-                </label>
-                <label style="font-weight:400;">
-                    <input type="checkbox" ${w.config.italic?"checked":""}
-                        oninput="updateSelected(x=>x.config.italic=this.checked)"> Italic
-                </label>
-            </div>`;
-    } else if (w.type === "media") {
-        const currentId = w.config.asset_id || NULL_UUID;
-        const opts = [`<option value="${NULL_UUID}" ${currentId===NULL_UUID?"selected":""}>— pick an image or video —</option>`]
-            .concat(MEDIA_ASSETS.map(a => {
-                const label = `${a.asset_type === "video" ? "🎞" : "🖼"} ${escapeHtml(a.name)}`;
-                return `<option value="${a.id}" ${a.id===currentId?"selected":""}>${label}</option>`;
-            }))
-            .join("");
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Media widget</h4>
-            <label>Asset</label>
-            <select oninput="updateSelected(x=>x.config.asset_id=this.value)">${opts}</select>
-            <label style="margin-top:0.5rem;">Fit</label>
-            <select oninput="updateSelected(x=>x.config.object_fit=this.value)">
-                <option value="cover" ${w.config.object_fit==="cover"?"selected":""}>Cover (crop to fill)</option>
-                <option value="contain" ${w.config.object_fit==="contain"?"selected":""}>Contain (letterbox)</option>
-                <option value="fill" ${w.config.object_fit==="fill"?"selected":""}>Fill (stretch)</option>
-            </select>
-            <label style="margin-top:0.5rem;">Alt text</label>
-            <input type="text" maxlength="512" value="${escapeHtml(w.config.alt||"")}"
-                   oninput="updateSelected(x=>x.config.alt=this.value)">
-            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
-                For videos: assign the asset to the same device groups so it lands in the device's video cache.
-            </p>`;
-    } else if (w.type === "clock") {
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Clock widget</h4>
-            <label>Format</label>
-            <select oninput="updateSelected(x=>x.config.format=this.value)">
-                <option value="24h" ${w.config.format==="24h"?"selected":""}>24-hour</option>
-                <option value="12h" ${w.config.format==="12h"?"selected":""}>12-hour</option>
-            </select>
-            <label style="font-weight:400; margin-top:0.5rem;">
-                <input type="checkbox" ${w.config.show_seconds?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Show seconds
-            </label>
-            <label style="font-weight:400;">
-                <input type="checkbox" ${w.config.show_date?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_date=this.checked)"> Show date
-            </label>
-            <div class="row">
-                <div>
-                    <label>Color</label>
-                    <input type="color" value="${w.config.color||"#ffffff"}"
-                           oninput="updateSelected(x=>x.config.color=this.value)">
-                </div>
-                <div>
-                    <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
-                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
-                </div>
-            </div>
-            <label>Font</label>
-            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
-                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
-            </select>`;
-    } else if (w.type === "ticker") {
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Ticker widget</h4>
-            <label>Text</label>
-            <textarea oninput="updateSelected(x=>x.config.text=this.value)">${escapeHtml(w.config.text||"")}</textarea>
-            <div class="row">
-                <div>
-                    <label>Speed (px/s)</label>
-                    <input type="number" min="20" max="500" value="${w.config.speed_px_per_sec||100}"
-                           oninput="updateSelected(x=>x.config.speed_px_per_sec=clampInt(this.value,20,500))">
-                </div>
-                <div>
-                    <label>Gap (px)</label>
-                    <input type="number" min="0" max="2000" value="${w.config.gap_px||100}"
-                           oninput="updateSelected(x=>x.config.gap_px=clampInt(this.value,0,2000))">
-                </div>
-            </div>
-            <label>Direction</label>
-            <select oninput="updateSelected(x=>x.config.direction=this.value)">
-                <option value="left" ${w.config.direction==="left"?"selected":""}>Left</option>
-                <option value="right" ${w.config.direction==="right"?"selected":""}>Right</option>
-            </select>
-            <label>Mode</label>
-            <select oninput="updateSelected(x=>x.config.mode=this.value)">
-                <option value="scroll" ${w.config.mode==="scroll"?"selected":""}>Scroll (loop)</option>
-                <option value="bounce" ${w.config.mode==="bounce"?"selected":""}>Bounce</option>
-            </select>
-            <div class="row">
-                <div>
-                    <label>Color</label>
-                    <input type="color" value="${w.config.color||"#ffffff"}"
-                           oninput="updateSelected(x=>x.config.color=this.value)">
-                </div>
-                <div>
-                    <label>Background</label>
-                    <input type="color" value="${w.config.background && w.config.background!=="transparent" ? w.config.background : "#000000"}"
-                           ${w.config.background==="transparent"?"disabled":""}
-                           oninput="updateSelected(x=>x.config.background=this.value)">
-                    <label style="display:flex; align-items:center; gap:0.35rem; margin-top:0.35rem; font-weight:normal;">
-                        <input type="checkbox" ${w.config.background==="transparent"?"checked":""}
-                               onchange="setTickerTransparent(this.checked)">
-                        Transparent
-                    </label>
-                </div>
-            </div>
-            <div class="row">
-                <div>
-                    <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||48}"
-                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
-                </div>
-                <div>
-                    <label>Font</label>
-                    <select oninput="updateSelected(x=>x.config.font_family=this.value)">
-                        ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
-                    </select>
-                </div>
-            </div>`;
-    } else if (w.type === "analog_clock") {
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Analog clock widget</h4>
-            <div class="row">
-                <div>
-                    <label>Face color</label>
-                    <input type="color" value="${w.config.face_color||"#111827"}"
-                           oninput="updateSelected(x=>x.config.face_color=this.value)">
-                </div>
-                <div>
-                    <label>Hand color</label>
-                    <input type="color" value="${w.config.hand_color||"#ffffff"}"
-                           oninput="updateSelected(x=>x.config.hand_color=this.value)">
-                </div>
-            </div>
-            <label>Second-hand color</label>
-            <input type="color" value="${w.config.second_color||"#ef4444"}"
-                   oninput="updateSelected(x=>x.config.second_color=this.value)">
-            <label style="font-weight:400; margin-top:0.5rem;">
-                <input type="checkbox" ${w.config.show_seconds?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Show second hand
-            </label>
-            <label style="font-weight:400;">
-                <input type="checkbox" ${w.config.show_ticks?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_ticks=this.checked)"> Show tick marks
-            </label>
-            <label style="font-weight:400;">
-                <input type="checkbox" ${w.config.show_numerals?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_numerals=this.checked)"> Show numerals
-            </label>`;
-    } else if (w.type === "weather") {
-        const lat = Number(w.config.latitude), lon = Number(w.config.longitude);
-        const curTxt = `${escapeHtml(w.config.location_label||"")}  (${lat.toFixed(3)}, ${lon.toFixed(3)})`;
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Weather widget</h4>
-            <label>Search city</label>
-            <input id="wx-q" type="text" placeholder="e.g. Seattle"
-                   oninput="weatherSearchDebounced(this.value)">
-            <div id="wx-status" style="font-size:0.75rem; color:var(--text-muted); min-height:1rem;"></div>
-            <div id="wx-results" class="wx-results"></div>
-            <label style="margin-top:0.5rem;">Location label</label>
-            <input id="wx-label" type="text" maxlength="80" value="${escapeHtml(w.config.location_label||"")}"
-                   oninput="updateSelected(x=>x.config.location_label=this.value)">
-            <div id="wx-current" style="font-size:0.72rem; color:var(--text-muted); margin-top:0.25rem; word-break:break-all;">${curTxt}</div>
-            <label style="margin-top:0.5rem;">Units</label>
-            <select oninput="updateSelected(x=>x.config.units=this.value)">
-                <option value="imperial" ${w.config.units==="imperial"?"selected":""}>Fahrenheit (°F)</option>
-                <option value="metric" ${w.config.units==="metric"?"selected":""}>Celsius (°C)</option>
-            </select>
-            <label style="font-weight:400; margin-top:0.5rem;">
-                <input type="checkbox" ${w.config.show_location?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_location=this.checked)"> Show location label
-            </label>
-            <label style="font-weight:400;">
-                <input type="checkbox" ${w.config.show_condition?"checked":""}
-                    oninput="updateSelected(x=>x.config.show_condition=this.checked)"> Show condition
-            </label>
-            <div class="row">
-                <div>
-                    <label>Color</label>
-                    <input type="color" value="${w.config.color||"#ffffff"}"
-                           oninput="updateSelected(x=>x.config.color=this.value)">
-                </div>
-                <div>
-                    <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||64}"
-                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
-                </div>
-            </div>
-            <label>Font</label>
-            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
-                ${SAFE_FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
-            </select>
-            <label style="margin-top:0.5rem;">Refresh (seconds, 600–86400)</label>
-            <input type="number" min="600" max="86400" value="${w.config.refresh_seconds||900}"
-                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,600,86400))">
-            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
-                Live temperature is fetched on the device. The preview shows placeholder values.
-            </p>`;
-    } else if (w.type === "qr") {
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">QR Code widget</h4>
-            <label>URL</label>
-            <input type="text" maxlength="1000" value="${escapeHtml(w.config.url||"")}"
-                   placeholder="https://example.com"
-                   oninput="updateSelected(x=>x.config.url=this.value)">
-            <label style="margin-top:0.5rem;">Error correction</label>
-            <select oninput="updateSelected(x=>x.config.error_correction=this.value)">
-                <option value="L" ${w.config.error_correction==="L"?"selected":""}>L — Low (7%)</option>
-                <option value="M" ${w.config.error_correction==="M"?"selected":""}>M — Medium (15%)</option>
-                <option value="Q" ${w.config.error_correction==="Q"?"selected":""}>Q — Quartile (25%)</option>
-                <option value="H" ${w.config.error_correction==="H"?"selected":""}>H — High (30%)</option>
-            </select>
-            <div class="row">
-                <div>
-                    <label>Foreground</label>
-                    <input type="color" value="${w.config.foreground||"#000000"}"
-                           oninput="updateSelected(x=>x.config.foreground=this.value)">
-                </div>
-                <div>
-                    <label>Background</label>
-                    <input type="color" value="${w.config.background||"#ffffff"}"
-                           oninput="updateSelected(x=>x.config.background=this.value)">
-                </div>
-            </div>
-            <label style="font-weight:400; margin-top:0.5rem;">
-                <input type="checkbox" ${w.config.quiet_zone?"checked":""}
-                    oninput="updateSelected(x=>x.config.quiet_zone=this.checked)"> Quiet zone (border)
-            </label>
-            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
-                The QR code is generated when the slide is published. The editor shows a placeholder.
-            </p>`;
-    } else if (w.type === "shape") {
-        const sh = w.config.shape || "rectangle";
-        const isLine = sh === "line";
-        const isEllipse = sh === "ellipse";
-        const boxControls = `
-            <div class="row">
-                <div>
-                    <label>Fill</label>
-                    <input type="color" value="${w.config.fill||"#3b82f6"}"
-                           oninput="updateSelected(x=>x.config.fill=this.value)">
-                </div>
-                <div>
-                    <label>Corner radius</label>
-                    <input type="number" min="0" max="500" ${isEllipse?"disabled":""}
-                           value="${clampInt(w.config.corner_radius,0,500)}"
-                           oninput="updateSelected(x=>x.config.corner_radius=clampInt(this.value,0,500))">
-                </div>
-            </div>
-            <div class="row">
-                <div>
-                    <label>Border width</label>
-                    <input type="number" min="0" max="100" value="${clampInt(w.config.border_width,0,100)}"
-                           oninput="updateSelected(x=>x.config.border_width=clampInt(this.value,0,100))">
-                </div>
-                <div>
-                    <label>Border color</label>
-                    <input type="color" value="${w.config.border_color||"#000000"}"
-                           oninput="updateSelected(x=>x.config.border_color=this.value)">
-                </div>
-            </div>`;
-        const lineControls = `
-            <div class="row">
-                <div>
-                    <label>Color</label>
-                    <input type="color" value="${w.config.fill||"#3b82f6"}"
-                           oninput="updateSelected(x=>x.config.fill=this.value)">
-                </div>
-                <div>
-                    <label>Thickness (px)</label>
-                    <input type="number" min="1" max="500" value="${clampInt(w.config.thickness,1,500)}"
-                           oninput="updateSelected(x=>x.config.thickness=clampInt(this.value,1,500))">
-                </div>
-            </div>
-            <label style="margin-top:0.5rem;">Orientation</label>
-            <select oninput="updateSelected(x=>x.config.orientation=this.value)">
-                <option value="horizontal" ${w.config.orientation==="horizontal"?"selected":""}>Horizontal</option>
-                <option value="vertical" ${w.config.orientation==="vertical"?"selected":""}>Vertical</option>
-            </select>
-            <label style="margin-top:0.5rem;">End-cap radius</label>
-            <input type="number" min="0" max="500" value="${clampInt(w.config.corner_radius,0,500)}"
-                   oninput="updateSelected(x=>x.config.corner_radius=clampInt(this.value,0,500))">`;
-        configHtml = `
-            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Shape widget</h4>
-            <label>Shape</label>
-            <select oninput="updateSelected(x=>x.config.shape=this.value)">
-                <option value="rectangle" ${sh==="rectangle"?"selected":""}>Rectangle</option>
-                <option value="ellipse" ${sh==="ellipse"?"selected":""}>Ellipse</option>
-                <option value="line" ${sh==="line"?"selected":""}>Line / Divider</option>
-            </select>
-            ${isLine ? lineControls : boxControls}
-            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
-                Tip: use a rectangle behind other widgets as a color block, or the
-                Appearance panel below to add opacity, inset, or a matte frame.
-            </p>`;
-    }
+    const _wd = WIDGETS.get(w.type);
+    if (_wd && _wd.settings) configHtml = _wd.settings(w);
 
     const fr = w.frame || FRAME_DEFAULTS;
     const frBgOn = fr.background != null;
@@ -2186,6 +2320,7 @@ function renderComposedGroupBadges() {
 }
 
 ensureLayoutShape();
+renderPalette();
 renderCanvas();
 renderSettings();
 startClockTimer();
