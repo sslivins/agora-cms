@@ -118,7 +118,18 @@ class TestFrameBundleEmission:
         end = html.index('"', start)
         return html[start:end]
 
+    def _inner_style(self, html: str) -> str | None:
+        idx = html.find('class="cw-cell-inner"')
+        if idx == -1:
+            return None
+        start = html.index('style="', idx) + len('style="')
+        end = html.index('"', start)
+        return html[start:end]
+
     def test_full_frame_emits_all_decls(self):
+        # With an inset, the decoration hugs the inset content: the outer
+        # cell carries only the inset padding + opacity (+ box-sizing) and
+        # the inner wrapper carries background/border/rounded corners.
         frame = WidgetFrame(
             corner_radius=24,
             border_width=4,
@@ -132,10 +143,18 @@ class TestFrameBundleEmission:
 
         assert "box-sizing: border-box;" in style
         assert "padding: 12px;" in style
-        assert "background: #445566;" in style
-        assert "border: 4px solid #112233;" in style
-        assert "border-radius: 24px;" in style
         assert "opacity: 0.5;" in style
+        # Decoration moved to the inner wrapper, not the outer cell.
+        assert "background:" not in style
+        assert "border:" not in style
+        assert "border-radius:" not in style
+
+        inner = self._inner_style(html)
+        assert inner is not None
+        assert "background: #445566;" in inner
+        assert "border: 4px solid #112233;" in inner
+        assert "border-radius: 24px;" in inner
+        assert "overflow: hidden;" in inner
 
     def test_partial_frame_emits_only_set_decls(self):
         frame = WidgetFrame(corner_radius=16)
@@ -180,8 +199,9 @@ class TestFrameBackwardCompat:
 
 
 class TestFrameInnerWrap:
-    """corner_radius + inset must round the *inset content*, not just clip
-    at the outer padding box (which leaves inset images square-cornered).
+    """With an inset, a frame's decoration (background, border, rounded
+    corners) hugs the inset content via a concentric inner wrapper — the
+    "floating frame" model — instead of sitting at the outer cell edge.
     """
 
     def _inner_div(self, html: str) -> str | None:
@@ -192,44 +212,77 @@ class TestFrameInnerWrap:
         end = html.index('"', start)
         return html[start:end]
 
-    def test_radius_with_inset_emits_inner_wrapper(self):
+    def _cell_style(self, html: str) -> str:
+        marker = 'data-widget-instance="11111111-1111-1111-1111-111111111111"'
+        idx = html.index(marker)
+        start = html.index('style="', idx) + len('style="')
+        end = html.index('"', start)
+        return html[start:end]
+
+    def test_radius_with_inset_inner_uses_full_radius(self):
+        # The inner box IS the frame, sitting inset from the cell edge, so
+        # it carries the full corner_radius (no concentric reduction). The
+        # outer cell keeps only the inset padding.
         frame = WidgetFrame(corner_radius=40, inset=10)
         html = build_bundle(_text_layout(frame)).html_bytes.decode("utf-8")
         inner = self._inner_div(html)
         assert inner is not None
-        # Reduced concentric radius: 40 - 10 inset - 0 border = 30.
-        assert "border-radius: 30px;" in inner
+        assert "border-radius: 40px;" in inner
         assert "overflow: hidden;" in inner
+        assert "box-sizing: border-box;" in inner
+        # Radius no longer lives on the outer cell.
+        outer = self._cell_style(html)
+        assert "border-radius:" not in outer
+        assert "padding: 10px;" in outer
 
-    def test_inner_radius_also_reduced_by_border(self):
-        frame = WidgetFrame(corner_radius=40, inset=10, border_width=5)
+    def test_border_with_inset_moves_to_inner(self):
+        # The border hugs the inset content: it's on the inner box, and the
+        # outer cell carries no border.
+        frame = WidgetFrame(border_width=6, border_color="#abcdef", inset=8)
         html = build_bundle(_text_layout(frame)).html_bytes.decode("utf-8")
         inner = self._inner_div(html)
         assert inner is not None
-        # 40 - 10 inset - 5 border = 25.
-        assert "border-radius: 25px;" in inner
+        assert "border: 6px solid #abcdef;" in inner
+        outer = self._cell_style(html)
+        assert "border:" not in outer
+        assert "padding: 8px;" in outer
 
-    def test_inner_radius_clamped_at_zero(self):
-        # Inset larger than the radius can't make a negative radius.
-        frame = WidgetFrame(corner_radius=10, inset=40)
+    def test_background_with_inset_moves_to_inner(self):
+        frame = WidgetFrame(background="#123456", inset=8)
         html = build_bundle(_text_layout(frame)).html_bytes.decode("utf-8")
         inner = self._inner_div(html)
         assert inner is not None
-        assert "border-radius: 0px;" in inner
+        assert "background: #123456;" in inner
+        outer = self._cell_style(html)
+        assert "background:" not in outer
 
     def test_radius_without_inset_has_no_inner_wrapper(self):
-        # No inset → outer clip rounds the content correctly; no wrapper,
-        # so these bundles stay byte-identical to the pre-fix output.
+        # No inset → the decoration sits on the outer cell exactly as
+        # before, so these bundles stay byte-identical to legacy output.
         html = build_bundle(
             _text_layout(WidgetFrame(corner_radius=24))
         ).html_bytes.decode("utf-8")
         assert "cw-cell-inner" not in html
+        assert "border-radius: 24px;" in self._cell_style(html)
 
-    def test_inset_without_radius_has_no_inner_wrapper(self):
+    def test_inset_without_decoration_has_no_inner_wrapper(self):
+        # Inset only (no background/border/radius) → nothing to hug, so no
+        # wrapper; the outer cell just carries the padding.
         html = build_bundle(
             _text_layout(WidgetFrame(inset=20))
         ).html_bytes.decode("utf-8")
         assert "cw-cell-inner" not in html
+        assert "padding: 20px;" in self._cell_style(html)
+
+    def test_inset_with_only_opacity_has_no_inner_wrapper(self):
+        # Opacity is not decoration; it stays on the outer cell.
+        html = build_bundle(
+            _text_layout(WidgetFrame(inset=20, opacity=0.4))
+        ).html_bytes.decode("utf-8")
+        assert "cw-cell-inner" not in html
+        outer = self._cell_style(html)
+        assert "padding: 20px;" in outer
+        assert "opacity: 0.4;" in outer
 
     def test_no_frame_has_no_inner_wrapper(self):
         html = build_bundle(_text_layout(None)).html_bytes.decode("utf-8")

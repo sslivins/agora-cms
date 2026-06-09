@@ -394,6 +394,29 @@ def build_bundle(
     )
 
 
+def _frame_has_decoration(frame: WidgetFrame) -> bool:
+    """True when the frame draws something (background, border, or rounded
+    corners) as opposed to only spacing/opacity."""
+    return bool(
+        frame.corner_radius or frame.border_width or frame.background is not None
+    )
+
+
+def _frame_uses_inner(frame: WidgetFrame | None) -> bool:
+    """Whether the frame's decoration is rendered on a concentric inner box
+    (the "floating frame" model) rather than on the outer cell.
+
+    When a frame has an ``inset``, the decoration — background, border, and
+    rounded corners — hugs the inset content instead of sitting at the
+    cell edge.  The outer ``.cw-cell`` then keeps only the inset padding
+    (a transparent gap) plus opacity, and the inner ``.cw-cell-inner``
+    wrapper carries the visible frame.  With no inset there is nothing to
+    hug, so the decoration stays on the outer cell exactly as before and
+    those bundles remain byte-identical.
+    """
+    return frame is not None and bool(frame.inset) and _frame_has_decoration(frame)
+
+
 def _frame_style(inst: WidgetInstance) -> str:
     """Emit inline CSS declarations for a widget's optional appearance frame.
 
@@ -403,6 +426,11 @@ def _frame_style(inst: WidgetInstance) -> str:
     pre-appearance bundle, so existing slide bundle hashes are unchanged
     and devices don't needlessly re-cache.
 
+    When the frame has an inset *and* a decoration, the decoration moves to
+    the inner wrapper (see ``_frame_uses_inner`` / ``_frame_inner_wrap``)
+    so the border/background/corners hug the inset content; the outer cell
+    then carries only the inset padding and opacity.
+
     Lengths are in 1920x1080 design-space pixels, matching the units the
     widget renderers use for font sizes (the v1 canvas is a fixed
     1920x1080 surface, so design px == device px).
@@ -410,15 +438,21 @@ def _frame_style(inst: WidgetInstance) -> str:
     frame = inst.frame
     if frame is None:
         return ""
+    use_inner = _frame_uses_inner(frame)
     parts: list[str] = []
     if frame.inset:
         parts.append(f"padding: {frame.inset}px;")
-    if frame.background is not None:
-        parts.append(f"background: {frame.background};")
-    if frame.border_width:
-        parts.append(f"border: {frame.border_width}px solid {frame.border_color};")
-    if frame.corner_radius:
-        parts.append(f"border-radius: {frame.corner_radius}px;")
+    if not use_inner:
+        # No inset (or nothing to draw): the decoration sits on the outer
+        # cell edge, byte-identical to legacy bundles.
+        if frame.background is not None:
+            parts.append(f"background: {frame.background};")
+        if frame.border_width:
+            parts.append(
+                f"border: {frame.border_width}px solid {frame.border_color};"
+            )
+        if frame.corner_radius:
+            parts.append(f"border-radius: {frame.corner_radius}px;")
     if frame.opacity < 1.0:
         parts.append(f"opacity: {frame.opacity:g};")
     if not parts:
@@ -430,36 +464,38 @@ def _frame_style(inst: WidgetInstance) -> str:
 
 
 def _frame_inner_wrap(inst: WidgetInstance) -> tuple[str, str]:
-    """Optional inner content wrapper that actually rounds inset content.
+    """Optional inner content wrapper carrying the inset frame decoration.
 
-    The outer ``.cw-cell`` has ``overflow:hidden`` and carries the frame's
-    ``border-radius``, but CSS rounds the overflow clip at the cell's
-    *padding box* (the outer edge).  When the frame also has an ``inset``
-    (padding), the real content is pushed inward by that padding, so its
-    square corners sit *inside* the rounded clip region and never get
-    rounded — e.g. an inset image keeps square corners inside a rounded
-    matte frame.
+    When a frame has an ``inset``, the inset is a transparent gap between
+    the cell edge and the decorated box.  The decoration (background,
+    border, rounded corners) and the overflow clip live on this concentric
+    inner box, so the frame hugs the inset content: an inset image shows
+    its border tight around the image and its corners rounded against the
+    image, not floating at the original cell edge.
 
-    To fix this we wrap the content in a concentric inner box that carries
-    its own (reduced) ``border-radius`` + ``overflow:hidden``, so the
-    content itself is clipped to the rounded shape.  The inner radius is
-    the outer radius minus the distance from the outer edge to the inner
-    content box (border + inset), clamped at zero.
+    The inner box uses ``box-sizing: border-box`` so its border draws just
+    inside its footprint, and ``overflow: hidden`` + ``border-radius``
+    clip the content to the rounded inner edge of the border automatically
+    (the browser insets the clip radius by the border width).
 
-    Only emitted when both ``corner_radius`` and ``inset`` are non-zero —
-    every other case (no frame, no rounding, or rounding with no inset)
-    is correctly handled by the outer clip alone, so those cells stay
+    Only emitted when the frame has both an inset and a decoration — every
+    other case (no frame, spacing only, or decoration with no inset) is
+    handled by ``_frame_style`` on the outer cell, so those cells stay
     byte-identical and their bundle hashes don't change.
     """
     frame = inst.frame
-    if frame is None or not frame.corner_radius or not frame.inset:
+    if not _frame_uses_inner(frame):
         return "", ""
-    inner_radius = max(0, frame.corner_radius - frame.inset - frame.border_width)
-    style = (
-        f"width: 100%; height: 100%; "
-        f"border-radius: {inner_radius}px; overflow: hidden;"
-    )
-    return f'<div class="cw-cell-inner" style="{style}">', "</div>"
+    assert frame is not None  # narrowed by _frame_uses_inner
+    parts: list[str] = ["width: 100%;", "height: 100%;", "box-sizing: border-box;"]
+    if frame.background is not None:
+        parts.append(f"background: {frame.background};")
+    if frame.border_width:
+        parts.append(f"border: {frame.border_width}px solid {frame.border_color};")
+    if frame.corner_radius:
+        parts.append(f"border-radius: {frame.corner_radius}px;")
+    parts.append("overflow: hidden;")
+    return f'<div class="cw-cell-inner" style="{" ".join(parts)}">', "</div>"
 
 
 # ── Templates / boilerplate ──────────────────────────────────────────

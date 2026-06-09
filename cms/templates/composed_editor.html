@@ -1772,11 +1772,14 @@ function ensureFrame(w) {
 }
 function frameSet(w, k, v) { ensureFrame(w)[k] = v; }
 
-// Mirror the published bundle's .cw-cell frame onto the editor preview.
-// el (.placed-widget) gets padding/border/background/radius; the inner
-// content node gets the radius + overflow clip + opacity. We deliberately
-// keep overflow OFF el and opacity OFF el so the resize handles stay
-// visible and fully opaque.
+// Mirror the published bundle's frame onto the editor preview. When the
+// frame has an inset it uses the "floating frame" model: the decoration
+// (background/border/rounded corners + overflow clip) hugs the inset
+// content and lives on the inner content node, while el keeps only the
+// inset padding. With no inset, the decoration sits on el (the cell edge),
+// matching the published bundle's outer-cell styling. We deliberately keep
+// overflow OFF el and opacity OFF el so the resize handles stay visible and
+// fully opaque.
 function applyFramePreview(el, content, frame) {
     if (!frame) return;
     const f = Object.assign({}, FRAME_DEFAULTS, frame);
@@ -1785,17 +1788,28 @@ function applyFramePreview(el, content, frame) {
     if (!active) return;
     el.style.boxSizing = "border-box";
     if (f.inset > 0) el.style.padding = cqwLen(f.inset);
-    if (f.background != null) el.style.background = f.background;
-    if (f.border_width > 0) el.style.border = cqwLen(f.border_width) + " solid " + f.border_color;
-    if (f.corner_radius > 0) {
-        el.style.borderRadius = cqwLen(f.corner_radius);
-        // Round the inner content concentrically. The published bundle
-        // clips the inset content with a reduced radius (outer radius
-        // minus border + inset), so mirror that here — otherwise an inset
-        // image looks rounded in the editor but ships with square corners.
-        const innerR = Math.max(0, f.corner_radius - f.inset - f.border_width);
-        content.style.borderRadius = cqwLen(innerR);
+    const hasDecoration = f.background != null || f.border_width > 0 ||
+                          f.corner_radius > 0;
+    if (f.inset > 0 && hasDecoration) {
+        // Floating-frame model: the decoration hugs the inset content.
+        content.style.boxSizing = "border-box";
+        content.style.width = "100%";
+        content.style.height = "100%";
+        if (f.background != null) content.style.background = f.background;
+        if (f.border_width > 0) content.style.border = cqwLen(f.border_width) + " solid " + f.border_color;
+        if (f.corner_radius > 0) content.style.borderRadius = cqwLen(f.corner_radius);
         content.style.overflow = "hidden";
+    } else {
+        // Decoration sits at the cell edge (no inset, or nothing to hug).
+        if (f.background != null) el.style.background = f.background;
+        if (f.border_width > 0) el.style.border = cqwLen(f.border_width) + " solid " + f.border_color;
+        if (f.corner_radius > 0) {
+            el.style.borderRadius = cqwLen(f.corner_radius);
+            // Clip the content node too (overflow stays off el so the
+            // resize handles aren't clipped).
+            content.style.borderRadius = cqwLen(f.corner_radius);
+            content.style.overflow = "hidden";
+        }
     }
     if (f.opacity < 1) content.style.opacity = String(f.opacity);
 }
