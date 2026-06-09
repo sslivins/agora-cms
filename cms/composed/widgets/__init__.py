@@ -22,6 +22,7 @@ from cms.composed.registry import get_registry
 from cms.composed.widgets.analog_clock import AnalogClockWidget
 from cms.composed.widgets.clock import ClockWidget
 from cms.composed.widgets.countdown import CountdownWidget
+from cms.composed.widgets.datebanner import DateBannerWidget
 from cms.composed.widgets.image import ImageWidget
 from cms.composed.widgets.media import MediaWidget
 from cms.composed.widgets.qr import QrWidget
@@ -42,6 +43,7 @@ for _widget_cls in (
     ClockWidget,
     AnalogClockWidget,
     CountdownWidget,
+    DateBannerWidget,
     TickerWidget,
     WeatherWidget,
     QrWidget,
@@ -54,6 +56,7 @@ __all__ = [
     "AnalogClockWidget",
     "ClockWidget",
     "CountdownWidget",
+    "DateBannerWidget",
     "ImageWidget",
     "MediaWidget",
     "QrWidget",
