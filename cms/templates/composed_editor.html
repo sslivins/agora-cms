@@ -323,6 +323,17 @@
     }
     .cw-prev-countdown-label { opacity: 0.8; margin-bottom: 0.2em; white-space: nowrap; }
     .cw-prev-countdown-time { line-height: 1; white-space: nowrap; }
+    .cw-prev-datebanner {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        text-align: center;
+    }
+    .cw-prev-datebanner-date { line-height: 1.1; white-space: nowrap; }
     .cw-prev-ticker {
         width: 100%;
         height: 100%;
@@ -1028,6 +1039,74 @@ registerWidget("countdown", {
             <label style="font-weight:400;">
                 <input type="checkbox" ${w.config.show_seconds?"checked":""}
                     oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Seconds
+            </label>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <label>Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>`,
+});
+
+registerWidget("datebanner", {
+    label: "Date Banner", icon: "📅", category: "Time & Date",
+    keywords: ["date", "day", "banner", "calendar", "today", "weekday"],
+    defaults: () => ({format:"full", prefix:"", uppercase:false, color:"#ffffff", font_family:"sans", font_size_px:96}),
+    summary: (w) => w.config.format || "full",
+    preview: (root, cfg) => {
+        const OPTS = {
+            full: {weekday:'long', year:'numeric', month:'long', day:'numeric'},
+            long: {year:'numeric', month:'long', day:'numeric'},
+            weekday: {weekday:'long'},
+            short: {weekday:'short', month:'short', day:'numeric'},
+            numeric: {year:'numeric', month:'2-digit', day:'2-digit'},
+        };
+        const c = document.createElement("div");
+        c.className = "cw-prev-datebanner";
+        c.style.color = cfg.color || "#ffffff";
+        c.style.fontFamily = fontStack(cfg.font_family);
+        const dateEl = document.createElement("div");
+        dateEl.className = "cw-prev-datebanner-date";
+        dateEl.style.fontSize = cqwFont(cfg.font_size_px);
+        let txt;
+        try {
+            txt = new Date().toLocaleDateString(undefined, OPTS[cfg.format] || OPTS.full);
+        } catch (e) {
+            txt = new Date().toLocaleDateString();
+        }
+        txt = (cfg.prefix || "") + txt;
+        if (cfg.uppercase) txt = txt.toUpperCase();
+        dateEl.textContent = txt;
+        c.appendChild(dateEl);
+        root.appendChild(c);
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Date banner widget</h4>
+            <label>Format</label>
+            <select oninput="updateSelected(x=>x.config.format=this.value)">
+                <option value="full" ${w.config.format==="full"?"selected":""}>Full (Monday, January 1, 2025)</option>
+                <option value="long" ${w.config.format==="long"?"selected":""}>Long (January 1, 2025)</option>
+                <option value="weekday" ${w.config.format==="weekday"?"selected":""}>Weekday (Monday)</option>
+                <option value="short" ${w.config.format==="short"?"selected":""}>Short (Mon, Jan 1)</option>
+                <option value="numeric" ${w.config.format==="numeric"?"selected":""}>Numeric (2025-01-01)</option>
+            </select>
+            <label>Prefix</label>
+            <input type="text" maxlength="120" value="${(w.config.prefix||"").replace(/"/g,"&quot;")}"
+                   placeholder="e.g. Today is "
+                   oninput="updateSelected(x=>x.config.prefix=this.value)">
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.uppercase?"checked":""}
+                    oninput="updateSelected(x=>x.config.uppercase=this.checked)"> Uppercase
             </label>
             <div class="row">
                 <div>
