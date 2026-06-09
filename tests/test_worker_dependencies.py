@@ -116,9 +116,19 @@ def test_shared_top_level_imports_are_in_requirements_shared() -> None:
     # azure-* declaration as satisfying it.
     azure_satisfied = any(name.startswith("azure-") for name in declared)
 
+    # The ``opentelemetry`` API/SDK packages are pulled in by the
+    # ``azure-monitor-opentelemetry`` meta-package (that is the whole
+    # point of the meta-package — see requirements-shared.txt).  Treat
+    # its presence as satisfying a top-level ``import opentelemetry``
+    # so shared/metrics.py + shared/observability.py don't have to pin
+    # the OTel API distribution separately and risk version skew.
+    otel_satisfied = "azure-monitor-opentelemetry" in declared
+
     missing: set[str] = set()
     for dist in needed:
         if dist == "azure-storage-blob" and azure_satisfied:
+            continue
+        if dist == "opentelemetry" and otel_satisfied:
             continue
         if dist not in declared:
             missing.add(dist)

@@ -275,6 +275,8 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     )
     from sqlalchemy import select
 
+    from shared import metrics
+
     session_factory = get_session_factory()
     asset_dir = settings.asset_storage_path
 
@@ -530,6 +532,11 @@ async def _queue_mode(settings: WorkerSettings) -> None:
     success = False
     error_message: str | None = None
     terminal_failure = False
+    # Bounded reason for the agora.transcode.failure counter, set in the
+    # except handlers below and emitted at the terminal-failure branches
+    # in the finalize block.  None when the dispatch raised nothing (a
+    # handler returning False maps to REASON_UNKNOWN at emit time).
+    failure_reason: str | None = None
     try:
         logger.info(
             "Processing job %s type=%s target=%s (attempt %d)",
@@ -557,10 +564,18 @@ async def _queue_mode(settings: WorkerSettings) -> None:
         logger.error("Job %s terminal imager failure: %s", job_id, e)
         terminal_failure = True
         success = False
+        failure_reason = metrics.REASON_IMAGER_TERMINAL
     except Exception as e:
         error_message = f"{type(e).__name__}: {e}"
         logger.exception("Job %s raised an exception", job_id)
         success = False
+        # A missing/broken dependency (e.g. the markupsafe import bug)
+        # surfaces as ImportError; ModuleNotFoundError is a subclass.
+        failure_reason = (
+            metrics.REASON_IMPORT_ERROR
+            if isinstance(e, ImportError)
+            else metrics.REASON_RENDER_ERROR
+        )
 
     # Stop the heartbeat before doing any final DB/queue work.
     await _stop_heartbeat()
@@ -602,6 +617,13 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 "Job %s SIGTERM-failed but queue delete failed", job_id, exc_info=True
             )
         logger.error("Job %s failed: %s", job_id, timeout_msg)
+        metrics.transcode_failure_total.add(
+            1,
+            {
+                metrics.ATTR_REASON: metrics.REASON_TIMEOUT,
+                metrics.ATTR_JOB_TYPE: job.type.value,
+            },
+        )
     elif lease_actually_lost:
         # Another worker has (or will) pick up the re-visible message and
         # owns the job now.  Do NOT touch DB or queue — we'd stomp on the
@@ -658,6 +680,13 @@ async def _queue_mode(settings: WorkerSettings) -> None:
                 job_id, exc_info=True,
             )
         logger.info("Job %s terminal failure: %s", job_id, error_message)
+        metrics.transcode_failure_total.add(
+            1,
+            {
+                metrics.ATTR_REASON: failure_reason or metrics.REASON_IMAGER_TERMINAL,
+                metrics.ATTR_JOB_TYPE: job.type.value,
+            },
+        )
     elif success:
         async with session_factory() as db:
             await mark_done(db, job_id)
@@ -686,6 +715,13 @@ async def _queue_mode(settings: WorkerSettings) -> None:
             )
             await db.commit()
         logger.info("Job %s failed — will retry after visibility timeout", job_id)
+        metrics.transcode_failure_total.add(
+            1,
+            {
+                metrics.ATTR_REASON: failure_reason or metrics.REASON_UNKNOWN,
+                metrics.ATTR_JOB_TYPE: job.type.value,
+            },
+        )
 
 
 async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
