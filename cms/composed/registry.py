@@ -55,6 +55,18 @@ class BundleContext:
     sibling-URLs channel, never both — the publish layer buckets by
     ``asset_type``.
 
+    ``cms_base_url`` is the canonical public base URL of the CMS
+    (scheme + host, no trailing slash), or ``None``.  It exists for
+    widgets that bake an *absolute* call-back URL into the device
+    bundle — e.g. the RSS widget points the device's runtime fetch at
+    the CMS's ``/composed/rss`` feed proxy.  The device serves the
+    bundle from its own local shell HTTP server, so a relative URL
+    would hit the device, not the CMS; an absolute URL is required on
+    real hardware.  ``None`` means "bake a relative URL" — correct for
+    the same-origin CMS live preview (where the document is served by
+    the CMS itself) and for the headless thumbnail render.  Widgets
+    that make no runtime CMS call ignore this entirely.
+
     Empty defaults are intentional: trivial widgets (text, clock) that
     never touch assets can ignore the parameter entirely.
     """
@@ -62,6 +74,7 @@ class BundleContext:
     asset_bytes: dict[uuid.UUID, bytes] = field(default_factory=dict)
     asset_mimes: dict[uuid.UUID, str] = field(default_factory=dict)
     sibling_asset_urls: dict[uuid.UUID, str] = field(default_factory=dict)
+    cms_base_url: str | None = None
 
 
 @dataclass

@@ -377,6 +377,18 @@
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
+    .cw-prev-rss {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        box-sizing: border-box;
+        line-height: 1.2;
+    }
+    .cw-prev-rss-heading { font-weight: 700; margin-bottom: 0.3em; flex: 0 0 auto; }
+    .cw-prev-rss-list { flex: 1 1 auto; overflow: hidden; display: flex; flex-direction: column; gap: 0.4em; }
+    .cw-prev-rss-date { opacity: 0.7; margin-top: 0.1em; }
     .wx-results { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
     .wx-result {
         text-align: left;
@@ -1184,6 +1196,95 @@ registerWidget("weather", {
                 Live temperature is fetched on the device. The preview shows placeholder values.
             </p>`;
     },
+});
+
+registerWidget("rss", {
+    label: "RSS Headlines", icon: "📰", category: "Live Data",
+    keywords: ["rss", "feed", "news", "headlines", "atom", "syndication"],
+    defaults: () => ({feed_url:"https://feeds.bbci.co.uk/news/world/rss.xml", heading:"",
+             item_count:5, show_dates:false, color:"#ffffff", font_family:"sans",
+             font_size_px:32, refresh_seconds:900}),
+    summary: (w) => (w.config.heading || "headlines").slice(0, 24),
+    preview: (root, cfg) => {
+        const wrap = document.createElement("div");
+        wrap.className = "cw-prev-rss";
+        wrap.style.color = cfg.color || "#ffffff";
+        wrap.style.fontFamily = fontStack(cfg.font_family);
+        if (cfg.heading) {
+            const h = document.createElement("div");
+            h.className = "cw-prev-rss-heading";
+            h.textContent = cfg.heading;
+            h.style.fontSize = cqwFont(Math.round((Number(cfg.font_size_px)||32) * 1.1));
+            wrap.appendChild(h);
+        }
+        const list = document.createElement("div");
+        list.className = "cw-prev-rss-list";
+        const n = Math.max(1, Math.min(Number(cfg.item_count) || 5, 6));
+        const samples = ["Sample headline one", "Sample headline two",
+            "Sample headline three", "Sample headline four",
+            "Sample headline five", "Sample headline six"];
+        for (let i = 0; i < n; i++) {
+            const row = document.createElement("div");
+            const t = document.createElement("div");
+            t.textContent = samples[i % samples.length];
+            t.style.fontSize = cqwFont(cfg.font_size_px || 32);
+            row.appendChild(t);
+            if (cfg.show_dates) {
+                const d = document.createElement("div");
+                d.className = "cw-prev-rss-date";
+                d.textContent = "Mon, 01 Jan 2026";
+                d.style.fontSize = cqwFont(Math.round((Number(cfg.font_size_px)||32) * 0.6));
+                row.appendChild(d);
+            }
+            list.appendChild(row);
+        }
+        wrap.appendChild(list);
+        root.appendChild(wrap);
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">RSS Headlines widget</h4>
+            <label>Feed URL</label>
+            <input type="text" maxlength="2048" value="${escapeHtml(w.config.feed_url||"")}"
+                   placeholder="https://example.com/feed.xml"
+                   oninput="updateSelected(x=>x.config.feed_url=this.value)">
+            <label style="margin-top:0.5rem;">Heading (optional)</label>
+            <input type="text" maxlength="80" value="${escapeHtml(w.config.heading||"")}"
+                   oninput="updateSelected(x=>x.config.heading=this.value)">
+            <div class="row">
+                <div>
+                    <label>Headlines</label>
+                    <input type="number" min="1" max="30" value="${w.config.item_count||5}"
+                           oninput="updateSelected(x=>x.config.item_count=clampInt(this.value,1,30))">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="256" value="${w.config.font_size_px||32}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,256))">
+                </div>
+            </div>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_dates?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_dates=this.checked)"> Show dates
+            </label>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Font</label>
+                    <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                        ${SAFE_FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+                    </select>
+                </div>
+            </div>
+            <label style="margin-top:0.5rem;">Refresh (seconds, 300–86400)</label>
+            <input type="number" min="300" max="86400" value="${w.config.refresh_seconds||900}"
+                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,300,86400))">
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                Headlines are fetched on the device via the CMS feed proxy. The preview shows placeholder text.
+            </p>`,
 });
 
 registerWidget("ticker", {

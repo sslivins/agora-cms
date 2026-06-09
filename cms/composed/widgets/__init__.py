@@ -26,6 +26,7 @@ from cms.composed.widgets.datebanner import DateBannerWidget
 from cms.composed.widgets.image import ImageWidget
 from cms.composed.widgets.media import MediaWidget
 from cms.composed.widgets.qr import QrWidget
+from cms.composed.widgets.rss import RssWidget
 from cms.composed.widgets.shape import ShapeWidget
 from cms.composed.widgets.text import TextWidget
 from cms.composed.widgets.ticker import TickerWidget
@@ -47,6 +48,7 @@ for _widget_cls in (
     TickerWidget,
     WeatherWidget,
     QrWidget,
+    RssWidget,
     ShapeWidget,
 ):
     if not _reg.has(_widget_cls.slug):
@@ -60,6 +62,7 @@ __all__ = [
     "ImageWidget",
     "MediaWidget",
     "QrWidget",
+    "RssWidget",
     "ShapeWidget",
     "TextWidget",
     "TickerWidget",

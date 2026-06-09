@@ -68,6 +68,46 @@ router = APIRouter(
 )
 
 
+# The RSS proxy is deliberately mounted on a SEPARATE router WITHOUT the
+# router-level ``require_auth`` dependency. The composed-slide device
+# bundle fetches this endpoint at runtime from inside the sandboxed
+# player iframe (served off the device's own local shell origin), so the
+# request is cross-origin and credential-less and cannot authenticate —
+# exactly like the weather widget's keyless Open-Meteo fetch. SSRF safety
+# is provided by ``cms.composed.rss_proxy`` (scheme allowlist + resolved-IP
+# range checks + redirect re-validation + size/time caps), not by auth.
+public_router = APIRouter(prefix="/composed", tags=["composed"])
+
+
+@public_router.get("/rss")
+async def rss_proxy(url: str, count: int | None = None) -> Any:
+    """Unauthenticated, SSRF-guarded RSS/Atom feed proxy (CORS-enabled).
+
+    Fetches and parses ``url`` server-side and returns a small JSON
+    projection the composed-slide RSS widget can read cross-origin. See
+    ``cms.composed.rss_proxy`` for the threat model and guard.
+    """
+    from fastapi.responses import JSONResponse
+
+    from cms.composed.rss_proxy import (
+        RssProxyError,
+        clamp_item_count,
+        fetch_feed_items,
+    )
+
+    cors = {"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
+    n = clamp_item_count(count)
+    try:
+        items = await fetch_feed_items(url, count=n)
+    except RssProxyError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.detail},
+            headers=cors,
+        )
+    return JSONResponse(content={"items": items}, headers=cors)
+
+
 _PREVIEW_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "
@@ -507,9 +547,18 @@ async def preview_composed_slide(
     # fallback instead of live values. Allow exactly that one origin —
     # and only when the slide actually contains a weather widget, so a
     # plain text/image slide keeps the fully-locked CSP.
+    # CSP allows only a single connect-src directive, so weather and rss
+    # must be combined into one list. Weather fetches Open-Meteo directly;
+    # the RSS widget fetches this CMS's own same-origin proxy (/composed/rss),
+    # so 'self' is sufficient for it in the preview context.
     csp = _PREVIEW_CSP
+    connect_src: list[str] = []
     if rendered.has_weather:
-        csp = csp + "; connect-src https://api.open-meteo.com"
+        connect_src.append("https://api.open-meteo.com")
+    if rendered.has_rss:
+        connect_src.append("'self'")
+    if connect_src:
+        csp = csp + "; connect-src " + " ".join(connect_src)
 
     headers = {
         "Content-Security-Policy": csp,
