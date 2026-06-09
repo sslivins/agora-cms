@@ -154,6 +154,27 @@ class TestNoExternalReferences:
         match = self.EXTERNAL_RE.search(html)
         assert match is None, f"unexpected external reference: {match!r}"
 
+    def test_iframe_widget_bundle_has_no_external_attr_refs(self):
+        # The iframe widget loads a live page, but the URL must only ever
+        # exist as a JS string literal that init_js assigns to frame.src —
+        # never as a static src=/href= attribute on the <iframe> itself.
+        layout = Layout(
+            widgets=[
+                WidgetInstance(
+                    id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+                    type="iframe",
+                    cell=Cell(row=1, col=1, rowspan=2, colspan=3),
+                    config={"url": "https://dash.example.net/board"},
+                ),
+            ],
+        )
+        html = build_bundle(layout).html_bytes.decode("utf-8")
+        # The embed URL is present (baked into init_js)…
+        assert "dash.example.net/board" in html
+        # …but never as an external src=/href= attribute.
+        match = self.EXTERNAL_RE.search(html)
+        assert match is None, f"unexpected external reference: {match!r}"
+
 
 class TestDeterminism:
     def test_same_layout_produces_same_sha_and_bytes(self):
