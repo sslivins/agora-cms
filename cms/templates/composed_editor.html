@@ -389,6 +389,30 @@
     .cw-prev-rss-heading { font-weight: 700; margin-bottom: 0.3em; flex: 0 0 auto; }
     .cw-prev-rss-list { flex: 1 1 auto; overflow: hidden; display: flex; flex-direction: column; gap: 0.4em; }
     .cw-prev-rss-date { opacity: 0.7; margin-top: 0.1em; }
+    .cw-prev-storehours {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        box-sizing: border-box;
+        line-height: 1.2;
+        text-align: center;
+        gap: 0.25em;
+    }
+    .cw-prev-storehours-heading { font-weight: 700; flex: 0 0 auto; }
+    .cw-prev-storehours-status { font-weight: 700; }
+    .cw-prev-storehours-pill {
+        display: inline-block; border-radius: 0.4em; padding: 0.05em 0.4em;
+        color: #0d1117;
+    }
+    .cw-prev-storehours-body { opacity: 0.95; }
+    .cw-prev-storehours-week { display: flex; flex-direction: column; gap: 0.15em; width: 100%; }
+    .cw-prev-storehours-row { display: flex; justify-content: space-between; gap: 1em; }
+    .cw-prev-storehours-row .d { font-weight: 600; }
+    .cw-prev-storehours-hint { opacity: 0.75; }
     .wx-results { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
     .wx-result {
         text-align: left;
@@ -1285,6 +1309,286 @@ registerWidget("rss", {
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 Headlines are fetched on the device via the CMS feed proxy. The preview shows placeholder text.
             </p>`,
+});
+
+// ── Store Hours widget editor helpers ──────────────────────────────
+// The settings panel is the most structural in the editor: it edits
+// per-day open intervals and a holiday-override list. Mutating those
+// arrays must re-render the panel (mirrors setTickerTransparent's
+// pattern of updateSelected + renderSettings).
+const SH_DAY_FIELDS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+const SH_DAY_LABELS = {monday:"Mon", tuesday:"Tue", wednesday:"Wed", thursday:"Thu", friday:"Fri", saturday:"Sat", sunday:"Sun"};
+const SH_DAY_JS_INDEX = {sunday:0, monday:1, tuesday:2, wednesday:3, thursday:4, friday:5, saturday:6};
+
+function shParseHHMM(v) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || "").trim());
+    if (!m) return null;
+    const mins = (+m[1]) * 60 + (+m[2]);
+    return (mins >= 0 && mins <= 1440) ? mins : null;
+}
+function shFmtTime(mins, fmt24) {
+    if (mins >= 1440) mins = 0;
+    let h = Math.floor(mins / 60), mm = mins % 60;
+    const pad = (n) => (n < 10 ? "0" + n : "" + n);
+    if (fmt24) return pad(h) + ":" + pad(mm);
+    const ap = h < 12 ? "AM" : "PM";
+    let hr = h % 12; if (hr === 0) hr = 12;
+    return hr + ":" + pad(mm) + " " + ap;
+}
+function shFmtIntervals(intervals, fmt24) {
+    if (!intervals || !intervals.length) return "Closed";
+    return intervals.map(iv => {
+        const o = shParseHHMM(iv.open), c = shParseHHMM(iv.close);
+        if (o == null || c == null) return "—";
+        return shFmtTime(o, fmt24) + "–" + shFmtTime(c, fmt24);
+    }).join(", ");
+}
+function shAddInterval(day) {
+    updateSelected(x => { (x.config[day] = x.config[day] || []).push({open:"09:00", close:"17:00"}); });
+    renderSettings();
+}
+function shRemoveInterval(day, idx) {
+    updateSelected(x => { if (x.config[day]) x.config[day].splice(idx, 1); });
+    renderSettings();
+}
+function shSetInterval(day, idx, field, val) {
+    updateSelected(x => { if (x.config[day] && x.config[day][idx]) x.config[day][idx][field] = val; });
+}
+function shAddHoliday() {
+    updateSelected(x => { (x.config.holidays = x.config.holidays || []).push({date:"", label:"", closed:true, intervals:[]}); });
+    renderSettings();
+}
+function shRemoveHoliday(idx) {
+    updateSelected(x => { if (x.config.holidays) x.config.holidays.splice(idx, 1); });
+    renderSettings();
+}
+function shSetHoliday(idx, field, val) {
+    updateSelected(x => { if (x.config.holidays && x.config.holidays[idx]) x.config.holidays[idx][field] = val; });
+}
+function shToggleHolidayClosed(idx, closed) {
+    updateSelected(x => {
+        const h = x.config.holidays && x.config.holidays[idx];
+        if (!h) return;
+        h.closed = closed;
+        if (!closed && (!h.intervals || !h.intervals.length)) h.intervals = [{open:"09:00", close:"17:00"}];
+    });
+    renderSettings();
+}
+function shAddHolidayInterval(hidx) {
+    updateSelected(x => {
+        const h = x.config.holidays && x.config.holidays[hidx];
+        if (h) (h.intervals = h.intervals || []).push({open:"09:00", close:"17:00"});
+    });
+    renderSettings();
+}
+function shRemoveHolidayInterval(hidx, iidx) {
+    updateSelected(x => {
+        const h = x.config.holidays && x.config.holidays[hidx];
+        if (h && h.intervals) h.intervals.splice(iidx, 1);
+    });
+    renderSettings();
+}
+function shSetHolidayInterval(hidx, iidx, field, val) {
+    updateSelected(x => {
+        const h = x.config.holidays && x.config.holidays[hidx];
+        if (h && h.intervals && h.intervals[iidx]) h.intervals[iidx][field] = val;
+    });
+}
+
+registerWidget("storehours", {
+    label: "Store Hours", icon: "🕗", category: "Time & Date",
+    keywords: ["store", "hours", "open", "closed", "schedule", "opening", "business"],
+    defaults: () => ({
+        monday:[{open:"09:00",close:"17:00"}], tuesday:[{open:"09:00",close:"17:00"}],
+        wednesday:[{open:"09:00",close:"17:00"}], thursday:[{open:"09:00",close:"17:00"}],
+        friday:[{open:"09:00",close:"17:00"}], saturday:[{open:"10:00",close:"16:00"}],
+        sunday:[], holidays:[], display_mode:"today", heading:"", show_status:true,
+        time_format:"12h", color:"#ffffff", open_color:"#3fb950", closed_color:"#f85149",
+        font_family:"sans", font_size_px:48,
+    }),
+    summary: (w) => (w.config.heading || (w.config.display_mode === "week" ? "weekly hours" : "today's hours")).slice(0, 24),
+    preview: (root, cfg) => {
+        const fmt24 = cfg.time_format === "24h";
+        const wrap = document.createElement("div");
+        wrap.className = "cw-prev-storehours";
+        wrap.style.color = cfg.color || "#ffffff";
+        wrap.style.fontFamily = fontStack(cfg.font_family);
+        const baseFont = Number(cfg.font_size_px) || 48;
+        if (cfg.heading) {
+            const h = document.createElement("div");
+            h.className = "cw-prev-storehours-heading";
+            h.textContent = cfg.heading;
+            h.style.fontSize = cqwFont(Math.round(baseFont * 1.05));
+            wrap.appendChild(h);
+        }
+        // Resolve today's intervals from the weekly schedule (preview
+        // ignores holiday date-matching; runtime handles real dates).
+        const todayIdx = new Date().getDay();
+        const todayField = SH_DAY_FIELDS.find(f => SH_DAY_JS_INDEX[f] === todayIdx) || "monday";
+        const todayIntervals = cfg[todayField] || [];
+        if (cfg.show_status) {
+            const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+            let open = false;
+            for (const iv of todayIntervals) {
+                const o = shParseHHMM(iv.open), c = shParseHHMM(iv.close);
+                if (o != null && c != null && nowMin >= o && nowMin < c) { open = true; break; }
+            }
+            const st = document.createElement("div");
+            st.className = "cw-prev-storehours-status";
+            st.style.fontSize = cqwFont(baseFont);
+            const pill = document.createElement("span");
+            pill.className = "cw-prev-storehours-pill";
+            pill.textContent = open ? "Open" : "Closed";
+            pill.style.background = (open ? (cfg.open_color || "#3fb950") : (cfg.closed_color || "#f85149"));
+            st.appendChild(pill);
+            wrap.appendChild(st);
+        }
+        if (cfg.display_mode === "week") {
+            const wk = document.createElement("div");
+            wk.className = "cw-prev-storehours-week";
+            wk.style.fontSize = cqwFont(Math.round(baseFont * 0.55));
+            for (const f of SH_DAY_FIELDS) {
+                const row = document.createElement("div");
+                row.className = "cw-prev-storehours-row";
+                const d = document.createElement("span"); d.className = "d"; d.textContent = SH_DAY_LABELS[f];
+                const v = document.createElement("span"); v.textContent = shFmtIntervals(cfg[f], fmt24);
+                row.appendChild(d); row.appendChild(v); wk.appendChild(row);
+            }
+            wrap.appendChild(wk);
+        } else {
+            const body = document.createElement("div");
+            body.className = "cw-prev-storehours-body";
+            body.style.fontSize = cqwFont(Math.round(baseFont * 0.7));
+            body.textContent = "Today: " + shFmtIntervals(todayIntervals, fmt24);
+            wrap.appendChild(body);
+        }
+        root.appendChild(wrap);
+    },
+    settings: (w) => {
+        const c = w.config;
+        const fmt24 = c.time_format === "24h";
+        const dayRows = SH_DAY_FIELDS.map(day => {
+            const ivs = c[day] || [];
+            const ivHtml = ivs.length ? ivs.map((iv, i) => `
+                <div class="row" style="align-items:center; gap:0.25rem; margin-bottom:0.2rem;">
+                    <input type="time" value="${escapeHtml(iv.open || "")}"
+                           oninput="shSetInterval('${day}',${i},'open',this.value)">
+                    <span style="opacity:0.6;">–</span>
+                    <input type="time" value="${escapeHtml(iv.close || "")}"
+                           oninput="shSetInterval('${day}',${i},'close',this.value)">
+                    <button type="button" title="Remove" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:0.9rem; padding:0 0.2rem;"
+                            onclick="shRemoveInterval('${day}',${i})">✕</button>
+                </div>`).join("") : `<div style="opacity:0.6; font-size:0.8rem; margin-bottom:0.2rem;">Closed</div>`;
+            return `
+            <div style="border:1px solid var(--border); border-radius:0.4rem; padding:0.4rem 0.5rem; margin-bottom:0.4rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.25rem;">
+                    <strong style="font-size:0.85rem;">${SH_DAY_LABELS[day]}</strong>
+                    <button type="button" class="btn-secondary" style="padding:0.1rem 0.5rem; font-size:0.75rem;"
+                            onclick="shAddInterval('${day}')">+ Hours</button>
+                </div>
+                ${ivHtml}
+            </div>`;
+        }).join("");
+        const holidays = c.holidays || [];
+        const holidayHtml = holidays.length ? holidays.map((h, i) => {
+            const ivEditor = h.closed ? "" : `
+                <div style="margin-top:0.3rem;">
+                    ${(h.intervals || []).map((iv, j) => `
+                    <div class="row" style="align-items:center; gap:0.25rem; margin-bottom:0.2rem;">
+                        <input type="time" value="${escapeHtml(iv.open || "")}"
+                               oninput="shSetHolidayInterval(${i},${j},'open',this.value)">
+                        <span style="opacity:0.6;">–</span>
+                        <input type="time" value="${escapeHtml(iv.close || "")}"
+                               oninput="shSetHolidayInterval(${i},${j},'close',this.value)">
+                        <button type="button" title="Remove" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:0.9rem; padding:0 0.2rem;"
+                                onclick="shRemoveHolidayInterval(${i},${j})">✕</button>
+                    </div>`).join("")}
+                    <button type="button" class="btn-secondary" style="padding:0.1rem 0.5rem; font-size:0.75rem;"
+                            onclick="shAddHolidayInterval(${i})">+ Hours</button>
+                </div>`;
+            return `
+            <div style="border:1px solid var(--border); border-radius:0.4rem; padding:0.4rem 0.5rem; margin-bottom:0.4rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.3rem;">
+                    <input type="text" maxlength="10" placeholder="MM-DD or YYYY-MM-DD"
+                           value="${escapeHtml(h.date || "")}" style="flex:1 1 auto;"
+                           oninput="shSetHoliday(${i},'date',this.value)">
+                    <button type="button" title="Remove holiday" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:0.9rem; padding:0 0.2rem;"
+                            onclick="shRemoveHoliday(${i})">✕</button>
+                </div>
+                <input type="text" maxlength="80" placeholder="Label (e.g. Christmas Day)"
+                       value="${escapeHtml(h.label || "")}" style="width:100%; margin-top:0.25rem;"
+                       oninput="shSetHoliday(${i},'label',this.value)">
+                <label style="font-weight:400; margin-top:0.25rem;">
+                    <input type="checkbox" ${h.closed ? "checked" : ""}
+                        onchange="shToggleHolidayClosed(${i}, this.checked)"> Closed all day
+                </label>
+                ${ivEditor}
+            </div>`;
+        }).join("") : `<div style="opacity:0.6; font-size:0.8rem; margin-bottom:0.4rem;">No holidays added.</div>`;
+        return `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Store Hours widget</h4>
+            <label>Heading (optional)</label>
+            <input type="text" maxlength="80" value="${escapeHtml(c.heading || "")}"
+                   placeholder="e.g. Store Hours"
+                   oninput="updateSelected(x=>x.config.heading=this.value)">
+            <div class="row" style="margin-top:0.5rem;">
+                <div>
+                    <label>Display</label>
+                    <select oninput="updateSelected(x=>x.config.display_mode=this.value); renderSettings();">
+                        <option value="today" ${c.display_mode==="today"?"selected":""}>Today only</option>
+                        <option value="week" ${c.display_mode==="week"?"selected":""}>Full week</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Time format</label>
+                    <select oninput="updateSelected(x=>x.config.time_format=this.value)">
+                        <option value="12h" ${c.time_format==="12h"?"selected":""}>12-hour</option>
+                        <option value="24h" ${c.time_format==="24h"?"selected":""}>24-hour</option>
+                    </select>
+                </div>
+            </div>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${c.show_status?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_status=this.checked)"> Show open/closed status
+            </label>
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Weekly hours</h4>
+            ${dayRows}
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Holiday overrides</h4>
+            ${holidayHtml}
+            <button type="button" class="btn-secondary" style="padding:0.2rem 0.6rem; font-size:0.8rem;"
+                    onclick="shAddHoliday()">+ Add holiday</button>
+            <div class="row" style="margin-top:0.6rem;">
+                <div>
+                    <label>Text color</label>
+                    <input type="color" value="${c.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${c.font_size_px||48}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <div class="row" style="margin-top:0.3rem;">
+                <div>
+                    <label>Open color</label>
+                    <input type="color" value="${c.open_color||"#3fb950"}"
+                           oninput="updateSelected(x=>x.config.open_color=this.value)">
+                </div>
+                <div>
+                    <label>Closed color</label>
+                    <input type="color" value="${c.closed_color||"#f85149"}"
+                           oninput="updateSelected(x=>x.config.closed_color=this.value)">
+                </div>
+            </div>
+            <label style="margin-top:0.3rem;">Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${c.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>
+            <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
+                Hours are evaluated on the device using its local clock. Holiday dates match by MM-DD (every year) or YYYY-MM-DD (one-off).
+            </p>`;
+    },
 });
 
 registerWidget("ticker", {
