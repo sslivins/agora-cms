@@ -514,6 +514,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /composed/rss:
+    get:
+      tags:
+      - composed
+      summary: Rss Proxy
+      description: |-
+        Unauthenticated, SSRF-guarded RSS/Atom feed proxy (CORS-enabled).
+
+        Fetches and parses ``url`` server-side and returns a small JSON
+        projection the composed-slide RSS widget can read cross-origin. See
+        ``cms.composed.rss_proxy`` for the threat model and guard.
+      operationId: rss_proxy_composed_rss_get
+      parameters:
+      - name: url
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Url
+      - name: count
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Count
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Rss Proxy Composed Rss Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/check-updates:
     post:
       summary: Check For Updates
