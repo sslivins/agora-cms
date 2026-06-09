@@ -525,6 +525,9 @@ paths:
         Fetches and parses ``url`` server-side and returns a small JSON
         projection the composed-slide RSS widget can read cross-origin. See
         ``cms.composed.rss_proxy`` for the threat model and guard.
+
+        ``newest`` (default true) orders the returned headlines newest-first;
+        pass ``newest=0`` to preserve the feed's own document order.
       operationId: rss_proxy_composed_rss_get
       parameters:
       - name: url
@@ -541,6 +544,13 @@ paths:
           - type: integer
           - type: 'null'
           title: Count
+      - name: newest
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Newest
       responses:
         '200':
           description: Successful Response

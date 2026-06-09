@@ -121,6 +121,77 @@ class TestParseFeedErrors:
         assert parse_feed(body, count=10) == []
 
 
+class TestParseFeedSortNewest:
+    SORTABLE = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Older</title>
+      <link>https://example.com/old</link>
+      <pubDate>Mon, 01 Jan 2024 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Newer</title>
+      <link>https://example.com/new</link>
+      <pubDate>Wed, 03 Jan 2024 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Middle</title>
+      <link>https://example.com/mid</link>
+      <pubDate>Tue, 02 Jan 2024 12:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
+"""
+
+    def test_default_preserves_document_order(self):
+        items = parse_feed(self.SORTABLE, count=10)
+        assert [i["title"] for i in items] == ["Older", "Newer", "Middle"]
+
+    def test_sort_newest_orders_by_date(self):
+        items = parse_feed(self.SORTABLE, count=10, sort_newest=True)
+        assert [i["title"] for i in items] == ["Newer", "Middle", "Older"]
+
+    def test_sort_newest_truncates_after_sorting(self):
+        items = parse_feed(self.SORTABLE, count=1, sort_newest=True)
+        assert len(items) == 1
+        assert items[0]["title"] == "Newer"
+
+    def test_undated_items_sort_last_in_doc_order(self):
+        body = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item><title>No date A</title><link>https://example.com/a</link></item>
+    <item>
+      <title>Dated</title><link>https://example.com/d</link>
+      <pubDate>Mon, 01 Jan 2024 12:00:00 GMT</pubDate>
+    </item>
+    <item><title>No date B</title><link>https://example.com/b</link></item>
+  </channel>
+</rss>
+"""
+        items = parse_feed(body, count=10, sort_newest=True)
+        assert [i["title"] for i in items] == ["Dated", "No date A", "No date B"]
+
+
+class TestParseFeedWhitespace:
+    def test_internal_newlines_collapsed_in_title(self):
+        body = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Breaking:
+      multi   line
+      headline</title>
+      <link>https://example.com/1</link>
+    </item>
+  </channel>
+</rss>
+"""
+        items = parse_feed(body, count=10)
+        assert items[0]["title"] == "Breaking: multi line headline"
+
+
 class TestValidateTargetScheme:
     def test_rejects_ftp(self):
         with pytest.raises(RssProxyError) as exc:
@@ -185,7 +256,7 @@ class TestValidateTargetSsrfResolution:
 @pytest.mark.asyncio
 class TestRssProxyRoute:
     async def test_returns_items_with_cors(self, unauthed_client, monkeypatch):
-        async def fake_fetch(url, *, count):
+        async def fake_fetch(url, *, count, sort_newest=True):
             return [{"title": "Hello", "link": "https://example.com/1"}]
 
         monkeypatch.setattr(rss_proxy, "fetch_feed_items", fake_fetch)
@@ -198,7 +269,7 @@ class TestRssProxyRoute:
         assert resp.json() == {"items": [{"title": "Hello", "link": "https://example.com/1"}]}
 
     async def test_error_returns_status_and_message(self, unauthed_client, monkeypatch):
-        async def fake_fetch(url, *, count):
+        async def fake_fetch(url, *, count, sort_newest=True):
             raise RssProxyError(400, "Feed host is not allowed")
 
         monkeypatch.setattr(rss_proxy, "fetch_feed_items", fake_fetch)
@@ -212,7 +283,7 @@ class TestRssProxyRoute:
     async def test_count_is_clamped_before_fetch(self, unauthed_client, monkeypatch):
         seen = {}
 
-        async def fake_fetch(url, *, count):
+        async def fake_fetch(url, *, count, sort_newest=True):
             seen["count"] = count
             return []
 
@@ -224,8 +295,40 @@ class TestRssProxyRoute:
         assert resp.status_code == 200
         assert seen["count"] == 30
 
+    async def test_newest_defaults_true_and_passes_through(
+        self, unauthed_client, monkeypatch
+    ):
+        seen = {}
+
+        async def fake_fetch(url, *, count, sort_newest=True):
+            seen["sort_newest"] = sort_newest
+            return []
+
+        monkeypatch.setattr(rss_proxy, "fetch_feed_items", fake_fetch)
+        resp = await unauthed_client.get(
+            "/composed/rss",
+            params={"url": "https://example.com/feed.xml"},
+        )
+        assert resp.status_code == 200
+        assert seen["sort_newest"] is True
+
+    async def test_newest_zero_disables_sort(self, unauthed_client, monkeypatch):
+        seen = {}
+
+        async def fake_fetch(url, *, count, sort_newest=True):
+            seen["sort_newest"] = sort_newest
+            return []
+
+        monkeypatch.setattr(rss_proxy, "fetch_feed_items", fake_fetch)
+        resp = await unauthed_client.get(
+            "/composed/rss",
+            params={"url": "https://example.com/feed.xml", "newest": 0},
+        )
+        assert resp.status_code == 200
+        assert seen["sort_newest"] is False
+
     async def test_route_requires_no_auth(self, unauthed_client, monkeypatch):
-        async def fake_fetch(url, *, count):
+        async def fake_fetch(url, *, count, sort_newest=True):
             return []
 
         monkeypatch.setattr(rss_proxy, "fetch_feed_items", fake_fetch)

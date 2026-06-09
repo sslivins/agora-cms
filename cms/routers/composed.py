@@ -80,12 +80,17 @@ public_router = APIRouter(prefix="/composed", tags=["composed"])
 
 
 @public_router.get("/rss")
-async def rss_proxy(url: str, count: int | None = None) -> Any:
+async def rss_proxy(
+    url: str, count: int | None = None, newest: bool = True
+) -> Any:
     """Unauthenticated, SSRF-guarded RSS/Atom feed proxy (CORS-enabled).
 
     Fetches and parses ``url`` server-side and returns a small JSON
     projection the composed-slide RSS widget can read cross-origin. See
     ``cms.composed.rss_proxy`` for the threat model and guard.
+
+    ``newest`` (default true) orders the returned headlines newest-first;
+    pass ``newest=0`` to preserve the feed's own document order.
     """
     from fastapi.responses import JSONResponse
 
@@ -98,7 +103,7 @@ async def rss_proxy(url: str, count: int | None = None) -> Any:
     cors = {"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
     n = clamp_item_count(count)
     try:
-        items = await fetch_feed_items(url, count=n)
+        items = await fetch_feed_items(url, count=n, sort_newest=newest)
     except RssProxyError as exc:
         return JSONResponse(
             status_code=exc.status_code,

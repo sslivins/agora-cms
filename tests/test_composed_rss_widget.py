@@ -26,6 +26,7 @@ class TestRssWidgetConfig:
         assert c.feed_url == _DEFAULT_FEED_URL
         assert c.heading == ""
         assert c.item_count == 5
+        assert c.sort_newest is True
         assert c.show_dates is False
         assert c.color == "#ffffff"
         assert c.font_family == "sans"
@@ -120,7 +121,16 @@ class TestProxyUrl:
         assert url.startswith("https://cms.example.org/composed/rss?url=")
         # feed url must be percent-encoded (no raw scheme separators).
         assert "https%3A%2F%2Ffeed.test%2Fx.xml" in url
-        assert url.endswith("&count=5")
+        assert "&count=5" in url
+        assert url.endswith("&newest=1")
+
+    def test_newest_flag_reflected(self):
+        on = _proxy_url("https://cms.example.org", "https://feed.test/x.xml", 5)
+        off = _proxy_url(
+            "https://cms.example.org", "https://feed.test/x.xml", 5, newest=False
+        )
+        assert on.endswith("&newest=1")
+        assert off.endswith("&newest=0")
 
     def test_relative_when_base_none(self):
         url = _proxy_url(None, "https://feed.test/x.xml", 3)

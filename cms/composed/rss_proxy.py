@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
 
@@ -148,12 +150,63 @@ def clamp_item_count(raw: int | None) -> int:
     return max(1, min(_MAX_ITEM_COUNT, n))
 
 
-def parse_feed(body: bytes, *, count: int) -> list[dict[str, str]]:
+def _norm_ws(s: str) -> str:
+    """Collapse internal whitespace and strip the ends.
+
+    ``str.strip()`` only removes leading/trailing whitespace; some feeds
+    embed hard newlines or tab runs *inside* ``<title>`` text, which the
+    device renders as stray line breaks.  ``" ".join(s.split())`` collapses
+    every internal whitespace run to a single space.
+    """
+    return " ".join(s.split())
+
+
+def _parse_entry_date(value: str) -> datetime | None:
+    """Best-effort parse of a feed date string into an aware ``datetime``.
+
+    RSS ``pubDate`` is RFC 822; Atom ``published`` / ``updated`` and
+    Dublin Core ``date`` are ISO 8601.  Returns ``None`` when the value
+    can't be parsed so undated/garbage entries can be ordered last.
+    Naive datetimes are assumed UTC so every result is comparable.
+    """
+    raw = value.strip()
+    if not raw:
+        return None
+    dt: datetime | None = None
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        dt = None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def parse_feed(
+    body: bytes, *, count: int, sort_newest: bool = False
+) -> list[dict[str, str]]:
     """Parse RSS/Atom ``body`` into a list of ``{title, link, pubDate}``.
 
     Namespace-agnostic (works for RSS 2.0, RSS 1.0/RDF and Atom).  Items
     missing a title are skipped; ``link`` / ``pubDate`` are best-effort
     and omitted when absent.  Returns at most ``count`` entries.
+
+    Title and date text are whitespace-normalized (internal newlines /
+    tabs / runs of spaces collapsed to single spaces) so feeds that embed
+    hard line breaks in ``<title>`` don't render as stray line breaks on
+    the device.
+
+    When ``sort_newest`` is true, every entry is parsed first and the
+    result is ordered newest-first by parsed publication date (entries
+    with no parseable date keep their document order at the end); the
+    list is then truncated to ``count``.  When false (default), entries
+    are returned in document order and parsing stops early once ``count``
+    is reached.
     """
     try:
         root = ET.fromstring(body)
@@ -164,7 +217,7 @@ def parse_feed(body: bytes, *, count: int) -> list[dict[str, str]]:
         el for el in root.iter() if _localname(el.tag) in _ITEM_TAGS
     ]
 
-    out: list[dict[str, str]] = []
+    collected: list[tuple[dict[str, str], datetime | None]] = []
     for item in items:
         title: str | None = None
         link: str | None = None
@@ -172,14 +225,14 @@ def parse_feed(body: bytes, *, count: int) -> list[dict[str, str]]:
         for child in item:
             ln = _localname(child.tag)
             if title is None and ln in _TITLE_TAGS:
-                title = (child.text or "").strip() or None
+                title = _norm_ws(child.text or "") or None
             elif link is None and ln in _LINK_TAGS:
                 # RSS: link text. Atom: <link href="..."/> (prefer the
                 # alternate/href attribute, fall back to text).
                 href = child.get("href")
                 link = (href or (child.text or "").strip()) or None
             elif date is None and ln in _DATE_TAGS:
-                date = (child.text or "").strip() or None
+                date = _norm_ws(child.text or "") or None
         if not title:
             continue
         entry: dict[str, str] = {"title": title}
@@ -187,17 +240,35 @@ def parse_feed(body: bytes, *, count: int) -> list[dict[str, str]]:
             entry["link"] = link
         if date:
             entry["pubDate"] = date
-        out.append(entry)
-        if len(out) >= count:
+        collected.append((entry, _parse_entry_date(date) if date else None))
+        if not sort_newest and len(collected) >= count:
             break
-    return out
+
+    if sort_newest:
+        # Stable newest-first: dated entries by descending timestamp,
+        # undated entries last in their original document order.
+        ordered = sorted(
+            enumerate(collected),
+            key=lambda pair: (
+                0 if pair[1][1] is not None else 1,
+                -pair[1][1].timestamp() if pair[1][1] is not None else 0.0,
+                pair[0],
+            ),
+        )
+        collected = [entry_dt for _, entry_dt in ordered]
+
+    return [entry for entry, _ in collected[:count]]
 
 
-async def fetch_feed_items(url: str, *, count: int) -> list[dict[str, str]]:
+async def fetch_feed_items(
+    url: str, *, count: int, sort_newest: bool = False
+) -> list[dict[str, str]]:
     """Fetch ``url`` (SSRF-guarded) and return parsed feed items.
 
-    Raises :class:`RssProxyError` on any scheme/host/size/timeout/parse
-    failure with an HTTP status the caller can return verbatim.
+    ``sort_newest`` is threaded through to :func:`parse_feed` to order the
+    returned items newest-first.  Raises :class:`RssProxyError` on any
+    scheme/host/size/timeout/parse failure with an HTTP status the caller
+    can return verbatim.
     """
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5"}
     current = url
@@ -225,7 +296,9 @@ async def fetch_feed_items(url: str, *, count: int) -> list[dict[str, str]]:
                         if total > _MAX_RESPONSE_BYTES:
                             raise RssProxyError(502, "Feed response is too large")
                         chunks.append(chunk)
-                    return parse_feed(b"".join(chunks), count=count)
+                    return parse_feed(
+                        b"".join(chunks), count=count, sort_newest=sort_newest
+                    )
             raise RssProxyError(502, "Feed had too many redirects")
     except httpx.TimeoutException as exc:
         raise RssProxyError(504, "Feed request timed out") from exc
