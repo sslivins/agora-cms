@@ -122,7 +122,8 @@ async def publish_composed_slide(
     # loop and surfaces as a PublishError.
     from cms.auth import get_settings as _get_settings
 
-    storage_dir = _get_settings().asset_storage_path
+    _settings = _get_settings()
+    storage_dir = _settings.asset_storage_path
 
     declared_ids: list[uuid.UUID] = []
     seen_declared: set[uuid.UUID] = set()
@@ -225,6 +226,11 @@ async def publish_composed_slide(
             registry,
             asset_loader=_asset_loader if asset_payloads else None,
             sibling_asset_urls=sibling_asset_urls or None,
+            # Device bundles are served from the device's own local
+            # shell HTTP server, so any CMS call-back URL (e.g. the RSS
+            # feed proxy) must be absolute.  Preview/thumbnail renders
+            # pass None and bake a same-origin relative URL instead.
+            cms_base_url=_settings.base_url,
         )
     except BundleValidationError as e:
         raise PublishError(

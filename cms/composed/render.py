@@ -84,6 +84,7 @@ class ComposedRender:
 
     html_bytes: bytes
     has_weather: bool
+    has_rss: bool = False
 
 
 # Optional async hook called for the slide asset and every referenced
@@ -323,4 +324,11 @@ async def build_composed_html(
         ) from e
 
     has_weather = any(inst.type == "weather" for inst in layout.widgets)
-    return ComposedRender(html_bytes=built.html_bytes, has_weather=has_weather)
+    has_rss = any(inst.type == "rss" for inst in layout.widgets)
+    # NB: cms_base_url is intentionally left at its None default here.
+    # This is the same-origin preview / thumbnail path, so widgets that
+    # call back into the CMS (RSS) bake a relative URL that resolves
+    # against the preview document's own origin.
+    return ComposedRender(
+        html_bytes=built.html_bytes, has_weather=has_weather, has_rss=has_rss
+    )

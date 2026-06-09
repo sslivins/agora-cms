@@ -163,6 +163,7 @@ def build_bundle(
     registry: WidgetRegistry | None = None,
     asset_loader: AssetLoader | None = None,
     sibling_asset_urls: dict[uuid.UUID, str] | None = None,
+    cms_base_url: str | None = None,
 ) -> BuiltBundle:
     """Render ``layout`` to a self-contained HTML bundle.
 
@@ -176,6 +177,13 @@ def build_bundle(
     shipped to the device as siblings rather than inlined.  Used for
     video assets — the bundle's ``<video src>`` points at these URLs
     and the device cache layer fetches them separately.
+
+    ``cms_base_url`` is threaded onto every widget's
+    :class:`BundleContext` so widgets that bake an absolute CMS
+    call-back URL (e.g. the RSS feed-proxy URL) can do so.  Pass the
+    public CMS base URL when building a *device* bundle; pass ``None``
+    for the same-origin live preview / thumbnail render so those bake
+    a relative URL instead.
 
     A declared asset ID must be resolvable through *either* the
     ``asset_loader`` path *or* the ``sibling_asset_urls`` mapping; if
@@ -259,6 +267,7 @@ def build_bundle(
             sibling_asset_urls={
                 aid: sib_urls[aid] for aid in declared if aid in sib_urls
             },
+            cms_base_url=cms_base_url,
         )
         render: WidgetRender = widget.render_html(
             config=config,
