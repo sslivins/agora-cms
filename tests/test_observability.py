@@ -1,4 +1,4 @@
-"""Tests for cms.observability — App Insights bootstrap wrapper.
+"""Tests for shared.observability — App Insights bootstrap wrapper.
 
 Issue #474, Phase 0 / A1.
 
@@ -10,13 +10,14 @@ the wrapper's lazy import resolves to a controllable mock.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import types
 from unittest import mock
 
 import pytest
 
-from cms import observability
+from shared import observability
 
 
 def _install_fake_azure_monitor(
@@ -49,13 +50,15 @@ def _reset_module_state(monkeypatch: pytest.MonkeyPatch):
     """Clear the conn string env var and reset the init flag for each test."""
     monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
     monkeypatch.delenv("AGORA_CMS_DISABLE_OBSERVABILITY", raising=False)
+    monkeypatch.delenv("AGORA_DISABLE_OBSERVABILITY", raising=False)
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
     observability._reset_for_tests()
     yield
     observability._reset_for_tests()
 
 
 def test_no_op_when_conn_string_unset(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO, logger="agora.cms.observability")
+    caplog.set_level(logging.INFO, logger="agora.observability")
 
     result = observability.setup_observability()
 
@@ -82,7 +85,7 @@ def test_disable_env_var_short_circuits(
         "InstrumentationKey=00000000-0000-0000-0000-000000000000;",
     )
     monkeypatch.setenv("AGORA_CMS_DISABLE_OBSERVABILITY", "1")
-    caplog.set_level(logging.INFO, logger="agora.cms.observability")
+    caplog.set_level(logging.INFO, logger="agora.observability")
     mocked = _install_fake_azure_monitor(monkeypatch)
 
     result = observability.setup_observability()
@@ -99,7 +102,7 @@ def test_calls_configure_azure_monitor_when_conn_set(
 ) -> None:
     conn = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example/"
     monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", conn)
-    caplog.set_level(logging.INFO, logger="agora.cms.observability")
+    caplog.set_level(logging.INFO, logger="agora.observability")
     mocked = _install_fake_azure_monitor(monkeypatch)
 
     result = observability.setup_observability()
@@ -109,6 +112,51 @@ def test_calls_configure_azure_monitor_when_conn_set(
     assert any(
         "enabled" in rec.message for rec in caplog.records
     )
+
+
+def test_role_name_sets_otel_service_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """role_name must populate cloud_RoleName via OTEL_SERVICE_NAME."""
+    conn = "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
+    monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", conn)
+    mocked = _install_fake_azure_monitor(monkeypatch)
+
+    result = observability.setup_observability(role_name="agora-worker")
+
+    assert result is True
+    mocked.assert_called_once_with(connection_string=conn)
+    assert os.environ.get("OTEL_SERVICE_NAME") == "agora-worker"
+
+
+def test_role_name_does_not_override_explicit_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit OTEL_SERVICE_NAME (deploy-time) wins over role_name."""
+    monkeypatch.setenv(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING",
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;",
+    )
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "preset-role")
+    _install_fake_azure_monitor(monkeypatch)
+
+    assert observability.setup_observability(role_name="agora-worker") is True
+    assert os.environ.get("OTEL_SERVICE_NAME") == "preset-role"
+
+
+def test_neutral_disable_env_var_short_circuits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The process-neutral kill switch also beats a present conn string."""
+    monkeypatch.setenv(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING",
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;",
+    )
+    monkeypatch.setenv("AGORA_DISABLE_OBSERVABILITY", "true")
+    mocked = _install_fake_azure_monitor(monkeypatch)
+
+    assert observability.setup_observability() is False
+    mocked.assert_not_called()
 
 
 def test_idempotent_repeated_calls_only_init_once(
@@ -135,7 +183,7 @@ def test_missing_sdk_does_not_crash(
         "APPLICATIONINSIGHTS_CONNECTION_STRING",
         "InstrumentationKey=00000000-0000-0000-0000-000000000000;",
     )
-    caplog.set_level(logging.WARNING, logger="agora.cms.observability")
+    caplog.set_level(logging.WARNING, logger="agora.observability")
 
     # Make sure the module is NOT in sys.modules — and block re-import.
     for name in (

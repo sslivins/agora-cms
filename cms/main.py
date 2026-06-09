@@ -55,8 +55,8 @@ logging.getLogger().addHandler(_buf_handler)
 # Must run BEFORE the FastAPI app is constructed so the auto-
 # instrumentation can hook the framework at import time.  No-op when
 # APPLICATIONINSIGHTS_CONNECTION_STRING is unset — see
-# cms/observability.py.  Issue #474, Phase 0 / A1.
-from cms.observability import setup_observability  # noqa: E402
+# shared/observability.py.  Issue #474, Phase 0 / A1.
+from shared.observability import setup_observability  # noqa: E402
 
 setup_observability()
 

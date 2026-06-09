@@ -1,4 +1,4 @@
-"""Application Insights / OpenTelemetry bootstrap for the CMS.
+"""Application Insights / OpenTelemetry bootstrap for the CMS and worker.
 
 Issue #474, Phase 0 / A1 — telemetry roadmap.
 
@@ -11,12 +11,22 @@ auto-instrumentation for:
 * HTTPX / requests / urllib3 (``dependencies`` rows for outbound HTTP)
 
 Unhandled exceptions raised inside instrumented frames are also captured
-into the ``exceptions`` table.
+into the ``exceptions`` table.  This is the whole point of also wiring the
+**transcode worker** up to this bootstrap: a transcode failure (a missing
+module, a render crash, a timeout) raised in the worker now surfaces in the
+App Insights ``exceptions`` table and trips the fleet exception alert,
+instead of dying silently in container stdout.
+
+Pass ``role_name`` to set the ``cloud_RoleName`` dimension (via
+``OTEL_SERVICE_NAME``) so CMS and worker telemetry are distinguishable in
+Application Insights — e.g. the worker passes ``"agora-worker"``.  When
+omitted the azure-monitor default role name is used (the CMS keeps its
+existing default so dashboards / alerts that key on it are unaffected).
 
 The function is a **no-op** when ``APPLICATIONINSIGHTS_CONNECTION_STRING``
 is unset — that's the expected state for local development, docker-compose
 runs, and the unit-test suite.  This means we can call it unconditionally
-from ``cms.main`` without breaking anything.
+from ``cms.main`` (and ``worker.__main__``) without breaking anything.
 
 It is also safe to call multiple times in the same process: the underlying
 ``configure_azure_monitor`` short-circuits on the second invocation.
@@ -28,10 +38,16 @@ import logging
 import os
 from typing import Final
 
-logger = logging.getLogger("agora.cms.observability")
+logger = logging.getLogger("agora.observability")
 
 _CONN_STRING_ENV: Final[str] = "APPLICATIONINSIGHTS_CONNECTION_STRING"
-_DISABLE_ENV: Final[str] = "AGORA_CMS_DISABLE_OBSERVABILITY"
+# Honour both the historical CMS-specific kill switch and a process-neutral
+# one so the worker can be silenced independently if ever needed.
+_DISABLE_ENVS: Final[tuple[str, ...]] = (
+    "AGORA_DISABLE_OBSERVABILITY",
+    "AGORA_CMS_DISABLE_OBSERVABILITY",
+)
+_ROLE_NAME_ENV: Final[str] = "OTEL_SERVICE_NAME"
 
 # Process-level flag so repeated calls don't double-initialize the
 # OpenTelemetry exporter.  ``configure_azure_monitor`` itself is
@@ -39,8 +55,12 @@ _DISABLE_ENV: Final[str] = "AGORA_CMS_DISABLE_OBSERVABILITY"
 _initialised: bool = False
 
 
-def setup_observability() -> bool:
+def setup_observability(role_name: str | None = None) -> bool:
     """Initialise Application Insights / OpenTelemetry export.
+
+    ``role_name`` sets the ``cloud_RoleName`` telemetry dimension so each
+    process (``agora-cms`` vs ``agora-worker``) is distinguishable in
+    Application Insights.  When ``None`` the azure-monitor default is used.
 
     Returns ``True`` when telemetry export was enabled (connection string
     present and SDK loaded successfully), ``False`` otherwise.  Callers
@@ -51,10 +71,18 @@ def setup_observability() -> bool:
     if _initialised:
         return True
 
-    if os.environ.get(_DISABLE_ENV, "").lower() in {"1", "true", "yes"}:
+    disabled_via = next(
+        (
+            env
+            for env in _DISABLE_ENVS
+            if os.environ.get(env, "").lower() in {"1", "true", "yes"}
+        ),
+        None,
+    )
+    if disabled_via is not None:
         logger.info(
             "observability disabled via %s; skipping App Insights init",
-            _DISABLE_ENV,
+            disabled_via,
         )
         return False
 
@@ -83,19 +111,24 @@ def setup_observability() -> bool:
         return False
 
     try:
+        if role_name:
+            # azure-monitor reads the cloud_RoleName from OTEL_SERVICE_NAME.
+            # setdefault so an explicit env override (deploy-time) still wins.
+            os.environ.setdefault(_ROLE_NAME_ENV, role_name)
         configure_azure_monitor(connection_string=conn)
     except Exception:  # pragma: no cover — defensive: never let a
-        # telemetry init failure crash the CMS process
+        # telemetry init failure crash the process
         logger.exception(
-            "configure_azure_monitor() failed; CMS will continue without "
+            "configure_azure_monitor() failed; process will continue without "
             "telemetry export"
         )
         return False
 
     _initialised = True
     logger.info(
-        "App Insights observability enabled (FastAPI / SQLAlchemy / "
-        "HTTPX auto-instrumentation active)"
+        "App Insights observability enabled (role=%s; FastAPI / SQLAlchemy / "
+        "HTTPX auto-instrumentation active)",
+        os.environ.get(_ROLE_NAME_ENV) or "default",
     )
     return True
 
