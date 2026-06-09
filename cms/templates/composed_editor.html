@@ -1202,7 +1202,7 @@ registerWidget("rss", {
     label: "RSS Headlines", icon: "📰", category: "Live Data",
     keywords: ["rss", "feed", "news", "headlines", "atom", "syndication"],
     defaults: () => ({feed_url:"https://feeds.bbci.co.uk/news/world/rss.xml", heading:"",
-             item_count:5, show_dates:false, color:"#ffffff", font_family:"sans",
+             item_count:5, sort_newest:true, show_dates:false, color:"#ffffff", font_family:"sans",
              font_size_px:32, refresh_seconds:900}),
     summary: (w) => (w.config.heading || "headlines").slice(0, 24),
     preview: (root, cfg) => {
@@ -1262,6 +1262,10 @@ registerWidget("rss", {
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,256))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.sort_newest!==false?"checked":""}
+                    oninput="updateSelected(x=>x.config.sort_newest=this.checked)"> Sort by newest
+            </label>
             <label style="font-weight:400; margin-top:0.5rem;">
                 <input type="checkbox" ${w.config.show_dates?"checked":""}
                     oninput="updateSelected(x=>x.config.show_dates=this.checked)"> Show dates

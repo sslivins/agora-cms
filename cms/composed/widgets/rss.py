@@ -85,6 +85,7 @@ class RssWidgetConfig(BaseModel):
     feed_url: str = Field(default=_DEFAULT_FEED_URL, max_length=2048)
     heading: str = Field(default="", max_length=80)
     item_count: int = Field(default=5, ge=1, le=30)
+    sort_newest: bool = True
     show_dates: bool = False
     color: str = Field(default="#ffffff", pattern=_HEX)
     font_family: str = Field(default="sans")
@@ -193,14 +194,19 @@ refresh();
 """.strip()
 
 
-def _proxy_url(base: str | None, feed_url: str, count: int) -> str:
+def _proxy_url(
+    base: str | None, feed_url: str, count: int, *, newest: bool = True
+) -> str:
     """Build the CMS feed-proxy URL the device fetches at runtime.
 
     Absolute when ``base`` is set (real device bundle); relative
     same-origin otherwise (CMS preview / thumbnail render).
     """
     prefix = base.rstrip("/") if base else ""
-    return f"{prefix}/composed/rss?url={quote(feed_url, safe='')}&count={count}"
+    return (
+        f"{prefix}/composed/rss?url={quote(feed_url, safe='')}"
+        f"&count={count}&newest={1 if newest else 0}"
+    )
 
 
 def _build_rss_init_js(
@@ -242,6 +248,7 @@ class RssWidget(Widget):
             "feed_url": _DEFAULT_FEED_URL,
             "heading": "",
             "item_count": 5,
+            "sort_newest": True,
             "show_dates": False,
             "color": "#ffffff",
             "font_family": "sans",
@@ -330,11 +337,19 @@ class RssWidget(Widget):
         )
 
         base = ctx.cms_base_url if ctx else None
-        cfg_fp = f"{config.feed_url}|{config.item_count}"
+        cfg_fp = (
+            f"{config.feed_url}|{config.item_count}"
+            f"|{int(config.sort_newest)}"
+        )
         init_js = _build_rss_init_js(
             root_id=root_id,
             list_id=list_id,
-            url=_proxy_url(base, config.feed_url, config.item_count),
+            url=_proxy_url(
+                base,
+                config.feed_url,
+                config.item_count,
+                newest=config.sort_newest,
+            ),
             cfg_fp=cfg_fp,
             cache_key=f"cw-rss-{instance_id}",
             refresh_ms=config.refresh_seconds * 1000,
