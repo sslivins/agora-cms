@@ -39,6 +39,20 @@ def _weather_layout() -> Layout:
     return layout
 
 
+def _iframe_layout() -> Layout:
+    layout = empty_layout()
+    layout.widgets.append(
+        WidgetInstance(
+            id=uuid.uuid4(),
+            type="iframe",
+            cell=Cell(row=1, col=1, rowspan=2, colspan=4),
+            config={"url": "https://example.com/"},
+            config_version=1,
+        )
+    )
+    return layout
+
+
 async def _make_composed(
     db_session, *, layout: Layout | None = None
 ) -> tuple[Asset, ComposedSlide]:
@@ -138,6 +152,27 @@ class TestComposedPreview:
         # only https origin that leaks into the policy.
         assert "default-src 'none'" in csp
         assert csp.count("https://") == 1
+
+    async def test_csp_allows_frame_src_for_iframe_slide(
+        self, client, db_session
+    ):
+        # The Web Embed (iframe) widget renders a live external URL in a
+        # sandboxed <iframe>. With default-src 'none' and no frame-src,
+        # the browser blocks ALL framed content (even sites that send no
+        # anti-framing headers). A slide containing an iframe widget must
+        # add a frame-src carve-out so framable pages actually load in the
+        # preview; everything else stays locked down.
+        asset, _cs = await _make_composed(db_session, layout=_iframe_layout())
+
+        resp = await client.get(f"/composed/{asset.id}/preview")
+        assert resp.status_code == 200
+        csp = resp.headers.get("content-security-policy", "")
+        assert "frame-src https: http:" in csp
+        assert "default-src 'none'" in csp
+        # The carve-out is scoped to frames only — no script/style/img
+        # external origins leak in.
+        assert "script-src 'unsafe-inline'" in csp
+        assert "connect-src" not in csp
 
     async def test_no_cache_header_set(self, client, db_session):
         asset, _cs = await _make_composed(db_session)

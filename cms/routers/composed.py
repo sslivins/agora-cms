@@ -564,6 +564,18 @@ async def preview_composed_slide(
         connect_src.append("'self'")
     if connect_src:
         csp = csp + "; connect-src " + " ".join(connect_src)
+    # The iframe ("Web Embed") widget renders a live external URL in a
+    # sandboxed <iframe>. With default-src 'none' and no frame-src, the
+    # browser blocks ALL framed content (even example.com, which sends no
+    # anti-framing headers) — so the preview shows "blocked". Add a
+    # frame-src carve-out, scoped to frames only, when the slide actually
+    # contains an iframe widget. The widget's config restricts URLs to
+    # http(s), so both schemes are permitted here; the frame remains
+    # sandboxed regardless. Sites that send X-Frame-Options /
+    # frame-ancestors still refuse to embed — that's the target's choice,
+    # not this CSP.
+    if rendered.has_iframe:
+        csp = csp + "; frame-src https: http:"
 
     headers = {
         "Content-Security-Policy": csp,
