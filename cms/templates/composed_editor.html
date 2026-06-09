@@ -311,6 +311,18 @@
     }
     .cw-prev-clock-time { line-height: 1; white-space: nowrap; }
     .cw-prev-clock-date { opacity: 0.8; margin-top: 0.25em; white-space: nowrap; }
+    .cw-prev-countdown {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        font-variant-numeric: tabular-nums;
+    }
+    .cw-prev-countdown-label { opacity: 0.8; margin-bottom: 0.2em; white-space: nowrap; }
+    .cw-prev-countdown-time { line-height: 1; white-space: nowrap; }
     .cw-prev-ticker {
         width: 100%;
         height: 100%;
@@ -935,6 +947,104 @@ registerWidget("analog_clock", {
                 <input type="checkbox" ${w.config.show_numerals?"checked":""}
                     oninput="updateSelected(x=>x.config.show_numerals=this.checked)"> Show numerals
             </label>`,
+});
+
+registerWidget("countdown", {
+    label: "Countdown", icon: "⏳", category: "Time & Date",
+    keywords: ["countdown", "countup", "timer", "event", "days", "until", "since", "deadline"],
+    defaults: () => ({target:"2030-01-01T00:00:00", direction:"down", label:"", completed_text:"",
+             show_days:true, show_hours:true, show_minutes:true, show_seconds:false,
+             color:"#ffffff", font_family:"sans", font_size_px:96}),
+    summary: (w) => (w.config.direction === "up" ? "since " : "to ") + String(w.config.target || "").slice(0, 16),
+    preview: (root, cfg) => {
+        const fmt = (cfg) => {
+            const t = new Date(String(cfg.target || "").replace(" ", "T")).getTime();
+            if (isNaN(t)) return "—";
+            const dir = cfg.direction === "up" ? "up" : "down";
+            let diff = dir === "down" ? (t - Date.now()) : (Date.now() - t);
+            let done = false;
+            if (diff <= 0) { if (dir === "down") done = true; diff = 0; }
+            if (done && (cfg.completed_text || "").length > 0) return cfg.completed_text;
+            let rem = Math.floor(diff / 1000);
+            const defs = [[!!cfg.show_days,86400,"d"],[!!cfg.show_hours,3600,"h"],
+                          [!!cfg.show_minutes,60,"m"],[!!cfg.show_seconds,1,"s"]];
+            const parts = []; let leading = true;
+            for (const [on, sec, suf] of defs) {
+                if (!on) continue;
+                const v = Math.floor(rem / sec); rem -= v * sec;
+                parts.push((leading ? String(v) : (v < 10 ? "0" + v : "" + v)) + suf);
+                leading = false;
+            }
+            return parts.length ? parts.join(" ") : "0";
+        };
+        const c = document.createElement("div");
+        c.className = "cw-prev-countdown";
+        c.style.color = cfg.color || "#ffffff";
+        c.style.fontFamily = fontStack(cfg.font_family);
+        if (cfg.label) {
+            const lab = document.createElement("div");
+            lab.className = "cw-prev-countdown-label";
+            lab.style.fontSize = cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
+            lab.textContent = cfg.label;
+            c.appendChild(lab);
+        }
+        const timeEl = document.createElement("div");
+        timeEl.className = "cw-prev-countdown-time";
+        timeEl.style.fontSize = cqwFont(cfg.font_size_px);
+        timeEl.textContent = fmt(cfg);
+        c.appendChild(timeEl);
+        root.appendChild(c);
+    },
+    settings: (w) => `
+            <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Countdown widget</h4>
+            <label>Target date &amp; time</label>
+            <input type="datetime-local" step="1" value="${(w.config.target||"").slice(0,19)}"
+                   oninput="updateSelected(x=>x.config.target=this.value)">
+            <label>Direction</label>
+            <select oninput="updateSelected(x=>x.config.direction=this.value)">
+                <option value="down" ${w.config.direction!=="up"?"selected":""}>Count down to</option>
+                <option value="up" ${w.config.direction==="up"?"selected":""}>Count up from</option>
+            </select>
+            <label>Label (optional)</label>
+            <input type="text" maxlength="120" value="${(w.config.label||"").replace(/"/g,"&quot;")}"
+                   placeholder="e.g. Grand opening in"
+                   oninput="updateSelected(x=>x.config.label=this.value)">
+            <label>Completed text (optional)</label>
+            <input type="text" maxlength="120" value="${(w.config.completed_text||"").replace(/"/g,"&quot;")}"
+                   placeholder="e.g. We're open!"
+                   oninput="updateSelected(x=>x.config.completed_text=this.value)">
+            <label style="font-weight:400; margin-top:0.5rem;">
+                <input type="checkbox" ${w.config.show_days?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_days=this.checked)"> Days
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_hours?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_hours=this.checked)"> Hours
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_minutes?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_minutes=this.checked)"> Minutes
+            </label>
+            <label style="font-weight:400;">
+                <input type="checkbox" ${w.config.show_seconds?"checked":""}
+                    oninput="updateSelected(x=>x.config.show_seconds=this.checked)"> Seconds
+            </label>
+            <div class="row">
+                <div>
+                    <label>Color</label>
+                    <input type="color" value="${w.config.color||"#ffffff"}"
+                           oninput="updateSelected(x=>x.config.color=this.value)">
+                </div>
+                <div>
+                    <label>Size (px)</label>
+                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
+                           oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
+                </div>
+            </div>
+            <label>Font</label>
+            <select oninput="updateSelected(x=>x.config.font_family=this.value)">
+                ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
+            </select>`,
 });
 
 registerWidget("weather", {
