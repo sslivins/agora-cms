@@ -23,6 +23,7 @@ from shared.models import AssetVariant, VariantStatus
 
 from shared.config import SharedSettings
 from shared.database import init_db, get_session_factory, dispose_db
+from shared.observability import setup_observability
 from shared.services.storage import (
     AzureStorageBackend,
     LocalStorageBackend,
@@ -713,6 +714,11 @@ async def _wait_for_schema(max_retries: int = 30, delay: float = 2.0) -> None:
 
 
 async def main() -> None:
+    # Wire Application Insights / OpenTelemetry first so any exception
+    # raised during startup or transcoding reaches the App Insights
+    # exceptions table (issue #474).  No-op without a connection string.
+    setup_observability(role_name="agora-worker")
+
     settings = WorkerSettings()
     init_db(settings)
 

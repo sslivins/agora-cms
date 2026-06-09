@@ -19,3 +19,14 @@ aiohttp>=3.9,<4.0
 # thumbnail render) execute the widget's render_html, so segno must be
 # present in both images.
 segno>=1.6,<2.0
+
+# Telemetry — Application Insights via OpenTelemetry (issue #474).
+# Meta-package that pulls in opentelemetry-api/sdk + the Azure Monitor
+# exporter.  A no-op when APPLICATIONINSIGHTS_CONNECTION_STRING is unset
+# (see shared/observability.py).  Both the CMS and the worker call
+# setup_observability() so worker transcode failures reach the App
+# Insights exceptions table, and so the worker can emit the
+# agora.transcode.failure OTel counter (shared/metrics.py).  Duplicated
+# from requirements.txt (CMS image installs requirements.txt only, not
+# the shared file) — keep the version pins in sync.
+azure-monitor-opentelemetry>=1.6,<2.0

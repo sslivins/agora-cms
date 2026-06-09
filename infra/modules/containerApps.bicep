@@ -313,7 +313,7 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               // Picked up by azure-monitor-opentelemetry's
               // configure_azure_monitor() at process start (see
-              // cms/observability.py).  When unset (e.g. local dev,
+              // shared/observability.py).  When unset (e.g. local dev,
               // docker-compose) telemetry export is silently disabled.
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               secretRef: 'app-insights-connection-string'

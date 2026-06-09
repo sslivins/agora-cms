@@ -6,8 +6,10 @@ Issue [#474](../../../issues/474) — Phase 0 (A1 + A1.5).
 
 The CMS app is auto-instrumented at process start by the
 [`azure-monitor-opentelemetry`](https://pypi.org/project/azure-monitor-opentelemetry/)
-distro.  See `cms/observability.py` for the bootstrap; it runs from
-`cms/main.py` before the FastAPI app is constructed.
+distro.  See `shared/observability.py` for the bootstrap; it runs from
+`cms/main.py` before the FastAPI app is constructed, and from
+`worker/__main__.py` (as `setup_observability(role_name="agora-worker")`)
+so transcode-worker exceptions also reach the `exceptions` table.
 
 Auto-instrumentations active:
 

@@ -14,7 +14,7 @@ benefits:
 Runtime behaviour:
 
 * When ``APPLICATIONINSIGHTS_CONNECTION_STRING`` is set and
-  :func:`cms.observability.setup_observability` has run, the OTel SDK
+  :func:`shared.observability.setup_observability` has run, the OTel SDK
   installed by ``azure-monitor-opentelemetry`` becomes the global
   ``MeterProvider`` and these counters export to App Insights as
   custom metrics.
