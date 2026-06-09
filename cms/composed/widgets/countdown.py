@@ -26,11 +26,11 @@ DOM ID + CSS class is suffixed with the widget instance UUID.
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime
 from typing import ClassVar, Literal
 
-from markupsafe import escape
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
@@ -225,7 +225,7 @@ class CountdownWidget(Widget):
         font_stack = _FONT_STACKS[config.font_family]
 
         label_html = (
-            f'<div class="{css_class}-label">{escape(config.label)}</div>'
+            f'<div class="{css_class}-label">{html.escape(config.label)}</div>'
             if config.label
             else ""
         )

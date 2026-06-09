@@ -13,10 +13,10 @@ collide.
 
 from __future__ import annotations
 
+import html
 import json
 from typing import ClassVar, Literal
 
-from markupsafe import escape
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
@@ -148,7 +148,7 @@ class DateBannerWidget(Widget):
         # not blank for the split second before init_js runs, and so a
         # JS-less snapshot still shows something sensible.  The runtime
         # immediately overwrites it with the live, locale-formatted date.
-        placeholder = escape(
+        placeholder = html.escape(
             f"{config.prefix} \u2026" if config.prefix else "\u2026"
         )
         html_out = (

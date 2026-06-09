@@ -26,10 +26,10 @@ instance UUID so two store-hours widgets in the same bundle don't collide.
 
 from __future__ import annotations
 
+import html
 import json
 from typing import ClassVar, Literal
 
-from markupsafe import escape
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
@@ -444,7 +444,7 @@ class StoreHoursWidget(Widget):
         heading_html = ""
         if config.heading:
             heading_html = (
-                f'<div class="{css_class}-heading">{escape(config.heading)}</div>'
+                f'<div class="{css_class}-heading">{html.escape(config.heading)}</div>'
             )
         status_html = ""
         if config.show_status:
