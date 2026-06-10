@@ -163,10 +163,22 @@
     }
     .composed-editor {
         display: grid;
-        grid-template-columns: 200px 1fr 280px;
+        grid-template-columns: 220px 1fr 320px;
         gap: 1rem;
         margin-top: 1rem;
         align-items: start;
+    }
+    /* Page-scoped breakout: on wide viewports let the editor extend past the
+       global `main` max-width (1400px) so the canvas/editor panel gets more
+       room. The fixed side columns stay modest; the 1fr canvas soaks up the
+       extra width. Does not affect the <=800px single-column layout below. */
+    @media (min-width: 1500px) {
+        .composed-editor {
+            width: min(1820px, 94vw);
+            position: relative;
+            left: 50%;
+            transform: translateX(-50%);
+        }
     }
     .palette, .settings {
         padding: 0.75rem;
@@ -1901,6 +1913,13 @@ function selectPaletteType(t) {
     document.getElementById("palette-status").textContent = "Placing: " + t + ". Click a cell.";
 }
 
+function clearPaletteType() {
+    selectedPaletteType = null;
+    document.querySelectorAll(".palette-btn").forEach(b => b.classList.remove("active"));
+    const status = document.getElementById("palette-status");
+    if (status) status.textContent = "";
+}
+
 function setBgColor(c) {
     ensureLayoutShape();
     LAYOUT.background.color = c;
@@ -2387,6 +2406,10 @@ function placeAt(row, col) {
         config_version: 1,
     });
     selectedWidgetId = id;
+    // Deselect the palette tool after a drop so a subsequent click in the
+    // editor selects/edits widgets instead of dropping another one. The
+    // just-placed widget stays selected (selectedWidgetId) for editing.
+    clearPaletteType();
     markDirty();
     renderCanvas();
     renderSettings();
@@ -2531,13 +2554,15 @@ function renderSettings() {
         <label style="margin-top:0.5rem;">Opacity: <span id="frame-op-val">${Math.round((fr.opacity ?? 1)*100)}</span>%</label>
         <input type="range" min="0" max="100" value="${Math.round((fr.opacity ?? 1)*100)}" style="width:100%;"
                oninput="document.getElementById('frame-op-val').textContent=this.value; updateSelected(x=>frameSet(x,'opacity',clampInt(this.value,0,100)/100))">
-        <label style="display:block; margin-top:0.5rem;">
-            <input type="checkbox" id="frame-bg-toggle" ${frBgOn ? "checked" : ""}
-                   oninput="updateSelected(x=>frameSet(x,'background', this.checked ? (document.getElementById('frame-bg-color').value || '#000000') : null))">
-            Background fill
-        </label>
-        <input type="color" id="frame-bg-color" value="${escapeHtml(frBgColor)}"
-               oninput="updateSelected(x=>{ if (document.getElementById('frame-bg-toggle').checked) frameSet(x,'background',this.value); })">`;
+        <div class="row" style="align-items:center; margin-top:0.5rem;">
+            <label style="display:flex; align-items:center; gap:0.35rem; margin:0; flex:0 0 auto;">
+                <input type="checkbox" id="frame-bg-toggle" ${frBgOn ? "checked" : ""}
+                       oninput="document.getElementById('frame-bg-color').disabled=!this.checked; updateSelected(x=>frameSet(x,'background', this.checked ? (document.getElementById('frame-bg-color').value || '#000000') : null))">
+                Background fill
+            </label>
+            <input type="color" id="frame-bg-color" value="${escapeHtml(frBgColor)}" ${frBgOn ? "" : "disabled"}
+                   oninput="updateSelected(x=>{ if (document.getElementById('frame-bg-toggle').checked) frameSet(x,'background',this.value); })">
+        </div>`;
 
     panel.innerHTML = `
         ${renderLayersHtml()}
@@ -2552,7 +2577,9 @@ function renderSettings() {
         ${cellHtml}
         ${configHtml}
         ${appearanceHtml}
-        <button type="button" class="delete-btn" onclick="deleteSelected()">Delete widget</button>`;
+        <div style="text-align:center;">
+            <button type="button" class="delete-btn" onclick="deleteSelected()">Delete widget</button>
+        </div>`;
 }
 
 function clampInt(v, lo, hi) {
