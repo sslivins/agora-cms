@@ -10,9 +10,17 @@ defines two globals used by text-bearing widgets whose config has
   an inline ``font-size``.
 * ``window.__cwFitObserve(inner, maxPx, minPx)`` — runs ``__cwFit`` once
   and re-runs it whenever the box resizes (via ``ResizeObserver``, with a
-  window-resize fallback).  Returns a zero-arg refit handle so callers
-  whose content changes over time (e.g. a date that rolls over) can
-  re-fit on demand.
+  window-resize fallback) **or whenever the measured element's content
+  changes** (via ``MutationObserver`` watching ``childList`` +
+  ``characterData``, but NOT ``attributes`` — so the fit's own inline
+  ``font-size`` write never retriggers it).  Returns a zero-arg refit
+  handle so callers can also re-fit on demand.
+
+  The ``MutationObserver`` is what lets *dynamic* widgets (a ticking
+  clock, a counting-down timer, a rotating RSS list, a weather refresh)
+  re-fit automatically: they just paint into child nodes as usual and
+  the observer refits — **no per-widget refit wiring required**.  A
+  static widget (plain text) simply never mutates and pays nothing.
 
 Both globals are guarded (``window.X = window.X || function(){...}``) so
 embedding ``AUTOFIT_JS`` once per bundle is sufficient even when many
@@ -69,6 +77,37 @@ window.__cwFitObserve = window.__cwFitObserve || function (inner, maxPx, minPx) 
   } else {
     window.addEventListener('resize', refit);
   }
+  // Re-fit when the measured content changes (clock tick, countdown,
+  // RSS rotation, weather refresh, ...).  childList + characterData
+  // only: observing attributes would loop because __cwFit writes
+  // inner.style.fontSize on every fit.
+  if (typeof MutationObserver !== 'undefined') {
+    try {
+      new MutationObserver(function () { refit(); }).observe(inner, {
+        childList: true, characterData: true, subtree: true
+      });
+    } catch (e) { /* no-op: resize observer still covers box changes */ }
+  }
   return refit;
 };
 """.strip()
+
+
+def autofit_inner_init_js(inner_id: str) -> str:
+    """Return the standard one-line per-instance autofit init.
+
+    Every "shrink to fit" widget wraps its content in an inner element
+    (``inner_id``) and fits that element against its bounded parent box.
+    This helper emits the exact init statement that text.py's shrink path
+    has used since the feature shipped, so each widget concatenates it
+    after its own (content-painting) ``init_js`` instead of re-deriving
+    the ``__cwFitObserve`` call by hand.
+
+    ``inner_id`` is always a CMS-generated DOM id (``cw-<slug>-inner-<uuid>``)
+    so it is safe to embed as a single-quoted JS string literal.
+    """
+    return (
+        f"var el=document.getElementById('{inner_id}');"
+        f"if(el&&window.__cwFitObserve)"
+        f"window.__cwFitObserve(el,{AUTOFIT_MAX_PX},{AUTOFIT_MIN_PX});"
+    )

@@ -137,3 +137,37 @@ class TestClockWidgetRender:
         cfg = ClockWidgetConfig(font_size_px=128)
         r = w.render_html(cfg, _cell(), "abc")
         assert "font-size: 128px" in r.css
+
+
+class TestShrinkToFit:
+    def test_default_off_is_byte_identical_to_no_field(self):
+        w = ClockWidget()
+        a = w.render_html(ClockWidgetConfig(font_size_px=64), _cell(), "x")
+        b = w.render_html(ClockWidgetConfig(font_size_px=64, shrink_to_fit=False), _cell(), "x")
+        assert a.html == b.html
+        assert a.css == b.css
+        assert a.js == b.js
+        assert a.init_js == b.init_js
+
+    def test_default_off_emits_no_autofit_code(self):
+        w = ClockWidget()
+        out = w.render_html(ClockWidgetConfig(font_size_px=64, shrink_to_fit=False), _cell(), "x")
+        assert out.js == ""
+        assert "__cwFit" not in out.html
+        assert "__cwFit" not in out.css
+        assert "__cwFit" not in (out.init_js or "")
+        assert "cw-clock-inner-" not in out.html
+
+    def test_on_path_emits_autofit_js_and_init(self):
+        w = ClockWidget()
+        out = w.render_html(ClockWidgetConfig(font_size_px=64, shrink_to_fit=True), _cell(), "abcd")
+        assert "window.__cwFit" in out.js
+        assert "window.__cwFitObserve" in out.js
+        inner_id = "cw-clock-inner-abcd"
+        assert inner_id in out.html
+        assert inner_id in out.init_js
+        assert "__cwFitObserve" in out.init_js
+        assert "font-size: 64px" in out.css
+
+    def test_default_config_includes_shrink_to_fit_false(self):
+        assert ClockWidget().default_config()["shrink_to_fit"] is False

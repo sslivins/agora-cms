@@ -26,8 +26,7 @@ from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
 from cms.composed.widgets._autofit import (
     AUTOFIT_JS,
-    AUTOFIT_MAX_PX,
-    AUTOFIT_MIN_PX,
+    autofit_inner_init_js,
 )
 
 
@@ -207,11 +206,7 @@ class TextWidget(Widget):
             f"}}"
         )
 
-        init_js = (
-            f"var el = document.getElementById('{inner_id}');\n"
-            f"if (el && window.__cwFitObserve) "
-            f"window.__cwFitObserve(el, {AUTOFIT_MAX_PX}, {AUTOFIT_MIN_PX});"
-        )
+        init_js = autofit_inner_init_js(inner_id)
 
         return WidgetRender(
             html=html_out,
