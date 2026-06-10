@@ -738,6 +738,38 @@ function cqwFont(px) {
     const n = Number(px);
     return ((isFinite(n) ? n : 48) / 19.2).toFixed(3) + "cqw";
 }
+// Shrink-to-fit preview: binary-search the largest font size (in real
+// rendered px) at which `inner` still fits inside its parent box, then
+// pin it. Mirrors the on-device __cwFit algorithm in cms/composed/
+// widgets/_autofit.py (the device fits in design-space px; the editor
+// preview fits in the smaller on-screen box, so the visual is an
+// approximation — the published bundle does the real fit on hardware).
+function cwFitEl(inner, maxPx, minPx) {
+    const box = inner.parentElement;
+    if (!box) return;
+    if (box.clientWidth <= 0 || box.clientHeight <= 0) return;
+    let lo = minPx, hi = maxPx, best = minPx;
+    for (let i = 0; i < 14; i++) {
+        const mid = (lo + hi) / 2;
+        inner.style.fontSize = mid + "px";
+        if (inner.scrollWidth <= box.clientWidth && inner.scrollHeight <= box.clientHeight) {
+            best = mid; lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    inner.style.fontSize = best.toFixed(2) + "px";
+}
+// Run after renderCanvas paints: fit every shrink-to-fit preview element.
+// Must run in rAF — the .cw-fit nodes only exist once the placed-widget
+// loop has appended them and the browser has laid them out.
+function fitMarkedPreviews() {
+    document.querySelectorAll("#canvas .cw-fit").forEach(el => {
+        const mx = Number(el.dataset.fitMax) || 512;
+        const mn = Number(el.dataset.fitMin) || 8;
+        cwFitEl(el, mx, mn);
+    });
+}
 // Appearance frame lengths (corner radius / border / inset) are also in
 // 1920x1080 design-space px; convert to cqw so the editor preview scales
 // the same way the published bundle does on the device.
@@ -787,17 +819,30 @@ const WIDGETS = {
 registerWidget("text", {
     label: "Text", icon: "🅰", category: "Text & Media",
     keywords: ["text", "label", "heading", "caption", "title", "words"],
-    defaults: () => ({text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false}),
+    defaults: () => ({text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false, shrink_to_fit:false}),
     summary: (w) => (w.config.text || "").slice(0, 24),
     preview: (root, cfg) => {
         const d = document.createElement("div");
         d.className = "cw-prev-text";
-        d.textContent = cfg.text || "";
         d.style.color = cfg.color || "#ffffff";
         d.style.fontFamily = fontStack(cfg.font_family);
-        d.style.fontSize = cqwFont(cfg.font_size_px);
         d.style.fontWeight = cfg.bold ? "700" : "400";
         d.style.fontStyle = cfg.italic ? "italic" : "normal";
+        if (cfg.shrink_to_fit) {
+            const inner = document.createElement("span");
+            inner.textContent = cfg.text || "";
+            inner.style.display = "inline-block";
+            inner.style.maxWidth = "100%";
+            inner.style.wordWrap = "break-word";
+            inner.style.fontSize = "24px";
+            inner.classList.add("cw-fit");
+            inner.dataset.fitMax = "512";
+            inner.dataset.fitMin = "8";
+            d.appendChild(inner);
+        } else {
+            d.textContent = cfg.text || "";
+            d.style.fontSize = cqwFont(cfg.font_size_px);
+        }
         root.appendChild(d);
     },
     settings: (w) => `
@@ -812,10 +857,15 @@ registerWidget("text", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||48}"
+                    <input type="number" id="cw-text-size" min="8" max="512" value="${w.config.font_size_px||48}"
+                           ${w.config.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-text-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+            </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
                 ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
@@ -1109,7 +1159,7 @@ registerWidget("countdown", {
 registerWidget("datebanner", {
     label: "Date Banner", icon: "📅", category: "Time & Date",
     keywords: ["date", "day", "banner", "calendar", "today", "weekday"],
-    defaults: () => ({format:"full", prefix:"", uppercase:false, color:"#ffffff", font_family:"sans", font_size_px:96}),
+    defaults: () => ({format:"full", prefix:"", uppercase:false, color:"#ffffff", font_family:"sans", font_size_px:96, shrink_to_fit:false}),
     summary: (w) => w.config.format || "full",
     preview: (root, cfg) => {
         const OPTS = {
@@ -1125,7 +1175,14 @@ registerWidget("datebanner", {
         c.style.fontFamily = fontStack(cfg.font_family);
         const dateEl = document.createElement("div");
         dateEl.className = "cw-prev-datebanner-date";
-        dateEl.style.fontSize = cqwFont(cfg.font_size_px);
+        if (cfg.shrink_to_fit) {
+            dateEl.style.fontSize = "24px";
+            dateEl.classList.add("cw-fit");
+            dateEl.dataset.fitMax = "512";
+            dateEl.dataset.fitMin = "8";
+        } else {
+            dateEl.style.fontSize = cqwFont(cfg.font_size_px);
+        }
         let txt;
         try {
             txt = new Date().toLocaleDateString(undefined, OPTS[cfg.format] || OPTS.full);
@@ -1164,10 +1221,15 @@ registerWidget("datebanner", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
+                    <input type="number" id="cw-datebanner-size" min="8" max="512" value="${w.config.font_size_px||96}"
+                           ${w.config.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-datebanner-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+            </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
                 ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
@@ -1992,6 +2054,8 @@ function renderCanvas() {
         }
         canvas.appendChild(el);
     });
+    // Fit shrink-to-fit previews after the browser lays out the new nodes.
+    requestAnimationFrame(fitMarkedPreviews);
 }
 
 // ── Live in-editor widget previews ──────────────────────────────────

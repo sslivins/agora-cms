@@ -24,6 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._autofit import (
+    AUTOFIT_JS,
+    AUTOFIT_MAX_PX,
+    AUTOFIT_MIN_PX,
+)
 
 
 # Allowlist of font-family slugs → emitted CSS font stack.  Keeping
@@ -53,6 +58,10 @@ class TextWidgetConfig(BaseModel):
     # output toggles, no core contract changes.
     bold: bool = False
     italic: bool = False
+    # When true, font size auto-scales to fill the widget box and the
+    # manual ``font_size_px`` is ignored at render time (kept only as the
+    # pre-JS starting value).  Default false → byte-identical legacy render.
+    shrink_to_fit: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -82,6 +91,7 @@ class TextWidget(Widget):
             "font_family": "sans",
             "bold": False,
             "italic": False,
+            "shrink_to_fit": False,
         }
 
     def editor_template(self) -> str:
@@ -109,10 +119,21 @@ class TextWidget(Widget):
         css_class = f"cw-text-{instance_id}"
         font_stack = _FONT_STACKS[config.font_family]
 
-        html_out = f'<div class="{css_class}">{escaped_text}</div>'
-
         font_weight = "700" if config.bold else "400"
         font_style = "italic" if config.italic else "normal"
+
+        if config.shrink_to_fit:
+            return self._render_shrink(
+                escaped_text=escaped_text,
+                css_class=css_class,
+                instance_id=instance_id,
+                font_stack=font_stack,
+                font_weight=font_weight,
+                font_style=font_style,
+                config=config,
+            )
+
+        html_out = f'<div class="{css_class}">{escaped_text}</div>'
 
         css_out = (
             f".{css_class} {{\n"
@@ -135,4 +156,66 @@ class TextWidget(Widget):
         return WidgetRender(
             html=html_out,
             css=css_out,
+        )
+
+    def _render_shrink(
+        self,
+        *,
+        escaped_text: str,
+        css_class: str,
+        instance_id: str,
+        font_stack: str,
+        font_weight: str,
+        font_style: str,
+        config: TextWidgetConfig,
+    ) -> WidgetRender:
+        """Shrink-to-fit variant: text auto-scales to fill the box.
+
+        Outer ``.{css_class}`` is the bounded, flex-centered box; an inner
+        ``#cw-text-inner-{instance_id}`` holds the text and is the element
+        whose font size the autofit JS binary-searches.
+        """
+        inner_id = f"cw-text-inner-{instance_id}"
+        inner_class = f"{css_class}-inner"
+
+        html_out = (
+            f'<div class="{css_class}">'
+            f'<div id="{inner_id}" class="{inner_class}">{escaped_text}</div>'
+            f"</div>"
+        )
+
+        css_out = (
+            f".{css_class} {{\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  display: flex;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"  text-align: center;\n"
+            f"  color: {config.color};\n"
+            f"  font-family: {font_stack};\n"
+            f"  font-weight: {font_weight};\n"
+            f"  font-style: {font_style};\n"
+            f"  overflow: hidden;\n"
+            f"}}\n"
+            f".{inner_class} {{\n"
+            # Starting size before JS runs; immediately overridden by fit.
+            f"  font-size: {config.font_size_px}px;\n"
+            f"  max-width: 100%;\n"
+            f"  line-height: 1.1;\n"
+            f"  word-wrap: break-word;\n"
+            f"}}"
+        )
+
+        init_js = (
+            f"var el = document.getElementById('{inner_id}');\n"
+            f"if (el && window.__cwFitObserve) "
+            f"window.__cwFitObserve(el, {AUTOFIT_MAX_PX}, {AUTOFIT_MIN_PX});"
+        )
+
+        return WidgetRender(
+            html=html_out,
+            css=css_out,
+            js=AUTOFIT_JS,
+            init_js=init_js,
         )

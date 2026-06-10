@@ -21,6 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._autofit import (
+    AUTOFIT_JS,
+    AUTOFIT_MAX_PX,
+    AUTOFIT_MIN_PX,
+)
 
 # Font-family allowlist — kept local to this widget so it can evolve
 # typography independently of clock/text.
@@ -59,6 +64,10 @@ class DateBannerWidgetConfig(BaseModel):
     color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
     font_family: str = Field(default="sans")
     font_size_px: int = Field(default=96, ge=8, le=512)
+    # When true, font size auto-scales to fill the widget box; the manual
+    # ``font_size_px`` becomes the pre-JS starting value only.  Default
+    # false → byte-identical legacy render.
+    shrink_to_fit: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -104,6 +113,54 @@ def _build_datebanner_init_js(
     )
 
 
+# Shrink-to-fit init: identical date logic, but refits the font after each
+# render (initial + every 60 s rollover) and on box resize.  Kept as a
+# SEPARATE template so the default (non-autofit) path stays byte-identical.
+_DATEBANNER_INIT_JS_AUTOFIT_TEMPLATE = """
+var dateEl = document.getElementById($DATE_ID_LIT);
+var prefix = $PREFIX_LIT;
+var upper = $UPPERCASE;
+function refit() {
+  if (dateEl && window.__cwFit) window.__cwFit(dateEl, $MAX_PX, $MIN_PX);
+}
+function render() {
+  if (!dateEl) return;
+  var d = new Date();
+  var s = d.toLocaleDateString(undefined, $OPTIONS);
+  if (prefix) s = prefix + ' ' + s;
+  if (upper) s = s.toUpperCase();
+  dateEl.textContent = s;
+  refit();
+}
+render();
+if (dateEl && dateEl.parentElement && typeof ResizeObserver !== 'undefined') {
+  try { new ResizeObserver(refit).observe(dateEl.parentElement); }
+  catch (e) { window.addEventListener('resize', refit); }
+} else {
+  window.addEventListener('resize', refit);
+}
+setInterval(render, 60000);
+""".strip()
+
+
+def _build_datebanner_init_js_autofit(
+    *,
+    date_id: str,
+    options: str,
+    prefix: str,
+    uppercase: bool,
+) -> str:
+    return (
+        _DATEBANNER_INIT_JS_AUTOFIT_TEMPLATE
+        .replace("$DATE_ID_LIT", f"'{date_id}'")
+        .replace("$OPTIONS", options)
+        .replace("$PREFIX_LIT", json.dumps(prefix))
+        .replace("$UPPERCASE", "true" if uppercase else "false")
+        .replace("$MAX_PX", str(AUTOFIT_MAX_PX))
+        .replace("$MIN_PX", str(AUTOFIT_MIN_PX))
+    )
+
+
 class DateBannerWidget(Widget):
     """Current date / day-of-week banner."""
 
@@ -121,6 +178,7 @@ class DateBannerWidget(Widget):
             "color": "#ffffff",
             "font_family": "sans",
             "font_size_px": 96,
+            "shrink_to_fit": False,
         }
 
     def editor_template(self) -> str:
@@ -173,6 +231,20 @@ class DateBannerWidget(Widget):
             f"  line-height: 1.1;\n"
             f"}}"
         )
+
+        if config.shrink_to_fit:
+            init_js = _build_datebanner_init_js_autofit(
+                date_id=date_id,
+                options=options,
+                prefix=config.prefix,
+                uppercase=config.uppercase,
+            )
+            return WidgetRender(
+                html=html_out,
+                css=css_out,
+                js=AUTOFIT_JS,
+                init_js=init_js,
+            )
 
         init_js = _build_datebanner_init_js(
             date_id=date_id,
