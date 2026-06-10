@@ -151,3 +151,43 @@ class TestDateBannerWidgetRender:
         r = self._render()
         assert r.static_assets == []
         assert r.referenced_asset_ids == []
+
+
+class TestDateBannerShrinkToFit:
+    def _render(self, **overrides):
+        w = DateBannerWidget()
+        cfg = DateBannerWidgetConfig(**{**w.default_config(), **overrides})
+        return w.render_html(cfg, _cell(), "inst-1")
+
+    def test_default_off_is_byte_identical(self):
+        w = DateBannerWidget()
+        base = w.default_config()
+        cfg_implicit = DateBannerWidgetConfig(**{k: v for k, v in base.items() if k != "shrink_to_fit"})
+        cfg_explicit = DateBannerWidgetConfig(**{**base, "shrink_to_fit": False})
+        a = w.render_html(cfg_implicit, _cell(), "x")
+        b = w.render_html(cfg_explicit, _cell(), "x")
+        assert a.html == b.html
+        assert a.css == b.css
+        assert a.js == b.js
+        assert a.init_js == b.init_js
+
+    def test_default_off_emits_no_autofit_code(self):
+        r = self._render(shrink_to_fit=False)
+        assert "__cwFit" not in r.js
+        assert "__cwFit" not in r.init_js
+        assert r.js == ""
+
+    def test_on_path_emits_autofit_js_and_refit(self):
+        r = self._render(shrink_to_fit=True)
+        # Shared fit helper present in js.
+        assert "window.__cwFit" in r.js
+        # init wires a refit into render + a ResizeObserver.
+        assert "function refit()" in r.init_js
+        assert "window.__cwFit(dateEl" in r.init_js
+        assert "ResizeObserver" in r.init_js
+        # Date logic still intact on the autofit path.
+        assert "setInterval(render, 60000)" in r.init_js
+        assert "getElementById('cw-datebanner-date-inst-1')" in r.init_js
+
+    def test_default_config_includes_shrink_to_fit_false(self):
+        assert DateBannerWidget().default_config()["shrink_to_fit"] is False

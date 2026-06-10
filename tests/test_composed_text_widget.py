@@ -183,3 +183,59 @@ class TestRegistration:
         importlib.reload(widgets_pkg)
         reg = get_registry()
         assert reg.has("text")
+
+
+class TestShrinkToFit:
+    def test_default_off_is_byte_identical_to_no_field(self):
+        # A config that omits shrink_to_fit and one that sets it False
+        # must render byte-for-byte identical output — the legacy path.
+        w = TextWidget()
+        cfg_implicit = TextWidgetConfig(text="hi", color="#abcdef", font_size_px=64)
+        cfg_explicit = TextWidgetConfig(
+            text="hi", color="#abcdef", font_size_px=64, shrink_to_fit=False
+        )
+        a = w.render_html(cfg_implicit, _cell(), "x")
+        b = w.render_html(cfg_explicit, _cell(), "x")
+        assert a.html == b.html
+        assert a.css == b.css
+        assert a.js == b.js
+        assert a.init_js == b.init_js
+
+    def test_default_off_emits_no_autofit_code(self):
+        w = TextWidget()
+        cfg = TextWidgetConfig(text="hi", shrink_to_fit=False)
+        out = w.render_html(cfg, _cell(), "x")
+        assert "__cwFit" not in out.html
+        assert "__cwFit" not in out.css
+        assert "__cwFit" not in out.js
+        assert out.js == ""
+        assert out.init_js is None
+        # The legacy box carries the literal font-size; no inner element.
+        assert "cw-text-inner-" not in out.html
+
+    def test_on_path_emits_autofit_js_and_init(self):
+        w = TextWidget()
+        cfg = TextWidgetConfig(text="hi", font_size_px=64, shrink_to_fit=True)
+        out = w.render_html(cfg, _cell(), "abcd")
+        # Shared fit helper is emitted in js.
+        assert "window.__cwFit" in out.js
+        assert "window.__cwFitObserve" in out.js
+        # Per-instance init wires the inner element to the observer.
+        inner_id = "cw-text-inner-abcd"
+        assert inner_id in out.html
+        assert inner_id in out.init_js
+        assert "__cwFitObserve" in out.init_js
+        # The starting (pre-JS) size is preserved on the inner element.
+        assert "font-size: 64px" in out.css
+
+    def test_on_path_still_escapes_text(self):
+        w = TextWidget()
+        cfg = TextWidgetConfig(
+            text='<script>alert(1)</script>', shrink_to_fit=True
+        )
+        out = w.render_html(cfg, _cell(), "x")
+        assert "<script>" not in out.html
+        assert "&lt;script&gt;" in out.html
+
+    def test_default_config_includes_shrink_to_fit_false(self):
+        assert TextWidget().default_config()["shrink_to_fit"] is False
