@@ -47,6 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._autofit import AUTOFIT_JS, autofit_inner_init_js
 
 _HEX = r"^#[0-9a-fA-F]{6}$"
 
@@ -93,6 +94,7 @@ class RssWidgetConfig(BaseModel):
     # Feeds update at most a few times an hour; a 5-minute floor keeps
     # the proxy (and the upstream feed) from being hammered.
     refresh_seconds: int = Field(default=900, ge=300, le=86400)
+    shrink_to_fit: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -254,6 +256,7 @@ class RssWidget(Widget):
             "font_family": "sans",
             "font_size_px": 32,
             "refresh_seconds": 900,
+            "shrink_to_fit": False,
         }
 
     def editor_template(self) -> str:
@@ -280,6 +283,19 @@ class RssWidget(Widget):
         item_class = f"{css_class}-item"
         date_class = f"{css_class}-date"
         font_stack = _FONT_STACKS[config.font_family]
+
+        if config.shrink_to_fit:
+            return self._render_shrink(
+                config=config,
+                ctx=ctx,
+                css_class=css_class,
+                root_id=root_id,
+                list_id=list_id,
+                item_class=item_class,
+                date_class=date_class,
+                font_stack=font_stack,
+                instance_id=instance_id,
+            )
 
         # Heading is the ONLY config-controlled string in the markup —
         # escaped here, never passed into JS. Feed titles are painted at
@@ -359,3 +375,124 @@ class RssWidget(Widget):
         )
 
         return WidgetRender(html=html_out, css=css_out, init_js=init_js)
+
+    def _render_shrink(
+        self,
+        *,
+        config: RssWidgetConfig,
+        ctx: BundleContext | None,
+        css_class: str,
+        root_id: str,
+        list_id: str,
+        item_class: str,
+        date_class: str,
+        font_stack: str,
+        instance_id: str,
+    ) -> WidgetRender:
+        """Shrink-to-fit variant: the whole feed (heading + headline list)
+        auto-scales to fill the box.
+
+        ``root_id`` stays on the OUTER bounded box (the runtime JS does
+        ``document.body.contains(root)`` to stop polling once removed).  The
+        heading + list are nested in ``#cw-rss-inner-{id}`` which carries the
+        base ``px`` size and is what the shared autofit JS fits.  Unlike the
+        default render, the inner wrapper and the list do **not** clip
+        (``overflow: visible``) — the fit needs the list's true
+        ``scrollHeight`` to be measurable; only the outer box clips.  Headline
+        sizes are expressed in ``em`` so the composite scales together, and
+        the per-refresh repaint (rows appended to the list) re-fits via the
+        shared ``MutationObserver``.
+        """
+        inner_id = f"cw-rss-inner-{instance_id}"
+        inner_class = f"{css_class}-inner"
+
+        heading_html = (
+            f'<div class="{css_class}-heading">'
+            f"{html.escape(config.heading)}</div>"
+            if config.heading.strip()
+            else ""
+        )
+        html_out = (
+            f'<div id="{root_id}" class="{css_class}">'
+            f'<div id="{inner_id}" class="{inner_class}">'
+            f"{heading_html}"
+            f'<div id="{list_id}" class="{css_class}-list">'
+            f'<div class="{item_class}">Loading headlines\u2026</div>'
+            f"</div>"
+            f"</div>"
+            f"</div>"
+        )
+
+        css_out = (
+            f".{css_class} {{\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  display: flex;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"  color: {config.color};\n"
+            f"  font-family: {font_stack};\n"
+            f"  overflow: hidden;\n"
+            f"  box-sizing: border-box;\n"
+            f"}}\n"
+            f".{inner_class} {{\n"
+            f"  display: flex;\n"
+            f"  flex-direction: column;\n"
+            # Starting size before JS runs; immediately overridden by fit.
+            f"  font-size: {config.font_size_px}px;\n"
+            f"}}\n"
+            f".{css_class}-heading {{\n"
+            f"  font-size: 1.1em;\n"
+            f"  font-weight: 700;\n"
+            f"  margin-bottom: 0.3em;\n"
+            f"  flex: 0 0 auto;\n"
+            f"}}\n"
+            f".{css_class}-list {{\n"
+            f"  flex: 1 1 auto;\n"
+            f"  display: flex;\n"
+            f"  flex-direction: column;\n"
+            f"  gap: 0.4em;\n"
+            f"}}\n"
+            f".{css_class}-item {{\n"
+            f"  font-size: 1em;\n"
+            f"  line-height: 1.2;\n"
+            f"}}\n"
+            f".{css_class}-date {{\n"
+            f"  font-size: 0.6em;\n"
+            f"  opacity: 0.7;\n"
+            f"  margin-top: 0.1em;\n"
+            f"}}"
+        )
+
+        base = ctx.cms_base_url if ctx else None
+        cfg_fp = (
+            f"{config.feed_url}|{config.item_count}"
+            f"|{int(config.sort_newest)}"
+        )
+        init_js = (
+            _build_rss_init_js(
+                root_id=root_id,
+                list_id=list_id,
+                url=_proxy_url(
+                    base,
+                    config.feed_url,
+                    config.item_count,
+                    newest=config.sort_newest,
+                ),
+                cfg_fp=cfg_fp,
+                cache_key=f"cw-rss-{instance_id}",
+                refresh_ms=config.refresh_seconds * 1000,
+                show_dates=config.show_dates,
+                item_class=item_class,
+                date_class=date_class,
+            )
+            + "\n"
+            + autofit_inner_init_js(inner_id)
+        )
+
+        return WidgetRender(
+            html=html_out,
+            css=css_out,
+            js=AUTOFIT_JS,
+            init_js=init_js,
+        )

@@ -964,24 +964,37 @@ registerWidget("qr", {
 registerWidget("clock", {
     label: "Clock", icon: "🕒", category: "Time & Date",
     keywords: ["clock", "time", "digital", "hour", "date"],
-    defaults: () => ({format:"24h", show_seconds:true, show_date:false, color:"#ffffff", font_family:"sans", font_size_px:96}),
+    defaults: () => ({format:"24h", show_seconds:true, show_date:false, color:"#ffffff", font_family:"sans", font_size_px:96, shrink_to_fit:false}),
     summary: (w) => w.config.format || "24h",
     preview: (root, cfg) => {
         const c = document.createElement("div");
         c.className = "cw-prev-clock";
         c.style.color = cfg.color || "#ffffff";
         c.style.fontFamily = fontStack(cfg.font_family);
+        const fit = !!cfg.shrink_to_fit;
+        let host = c;
+        if (fit) {
+            host = document.createElement("div");
+            host.style.display = "flex";
+            host.style.flexDirection = "column";
+            host.style.alignItems = "center";
+            host.style.fontSize = "24px";
+            host.classList.add("cw-fit");
+            host.dataset.fitMax = "512";
+            host.dataset.fitMin = "8";
+            c.appendChild(host);
+        }
         const timeEl = document.createElement("div");
         timeEl.className = "cw-prev-clock-time";
-        timeEl.style.fontSize = cqwFont(cfg.font_size_px);
+        timeEl.style.fontSize = fit ? "1em" : cqwFont(cfg.font_size_px);
         timeEl.dataset.format = cfg.format || "24h";
         timeEl.dataset.showSeconds = cfg.show_seconds ? "1" : "0";
-        c.appendChild(timeEl);
+        host.appendChild(timeEl);
         if (cfg.show_date) {
             const dateEl = document.createElement("div");
             dateEl.className = "cw-prev-clock-date";
-            dateEl.style.fontSize = cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
-            c.appendChild(dateEl);
+            dateEl.style.fontSize = fit ? "0.4em" : cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
+            host.appendChild(dateEl);
         }
         root.appendChild(c);
         updateClockEl(timeEl);
@@ -1010,10 +1023,15 @@ registerWidget("clock", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
+                    <input type="number" id="cw-clock-size" min="8" max="512" value="${w.config.font_size_px||96}"
+                           ${w.config.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-clock-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+            </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
                 ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
@@ -1063,7 +1081,7 @@ registerWidget("countdown", {
     keywords: ["countdown", "countup", "timer", "event", "days", "until", "since", "deadline"],
     defaults: () => ({target:"2030-01-01T00:00:00", direction:"down", label:"", completed_text:"",
              show_days:true, show_hours:true, show_minutes:true, show_seconds:false,
-             color:"#ffffff", font_family:"sans", font_size_px:96}),
+             color:"#ffffff", font_family:"sans", font_size_px:96, shrink_to_fit:false}),
     summary: (w) => (w.config.direction === "up" ? "since " : "to ") + String(w.config.target || "").slice(0, 16),
     preview: (root, cfg) => {
         const fmt = (cfg) => {
@@ -1090,18 +1108,31 @@ registerWidget("countdown", {
         c.className = "cw-prev-countdown";
         c.style.color = cfg.color || "#ffffff";
         c.style.fontFamily = fontStack(cfg.font_family);
+        const fit = !!cfg.shrink_to_fit;
+        let host = c;
+        if (fit) {
+            host = document.createElement("div");
+            host.style.display = "flex";
+            host.style.flexDirection = "column";
+            host.style.alignItems = "center";
+            host.style.fontSize = "24px";
+            host.classList.add("cw-fit");
+            host.dataset.fitMax = "512";
+            host.dataset.fitMin = "8";
+            c.appendChild(host);
+        }
         if (cfg.label) {
             const lab = document.createElement("div");
             lab.className = "cw-prev-countdown-label";
-            lab.style.fontSize = cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
+            lab.style.fontSize = fit ? "0.4em" : cqwFont((Number(cfg.font_size_px) || 96) * 0.4);
             lab.textContent = cfg.label;
-            c.appendChild(lab);
+            host.appendChild(lab);
         }
         const timeEl = document.createElement("div");
         timeEl.className = "cw-prev-countdown-time";
-        timeEl.style.fontSize = cqwFont(cfg.font_size_px);
+        timeEl.style.fontSize = fit ? "1em" : cqwFont(cfg.font_size_px);
         timeEl.textContent = fmt(cfg);
-        c.appendChild(timeEl);
+        host.appendChild(timeEl);
         root.appendChild(c);
     },
     settings: (w) => `
@@ -1146,10 +1177,15 @@ registerWidget("countdown", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||96}"
+                    <input type="number" id="cw-countdown-size" min="8" max="512" value="${w.config.font_size_px||96}"
+                           ${w.config.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-countdown-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+            </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
                 ${FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
@@ -1241,7 +1277,7 @@ registerWidget("weather", {
     keywords: ["weather", "temperature", "forecast", "climate", "degrees"],
     defaults: () => ({latitude:47.6062, longitude:-122.3321, location_label:"Seattle", units:"imperial",
              show_condition:true, show_location:true, color:"#ffffff", font_family:"sans",
-             font_size_px:64, refresh_seconds:900}),
+             font_size_px:64, refresh_seconds:900, shrink_to_fit:false}),
     summary: (w) => (w.config.location_label || "weather").slice(0, 24),
     preview: (root, cfg) => { root.appendChild(buildWeatherPreview(cfg)); },
     settings: (w) => {
@@ -1279,10 +1315,15 @@ registerWidget("weather", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${w.config.font_size_px||64}"
+                    <input type="number" id="cw-weather-size" min="8" max="512" value="${w.config.font_size_px||64}"
+                           ${w.config.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-weather-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+            </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
                 ${SAFE_FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
@@ -1301,22 +1342,36 @@ registerWidget("rss", {
     keywords: ["rss", "feed", "news", "headlines", "atom", "syndication"],
     defaults: () => ({feed_url:"https://feeds.bbci.co.uk/news/world/rss.xml", heading:"",
              item_count:5, sort_newest:true, show_dates:false, color:"#ffffff", font_family:"sans",
-             font_size_px:32, refresh_seconds:900}),
+             font_size_px:32, refresh_seconds:900, shrink_to_fit:false}),
     summary: (w) => (w.config.heading || "headlines").slice(0, 24),
     preview: (root, cfg) => {
         const wrap = document.createElement("div");
         wrap.className = "cw-prev-rss";
         wrap.style.color = cfg.color || "#ffffff";
         wrap.style.fontFamily = fontStack(cfg.font_family);
+        const fit = !!cfg.shrink_to_fit;
+        let host = wrap;
+        if (fit) {
+            host = document.createElement("div");
+            host.style.display = "flex";
+            host.style.flexDirection = "column";
+            host.style.alignSelf = "center";
+            host.style.fontSize = "24px";
+            host.classList.add("cw-fit");
+            host.dataset.fitMax = "256";
+            host.dataset.fitMin = "8";
+            wrap.appendChild(host);
+        }
         if (cfg.heading) {
             const h = document.createElement("div");
             h.className = "cw-prev-rss-heading";
             h.textContent = cfg.heading;
-            h.style.fontSize = cqwFont(Math.round((Number(cfg.font_size_px)||32) * 1.1));
-            wrap.appendChild(h);
+            h.style.fontSize = fit ? "1.1em" : cqwFont(Math.round((Number(cfg.font_size_px)||32) * 1.1));
+            host.appendChild(h);
         }
         const list = document.createElement("div");
         list.className = "cw-prev-rss-list";
+        if (fit) { list.style.flex = "0 0 auto"; list.style.overflow = "visible"; }
         const n = Math.max(1, Math.min(Number(cfg.item_count) || 5, 6));
         const samples = ["Sample headline one", "Sample headline two",
             "Sample headline three", "Sample headline four",
@@ -1325,18 +1380,18 @@ registerWidget("rss", {
             const row = document.createElement("div");
             const t = document.createElement("div");
             t.textContent = samples[i % samples.length];
-            t.style.fontSize = cqwFont(cfg.font_size_px || 32);
+            t.style.fontSize = fit ? "1em" : cqwFont(cfg.font_size_px || 32);
             row.appendChild(t);
             if (cfg.show_dates) {
                 const d = document.createElement("div");
                 d.className = "cw-prev-rss-date";
                 d.textContent = "Mon, 01 Jan 2026";
-                d.style.fontSize = cqwFont(Math.round((Number(cfg.font_size_px)||32) * 0.6));
+                d.style.fontSize = fit ? "0.6em" : cqwFont(Math.round((Number(cfg.font_size_px)||32) * 0.6));
                 row.appendChild(d);
             }
             list.appendChild(row);
         }
-        wrap.appendChild(list);
+        host.appendChild(list);
         root.appendChild(wrap);
     },
     settings: (w) => `
@@ -1356,7 +1411,8 @@ registerWidget("rss", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="256" value="${w.config.font_size_px||32}"
+                    <input type="number" id="cw-rss-size" min="8" max="256" value="${w.config.font_size_px||32}"
+                           ${w.config.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,256))">
                 </div>
             </div>
@@ -1367,6 +1423,10 @@ registerWidget("rss", {
             <label style="font-weight:400; margin-top:0.5rem;">
                 <input type="checkbox" ${w.config.show_dates?"checked":""}
                     oninput="updateSelected(x=>x.config.show_dates=this.checked)"> Show dates
+            </label>
+            <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-rss-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
             </label>
             <div class="row">
                 <div>
@@ -1552,7 +1612,7 @@ registerWidget("storehours", {
         friday:[{open:"09:00",close:"17:00"}], saturday:[{open:"10:00",close:"16:00"}],
         sunday:[], holidays:[], display_mode:"today", heading:"", show_status:true,
         time_format:"12h", color:"#ffffff", open_color:"#3fb950", closed_color:"#f85149",
-        font_family:"sans", font_size_px:48,
+        font_family:"sans", font_size_px:48, shrink_to_fit:false,
     }),
     summary: (w) => (w.config.heading || (w.config.display_mode === "week" ? "weekly hours" : "today's hours")).slice(0, 24),
     preview: (root, cfg) => {
@@ -1562,12 +1622,27 @@ registerWidget("storehours", {
         wrap.style.color = cfg.color || "#ffffff";
         wrap.style.fontFamily = fontStack(cfg.font_family);
         const baseFont = Number(cfg.font_size_px) || 48;
+        const fit = !!cfg.shrink_to_fit;
+        let host = wrap;
+        if (fit) {
+            host = document.createElement("div");
+            host.style.display = "flex";
+            host.style.flexDirection = "column";
+            host.style.alignItems = "center";
+            host.style.alignSelf = "center";
+            host.style.gap = "0.25em";
+            host.style.fontSize = "24px";
+            host.classList.add("cw-fit");
+            host.dataset.fitMax = "512";
+            host.dataset.fitMin = "8";
+            wrap.appendChild(host);
+        }
         if (cfg.heading) {
             const h = document.createElement("div");
             h.className = "cw-prev-storehours-heading";
             h.textContent = cfg.heading;
-            h.style.fontSize = cqwFont(Math.round(baseFont * 1.05));
-            wrap.appendChild(h);
+            h.style.fontSize = fit ? "1.05em" : cqwFont(Math.round(baseFont * 1.05));
+            host.appendChild(h);
         }
         // Resolve today's intervals from the weekly schedule (preview
         // ignores holiday date-matching; runtime handles real dates).
@@ -1583,18 +1658,18 @@ registerWidget("storehours", {
             }
             const st = document.createElement("div");
             st.className = "cw-prev-storehours-status";
-            st.style.fontSize = cqwFont(baseFont);
+            st.style.fontSize = fit ? "1em" : cqwFont(baseFont);
             const pill = document.createElement("span");
             pill.className = "cw-prev-storehours-pill";
             pill.textContent = open ? "Open" : "Closed";
             pill.style.background = (open ? (cfg.open_color || "#3fb950") : (cfg.closed_color || "#f85149"));
             st.appendChild(pill);
-            wrap.appendChild(st);
+            host.appendChild(st);
         }
         if (cfg.display_mode === "week") {
             const wk = document.createElement("div");
             wk.className = "cw-prev-storehours-week";
-            wk.style.fontSize = cqwFont(Math.round(baseFont * 0.55));
+            wk.style.fontSize = fit ? "0.55em" : cqwFont(Math.round(baseFont * 0.55));
             for (const f of SH_DAY_FIELDS) {
                 const row = document.createElement("div");
                 row.className = "cw-prev-storehours-row";
@@ -1602,13 +1677,13 @@ registerWidget("storehours", {
                 const v = document.createElement("span"); v.textContent = shFmtIntervals(cfg[f], fmt24);
                 row.appendChild(d); row.appendChild(v); wk.appendChild(row);
             }
-            wrap.appendChild(wk);
+            host.appendChild(wk);
         } else {
             const body = document.createElement("div");
             body.className = "cw-prev-storehours-body";
-            body.style.fontSize = cqwFont(Math.round(baseFont * 0.7));
+            body.style.fontSize = fit ? "0.7em" : cqwFont(Math.round(baseFont * 0.7));
             body.textContent = "Today: " + shFmtIntervals(todayIntervals, fmt24);
-            wrap.appendChild(body);
+            host.appendChild(body);
         }
         root.appendChild(wrap);
     },
@@ -1713,10 +1788,15 @@ registerWidget("storehours", {
                 </div>
                 <div>
                     <label>Size (px)</label>
-                    <input type="number" min="8" max="512" value="${c.font_size_px||48}"
+                    <input type="number" id="cw-storehours-size" min="8" max="512" value="${c.font_size_px||48}"
+                           ${c.shrink_to_fit?"disabled":""}
                            oninput="updateSelected(x=>x.config.font_size_px=clampInt(this.value,8,512))">
                 </div>
             </div>
+            <label style="font-weight:400; margin-top:0.4rem; display:flex; align-items:center; gap:0.35rem;">
+                <input type="checkbox" ${c.shrink_to_fit?"checked":""}
+                    oninput="document.getElementById('cw-storehours-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+            </label>
             <div class="row" style="margin-top:0.3rem;">
                 <div>
                     <label>Open color</label>
@@ -2306,24 +2386,37 @@ function buildWeatherPreview(cfg) {
     wrap.className = "cw-prev-weather";
     wrap.style.color = cfg.color || "#ffffff";
     wrap.style.fontFamily = fontStack(cfg.font_family);
+    const fit = !!cfg.shrink_to_fit;
+    let host = wrap;
+    if (fit) {
+        host = document.createElement("div");
+        host.style.display = "flex";
+        host.style.flexDirection = "column";
+        host.style.alignItems = "center";
+        host.style.fontSize = "24px";
+        host.classList.add("cw-fit");
+        host.dataset.fitMax = "512";
+        host.dataset.fitMin = "8";
+        wrap.appendChild(host);
+    }
     if (cfg.show_location) {
         const loc = document.createElement("div");
         loc.className = "cw-prev-weather-loc";
         loc.textContent = cfg.location_label || "";
-        loc.style.fontSize = cqwFont((Number(cfg.font_size_px) || 64) * 0.4);
-        wrap.appendChild(loc);
+        loc.style.fontSize = fit ? "0.4em" : cqwFont((Number(cfg.font_size_px) || 64) * 0.4);
+        host.appendChild(loc);
     }
     const temp = document.createElement("div");
     temp.className = "cw-prev-weather-temp";
     temp.textContent = "72" + (cfg.units === "metric" ? "°C" : "°F");
-    temp.style.fontSize = cqwFont(cfg.font_size_px);
-    wrap.appendChild(temp);
+    temp.style.fontSize = fit ? "1em" : cqwFont(cfg.font_size_px);
+    host.appendChild(temp);
     if (cfg.show_condition) {
         const cond = document.createElement("div");
         cond.className = "cw-prev-weather-cond";
         cond.textContent = "⛅ Partly cloudy";
-        cond.style.fontSize = cqwFont((Number(cfg.font_size_px) || 64) * 0.45);
-        wrap.appendChild(cond);
+        cond.style.fontSize = fit ? "0.45em" : cqwFont((Number(cfg.font_size_px) || 64) * 0.45);
+        host.appendChild(cond);
     }
     return wrap;
 }

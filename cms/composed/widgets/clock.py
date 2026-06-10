@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._autofit import AUTOFIT_JS, autofit_inner_init_js
 
 
 # Font-family allowlist — kept local to this widget so the clock and
@@ -44,6 +45,7 @@ class ClockWidgetConfig(BaseModel):
     color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
     font_family: str = Field(default="sans")
     font_size_px: int = Field(default=96, ge=8, le=512)
+    shrink_to_fit: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -125,6 +127,7 @@ class ClockWidget(Widget):
             "color": "#ffffff",
             "font_family": "sans",
             "font_size_px": 96,
+            "shrink_to_fit": False,
         }
 
     def editor_template(self) -> str:
@@ -147,6 +150,16 @@ class ClockWidget(Widget):
         time_id = f"cw-clock-time-{instance_id}"
         date_id = f"cw-clock-date-{instance_id}"
         font_stack = _FONT_STACKS[config.font_family]
+
+        if config.shrink_to_fit:
+            return self._render_shrink(
+                config=config,
+                css_class=css_class,
+                time_id=time_id,
+                date_id=date_id,
+                font_stack=font_stack,
+                instance_id=instance_id,
+            )
 
         date_html = (
             f'<div id="{date_id}" class="{css_class}-date"></div>'
@@ -198,5 +211,92 @@ class ClockWidget(Widget):
         return WidgetRender(
             html=html_out,
             css=css_out,
+            init_js=init_js,
+        )
+
+    def _render_shrink(
+        self,
+        *,
+        config: ClockWidgetConfig,
+        css_class: str,
+        time_id: str,
+        date_id: str,
+        font_stack: str,
+        instance_id: str,
+    ) -> WidgetRender:
+        """Shrink-to-fit variant: the time (+ optional date) auto-scales.
+
+        The time + date are wrapped in ``#cw-clock-inner-{id}`` which
+        carries the base font size; child sizes are expressed in ``em`` so
+        the whole composite scales proportionally when the shared autofit
+        JS fits the wrapper against the bounded outer box.  The existing
+        per-second render loop keeps writing the same child IDs; the
+        ``MutationObserver`` inside ``__cwFitObserve`` re-fits on each tick
+        for free.
+        """
+        inner_id = f"cw-clock-inner-{instance_id}"
+        inner_class = f"{css_class}-inner"
+
+        date_html = (
+            f'<div id="{date_id}" class="{css_class}-date"></div>'
+            if config.show_date
+            else ""
+        )
+        html_out = (
+            f'<div class="{css_class}">'
+            f'<div id="{inner_id}" class="{inner_class}">'
+            f'<div id="{time_id}" class="{css_class}-time"></div>'
+            f"{date_html}"
+            f"</div>"
+            f"</div>"
+        )
+
+        css_out = (
+            f".{css_class} {{\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  display: flex;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"  color: {config.color};\n"
+            f"  font-family: {font_stack};\n"
+            f"  font-variant-numeric: tabular-nums;\n"
+            f"  overflow: hidden;\n"
+            f"}}\n"
+            f".{inner_class} {{\n"
+            # Starting size before JS runs; immediately overridden by fit.
+            f"  font-size: {config.font_size_px}px;\n"
+            f"  display: flex;\n"
+            f"  flex-direction: column;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"}}\n"
+            f".{css_class}-time {{\n"
+            f"  font-size: 1em;\n"
+            f"  line-height: 1;\n"
+            f"}}\n"
+            f".{css_class}-date {{\n"
+            f"  font-size: 0.4em;\n"
+            f"  opacity: 0.8;\n"
+            f"  margin-top: 0.25em;\n"
+            f"}}"
+        )
+
+        init_js = (
+            _build_clock_init_js(
+                time_id=time_id,
+                date_id=date_id if config.show_date else "",
+                format_=config.format,
+                show_seconds=config.show_seconds,
+                show_date=config.show_date,
+            )
+            + "\n"
+            + autofit_inner_init_js(inner_id)
+        )
+
+        return WidgetRender(
+            html=html_out,
+            css=css_out,
+            js=AUTOFIT_JS,
             init_js=init_js,
         )

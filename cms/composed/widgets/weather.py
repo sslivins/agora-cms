@@ -45,6 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._autofit import AUTOFIT_JS, autofit_inner_init_js
 
 _HEX = r"^#[0-9a-fA-F]{6}$"
 
@@ -98,6 +99,7 @@ class WeatherWidgetConfig(BaseModel):
     # conditions update at most a few times an hour upstream, so a
     # 10-minute floor is plenty and keeps us a good citizen.
     refresh_seconds: int = Field(default=900, ge=600, le=86400)
+    shrink_to_fit: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -275,6 +277,7 @@ class WeatherWidget(Widget):
             "font_family": "sans",
             "font_size_px": 64,
             "refresh_seconds": 900,
+            "shrink_to_fit": False,
         }
 
     def editor_template(self) -> str:
@@ -307,6 +310,18 @@ class WeatherWidget(Widget):
         cond_id = f"cw-weather-cond-{instance_id}"
         font_stack = _FONT_STACKS[config.font_family]
         symbol = "\u00b0F" if config.units == "imperial" else "\u00b0C"
+
+        if config.shrink_to_fit:
+            return self._render_shrink(
+                config=config,
+                css_class=css_class,
+                root_id=root_id,
+                temp_id=temp_id,
+                cond_id=cond_id,
+                font_stack=font_stack,
+                symbol=symbol,
+                instance_id=instance_id,
+            )
 
         # Location label is the ONLY config-controlled string in the
         # markup — escaped here, never passed into JS.
@@ -373,3 +388,112 @@ class WeatherWidget(Widget):
         )
 
         return WidgetRender(html=html_out, css=css_out, init_js=init_js)
+
+    def _render_shrink(
+        self,
+        *,
+        config: WeatherWidgetConfig,
+        css_class: str,
+        root_id: str,
+        temp_id: str,
+        cond_id: str,
+        font_stack: str,
+        symbol: str,
+        instance_id: str,
+    ) -> WidgetRender:
+        """Shrink-to-fit variant: location + temperature + condition
+        auto-scale together to fill the box.
+
+        ``root_id`` stays on the OUTER bounded box (the runtime JS does
+        ``document.body.contains(root)`` to stop polling once removed).  The
+        three lines are nested in ``#cw-weather-inner-{id}`` which carries the
+        base ``px`` size and is what the shared autofit JS fits; child sizes
+        are expressed in ``em`` so they scale as a unit.  The per-refresh
+        temperature/condition repaint mutates child text nodes, so the shared
+        ``MutationObserver`` re-fits automatically.
+        """
+        inner_id = f"cw-weather-inner-{instance_id}"
+        inner_class = f"{css_class}-inner"
+
+        loc_html = (
+            f'<div class="{css_class}-loc">'
+            f"{html.escape(config.location_label)}</div>"
+            if config.show_location
+            else ""
+        )
+        cond_html = (
+            f'<div id="{cond_id}" class="{css_class}-cond"></div>'
+            if config.show_condition
+            else ""
+        )
+        html_out = (
+            f'<div id="{root_id}" class="{css_class}">'
+            f'<div id="{inner_id}" class="{inner_class}">'
+            f"{loc_html}"
+            f'<div id="{temp_id}" class="{css_class}-temp">--{symbol}</div>'
+            f"{cond_html}"
+            f"</div>"
+            f"</div>"
+        )
+
+        css_out = (
+            f".{css_class} {{\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  display: flex;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"  color: {config.color};\n"
+            f"  font-family: {font_stack};\n"
+            f"  text-align: center;\n"
+            f"  overflow: hidden;\n"
+            f"  box-sizing: border-box;\n"
+            f"}}\n"
+            f".{inner_class} {{\n"
+            f"  display: flex;\n"
+            f"  flex-direction: column;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"  font-size: {config.font_size_px}px;\n"
+            f"}}\n"
+            f".{css_class}-loc {{\n"
+            f"  font-size: 0.4em;\n"
+            f"  opacity: 0.85;\n"
+            f"  margin-bottom: 0.1em;\n"
+            f"}}\n"
+            f".{css_class}-temp {{\n"
+            f"  font-size: 1em;\n"
+            f"  line-height: 1;\n"
+            f"  font-variant-numeric: tabular-nums;\n"
+            f"}}\n"
+            f".{css_class}-cond {{\n"
+            f"  font-size: 0.45em;\n"
+            f"  opacity: 0.9;\n"
+            f"  margin-top: 0.1em;\n"
+            f"}}"
+        )
+
+        cfg_fp = f"{config.latitude},{config.longitude},{config.units}"
+        init_js = (
+            _build_weather_init_js(
+                root_id=root_id,
+                temp_id=temp_id,
+                cond_id=cond_id if config.show_condition else "",
+                url=_forecast_url(
+                    config.latitude, config.longitude, config.units
+                ),
+                symbol=symbol,
+                cfg_fp=cfg_fp,
+                cache_key=f"cw-weather-{instance_id}",
+                refresh_ms=config.refresh_seconds * 1000,
+            )
+            + "\n"
+            + autofit_inner_init_js(inner_id)
+        )
+
+        return WidgetRender(
+            html=html_out,
+            css=css_out,
+            js=AUTOFIT_JS,
+            init_js=init_js,
+        )

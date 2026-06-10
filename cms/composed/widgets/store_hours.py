@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._autofit import AUTOFIT_JS, autofit_inner_init_js
 
 # Font-family allowlist — kept local so typography can evolve independently.
 _FONT_STACKS: dict[str, str] = {
@@ -204,6 +205,7 @@ class StoreHoursWidgetConfig(BaseModel):
     closed_color: str = Field(default="#f85149", pattern=r"^#[0-9a-fA-F]{6}$")
     font_family: str = Field(default="sans")
     font_size_px: int = Field(default=48, ge=8, le=512)
+    shrink_to_fit: bool = False
 
     @field_validator("font_family")
     @classmethod
@@ -418,6 +420,7 @@ class StoreHoursWidget(Widget):
             "closed_color": "#f85149",
             "font_family": "sans",
             "font_size_px": 48,
+            "shrink_to_fit": False,
         }
 
     def editor_template(self) -> str:
@@ -440,6 +443,16 @@ class StoreHoursWidget(Widget):
         status_id = f"cw-storehours-status-{instance_id}"
         body_id = f"cw-storehours-body-{instance_id}"
         font_stack = _FONT_STACKS[config.font_family]
+
+        if config.shrink_to_fit:
+            return self._render_shrink(
+                config=config,
+                css_class=css_class,
+                status_id=status_id,
+                body_id=body_id,
+                font_stack=font_stack,
+                instance_id=instance_id,
+            )
 
         heading_html = ""
         if config.heading:
@@ -519,5 +532,124 @@ class StoreHoursWidget(Widget):
         return WidgetRender(
             html=html_out,
             css=css_out,
+            init_js=init_js,
+        )
+
+    def _render_shrink(
+        self,
+        *,
+        config: StoreHoursWidgetConfig,
+        css_class: str,
+        status_id: str,
+        body_id: str,
+        font_stack: str,
+        instance_id: str,
+    ) -> WidgetRender:
+        """Shrink-to-fit variant.
+
+        The widget content is already fully ``em`` / inherit-relative (the
+        outer box normally carries the only ``px`` font-size and children
+        scale off it).  So the only change here is to move that base ``px``
+        onto an inner wrapper (``#cw-storehours-inner-{id}``) and let the
+        shared autofit JS scale that wrapper to fit the bounded outer box.
+
+        The per-minute status/body repaint mutates ``status_id`` / ``body_id``
+        (both inside the wrapper); the ``MutationObserver`` in
+        ``__cwFitObserve`` re-fits on each repaint automatically.
+        """
+        inner_id = f"cw-storehours-inner-{instance_id}"
+        inner_class = f"{css_class}-inner"
+
+        heading_html = ""
+        if config.heading:
+            heading_html = (
+                f'<div class="{css_class}-heading">{html.escape(config.heading)}</div>'
+            )
+        status_html = ""
+        if config.show_status:
+            status_html = f'<div id="{status_id}" class="{css_class}-status">\u2026</div>'
+
+        html_out = (
+            f'<div class="{css_class}">'
+            f'<div id="{inner_id}" class="{inner_class}">'
+            f"{heading_html}"
+            f"{status_html}"
+            f'<div id="{body_id}" class="{css_class}-body"></div>'
+            f"</div>"
+            f"</div>"
+        )
+
+        css_out = (
+            f".{css_class} {{\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  box-sizing: border-box;\n"
+            f"  display: flex;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            f"  overflow: hidden;\n"
+            f"  text-align: center;\n"
+            f"  color: {config.color};\n"
+            f"  font-family: {font_stack};\n"
+            f"  line-height: 1.25;\n"
+            f"}}\n"
+            f".{inner_class} {{\n"
+            f"  display: flex;\n"
+            f"  flex-direction: column;\n"
+            f"  align-items: center;\n"
+            f"  justify-content: center;\n"
+            # Starting size before JS runs; immediately overridden by fit.
+            f"  font-size: {config.font_size_px}px;\n"
+            f"}}\n"
+            f".{css_class}-heading {{\n"
+            f"  font-weight: 700;\n"
+            f"  margin-bottom: 0.25em;\n"
+            f"}}\n"
+            f".{css_class}-status {{\n"
+            f"  margin-bottom: 0.35em;\n"
+            f"}}\n"
+            f".{css_class}-status .cw-storehours-pill {{\n"
+            f"  font-weight: 700;\n"
+            f"}}\n"
+            f".{css_class}-status .cw-storehours-hint {{\n"
+            f"  opacity: 0.85;\n"
+            f"}}\n"
+            f".{css_class}-body {{\n"
+            f"  width: 100%;\n"
+            f"  display: flex;\n"
+            f"  flex-direction: column;\n"
+            f"  gap: 0.15em;\n"
+            f"}}\n"
+            f".{css_class}-body .cw-storehours-row {{\n"
+            f"  display: flex;\n"
+            f"  justify-content: space-between;\n"
+            f"  gap: 1em;\n"
+            f"  white-space: nowrap;\n"
+            f"}}\n"
+            f".{css_class}-body .cw-storehours-row-today {{\n"
+            f"  font-weight: 700;\n"
+            f"}}\n"
+            f".{css_class}-body .cw-storehours-day {{\n"
+            f"  text-align: left;\n"
+            f"}}\n"
+            f".{css_class}-body .cw-storehours-hrs {{\n"
+            f"  text-align: right;\n"
+            f"}}"
+        )
+
+        init_js = (
+            _build_storehours_init_js(
+                status_id=status_id,
+                body_id=body_id,
+                config=config,
+            )
+            + "\n"
+            + autofit_inner_init_js(inner_id)
+        )
+
+        return WidgetRender(
+            html=html_out,
+            css=css_out,
+            js=AUTOFIT_JS,
             init_js=init_js,
         )
