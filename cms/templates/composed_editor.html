@@ -18,15 +18,6 @@
                    value="{{ asset_name }}"
                    placeholder="e.g. Lobby welcome"
                    style="width:100%; max-width:420px; padding:0.5rem; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);">
-            {% if edit_mode %}
-            <small class="text-muted" style="display:block; margin-top:0.25rem; font-size:0.78rem;">
-                Renames the slide when you Save.
-            </small>
-            {% elif assistant_enabled %}
-            <small class="text-muted" style="display:block; margin-top:0.25rem; font-size:0.78rem;">
-                Optional when using the AI assistant — leave blank and it'll be auto-named (rename later anytime).
-            </small>
-            {% endif %}
         </div>
 
         {% if user_groups | length > 0 %}
@@ -92,19 +83,14 @@
     <div class="composed-editor">
         <aside class="palette">
             <h3>Palette</h3>
-            <p class="text-muted" style="font-size:0.85rem;">
-                Click a widget below, then click a grid cell to place it.
-            </p>
             <input type="search" id="palette-search" placeholder="Search widgets…"
                    oninput="renderPalette(this.value)" autocomplete="off">
             <div id="palette-list"></div>
-            <div id="palette-status" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted);">
-                None selected.
-            </div>
 
-            <h3 style="margin-top:1.5rem;">Background</h3>
-            <label style="display:block; font-size:0.85rem;">Color</label>
-            <input type="color" id="bg-color" value="#000000" oninput="setBgColor(this.value)">
+            <div style="display:flex; align-items:center; gap:0.6rem; margin-top:1.5rem;">
+                <h3 style="margin:0;">Background</h3>
+                <input type="color" id="bg-color" value="#000000" oninput="setBgColor(this.value)">
+            </div>
         </aside>
 
         <div class="canvas-wrap">
@@ -517,7 +503,9 @@
         border: 1px solid #064e3b;
         z-index: 5;
         box-sizing: border-box;
+        display: none;
     }
+    .placed-widget.selected .resize-handle { display: block; }
     .resize-handle.h-e  { right: -5px; top: 50%; width: 10px; height: 18px; transform: translateY(-50%); cursor: ew-resize; border-radius: 2px; }
     .resize-handle.h-w  { left: -5px;  top: 50%; width: 10px; height: 18px; transform: translateY(-50%); cursor: ew-resize; border-radius: 2px; }
     .resize-handle.h-s  { bottom: -5px; left: 50%; width: 18px; height: 10px; transform: translateX(-50%); cursor: ns-resize; border-radius: 2px; }
@@ -864,7 +852,7 @@ registerWidget("text", {
             </div>
             <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-text-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-text-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
@@ -1030,7 +1018,7 @@ registerWidget("clock", {
             </div>
             <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-clock-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-clock-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
@@ -1184,7 +1172,7 @@ registerWidget("countdown", {
             </div>
             <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-countdown-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-countdown-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
@@ -1264,7 +1252,7 @@ registerWidget("datebanner", {
             </div>
             <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-datebanner-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-datebanner-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
@@ -1322,7 +1310,7 @@ registerWidget("weather", {
             </div>
             <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-weather-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-weather-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <label>Font</label>
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
@@ -1426,7 +1414,7 @@ registerWidget("rss", {
             </label>
             <label style="font-weight:400; margin-top:0.5rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${w.config.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-rss-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-rss-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <div class="row">
                 <div>
@@ -1795,7 +1783,7 @@ registerWidget("storehours", {
             </div>
             <label style="font-weight:400; margin-top:0.4rem; display:flex; align-items:center; gap:0.35rem;">
                 <input type="checkbox" ${c.shrink_to_fit?"checked":""}
-                    oninput="document.getElementById('cw-storehours-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Shrink to fit
+                    oninput="document.getElementById('cw-storehours-size').disabled=this.checked; updateSelected(x=>x.config.shrink_to_fit=this.checked)"> Auto-fit
             </label>
             <div class="row" style="margin-top:0.3rem;">
                 <div>
@@ -2052,7 +2040,6 @@ function selectPaletteType(t) {
     document.querySelectorAll(".palette-btn").forEach(b => {
         b.classList.toggle("active", b.dataset.type === t);
     });
-    document.getElementById("palette-status").textContent = "Placing: " + t + ". Click a cell.";
 }
 
 function clearPaletteType() {
