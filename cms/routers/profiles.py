@@ -946,3 +946,77 @@ async def profiles_status_json(
         "queue": queue_out,
         "queue_count": len(queue_out),
     }
+
+
+@router.post("/clear-errors")
+async def clear_transcode_errors(
+    user=Depends(require_permission(PROFILES_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss FAILED transcode variants from the Transcoding Queue panel.
+
+    A FAILED variant is a permanent (non-retryable) transcode failure; it never
+    transitions out on its own, so without this it lingers in the queue forever.
+    This deletes the FAILED variant rows in the caller's visible scope (with
+    best-effort output-file cleanup) and removes any matching transcode-failure
+    notifications (one-way tie — clearing the queue clears the bell, but not the
+    reverse).
+
+    Composed-slide thumbnail snapshots that are still needed will be
+    re-rendered by the worker's startup backfill, so clearing them is safe.
+
+    Gated on ``profiles:write`` (Admin among built-in roles), unlike the
+    read-only status panel which is visible to Operators/Viewers too.
+    """
+    from cms.routers.assets import _visible_asset_ids
+    from cms.auth import get_settings
+    from cms.services.storage import get_storage
+    from cms.services.transcoder import TRANSCODE_FAIL_NOTIFICATION_TITLE
+    from cms.models.notification import Notification
+
+    visible = await _visible_asset_ids(user, db)
+
+    q = select(AssetVariant).where(AssetVariant.status == VariantStatus.FAILED)
+    if visible is not None:
+        if not visible:
+            return {"cleared": 0, "notifications_cleared": 0}
+        q = q.where(AssetVariant.source_asset_id.in_(visible))
+    failed = (await db.execute(q)).scalars().all()
+
+    storage = get_storage()
+    variants_dir = get_settings().asset_storage_path / "variants"
+    cleared_ids: list[str] = []
+    for variant in failed:
+        try:
+            vpath = variants_dir / variant.filename
+            if vpath.is_file():
+                vpath.unlink()
+            await storage.on_file_deleted(f"variants/{variant.filename}")
+        except Exception:
+            logger.warning(
+                "clear-errors: file cleanup failed for variant %s",
+                variant.id, exc_info=True,
+            )
+        cleared_ids.append(str(variant.id))
+        await db.delete(variant)
+
+    # One-way tie: remove any transcode-failure notifications for cleared variants.
+    notif_deleted = 0
+    if cleared_ids:
+        cleared_set = set(cleared_ids)
+        notifs = (await db.execute(
+            select(Notification).where(
+                Notification.title == TRANSCODE_FAIL_NOTIFICATION_TITLE
+            )
+        )).scalars().all()
+        for n in notifs:
+            if (n.details or {}).get("variant_id") in cleared_set:
+                await db.delete(n)
+                notif_deleted += 1
+
+    await db.commit()
+    logger.info(
+        "clear-errors: %s deleted %d failed variant(s), %d notification(s)",
+        getattr(user, "username", "?"), len(cleared_ids), notif_deleted,
+    )
+    return {"cleared": len(cleared_ids), "notifications_cleared": notif_deleted}

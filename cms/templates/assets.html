@@ -405,7 +405,7 @@
     </div>
 </div>
 
-{# ── Transcoding Queue (collapsible, live-updating) — admin-only ── #}
+{# ── Transcoding Queue (collapsible, live-updating) ── #}
 {% if 'profiles:read' in user_perms %}
 <div class="card" id="queue-card" style="display:none;">
     <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;"
@@ -415,6 +415,13 @@
             Transcoding Queue
             <span class="badge badge-muted" id="queue-count-badge" style="margin-left:0.5rem;">0</span>
         </h2>
+        {% if 'profiles:write' in user_perms %}
+        <button type="button" id="queue-clear-errors" class="btn btn-sm btn-danger"
+                style="display:none;"
+                onclick="event.stopPropagation(); clearTranscodeErrors();">
+            Clear errors
+        </button>
+        {% endif %}
     </div>
     <div id="queue-body-wrap" style="display:none; margin-top:0.75rem;">
         <div class="table-wrap">
@@ -1018,6 +1025,9 @@ function fallbackCopy(text, onSuccess) {
 
             const count = data.queue_count || 0;
             badge.textContent = count;
+            const clearBtn = document.getElementById('queue-clear-errors');
+            const hasErrors = (data.queue || []).some(v => v.status === 'failed');
+            if (clearBtn) clearBtn.style.display = hasErrors ? '' : 'none';
             if (count > 0) {
                 card.style.display = '';
                 body.innerHTML = data.queue.map(buildQueueRow).join('');
@@ -1027,6 +1037,24 @@ function fallbackCopy(text, onSuccess) {
             }
         } catch (e) { /* ignore */ }
     }
+
+    window.clearTranscodeErrors = async function() {
+        const ok = await showConfirm('Dismiss all failed transcodes from the queue? This cannot be undone.');
+        if (!ok) return;
+        const btn = document.getElementById('queue-clear-errors');
+        if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
+        try {
+            const res = await fetch('/api/profiles/clear-errors', { method: 'POST' });
+            if (!res.ok) {
+                showToast('Failed to clear transcode errors.', true);
+            }
+        } catch (e) {
+            showToast('Failed to clear transcode errors.', true);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Clear errors'; }
+            refreshQueue();
+        }
+    };
 
     applyExpand();
     refreshQueue();
