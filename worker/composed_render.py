@@ -6,12 +6,18 @@ leaks):
 
 * :func:`render_composed_to_png` — renders the self-contained
   composed-slide HTML produced by
-  :func:`cms.composed.render.build_composed_html` with **all network
-  blocked**: only ``data:`` URIs (already-inlined images / videos /
-  fonts) ever load, so a slide can never make the worker reach out to an
-  arbitrary origin while it is being snapshotted. The weather widget's
-  live Open-Meteo fetch is blocked too, so it renders its offline
-  fallback in the thumbnail — acceptable for a static snapshot.
+  :func:`cms.composed.render.build_composed_html`. Inlined ``data:``
+  URIs (already-embedded images / videos / fonts) always load. Live
+  ``http(s)`` requests from widgets — the weather widget's Open-Meteo
+  fetch, a web-embed iframe's page — are allowed **only** when the
+  target host passes the same SSRF guard used by
+  :func:`render_url_to_png` (rejecting private / loopback / link-local /
+  reserved / multicast / unspecified addresses, which covers the
+  169.254.169.254 cloud-metadata endpoint). Everything else
+  (``file`` / ``blob`` / ``ws`` / unsafe hosts) is aborted. This lets
+  the thumbnail reflect live widget content (real weather, embedded
+  pages) while keeping the worker from reaching arbitrary internal
+  origins.
 
 * :func:`render_url_to_png` — navigates to a live webpage URL and
   screenshots it, so network **must** be allowed. To keep this from
@@ -37,9 +43,13 @@ logger = logging.getLogger("agora.worker.composed_render")
 _VIEWPORT = {"width": 1920, "height": 1080}
 _NAV_TIMEOUT_MS = 15000
 _READY_TIMEOUT_MS = 8000
+# Bounded wait for live widget requests (weather fetch, embed iframe) to
+# settle once network is allowed. Wrapped in try/except so a page that
+# keeps a connection open can't hang the render past this budget.
+_NETWORK_IDLE_TIMEOUT_MS = 6000
 # Short settle after readiness so late CSS transitions / clock paints land
 # before the screenshot.
-_SETTLE_MS = 200
+_SETTLE_MS = 300
 
 # Lazy singletons — created on first render, reused thereafter.
 _pw = None
@@ -73,6 +83,21 @@ async () => {
       setTimeout(res, 3000);
     });
   }));
+  const frames = Array.from(document.querySelectorAll('iframe'));
+  await Promise.all(frames.map(f => {
+    try {
+      if (f.contentDocument && f.contentDocument.readyState === 'complete') {
+        return Promise.resolve();
+      }
+    } catch (e) {
+      // Cross-origin frame: can't inspect readiness, treat as settled.
+      return Promise.resolve();
+    }
+    return new Promise(res => {
+      f.addEventListener('load', res, {once: true});
+      setTimeout(res, 4000);
+    });
+  }));
 }
 """
 
@@ -103,10 +128,14 @@ async def _get_browser():
 async def render_composed_to_png(html_bytes: bytes) -> bytes:
     """Render self-contained composed-slide HTML to a 1920×1080 PNG.
 
-    Blocks all network (only inline ``data:`` URIs load), waits for fonts
-    and media to settle, then screenshots the full canvas. Raises on a
-    hard render failure (browser launch / navigation timeout) — the caller
-    marks the variant failed.
+    Inline ``data:`` URIs always load. Live ``http(s)`` requests from
+    widgets (weather fetch, web-embed iframe) load **only** when the
+    target host passes the SSRF guard (:func:`_host_is_safe`); unsafe
+    hosts and all other schemes (``file`` / ``blob`` / ``ws``) are
+    aborted. Waits for fonts, media, and iframes to settle, then
+    screenshots the full canvas. Raises on a hard render failure
+    (browser launch / navigation timeout) — the caller marks the
+    variant failed.
     """
     html = html_bytes.decode("utf-8")
     browser = await _get_browser()
@@ -118,20 +147,49 @@ async def render_composed_to_png(html_bytes: bytes) -> bytes:
     try:
         page = await context.new_page()
 
-        async def _block(route):
-            # Inline data: URIs are resolved internally and rarely hit this
-            # handler; everything else (http/https/file/blob/ws) is aborted
-            # so the snapshot render is fully offline and side-effect free.
+        # Per-render cache of host -> is-safe so we resolve each host once.
+        safe_hosts: dict[str, bool] = {}
+
+        async def _guard(route):
             url = route.request.url
-            if url.startswith("data:"):
+            action = _composed_scheme_action(url)
+            if action == "allow":
+                await route.continue_()
+                return
+            if action == "abort":
+                await route.abort()
+                return
+            # action == "check_host": http/https — gate on SSRF safety.
+            host = _host_of(url)
+            if not host:
+                await route.abort()
+                return
+            ok = safe_hosts.get(host)
+            if ok is None:
+                ok = await asyncio.to_thread(_host_is_safe, host)
+                safe_hosts[host] = ok
+            if ok:
                 await route.continue_()
             else:
+                logger.warning(
+                    "composed snapshot blocked unsafe host %r (%s)", host, url,
+                )
                 await route.abort()
 
-        await page.route("**/*", _block)
+        await page.route("**/*", _guard)
         page.set_default_timeout(_NAV_TIMEOUT_MS)
 
         await page.set_content(html, wait_until="load", timeout=_NAV_TIMEOUT_MS)
+
+        # Let live widget requests (weather fetch, embed iframe subresources)
+        # settle. Bounded + best-effort: a page holding a long-lived
+        # connection must not stall the snapshot past this budget.
+        try:
+            await page.wait_for_load_state(
+                "networkidle", timeout=_NETWORK_IDLE_TIMEOUT_MS,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         try:
             await asyncio.wait_for(
@@ -205,6 +263,24 @@ def _host_of(url: str) -> str:
     from urllib.parse import urlsplit
 
     return (urlsplit(url).hostname or "").strip()
+
+
+def _composed_scheme_action(url: str) -> str:
+    """Classify a composed-snapshot subresource request by scheme.
+
+    Returns one of:
+    * ``"allow"`` — inline ``data:`` URIs (already CMS-embedded); load.
+    * ``"check_host"`` — ``http``/``https``; caller must gate on
+      :func:`_host_is_safe`.
+    * ``"abort"`` — every other scheme (``file`` / ``blob`` / ``ws`` /
+      ``ftp`` / …); never allowed in a snapshot.
+    """
+    lowered = url.strip().lower()
+    if lowered.startswith("data:"):
+        return "allow"
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return "check_host"
+    return "abort"
 
 
 async def render_url_to_png(url: str) -> bytes:
