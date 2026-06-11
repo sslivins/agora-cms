@@ -883,9 +883,11 @@ registerWidget("media", {
     preview: (root, cfg) => { root.appendChild(renderMediaPreview(cfg)); },
     settings: (w) => {
         const currentId = w.config.asset_id || NULL_UUID;
-        const opts = [`<option value="${NULL_UUID}" ${currentId===NULL_UUID?"selected":""}>— pick an image or video —</option>`]
+        const opts = [`<option value="${NULL_UUID}" ${currentId===NULL_UUID?"selected":""}>— pick an image, video, or slideshow —</option>`]
             .concat(MEDIA_ASSETS.map(a => {
-                const label = `${a.asset_type === "video" ? "🎞" : "🖼"} ${escapeHtml(a.name)}`;
+                const icon = a.asset_type === "video" ? "🎞"
+                    : a.asset_type === "slideshow" ? "🎠" : "🖼";
+                const label = `${icon} ${escapeHtml(a.name)}`;
                 return `<option value="${a.id}" ${a.id===currentId?"selected":""}>${label}</option>`;
             }))
             .join("");
@@ -904,6 +906,7 @@ registerWidget("media", {
                    oninput="updateSelected(x=>x.config.alt=this.value)">
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 For videos: assign the asset to the same device groups so it lands in the device's video cache.
+                Slideshows cycle through their slides on the device (cut / cross-fade only).
             </p>`;
     },
 });
@@ -2229,6 +2232,8 @@ function renderMediaPreview(cfg) {
     const wrap = document.createElement("div");
     wrap.className = "cw-prev-media";
     const isVideo = a.asset_type === "video";
+    const isSlideshow = a.asset_type === "slideshow";
+    const fallbackIcon = isSlideshow ? "🎠" : (isVideo ? "🎬" : "🖼");
     if (a.thumbnail_url) {
         const img = document.createElement("img");
         img.src = a.thumbnail_url;
@@ -2236,18 +2241,18 @@ function renderMediaPreview(cfg) {
         img.style.objectFit = cfg.object_fit || "cover";
         img.onerror = () => {
             wrap.replaceChildren(
-                mediaPlaceholder(isVideo ? "🎬" : "🖼", a.name || "")
+                mediaPlaceholder(fallbackIcon, a.name || "")
             );
         };
         wrap.appendChild(img);
-        if (isVideo) {
+        if (isVideo || isSlideshow) {
             const badge = document.createElement("div");
             badge.className = "cw-prev-media-badge";
-            badge.textContent = "▶";
+            badge.textContent = isSlideshow ? "🎠" : "▶";
             wrap.appendChild(badge);
         }
     } else {
-        wrap.appendChild(mediaPlaceholder(isVideo ? "🎬" : "🖼", a.name || ""));
+        wrap.appendChild(mediaPlaceholder(fallbackIcon, a.name || ""));
     }
     return wrap;
 }

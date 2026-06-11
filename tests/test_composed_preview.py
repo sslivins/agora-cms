@@ -9,6 +9,7 @@ import pytest
 from cms.composed.schema import Cell, Layout, WidgetInstance, empty_layout
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
+from cms.models.slideshow_slide import SlideshowSlide
 
 
 def _text_layout(text: str = "hello preview") -> Layout:
@@ -442,3 +443,106 @@ class TestComposedPreviewMedia:
         # Admin can still see it (sanity).
         ok = await client.get(f"/composed/{asset.id}/preview")
         assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.asyncio
+class TestComposedPreviewSlideshowMedia:
+    async def _make_composed_with(self, db_session, layout: Layout):
+        asset = Asset(
+            filename=f"composed-{uuid.uuid4()}",
+            asset_type=AssetType.COMPOSED,
+            size_bytes=0,
+            checksum="",
+        )
+        db_session.add(asset)
+        await db_session.flush()
+        cs = ComposedSlide(
+            asset_id=asset.id, layout_json=layout.model_dump(mode="json")
+        )
+        db_session.add(cs)
+        await db_session.commit()
+        return asset
+
+    async def _make_image(self, db_session, storage, name):
+        (storage / name).write_bytes(_PNG_BYTES)
+        img = Asset(
+            filename=name,
+            asset_type=AssetType.IMAGE,
+            size_bytes=len(_PNG_BYTES),
+            checksum="x",
+            is_global=True,
+        )
+        db_session.add(img)
+        await db_session.flush()
+        return img
+
+    async def _make_slideshow(self, db_session, members):
+        ss = Asset(
+            filename=f"show-{uuid.uuid4()}.slideshow",
+            asset_type=AssetType.SLIDESHOW,
+            size_bytes=0,
+            checksum="",
+            is_global=True,
+        )
+        db_session.add(ss)
+        await db_session.flush()
+        for idx, src in enumerate(members):
+            db_session.add(SlideshowSlide(
+                slideshow_asset_id=ss.id,
+                source_asset_id=src.id,
+                position=idx,
+                duration_ms=4000,
+                play_to_end=False,
+                transition="fade",
+                transition_ms=600,
+            ))
+        await db_session.flush()
+        return ss
+
+    async def test_preview_slideshow_member_inlines_each_source(
+        self, client, db_session, tmp_path
+    ):
+        storage = _storage_dir(tmp_path)
+        img1 = await self._make_image(db_session, storage, "a.png")
+        img2 = await self._make_image(db_session, storage, "b.png")
+        ss = await self._make_slideshow(db_session, [img1, img2])
+        asset = await self._make_composed_with(db_session, _media_layout(ss.id))
+
+        resp = await client.get(f"/composed/{asset.id}/preview")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Both member images inlined; no device-local sibling path.
+        assert body.count("data:image/png;base64,") == 2
+        assert "cw-ss-slide" in body
+        assert "/assets/videos/" not in body
+
+    async def test_preview_empty_slideshow_is_422(
+        self, client, db_session, tmp_path
+    ):
+        _storage_dir(tmp_path)
+        ss = await self._make_slideshow(db_session, [])
+        asset = await self._make_composed_with(db_session, _media_layout(ss.id))
+
+        resp = await client.get(f"/composed/{asset.id}/preview")
+        assert resp.status_code == 422, resp.text
+        assert "has no slides" in resp.text
+
+    async def test_preview_slideshow_with_non_media_member_is_422(
+        self, client, db_session, tmp_path
+    ):
+        _storage_dir(tmp_path)
+        web = Asset(
+            filename="page.url",
+            asset_type=AssetType.WEBPAGE,
+            size_bytes=0,
+            checksum="",
+            is_global=True,
+        )
+        db_session.add(web)
+        await db_session.flush()
+        ss = await self._make_slideshow(db_session, [web])
+        asset = await self._make_composed_with(db_session, _media_layout(ss.id))
+
+        resp = await client.get(f"/composed/{asset.id}/preview")
+        assert resp.status_code == 422, resp.text
+        assert "can only cycle IMAGE and VIDEO" in resp.text

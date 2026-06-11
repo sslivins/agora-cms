@@ -60,8 +60,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.composed.bundle import BundleValidationError, build_bundle
-from cms.composed.registry import get_registry
+from cms.composed.registry import SlideshowSlidePlan, get_registry
 from cms.composed.schema import Layout
+from cms.composed.slideshow_expand import (
+    composed_cell_transition,
+    load_slideshow_members,
+)
 from cms.composed.validate import validate_layout
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
@@ -241,6 +245,7 @@ async def build_composed_html(
 
     asset_payloads: dict[uuid.UUID, tuple[bytes, str]] = {}
     sibling_asset_urls: dict[uuid.UUID, str] = {}
+    slideshow_plans: dict[uuid.UUID, list[SlideshowSlidePlan]] = {}
 
     if declared_ids:
         storage_dir = settings.asset_storage_path
@@ -250,6 +255,61 @@ async def build_composed_html(
             ),
         )
         by_id = {a.id: a for a in rows.scalars().all()}
+
+        async def _route_media_source(ref: Asset, slugs: set[str]) -> None:
+            """Inline one IMAGE/VIDEO source for the preview/snapshot path.
+
+            Images inline as data URIs; videos inline as base64 ``data:``
+            URIs (the preview CSP only allows ``media-src data:``).  Shared
+            by the top-level declared loop and slideshow expansion so both
+            produce identical inlining.  Raises 422 for non-image/video.
+            """
+            if ref.id in asset_payloads or ref.id in sibling_asset_urls:
+                return
+            if ref.asset_type == AssetType.IMAGE:
+                blob = await _read_inline_asset(storage_dir, ref)
+                mime, _ = mimetypes.guess_type(ref.filename)
+                asset_payloads[ref.id] = (
+                    blob,
+                    mime or "application/octet-stream",
+                )
+            elif ref.asset_type == AssetType.VIDEO:
+                if not slugs.issubset(_VIDEO_CAPABLE_SLUGS):
+                    bad = sorted(slugs - _VIDEO_CAPABLE_SLUGS)
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Asset {ref.id} is a video but is used by "
+                            f"widget(s) {', '.join(bad)} that cannot render "
+                            "video"
+                        ),
+                    )
+                if (ref.size_bytes or 0) > _MAX_INLINE_VIDEO_BYTES:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Video asset {ref.id} is too large to render "
+                            f"({ref.size_bytes} bytes; cap "
+                            f"{_MAX_INLINE_VIDEO_BYTES})"
+                        ),
+                    )
+                blob = await _read_inline_asset(
+                    storage_dir, ref, max_bytes=_MAX_INLINE_VIDEO_BYTES,
+                )
+                mime, _ = mimetypes.guess_type(ref.filename)
+                b64 = base64.b64encode(blob).decode("ascii")
+                sibling_asset_urls[ref.id] = (
+                    f"data:{mime or 'video/mp4'};base64,{b64}"
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Composed slide references asset {ref.id} of type "
+                        f"{ref.asset_type.value!r}; only IMAGE and VIDEO "
+                        "assets can be embedded in a composed slide"
+                    ),
+                )
 
         for aid in declared_ids:
             ref = by_id.get(aid)
@@ -264,46 +324,63 @@ async def build_composed_html(
             if verify_asset is not None:
                 await verify_asset(aid)
 
-            if ref.asset_type == AssetType.IMAGE:
-                blob = await _read_inline_asset(storage_dir, ref)
-                mime, _ = mimetypes.guess_type(ref.filename)
-                asset_payloads[aid] = (blob, mime or "application/octet-stream")
-            elif ref.asset_type == AssetType.VIDEO:
-                slugs = declaring_slugs.get(aid, set())
-                if not slugs.issubset(_VIDEO_CAPABLE_SLUGS):
-                    bad = sorted(slugs - _VIDEO_CAPABLE_SLUGS)
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"Asset {aid} is a video but is used by widget(s) "
-                            f"{', '.join(bad)} that cannot render video"
-                        ),
-                    )
-                # Fast reject on recorded size before reading anything.
-                if (ref.size_bytes or 0) > _MAX_INLINE_VIDEO_BYTES:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"Video asset {aid} is too large to render "
-                            f"({ref.size_bytes} bytes; cap "
-                            f"{_MAX_INLINE_VIDEO_BYTES})"
-                        ),
-                    )
-                blob = await _read_inline_asset(
-                    storage_dir, ref, max_bytes=_MAX_INLINE_VIDEO_BYTES,
+            if ref.asset_type == AssetType.SLIDESHOW:
+                # The render/preview path excludes deleted source assets
+                # (it reflects the live editor state, not a frozen device
+                # snapshot).
+                members = await load_slideshow_members(
+                    db, aid, exclude_deleted=True
                 )
-                mime, _ = mimetypes.guess_type(ref.filename)
-                b64 = base64.b64encode(blob).decode("ascii")
-                sibling_asset_urls[aid] = f"data:{mime or 'video/mp4'};base64,{b64}"
+                if not members:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Composed slide references slideshow {aid} "
+                            "that has no slides"
+                        ),
+                    )
+                plan: list[SlideshowSlidePlan] = []
+                for slide, source in members:
+                    if source is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Slideshow {aid} slide {slide.id} "
+                                "references a missing source asset"
+                            ),
+                        )
+                    if verify_asset is not None:
+                        await verify_asset(source.id)
+                    if source.asset_type not in (
+                        AssetType.IMAGE,
+                        AssetType.VIDEO,
+                    ):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Slideshow {aid} slide {slide.id} "
+                                f"references asset {source.id} of type "
+                                f"{source.asset_type.value!r}; a composed-"
+                                "slide media widget can only cycle IMAGE "
+                                "and VIDEO slideshow members"
+                            ),
+                        )
+                    # Slideshow members are always rendered by the media
+                    # widget, which is video-capable.
+                    await _route_media_source(source, {"media"})
+                    plan.append(
+                        SlideshowSlidePlan(
+                            source_asset_id=source.id,
+                            duration_ms=int(slide.duration_ms),
+                            transition=composed_cell_transition(
+                                slide.transition
+                            ),
+                            transition_ms=int(slide.transition_ms),
+                        )
+                    )
+                slideshow_plans[aid] = plan
             else:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Composed slide references asset {aid} of type "
-                        f"{ref.asset_type.value!r}; only IMAGE and VIDEO "
-                        "assets can be embedded in a composed slide"
-                    ),
-                )
+                await _route_media_source(ref, declaring_slugs.get(aid, set()))
 
     def _asset_loader(aid: uuid.UUID) -> tuple[bytes, str]:
         return asset_payloads[aid]
@@ -314,6 +391,7 @@ async def build_composed_html(
             registry,
             asset_loader=_asset_loader if asset_payloads else None,
             sibling_asset_urls=sibling_asset_urls or None,
+            slideshow_plans=slideshow_plans or None,
         )
     except BundleValidationError as e:
         raise HTTPException(

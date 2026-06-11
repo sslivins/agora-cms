@@ -309,6 +309,7 @@ class TestExtensibilityContractGuardrail:
             "asset_mimes",
             "sibling_asset_urls",
             "cms_base_url",
+            "slideshow_plans",
         }, (
             f"BundleContext fields drifted: {names!r}. Adding fields "
             "may be OK — explicitly update this pin and the contract docs."

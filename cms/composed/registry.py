@@ -28,6 +28,33 @@ from pydantic import BaseModel
 from cms.composed.schema import Cell
 
 
+@dataclass(frozen=True)
+class SlideshowSlidePlan:
+    """One resolved slide of a SLIDESHOW asset embedded in a media widget.
+
+    When a :class:`~cms.composed.widgets.media.MediaWidget` points its
+    ``asset_id`` at a SLIDESHOW asset, the publish / render layer
+    re-resolves the slideshow's ordered slides at build time (so the
+    composed bundle always tracks the *live* slideshow) and hands the
+    bundle builder one of these per slide, in ``position`` order.
+
+    ``source_asset_id`` is the per-slide IMAGE/VIDEO source — its bytes
+    (image) or sibling/data URL (video) are routed into the same
+    :class:`BundleContext` channels a standalone media asset would use.
+    ``duration_ms`` is how long the slide shows before advancing.
+    ``transition`` is the composed-cell transition repertoire only
+    (``"cut"`` or ``"fade"`` — the device's richer native set is
+    firmware-only and not reusable in a Chromium bundle, so callers map
+    the other transitions down to ``"fade"``).  ``transition_ms`` is the
+    cross-fade duration (ignored for ``"cut"``).
+    """
+
+    source_asset_id: uuid.UUID
+    duration_ms: int
+    transition: str = "cut"
+    transition_ms: int = 0
+
+
 @dataclass
 class BundleContext:
     """Per-build context passed into every widget's ``render_html``.
@@ -67,6 +94,17 @@ class BundleContext:
     the CMS itself) and for the headless thumbnail render.  Widgets
     that make no runtime CMS call ignore this entirely.
 
+    ``slideshow_plans`` is the additive channel for a media widget whose
+    ``asset_id`` points at a SLIDESHOW asset.  It maps that container
+    asset ID to the ordered list of :class:`SlideshowSlidePlan` the
+    publish / render layer resolved from the live slideshow.  The
+    per-slide *source* asset IDs are routed into ``asset_bytes`` /
+    ``sibling_asset_urls`` exactly like standalone media; the plan adds
+    the ordering, per-slide duration, and transition metadata the media
+    widget needs to emit its client-side cycling markup.  Empty for
+    every layout that contains no slideshow-backed media widget — in
+    which case the whole build is byte-for-byte unchanged.
+
     Empty defaults are intentional: trivial widgets (text, clock) that
     never touch assets can ignore the parameter entirely.
     """
@@ -75,6 +113,9 @@ class BundleContext:
     asset_mimes: dict[uuid.UUID, str] = field(default_factory=dict)
     sibling_asset_urls: dict[uuid.UUID, str] = field(default_factory=dict)
     cms_base_url: str | None = None
+    slideshow_plans: dict[uuid.UUID, list[SlideshowSlidePlan]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
