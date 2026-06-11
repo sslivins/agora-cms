@@ -1316,9 +1316,9 @@ registerWidget("weather", {
             <select oninput="updateSelected(x=>x.config.font_family=this.value)">
                 ${SAFE_FONT_OPTIONS.map(f=>`<option value="${f}" ${w.config.font_family===f?"selected":""}>${f}</option>`).join("")}
             </select>
-            <label style="margin-top:0.5rem;">Refresh (seconds, 600–86400)</label>
-            <input type="number" min="600" max="86400" value="${w.config.refresh_seconds||900}"
-                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,600,86400))">
+            <label style="margin-top:0.5rem;">Refresh (minutes, 10–1440)</label>
+            <input type="number" min="10" max="1440" value="${Math.round((w.config.refresh_seconds||900)/60)}"
+                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,10,1440)*60)">
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 Live temperature is fetched on the device. The preview shows placeholder values.
             </p>`;
@@ -1429,9 +1429,9 @@ registerWidget("rss", {
                     </select>
                 </div>
             </div>
-            <label style="margin-top:0.5rem;">Refresh (seconds, 300–86400)</label>
-            <input type="number" min="300" max="86400" value="${w.config.refresh_seconds||900}"
-                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,300,86400))">
+            <label style="margin-top:0.5rem;">Refresh (minutes, 5–1440)</label>
+            <input type="number" min="5" max="1440" value="${Math.round((w.config.refresh_seconds||900)/60)}"
+                   oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,5,1440)*60)">
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 Headlines are fetched on the device via the CMS feed proxy. The preview shows placeholder text.
             </p>`,
@@ -1487,9 +1487,9 @@ registerWidget("iframe", {
             </label>
             <div class="row" style="margin-top:0.5rem;">
                 <div>
-                    <label>Refresh (sec, 0=off)</label>
-                    <input type="number" min="0" max="86400" value="${w.config.refresh_seconds||0}"
-                           oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,0,86400))">
+                    <label>Refresh (min, 0=off)</label>
+                    <input type="number" min="0" max="1440" value="${Math.round((w.config.refresh_seconds||0)/60)}"
+                           oninput="updateSelected(x=>x.config.refresh_seconds=clampInt(this.value,0,1440)*60)">
                 </div>
                 <div>
                     <label>Background</label>
@@ -1503,7 +1503,7 @@ registerWidget("iframe", {
             <p style="font-size:0.75rem; color:var(--text-muted); margin-top:0.5rem;">
                 The page loads live on the device. Some sites block embedding
                 (X-Frame-Options / CSP) and will show the offline message instead.
-                Refresh of 0 disables auto-reload; otherwise the minimum is 60 seconds.
+                Refresh of 0 disables auto-reload; otherwise the minimum is 1 minute.
             </p>`,
 });
 
@@ -1975,7 +1975,17 @@ function flash(msg, ok) {
     box.style.background = ok ? "#dcfce7" : "#fee2e2";
     box.style.color     = ok ? "#166534" : "#991b1b";
     box.textContent = msg;
-    if (ok) setTimeout(() => { box.style.display = "none"; }, 2500);
+    // Auto-dismiss both success and error toasts so a transient message
+    // (e.g. "Pick a widget type…") can't linger forever with no way to
+    // clear it. Errors stay a little longer than successes.
+    clearTimeout(flash._t);
+    flash._t = setTimeout(() => { box.style.display = "none"; }, ok ? 2500 : 5000);
+}
+
+function clearFlash() {
+    const box = document.getElementById("msg-box");
+    if (box) box.style.display = "none";
+    clearTimeout(flash._t);
 }
 
 function uuid4() {
@@ -2037,6 +2047,7 @@ function renderPalette(filter) {
 
 function selectPaletteType(t) {
     selectedPaletteType = t;
+    clearFlash();
     document.querySelectorAll(".palette-btn").forEach(b => {
         b.classList.toggle("active", b.dataset.type === t);
     });
@@ -2540,6 +2551,7 @@ function placeAt(row, col) {
         return;
     }
     ensureLayoutShape();
+    clearFlash();
     const id = uuid4();
     const cfg = WIDGETS.defaults(selectedPaletteType);
     LAYOUT.widgets.push({
@@ -2801,8 +2813,15 @@ async function ensureAssetExists() {
     const nameEl = document.getElementById("composed-name");
     const name = nameEl ? nameEl.value.trim() : "";
     if (!name) {
-        flash("Please enter a name before saving.", false);
-        if (nameEl) nameEl.focus();
+        if (nameEl) {
+            nameEl.setCustomValidity("Give this slide a name before saving.");
+            nameEl.reportValidity();
+            nameEl.focus();
+            nameEl.addEventListener(
+                "input", () => nameEl.setCustomValidity(""), { once: true });
+        } else {
+            flash("Please enter a name before saving.", false);
+        }
         return false;
     }
     const groupIds = (window.composedSelectedGroupIds || []).slice();
