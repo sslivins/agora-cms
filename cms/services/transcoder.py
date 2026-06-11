@@ -1081,6 +1081,96 @@ async def reap_superseded_variants_once(db, settings=None) -> int:
     return reaped
 
 
+# ── Transcode-failure notifications ──────────────────────────────
+#
+# Title used to tag (and later find/prune) transcode-failure notifications.
+# Kept as a module constant so the clear-errors endpoint can match on it.
+TRANSCODE_FAIL_NOTIFICATION_TITLE = "Transcode failed"
+
+
+async def reconcile_transcode_failure_notifications_once(db) -> int:
+    """Push permanent transcode failures into the notification bell.
+
+    Centralized, push-based reconciler: for every currently-FAILED (and not
+    soft-deleted) transcode variant that doesn't already have a notification,
+    create a ``scope="system"``, ``level="error"`` notification.  Conversely,
+    prune notifications whose variant is no longer FAILED (recovered, deleted,
+    or cleared via the clear-errors endpoint) so the bell self-heals.
+
+    Running this in the reaper loop (single replica, under advisory lock) means
+    we never double-emit, and it covers *every* path a variant can reach FAILED
+    (worker ``_mark_failed``, the 2-hour-timeout bulk update, retry exhaustion)
+    without hooking each site — and without the worker needing to import the
+    CMS-only ``Notification`` model.
+
+    Dedup key is ``details['variant_id']``.  Returns the number of
+    notifications created this pass.
+    """
+    from cms.models.asset import AssetVariant, VariantStatus
+    from cms.models.notification import Notification
+    from cms.models.asset import Asset
+
+    failed_rows = (await db.execute(
+        select(
+            AssetVariant.id,
+            AssetVariant.source_asset_id,
+            AssetVariant.error_message,
+        ).where(
+            AssetVariant.status == VariantStatus.FAILED,
+            AssetVariant.deleted_at.is_(None),
+        )
+    )).all()
+    failed_ids = {str(r[0]) for r in failed_rows}
+
+    existing = (await db.execute(
+        select(Notification).where(
+            Notification.title == TRANSCODE_FAIL_NOTIFICATION_TITLE
+        )
+    )).scalars().all()
+
+    notified_ids: set[str] = set()
+    stale: list[Notification] = []
+    for n in existing:
+        vid = (n.details or {}).get("variant_id")
+        if vid is None:
+            continue
+        if vid in failed_ids:
+            notified_ids.add(vid)
+        else:
+            stale.append(n)
+
+    for n in stale:
+        await db.delete(n)
+
+    to_create = [r for r in failed_rows if str(r[0]) not in notified_ids]
+    created = 0
+    if to_create:
+        asset_ids = {r[1] for r in to_create}
+        name_rows = (await db.execute(
+            select(Asset.id, Asset.filename).where(Asset.id.in_(asset_ids))
+        )).all()
+        names = {a_id: fn for a_id, fn in name_rows}
+        for vid_u, src_id, err in to_create:
+            filename = names.get(src_id) or "asset"
+            db.add(Notification(
+                scope="system",
+                level="error",
+                title=TRANSCODE_FAIL_NOTIFICATION_TITLE,
+                message=f"Transcoding failed for {filename}.",
+                details={
+                    "variant_id": str(vid_u),
+                    "asset_id": str(src_id),
+                    "filename": filename,
+                    "error": (err or "")[:500],
+                },
+            ))
+            created += 1
+
+    if created or stale:
+        await db.commit()
+    return created
+
+
 async def deleted_asset_reaper_loop() -> None:
     """Background loop: hard-delete soft-deleted assets whose jobs are terminal.
 
@@ -1138,6 +1228,18 @@ async def deleted_asset_reaper_loop() -> None:
                             )
                     except Exception:
                         logger.exception("Reaper: variant hard-delete sweep failed")
+                async for db in get_db():
+                    try:
+                        emitted = await reconcile_transcode_failure_notifications_once(db)
+                        if emitted:
+                            logger.info(
+                                "Reaper: emitted %d transcode-failure notification(s)",
+                                emitted,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Reaper: transcode-failure notification sweep failed"
+                        )
         except asyncio.CancelledError:
             logger.info("Deleted asset reaper shutting down")
             raise

@@ -2743,6 +2743,31 @@ paths:
           content:
             application/json:
               schema: {}
+  /api/profiles/clear-errors:
+    post:
+      summary: Clear Transcode Errors
+      description: |-
+        Dismiss FAILED transcode variants from the Transcoding Queue panel.
+
+        A FAILED variant is a permanent (non-retryable) transcode failure; it never
+        transitions out on its own, so without this it lingers in the queue forever.
+        This deletes the FAILED variant rows in the caller's visible scope (with
+        best-effort output-file cleanup) and removes any matching transcode-failure
+        notifications (one-way tie — clearing the queue clears the bell, but not the
+        reverse).
+
+        Composed-slide thumbnail snapshots that are still needed will be
+        re-rendered by the worker's startup backfill, so clearing them is safe.
+
+        Gated on ``profiles:write`` (Admin among built-in roles), unlike the
+        read-only status panel which is visible to Operators/Viewers too.
+      operationId: clear_transcode_errors_api_profiles_clear_errors_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /api/cms/logs:
     get:
       summary: Download Cms Logs
