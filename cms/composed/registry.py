@@ -42,11 +42,11 @@ class SlideshowSlidePlan:
     (image) or sibling/data URL (video) are routed into the same
     :class:`BundleContext` channels a standalone media asset would use.
     ``duration_ms`` is how long the slide shows before advancing.
-    ``transition`` is the composed-cell transition repertoire only
-    (``"cut"`` or ``"fade"`` — the device's richer native set is
-    firmware-only and not reusable in a Chromium bundle, so callers map
-    the other transitions down to ``"fade"``).  ``transition_ms`` is the
-    cross-fade duration (ignored for ``"cut"``).
+    ``transition`` is the slide's entrance transition — the composed
+    media cell renders the full slideshow set as self-contained CSS/JS
+    (``cut`` / ``fade`` / ``fade_black`` / ``dissolve`` / ``push`` /
+    ``wipe`` / ``zoom``).  ``transition_ms`` is the transition duration
+    (ignored for ``"cut"``).
     """
 
     source_asset_id: uuid.UUID

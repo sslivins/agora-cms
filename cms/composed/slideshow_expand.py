@@ -29,20 +29,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models.asset import Asset
 from shared.models.slideshow_slide import SlideshowSlide
+from cms.schemas.asset import SLIDE_TRANSITIONS
 
 
 def composed_cell_transition(transition: str) -> str:
-    """Map a slideshow transition to the composed-cell CSS repertoire.
+    """Map a slideshow transition into the composed-cell repertoire.
 
-    The composed media cell implements only an instant ``"cut"`` and an
-    opacity ``"fade"`` cross-fade.  Every non-cut transition
-    (``fade_black`` / ``dissolve`` / ``push`` / ``wipe`` / ``zoom``)
-    degrades to a cross-fade — the closest visual match available inside
-    a self-contained HTML cell.  (The device's native slideshow player
-    renders the richer set in firmware; that code is not reusable inside
-    a Chromium bundle.)
+    The composed media cell now renders the **full** slideshow
+    transition set as self-contained CSS keyframes / JS inside the
+    Chromium bundle: ``cut`` (instant), ``fade`` (cross-fade),
+    ``fade_black`` (through-black), ``dissolve`` (Ken Burns),
+    ``push`` (slide), ``wipe`` (clip reveal) and ``zoom``.  These are
+    self-contained approximations of the device's native firmware
+    renderer — close enough that an embedded slideshow reads the same
+    as the standalone one.
+
+    Any value outside :data:`~cms.schemas.asset.SLIDE_TRANSITIONS`
+    (should be impossible — the slide schema validates it) falls back
+    to ``"fade"`` so the cell still cycles rather than emitting an
+    unknown class.
     """
-    return "cut" if transition == "cut" else "fade"
+    return transition if transition in SLIDE_TRANSITIONS else "fade"
 
 
 async def load_slideshow_members(
