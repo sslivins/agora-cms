@@ -121,6 +121,21 @@ class MediaWidget(Widget):
         css_class = f"cw-media-{instance_id}"
         alt_escaped = _html.escape(config.alt)
 
+        # Slideshow branch: the declared asset is a SLIDESHOW container.
+        # The publish / render layer resolved its ordered slides into
+        # ctx.slideshow_plans and routed each per-slide source into
+        # asset_bytes (image) or sibling_asset_urls (video).  Emit a
+        # stack of absolutely-positioned slides and a small timer that
+        # cross-fades / cuts between them client-side.
+        if ctx.slideshow_plans and asset_id in ctx.slideshow_plans:
+            return self._render_slideshow(
+                config=config,
+                instance_id=instance_id,
+                asset_id=asset_id,
+                alt_escaped=alt_escaped,
+                ctx=ctx,
+            )
+
         # Video branch: publish layer routed this ID to the sibling
         # URL channel.  Emit a <video> tag pointing at the device-local
         # URL; the bundle stays small and the device cache fetches the
@@ -188,4 +203,159 @@ class MediaWidget(Widget):
             html=html_out,
             css=css_out,
             referenced_asset_ids=[asset_id],
+        )
+
+    def _render_slideshow(
+        self,
+        config: MediaWidgetConfig,
+        instance_id: str,
+        asset_id: uuid.UUID,
+        alt_escaped: str,
+        ctx: BundleContext,
+    ) -> WidgetRender:
+        """Render a SLIDESHOW asset as a self-cycling stack of slides.
+
+        Each member slide is rendered exactly like a standalone media
+        widget (image inlined as a data URI, video pointed at its
+        device-local sibling URL), stacked absolutely inside an
+        instance-scoped container.  Slide 0 is marked active in the
+        markup so a t=0 thumbnail snapshot is deterministic.  A small
+        baked-in timer toggles the active class to advance; CSS opacity
+        transitions handle the cut / cross-fade.
+        """
+        plans = ctx.slideshow_plans[asset_id]
+        if not plans:
+            # Should never happen — publish/render reject empty
+            # slideshows up front — but fail loud rather than emit an
+            # empty, never-advancing container.
+            raise RuntimeError(
+                f"MediaWidget instance {instance_id}: slideshow asset "
+                f"{asset_id} expanded to zero slides"
+            )
+
+        css_class = f"cw-ss-{instance_id}"
+        slide_html: list[str] = []
+        referenced: list[uuid.UUID] = []
+        durations: list[int] = []
+
+        for idx, plan in enumerate(plans):
+            source = plan.source_asset_id
+            referenced.append(source)
+            durations.append(int(plan.duration_ms))
+
+            active = " cw-ss-active" if idx == 0 else ""
+            # Per-slide transition duration overrides the container's
+            # default; a "cut" slide is baked as 0ms (instant swap).
+            trans_ms = int(plan.transition_ms) if plan.transition == "fade" else 0
+            slide_style = f"transition-duration:{trans_ms}ms"
+
+            if source in ctx.sibling_asset_urls:
+                src = ctx.sibling_asset_urls[source]
+                src_escaped = _html.escape(src, quote=True)
+                inner = (
+                    f'<video src="{src_escaped}" '
+                    f"muted loop playsinline "
+                    f'aria-label="{alt_escaped}"></video>'
+                )
+            elif source in ctx.asset_bytes:
+                blob = ctx.asset_bytes[source]
+                mime = ctx.asset_mimes[source]
+                if len(blob) > _LARGE_IMAGE_WARN_BYTES:
+                    log.warning(
+                        "composed media widget %s: slideshow image asset "
+                        "%s is %d bytes (>%d) — inlined bundle will be large",
+                        instance_id,
+                        source,
+                        len(blob),
+                        _LARGE_IMAGE_WARN_BYTES,
+                    )
+                b64 = base64.b64encode(blob).decode("ascii")
+                data_uri = f"data:{mime};base64,{b64}"
+                inner = (
+                    f'<img src="{data_uri}" '
+                    f'alt="{alt_escaped}" draggable="false" />'
+                )
+            else:
+                # Same contract violation as the standalone else branch:
+                # the build layer must route every per-slide source into
+                # one of the two channels.
+                raise RuntimeError(
+                    f"MediaWidget instance {instance_id}: slideshow source "
+                    f"{source} missing from BundleContext (neither "
+                    "asset_bytes nor sibling_asset_urls)"
+                )
+
+            slide_html.append(
+                f'<div class="cw-ss-slide{active}" style="{slide_style}">'
+                f"{inner}</div>"
+            )
+
+        html_out = f'<div class="{css_class}">' + "".join(slide_html) + "</div>"
+
+        css_out = (
+            f".{css_class} {{\n"
+            f"  position: relative;\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  overflow: hidden;\n"
+            f"  background: #000;\n"
+            f"}}\n"
+            f".{css_class} .cw-ss-slide {{\n"
+            f"  position: absolute;\n"
+            f"  inset: 0;\n"
+            f"  opacity: 0;\n"
+            f"  transition-property: opacity;\n"
+            f"  transition-timing-function: ease-in-out;\n"
+            f"}}\n"
+            f".{css_class} .cw-ss-slide.cw-ss-active {{\n"
+            f"  opacity: 1;\n"
+            f"}}\n"
+            f".{css_class} img,\n"
+            f".{css_class} video {{\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  display: block;\n"
+            f"  object-fit: {config.object_fit};\n"
+            f"  object-position: center;\n"
+            f"  user-select: none;\n"
+            f"}}"
+        )
+
+        # Bake ONLY integer durations into the runtime — never
+        # interpolate raw config strings into JS.
+        durations_js = "[" + ",".join(str(d) for d in durations) + "]"
+        init_js = (
+            "var root = document.querySelector('.cw-ss-' + instanceId);\n"
+            "if (!root) { return; }\n"
+            "var slides = root.querySelectorAll('.cw-ss-slide');\n"
+            f"var durations = {durations_js};\n"
+            "function startVideo(slide) {\n"
+            "  var v = slide.querySelector('video');\n"
+            "  if (v) { try { v.currentTime = 0; var p = v.play();"
+            " if (p && p.catch) { p.catch(function(){}); } } catch (e) {} }\n"
+            "}\n"
+            "if (slides.length >= 1) { startVideo(slides[0]); }\n"
+            "if (slides.length <= 1) { return; }\n"
+            "var idx = 0;\n"
+            "function activate(n) {\n"
+            "  for (var i = 0; i < slides.length; i++) {\n"
+            "    slides[i].classList.toggle('cw-ss-active', i === n);\n"
+            "  }\n"
+            "  startVideo(slides[n]);\n"
+            "}\n"
+            "function schedule() {\n"
+            "  setTimeout(function () {\n"
+            "    idx = (idx + 1) % slides.length;\n"
+            "    activate(idx);\n"
+            "    schedule();\n"
+            "  }, durations[idx]);\n"
+            "}\n"
+            "schedule();"
+        )
+
+        return WidgetRender(
+            html=html_out,
+            css=css_out,
+            init_js=init_js,
+            referenced_asset_ids=referenced,
         )

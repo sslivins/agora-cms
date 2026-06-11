@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 from cms.composed.registry import (
     BundleContext,
+    SlideshowSlidePlan,
     Widget,
     WidgetRegistry,
     WidgetRender,
@@ -164,6 +165,7 @@ def build_bundle(
     asset_loader: AssetLoader | None = None,
     sibling_asset_urls: dict[uuid.UUID, str] | None = None,
     cms_base_url: str | None = None,
+    slideshow_plans: dict[uuid.UUID, list[SlideshowSlidePlan]] | None = None,
 ) -> BuiltBundle:
     """Render ``layout`` to a self-contained HTML bundle.
 
@@ -189,6 +191,17 @@ def build_bundle(
     ``asset_loader`` path *or* the ``sibling_asset_urls`` mapping; if
     it's in neither, :class:`MissingAssetLoaderError` is raised.
 
+    ``slideshow_plans`` is the additive channel for a media widget whose
+    declared ``asset_id`` is a SLIDESHOW asset.  It maps that *container*
+    asset ID to the ordered list of :class:`SlideshowSlidePlan` the
+    caller resolved from the live slideshow.  The container ID itself has
+    no file: wherever the builder would otherwise load / prefetch /
+    scope a declared ID, a planned ID is transparently *expanded* to its
+    per-slide source asset IDs, which the caller has already routed into
+    ``asset_loader`` / ``sibling_asset_urls`` like any standalone media.
+    When ``slideshow_plans`` is ``None`` / empty the expansion is the
+    identity function and the build is byte-for-byte unchanged.
+
     Raises :class:`BundleValidationError` if the layout fails
     :func:`~cms.composed.validate.validate_layout`.  The check is
     redundant with the editor's save-time validation but kept as
@@ -199,6 +212,29 @@ def build_bundle(
     sib_urls: dict[uuid.UUID, str] = (
         dict(sibling_asset_urls) if sibling_asset_urls else {}
     )
+    plans: dict[uuid.UUID, list[SlideshowSlidePlan]] = (
+        dict(slideshow_plans) if slideshow_plans else {}
+    )
+
+    def _expand(aid: uuid.UUID) -> list[uuid.UUID]:
+        # A slideshow *container* ID has no file of its own; it stands
+        # in for its ordered per-slide source IDs.  Any non-planned ID
+        # expands to itself, so the whole pipeline is unchanged when
+        # ``slideshow_plans`` is empty.
+        plan = plans.get(aid)
+        if plan:
+            return [s.source_asset_id for s in plan]
+        return [aid]
+
+    def _expand_all(ids: list[uuid.UUID]) -> list[uuid.UUID]:
+        out: list[uuid.UUID] = []
+        seen: set[uuid.UUID] = set()
+        for aid in ids:
+            for eff in _expand(aid):
+                if eff not in seen:
+                    seen.add(eff)
+                    out.append(eff)
+        return out
 
     # 1. Defensive validation.
     errors = validate_layout(layout, reg)
@@ -225,21 +261,27 @@ def build_bundle(
                 seen_declared.add(aid)
                 all_declared_ids.append(aid)
 
+    # Expand slideshow containers to their source IDs for the
+    # loader-coverage and prefetch passes.  A container ID is never
+    # loaded as bytes itself (it has no file) — it disappears here,
+    # replaced by the per-slide sources the caller already routed.
+    all_effective_ids = _expand_all(all_declared_ids)
+
     # An ID counts as "satisfied" if we have either bytes-channel
     # coverage (asset_loader) OR a sibling-URL mapping for it.  Only
     # IDs with no coverage from either channel are missing.
-    needs_loader = [aid for aid in all_declared_ids if aid not in sib_urls]
+    needs_loader = [aid for aid in all_effective_ids if aid not in sib_urls]
     if needs_loader and asset_loader is None:
         raise MissingAssetLoaderError(needs_loader)
 
-    # 2b. Pre-fetch every declared asset exactly once.  Skip IDs
+    # 2b. Pre-fetch every effective asset exactly once.  Skip IDs
     #     that the publish layer routed to the sibling-URLs channel
     #     (videos, etc.) — those don't get inlined and don't need
     #     bytes loaded.
     asset_bytes: dict[uuid.UUID, bytes] = {}
     asset_mimes: dict[uuid.UUID, str] = {}
     if asset_loader is not None:
-        for aid in all_declared_ids:
+        for aid in all_effective_ids:
             if aid in sib_urls:
                 continue
             blob, mime = asset_loader(aid)
@@ -257,17 +299,23 @@ def build_bundle(
     seen_asset_ids: set[uuid.UUID] = set()
 
     for inst, widget, config, declared in prepped:
+        # Effective IDs visible to this widget: its declared IDs with
+        # any slideshow container expanded to its per-slide sources.
+        eff_declared = _expand_all(declared)
         ctx = BundleContext(
             asset_bytes={
-                aid: asset_bytes[aid] for aid in declared if aid in asset_bytes
+                aid: asset_bytes[aid] for aid in eff_declared if aid in asset_bytes
             },
             asset_mimes={
-                aid: asset_mimes[aid] for aid in declared if aid in asset_mimes
+                aid: asset_mimes[aid] for aid in eff_declared if aid in asset_mimes
             },
             sibling_asset_urls={
-                aid: sib_urls[aid] for aid in declared if aid in sib_urls
+                aid: sib_urls[aid] for aid in eff_declared if aid in sib_urls
             },
             cms_base_url=cms_base_url,
+            slideshow_plans={
+                aid: plans[aid] for aid in declared if aid in plans
+            },
         )
         render: WidgetRender = widget.render_html(
             config=config,
@@ -277,9 +325,11 @@ def build_bundle(
         )
 
         # Enforce the declare-before-reference invariant: every ID a
-        # widget reports in WidgetRender.referenced_asset_ids must
-        # have been declared up front.
-        declared_set = set(declared)
+        # widget reports in WidgetRender.referenced_asset_ids must have
+        # been declared up front — either directly, or (for a slideshow
+        # media widget) as one of the expanded per-slide source IDs of a
+        # declared container.
+        declared_set = set(declared) | set(eff_declared)
         for aid in render.referenced_asset_ids:
             if aid not in declared_set:
                 raise BundleValidationError(

@@ -1807,14 +1807,14 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         groups_q = None
     user_groups = groups_q.scalars().all() if groups_q else []
 
-    # Query IMAGE + VIDEO assets the user can pick in the editor's
-    # media-widget asset picker.  Visibility filter mirrors the
+    # Query IMAGE + VIDEO + SLIDESHOW assets the user can pick in the
+    # editor's media-widget asset picker.  Visibility filter mirrors the
     # schedules-page pattern: globals + group-assigned + own uploads
     # (not yet assigned to any group).  Admins see everything.
     media_q = (
         select(Asset)
         .where(Asset.deleted_at.is_(None))
-        .where(Asset.asset_type.in_((AssetType.IMAGE, AssetType.VIDEO)))
+        .where(Asset.asset_type.in_((AssetType.IMAGE, AssetType.VIDEO, AssetType.SLIDESHOW)))
         .order_by(Asset.filename)
     )
     if not is_admin:

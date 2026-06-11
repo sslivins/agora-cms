@@ -32,8 +32,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.composed.bundle import BundleValidationError, build_bundle
-from cms.composed.registry import get_registry
+from cms.composed.registry import SlideshowSlidePlan, get_registry
 from cms.composed.schema import Layout
+from cms.composed.slideshow_expand import (
+    composed_cell_transition,
+    load_slideshow_members,
+)
 from cms.models.composed_slide import ComposedSlide
 from shared.models.asset import Asset, AssetType
 from shared.services.storage import get_storage
@@ -150,10 +154,53 @@ async def publish_composed_slide(
     #           to the same device groups so they land in the device's
     #           video cache through the existing per-asset sync path.
     #   anything else → reject (e.g. a composed slide can't embed
-    #           another composed slide, a webpage asset, or a slideshow)
+    #           another composed slide, a webpage asset)
+    #
+    #   SLIDESHOW → expand into its ordered member slides; each member
+    #           source is routed through the SAME image/video buckets
+    #           above, and an ordered SlideshowSlidePlan list is recorded
+    #           in slideshow_plans[container_id] so the bundle builder
+    #           and MediaWidget can cycle them client-side.
     asset_payloads: dict[uuid.UUID, tuple[bytes, str]] = {}
     sibling_asset_urls: dict[uuid.UUID, str] = {}
+    slideshow_plans: dict[uuid.UUID, list[SlideshowSlidePlan]] = {}
+    # Mutable cell so the nested closure can bump the shared counter.
     video_count = 0
+
+    def _route_media_source(ref: Asset) -> None:
+        """Route one IMAGE/VIDEO source asset into the right channel.
+
+        Shared by the top-level declared-asset loop and the slideshow
+        member expansion so both produce byte-identical routing.
+        Raises PublishError for any non-image/video source.
+        """
+        nonlocal video_count
+        if ref.id in asset_payloads or ref.id in sibling_asset_urls:
+            return
+        if ref.asset_type == AssetType.IMAGE:
+            ref_path = storage_dir / ref.filename
+            try:
+                blob = ref_path.read_bytes()
+            except FileNotFoundError as e:
+                raise PublishError(
+                    f"Asset {ref.id} file missing on disk: {ref.filename}",
+                ) from e
+            mime, _ = mimetypes.guess_type(ref.filename)
+            asset_payloads[ref.id] = (blob, mime or "application/octet-stream")
+        elif ref.asset_type == AssetType.VIDEO:
+            import urllib.parse as _urlparse
+
+            sibling_asset_urls[ref.id] = (
+                f"/assets/videos/{_urlparse.quote(ref.filename, safe='')}"
+            )
+            video_count += 1
+        else:
+            raise PublishError(
+                f"Composed slide references asset {ref.id} of type "
+                f"{ref.asset_type.value!r}; only IMAGE and VIDEO "
+                "assets can be embedded in a composed slide",
+            )
+
     if declared_ids:
         rows = await db.execute(
             select(Asset).where(Asset.id.in_(declared_ids)),
@@ -165,38 +212,51 @@ async def publish_composed_slide(
                 raise PublishError(
                     f"Composed slide references missing asset {aid}",
                 )
-            if ref.asset_type == AssetType.IMAGE:
-                ref_path = storage_dir / ref.filename
-                try:
-                    blob = ref_path.read_bytes()
-                except FileNotFoundError as e:
+            if ref.asset_type == AssetType.SLIDESHOW:
+                # Expand the slideshow into ordered member slides.  The
+                # device-publish path keeps deleted source assets (a
+                # device bundle is a point-in-time snapshot); the editor
+                # render path excludes them.
+                members = await load_slideshow_members(
+                    db, aid, exclude_deleted=False
+                )
+                if not members:
                     raise PublishError(
-                        f"Asset {aid} file missing on disk: {ref.filename}",
-                    ) from e
-                mime, _ = mimetypes.guess_type(ref.filename)
-                asset_payloads[aid] = (blob, mime or "application/octet-stream")
-            elif ref.asset_type == AssetType.VIDEO:
-                # Device-local URL served by the Pi shell's HTTP server
-                # (port 8780, FastAPI StaticFiles mount on /assets →
-                # /opt/agora/assets/).  URL-encode the filename so files
-                # with spaces / special chars (e.g. "my video (final).mp4")
-                # produce a valid src attribute.
-                import urllib.parse as _urlparse
-
-                # ``safe=""`` so '/' in a hypothetical filename gets
-                # percent-encoded too — without it, urllib leaves '/'
-                # alone (the default ``safe="/"``) and a malicious or
-                # buggy filename could break out of the videos/ dir.
-                sibling_asset_urls[aid] = (
-                    f"/assets/videos/{_urlparse.quote(ref.filename, safe='')}"
-                )
-                video_count += 1
+                        f"Composed slide references slideshow {aid} that "
+                        "has no slides",
+                    )
+                plan: list[SlideshowSlidePlan] = []
+                for slide, source in members:
+                    if source is None:
+                        raise PublishError(
+                            f"Slideshow {aid} slide {slide.id} references a "
+                            "missing source asset",
+                        )
+                    if source.asset_type not in (
+                        AssetType.IMAGE,
+                        AssetType.VIDEO,
+                    ):
+                        raise PublishError(
+                            f"Slideshow {aid} slide {slide.id} references "
+                            f"asset {source.id} of type "
+                            f"{source.asset_type.value!r}; a composed-slide "
+                            "media widget can only cycle IMAGE and VIDEO "
+                            "slideshow members",
+                        )
+                    _route_media_source(source)
+                    plan.append(
+                        SlideshowSlidePlan(
+                            source_asset_id=source.id,
+                            duration_ms=int(slide.duration_ms),
+                            transition=composed_cell_transition(
+                                slide.transition
+                            ),
+                            transition_ms=int(slide.transition_ms),
+                        )
+                    )
+                slideshow_plans[aid] = plan
             else:
-                raise PublishError(
-                    f"Composed slide references asset {aid} of type "
-                    f"{ref.asset_type.value!r}; only IMAGE and VIDEO "
-                    "assets can be embedded in a composed slide",
-                )
+                _route_media_source(ref)
 
     if video_count > 1:
         # No hard cap — multiple muted autoplay videos technically work
@@ -226,6 +286,7 @@ async def publish_composed_slide(
             registry,
             asset_loader=_asset_loader if asset_payloads else None,
             sibling_asset_urls=sibling_asset_urls or None,
+            slideshow_plans=slideshow_plans or None,
             # Device bundles are served from the device's own local
             # shell HTTP server, so any CMS call-back URL (e.g. the RSS
             # feed proxy) must be absolute.  Preview/thumbnail renders

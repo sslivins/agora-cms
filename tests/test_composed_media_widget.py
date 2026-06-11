@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 # Side-effect import: triggers global registry population
 import cms.composed.widgets  # noqa: F401
-from cms.composed.registry import BundleContext, get_registry
+from cms.composed.registry import BundleContext, SlideshowSlidePlan, get_registry
 from cms.composed.schema import Cell
 from cms.composed.widgets.media import (
     MediaWidget,
@@ -212,3 +212,165 @@ class TestMediaWidgetScoping:
         ctx = _vid_ctx(aid, "/assets/videos/x.mp4")
         r = MediaWidget().render_html(cfg, _cell(), "vid", ctx=ctx)
         assert "object-fit: contain" in r.css
+
+
+class TestMediaWidgetSlideshowBranch:
+    """A media widget whose asset_id is a SLIDESHOW container cycles
+    its ordered member slides client-side."""
+
+    def _ss_ctx(self, container, sources):
+        """Build a ctx with a slideshow plan + per-source channels.
+
+        ``sources`` is a list of (source_id, plan_kwargs, kind, payload):
+          kind == "img" -> payload is (bytes, mime) -> asset_bytes
+          kind == "vid" -> payload is url           -> sibling_asset_urls
+        """
+        asset_bytes = {}
+        asset_mimes = {}
+        sibling = {}
+        plan = []
+        for sid, pk, kind, payload in sources:
+            if kind == "img":
+                asset_bytes[sid] = payload[0]
+                asset_mimes[sid] = payload[1]
+            else:
+                sibling[sid] = payload
+            plan.append(SlideshowSlidePlan(source_asset_id=sid, **pk))
+        return BundleContext(
+            asset_bytes=asset_bytes,
+            asset_mimes=asset_mimes,
+            sibling_asset_urls=sibling,
+            slideshow_plans={container: plan},
+        )
+
+    def test_renders_stacked_slides_first_active(self):
+        container = uuid.uuid4()
+        s1, s2 = uuid.uuid4(), uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [
+                (s1, {"duration_ms": 4000, "transition": "fade",
+                      "transition_ms": 600}, "img", (_TINY_PNG, "image/png")),
+                (s2, {"duration_ms": 5000, "transition": "cut"},
+                 "vid", "/assets/videos/clip.mp4"),
+            ],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ss1", ctx=ctx)
+
+        # Instance-scoped container.
+        assert 'class="cw-ss-ss1"' in r.html
+        # Two stacked slides, first active.
+        assert r.html.count("cw-ss-slide") == 2
+        assert "cw-ss-slide cw-ss-active" in r.html
+        # Image slide is a data URI; video slide is a sibling <video>.
+        b64 = base64.b64encode(_TINY_PNG).decode("ascii")
+        assert f"data:image/png;base64,{b64}" in r.html
+        assert 'src="/assets/videos/clip.mp4"' in r.html
+        # Both source ids referenced, in order.
+        assert r.referenced_asset_ids == [s1, s2]
+
+    def test_cut_transition_baked_zero_ms(self):
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 3000, "transition": "cut",
+                   "transition_ms": 600}, "img", (_TINY_PNG, "image/png"))],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssC", ctx=ctx)
+        assert "transition-duration:0ms" in r.html
+
+    def test_fade_transition_uses_transition_ms(self):
+        container = uuid.uuid4()
+        s1, s2 = uuid.uuid4(), uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [
+                (s1, {"duration_ms": 3000, "transition": "fade",
+                      "transition_ms": 750}, "img", (_TINY_PNG, "image/png")),
+                (s2, {"duration_ms": 3000, "transition": "fade",
+                      "transition_ms": 750}, "img", (_TINY_PNG, "image/png")),
+            ],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssF", ctx=ctx)
+        assert "transition-duration:750ms" in r.html
+
+    def test_cycling_js_bakes_durations_and_guards_single(self):
+        container = uuid.uuid4()
+        s1, s2 = uuid.uuid4(), uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [
+                (s1, {"duration_ms": 4000, "transition": "cut"},
+                 "img", (_TINY_PNG, "image/png")),
+                (s2, {"duration_ms": 5000, "transition": "cut"},
+                 "img", (_TINY_PNG, "image/png")),
+            ],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssJ", ctx=ctx)
+        assert r.init_js is not None
+        assert "[4000,5000]" in r.init_js
+        assert "slides.length <= 1" in r.init_js
+        # Selector is instance-scoped via the runtime instanceId arg.
+        assert "'.cw-ss-' + instanceId" in r.init_js
+
+    def test_single_slide_still_renders_one_slide(self):
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 4000, "transition": "cut"},
+              "img", (_TINY_PNG, "image/png"))],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssS", ctx=ctx)
+        assert r.html.count("cw-ss-slide") == 1
+        assert r.referenced_asset_ids == [s1]
+
+    def test_missing_source_channel_raises(self):
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        # Plan references s1 but neither channel carries it.
+        ctx = BundleContext(
+            slideshow_plans={
+                container: [SlideshowSlidePlan(
+                    source_asset_id=s1, duration_ms=3000, transition="cut")]
+            }
+        )
+        with pytest.raises(RuntimeError, match="missing from BundleContext"):
+            MediaWidget().render_html(cfg, _cell(), "ssM", ctx=ctx)
+
+    def test_alt_escaped_in_slideshow_slides(self):
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container, alt='<x>"q"')
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 3000, "transition": "cut"},
+              "img", (_TINY_PNG, "image/png"))],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssA", ctx=ctx)
+        assert "<x>" not in r.html
+        assert "&lt;x&gt;" in r.html
+
+    def test_slideshow_branch_preferred_over_image_channel(self):
+        # If the container id ALSO appears in asset_bytes (shouldn't in
+        # practice), the slideshow branch still wins so we cycle.
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 3000, "transition": "cut"},
+              "img", (_TINY_PNG, "image/png"))],
+        )
+        ctx.asset_bytes[container] = _TINY_PNG
+        ctx.asset_mimes[container] = "image/png"
+        r = MediaWidget().render_html(cfg, _cell(), "ssP", ctx=ctx)
+        assert "cw-ss-" in r.html
+

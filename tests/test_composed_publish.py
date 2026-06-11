@@ -20,6 +20,7 @@ from cms.composed.schema import (
 )
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
+from cms.models.slideshow_slide import SlideshowSlide
 
 
 def _text_layout(text: str = "hello world") -> Layout:
@@ -445,3 +446,109 @@ async def test_publish_mixed_image_and_video_uses_both_channels(
 
     await db_session.refresh(cs)
     assert {str(x) for x in cs.bundle_source_asset_ids} == {str(img.id), str(vid.id)}
+
+
+# --- Slideshow-in-media-widget publish tests -----------------------------
+
+
+async def _make_slideshow_asset(db_session, members, filename="show.slideshow") -> Asset:
+    """Seed a SLIDESHOW container asset + ordered member slides.
+
+    ``members`` is a list of (source_asset, duration_ms, transition,
+    transition_ms).
+    """
+    ss = Asset(
+        filename=filename,
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum="",
+    )
+    db_session.add(ss)
+    await db_session.flush()
+    for idx, (src, dur, trans, trans_ms) in enumerate(members):
+        db_session.add(SlideshowSlide(
+            slideshow_asset_id=ss.id,
+            source_asset_id=src.id,
+            position=idx,
+            duration_ms=dur,
+            play_to_end=False,
+            transition=trans,
+            transition_ms=trans_ms,
+        ))
+    await db_session.flush()
+    return ss
+
+
+@pytest.mark.asyncio
+async def test_publish_slideshow_member_expands_image_sources(
+    db_session, mock_storage_and_dir
+):
+    _, tmp_path = mock_storage_and_dir
+    img1 = await _make_image_asset(db_session, tmp_path, "a.png")
+    img2 = await _make_image_asset(db_session, tmp_path, "b.png")
+    ss = await _make_slideshow_asset(
+        db_session,
+        [(img1, 4000, "fade", 600), (img2, 5000, "cut", 600)],
+    )
+    asset, cs = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    # Two stacked slides cycling client-side — both image sources inlined.
+    assert bundle_html.count("data:image/png;base64,") == 2
+    assert "cw-ss-slide" in bundle_html
+
+    await db_session.refresh(cs)
+    sources = {str(x) for x in cs.bundle_source_asset_ids}
+    # Per-slide SOURCE ids are tracked, NOT the slideshow container id.
+    assert sources == {str(img1.id), str(img2.id)}
+    assert str(ss.id) not in sources
+
+
+@pytest.mark.asyncio
+async def test_publish_slideshow_member_mixed_image_video(
+    db_session, mock_storage_and_dir
+):
+    _, tmp_path = mock_storage_and_dir
+    img = await _make_image_asset(db_session, tmp_path, "a.png")
+    vid = await _make_video_asset(db_session, "clip.mp4")
+    ss = await _make_slideshow_asset(
+        db_session,
+        [(img, 4000, "cut", 600), (vid, 6000, "fade", 600)],
+    )
+    asset, _ = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    assert "data:image/png;base64," in bundle_html
+    assert "/assets/videos/clip.mp4" in bundle_html
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_empty_slideshow(db_session, mock_storage_and_dir):
+    ss = await _make_slideshow_asset(db_session, [])
+    asset, _ = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    with pytest.raises(PublishError, match="has no slides"):
+        await publish_composed_slide(asset.id, db_session)
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_slideshow_with_non_media_member(
+    db_session, mock_storage_and_dir
+):
+    web = Asset(
+        filename="page.url",
+        asset_type=AssetType.WEBPAGE,
+        size_bytes=0,
+        checksum="",
+    )
+    db_session.add(web)
+    await db_session.flush()
+    ss = await _make_slideshow_asset(db_session, [(web, 4000, "cut", 600)])
+    asset, _ = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    with pytest.raises(PublishError, match="can only cycle IMAGE and VIDEO"):
+        await publish_composed_slide(asset.id, db_session)
