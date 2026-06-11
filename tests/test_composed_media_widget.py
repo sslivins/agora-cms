@@ -374,3 +374,127 @@ class TestMediaWidgetSlideshowBranch:
         r = MediaWidget().render_html(cfg, _cell(), "ssP", ctx=ctx)
         assert "cw-ss-" in r.html
 
+    @pytest.mark.parametrize(
+        "transition,enter_kf,leave_kf",
+        [
+            ("fade_black", "cw-ss-fadeblack-in", "cw-ss-fadeblack-out"),
+            ("dissolve", "cw-ss-dissolve-in", "cw-ss-dissolve-out"),
+            ("push", "cw-ss-push-in", "cw-ss-push-out"),
+            ("wipe", "cw-ss-wipe-in", "cw-ss-wipe-out"),
+            ("zoom", "cw-ss-zoom-in", "cw-ss-zoom-out"),
+        ],
+    )
+    def test_rich_transition_emits_class_and_keyframe_library(
+        self, transition, enter_kf, leave_kf
+    ):
+        container = uuid.uuid4()
+        s1, s2 = uuid.uuid4(), uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [
+                (s1, {"duration_ms": 4000, "transition": transition,
+                      "transition_ms": 800}, "img", (_TINY_PNG, "image/png")),
+                (s2, {"duration_ms": 4000, "transition": transition,
+                      "transition_ms": 800}, "img", (_TINY_PNG, "image/png")),
+            ],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssRich", ctx=ctx)
+
+        # Per-slide type class baked onto each slide div.
+        assert f"cw-ss-t-{transition}" in r.html
+        # The slide-count invariant still holds (type class shares no
+        # "cw-ss-slide" substring).
+        assert r.html.count("cw-ss-slide") == 2
+        assert "cw-ss-slide cw-ss-active" in r.html
+
+        # Shared keyframe library emitted as a static CSS asset.
+        css_assets = [a for a in r.static_assets if a.kind == "css"]
+        assert len(css_assets) == 1
+        lib = css_assets[0].content
+        assert enter_kf in lib
+        assert leave_kf in lib
+        assert f"cw-ss-enter-{transition}" in lib
+        assert f"cw-ss-leave-{transition}" in lib
+
+        # Rich transitions opt out of the base opacity transition so the
+        # keyframe animation owns the timeline.
+        assert "transition: none;" in r.css
+
+    def test_rich_transition_bakes_int_arrays_in_js(self):
+        container = uuid.uuid4()
+        s1, s2 = uuid.uuid4(), uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [
+                # cut -> type index 0, transMs 0
+                (s1, {"duration_ms": 3000, "transition": "cut"},
+                 "img", (_TINY_PNG, "image/png")),
+                # zoom -> type index 6, transMs 900
+                (s2, {"duration_ms": 4000, "transition": "zoom",
+                      "transition_ms": 900}, "img", (_TINY_PNG, "image/png")),
+            ],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssArr", ctx=ctx)
+        assert r.init_js is not None
+        # Only integer arrays are baked into the runtime — never raw
+        # config strings.
+        assert "var types = [0,6];" in r.init_js
+        assert "var transMs = [0,900];" in r.init_js
+        assert "var durations = [3000,4000];" in r.init_js
+
+    def test_cut_fade_only_emits_no_keyframe_asset(self):
+        # A slideshow that only uses cut + fade must NOT emit the shared
+        # keyframe library (it would be dead CSS).
+        container = uuid.uuid4()
+        s1, s2 = uuid.uuid4(), uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [
+                (s1, {"duration_ms": 3000, "transition": "cut"},
+                 "img", (_TINY_PNG, "image/png")),
+                (s2, {"duration_ms": 3000, "transition": "fade",
+                      "transition_ms": 600}, "img", (_TINY_PNG, "image/png")),
+            ],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssCF", ctx=ctx)
+        assert [a for a in r.static_assets if a.kind == "css"] == []
+
+    def test_unknown_transition_falls_back_to_fade(self):
+        # SlideshowSlidePlan.transition is a plain str; an unexpected
+        # value must degrade to "fade" rather than emit an unknown class.
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 3000, "transition": "bogus",
+                   "transition_ms": 500}, "img", (_TINY_PNG, "image/png"))],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssU", ctx=ctx)
+        assert "cw-ss-t-fade" in r.html
+        assert "cw-ss-t-bogus" not in r.html
+        assert r.static_assets == []
+
+
+class TestComposedCellTransitionMapper:
+    """``composed_cell_transition`` now passes the full validated
+    repertoire through (was: collapse everything but cut -> fade)."""
+
+    @pytest.mark.parametrize(
+        "t",
+        ["cut", "fade", "fade_black", "dissolve", "push", "wipe", "zoom"],
+    )
+    def test_known_transition_passes_through(self, t):
+        from cms.composed.slideshow_expand import composed_cell_transition
+
+        assert composed_cell_transition(t) == t
+
+    def test_unknown_transition_degrades_to_fade(self):
+        from cms.composed.slideshow_expand import composed_cell_transition
+
+        assert composed_cell_transition("bogus") == "fade"
+        assert composed_cell_transition("") == "fade"
+
