@@ -1840,6 +1840,30 @@ async def _composed_builder_context(request, db, *, asset_id=None):
         visible = list(global_ids | ga_ids | own_ids)
         media_q = media_q.where(Asset.id.in_(visible))
     media_rows = (await db.execute(media_q)).scalars().all()
+    # A SLIDESHOW is only offerable in the media-widget picker if every
+    # one of its (non-deleted) member sources is an IMAGE or VIDEO — the
+    # only types a composed media cell can cycle.  Slideshows that are
+    # empty, or that contain a COMPOSED / WEBPAGE / missing member, are
+    # filtered out so the user can't pick one that would only fail later
+    # with a 422 at preview/publish time.
+    from cms.composed.slideshow_expand import load_slideshow_members
+
+    _cyclable = {AssetType.IMAGE, AssetType.VIDEO}
+    pickable_slideshow_ids: set = set()
+    for a in media_rows:
+        if a.asset_type != AssetType.SLIDESHOW:
+            continue
+        members = await load_slideshow_members(db, a.id, exclude_deleted=True)
+        if members and all(
+            src is not None and src.asset_type in _cyclable
+            for _slide, src in members
+        ):
+            pickable_slideshow_ids.add(a.id)
+    media_rows = [
+        a
+        for a in media_rows
+        if a.asset_type != AssetType.SLIDESHOW or a.id in pickable_slideshow_ids
+    ]
     # Thumbnail/poster URLs so the editor canvas can show a live preview
     # of each image/video widget (videos get a poster frame once they've
     # been transcoded).  Assets without a ready thumbnail variant are

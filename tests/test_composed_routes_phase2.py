@@ -32,6 +32,7 @@ from cms.composed.schema import (
 )
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
+from cms.models.slideshow_slide import SlideshowSlide
 
 EDITOR_TEMPLATE = (
     Path(__file__).resolve().parents[1]
@@ -273,6 +274,84 @@ class TestComposedUI:
         assert resp.status_code == 200
         assert "thumbnail_url" in resp.text
         assert str(img.id) in resp.text
+
+    async def _seed_slideshow(self, db_session, member_types):
+        """Create a global SLIDESHOW with one member per entry in
+        ``member_types`` (each an AssetType). Returns (slideshow, members)."""
+        ss = Asset(
+            filename=f"show-{uuid.uuid4()}.slideshow",
+            display_name="A slideshow",
+            asset_type=AssetType.SLIDESHOW,
+            size_bytes=0,
+            checksum="",
+            is_global=True,
+        )
+        db_session.add(ss)
+        await db_session.flush()
+        members = []
+        for idx, atype in enumerate(member_types):
+            m = Asset(
+                filename=f"m-{uuid.uuid4()}",
+                display_name=f"member {idx}",
+                asset_type=atype,
+                size_bytes=1,
+                checksum="x",
+                is_global=True,
+            )
+            db_session.add(m)
+            await db_session.flush()
+            db_session.add(SlideshowSlide(
+                slideshow_asset_id=ss.id,
+                source_asset_id=m.id,
+                position=idx,
+                duration_ms=4000,
+                play_to_end=False,
+                transition="fade",
+                transition_ms=600,
+            ))
+            members.append(m)
+        await db_session.commit()
+        return ss, members
+
+    async def test_media_picker_offers_image_video_only_slideshow(
+        self, client, db_session
+    ):
+        # A slideshow whose members are all IMAGE/VIDEO is a valid pick.
+        ss, _ = await self._seed_slideshow(
+            db_session, [AssetType.IMAGE, AssetType.VIDEO]
+        )
+        resp = await client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        assert str(ss.id) in resp.text
+
+    async def test_media_picker_hides_slideshow_with_composed_member(
+        self, client, db_session
+    ):
+        # A slideshow containing a COMPOSED member cannot be cycled by a
+        # media cell, so it must NOT appear in the picker (the user would
+        # otherwise hit a 422 only at preview/publish time).
+        ss, members = await self._seed_slideshow(
+            db_session, [AssetType.IMAGE, AssetType.COMPOSED]
+        )
+        resp = await client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        assert str(ss.id) not in resp.text
+
+    async def test_media_picker_hides_empty_slideshow(self, client, db_session):
+        # An empty slideshow can't be cycled either — hide it.
+        ss = Asset(
+            filename=f"empty-{uuid.uuid4()}.slideshow",
+            display_name="Empty show",
+            asset_type=AssetType.SLIDESHOW,
+            size_bytes=0,
+            checksum="",
+            is_global=True,
+        )
+        db_session.add(ss)
+        await db_session.commit()
+        resp = await client.get("/assets/new/composed")
+        assert resp.status_code == 200
+        assert str(ss.id) not in resp.text
 
     async def test_editor_ships_live_preview_renderer(self, client, db_session):
         asset, _ = await _make_composed(db_session)
