@@ -1815,6 +1815,9 @@ registerWidget("ticker", {
     keywords: ["ticker", "scroll", "marquee", "news", "banner", "crawl"],
     defaults: () => ({text:"Breaking news...", speed_px_per_sec:100, direction:"left", mode:"scroll",
              color:"#ffffff", background:"#000000", font_family:"sans", font_size_px:48, gap_px:100}),
+    // The ticker paints a solid strip across the whole cell unless it's
+    // explicitly transparent — when solid it occludes the frame fill.
+    opaqueBg: (cfg) => cfg.background != null && cfg.background !== "transparent",
     summary: (w) => (w.config.text || "").slice(0, 24),
     preview: (root, cfg) => {
         const strip = document.createElement("div");
@@ -2683,6 +2686,18 @@ function renderSettings() {
     const fr = w.frame || FRAME_DEFAULTS;
     const frBgOn = fr.background != null;
     const frBgColor = frBgOn ? fr.background : "#000000";
+    // Hide the redundant frame "Background fill" when the widget already
+    // paints its own opaque background and the frame is fully opaque.
+    const fillRowHtml = frameFillOccluded(w) ? "" : `
+        <div class="row" style="align-items:center; margin-top:0.5rem;">
+            <label style="display:flex; align-items:center; gap:0.35rem; margin:0; flex:0 0 auto;">
+                <input type="checkbox" id="frame-bg-toggle" ${frBgOn ? "checked" : ""}
+                       oninput="document.getElementById('frame-bg-color').disabled=!this.checked; updateSelected(x=>frameSet(x,'background', this.checked ? (document.getElementById('frame-bg-color').value || '#000000') : null))">
+                Background fill
+            </label>
+            <input type="color" id="frame-bg-color" value="${escapeHtml(frBgColor)}" ${frBgOn ? "" : "disabled"}
+                   oninput="updateSelected(x=>{ if (document.getElementById('frame-bg-toggle').checked) frameSet(x,'background',this.value); })">
+        </div>`;
     const appearanceHtml = `
         <h4 style="margin:0.75rem 0 0.25rem; font-size:0.85rem;">Appearance</h4>
         <p style="font-size:0.75rem; color:var(--text-muted); margin:0.25rem 0 0.5rem;">
@@ -2714,16 +2729,9 @@ function renderSettings() {
         </div>
         <label style="margin-top:0.5rem;">Opacity: <span id="frame-op-val">${Math.round((fr.opacity ?? 1)*100)}</span>%</label>
         <input type="range" min="0" max="100" value="${Math.round((fr.opacity ?? 1)*100)}" style="width:100%;"
-               oninput="document.getElementById('frame-op-val').textContent=this.value; updateSelected(x=>frameSet(x,'opacity',clampInt(this.value,0,100)/100))">
-        <div class="row" style="align-items:center; margin-top:0.5rem;">
-            <label style="display:flex; align-items:center; gap:0.35rem; margin:0; flex:0 0 auto;">
-                <input type="checkbox" id="frame-bg-toggle" ${frBgOn ? "checked" : ""}
-                       oninput="document.getElementById('frame-bg-color').disabled=!this.checked; updateSelected(x=>frameSet(x,'background', this.checked ? (document.getElementById('frame-bg-color').value || '#000000') : null))">
-                Background fill
-            </label>
-            <input type="color" id="frame-bg-color" value="${escapeHtml(frBgColor)}" ${frBgOn ? "" : "disabled"}
-                   oninput="updateSelected(x=>{ if (document.getElementById('frame-bg-toggle').checked) frameSet(x,'background',this.value); })">
-        </div>`;
+               oninput="document.getElementById('frame-op-val').textContent=this.value; updateSelected(x=>frameSet(x,'opacity',clampInt(this.value,0,100)/100))"
+               onchange="renderSettings()">
+        ${fillRowHtml}`;
 
     panel.innerHTML = `
         ${renderLayersHtml()}
@@ -2761,6 +2769,26 @@ function ensureFrame(w) {
     return w.frame;
 }
 function frameSet(w, k, v) { ensureFrame(w)[k] = v; }
+
+// ── Frame "Background fill" occlusion ───────────────────────────────
+// Some widgets paint their own fully-opaque background across the whole
+// cell (e.g. the ticker's solid strip). When they do, the generic frame
+// "Background fill" sits behind that opaque paint and is never visible,
+// so the control is redundant and confusing. We hide it in that case.
+//
+// A widget opts in by declaring an `opaqueBg(cfg) => bool` predicate in
+// its registry descriptor — keeping this logic shared/common rather than
+// scattered per-widget. The fill only truly hides behind the widget when
+// the frame is fully opaque (opacity 100%); a translucent frame fades the
+// widget paint and reveals the fill again, so we keep the control then.
+function widgetPaintsOpaqueBg(w) {
+    const d = WIDGETS.get(w.type);
+    return !!(d && d.opaqueBg && d.opaqueBg(w.config || {}));
+}
+function frameFillOccluded(w) {
+    const fr = w.frame || FRAME_DEFAULTS;
+    return widgetPaintsOpaqueBg(w) && (fr.opacity ?? 1) >= 1;
+}
 
 // Mirror the published bundle's frame onto the editor preview. When the
 // frame has an inset it uses the "floating frame" model: the decoration
