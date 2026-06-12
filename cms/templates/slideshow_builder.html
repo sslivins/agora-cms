@@ -329,6 +329,14 @@
 }
 .ssb-trans-opt-sel {
     background: rgba(22,160,133,0.25);
+    box-shadow: inset 3px 0 0 #1abc9c;
+    font-weight: 600;
+}
+.ssb-trans-opt-sel::after {
+    content: '\2713';
+    margin-left: auto;
+    color: #1abc9c;
+    font-size: 0.85rem;
 }
 .ssb-trans-opt-sel .ssb-trans-opt-icon {
     color: #1abc9c;
@@ -796,7 +804,7 @@ function buildTransitionGap(gap, slideIdx, isLoop) {
     if (isLoop) gap.classList.add('ssb-gap-loop');
     gap.innerHTML = `
             <button type="button" class="ssb-gap-btn${isLoop ? ' ssb-gap-btn-loop' : ''}"
-                    title="${current.label}${titleSuffix} — click to change">${isLoop ? '\u21BA' : current.icon}</button>
+                    title="${current.label}${titleSuffix} — click to change">${current.icon}</button>
             <div class="ssb-trans-menu" popover="auto" role="menu"></div>`;
         const btn = gap.querySelector('.ssb-gap-btn');
         const menu = gap.querySelector('.ssb-trans-menu');
@@ -823,7 +831,7 @@ function buildTransitionGap(gap, slideIdx, isLoop) {
                         markDirty();
                     }
                 }
-                btn.textContent = isLoop ? '\u21BA' : t.icon;
+                btn.textContent = t.icon;
                 btn.title = `${t.label}${isLoop ? ' — loop (last → first)' : ''} — click to change`;
                 // Refresh duration input enabled state without closing the popover.
                 const di = menu.querySelector('.ssb-trans-dur-input');
