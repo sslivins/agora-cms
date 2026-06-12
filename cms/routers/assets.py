@@ -2091,6 +2091,9 @@ async def slideshow_assistant_thread(
     await db.commit()
     await db.refresh(thread)
     return {"thread_id": str(thread.id), "created": True}
+
+
+@router.patch("/{asset_id}", response_model=AssetOut)
 async def update_asset(
     asset_id: uuid.UUID,
     request: Request,
