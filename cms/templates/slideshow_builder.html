@@ -544,23 +544,27 @@
     </form>
 </div>
 
-{% if assistant_enabled and asset_id %}
-    {# AI assistant chat drawer (shared partial). Gated on the Assistant
-       feature flag AND edit mode (asset_id set): the slideshow assistant
-       edits an existing slideshow's slides, so there is no create-mode
-       mint path (unlike the composed editor). Behaviour is configured at
-       the bottom of this template via window.cwAiConfig. #}
-    {% set assistant_hint %}Tell me how to change this slideshow — e.g.
-        “Add the welcome video to the front and give every slide a
-        1-second fade,” or “Reorder so the holiday image is last.”
-        Edits are saved and go live as soon as I apply them.{% endset %}
+{% if assistant_enabled %}
+    {# AI assistant chat drawer (shared partial). Gated only on the
+       Assistant feature flag so it's available from the very first moment
+       — including create mode (no asset_id yet). On a brand-new slideshow
+       the drawer mints the draft asset on the first message (via
+       window.slideshowMintDraft, auto-naming if the user hasn't typed a
+       name) so the chat can bind to it, mirroring the composed editor.
+       Behaviour is configured at the bottom of this template via
+       window.cwAiConfig. #}
+    {% set assistant_hint %}Tell me how to build or change this slideshow —
+        e.g. “Make a slideshow from the welcome video and the three lobby
+        photos with a 1-second fade between each,” or “Reorder so the
+        holiday image is last.” Edits are saved and go live as soon as I
+        apply them.{% endset %}
     {% include "_assistant_drawer.html" %}
 {% endif %}
 
 <script id="ss-initial-slides" type="application/json">{{ slides | tojson }}</script>
 <script>
-const SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
-const SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
+let SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
+let SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
 const SS_MAX_SLIDES = 50;
 
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
@@ -1307,8 +1311,9 @@ function initDirtyTracking() {
 }
 
 // Stable surface the chat drawer (editor_chat.js) talks to, so it never
-// reaches into builder internals directly. Edit-mode only — the slideshow
-// assistant always operates on an existing slideshow.
+// reaches into builder internals directly. Works in both create mode (no
+// asset yet — the assistant mints a draft on the first message via
+// window.slideshowMintDraft) and edit mode.
 window.slideshowEditorBridge = {
     getAssetId() { return SS_ASSET_ID; },
     isDirty() { return !!__ssDirty; },
@@ -1328,8 +1333,70 @@ window.slideshowEditorBridge = {
         return true;
     },
 };
+
+// A friendly, sortable default name for slideshows started via the
+// assistant without typing one (mirrors the composed editor's
+// defaultSlideName). Built from local Date parts so it's locale-stable
+// and lexically sortable.
+function defaultSlideshowName() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return 'Untitled slideshow ' + d.getFullYear() + '-' + p(d.getMonth() + 1)
+        + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+// Create-mode mint for the AI assistant. On a brand-new slideshow there's
+// no asset yet, so the chat can't bind to one. POST a draft (the current
+// in-memory slides, possibly empty) with a default name if the user
+// hasn't typed one, WITHOUT redirecting (a normal create-mode Save would
+// navigate to the edit page and tear down the chat), then flip into edit
+// mode so the assistant's set_slideshow_slides writes land on the new
+// asset. Returns true on success. Display names need not be unique (the
+// server uniquifies the filename); the user can rename later.
+window.slideshowMintDraft = async function () {
+    if (SS_ASSET_ID) return true;
+    const nameEl = document.getElementById('ss-name');
+    if (nameEl && !(nameEl.value || '').trim()) {
+        nameEl.value = defaultSlideshowName();
+    }
+    const name = nameEl ? nameEl.value.trim() : '';
+    if (!name) { setStatus('Name is required', true); return false; }
+    const slidePayload = slides.map(s => ({
+        source_asset_id: s.source_asset_id,
+        duration_ms: s.duration_ms,
+        play_to_end: !!s.play_to_end,
+        transition: s.transition || 'cut',
+        transition_ms: (typeof s.transition_ms === 'number') ? s.transition_ms : 600,
+    }));
+    try {
+        const r = await fetch('/api/assets/slideshow', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, slides: slidePayload, group_ids: selectedGroupIds}),
+        });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            setStatus(typeof err.detail === 'string' ? err.detail : ('HTTP ' + r.status), true);
+            return false;
+        }
+        const data = await r.json().catch(() => ({}));
+        const newId = data.id || data.asset_id;
+        if (!newId) { setStatus('Create failed', true); return false; }
+        SS_ASSET_ID = newId;
+        SS_EDIT_MODE = true;
+        clearDirty();
+        setStatus('Created.');
+        try {
+            history.replaceState(null, '', '/assets/' + encodeURIComponent(newId) + '/slideshow');
+        } catch (_) { /* non-fatal */ }
+        return true;
+    } catch (e) {
+        setStatus(typeof e.message === 'string' ? e.message : 'Create failed', true);
+        return false;
+    }
+};
 </script>
-{% if assistant_enabled and asset_id %}
+{% if assistant_enabled %}
 <!-- marked + DOMPurify render the assistant's Markdown replies as HTML
      (bold, lists, code). Non-deferred so they're ready before the
      deferred drawer IIFE runs. -->
@@ -1337,15 +1404,16 @@ window.slideshowEditorBridge = {
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/assistant_usage.js" defer></script>
 <script>
-// Slideshow builder: edit-mode-only assistant. bridge =
-// window.slideshowEditorBridge; thread path /api/assets/{id}/assistant/thread;
-// write tool set_slideshow_slides. mint=null DISABLES create-mode minting
-// (the drawer only renders when a slideshow already exists).
+// Slideshow builder assistant. bridge = window.slideshowEditorBridge;
+// thread path /api/assets/{id}/assistant/thread; write tool
+// set_slideshow_slides. mint = window.slideshowMintDraft enables
+// create-mode chat (mints a draft slideshow on the first message,
+// mirroring the composed editor).
 window.cwAiConfig = {
     bridge: window.slideshowEditorBridge,
     threadPath: (id) => `/api/assets/${id}/assistant/thread`,
     writeTools: ["set_slideshow_slides"],
-    mint: null,
+    mint: window.slideshowMintDraft,
 };
 </script>
 <script src="/static/editor_chat.js" defer></script>
