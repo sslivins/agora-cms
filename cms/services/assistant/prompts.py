@@ -142,7 +142,11 @@ Per-slide fields:
   of using ``duration_ms`` (default false).
 * ``transition``: how the slide enters — one of ``cut``, ``fade``,
   ``fade_black``, ``dissolve``, ``push``, ``wipe``, ``zoom``
-  (default ``cut``).
+  (default ``cut``).  The **first** slide's ``transition`` is special:
+  because the show loops continuously, it is applied every time the
+  show wraps from the last slide back to the first — i.e. it is the
+  **loop (last → first) transition**.  Set it when the operator wants
+  the wrap-around to fade/dissolve instead of cutting.
 * ``transition_ms``: transition length, 0–5000 ms (default 600).
 
 Facts (fixed):

@@ -140,3 +140,30 @@ class TestSlideshowBuilderRoutes:
         assert resp.status_code == 200
         # Badge text from _macros.html
         assert "3 slides" in resp.text
+
+
+class TestSlideshowLoopTransitionUI:
+    """The leading timeline gap doubles as the loop (last → first)
+    transition control bound to slides[0]. Behavior is implemented in the
+    baked builder JS, so assert the source ships and is gated correctly."""
+
+    async def test_builder_bakes_loop_transition_control(self, client):
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Shared popover builder reused for both between-slide and loop gaps.
+        assert "function buildTransitionGap(" in body
+        # Distinct loop styling + accessible label.
+        assert "ssb-gap-btn-loop" in body
+        assert "loop (last \u2192 first)" in body
+
+    async def test_loop_control_gated_on_two_or_more_slides(self, client):
+        """The leading gap only becomes the loop control with >=2 slides;
+        a 0–1 slide show never wraps with a visible transition."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # The gating branch in makeGap's leading path.
+        assert "slides.length >= 2" in body
+        # Loop control binds to slides[0].
+        assert "buildTransitionGap(gap, 0, /*isLoop*/ true)" in body
