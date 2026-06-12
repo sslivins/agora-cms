@@ -61,7 +61,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.composed.bundle import BundleValidationError, build_bundle
 from cms.composed.registry import SlideshowSlidePlan, get_registry
-from cms.composed.schema import Layout
+from cms.composed.schema import (
+    GRID_COLS,
+    GRID_ROWS,
+    Cell,
+    Layout,
+    WidgetInstance,
+)
 from cms.composed.slideshow_expand import (
     composed_cell_transition,
     load_slideshow_members,
@@ -207,6 +213,84 @@ async def build_composed_html(
             status_code=422, detail=f"Invalid layout JSON: {e}",
         ) from e
 
+    return await _render_layout_to_html(
+        db, settings, layout, verify_asset=verify_asset
+    )
+
+
+async def build_slideshow_preview_html(
+    db: AsyncSession,
+    settings,
+    asset_id: uuid.UUID,
+    *,
+    verify_asset: VerifyAsset | None = None,
+) -> ComposedRender:
+    """Render a standalone SLIDESHOW asset to self-contained preview HTML.
+
+    Reuses the composed-slide render pipeline: wraps the slideshow in an
+    ephemeral, single full-bleed ``media`` widget layout and runs it
+    through the exact same machinery the composed preview / thumbnail
+    path uses. Because the media widget already expands a referenced
+    SLIDESHOW into per-member slides (with the device-faithful CSS
+    transitions ported in PR #772), this gives an authentic preview of
+    how the slideshow animates on a device — with zero parallel renderer.
+
+    ``verify_asset`` mirrors :func:`build_composed_html`: when supplied it
+    is awaited for the slideshow asset and for each expanded member before
+    its bytes are read, so a viewer can't preview members they can't see.
+
+    Raises ``HTTPException`` 404 (missing / not a slideshow / deleted),
+    403 (via ``verify_asset``), or 422 (empty slideshow, missing or
+    non-IMAGE/VIDEO member) — the same contract as the composed path.
+    """
+    asset = await db.get(Asset, asset_id)
+    if (
+        asset is None
+        or asset.asset_type != AssetType.SLIDESHOW
+        or asset.deleted_at is not None
+    ):
+        raise HTTPException(status_code=404, detail="Slideshow not found")
+
+    if verify_asset is not None:
+        await verify_asset(asset_id)
+
+    # Ephemeral layout: one full-bleed media widget pointing at the
+    # slideshow. The widget's slideshow-expansion branch does the rest.
+    # A deterministic instance id keeps the rendered output reproducible
+    # for a given slideshow (helps caching / golden tests).
+    instance_id = uuid.uuid5(uuid.NAMESPACE_URL, f"slideshow-preview:{asset_id}")
+    layout = Layout(
+        widgets=[
+            WidgetInstance(
+                id=instance_id,
+                type="media",
+                cell=Cell(row=1, col=1, rowspan=GRID_ROWS, colspan=GRID_COLS),
+                config={"asset_id": str(asset_id), "object_fit": "contain"},
+                config_version=1,
+            )
+        ]
+    )
+
+    return await _render_layout_to_html(
+        db, settings, layout, verify_asset=verify_asset
+    )
+
+
+async def _render_layout_to_html(
+    db: AsyncSession,
+    settings,
+    layout: Layout,
+    *,
+    verify_asset: VerifyAsset | None = None,
+) -> ComposedRender:
+    """Render an already-validated-shape :class:`Layout` to self-contained HTML.
+
+    Shared by :func:`build_composed_html` (persisted composed slides) and
+    :func:`build_slideshow_preview_html` (ephemeral single-media-widget
+    wrapper around a SLIDESHOW asset). Runs the semantic validator, inlines
+    every referenced image / video (and expands referenced slideshows into
+    per-member slides), then builds the bundle.
+    """
     # Trigger auto-registration of all built-in widgets.
     import cms.composed.widgets  # noqa: F401
 

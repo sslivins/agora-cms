@@ -1568,10 +1568,12 @@ function previewAsset(assetId, filename, assetType) {
     }
 }
 
-function previewComposed(assetId, name) {
-    // Composed slides have no raster image -- show the live HTML render,
-    // sized to its true 1920x1080 canvas and scaled to fit via CSS
-    // container-query units (.composed-preview-frame).
+function _previewHtmlFrame(url, name) {
+    // Shared HTML-render preview modal: an iframe sized to the true
+    // 1920x1080 canvas and scaled to fit via CSS container-query units
+    // (.composed-preview-frame). Used for composed slides and standalone
+    // slideshow previews (which the server renders as a full-bleed
+    // single-media-widget composed layout).
     const { box, close } = createModal({
         closeOnBackdrop: true,
         closeOnEsc: true,
@@ -1580,7 +1582,7 @@ function previewComposed(assetId, name) {
     const header = document.createElement("div");
     header.className = "preview-header";
     const title = document.createElement("span");
-    title.textContent = name || "Composed slide";
+    title.textContent = name || "Preview";
     const closeBtn = document.createElement("button");
     closeBtn.className = "btn btn-secondary btn-sm";
     closeBtn.textContent = "Close";
@@ -1593,11 +1595,29 @@ function previewComposed(assetId, name) {
     wrap.className = "composed-preview composed-preview-modal";
     const frame = document.createElement("iframe");
     frame.className = "composed-preview-frame";
-    frame.src = "/composed/" + encodeURIComponent(assetId) + "/preview";
+    frame.src = url;
     frame.setAttribute("scrolling", "no");
     frame.setAttribute("tabindex", "-1");
     wrap.appendChild(frame);
     box.appendChild(wrap);
+}
+
+function previewComposed(assetId, name) {
+    // Composed slides have no raster image -- show the live HTML render.
+    _previewHtmlFrame(
+        "/composed/" + encodeURIComponent(assetId) + "/preview",
+        name || "Composed slide",
+    );
+}
+
+function previewSlideshow(assetId, name) {
+    // Standalone slideshow preview: the server wraps the slideshow in an
+    // ephemeral full-bleed media widget and renders it through the same
+    // composed pipeline, so members cycle with device-faithful transitions.
+    _previewHtmlFrame(
+        "/composed/slideshow/" + encodeURIComponent(assetId) + "/preview",
+        name || "Slideshow",
+    );
 }
 
 function previewVariant(variantId, filename, assetType, profileName) {
