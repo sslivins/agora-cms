@@ -38,7 +38,7 @@ from cms.auth import (
     require_permission,
 )
 from cms.composed.registry import get_registry
-from cms.composed.render import build_composed_html
+from cms.composed.render import build_composed_html, build_slideshow_preview_html
 from cms.composed.schema import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
@@ -579,6 +579,49 @@ async def preview_composed_slide(
 
     headers = {
         "Content-Security-Policy": csp,
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    }
+    return HTMLResponse(content=rendered.html_bytes, headers=headers)
+
+
+@router.get("/slideshow/{asset_id}/preview", response_class=HTMLResponse)
+async def preview_slideshow(
+    asset_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings=Depends(get_settings),
+) -> HTMLResponse:
+    """Live-render a standalone SLIDESHOW asset as a full-bleed HTML preview.
+
+    Wraps the slideshow in an ephemeral single ``media``-widget composed
+    layout and renders it through the shared composed pipeline, so the
+    preview animates with the same device-faithful CSS transitions used
+    everywhere else. Used by the asset-library kebab menus and the
+    slideshow editor's Preview button.
+
+    Returns 404 if the asset doesn't exist or isn't a slideshow, 403 if the
+    caller can't see the slideshow (or a member), and 422 if the slideshow
+    is empty or contains a non-IMAGE/VIDEO member. No disk writes; no row
+    mutations. Every member image / video is inlined as a base64 ``data:``
+    URI so the render works in an editor ``<iframe>`` under the locked-down
+    preview CSP.
+    """
+    from cms.routers.assets import _verify_asset_access  # noqa: WPS433
+
+    async def _verify(aid: uuid.UUID) -> None:
+        await _verify_asset_access(aid, request, db)
+
+    rendered = await build_slideshow_preview_html(
+        db, settings, asset_id, verify_asset=_verify,
+    )
+
+    # A slideshow preview is a single media widget cycling IMAGE/VIDEO
+    # members — none of the network-calling widgets (weather/rss/iframe)
+    # can appear here, so the base preview CSP (media-src/img-src data:)
+    # is always sufficient.
+    headers = {
+        "Content-Security-Policy": _PREVIEW_CSP,
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     }

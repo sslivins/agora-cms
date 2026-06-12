@@ -238,6 +238,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /composed/slideshow/{asset_id}/preview:
+    get:
+      tags:
+      - composed
+      summary: Preview Slideshow
+      description: |-
+        Live-render a standalone SLIDESHOW asset as a full-bleed HTML preview.
+
+        Wraps the slideshow in an ephemeral single ``media``-widget composed
+        layout and renders it through the shared composed pipeline, so the
+        preview animates with the same device-faithful CSS transitions used
+        everywhere else. Used by the asset-library kebab menus and the
+        slideshow editor's Preview button.
+
+        Returns 404 if the asset doesn't exist or isn't a slideshow, 403 if the
+        caller can't see the slideshow (or a member), and 422 if the slideshow
+        is empty or contains a non-IMAGE/VIDEO member. No disk writes; no row
+        mutations. Every member image / video is inlined as a base64 ``data:``
+        URI so the render works in an editor ``<iframe>`` under the locked-down
+        preview CSP.
+      operationId: preview_slideshow_composed_slideshow__asset_id__preview_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/html:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /composed/:
     post:
       tags:

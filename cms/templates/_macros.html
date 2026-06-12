@@ -284,6 +284,7 @@
                     {% elif a.asset_type.value == 'stream' %}
                         <a role="menuitem" href="{{ a.url }}" target="_blank" rel="noopener">Open Stream</a>
                     {% elif a.asset_type.value == 'slideshow' %}
+                        <button type="button" role="menuitem" onclick="previewSlideshow('{{ a.id }}', {{ (a.display_name or a.original_filename or a.filename) | tojson | forceescape }})">Preview</button>
                         {% if 'assets:write' in user_perms and is_owner %}
                         <a role="menuitem" href="/assets/{{ a.id }}/slideshow">Edit slides</a>
                         {% else %}

@@ -516,6 +516,9 @@
         <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
             <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
+            {% if edit_mode %}
+            <button type="button" class="btn btn-secondary" id="ss-preview-btn" onclick="previewSlideshowFromEditor()" title="Preview the saved slideshow">Preview</button>
+            {% endif %}
             <a href="/assets" class="btn btn-secondary">Cancel</a>
         </div>
     </form>
@@ -1098,6 +1101,28 @@ async function saveSlideshow(opts) {
 function openGroupPopup(id) {
     const el = document.getElementById(id);
     if (el && el.showPopover) el.showPopover();
+}
+
+async function previewSlideshowFromEditor() {
+    // Preview renders the SAVED DB state (not the in-memory timeline).
+    // If there are unsaved edits, persist them first so the preview
+    // reflects what the user is looking at; saveSlideshow() in edit mode
+    // stays on this page and clears the dirty flag.
+    setStatus('');
+    if (slides.length === 0) {
+        setStatus('Add at least one slide to preview.', true);
+        return;
+    }
+    if (__ssDirty) {
+        const ok = await saveSlideshow();
+        if (!ok) return;  // save surfaced its own error
+    }
+    if (!SS_ASSET_ID) {
+        setStatus('Save the slideshow before previewing.', true);
+        return;
+    }
+    const name = document.getElementById('ss-name').value.trim() || 'Slideshow';
+    previewSlideshow(SS_ASSET_ID, name);
 }
 
 document.addEventListener('DOMContentLoaded', () => {

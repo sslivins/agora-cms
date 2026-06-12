@@ -1298,6 +1298,7 @@ function fallbackCopy(text, onSuccess) {
         } else if (t === 'stream') {
             if (a.url) items.push('<a role="menuitem" href="' + _escAttr(a.url) + '" target="_blank" rel="noopener">Open Stream</a>');
         } else if (t === 'slideshow') {
+            items.push('<button type="button" role="menuitem" onclick="previewSlideshow(' + _kebabArg(a.id) + ', ' + _kebabArg(name) + ')">Preview</button>');
             items.push('<a role="menuitem" href="/assets/' + _escAttr(a.id) + '/slideshow">' + ((canWrite && isOwner) ? 'Edit slides' : 'View slides') + '</a>');
         } else if (t === 'composed') {
             items.push('<button type="button" role="menuitem" onclick="previewComposed(' + _kebabArg(a.id) + ', ' + _kebabArg(name) + ')">Preview</button>');
