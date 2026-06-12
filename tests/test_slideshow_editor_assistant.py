@@ -11,8 +11,9 @@ embedded in the slideshow editor:
 * ``build_system_prompt`` renders the slideshow-editor variant only in
   ``slideshow_editor`` mode with a bound asset id (never widens).
 * The slideshow builder template renders the shared assistant drawer
-  only in edit mode (asset bound) when the feature flag is on, and
-  never in create mode.
+  in BOTH edit and create mode when the feature flag is on (create mode
+  mints a draft slideshow on the first message, mirroring the composed
+  editor); it's hidden only when the feature flag is off.
 """
 
 from __future__ import annotations
@@ -224,7 +225,7 @@ class TestBuildSystemPrompt:
         assert "Slideshow Assistant" not in prompt
 
 
-# ── builder template drawer gating (edit-mode-only) ─────────────────
+# ── builder template drawer gating (feature-flag-gated, both modes) ──
 
 
 @pytest.mark.asyncio
@@ -242,15 +243,22 @@ class TestBuilderDrawerGating:
         assert '<script src="/static/editor_chat.js"' in text
         assert f'data-asset-id="{asset.id}"' in text
 
-    async def test_create_page_hides_drawer(self, client):
-        # v1 is edit-mode-only: a brand-new slideshow has no bound asset,
-        # so the drawer (and its scripts) must not render even for an
-        # admin with the feature on.
+    async def test_create_page_shows_drawer(self, client):
+        # The assistant is available from the very first moment, including
+        # create mode: a brand-new slideshow has no bound asset, so the
+        # drawer mints a draft on the first message (window.slideshowMintDraft),
+        # mirroring the composed editor. The drawer + its scripts must render
+        # for an admin with the feature on, and the create-mode mint must be
+        # wired into cwAiConfig (not disabled).
         resp = await client.get("/assets/new/slideshow")
         assert resp.status_code == 200, resp.text
         text = resp.text
-        assert 'id="cw-ai"' not in text
-        assert '<script src="/static/editor_chat.js"' not in text
+        assert 'id="cw-ai"' in text
+        assert '<script src="/static/editor_chat.js"' in text
+        # Create-mode mint must be wired in (NOT mint: null).
+        assert "window.slideshowMintDraft" in text
+        assert "mint: window.slideshowMintDraft" in text
+        assert "mint: null" not in text
 
     async def test_edit_page_hides_drawer_for_disabled_user(
         self, operator_client, app, db_session
