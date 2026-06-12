@@ -1419,6 +1419,87 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}:
+    patch:
+      summary: Update Asset
+      description: 'Update asset properties (currently: display_name).'
+      operationId: update_asset_api_assets__asset_id__patch
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      summary: Get Asset
+      operationId: get_asset_api_assets__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Asset
+      description: |-
+        Soft-delete an asset.
+
+        Sets ``assets.deleted_at`` and flags any in-flight Jobs targeting this
+        asset (or its variants) with ``cancel_requested = true``.  The worker
+        heartbeat will pick up the flag and abort ffmpeg within ~15s; the
+        CMS reaper loop (``deleted_asset_reaper_loop``) later hard-deletes
+        blobs + rows once all Jobs are terminal.  Returns 200 immediately.
+      operationId: delete_asset_api_assets__asset_id__delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/{asset_id}/recapture:
     post:
       summary: Recapture Stream
@@ -1456,62 +1537,6 @@ paths:
         complete, etc.) so the client never has to synthesize row markup in JS.
         See issue #87.
       operationId: get_asset_row_api_assets__asset_id__row_get
-      parameters:
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Asset Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/assets/{asset_id}:
-    get:
-      summary: Get Asset
-      operationId: get_asset_api_assets__asset_id__get
-      parameters:
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Asset Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AssetOut'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      summary: Delete Asset
-      description: |-
-        Soft-delete an asset.
-
-        Sets ``assets.deleted_at`` and flags any in-flight Jobs targeting this
-        asset (or its variants) with ``cancel_requested = true``.  The worker
-        heartbeat will pick up the flag and abort ffmpeg within ~15s; the
-        CMS reaper loop (``deleted_asset_reaper_loop``) later hard-deletes
-        blobs + rows once all Jobs are terminal.  Returns 200 immediately.
-      operationId: delete_asset_api_assets__asset_id__delete
       parameters:
       - name: asset_id
         in: path
