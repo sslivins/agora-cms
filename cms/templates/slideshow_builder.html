@@ -253,6 +253,18 @@
     border-color: #16a085;
     color: #fff;
 }
+/* The leading gap doubles as the loop (last → first) transition control.
+   Give it a distinct accent so it doesn't read as a between-slide gap. */
+.ssb-gap-btn-loop {
+    background: #2c3e50;
+    border-color: #8e44ad;
+    color: #d6bcfa;
+}
+.ssb-gap-btn-loop:hover {
+    background: #8e44ad;
+    border-color: #8e44ad;
+    color: #fff;
+}
 /* When a draggable hovers a gap, the gap "opens up" into a slot-sized
    placeholder so the user can preview where the new slide will land.
    Reverts smoothly on dragleave or drop. */
@@ -753,17 +765,38 @@ function makeGap(index, isLeading) {
     gap.className = 'ssb-gap';
     gap.dataset.dropIndex = String(index);
     if (isLeading) {
-        // Leading drop zone is small + invisible; no transition button there
-        gap.innerHTML = '';
-        gap.style.flex = '0 0 12px';
+        // The leading gap doubles as the loop (last → first) transition control.
+        // On a looping slideshow the device shows slides[0] both on first play and
+        // on every wrap, applying slides[0].transition each time — so editing
+        // slides[0].transition here configures how the show loops back to the start.
+        // Only meaningful with ≥2 slides; for 0–1 slides keep the small invisible
+        // drop zone (a single-slide show never wraps with a visible transition).
+        if (slides.length >= 2) {
+            buildTransitionGap(gap, 0, /*isLoop*/ true);
+        } else {
+            gap.innerHTML = '';
+            gap.style.flex = '0 0 12px';
+        }
     } else {
         // index here is the gap position (1..slides.length-1 for between-slot gaps).
         // The transition belongs to the slide on the right (slides[index]).
-        const slideIdx = index;
-        const current = transitionDef((slides[slideIdx] && slides[slideIdx].transition) || 'cut');
-        gap.innerHTML = `
-            <button type="button" class="ssb-gap-btn"
-                    title="${current.label} transition — click to change">${current.icon}</button>
+        buildTransitionGap(gap, index, /*isLoop*/ false);
+    }
+    wireDropZone(gap, index);
+    return gap;
+}
+
+// Builds the transition picker popover (icon button + options + duration input)
+// into ``gap`` bound to ``slides[slideIdx]``. ``isLoop`` only changes the labels /
+// styling so the leading slides[0] control reads as the last → first loop
+// transition rather than a between-slide transition.
+function buildTransitionGap(gap, slideIdx, isLoop) {
+    const current = transitionDef((slides[slideIdx] && slides[slideIdx].transition) || 'cut');
+    const titleSuffix = isLoop ? ' — loop (last → first)' : '';
+    if (isLoop) gap.classList.add('ssb-gap-loop');
+    gap.innerHTML = `
+            <button type="button" class="ssb-gap-btn${isLoop ? ' ssb-gap-btn-loop' : ''}"
+                    title="${current.label}${titleSuffix} — click to change">${isLoop ? '\u21BA' : current.icon}</button>
             <div class="ssb-trans-menu" popover="auto" role="menu"></div>`;
         const btn = gap.querySelector('.ssb-gap-btn');
         const menu = gap.querySelector('.ssb-trans-menu');
@@ -790,8 +823,8 @@ function makeGap(index, isLeading) {
                         markDirty();
                     }
                 }
-                btn.textContent = t.icon;
-                btn.title = `${t.label} transition — click to change`;
+                btn.textContent = isLoop ? '\u21BA' : t.icon;
+                btn.title = `${t.label}${isLoop ? ' — loop (last → first)' : ''} — click to change`;
                 // Refresh duration input enabled state without closing the popover.
                 const di = menu.querySelector('.ssb-trans-dur-input');
                 if (di) {
@@ -845,9 +878,6 @@ function makeGap(index, isLeading) {
             menu.style.transform = 'translateX(-50%)';
             try { menu.showPopover(); } catch {}
         });
-    }
-    wireDropZone(gap, index);
-    return gap;
 }
 
 function wireDropZone(el, dropIndex) {
