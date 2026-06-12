@@ -161,7 +161,10 @@ ALLOWED_TOOLS: frozenset[str] = READ_ONLY_TOOLS | WRITE_TOOLS
 # mode selects the editor profile below.
 MODE_GENERAL = "general"
 MODE_COMPOSED_EDITOR = "composed_editor"
-VALID_MODES: frozenset[str] = frozenset({MODE_GENERAL, MODE_COMPOSED_EDITOR})
+MODE_SLIDESHOW_EDITOR = "slideshow_editor"
+VALID_MODES: frozenset[str] = frozenset(
+    {MODE_GENERAL, MODE_COMPOSED_EDITOR, MODE_SLIDESHOW_EDITOR}
+)
 
 # Composed reads — safe to run inline like any other read.
 COMPOSED_READ_TOOLS: frozenset[str] = frozenset(
@@ -196,11 +199,47 @@ COMPOSED_ASSET_SCOPED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# ── Slideshow editor profile (mirrors the composed profile) ──
+# Slideshow reads — safe to run inline like any other read.
+SLIDESHOW_READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_slideshow",
+    }
+)
+
+# Slideshow writes.  Unlike composed slides, a slideshow has no
+# draft/publish step — ``set_slideshow_slides`` goes live immediately.
+# We still run it inline WITHOUT an approval click because the user is
+# sitting in the slideshow editor where the Save button is already a
+# one-click live write, and the change is fully reversible by re-saving.
+SLIDESHOW_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "set_slideshow_slides",
+    }
+)
+
+# Slideshow tools that operate on one specific slideshow asset (their
+# MCP signature takes an ``asset_id``).  In ``slideshow_editor`` mode the
+# agent FORCES the thread's bound asset id onto these so the editor
+# assistant can never read or write a slideshow other than the one the
+# user has open.  ``list_assets`` / ``get_asset`` are excluded — they
+# legitimately read *other* assets (the images/videos to add as slides).
+SLIDESHOW_ASSET_SCOPED_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_slideshow",
+        "set_slideshow_slides",
+    }
+)
+
 # Tools the agent may execute immediately, with no approval click.
 # Reads are inherently safe; composed draft writes are reversible and
-# device-invisible (see above).
+# device-invisible; slideshow writes are reversible editor-context saves.
 NO_APPROVAL_TOOLS: frozenset[str] = (
-    READ_ONLY_TOOLS | COMPOSED_READ_TOOLS | COMPOSED_DRAFT_WRITE_TOOLS
+    READ_ONLY_TOOLS
+    | COMPOSED_READ_TOOLS
+    | COMPOSED_DRAFT_WRITE_TOOLS
+    | SLIDESHOW_READ_TOOLS
+    | SLIDESHOW_WRITE_TOOLS
 )
 
 # The editor-mode tool profile: just enough to discover/select assets
@@ -212,6 +251,14 @@ COMPOSED_EDITOR_TOOLS: frozenset[str] = (
     | COMPOSED_DRAFT_WRITE_TOOLS
 )
 
+# The slideshow-editor tool profile: discover/select assets + read+write
+# the current slideshow's slides.
+SLIDESHOW_EDITOR_TOOLS: frozenset[str] = (
+    frozenset({"list_assets", "get_asset"})
+    | SLIDESHOW_READ_TOOLS
+    | SLIDESHOW_WRITE_TOOLS
+)
+
 
 def tools_for_mode(mode: str | None) -> frozenset[str]:
     """Return the set of tools advertised/callable for a thread ``mode``.
@@ -221,6 +268,8 @@ def tools_for_mode(mode: str | None) -> frozenset[str]:
     """
     if mode == MODE_COMPOSED_EDITOR:
         return COMPOSED_EDITOR_TOOLS
+    if mode == MODE_SLIDESHOW_EDITOR:
+        return SLIDESHOW_EDITOR_TOOLS
     return ALLOWED_TOOLS
 
 

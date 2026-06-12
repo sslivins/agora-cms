@@ -62,10 +62,20 @@ from cms.services.assistant.mcp_client import (
     McpUnavailableError,
     MODE_COMPOSED_EDITOR,
     MODE_GENERAL,
+    MODE_SLIDESHOW_EDITOR,
+    SLIDESHOW_ASSET_SCOPED_TOOLS,
     WRITE_TOOLS,
     executable_tools_for_mode,
     tools_for_mode,
 )
+
+# Asset-scoped editor tools across all editor modes: the agent forces the
+# thread's bound asset id onto these so the editor assistant can never read
+# or write an asset other than the one the user has open.
+_ASSET_SCOPED_TOOLS = COMPOSED_ASSET_SCOPED_TOOLS | SLIDESHOW_ASSET_SCOPED_TOOLS
+# Editor modes that bind the thread to a single asset (reusing the
+# ``composed_asset_id`` column as the generic bound-asset pointer).
+_EDITOR_MODES = (MODE_COMPOSED_EDITOR, MODE_SLIDESHOW_EDITOR)
 from cms.services.assistant.prompts import build_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -148,8 +158,8 @@ async def _execute_tool_call(
     args, err = _parse_tool_arguments(fn.get("arguments"))
     if err is not None:
         return json.dumps({"error": "bad_arguments", "message": err})
-    if bound_asset_id is not None and name in COMPOSED_ASSET_SCOPED_TOOLS:
-        # Force the thread's bound slide id; ignore whatever the model sent.
+    if bound_asset_id is not None and name in _ASSET_SCOPED_TOOLS:
+        # Force the thread's bound asset id; ignore whatever the model sent.
         args = dict(args or {})
         args["asset_id"] = str(bound_asset_id)
     if name not in executable_tools:
@@ -240,7 +250,7 @@ async def run_user_turn(
     mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
     bound_asset_id = (
         getattr(thread, "composed_asset_id", None)
-        if mode == MODE_COMPOSED_EDITOR
+        if mode in _EDITOR_MODES
         else None
     )
     openai_messages: list[dict[str, Any]] = [
@@ -478,7 +488,7 @@ async def run_user_turn_streaming(
     mode = getattr(thread, "mode", MODE_GENERAL) or MODE_GENERAL
     bound_asset_id = (
         getattr(thread, "composed_asset_id", None)
-        if mode == MODE_COMPOSED_EDITOR
+        if mode in _EDITOR_MODES
         else None
     )
     openai_messages: list[dict[str, Any]] = [

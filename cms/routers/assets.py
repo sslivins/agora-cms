@@ -27,6 +27,7 @@ from cms.models.schedule import Schedule
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.tag import AssetTag, Tag
 from cms.models.user import User
+from cms.models.chat_thread import ChatThread
 from cms.schemas.asset import (
     AssetBulkFailure,
     AssetBulkIn,
@@ -43,6 +44,8 @@ from cms.schemas.asset import (
 from cms.schemas.tag import TagOut
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import composed_unpublished_reason
+from cms.services.assistant.mcp_client import MODE_SLIDESHOW_EDITOR
+from cms.services.assistant_flag import assistant_enabled_for
 from cms.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -2000,6 +2003,94 @@ async def replace_slideshow_slides(
         "slide_count": len(slides),
         "duration_seconds": duration_seconds,
     }
+
+
+async def _load_slideshow_for_write(
+    asset_id: uuid.UUID, request: Request, db: AsyncSession
+) -> Asset:
+    """Load a slideshow asset, enforcing visibility + owner/admin write.
+
+    Mirrors the gating of ``replace_slideshow_slides`` so the slideshow
+    assistant-thread route and the chat re-validation hook share one
+    rule. Returns the ``Asset`` or raises 404 / 403.
+    """
+    await _verify_asset_access(asset_id, request, db)
+    asset = (
+        await db.execute(
+            select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.asset_type != AssetType.SLIDESHOW:
+        raise HTTPException(status_code=400, detail="Asset is not a slideshow")
+
+    # require_auth populates request.state.user for this router.
+    user = getattr(request.state, "user", None)
+    user_groups = await get_user_group_ids(user, db) if user else []
+    is_admin = user_groups is None
+    if not is_admin and (user is None or asset.uploaded_by_user_id != user.id):
+        raise HTTPException(
+            status_code=403, detail="Only the slideshow owner can edit its slides"
+        )
+    return asset
+
+
+@router.post("/{asset_id}/assistant/thread")
+async def slideshow_assistant_thread(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get-or-create the editor-scoped AI chat thread for this slideshow.
+
+    Powers the embedded chat panel in the slideshow builder. The thread
+    is bound to ``asset_id`` and runs in ``slideshow_editor`` mode, which
+    scopes the assistant to the slideshow read/write tools and forces
+    every slideshow tool call onto *this* slideshow.
+
+    Reuses the caller's newest existing ``slideshow_editor`` thread for
+    the slideshow if one exists (so reopening the editor resumes the same
+    conversation); otherwise creates one. Returns ``{thread_id, created}``.
+
+    Gated identically to editing the slideshow itself: requires
+    ``ASSETS_WRITE``, that the slideshow exists, is visible, and is owned
+    by the caller (or the caller is an admin), and that the Assistant
+    feature is enabled for the caller (404 otherwise, to keep the hidden
+    feature invisible).
+    """
+    asset = await _load_slideshow_for_write(asset_id, request, db)
+
+    if not await assistant_enabled_for(db, user):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    existing = (
+        await db.execute(
+            select(ChatThread)
+            .where(
+                ChatThread.user_id == user.id,
+                ChatThread.composed_asset_id == asset_id,
+                ChatThread.mode == MODE_SLIDESHOW_EDITOR,
+            )
+            .order_by(ChatThread.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {"thread_id": str(existing.id), "created": False}
+
+    asset_name = asset.display_name or asset.filename or "slideshow"
+    thread = ChatThread(
+        user_id=user.id,
+        mode=MODE_SLIDESHOW_EDITOR,
+        composed_asset_id=asset_id,
+        title=f"Editing {asset_name}"[:200],
+    )
+    db.add(thread)
+    await db.commit()
+    await db.refresh(thread)
+    return {"thread_id": str(thread.id), "created": True}
 
 
 @router.patch("/{asset_id}", response_model=AssetOut)

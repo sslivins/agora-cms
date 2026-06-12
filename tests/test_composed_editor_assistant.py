@@ -323,7 +323,7 @@ class TestCreateModeDrawer:
         assert resp.status_code == 200
         text = resp.text
         assert 'id="cw-ai"' in text
-        assert '<script src="/static/composed_editor_chat.js"' in text
+        assert '<script src="/static/editor_chat.js"' in text
         # Create mode has no asset yet — the drawer must render an EMPTY
         # data-asset-id (not the string "None"), so the client treats it as
         # unbound and mints on first send.
@@ -341,4 +341,4 @@ class TestCreateModeDrawer:
         assert resp.status_code == 200
         text = resp.text
         assert 'id="cw-ai"' not in text
-        assert '<script src="/static/composed_editor_chat.js"' not in text
+        assert '<script src="/static/editor_chat.js"' not in text

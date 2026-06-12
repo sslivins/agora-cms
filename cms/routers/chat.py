@@ -54,6 +54,7 @@ from cms.services.assistant.llm_client import (
 from cms.services.assistant.mcp_client import (
     McpUnavailableError,
     MODE_COMPOSED_EDITOR,
+    MODE_SLIDESHOW_EDITOR,
 )
 from cms.services.assistant.pricing import estimate_usd, model_for_deployment
 from cms.services.assistant_flag import assistant_enabled_for
@@ -111,26 +112,27 @@ async def _verify_composed_editor_thread(
     request: Request,
     db: AsyncSession,
 ) -> None:
-    """Re-validate a ``composed_editor`` thread at turn start.
+    """Re-validate an editor-bound thread at turn start.
 
-    No-op for general threads. For an editor-bound thread this defends
-    against state drift between the moment the editor opened the thread
-    and the moment a message is sent:
+    No-op for general threads. For a ``composed_editor`` or
+    ``slideshow_editor`` thread this defends against state drift between
+    the moment the editor opened the thread and the moment a message is
+    sent:
 
-    * orphaned thread (no bound asset) → 409 — never run the agent with a
-      composed-editor prompt but no slide to scope it to;
+    * orphaned thread (no bound asset) → 409 — never run the agent with an
+      editor prompt but no asset to scope it to;
     * the caller lost ``ASSETS_WRITE`` since the thread was created → 403;
-    * the bound slide was deleted, or is no longer visible to the caller
-      → 404 / 403, surfaced by ``_load_composed_for_write``.
+    * the bound asset was deleted, or is no longer visible to the caller
+      → 404 / 403.
 
     Without this, a stale editor thread could let the assistant attempt
-    draft writes against a slide the user can no longer edit or see.
+    writes against an asset the user can no longer edit or see.
     """
-    if thread.mode != MODE_COMPOSED_EDITOR:
+    if thread.mode not in (MODE_COMPOSED_EDITOR, MODE_SLIDESHOW_EDITOR):
         return
     if thread.composed_asset_id is None:
         raise HTTPException(
-            status_code=409, detail="Editor thread is not bound to a slide"
+            status_code=409, detail="Editor thread is not bound to an asset"
         )
     if user.role is None or not has_permission(
         user.role.permissions, ASSETS_WRITE
@@ -139,10 +141,15 @@ async def _verify_composed_editor_thread(
             status_code=403, detail=f"Missing permission: {ASSETS_WRITE}"
         )
     # Existence + visibility (raises 404 / 403). Lazy import avoids a
-    # router import cycle (composed imports nothing from chat).
-    from cms.routers.composed import _load_composed_for_write  # noqa: WPS433
+    # router import cycle (composed/assets import nothing from chat).
+    if thread.mode == MODE_COMPOSED_EDITOR:
+        from cms.routers.composed import _load_composed_for_write  # noqa: WPS433
 
-    await _load_composed_for_write(thread.composed_asset_id, request, db)
+        await _load_composed_for_write(thread.composed_asset_id, request, db)
+    else:
+        from cms.routers.assets import _load_slideshow_for_write  # noqa: WPS433
+
+        await _load_slideshow_for_write(thread.composed_asset_id, request, db)
 
 
 async def _emit_assistant_audit(
@@ -265,10 +272,11 @@ async def list_threads(
 ):
     """List the caller's general threads, newest-updated first.
 
-    Composed-editor threads (``mode == "composed_editor"``) are excluded:
-    they're asset-scoped ephemera owned by the slide editor's embedded
-    chat panel, not standalone conversations, so they must never appear
-    in the general assistant sidebar.
+    Editor threads (``mode == "composed_editor"`` or
+    ``"slideshow_editor"``) are excluded: they're asset-scoped ephemera
+    owned by an editor's embedded chat panel, not standalone
+    conversations, so they must never appear in the general assistant
+    sidebar.
     """
     await _require_feature(user, db)
     rows = (
@@ -276,7 +284,9 @@ async def list_threads(
             select(ChatThread)
             .where(
                 ChatThread.user_id == user.id,
-                ChatThread.mode != MODE_COMPOSED_EDITOR,
+                ChatThread.mode.notin_(
+                    [MODE_COMPOSED_EDITOR, MODE_SLIDESHOW_EDITOR]
+                ),
             )
             .order_by(ChatThread.updated_at.desc())
         )

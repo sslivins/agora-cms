@@ -103,6 +103,8 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "list_composed_widget_types": "assets:read",
     "get_composed_layout": "assets:read",
     "set_composed_widgets": "assets:write",
+    "get_slideshow": "assets:read",
+    "set_slideshow_slides": "assets:write",
 }
 
 
@@ -465,6 +467,65 @@ async def set_composed_widgets(
     if background_color is not None:
         payload["background_color"] = background_color
     result = await _call_api("set_composed_widgets", asset_id, payload)
+    return _json_result(result)
+
+
+@mcp.tool()
+async def get_slideshow(asset_id: str) -> str:
+    """Get the ordered slides of a slideshow asset.
+
+    Returns ``{slideshow_id, slides}`` where each slide is
+    ``{id, position, duration_ms, play_to_end, transition,
+    transition_ms, source_asset_id, source_filename,
+    source_asset_type, source_duration_seconds, thumbnail_url}``.
+
+    ``source_asset_id`` is the IMAGE / VIDEO / COMPOSED asset shown for
+    that slide — pass these back to ``set_slideshow_slides`` to keep the
+    same members. Call this before editing so you preserve the existing
+    order and timing.
+
+    Args:
+        asset_id: UUID of the slideshow asset being edited.
+    """
+    if err := _check_permission("get_slideshow"):
+        return err
+    result = await _call_api("get_slideshow", asset_id)
+    return _json_result(result)
+
+
+@mcp.tool()
+async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
+    """Replace the ordered slides of a slideshow.
+
+    ``slides`` is the FULL replacement list in display order — include
+    every slide you want kept; omitted slides are removed. This change is
+    saved and goes LIVE immediately (slideshows have no draft/publish
+    step).
+
+    Each slide is ``{source_asset_id, duration_ms?, play_to_end?,
+    transition?, transition_ms?}``:
+      - ``source_asset_id``: UUID of an IMAGE / VIDEO / COMPOSED asset
+        (from ``list_assets`` or an existing slide's ``source_asset_id``).
+      - ``duration_ms``: how long the slide shows, 500–3,600,000
+        (default 7000). Ignored for videos when ``play_to_end`` is true.
+      - ``play_to_end``: for video slides, play the whole clip instead of
+        using ``duration_ms`` (default false; only valid for video).
+      - ``transition``: how this slide enters — one of ``cut``, ``fade``,
+        ``fade_black``, ``dissolve``, ``push``, ``wipe``, ``zoom``
+        (default ``cut``).
+      - ``transition_ms``: transition length in ms, 0–5000 (default 600).
+
+    A slideshow can hold up to 50 slides. On invalid input the call
+    returns structured errors — fix and retry.
+
+    Args:
+        asset_id: UUID of the slideshow asset being edited.
+        slides: full ordered replacement list of slide objects.
+    """
+    if err := _check_permission("set_slideshow_slides"):
+        return err
+    payload: dict = {"slides": slides}
+    result = await _call_api("set_slideshow_slides", asset_id, payload)
     return _json_result(result)
 
 

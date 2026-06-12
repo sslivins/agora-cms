@@ -524,6 +524,19 @@
     </form>
 </div>
 
+{% if assistant_enabled and asset_id %}
+    {# AI assistant chat drawer (shared partial). Gated on the Assistant
+       feature flag AND edit mode (asset_id set): the slideshow assistant
+       edits an existing slideshow's slides, so there is no create-mode
+       mint path (unlike the composed editor). Behaviour is configured at
+       the bottom of this template via window.cwAiConfig. #}
+    {% set assistant_hint %}Tell me how to change this slideshow — e.g.
+        “Add the welcome video to the front and give every slide a
+        1-second fade,” or “Reorder so the holiday image is last.”
+        Edits are saved and go live as soon as I apply them.{% endset %}
+    {% include "_assistant_drawer.html" %}
+{% endif %}
+
 <script id="ss-initial-slides" type="application/json">{{ slides | tojson }}</script>
 <script>
 const SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
@@ -1254,5 +1267,49 @@ function initDirtyTracking() {
         e.returnValue = '';
     });
 }
+
+// Stable surface the chat drawer (editor_chat.js) talks to, so it never
+// reaches into builder internals directly. Edit-mode only — the slideshow
+// assistant always operates on an existing slideshow.
+window.slideshowEditorBridge = {
+    getAssetId() { return SS_ASSET_ID; },
+    isDirty() { return !!__ssDirty; },
+    async save() { return await saveSlideshow({}); },
+    async refreshFromServer() {
+        // The assistant's set_slideshow_slides tool writes the slide list
+        // server-side and it's immediately live; re-pull the canonical
+        // slides so the timeline reflects what the assistant just did.
+        if (!SS_ASSET_ID) return false;
+        const r = await fetch(`/api/assets/${SS_ASSET_ID}/slides`);
+        if (!r.ok) return false;
+        const data = await r.json().catch(() => null);
+        if (!data || !Array.isArray(data.slides)) return false;
+        slides = data.slides;
+        renderTimeline();
+        clearDirty();
+        return true;
+    },
+};
 </script>
+{% if assistant_enabled and asset_id %}
+<!-- marked + DOMPurify render the assistant's Markdown replies as HTML
+     (bold, lists, code). Non-deferred so they're ready before the
+     deferred drawer IIFE runs. -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/assistant_usage.js" defer></script>
+<script>
+// Slideshow builder: edit-mode-only assistant. bridge =
+// window.slideshowEditorBridge; thread path /api/assets/{id}/assistant/thread;
+// write tool set_slideshow_slides. mint=null DISABLES create-mode minting
+// (the drawer only renders when a slideshow already exists).
+window.cwAiConfig = {
+    bridge: window.slideshowEditorBridge,
+    threadPath: (id) => `/api/assets/${id}/assistant/thread`,
+    writeTools: ["set_slideshow_slides"],
+    mint: null,
+};
+</script>
+<script src="/static/editor_chat.js" defer></script>
+{% endif %}
 {% endblock %}

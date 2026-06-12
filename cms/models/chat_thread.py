@@ -45,12 +45,14 @@ class ChatThread(Base):
         default="general",
         server_default="general",
     )
-    # Binds a ``composed_editor``-mode thread to the one composed-slide
-    # asset it is editing.  NULL for general-mode threads.  The agent
-    # forces this asset id onto the composed asset-scoped tools so the
-    # editor assistant can only ever read/write *this* slide's draft,
-    # never another asset's.  ``ondelete=CASCADE``: editor chats are
-    # asset-scoped ephemera, so deleting the slide deletes its chat.
+    # Binds an editor-mode thread to the one asset it is editing.  For
+    # ``composed_editor`` threads this is the composed-slide asset; for
+    # ``slideshow_editor`` threads the same column is reused to point at
+    # the slideshow asset.  NULL for general-mode threads.  The agent
+    # forces this asset id onto the editor's asset-scoped tools so the
+    # editor assistant can only ever read/write *this* asset, never
+    # another one.  ``ondelete=CASCADE``: editor chats are asset-scoped
+    # ephemera, so deleting the asset deletes its chat.
     composed_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("assets.id", ondelete="CASCADE"),

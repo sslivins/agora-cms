@@ -106,38 +106,16 @@
         </aside>
     </div>
 {% if assistant_enabled %}
-    <!-- AI assistant chat drawer. Floating launcher + slide-up panel.
-         Gated on the Assistant feature flag. Available in BOTH create and
-         edit mode: in create mode the drawer mints the draft asset on the
-         first message (via window.composedEditorBridge) so the chat can
-         bind to it. See /static/composed_editor_chat.js. -->
-    <div id="cw-ai" data-asset-id="{{ asset_id or '' }}">
-        <button type="button" id="cw-ai-launcher" onclick="cwAiToggle()"
-                aria-expanded="false" aria-controls="cw-ai-panel"
-                title="Build this slide with AI">✨ AI Assistant</button>
-        <section id="cw-ai-panel" role="dialog" aria-label="AI slide assistant" hidden>
-            <header id="cw-ai-head">
-                <strong>✨ AI Assistant</strong>
-                <button type="button" id="cw-ai-close" onclick="cwAiToggle()"
-                        aria-label="Close assistant">×</button>
-            </header>
-            <div id="cw-ai-log" aria-live="polite">
-                <div class="cw-ai-hint">
-                    Describe the slide you want and I'll build it — e.g.
-                    “Add a big welcome heading at the top and a clock in
-                    the corner.” I edit a draft; click <strong>Publish</strong>
-                    when you're happy with it.
-                </div>
-            </div>
-            <div id="cw-ai-usage" style="display:none;"></div>
-            <form id="cw-ai-form" onsubmit="return cwAiSubmit(event)">
-                <textarea id="cw-ai-input" rows="2"
-                          placeholder="Describe a change…"
-                          aria-label="Message the AI assistant"></textarea>
-                <button type="submit" id="cw-ai-send" class="btn btn-primary">Send</button>
-            </form>
-        </section>
-    </div>
+    {# AI assistant chat drawer (shared partial). Gated on the Assistant
+       feature flag. Available in BOTH create and edit mode: in create mode
+       the drawer mints the draft asset on the first message (via
+       window.composedEditorBridge) so the chat can bind to it. Behaviour is
+       configured below via window.cwAiConfig. #}
+    {% set assistant_hint %}Describe the slide you want and I'll build it — e.g.
+        “Add a big welcome heading at the top and a clock in
+        the corner.” I edit a draft; click <strong>Publish</strong>
+        when you're happy with it.{% endset %}
+    {% include "_assistant_drawer.html" %}
 {% endif %}
 </div>
 
@@ -589,67 +567,8 @@
     .cw-modal-actions .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
     .cw-modal-actions .ghost { background: transparent; color: var(--text, #e6e6e6); }
 
-    /* ── AI assistant drawer ── */
-    #cw-ai-launcher {
-        position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 60;
-        padding: 0.6rem 1rem; border-radius: 999px; cursor: pointer;
-        border: 1px solid var(--accent, #2563eb);
-        background: var(--primary, #2563eb); color: #fff; font-size: 0.9rem;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.35);
-    }
-    #cw-ai-panel {
-        position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 61;
-        width: min(380px, calc(100vw - 2rem));
-        height: min(540px, calc(100vh - 6rem));
-        display: flex; flex-direction: column;
-        border: 1px solid var(--border, rgba(255,255,255,0.18));
-        border-radius: 12px; overflow: hidden;
-        background: var(--surface, #1a1a2e); color: var(--text, #e6e6e6);
-        box-shadow: 0 10px 34px rgba(0,0,0,0.45);
-    }
-    #cw-ai-panel[hidden] { display: none; }
-    #cw-ai-head {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 0.6rem 0.85rem;
-        border-bottom: 1px solid var(--border, rgba(255,255,255,0.18));
-        background: var(--surface-alt, #16213e);
-    }
-    #cw-ai-close {
-        background: transparent; border: none; color: var(--text, #e6e6e6);
-        font-size: 1.4rem; line-height: 1; cursor: pointer; padding: 0 0.25rem;
-    }
-    #cw-ai-log {
-        flex: 1; overflow-y: auto; padding: 0.75rem;
-        display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.88rem;
-    }
-    .cw-ai-hint { color: var(--text-muted, #b3b3c0); font-size: 0.82rem; }
-    .cw-ai-msg { padding: 0.5rem 0.7rem; border-radius: 10px; max-width: 90%; white-space: pre-wrap; word-wrap: break-word; }
-    .cw-ai-msg.user { align-self: flex-end; background: var(--primary, #2563eb); color: #fff; }
-    .cw-ai-msg.assistant { align-self: flex-start; background: var(--surface-alt, #16213e); border: 1px solid var(--border, rgba(255,255,255,0.18)); }
-    .cw-ai-msg.tool { align-self: flex-start; font-size: 0.78rem; color: var(--text-muted, #b3b3c0); font-style: italic; padding: 0.2rem 0.5rem; }
-    .cw-ai-msg.error { align-self: flex-start; background: #fee2e2; color: #991b1b; }
-    /* Rendered Markdown (assistant replies). Drop pre-wrap so marked's
-       <br> handling doesn't double up blank lines, and tame block margins
-       inside the bubble. */
-    .cw-ai-msg.is-markdown { white-space: normal; }
-    .cw-ai-msg.is-markdown > :first-child { margin-top: 0; }
-    .cw-ai-msg.is-markdown > :last-child { margin-bottom: 0; }
-    .cw-ai-msg.is-markdown p { margin: 0 0 0.5rem; }
-    .cw-ai-msg.is-markdown ul, .cw-ai-msg.is-markdown ol { margin: 0 0 0.5rem 1.15rem; padding: 0; }
-    .cw-ai-msg.is-markdown li { margin: 0.1rem 0; }
-    .cw-ai-msg.is-markdown strong { font-weight: 700; }
-    .cw-ai-msg.is-markdown code { background: rgba(255,255,255,0.12); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
-    .cw-ai-msg.is-markdown a { color: var(--accent, #60a5fa); }
-    #cw-ai-form {
-        display: flex; gap: 0.5rem; padding: 0.6rem;
-        border-top: 1px solid var(--border, rgba(255,255,255,0.18));
-    }
-    #cw-ai-input {
-        flex: 1; resize: none; padding: 0.5rem; border-radius: 8px;
-        border: 1px solid var(--border, rgba(255,255,255,0.18));
-        background: var(--bg, #0f0f1a); color: var(--text, #e6e6e6); font: inherit;
-    }
-    #cw-ai-send:disabled { opacity: 0.55; cursor: progress; }
+    /* AI assistant drawer styles live in the shared partial
+       cms/templates/_assistant_drawer.html. */
 </style>
 
 <div id="cw-leave-modal" class="cw-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="cw-leave-title">
@@ -3277,7 +3196,7 @@ async function refreshLayoutFromServer() {
     return true;
 }
 
-// Stable surface the chat drawer (composed_editor_chat.js) talks to,
+// Stable surface the chat drawer (editor_chat.js) talks to,
 // so it never reaches into editor internals directly.
 window.composedEditorBridge = {
     getAssetId() { return ASSET_ID; },
@@ -3293,6 +3212,17 @@ window.composedEditorBridge = {
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/assistant_usage.js" defer></script>
-<script src="/static/composed_editor_chat.js" defer></script>
+<script>
+// Composed editor uses the generalized drawer's built-in defaults
+// (bridge = window.composedEditorBridge, thread path /composed/{id}/assistant/thread,
+//  write tool set_composed_widgets, create-mode draft mint). Set explicitly
+// for clarity / forward-compat.
+window.cwAiConfig = {
+    bridge: window.composedEditorBridge,
+    threadPath: (id) => `/composed/${id}/assistant/thread`,
+    writeTools: ["set_composed_widgets"],
+};
+</script>
+<script src="/static/editor_chat.js" defer></script>
 {% endif %}
 {% endblock %}

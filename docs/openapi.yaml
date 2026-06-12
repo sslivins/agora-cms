@@ -1375,6 +1375,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}/assistant/thread:
+    post:
+      summary: Slideshow Assistant Thread
+      description: |-
+        Get-or-create the editor-scoped AI chat thread for this slideshow.
+
+        Powers the embedded chat panel in the slideshow builder. The thread
+        is bound to ``asset_id`` and runs in ``slideshow_editor`` mode, which
+        scopes the assistant to the slideshow read/write tools and forces
+        every slideshow tool call onto *this* slideshow.
+
+        Reuses the caller's newest existing ``slideshow_editor`` thread for
+        the slideshow if one exists (so reopening the editor resumes the same
+        conversation); otherwise creates one. Returns ``{thread_id, created}``.
+
+        Gated identically to editing the slideshow itself: requires
+        ``ASSETS_WRITE``, that the slideshow exists, is visible, and is owned
+        by the caller (or the caller is an admin), and that the Assistant
+        feature is enabled for the caller (404 otherwise, to keep the hidden
+        feature invisible).
+      operationId: slideshow_assistant_thread_api_assets__asset_id__assistant_thread_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Slideshow Assistant Thread Api Assets  Asset Id  Assistant Thread Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/{asset_id}:
     patch:
       summary: Update Asset
@@ -2119,10 +2163,11 @@ paths:
       description: |-
         List the caller's general threads, newest-updated first.
 
-        Composed-editor threads (``mode == "composed_editor"``) are excluded:
-        they're asset-scoped ephemera owned by the slide editor's embedded
-        chat panel, not standalone conversations, so they must never appear
-        in the general assistant sidebar.
+        Editor threads (``mode == "composed_editor"`` or
+        ``"slideshow_editor"``) are excluded: they're asset-scoped ephemera
+        owned by an editor's embedded chat panel, not standalone
+        conversations, so they must never appear in the general assistant
+        sidebar.
       operationId: list_threads_api_chat_threads_get
       responses:
         '200':
