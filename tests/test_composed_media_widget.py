@@ -280,7 +280,11 @@ class TestMediaWidgetSlideshowBranch:
                    "transition_ms": 600}, "img", (_TINY_PNG, "image/png"))],
         )
         r = MediaWidget().render_html(cfg, _cell(), "ssC", ctx=ctx)
-        assert "transition-duration:0ms" in r.html
+        # Duration is carried by the --cw-ss-ms custom property the
+        # ported device CSS reads (the JS overrides it per swap).
+        assert "--cw-ss-ms:0ms" in r.html
+        assert r.init_js is not None
+        assert "var transMs = [0];" in r.init_js
 
     def test_fade_transition_uses_transition_ms(self):
         container = uuid.uuid4()
@@ -296,7 +300,9 @@ class TestMediaWidgetSlideshowBranch:
             ],
         )
         r = MediaWidget().render_html(cfg, _cell(), "ssF", ctx=ctx)
-        assert "transition-duration:750ms" in r.html
+        assert "--cw-ss-ms:750ms" in r.html
+        assert r.init_js is not None
+        assert "var transMs = [750,750];" in r.init_js
 
     def test_cycling_js_bakes_durations_and_guards_single(self):
         container = uuid.uuid4()
@@ -375,17 +381,19 @@ class TestMediaWidgetSlideshowBranch:
         assert "cw-ss-" in r.html
 
     @pytest.mark.parametrize(
-        "transition,enter_kf,leave_kf",
+        "transition,css_marker",
         [
-            ("fade_black", "cw-ss-fadeblack-in", "cw-ss-fadeblack-out"),
-            ("dissolve", "cw-ss-dissolve-in", "cw-ss-dissolve-out"),
-            ("push", "cw-ss-push-in", "cw-ss-push-out"),
-            ("wipe", "cw-ss-wipe-in", "cw-ss-wipe-out"),
-            ("zoom", "cw-ss-zoom-in", "cw-ss-zoom-out"),
+            # fade_black is sequenced entirely in JS (two half fades
+            # through black) — it has no dedicated CSS tx-* rule.
+            ("fade_black", None),
+            ("dissolve", "cw-tx-dissolve"),
+            ("push", "cw-tx-push"),
+            ("wipe", "cw-tx-wipe"),
+            ("zoom", "cw-tx-zoom"),
         ],
     )
-    def test_rich_transition_emits_class_and_keyframe_library(
-        self, transition, enter_kf, leave_kf
+    def test_rich_transition_emits_class_and_shared_transition_css(
+        self, transition, css_marker
     ):
         container = uuid.uuid4()
         s1, s2 = uuid.uuid4(), uuid.uuid4()
@@ -401,25 +409,33 @@ class TestMediaWidgetSlideshowBranch:
         )
         r = MediaWidget().render_html(cfg, _cell(), "ssRich", ctx=ctx)
 
-        # Per-slide type class baked onto each slide div.
+        # Per-slide informational type class baked onto each slide div.
         assert f"cw-ss-t-{transition}" in r.html
         # The slide-count invariant still holds (type class shares no
         # "cw-ss-slide" substring).
         assert r.html.count("cw-ss-slide") == 2
         assert "cw-ss-slide cw-ss-active" in r.html
 
-        # Shared keyframe library emitted as a static CSS asset.
+        # Shared transition CSS (ported from the device player shell)
+        # emitted once as a static CSS asset.
         css_assets = [a for a in r.static_assets if a.kind == "css"]
         assert len(css_assets) == 1
         lib = css_assets[0].content
-        assert enter_kf in lib
-        assert leave_kf in lib
-        assert f"cw-ss-enter-{transition}" in lib
-        assert f"cw-ss-leave-{transition}" in lib
+        # Ported device base mechanics.
+        assert ".cw-ss-slide{" in lib
+        assert ".cw-ss-slide.cw-ss-active{opacity:1" in lib
+        assert ".cw-ss-slide.cw-ss-notrans{transition:none !important}" in lib
+        # Per-mode rule present for the staged (transform/clip-path) modes.
+        if css_marker is not None:
+            assert css_marker in lib
 
-        # Rich transitions opt out of the base opacity transition so the
-        # keyframe animation owns the timeline.
-        assert "transition: none;" in r.css
+        # The cycling JS ports swapTo(): staged modes flip dynamic tx-*
+        # classes; fade_black is sequenced by name.
+        assert r.init_js is not None
+        if transition == "fade_black":
+            assert "fade_black" in r.init_js
+        else:
+            assert css_marker in r.init_js
 
     def test_rich_transition_bakes_int_arrays_in_js(self):
         container = uuid.uuid4()
@@ -444,9 +460,11 @@ class TestMediaWidgetSlideshowBranch:
         assert "var transMs = [0,900];" in r.init_js
         assert "var durations = [3000,4000];" in r.init_js
 
-    def test_cut_fade_only_emits_no_keyframe_asset(self):
-        # A slideshow that only uses cut + fade must NOT emit the shared
-        # keyframe library (it would be dead CSS).
+    def test_cut_fade_still_emits_shared_transition_css(self):
+        # Even a cut+fade-only slideshow emits the shared transition CSS
+        # now — the base .cw-ss-slide / .cw-ss-active / fade mechanics
+        # live there (ported from the device player shell), not in
+        # per-mode keyframes.
         container = uuid.uuid4()
         s1, s2 = uuid.uuid4(), uuid.uuid4()
         cfg = MediaWidgetConfig(asset_id=container)
@@ -460,7 +478,9 @@ class TestMediaWidgetSlideshowBranch:
             ],
         )
         r = MediaWidget().render_html(cfg, _cell(), "ssCF", ctx=ctx)
-        assert [a for a in r.static_assets if a.kind == "css"] == []
+        css_assets = [a for a in r.static_assets if a.kind == "css"]
+        assert len(css_assets) == 1
+        assert ".cw-ss-slide{" in css_assets[0].content
 
     def test_unknown_transition_falls_back_to_fade(self):
         # SlideshowSlidePlan.transition is a plain str; an unexpected
@@ -476,7 +496,8 @@ class TestMediaWidgetSlideshowBranch:
         r = MediaWidget().render_html(cfg, _cell(), "ssU", ctx=ctx)
         assert "cw-ss-t-fade" in r.html
         assert "cw-ss-t-bogus" not in r.html
-        assert r.static_assets == []
+        # Shared transition CSS is always emitted (base slide mechanics).
+        assert [a for a in r.static_assets if a.kind == "css"]
 
 
 class TestComposedCellTransitionMapper:

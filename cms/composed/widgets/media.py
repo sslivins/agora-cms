@@ -75,51 +75,75 @@ _SS_TRANSITIONS: tuple[str, ...] = (
     "wipe",
     "zoom",
 )
-# Transitions driven by CSS @keyframes (enter/leave) rather than the
-# plain opacity transition (fade) or an instant swap (cut).
-_SS_KEYFRAME_TRANSITIONS: frozenset[str] = frozenset(
-    {"fade_black", "dissolve", "push", "wipe", "zoom"}
-)
-
-
-# Shared keyframe library for the keyframe-driven slideshow transitions.
-# Emitted once per bundle (de-duped by content hash).  Every keyframe
-# sets ``opacity`` explicitly so fill-mode never leaves a slide in an
-# ambiguous resting state.  The ``-in`` keyframe animates the incoming
-# slide; the ``-out`` keyframe animates the outgoing one.  Per-instance
-# ``animation-duration`` is set in JS so both halves stay in sync.
-_SS_KEYFRAME_CSS: str = (
-    "@keyframes cw-ss-fadeblack-in{0%{opacity:0}50%{opacity:0}100%{opacity:1}}\n"
-    "@keyframes cw-ss-fadeblack-out{0%{opacity:1}50%{opacity:0}100%{opacity:0}}\n"
-    "@keyframes cw-ss-dissolve-in{0%{opacity:0;transform:scale(1.06)}"
-    "100%{opacity:1;transform:scale(1)}}\n"
-    "@keyframes cw-ss-dissolve-out{0%{opacity:1}100%{opacity:0}}\n"
-    "@keyframes cw-ss-push-in{0%{opacity:1;transform:translateX(100%)}"
-    "100%{opacity:1;transform:translateX(0)}}\n"
-    "@keyframes cw-ss-push-out{0%{opacity:1;transform:translateX(0)}"
-    "100%{opacity:1;transform:translateX(-100%)}}\n"
-    "@keyframes cw-ss-wipe-in{0%{opacity:1;clip-path:inset(0 0 0 100%)}"
-    "100%{opacity:1;clip-path:inset(0 0 0 0)}}\n"
-    "@keyframes cw-ss-wipe-out{0%{opacity:1}100%{opacity:1}}\n"
-    "@keyframes cw-ss-zoom-in{0%{opacity:0;transform:scale(0.6)}"
-    "100%{opacity:1;transform:scale(1)}}\n"
-    "@keyframes cw-ss-zoom-out{0%{opacity:1}100%{opacity:0}}\n"
-    ".cw-ss-enter-fade_black,.cw-ss-leave-fade_black,"
-    ".cw-ss-enter-dissolve,.cw-ss-leave-dissolve,"
-    ".cw-ss-enter-push,.cw-ss-leave-push,"
-    ".cw-ss-enter-wipe,.cw-ss-leave-wipe,"
-    ".cw-ss-enter-zoom,.cw-ss-leave-zoom{"
-    "animation-timing-function:ease-in-out;animation-fill-mode:both}\n"
-    ".cw-ss-enter-fade_black{animation-name:cw-ss-fadeblack-in}\n"
-    ".cw-ss-leave-fade_black{animation-name:cw-ss-fadeblack-out}\n"
-    ".cw-ss-enter-dissolve{animation-name:cw-ss-dissolve-in}\n"
-    ".cw-ss-leave-dissolve{animation-name:cw-ss-dissolve-out}\n"
-    ".cw-ss-enter-push{animation-name:cw-ss-push-in}\n"
-    ".cw-ss-leave-push{animation-name:cw-ss-push-out}\n"
-    ".cw-ss-enter-wipe{animation-name:cw-ss-wipe-in}\n"
-    ".cw-ss-leave-wipe{animation-name:cw-ss-wipe-out}\n"
-    ".cw-ss-enter-zoom{animation-name:cw-ss-zoom-in}\n"
-    ".cw-ss-leave-zoom{animation-name:cw-ss-zoom-out}\n"
+# The composed media cell renders slideshow transitions by PORTING the
+# device player shell's real transition mechanism — two crossfading
+# layers plus per-mode ``tx-*`` classes flipped by JS — rather than
+# approximating them with a parallel ``@keyframes`` library.  The CSS
+# below is a near-verbatim port of ``agora/player/shell/player.css``'s
+# ``.layer`` / ``.tx-*`` rules, and the cycling JS in
+# ``_render_slideshow`` ports the ``swapTo()`` flip logic from
+# ``player.js`` (the transitions-off → commit entry state → flush →
+# flip ``.active`` dance, plus the ``fade_black`` two-stage sequenced
+# fade).  An embedded slideshow therefore animates pixel-identically to
+# a standalone one on the device.
+#
+# Device → composed class-name mapping:
+#   .layer          -> .cw-ss-slide
+#   .layer.active   -> .cw-ss-slide.cw-ss-active
+#   .no-transition  -> .cw-ss-notrans
+#   .tx-<mode>      -> .cw-tx-<mode>
+#   .tx-incoming    -> .cw-tx-incoming
+#   .tx-outgoing    -> .cw-tx-outgoing
+# The device drives timing off a ``--transition-ms`` custom property set
+# per-swap in JS; we use ``--cw-ss-ms`` for the same role.
+#
+# Emitted once per bundle (de-duped by content hash) as a shared static
+# CSS asset.  The selectors are intentionally global (not instance-
+# scoped) because the cycling JS only ever toggles the dynamic
+# ``cw-tx-*`` / ``cw-ss-active`` classes on slides inside its own
+# instance root, and the base ``.cw-ss-slide`` mechanics are identical
+# for every slideshow-media cell.
+#
+# One intentional deviation from the device's fixed two-layer DOM: an
+# N-slide stack needs explicit z-index so the transitioning incoming /
+# outgoing slides composite above the resting (opacity:0) slides, with
+# the incoming above the outgoing so wipe / push reveal correctly
+# regardless of slide order (the device relies on a fixed 2-element DOM
+# order for this).
+_SS_TRANSITION_CSS: str = (
+    ".cw-ss-slide{"
+    "position:absolute;inset:0;opacity:0;z-index:1;"
+    "transition:"
+    "opacity var(--cw-ss-ms,600ms) ease-in-out,"
+    "transform var(--cw-ss-ms,600ms) ease-in-out,"
+    "clip-path var(--cw-ss-ms,600ms) ease-in-out;"
+    "will-change:opacity,transform,clip-path}\n"
+    ".cw-ss-slide.cw-ss-active{opacity:1;z-index:2}\n"
+    ".cw-ss-slide.cw-ss-notrans{transition:none !important}\n"
+    ".cw-ss-slide.cw-tx-outgoing{z-index:3}\n"
+    ".cw-ss-slide.cw-tx-incoming{z-index:4}\n"
+    # push: incoming slides in from the right, outgoing off to the left;
+    # opacity pinned at 1 so the black gutter never shows.
+    ".cw-ss-slide.cw-tx-push{opacity:1}\n"
+    ".cw-ss-slide.cw-tx-push:not(.cw-ss-active){transform:translateX(100%)}\n"
+    ".cw-ss-slide.cw-tx-push.cw-ss-active{transform:translateX(0)}\n"
+    ".cw-ss-slide.cw-tx-push.cw-tx-outgoing:not(.cw-ss-active)"
+    "{transform:translateX(-100%)}\n"
+    # wipe: incoming reveals L->R via a clip-path inset; outgoing stays put.
+    ".cw-ss-slide.cw-tx-wipe{opacity:1}\n"
+    ".cw-ss-slide.cw-tx-wipe:not(.cw-ss-active){clip-path:inset(0 100% 0 0)}\n"
+    ".cw-ss-slide.cw-tx-wipe.cw-ss-active{clip-path:inset(0 0 0 0)}\n"
+    ".cw-ss-slide.cw-tx-wipe.cw-tx-outgoing{clip-path:inset(0 0 0 0)}\n"
+    # dissolve (Ken Burns): crossfade + outgoing scales up to 1.05.
+    ".cw-ss-slide.cw-tx-dissolve.cw-tx-outgoing:not(.cw-ss-active)"
+    "{transform:scale(1.05)}\n"
+    ".cw-ss-slide.cw-tx-dissolve.cw-tx-incoming.cw-ss-active"
+    "{transform:scale(1)}\n"
+    # zoom: incoming scales 0.9 -> 1.0 while fading in.
+    ".cw-ss-slide.cw-tx-zoom:not(.cw-ss-active){transform:scale(0.9)}\n"
+    ".cw-ss-slide.cw-tx-zoom.cw-ss-active{transform:scale(1)}\n"
+    # fade_black is sequenced JS-side (two half-duration fades through the
+    # black container background) — no extra CSS needed here.
 )
 
 
@@ -290,12 +314,18 @@ class MediaWidget(Widget):
         instance-scoped container.  Slide 0 is marked active in the
         markup so a t=0 thumbnail snapshot is deterministic.  A small
         baked-in timer advances the stack, honouring each slide's
-        entrance transition: ``cut`` is an instant swap and ``fade`` a
-        plain opacity cross-fade, while ``fade_black`` / ``dissolve`` /
-        ``push`` / ``wipe`` / ``zoom`` are driven by self-contained CSS
-        ``@keyframes`` (enter/leave animation classes applied in JS).
-        These are self-contained approximations of the device's native
-        firmware transitions, not pixel-exact reproductions.
+        entrance transition.
+
+        Transitions are a faithful PORT of the device player shell
+        (``agora/player/shell/player.{css,js}``), not approximations:
+        the shared ``_SS_TRANSITION_CSS`` asset reproduces the shell's
+        ``.layer`` / ``tx-*`` rules and the baked JS ports ``swapTo()``
+        (the transitions-off → commit entry state → flush → flip
+        ``.active`` dance for ``push`` / ``wipe`` / ``dissolve`` /
+        ``zoom``, and the two-stage ``fade_black`` sequence).  ``cut`` is
+        an instant swap and ``fade`` a plain opacity cross-fade.  An
+        embedded slideshow therefore animates pixel-identically to a
+        standalone one on the device.
         """
         plans = ctx.slideshow_plans[asset_id]
         if not plans:
@@ -329,7 +359,11 @@ class MediaWidget(Widget):
             trans_ms = 0 if transition == "cut" else int(plan.transition_ms)
             trans_codes.append(_SS_TRANSITIONS.index(transition))
             trans_durations.append(trans_ms)
-            slide_style = f"transition-duration:{trans_ms}ms"
+            # Per-slide resting default for the transition-duration custom
+            # property the shared CSS reads.  The cycling JS overrides it
+            # per-swap (and halves it for fade_black); this inline value is
+            # just a sensible default for a static t=0 snapshot.
+            slide_style = f"--cw-ss-ms:{trans_ms}ms"
 
             if source in ctx.sibling_asset_urls:
                 src = ctx.sibling_asset_urls[source]
@@ -375,10 +409,10 @@ class MediaWidget(Widget):
 
         html_out = f'<div class="{css_class}">' + "".join(slide_html) + "</div>"
 
-        uses_keyframes = any(
-            _SS_TRANSITIONS[c] in _SS_KEYFRAME_TRANSITIONS for c in trans_codes
-        )
-
+        # Instance-scoped CSS holds only the container framing + media
+        # sizing (object-fit is per-config).  The slide-transition
+        # mechanics live in the shared, global ``_SS_TRANSITION_CSS``
+        # asset emitted below.
         css_out = (
             f".{css_class} {{\n"
             f"  position: relative;\n"
@@ -386,27 +420,6 @@ class MediaWidget(Widget):
             f"  height: 100%;\n"
             f"  overflow: hidden;\n"
             f"  background: #000;\n"
-            f"}}\n"
-            f".{css_class} .cw-ss-slide {{\n"
-            f"  position: absolute;\n"
-            f"  inset: 0;\n"
-            f"  opacity: 0;\n"
-            f"  z-index: 1;\n"
-            f"  transition-property: opacity;\n"
-            f"  transition-timing-function: ease-in-out;\n"
-            f"}}\n"
-            f".{css_class} .cw-ss-slide.cw-ss-active {{\n"
-            f"  opacity: 1;\n"
-            f"  z-index: 2;\n"
-            f"}}\n"
-            # Keyframe-driven transitions own their opacity timeline, so
-            # the base opacity transition must not fight the animation.
-            f".{css_class} .cw-ss-t-fade_black,\n"
-            f".{css_class} .cw-ss-t-dissolve,\n"
-            f".{css_class} .cw-ss-t-push,\n"
-            f".{css_class} .cw-ss-t-wipe,\n"
-            f".{css_class} .cw-ss-t-zoom {{\n"
-            f"  transition: none;\n"
             f"}}\n"
             f".{css_class} img,\n"
             f".{css_class} video {{\n"
@@ -426,6 +439,16 @@ class MediaWidget(Widget):
         durations_js = "[" + ",".join(str(d) for d in durations) + "]"
         types_js = "[" + ",".join(str(c) for c in trans_codes) + "]"
         trans_ms_js = "[" + ",".join(str(d) for d in trans_durations) + "]"
+        # Ported from agora/player/shell/player.js ``swapTo()``.  Two
+        # crossfading layers on the device become an N-slide stack here,
+        # but the per-mode class choreography is identical: set the
+        # duration custom property, strip stale tx-* classes, then either
+        # cut (instant), fade (plain opacity), fade_black (two sequenced
+        # half fades through the black container), or run the single-stage
+        # commit-with-transitions-off → flush → flip-active dance for
+        # push/wipe/dissolve/zoom.  The device's _freezeOutgoingVideo
+        # DRM-overlay workaround is deliberately omitted — the composed
+        # cell composites in ordinary Chromium where it isn't needed.
         init_js = (
             "var root = document.querySelector('.cw-ss-' + instanceId);\n"
             "if (!root) { return; }\n"
@@ -434,7 +457,11 @@ class MediaWidget(Widget):
             f"var types = {types_js};\n"
             f"var transMs = {trans_ms_js};\n"
             "var TYPE = ['cut','fade','fade_black','dissolve','push','wipe','zoom'];\n"
-            "var ANIM = {fade_black:1,dissolve:1,push:1,wipe:1,zoom:1};\n"
+            # Modes whose entry/exit states live in transform / clip-path,
+            # so they need the transitions-off commit-then-flush dance.
+            "var STAGED = {dissolve:1,push:1,wipe:1,zoom:1};\n"
+            "var TX = ['cw-tx-dissolve','cw-tx-push','cw-tx-wipe','cw-tx-zoom',"
+            "'cw-tx-incoming','cw-tx-outgoing','cw-ss-notrans'];\n"
             "function startVideo(slide) {\n"
             "  var v = slide.querySelector('video');\n"
             "  if (v) { try { v.currentTime = 0; var p = v.play();"
@@ -442,62 +469,76 @@ class MediaWidget(Widget):
             "}\n"
             "if (slides.length >= 1) { startVideo(slides[0]); }\n"
             "if (slides.length <= 1) { return; }\n"
-            "function clearAnim(s) {\n"
-            "  var rm = [];\n"
-            "  s.classList.forEach(function(c){\n"
-            "    if (c.indexOf('cw-ss-enter-') === 0 || c.indexOf('cw-ss-leave-') === 0)"
-            " { rm.push(c); }\n"
-            "  });\n"
-            "  for (var i = 0; i < rm.length; i++) { s.classList.remove(rm[i]); }\n"
-            "  s.style.animationDuration = '';\n"
+            "function clearTx(s) {\n"
+            "  for (var i = 0; i < TX.length; i++) { s.classList.remove(TX[i]); }\n"
+            "  s.style.removeProperty('--cw-ss-ms');\n"
             "}\n"
             "var idx = 0;\n"
-            "function activate(n, prev) {\n"
-            "  for (var i = 0; i < slides.length; i++) { clearAnim(slides[i]); }\n"
-            "  void root.offsetWidth;\n"
+            "function swapTo(n, prev) {\n"
+            "  var incoming = slides[n];\n"
+            "  var outgoing = (prev != null && prev !== n) ? slides[prev] : null;\n"
+            "  var mode = TYPE[types[n]];\n"
+            "  var durMs = (mode === 'cut') ? 0 : transMs[n];\n"
+            "  for (var i = 0; i < slides.length; i++) { clearTx(slides[i]); }\n"
+            "  incoming.style.setProperty('--cw-ss-ms', durMs + 'ms');\n"
+            "  if (outgoing) { outgoing.style.setProperty('--cw-ss-ms', durMs + 'ms'); }\n"
+            "  if (durMs === 0) {\n"
+            "    incoming.classList.add('cw-ss-notrans');\n"
+            "    if (outgoing) { outgoing.classList.add('cw-ss-notrans'); }\n"
+            "  }\n"
+            "  if (mode === 'fade_black' && durMs > 0 && outgoing) {\n"
+            "    var half = Math.max(1, Math.floor(durMs / 2));\n"
+            "    incoming.style.setProperty('--cw-ss-ms', half + 'ms');\n"
+            "    outgoing.style.setProperty('--cw-ss-ms', half + 'ms');\n"
+            "    outgoing.classList.remove('cw-ss-active');\n"
+            "    setTimeout(function () { incoming.classList.add('cw-ss-active'); }, half);\n"
+            "    startVideo(incoming);\n"
+            "    return;\n"
+            "  }\n"
+            "  if (STAGED[mode]) {\n"
+            "    var txClass = 'cw-tx-' + mode;\n"
+            "    incoming.classList.add('cw-ss-notrans', txClass, 'cw-tx-incoming');\n"
+            "    if (outgoing) { outgoing.classList.add('cw-ss-notrans', txClass, 'cw-tx-outgoing'); }\n"
+            "    void root.offsetHeight;\n"
+            "    incoming.classList.remove('cw-ss-notrans');\n"
+            "    if (outgoing) { outgoing.classList.remove('cw-ss-notrans'); }\n"
+            "  }\n"
+            "  void root.offsetHeight;\n"
             "  for (var j = 0; j < slides.length; j++) {\n"
             "    slides[j].classList.toggle('cw-ss-active', j === n);\n"
             "  }\n"
-            "  var t = TYPE[types[n]];\n"
-            "  if (ANIM[t]) {\n"
-            "    var dur = transMs[n] + 'ms';\n"
-            "    var incoming = slides[n];\n"
-            "    incoming.classList.add('cw-ss-enter-' + t);\n"
-            "    incoming.style.animationDuration = dur;\n"
-            "    if (prev != null && prev !== n) {\n"
-            "      var outgoing = slides[prev];\n"
-            "      outgoing.classList.add('cw-ss-leave-' + t);\n"
-            "      outgoing.style.animationDuration = dur;\n"
-            "    }\n"
+            "  startVideo(incoming);\n"
+            "  if (outgoing) {\n"
+            "    var hide = outgoing;\n"
+            "    setTimeout(function () {\n"
+            "      if (!hide.classList.contains('cw-ss-active')) { clearTx(hide); }\n"
+            "    }, Math.max(durMs + 100, 50));\n"
             "  }\n"
-            "  startVideo(slides[n]);\n"
             "}\n"
             "function schedule() {\n"
             "  setTimeout(function () {\n"
             "    var prev = idx;\n"
             "    idx = (idx + 1) % slides.length;\n"
-            "    activate(idx, prev);\n"
+            "    swapTo(idx, prev);\n"
             "    schedule();\n"
             "  }, durations[idx]);\n"
             "}\n"
             "schedule();"
         )
 
-        static_assets: list[WidgetStaticAsset] = []
-        if uses_keyframes:
-            # Shared keyframe library — identical bytes for every
-            # slideshow-media instance, so the bundle builder de-dupes
-            # it to a single <style> block by content hash.  The
-            # enter/leave animation-name rules are intentionally global
-            # (not instance-scoped): JS only ever applies the classes to
-            # slides inside this instance's root during a transition.
-            static_assets.append(
-                WidgetStaticAsset(
-                    kind="css",
-                    mime="text/css",
-                    content=_SS_KEYFRAME_CSS,
-                )
+        # The shared transition CSS carries the base ``.cw-ss-slide``
+        # mechanics now, so it is ALWAYS emitted for any slideshow render
+        # (even cut/fade-only or single-slide).  Identical bytes for every
+        # instance, so the bundle builder de-dupes it to one <style> block
+        # by content hash.  Selectors are intentionally global — see the
+        # note on ``_SS_TRANSITION_CSS``.
+        static_assets: list[WidgetStaticAsset] = [
+            WidgetStaticAsset(
+                kind="css",
+                mime="text/css",
+                content=_SS_TRANSITION_CSS,
             )
+        ]
 
         return WidgetRender(
             html=html_out,
