@@ -3005,7 +3005,9 @@ async function maybeUpdateGroups() {
 async function openPreview() {
     const ok = await saveLayout({skipRedirect: true});
     if (!ok) return;
-    window.open("/composed/" + ASSET_ID + "/preview", "_blank");
+    const el = document.getElementById("composed-name");
+    const name = (el && el.value.trim()) || COMPOSED_ORIG_NAME || "Composed slide";
+    previewComposed(ASSET_ID, name);
 }
 
 async function publishLayout() {
