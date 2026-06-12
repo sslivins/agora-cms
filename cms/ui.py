@@ -1677,6 +1677,9 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         for t in all_tags_q.scalars().all()
     ]
 
+    from cms.services.assistant_flag import assistant_enabled_for
+    assistant_on = bool(user) and await assistant_enabled_for(db, user)
+
     ctx = {
         "active_tab": "assets",
         "is_admin": is_admin,
@@ -1690,6 +1693,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         "slides": [],
         "asset_groups": [],
         "asset_is_global": False,
+        "assistant_enabled": assistant_on,
     }
 
     if asset_id is not None:

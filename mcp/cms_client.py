@@ -147,6 +147,16 @@ class CMSClient:
             f"/composed/{asset_id}/layout-friendly", json=payload
         )
 
+    # ── Slideshows (AI editor) ──
+
+    async def get_slideshow(self, asset_id: str) -> dict:
+        return await self._get(f"/api/assets/{asset_id}/slides")
+
+    async def set_slideshow_slides(self, asset_id: str, payload: dict) -> dict:
+        return await self._put(
+            f"/api/assets/{asset_id}/slides", json=payload
+        )
+
     # ── Schedules ──
 
     async def list_schedules(self) -> list:

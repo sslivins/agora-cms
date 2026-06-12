@@ -1,27 +1,45 @@
-// Composed-editor AI chat drawer.
+// Shared in-editor AI chat drawer.
 //
-// Lives inside the composed-slide editor (gated on the Assistant
-// feature flag). The user describes a slide; the assistant edits the
-// *draft* layout via the composed_editor MCP tools and the canvas
-// refreshes when a write lands.
+// Powers the embedded assistant drawer on BOTH the composed-slide
+// editor and the slideshow builder. The user describes a change; the
+// assistant edits the asset via its editor-scoped MCP tools and the
+// editor refreshes when a write lands.
 //
-// It talks to the editor only through window.composedEditorBridge
-// (getAssetId / isDirty / save / refreshFromServer) and to the server
+// The page configures it via window.cwAiConfig (all fields optional;
+// the defaults reproduce the original composed-editor behaviour so
+// composed_editor.html needs no config block):
+//
+//   window.cwAiConfig = {
+//     bridge,                       // {getAssetId, isDirty, save, refreshFromServer}
+//     threadPath: (assetId) => "…", // POST get-or-create editor thread
+//     writeTools: ["set_…"],        // tool names whose success triggers a refresh
+//     mint,                         // async () => bool, or null to disable
+//   };
+//
+// It talks to the editor only through the bridge and to the server
 // through two endpoints:
-//   POST /composed/{assetId}/assistant/thread   → get-or-create the
-//        editor-scoped thread bound to this composed asset.
-//   POST /api/chat/threads/{threadId}/stream     → run one turn (SSE).
+//   POST <threadPath(assetId)>                    → get-or-create thread
+//   POST /api/chat/threads/{threadId}/stream       → run one turn (SSE).
 //
 // The SSE parser mirrors cms/static/assistant.js. No approval cards:
-// composed_editor tools run inline (draft-only), so a stray
-// approval_request is tolerated, not rendered as an interactive card.
+// editor tools run inline, so a stray approval_request is tolerated,
+// not rendered as an interactive card.
 (function () {
     "use strict";
 
     const root = document.getElementById("cw-ai");
     if (!root) return; // drawer not rendered (flag off / create mode)
 
-    const bridge = window.composedEditorBridge;
+    const cfg = window.cwAiConfig || {};
+    const bridge = cfg.bridge || window.composedEditorBridge;
+    const threadPath =
+        typeof cfg.threadPath === "function"
+            ? cfg.threadPath
+            : (id) => "/composed/" + encodeURIComponent(id) + "/assistant/thread";
+    const writeTools = Array.isArray(cfg.writeTools)
+        ? cfg.writeTools
+        : ["set_composed_widgets"];
+
     const launcher = document.getElementById("cw-ai-launcher");
     const panel = document.getElementById("cw-ai-panel");
     const closeBtn = document.getElementById("cw-ai-close");
@@ -79,7 +97,7 @@
         const id = assetId();
         if (!id) return Promise.resolve(null);
         state.threadPromise = fetch(
-            "/composed/" + encodeURIComponent(id) + "/assistant/thread",
+            threadPath(id),
             { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
         )
             .then(async (resp) => {
@@ -124,9 +142,11 @@
     }
 
     // ── Create-mode mint ─────────────────────────────────────────────
-    // On a brand-new slide there's no asset yet, so the chat can't bind to
-    // one. Mint the draft via the editor bridge (which POSTs /composed/ and
-    // PATCHes the seeded layout, no redirect), then proceed as in edit mode.
+    // On a brand-new composed slide there's no asset yet, so the chat
+    // can't bind to one. Mint the draft via the editor bridge (which
+    // POSTs /composed/ and PATCHes the seeded layout, no redirect), then
+    // proceed as in edit mode. Pages that don't support create-mode chat
+    // (e.g. the slideshow builder) pass mint: null to disable this.
 
     // A friendly, sortable default name for slides the user starts via the
     // assistant without typing one. Built from local Date parts (not
@@ -138,7 +158,7 @@
             + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
     }
 
-    async function mintDraft() {
+    async function composedMintDraft() {
         if (!bridge || typeof bridge.save !== "function") return false;
         // The create endpoint requires a name. If the user jumped straight to
         // the assistant without typing one, auto-fill a sensible default so the
@@ -162,6 +182,11 @@
         } catch (_) { /* non-fatal */ }
         return true;
     }
+
+    // Resolve the mint strategy: an explicit cfg.mint (including null to
+    // disable) wins; otherwise default to the composed-editor mint.
+    const mint =
+        "mint" in cfg ? cfg.mint : composedMintDraft;
 
     // ── Submit / stream ──────────────────────────────────────────────
     window.cwAiSubmit = function (e) {
@@ -187,7 +212,11 @@
         try {
             // Create mode: mint the draft asset so the chat can bind to it.
             if (!assetId()) {
-                const minted = await mintDraft();
+                if (typeof mint !== "function") {
+                    addMsg("error", "Save this first, then ask the assistant to make changes.");
+                    return;
+                }
+                const minted = await mint();
                 if (!minted) {
                     addMsg(
                         "error",
@@ -198,9 +227,9 @@
                 }
             }
 
-            // The assistant reads server-side draft state, so flush any
-            // unsaved manual edits first — otherwise the post-turn refresh
-            // (which clears the dirty flag) would silently drop them.
+            // The assistant reads server-side state, so flush any unsaved
+            // manual edits first — otherwise the post-turn refresh (which
+            // clears the dirty flag) would silently drop them.
             if (bridge && bridge.isDirty && bridge.isDirty()) {
                 const ok = await bridge.save();
                 if (!ok) {
@@ -244,14 +273,14 @@
                     case "tool_result": {
                         const name = (evt.data && evt.data.name) || "tool";
                         addMsg("tool", "✓ " + name);
-                        if (name === "set_composed_widgets" && !toolResultIsError(evt.data)) {
+                        if (writeTools.indexOf(name) !== -1 && !toolResultIsError(evt.data)) {
                             sawSuccessfulWrite = true;
                         }
                         break;
                     }
                     case "approval_request":
-                        // composed_editor tools never need approval; if one
-                        // arrives, note it rather than blocking the drawer.
+                        // editor tools never need approval; if one arrives,
+                        // note it rather than blocking the drawer.
                         addMsg("tool", "(skipped an approval-gated action)");
                         break;
                     case "done":
