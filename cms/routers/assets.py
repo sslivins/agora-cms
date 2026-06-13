@@ -1800,7 +1800,15 @@ async def create_slideshow_asset(
             raise HTTPException(status_code=403, detail="You are not a member of this group")
         resolved_groups.append(parsed_id)
 
-    make_global = (not resolved_groups and is_admin)
+    # Defer the global/audience decision for an empty draft.  A 0-slide
+    # slideshow has no sources, so there is no audience to enforce yet — and
+    # minting it global (the admin default for empty groups) would lock the
+    # audience to "global" before any source is chosen, making it impossible
+    # for the assistant to then add the owner's non-global sources (the
+    # global-source ACL would 400).  The audience is finalized later via the
+    # builder's group/global picker (set_global action), which re-validates
+    # the invariant against the now-known sources.
+    make_global = (not resolved_groups and is_admin and bool(slides))
 
     _validate_slideshow_acl(
         set(resolved_groups), make_global, sources_by_id, source_groups

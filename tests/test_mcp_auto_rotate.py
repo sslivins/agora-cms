@@ -230,9 +230,16 @@ class TestCallApiFallback:
 
     @pytest.mark.asyncio
     async def test_call_api_propagates_non_401(self, mcp_module):
-        """_call_api does NOT retry on non-401 errors."""
+        """_call_api does NOT retry on non-401 errors.
+
+        On a non-401 it re-raises as a RuntimeError carrying the CMS
+        ``detail`` (so the LLM sees the actionable reason instead of a bare
+        status line), with the original HTTPStatusError preserved as the
+        cause. It must NOT reload the service key.
+        """
         mock_response = MagicMock()
         mock_response.status_code = 500
+        mock_response.json.return_value = {"detail": "boom"}
 
         async def mock_method(*args, **kwargs):
             raise httpx.HTTPStatusError(
@@ -247,9 +254,12 @@ class TestCallApiFallback:
             patch.object(mcp_module, "_get_client", return_value=mock_client),
             patch.object(mcp_module, "_reload_service_key", mock_reload),
         ):
-            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            with pytest.raises(RuntimeError) as exc_info:
                 await mcp_module._call_api("list_devices")
-            assert exc_info.value.response.status_code == 500
+            assert "500" in str(exc_info.value)
+            assert "boom" in str(exc_info.value)
+            assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
+            assert exc_info.value.__cause__.response.status_code == 500
             mock_reload.assert_not_awaited()
 
     @pytest.mark.asyncio
