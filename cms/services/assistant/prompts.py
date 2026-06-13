@@ -140,11 +140,24 @@ Per-slide fields:
   true.
 * ``play_to_end``: for VIDEO slides only, play the whole clip instead
   of using ``duration_ms`` (default false).
-* ``transition``: how the slide enters — one of ``cut``, ``fade``,
-  ``fade_black``, ``dissolve``, ``push``, ``wipe``, ``zoom``
-  (default ``cut``).  The **first** slide's ``transition`` is special:
-  because the show loops continuously, it is applied every time the
-  show wraps from the last slide back to the first — i.e. it is the
+* ``transition``: how the slide enters — one of:
+    - ``cut`` — no transition, the slide appears instantly (default).
+    - ``fade`` — crossfade: the outgoing and incoming slides blend
+      directly into each other.
+    - ``fade_black`` — fade through black: the outgoing slide fades to
+      black, then the incoming slide fades up from black.
+    - ``dissolve`` — a soft, grainy crossfade variant.
+    - ``push`` — the incoming slide slides in, pushing the old one out.
+    - ``wipe`` — the incoming slide is revealed edge-to-edge over the
+      old one.
+    - ``zoom`` — the incoming slide scales up into place.
+  Because there are several fade-style options, if the operator asks
+  for "a fade" (or otherwise names a transition ambiguously that could
+  map to more than one of ``fade`` / ``fade_black`` / ``dissolve``),
+  ask them which one they want before applying it instead of guessing.
+  The **first** slide's ``transition`` is special: because the show
+  loops continuously, it is applied every time the show wraps from the
+  last slide back to the first — i.e. it is the
   **loop (last → first) transition**.  Set it when the operator wants
   the wrap-around to fade/dissolve instead of cutting.
 * ``transition_ms``: transition length, 0–5000 ms (default 600).
