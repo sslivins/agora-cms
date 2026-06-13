@@ -428,6 +428,54 @@ class TestSlideshowSlidesEndpoints:
         await db_session.refresh(ss)
         assert ss.duration_seconds == pytest.approx(5.5)
 
+    async def test_replace_slides_defaults_duration_when_omitted(
+        self, client, db_session
+    ):
+        # The MCP set_slideshow_slides tool + AI assistant prompt advertise
+        # duration_ms as optional (default 7000). A slide that omits it must
+        # NOT 400 — it lands on the schema default.
+        img = await _seed_image(db_session, filename="nodur.png", is_global=True)
+        create = await client.post(
+            "/api/assets/slideshow", json={"name": "nodur", "slides": []}
+        )
+        assert create.status_code == 201
+        sid = create.json()["id"]
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{"source_asset_id": str(img.id)}]},
+        )
+        assert put.status_code == 200, put.text
+        assert put.json()["slide_count"] == 1
+        # 7000 ms default → 7.0 s
+        assert put.json()["duration_seconds"] == pytest.approx(7.0)
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["duration_ms"] == 7000
+
+    async def test_empty_draft_not_global_allows_non_global_sources(
+        self, client, db_session
+    ):
+        # An admin minting an empty draft (no groups) must NOT lock it global.
+        # Otherwise the AI assistant can't then add the owner's non-global
+        # sources (the global-source ACL would 400). Mirrors the real
+        # assistant create flow: create empty draft → PUT non-global slides.
+        create = await client.post(
+            "/api/assets/slideshow", json={"name": "owner draft", "slides": []}
+        )
+        assert create.status_code == 201, create.text
+        sid = create.json()["id"]
+        ss = await db_session.get(Asset, uuid.UUID(sid))
+        assert ss.is_global is False
+
+        non_global = await _seed_image(
+            db_session, filename="mine.png", is_global=False
+        )
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{"source_asset_id": str(non_global.id)}]},
+        )
+        assert put.status_code == 200, put.text
+        assert put.json()["slide_count"] == 1
+
 
 @pytest.mark.asyncio
 class TestSlideTransitions:

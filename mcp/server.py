@@ -131,8 +131,22 @@ async def _call_api(method_name: str, *args, **kwargs):
     try:
         return await getattr(client, method_name)(*args, **kwargs)
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code != 401:
-            raise
+        status = exc.response.status_code
+        if status != 401:
+            # Surface the CMS-provided ``detail`` (e.g. an ACL message like
+            # "A global slideshow can only reference global source assets …
+            # Mark these global first.") instead of a bare "400 Bad Request".
+            # Without this the LLM only ever sees the generic status line and
+            # can't relay the actionable reason to the user.
+            detail: str
+            try:
+                body = exc.response.json()
+                detail = body.get("detail") if isinstance(body, dict) else None
+            except Exception:
+                detail = None
+            if not detail:
+                detail = (exc.response.text or "").strip() or exc.response.reason_phrase
+            raise RuntimeError(f"CMS API error {status}: {detail}") from exc
         logger.warning("CMS returned 401 — reloading service key and retrying")
         await _reload_service_key()
         client = _get_client()

@@ -20,6 +20,13 @@ MAX_SLIDESHOW_SLIDES = 50
 # reasonable slide length and prevents a single slide starving a schedule.
 MIN_SLIDE_DURATION_MS = 500
 MAX_SLIDE_DURATION_MS = 60 * 60 * 1000
+# Default per-slide duration when a client omits ``duration_ms``.  The
+# manual builder UI always sends an explicit value, but the AI assistant
+# (and the MCP ``set_slideshow_slides`` tool doc + assistant prompt) both
+# advertise this field as optional with a 7000 ms default.  Keeping the
+# schema default in sync with that contract means an assistant-built slide
+# that omits the field no longer 400s.
+DEFAULT_SLIDE_DURATION_MS = 7000
 
 # Per-slide transition controls (Phase 1a of agora#226, expanded in 0029).
 # ``cut`` is an instant swap (no transition) and is the only mode the
@@ -160,7 +167,9 @@ class SlideIn(BaseModel):
     """One slide in a create/replace slideshow request body."""
 
     source_asset_id: uuid.UUID
-    duration_ms: int = Field(..., ge=MIN_SLIDE_DURATION_MS, le=MAX_SLIDE_DURATION_MS)
+    duration_ms: int = Field(
+        DEFAULT_SLIDE_DURATION_MS, ge=MIN_SLIDE_DURATION_MS, le=MAX_SLIDE_DURATION_MS
+    )
     play_to_end: bool = False
     # Per-slide transition that runs BEFORE the slide appears (i.e. attached
     # to the slide on the right of a gap).  Optional on the wire — old UI
