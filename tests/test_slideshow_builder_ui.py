@@ -106,6 +106,32 @@ class TestSlideshowBuilderRoutes:
         # Ensure the seeded slides are in the JSON island the page uses for state
         assert '"position": 0' in body or '"position":0' in body
 
+    async def test_edit_page_wires_in_editor_rename(self, client, db_session):
+        """Edit mode must persist a renamed slideshow in-editor. The /slides
+        PUT can't carry a name, so a changed name is PATCHed to
+        /api/assets/{id} {display_name}. Regression for the silent
+        edit-mode rename drop."""
+        asset = await _seed_slideshow(db_session, name="Renameable", slides=2)
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Rename baseline + helper are baked into the edit page.
+        assert "SS_ORIG_NAME" in body
+        assert "maybeRenameSlideshow" in body
+        # Baseline is seeded with the current name so an unchanged name is a no-op.
+        assert "Renameable" in body
+        # The old "rename is managed via the Assets page" note must be gone.
+        assert "and rename are managed" not in body
+
+    async def test_new_page_omits_editor_rename_baseline(self, client):
+        """Create mode has no asset yet — the rename baseline is empty and
+        the helper is still defined (the mint flow flips into edit mode)."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert 'SS_ORIG_NAME = ""' in body
+        assert "maybeRenameSlideshow" in body
+
     async def test_edit_page_404s_for_non_slideshow(self, client, db_session):
         # Image, not slideshow: should redirect away
         img = Asset(

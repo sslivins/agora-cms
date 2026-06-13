@@ -490,7 +490,7 @@
         </div>
         {% if edit_mode %}
         <p class="text-muted" style="font-size:0.85rem; margin-top:0.5rem;">
-            Group assignments and rename are managed via the Assets page actions.
+            Group assignments are managed via the Assets page actions.
         </p>
         {% endif %}
 
@@ -565,6 +565,12 @@
 <script>
 let SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
 let SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
+// Baseline name for edit-mode rename detection. The edit-mode Save path
+// PUTs only the slides (the /slides endpoint can't rename), so a changed
+// name is persisted via a separate PATCH /api/assets/{id} {display_name}
+// — the same endpoint the Assets-page rename uses. Mirrors the composed
+// editor's COMPOSED_ORIG_NAME / maybeRenameSlide() pattern.
+let SS_ORIG_NAME = {% if edit_mode %}{{ asset_name | tojson }}{% else %}""{% endif %};
 const SS_MAX_SLIDES = 50;
 
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
@@ -1110,6 +1116,7 @@ async function saveSlideshow(opts) {
                 const err = await r.json().catch(() => ({}));
                 throw new Error(err.detail || ('HTTP ' + r.status));
             }
+            await maybeRenameSlideshow(name);
             clearDirty();
             setStatus('Saved.');
             // Stay on the page after a normal Save; only redirect when the
@@ -1151,6 +1158,26 @@ async function saveSlideshow(opts) {
     } finally {
         submit.disabled = !__ssDirty;
     }
+}
+
+// Persist an edit-mode rename. The /slides PUT can't carry a name, so a
+// changed name is PATCHed to /api/assets/{id} {display_name} (the same
+// endpoint the Assets-page rename uses). No-op in create mode or when the
+// name is unchanged. Mirrors composed_editor.html's maybeRenameSlide().
+async function maybeRenameSlideshow(name) {
+    if (!SS_EDIT_MODE || !SS_ASSET_ID) return;
+    const trimmed = (name || '').trim();
+    if (!trimmed || trimmed === (SS_ORIG_NAME || '').trim()) return;
+    const r = await fetch(`/api/assets/${SS_ASSET_ID}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({display_name: trimmed}),
+    });
+    if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || ('HTTP ' + r.status));
+    }
+    SS_ORIG_NAME = trimmed;
 }
 
 function openGroupPopup(id) {
@@ -1384,6 +1411,7 @@ window.slideshowMintDraft = async function () {
         if (!newId) { setStatus('Create failed', true); return false; }
         SS_ASSET_ID = newId;
         SS_EDIT_MODE = true;
+        SS_ORIG_NAME = name;
         clearDirty();
         setStatus('Created.');
         try {

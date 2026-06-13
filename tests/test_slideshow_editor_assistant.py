@@ -210,6 +210,23 @@ class TestBuildSystemPrompt:
         )
         assert "loop (last \u2192 first) transition" in prompt
 
+    def test_editor_prompt_clarifies_ambiguous_fade(self):
+        """Several transitions are fade-style (fade/fade_black/dissolve);
+        when the operator asks for "a fade" the assistant must ask which
+        one rather than guessing."""
+        from cms.services.assistant.prompts import build_system_prompt
+
+        aid = str(uuid.uuid4())
+        prompt = build_system_prompt(
+            self._user(), mode="slideshow_editor", composed_asset_id=aid
+        )
+        # Each fade-family transition is described so the assistant can
+        # distinguish them, and it is told to ask when the request is
+        # ambiguous.
+        assert "fade through black" in prompt
+        assert "crossfade" in prompt
+        assert "ask them which one" in prompt
+
     def test_slideshow_mode_without_id_falls_back_to_general(self):
         from cms.services.assistant.prompts import build_system_prompt
 
