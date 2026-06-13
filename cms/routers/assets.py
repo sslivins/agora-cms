@@ -1767,9 +1767,19 @@ async def create_slideshow_asset(
         raise HTTPException(status_code=400, detail=f"Invalid slide payload: {e}")
 
     visible = await _visible_asset_ids(user, db)
-    sources_by_id, source_groups = await _load_and_validate_slide_sources(
-        slides, db, visible_ids=visible
-    )
+    if slides:
+        sources_by_id, source_groups = await _load_and_validate_slide_sources(
+            slides, db, visible_ids=visible
+        )
+    else:
+        # Allow a 0-slide draft slideshow. The AI assistant's create-mode
+        # mint POSTs the builder's current in-memory slides, which is empty
+        # for a brand-new slideshow; without this the create always 400s and
+        # the assistant can never create a slideshow on a fresh page. The
+        # empty draft is populated immediately by the assistant, and the
+        # resolver treats a 0-slide slideshow as not-ready so it is never
+        # pushed to a device.
+        sources_by_id, source_groups = {}, {}
 
     # Resolve groups (mirror create_webpage_asset)
     resolved_groups: list[uuid.UUID] = []

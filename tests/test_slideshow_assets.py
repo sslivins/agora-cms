@@ -200,13 +200,18 @@ class TestSlideshowCreate:
         # is_global=True since admin + no groups
         assert body["is_global"] is True
 
-    async def test_rejects_empty_slides(self, client, db_session):
+    async def test_allows_empty_slides_creates_draft(self, client, db_session):
+        # A 0-slide slideshow is a valid draft (the AI assistant mints one
+        # on a fresh page before adding any slides). It must create a 201.
         resp = await client.post(
             "/api/assets/slideshow",
-            json={"name": "x", "slides": []},
+            json={"name": "Empty draft", "slides": []},
         )
-        assert resp.status_code == 400
-        assert "at least one" in resp.json()["detail"].lower()
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["asset_type"] == "slideshow"
+        assert body["filename"] == "Empty draft"
+        assert body["duration_seconds"] == 0
 
     async def test_rejects_too_many_slides(self, client, db_session):
         img = await _seed_image(db_session, is_global=True)

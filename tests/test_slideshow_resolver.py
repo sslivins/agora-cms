@@ -219,7 +219,26 @@ class TestSlideshowResolver:
         assert [s.duration_ms for s in plan.slides] == [5000, 8000]
         assert plan.slides[1].play_to_end is True
 
-    async def test_plan_picks_latest_ready_variant(self, db_session):
+    async def test_empty_slideshow_is_not_ready(self, db_session):
+        """A 0-slide slideshow (e.g. a fresh AI-assistant draft) must never
+        be ready, so it can't be pushed to a device as an empty manifest."""
+        from cms.services.slideshow_resolver import (
+            plan_slideshow,
+            resolved_slideshow_checksum,
+        )
+
+        profile = await _seed_profile(db_session, "pempty")
+        ss = await _seed_slideshow(
+            db_session, name="ss-empty", slides_data=[], checksum="empty-base",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.slides == []
+        assert plan.ready is False
+        # The device-facing checksum is None for a not-ready plan, so the
+        # empty draft never lands in a ScheduleEntry / default-asset.
+        assert await resolved_slideshow_checksum(ss, profile.id, db_session) is None
+
+
         """When multiple READY variants exist for the same (asset,profile),
         the resolver picks the latest one (created_at DESC, id DESC tiebreak)."""
         from cms.services.slideshow_resolver import plan_slideshow

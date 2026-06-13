@@ -123,7 +123,11 @@ class SlideshowPlan:
 
     @property
     def ready(self) -> bool:
-        return not self.blockers
+        # A 0-slide slideshow is never ready: a draft (e.g. just created by
+        # the AI assistant) with no slides must not be pushed to a device,
+        # which would render an empty manifest. Manual saves require >=1
+        # slide client-side, so this only guards the empty-draft case.
+        return bool(self.slides) and not self.blockers
 
 
 # Sentinel returned by :func:`_plan_composed_siblings` when at least one
