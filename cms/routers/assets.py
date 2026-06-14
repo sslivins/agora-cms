@@ -2020,11 +2020,11 @@ async def replace_slideshow_slides(
         db, user=user, action="asset.replace_slides", resource_type="asset",
         resource_id=str(asset_id),
         description=(
-            f"Replaced slides on slideshow '{asset.filename}' "
+            f"Replaced slides on slideshow '{asset.display_name or asset.original_filename or asset.filename}' "
             f"({len(slides)} slide(s))"
         ),
         details={
-            "filename": asset.filename,
+            "filename": asset.display_name or asset.original_filename or asset.filename,
             "slide_count": len(slides),
             "duration_seconds": duration_seconds,
         },
@@ -2170,7 +2170,7 @@ async def update_asset(
         await audit_log(
             db, user=user, action="asset.update", resource_type="asset",
             resource_id=str(asset_id),
-            description=f"Modified asset '{asset.filename}'",
+            description=f"Modified asset '{asset.display_name or asset.original_filename or asset.filename}'",
             details={"changes": changes},
             request=request,
         )
@@ -2260,7 +2260,7 @@ async def recapture_stream(
     await audit_log(
         db, user=user, action="asset.recapture", resource_type="asset",
         resource_id=str(asset_id),
-        description=f"Recaptured saved-stream asset '{asset.filename}'",
+        description=f"Recaptured saved-stream asset '{asset.display_name or asset.original_filename or asset.filename}'",
         details={"variants_reset": reset_count},
         request=request,
     )
@@ -2566,6 +2566,11 @@ async def delete_asset(
         await db.execute(delete(Schedule).where(Schedule.asset_id == asset_id))
 
     asset_filename = asset.filename
+    # Friendly, user-facing name for the audit log (the raw filename is a
+    # GUID storage name, e.g. composed-<uuid>-<hash>.html).
+    asset_display_name = (
+        asset.display_name or asset.original_filename or asset.filename
+    )
 
     # Mark as soft-deleted
     asset.deleted_at = datetime.now(timezone.utc)
@@ -2607,8 +2612,8 @@ async def delete_asset(
     await audit_log(
         db, user=user, action="asset.delete", resource_type="asset",
         resource_id=str(asset_id),
-        description=f"Soft-deleted asset '{asset_filename}'",
-        details={"filename": asset_filename, "asset_type": asset.asset_type.value},
+        description=f"Soft-deleted asset '{asset_display_name}'",
+        details={"filename": asset_display_name, "asset_type": asset.asset_type.value},
         request=request,
     )
     await db.commit()
@@ -2673,9 +2678,9 @@ async def share_asset(
     await audit_log(
         db, user=user, action="asset.share", resource_type="asset",
         resource_id=str(asset_id),
-        description=f"Shared asset '{asset.filename}' with group '{group.name}'",
+        description=f"Shared asset '{asset.display_name or asset.original_filename or asset.filename}' with group '{group.name}'",
         details={
-            "asset_filename": asset.filename,
+            "asset_filename": asset.display_name or asset.original_filename or asset.filename,
             "group_id": str(group_id),
             "group_name": group.name,
             "uploaded_by_user_id": (
@@ -2750,7 +2755,10 @@ async def unshare_asset(
     group_row = (await db.execute(
         select(DeviceGroup).where(DeviceGroup.id == group_id)
     )).scalar_one_or_none()
-    asset_filename = asset_row.filename if asset_row is not None else None
+    asset_filename = (
+        (asset_row.display_name or asset_row.original_filename or asset_row.filename)
+        if asset_row is not None else None
+    )
     group_name = group_row.name if group_row is not None else None
     uploader_email: str | None = None
     uploader_id = asset_row.uploaded_by_user_id if asset_row is not None else None
@@ -2846,7 +2854,7 @@ async def toggle_asset_global(
         db, user=getattr(request.state, "user", None),
         action="asset.toggle_global", resource_type="asset",
         resource_id=str(asset_id),
-        description=f"{'Marked' if asset.is_global else 'Unmarked'} asset '{asset.filename}' as global",
+        description=f"{'Marked' if asset.is_global else 'Unmarked'} asset '{asset.display_name or asset.original_filename or asset.filename}' as global",
         details={"is_global": asset.is_global},
         request=request,
     )
