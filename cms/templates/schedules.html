@@ -1412,6 +1412,42 @@ document.addEventListener('DOMContentLoaded', () => {
     window.refreshSchedules = () => pollSchedulesOnce(true);
 
     async function pollSchedulesOnce(force) {
+        // Asset-readiness self-heal runs on EVERY cycle — even while the edit
+        // modal is open — so a transcode that finishes while the user is
+        // sitting in the open editor (or on the create form) refreshes the
+        // asset dropdown in place, without a manual reload. This block lives
+        // ABOVE the modal/focus guard on purpose: when the edit modal is open
+        // the guard below short-circuits the schedule-list reload, and if the
+        // heal lived under it the open picker would stay frozen on its
+        // page-load "(transcoding…)" snapshot forever.
+        try {
+            const changed = await refreshAssetReadiness();
+            if (changed) {
+                const editSel = document.querySelector('#edit-asset');
+                if (editSel) {
+                    // Edit modal open: rebuild its picker, preserving the
+                    // user's current pick. Skip while the native dropdown is
+                    // (likely) open so we don't yank the list out from under it.
+                    if (document.activeElement !== editSel) {
+                        editSel.innerHTML = buildScheduleAssetOptions(editSel.value);
+                    }
+                } else {
+                    const createSel = document.querySelector('[name="asset_id"]');
+                    if (createSel && document.activeElement !== createSel) {
+                        const byId = {};
+                        for (const a of _scheduleData.assets) byId[a.id] = a;
+                        createSel.querySelectorAll('option[value]').forEach(opt => {
+                            const csa = byId[opt.value];
+                            if (csa) {
+                                opt.disabled = !csa.ready;
+                                opt.textContent = scheduleAssetLabel(csa);
+                            }
+                        });
+                    }
+                }
+            }
+        } catch (e) { /* best-effort */ }
+
         if (!force) {
             if (typeof isModalOpen === 'function' && isModalOpen()) return;
             if (document.querySelector('.kebab-menu:popover-open')) return;
@@ -1419,27 +1455,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const el = document.activeElement;
             if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return;
         }
-        // Keep the in-memory asset snapshot and the (server-rendered) create
-        // form picker honest about transcoding completion, so a finished
-        // transcode becomes selectable — and loses its "(transcoding…)"
-        // label — without a manual reload.
-        try {
-            const changed = await refreshAssetReadiness();
-            if (changed) {
-                const createSel = document.querySelector('[name="asset_id"]');
-                if (createSel) {
-                    const byId = {};
-                    for (const a of _scheduleData.assets) byId[a.id] = a;
-                    createSel.querySelectorAll('option[value]').forEach(opt => {
-                        const csa = byId[opt.value];
-                        if (csa) {
-                            opt.disabled = !csa.ready;
-                            opt.textContent = scheduleAssetLabel(csa);
-                        }
-                    });
-                }
-            }
-        } catch (e) { /* best-effort */ }
         try {
             const resp = await fetch('/api/schedules');
             if (!resp.ok) return;
