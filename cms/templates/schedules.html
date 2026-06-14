@@ -236,15 +236,24 @@ async function refreshAssetReadiness() {
 // `_scheduleData.assets` snapshot, marking `selectedId` selected. Shared by
 // the edit modal's initial render and its post-refresh rebuild so the two
 // paths can never drift.
+// Build the visible label for an asset <option> (icon + name + duration,
+// plus a trailing "(reason)" only while the asset isn't ready). Shared by
+// the edit-modal builder and the create-form self-heal so the two never
+// drift apart.
+function scheduleAssetLabel(a) {
+    const icon = ASSET_ICONS[a.type];
+    let label = icon ? icon + ' ' + a.name : a.name;
+    if (a.duration) {
+        const m = Math.floor(a.duration / 60), sec = Math.round(a.duration % 60);
+        label += ` (${m}:${String(sec).padStart(2,'0')})`;
+    }
+    if (!a.ready && a.notReadyReason) label += ` (${a.notReadyReason})`;
+    return label;
+}
+
 function buildScheduleAssetOptions(selectedId) {
     return _scheduleData.assets.map(a => {
-        const icon = ASSET_ICONS[a.type];
-        let label = icon ? icon + ' ' + a.name : a.name;
-        if (a.duration) {
-            const m = Math.floor(a.duration / 60), sec = Math.round(a.duration % 60);
-            label += ` (${m}:${String(sec).padStart(2,'0')})`;
-        }
-        if (!a.ready && a.notReadyReason) label += ` (${a.notReadyReason})`;
+        const label = scheduleAssetLabel(a);
         // Keep a not-ready asset selectable when it is the schedule's current
         // pick so editing an existing schedule never silently drops its asset.
         const isSelected = a.id === selectedId;
@@ -1412,9 +1421,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // Keep the in-memory asset snapshot and the (server-rendered) create
         // form picker honest about transcoding completion, so a finished
-        // transcode becomes selectable without a manual reload. Functional
-        // only: we toggle the `disabled` attribute; the cosmetic
-        // "(transcoding…)" suffix on a now-ready option clears on next reload.
+        // transcode becomes selectable — and loses its "(transcoding…)"
+        // label — without a manual reload.
         try {
             const changed = await refreshAssetReadiness();
             if (changed) {
@@ -1424,7 +1432,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     for (const a of _scheduleData.assets) byId[a.id] = a;
                     createSel.querySelectorAll('option[value]').forEach(opt => {
                         const a = byId[opt.value];
-                        if (a) opt.disabled = !a.ready;
+                        if (a) {
+                            opt.disabled = !a.ready;
+                            opt.textContent = scheduleAssetLabel(a);
+                        }
                     });
                 }
             }
