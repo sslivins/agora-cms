@@ -934,7 +934,10 @@ async def profiles_status_json(
         await db.refresh(v, ["source_asset", "profile"])
         queue_out.append({
             "id": str(v.id),
-            "source_filename": v.source_asset.filename if v.source_asset else "?",
+            "source_filename": (
+                (v.source_asset.display_name or v.source_asset.original_filename or v.source_asset.filename)
+                if v.source_asset else "?"
+            ),
             "profile_name": v.profile.name if v.profile else "?",
             "status": v.status.value,
             "progress": v.progress,

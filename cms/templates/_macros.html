@@ -307,7 +307,7 @@
                         {% if a.schedule_count > 0 %}
                         <button type="button" role="menuitem" class="kebab-item-danger" disabled title="Used by {{ a.schedule_count }} schedule{{ 's' if a.schedule_count != 1 }}. Remove from all schedules before deleting.">Delete</button>
                         {% else %}
-                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset('{{ a.id }}', {{ a.filename | tojson | forceescape }})">Delete</button>
+                        <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset('{{ a.id }}', {{ (a.display_name or a.original_filename or a.filename) | tojson | forceescape }})">Delete</button>
                         {% endif %}
                     {% endif %}
                     {% endcall %}

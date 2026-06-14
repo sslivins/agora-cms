@@ -1320,7 +1320,7 @@ function fallbackCopy(text, onSuccess) {
             if (sched > 0) {
                 items.push('<button type="button" role="menuitem" class="kebab-item-danger" disabled title="Used by ' + sched + ' schedule' + (sched !== 1 ? 's' : '') + '. Remove from all schedules before deleting.">Delete</button>');
             } else {
-                items.push('<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset(' + _kebabArg(a.id) + ', ' + _kebabArg(a.filename) + ')">Delete</button>');
+                items.push('<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteAsset(' + _kebabArg(a.id) + ', ' + _kebabArg(name) + ')">Delete</button>');
             }
         }
 
