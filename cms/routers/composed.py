@@ -471,7 +471,7 @@ async def _validate_persist_layout(
         action=action,
         resource_type="asset",
         resource_id=str(asset.id),
-        description=f"Updated composed-slide layout for '{asset.filename}'",
+        description=f"Updated composed-slide layout for '{asset.display_name or asset.original_filename or asset.filename}'",
         details={"widget_count": len(layout.widgets)},
         request=request,
     )
@@ -711,9 +711,9 @@ async def create_composed_slide(
         action="asset.create_composed",
         resource_type="asset",
         resource_id=str(asset.id),
-        description=f"Created composed slide '{filename}'",
+        description=f"Created composed slide '{asset.display_name or asset.original_filename or asset.filename}'",
         details={
-            "filename": filename,
+            "filename": asset.display_name or asset.original_filename or asset.filename,
             "group_ids": [str(g) for g in resolved_groups],
             "is_global": make_global,
         },
@@ -827,9 +827,9 @@ async def publish_composed_endpoint(
         action="asset.publish_composed",
         resource_type="asset",
         resource_id=str(asset.id),
-        description=f"Published composed slide '{asset.filename}'",
+        description=f"Published composed slide '{asset.display_name or asset.original_filename or asset.filename}'",
         details={
-            "filename": result.filename,
+            "filename": asset.display_name or asset.original_filename or asset.filename,
             "size_bytes": result.size_bytes,
             "checksum": result.checksum,
         },
