@@ -201,6 +201,58 @@ window._playingScheduleIds = {{ playing_schedule_ids | tojson }};
 const _tzList = JSON.parse(document.getElementById('_tzOptions').value);
 const _currentTz = document.getElementById('_tz').value;
 
+// Asset readiness ("transcoding…" disabled state) is baked into
+// `_scheduleData.assets` at page render. If an asset finishes transcoding
+// after the page loads, that frozen snapshot leaves the option disabled and
+// unselectable in the edit/create pickers until a full reload. Re-fetch the
+// canonical readiness from /api/assets/status (computed identically to the
+// server render) and merge it back into the in-memory snapshot. Best-effort:
+// any failure leaves the existing (possibly stale) data untouched.
+async function refreshAssetReadiness() {
+    try {
+        const resp = await fetch('/api/assets/status', {headers: {'Accept': 'application/json'}});
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        const byId = {};
+        for (const fa of (data.assets || [])) byId[fa.id] = fa;
+        let changed = false;
+        for (const a of _scheduleData.assets) {
+            const fresh = byId[a.id];
+            if (!fresh || typeof fresh.ready_for_selection !== 'boolean') continue;
+            const newReason = fresh.not_ready_reason || '';
+            if (a.ready !== fresh.ready_for_selection || a.notReadyReason !== newReason) {
+                a.ready = fresh.ready_for_selection;
+                a.notReadyReason = newReason;
+                changed = true;
+            }
+        }
+        return changed;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Build the <option> list for an asset picker from the current
+// `_scheduleData.assets` snapshot, marking `selectedId` selected. Shared by
+// the edit modal's initial render and its post-refresh rebuild so the two
+// paths can never drift.
+function buildScheduleAssetOptions(selectedId) {
+    return _scheduleData.assets.map(a => {
+        const icon = ASSET_ICONS[a.type];
+        let label = icon ? icon + ' ' + a.name : a.name;
+        if (a.duration) {
+            const m = Math.floor(a.duration / 60), sec = Math.round(a.duration % 60);
+            label += ` (${m}:${String(sec).padStart(2,'0')})`;
+        }
+        if (!a.ready && a.notReadyReason) label += ` (${a.notReadyReason})`;
+        // Keep a not-ready asset selectable when it is the schedule's current
+        // pick so editing an existing schedule never silently drops its asset.
+        const isSelected = a.id === selectedId;
+        const disabledAttr = (a.ready || isSelected) ? '' : ' disabled';
+        return `<option value="${a.id}" data-asset-type="${a.type || ''}"${disabledAttr} ${isSelected ? "selected" : ""}>${label}</option>`;
+    }).join("");
+}
+
 // Browser-vs-server clock skew in ms (browser - server).  The "Set to
 // now" chip needs server time, not browser time -- if the browser is
 // running a few seconds ahead of the server (common on Windows where
@@ -785,17 +837,7 @@ function editSchedule(s) {
         return `<label><input type="checkbox" name="edit_day_${num}" ${checked}> ${name}</label>`;
     }).join(" ");
 
-    const assetOpts = _scheduleData.assets.map(a => {
-        const icon = ASSET_ICONS[a.type];
-        let label = icon ? icon + ' ' + a.name : a.name;
-        if (a.duration) {
-            const m = Math.floor(a.duration / 60), s = Math.round(a.duration % 60);
-            label += ` (${m}:${String(s).padStart(2,'0')})`;
-        }
-        if (!a.ready && a.notReadyReason) label += ` (${a.notReadyReason})`;
-        const disabledAttr = a.ready ? '' : ' disabled';
-        return `<option value="${a.id}" data-asset-type="${a.type || ''}"${disabledAttr} ${a.id === s.asset_id ? "selected" : ""}>${label}</option>`;
-    }).join("");
+    const assetOpts = buildScheduleAssetOptions(s.asset_id);
 
     const groupOpts = groups.map(g =>
         `<option value="${g.id}" ${g.id === s.group_id ? "selected" : ""}>${g.name}</option>`
@@ -877,6 +919,20 @@ function editSchedule(s) {
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
+    // Self-heal a stale "transcoding…" disabled asset option: the modal is
+    // built instantly from the page-load snapshot (above) for a snappy open,
+    // then we re-fetch canonical readiness and rebuild the picker in place if
+    // anything changed. Preserve whatever the user currently has selected
+    // (defaults to the schedule's asset) so a finished transcode becomes
+    // selectable without dropping their choice.
+    (async () => {
+        const changed = await refreshAssetReadiness();
+        if (!changed) return;
+        const sel = box.querySelector("#edit-asset");
+        if (!sel) return;
+        const keep = sel.value || s.asset_id;
+        sel.innerHTML = buildScheduleAssetOptions(keep);
+    })();
     const _closeEditModal = async (force) => {
         if (!force && _isEditModalDirty()) {
             const ok = await showConfirm("\u26a0\ufe0f You have unsaved changes to this schedule. Discard them and close?");
@@ -1354,6 +1410,25 @@ document.addEventListener('DOMContentLoaded', () => {
             const el = document.activeElement;
             if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return;
         }
+        // Keep the in-memory asset snapshot and the (server-rendered) create
+        // form picker honest about transcoding completion, so a finished
+        // transcode becomes selectable without a manual reload. Functional
+        // only: we toggle the `disabled` attribute; the cosmetic
+        // "(transcoding…)" suffix on a now-ready option clears on next reload.
+        try {
+            const changed = await refreshAssetReadiness();
+            if (changed) {
+                const createSel = document.querySelector('[name="asset_id"]');
+                if (createSel) {
+                    const byId = {};
+                    for (const a of _scheduleData.assets) byId[a.id] = a;
+                    createSel.querySelectorAll('option[value]').forEach(opt => {
+                        const a = byId[opt.value];
+                        if (a) opt.disabled = !a.ready;
+                    });
+                }
+            }
+        } catch (e) { /* best-effort */ }
         try {
             const resp = await fetch('/api/schedules');
             if (!resp.ok) return;
