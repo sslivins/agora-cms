@@ -1431,10 +1431,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     const byId = {};
                     for (const a of _scheduleData.assets) byId[a.id] = a;
                     createSel.querySelectorAll('option[value]').forEach(opt => {
-                        const a = byId[opt.value];
-                        if (a) {
-                            opt.disabled = !a.ready;
-                            opt.textContent = scheduleAssetLabel(a);
+                        const csa = byId[opt.value];
+                        if (csa) {
+                            opt.disabled = !csa.ready;
+                            opt.textContent = scheduleAssetLabel(csa);
                         }
                     });
                 }
