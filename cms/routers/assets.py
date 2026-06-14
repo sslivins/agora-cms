@@ -323,6 +323,17 @@ async def assets_status_json(
         variant_ready += a_ready
         variant_processing += a_processing
         variant_failed += a_failed
+        # Schedule-picker readiness, computed identically to the server
+        # render in cms/ui.py (issue #201) so pages that poll this endpoint
+        # can self-heal a "transcoding…" disabled state once the variants
+        # finish — without a full page reload. Mirror ui.py exactly: use the
+        # full variant list (not the device-filtered view) and apply the
+        # composed-unpublished override.
+        from cms.services.variant_view import is_asset_ready as _is_asset_ready
+        _ready, _reason = _is_asset_ready(a.variants)
+        _composed_reason = composed_unpublished_reason(a)
+        if _ready and _composed_reason:
+            _ready, _reason = False, _composed_reason
         # Build group name map for scope data
         variant_progress_sum = sum((v.progress or 0.0) for v in visible_variants)
         aggregate_pct = round(variant_progress_sum / len(visible_variants), 1) if visible_variants else 0.0
@@ -350,6 +361,10 @@ async def assets_status_json(
             # buildVariantBadge() keeps the "Unpublished" badge instead of
             # overwriting it with "none" on the first reconcile.
             "unpublished": composed_unpublished_reason(a) is not None,
+            # Schedule-picker readiness (issue #201) so the schedules page can
+            # refresh a stale "transcoding…" disabled option live.
+            "ready_for_selection": _ready,
+            "not_ready_reason": _reason,
         })
 
     # Compute a hash of group-asset assignments so the poller can detect scope changes

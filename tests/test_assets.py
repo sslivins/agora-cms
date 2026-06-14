@@ -116,6 +116,69 @@ class TestAssetStatus:
         assert by_id[str(composed_pub.id)]["unpublished"] is False
         assert by_id[str(video.id)]["unpublished"] is False
 
+    async def test_status_exposes_schedule_picker_readiness(self, client, db_session):
+        """``/api/assets/status`` must echo ``ready_for_selection`` +
+        ``not_ready_reason`` so the schedules page can live-refresh a stale
+        "transcoding…" disabled <option> once a transcode finishes, without a
+        full reload (issue #201).
+        """
+        from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
+        from cms.models.device_profile import DeviceProfile
+
+        profile = DeviceProfile(name="Readiness Test")
+        db_session.add(profile)
+        await db_session.flush()
+
+        # READY video → selectable.
+        ready_vid = Asset(
+            filename="ready.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=5000, checksum="r1",
+        )
+        # Video still transcoding → not selectable, reason "transcoding…".
+        proc_vid = Asset(
+            filename="proc.mp4", asset_type=AssetType.VIDEO,
+            size_bytes=0, checksum="p1",
+        )
+        # Never-published composed → not selectable via composed override.
+        composed_unpub = Asset(
+            filename="composed_unpub.html", asset_type=AssetType.COMPOSED,
+            size_bytes=0, checksum="",
+        )
+        db_session.add_all([ready_vid, proc_vid, composed_unpub])
+        await db_session.flush()
+
+        db_session.add_all([
+            AssetVariant(
+                source_asset_id=ready_vid.id, profile_id=profile.id,
+                filename="ready_v.mp4", size_bytes=3000,
+                status=VariantStatus.READY, progress=100.0, checksum="rv",
+            ),
+            AssetVariant(
+                source_asset_id=proc_vid.id, profile_id=profile.id,
+                filename="proc_v.mp4", size_bytes=0,
+                status=VariantStatus.PROCESSING, progress=20.0, checksum="",
+            ),
+        ])
+        await db_session.commit()
+
+        resp = await client.get("/api/assets/status")
+        assert resp.status_code == 200
+        by_id = {a["id"]: a for a in resp.json()["assets"]}
+
+        # Both fields present on every asset.
+        for a in by_id.values():
+            assert "ready_for_selection" in a
+            assert "not_ready_reason" in a
+
+        assert by_id[str(ready_vid.id)]["ready_for_selection"] is True
+        assert by_id[str(ready_vid.id)]["not_ready_reason"] in (None, "")
+
+        assert by_id[str(proc_vid.id)]["ready_for_selection"] is False
+        assert by_id[str(proc_vid.id)]["not_ready_reason"]
+
+        assert by_id[str(composed_unpub.id)]["ready_for_selection"] is False
+        assert by_id[str(composed_unpub.id)]["not_ready_reason"]
+
 
 @pytest.mark.asyncio
 class TestAssetStatusCollapse:
