@@ -14,6 +14,9 @@ param cmsAppName string
 param cmsImage string
 param cmsCpu string = '1.0'
 param cmsMemory string = '2Gi'
+@description('Maximum number of CMS container-app replicas. Drives autoscale ceiling AND the Postgres max_connections formula in postgres.bicep (10 SQLAlchemy conns/replica). Pinned to 2 today; raise to scale out.')
+@minValue(1)
+param cmsMaxReplicas int = 2
 @secure()
 param cmsSecretKey string
 @secure()
@@ -362,7 +365,7 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: 2
+        minReplicas: min(2, cmsMaxReplicas)
         // Multi-replica safe as of issue #344 completion (April 2026).
         // All singleton state has been moved to DB-backed or leader-gated
         // paths: device presence, confirmed-playing, missed-schedule state,
@@ -370,9 +373,11 @@ resource cmsApp 'Microsoft.App/containerApps@2024-03-01' = {
         // transport fan-out.  Pinned to N=2 rather than letting autoscale
         // decide so the multi-replica paths are always exercised and we
         // learn about regressions before they surface at higher scale.
-        // Next step (post-stability): lift maxReplicas and gate scaling
-        // on CPU/HTTP metrics.
-        maxReplicas: 2
+        // Next step (post-stability): lift cmsMaxReplicas and gate scaling
+        // on CPU/HTTP metrics.  The Postgres max_connections ceiling tracks
+        // this value automatically (see postgres.bicep formula), so scaling
+        // out no longer requires hand-tuning the DB.
+        maxReplicas: cmsMaxReplicas
       }
     }
   }

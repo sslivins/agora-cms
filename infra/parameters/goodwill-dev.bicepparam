@@ -57,6 +57,15 @@ param workerMemory = '2Gi'
 // here we'll flip the default for the other envs too.
 param useSyntheticHeartbeat = true
 
+// Postgres max_connections is Bicep-managed in dev via the replica-count
+// formula in postgres.bicep: max_connections = 30 + 35*cmsMaxReplicas.
+// At the current cmsMaxReplicas=2 this is 100 — exactly the value dev was
+// hand-bumped to — so enabling this is a no-op write today (no PG restart).
+// Scaling cmsMaxReplicas later auto-raises the ceiling (that deploy WILL
+// restart PG, since max_connections is a static parameter). Prod and all
+// other envs leave manageMaxConnections=false (default 50) until reviewed.
+param manageMaxConnections = true
+
 // Opt this environment into the Assistant feature backend.
 // Phase 1: dev only. Prod opts in after the dev pilot validates the
 // budget caps + approval UX.

@@ -95,6 +95,13 @@ param cmsCpu string = '1.0'
 @description('CMS container memory (must be 2× CPU, e.g. 0.5→1Gi, 1.0→2Gi, 2.0→4Gi)')
 param cmsMemory string = '2Gi'
 
+@description('Maximum number of CMS container-app replicas. Sets the autoscale ceiling AND drives the Postgres max_connections formula (postgres.bicep). Pinned to 2 today.')
+@minValue(1)
+param cmsMaxReplicas int = 2
+
+@description('When true, Bicep manages Postgres max_connections via the replica-count formula (base + perReplica*cmsMaxReplicas). When false (default, all envs except dev), max_connections stays at the B1ms default (50). Enable per-env in its .bicepparam.')
+param manageMaxConnections bool = false
+
 @description('Object ID of the Azure AD user/principal for Key Vault admin access')
 param adminPrincipalId string
 
@@ -159,6 +166,9 @@ module postgres 'modules/postgres.bicep' = {
     postgresSubnetId: networking.outputs.postgresSubnetId
     privateDnsZoneId: networking.outputs.privateDnsZoneId
     tags: tags
+    // max_connections replica-count formula (no-op unless manageMaxConnections=true).
+    manageMaxConnections: manageMaxConnections
+    cmsMaxReplicas: cmsMaxReplicas
   }
 }
 
@@ -236,6 +246,7 @@ module containerApps 'modules/containerApps.bicep' = {
     cmsImage: cmsImage
     cmsCpu: cmsCpu
     cmsMemory: cmsMemory
+    cmsMaxReplicas: cmsMaxReplicas
     cmsDatabaseUrl: databaseUrl
     cmsSecretKey: cmsSecretKey
     cmsAdminUsername: cmsAdminUsername
