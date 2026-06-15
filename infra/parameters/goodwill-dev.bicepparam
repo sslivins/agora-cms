@@ -57,14 +57,27 @@ param workerMemory = '2Gi'
 // here we'll flip the default for the other envs too.
 param useSyntheticHeartbeat = true
 
-// Postgres max_connections is Bicep-managed in dev via the replica-count
-// formula in postgres.bicep: max_connections = 30 + 35*cmsMaxReplicas.
-// At the current cmsMaxReplicas=2 this is 100 — exactly the value dev was
-// hand-bumped to — so enabling this is a no-op write today (no PG restart).
-// Scaling cmsMaxReplicas later auto-raises the ceiling (that deploy WILL
-// restart PG, since max_connections is a static parameter). Prod and all
-// other envs leave manageMaxConnections=false (default 50) until reviewed.
-param manageMaxConnections = true
+// Postgres max_connections management is DISABLED here.
+//
+// The replica-count formula (postgres.bicep: max_connections =
+// 30 + 35*cmsMaxReplicas) was enabled on the assumption that re-writing a
+// static PG parameter to its current value is a no-op that does not restart
+// the server. That assumption is wrong: Azure Postgres Flexible Server
+// restarts the server whenever a deployment APPLIES a restart-required
+// (static) parameter, regardless of whether the value changed. Because the
+// configurations resource is in the per-deploy bicep path, every dev deploy
+// re-applied max_connections and restarted PG mid-rollout — the new CMS
+// revision booted while the DB was bouncing, could not connect, and hung
+// (verify saw HTTP 000000 for the full window). This durably broke every
+// dev deploy after PR #789.
+//
+// Dev's max_connections is already at the desired ceiling (100, written by
+// the first failed managed deploy), so leaving it unmanaged keeps that value
+// while removing the per-deploy restart. Re-introducing auto-derivation
+// later must move the static-param write OUT of the per-deploy path (e.g. a
+// separate, manually-triggered infra job run only when cmsMaxReplicas
+// changes, with an intentional restart window).
+param manageMaxConnections = false
 
 // Opt this environment into the Assistant feature backend.
 // Phase 1: dev only. Prod opts in after the dev pilot validates the
