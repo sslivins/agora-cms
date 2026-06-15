@@ -495,9 +495,13 @@
         {% endif %}
 
         <div style="margin-top:1.25rem;">
-            <h3 style="margin:0 0 0.5rem; font-size:1rem;">
+            <h3 style="margin:0 0 0.5rem; font-size:1rem; display:flex; align-items:center; gap:0.5rem;">
                 Library
                 <span class="text-muted" style="font-weight:normal; font-size:0.85rem;">— drag onto the timeline, or click to append</span>
+                <button type="button" class="btn btn-secondary" id="ss-add-all"
+                        style="margin-left:auto; padding:0.2rem 0.6rem; font-size:0.8rem;"
+                        onclick="addAllVisible()"
+                        title="Append every asset currently shown in the library to the timeline">+ Add all</button>
             </h3>
             {{ asset_filter_bar(
                 show_type=False,
@@ -521,6 +525,17 @@
         <div class="ssb-timeline-head">
             <h3>Timeline</h3>
             <div class="ssb-totals">
+                <label style="font-weight:normal; font-size:0.85rem; color:#888; display:inline-flex; align-items:center; gap:0.3rem;">
+                    Set all to
+                    <input type="number" id="ss-bulk-dur" min="1" max="3600" step="1" value="10"
+                           style="width:4rem; padding:0.15rem 0.3rem;" aria-label="Bulk duration in seconds">
+                    s
+                    <button type="button" class="btn btn-secondary" id="ss-apply-all"
+                            style="padding:0.2rem 0.6rem; font-size:0.8rem;"
+                            onclick="applyDurationToAll()"
+                            title="Apply this duration to every image slide (videos set to play-to-end are left untouched)">Apply</button>
+                </label>
+                &nbsp;·&nbsp;
                 <span id="ss-counter">0 / 50 slides</span>
                 &nbsp;·&nbsp;
                 Total: <strong id="ss-total">0.0s</strong>
@@ -986,6 +1001,78 @@ function addSlideFromAsset(assetId, atIndex) {
     markDirty();
     setStatus('');
     renderTimeline();
+}
+
+// Bulk-append every asset currently shown in the library (respects the
+// active filter, since ``availableAssets`` is already the filtered set).
+// Stops at the slide cap and reports how many were added vs skipped.
+function addAllVisible() {
+    if (!availableAssets.length) {
+        setStatus('Library is empty — nothing to add.', true);
+        return;
+    }
+    const room = SS_MAX_SLIDES - slides.length;
+    if (room <= 0) {
+        setStatus('Slide cap reached (' + SS_MAX_SLIDES + ').', true);
+        return;
+    }
+    const toAdd = availableAssets.slice(0, room);
+    toAdd.forEach(a => {
+        const slide = {
+            source_asset_id: a.id,
+            duration_ms: a.asset_type === 'video' && a.duration_seconds
+                ? Math.round(a.duration_seconds * 1000)
+                : 10000,
+            play_to_end: a.asset_type === 'video',
+            transition: 'cut',
+            transition_ms: 600,
+            source_filename: a.display_name || a.original_filename || a.filename,
+            source_asset_type: a.asset_type,
+            source_duration_seconds: a.duration_seconds,
+            thumbnail_url: a.thumbnail_url || null,
+        };
+        slides.push(slide);
+    });
+    markDirty();
+    const skipped = availableAssets.length - toAdd.length;
+    setStatus(
+        'Added ' + toAdd.length + ' slide' + (toAdd.length === 1 ? '' : 's') +
+        (skipped > 0 ? ' (' + skipped + ' skipped — slide cap reached)' : '') + '.',
+        skipped > 0,
+    );
+    renderTimeline();
+}
+
+// Apply a single duration (seconds) to every slide. Videos set to
+// ``play to end`` are left untouched — their on-device duration is the
+// clip length, so a fixed seconds value would be meaningless for them.
+function applyDurationToAll() {
+    if (slides.length === 0) {
+        setStatus('Add at least one slide first.', true);
+        return;
+    }
+    const input = document.getElementById('ss-bulk-dur');
+    const seconds = parseFloat(input ? input.value : '');
+    if (!isFinite(seconds) || seconds <= 0) {
+        setStatus('Enter a duration of at least 1 second.', true);
+        return;
+    }
+    const ms = Math.round(seconds * 1000);
+    let applied = 0;
+    slides.forEach(s => {
+        const isVideo = s.source_asset_type === 'video';
+        if (isVideo && s.play_to_end) return;
+        s.duration_ms = ms;
+        applied++;
+    });
+    if (applied === 0) {
+        setStatus('No slides updated — every slide is a play-to-end video.', true);
+        return;
+    }
+    markDirty();
+    setStatus('Set ' + applied + ' slide' + (applied === 1 ? '' : 's') + ' to ' + seconds + 's.');
+    renderTimeline();
+    updateTotals();
 }
 
 function reorderSlide(fromIdx, dropIdx) {
