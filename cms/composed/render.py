@@ -460,6 +460,8 @@ async def _render_layout_to_html(
                                 slide.transition
                             ),
                             transition_ms=int(slide.transition_ms),
+                            fit=slide.fit,
+                            effect=slide.effect,
                         )
                     )
                 slideshow_plans[aid] = plan

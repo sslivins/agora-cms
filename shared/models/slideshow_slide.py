@@ -49,6 +49,19 @@ class SlideshowSlide(Base):
             "transition_ms >= 0 AND transition_ms <= 5000",
             name="ck_slideshow_slide_transition_ms_range",
         ),
+        # Per-slide display effects (agora#7xx).  ``fit`` controls how the
+        # media is scaled into the cell (object-fit); ``effect`` is an
+        # optional animated treatment (Ken Burns slow pan/zoom).  Both are
+        # validated in the Pydantic schema and re-asserted here as a guard
+        # against out-of-band INSERTs.
+        CheckConstraint(
+            "fit IN ('cover','contain')",
+            name="ck_slideshow_slide_fit_known",
+        ),
+        CheckConstraint(
+            "effect IN ('none','ken_burns')",
+            name="ck_slideshow_slide_effect_known",
+        ),
         # FK columns are not auto-indexed in Postgres; the source-delete guard
         # and ACL re-check queries scan by source_asset_id.
         Index("ix_slideshow_slides_source_asset_id", "source_asset_id"),
@@ -84,6 +97,19 @@ class SlideshowSlide(Base):
     )
     transition_ms: Mapped[int] = mapped_column(
         Integer, nullable=False, default=600, server_default="600"
+    )
+    # How the media scales into the slide cell.  ``cover`` (default) fills
+    # the frame and crops overflow; ``contain`` letterboxes to show the
+    # whole image.  Mirrors CSS object-fit.
+    fit: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="cover", server_default="cover"
+    )
+    # Optional animated treatment applied while the slide is shown.
+    # ``none`` (default) is a static frame; ``ken_burns`` is a slow
+    # pan/zoom.  Rendered by the chromium player and the composed-bundle
+    # slideshow renderer.
+    effect: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none", server_default="none"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

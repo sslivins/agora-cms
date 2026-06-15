@@ -95,6 +95,10 @@ class _SlidePlan:
     # column existed.
     transition: str = "cut"
     transition_ms: int = 600
+    # Per-slide display effects.  Default ``cover`` / ``none`` matches the
+    # pre-effects behaviour for slides created before the columns existed.
+    fit: str = "cover"
+    effect: str = "none"
     # Populated for ready slides only:
     download_path: Optional[str] = None  # storage path for get_device_download_url
     api_url_path: Optional[str] = None  # CMS-relative API URL for fallback
@@ -354,6 +358,8 @@ async def plan_slideshow(
             play_to_end=slide_row.play_to_end,
             transition=slide_row.transition,
             transition_ms=slide_row.transition_ms,
+            fit=slide_row.fit,
+            effect=slide_row.effect,
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
@@ -450,7 +456,8 @@ def _compute_resolved_manifest_checksum(
     for s in slides:
         h.update(
             f"|{s.position}|{s.source_asset_id}|{s.checksum or ''}|"
-            f"{s.duration_ms}|{int(s.play_to_end)}|{s.transition}|{s.transition_ms}".encode()
+            f"{s.duration_ms}|{int(s.play_to_end)}|{s.transition}|{s.transition_ms}|"
+            f"{s.fit}|{s.effect}".encode()
         )
         # Fold each composed sibling's checksum so a re-transcoded sibling
         # video flips the resolved hash and prompts a device refetch.
@@ -536,6 +543,8 @@ async def build_fetch_for_slideshow(
                 play_to_end=sp.play_to_end,
                 transition=sp.transition,
                 transition_ms=sp.transition_ms,
+                fit=sp.fit,
+                effect=sp.effect,
                 siblings=wire_siblings,
             )
         )

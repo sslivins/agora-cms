@@ -1860,6 +1860,8 @@ async def create_slideshow_asset(
                 play_to_end=s.play_to_end,
                 transition=s.transition,
                 transition_ms=s.transition_ms,
+                fit=s.fit,
+                effect=s.effect,
             )
         )
 
@@ -2011,6 +2013,8 @@ async def replace_slideshow_slides(
                 play_to_end=s.play_to_end,
                 transition=s.transition,
                 transition_ms=s.transition_ms,
+                fit=s.fit,
+                effect=s.effect,
             )
         )
     asset.duration_seconds = duration_seconds

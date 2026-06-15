@@ -46,13 +46,19 @@ class SlideshowSlidePlan:
     media cell renders the full slideshow set as self-contained CSS/JS
     (``cut`` / ``fade`` / ``fade_black`` / ``dissolve`` / ``push`` /
     ``wipe`` / ``zoom``).  ``transition_ms`` is the transition duration
-    (ignored for ``"cut"``).
+    (ignored for ``"cut"``).  ``fit`` is the per-slide CSS object-fit
+    (``cover`` / ``contain``); ``effect`` is the per-slide motion effect
+    (``none`` / ``ken_burns``) — both mirror the on-device manifest
+    schema 1.3 fields so an embedded slideshow reads the same as the
+    standalone one.
     """
 
     source_asset_id: uuid.UUID
     duration_ms: int
     transition: str = "cut"
     transition_ms: int = 0
+    fit: str = "cover"
+    effect: str = "none"
 
 
 @dataclass
