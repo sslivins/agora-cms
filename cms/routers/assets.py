@@ -1931,6 +1931,8 @@ async def list_slideshow_slides(
                 "play_to_end": slide.play_to_end,
                 "transition": slide.transition,
                 "transition_ms": slide.transition_ms,
+                "fit": slide.fit,
+                "effect": slide.effect,
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.filename,
                 "source_asset_type": src.asset_type.value,
