@@ -231,9 +231,19 @@ jobs:
           EXPECTED="${{ needs.deploy.outputs.resolved_version }}"
           FQDN='${{ steps.fqdn.outputs.cms_fqdn }}'
           URL="https://${FQDN}/healthz"
-          echo "Polling $URL — expecting version $EXPECTED ..."
+          # Container App context for revision-state diagnostics on slow starts.
+          CMS_APP="${{ vars.INFRA_PREFIX }}-cms"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          NEW_CMS_REV='${{ needs.deploy.outputs.new_cms_revision }}'
+          # 90 attempts * 10s = 15 min ceiling. A fresh revision can sit in
+          # ImagePullBackOff for several minutes before any replica answers;
+          # the old 5-minute window produced false-negative deploy failures
+          # (HTTP 000 the whole time) that stranded an otherwise-healthy
+          # revision at 0% traffic. 15 minutes comfortably covers the pull.
+          MAX_ATTEMPTS=90
+          echo "Polling $URL — expecting version $EXPECTED (up to $MAX_ATTEMPTS attempts, ~15 min) ..."
           LAST_VERSION=""
-          for i in $(seq 1 30); do
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
             CODE=$(curl -s -o /tmp/health.json -w '%{http_code}' "$URL" --max-time 5 || echo "000")
             if [ "$CODE" = "200" ]; then
               LAST_VERSION=$(cat /tmp/health.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))")
@@ -245,12 +255,22 @@ jobs:
               echo "  attempt $i — version $LAST_VERSION != $EXPECTED, waiting 10s ..."
             else
               echo "  attempt $i — HTTP $CODE, waiting 10s ..."
+              # Once a minute, surface WHY the revision isn't answering yet
+              # (e.g. ImagePullBackOff vs CrashLoopBackOff) for fast triage.
+              if [ $((i % 6)) -eq 0 ]; then
+                RSTATE=$(az containerapp revision show --name "$CMS_APP" --resource-group "$RG" \
+                  --revision "$NEW_CMS_REV" --query "properties.runningState" -o tsv 2>/dev/null || echo "?")
+                RDETAIL=$(az containerapp replica list --name "$CMS_APP" --resource-group "$RG" \
+                  --revision "$NEW_CMS_REV" \
+                  --query "[0].properties.containers[0].{state:runningStateDetails}" -o tsv 2>/dev/null || echo "")
+                echo "    ↳ revision runningState=$RSTATE ${RDETAIL:+(replica: $RDETAIL)}"
+              fi
             fi
             sleep 10
           done
           echo "status=failed" >> "$GITHUB_OUTPUT"
           echo "last_version=$LAST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "::error::New CMS revision did not reach expected version $EXPECTED within 5 minutes (last: ${LAST_VERSION:-no response})"
+          echo "::error::New CMS revision did not reach expected version $EXPECTED within 15 minutes (last: ${LAST_VERSION:-no response})"
 
       - name: Post-deploy smoke probes (against new revision)
         id: smoke
