@@ -14,7 +14,10 @@ from cms.models.user import User
 pytestmark = pytest.mark.asyncio
 
 
-async def _seed_slideshow(db_session, *, name="My Show", is_global=True, slides=0):
+async def _seed_slideshow(
+    db_session, *, name="My Show", is_global=True, slides=0,
+    slide_fit="cover", slide_effect="none",
+):
     asset = Asset(
         filename=name,
         asset_type=AssetType.SLIDESHOW,
@@ -42,6 +45,8 @@ async def _seed_slideshow(db_session, *, name="My Show", is_global=True, slides=
                 position=i,
                 duration_ms=5000,
                 play_to_end=False,
+                fit=slide_fit,
+                effect=slide_effect,
             ))
     await db_session.commit()
     return asset
@@ -105,6 +110,21 @@ class TestSlideshowBuilderRoutes:
         assert "Editable" in body
         # Ensure the seeded slides are in the JSON island the page uses for state
         assert '"position": 0' in body or '"position":0' in body
+
+    async def test_edit_page_hydrates_fit_and_effect(self, client, db_session):
+        """Regression: per-slide fit/effect must survive the save -> reopen
+        round-trip. The edit-page JSON island (ss-initial-slides) is the
+        hydration source; if fit/effect are dropped here the editor silently
+        reverts them to defaults (cover/none) on reload."""
+        asset = await _seed_slideshow(
+            db_session, name="FitFx", slides=1,
+            slide_fit="contain", slide_effect="ken_burns",
+        )
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert '"fit": "contain"' in body or '"fit":"contain"' in body
+        assert '"effect": "ken_burns"' in body or '"effect":"ken_burns"' in body
 
     async def test_edit_page_wires_in_editor_rename(self, client, db_session):
         """Edit mode must persist a renamed slideshow in-editor. The /slides

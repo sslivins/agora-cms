@@ -1725,6 +1725,8 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                 "play_to_end": slide.play_to_end,
                 "transition": slide.transition,
                 "transition_ms": slide.transition_ms,
+                "fit": slide.fit,
+                "effect": slide.effect,
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.display_name or src.original_filename or src.filename,
                 "source_asset_type": src.asset_type.value,

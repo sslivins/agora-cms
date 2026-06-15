@@ -669,6 +669,110 @@ class TestSlideTransitions:
         assert ss.checksum != original_hash
 
 
+# ── Per-slide fit / effect (agora#7xx) ──
+
+
+@pytest.mark.asyncio
+class TestSlideFitEffect:
+    """Regression for the save -> reopen persistence bug: per-slide
+    ``fit`` and ``effect`` must round-trip through GET /slides. They were
+    persisted correctly but dropped from the serialized load payload, so
+    the editor silently reverted them to defaults (cover/none) on reload.
+    """
+
+    async def test_create_defaults_fit_cover_effect_none(self, client, db_session):
+        img = await _seed_image(db_session, filename="fx0.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "fx0",
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["fit"] == "cover"
+        assert slides[0]["effect"] == "none"
+
+    async def test_create_round_trips_explicit_fit_and_effect(
+        self, client, db_session
+    ):
+        img = await _seed_image(db_session, filename="fx1.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "fx1",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 2000,
+                    "fit": "contain",
+                    "effect": "ken_burns",
+                }],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["fit"] == "contain"
+        assert slides[0]["effect"] == "ken_burns"
+
+    async def test_replace_round_trips_explicit_fit_and_effect(
+        self, client, db_session
+    ):
+        img = await _seed_image(db_session, filename="fx2.png", is_global=True)
+        sid = (await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "fx2",
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )).json()["id"]
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{
+                "source_asset_id": str(img.id),
+                "duration_ms": 1000,
+                "fit": "contain",
+                "effect": "ken_burns",
+            }]},
+        )
+        assert put.status_code == 200, put.text
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["fit"] == "contain"
+        assert slides[0]["effect"] == "ken_burns"
+
+    async def test_rejects_unknown_fit(self, client, db_session):
+        img = await _seed_image(db_session, filename="fx3.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "fx3",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "fit": "squish",
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+    async def test_rejects_unknown_effect(self, client, db_session):
+        img = await _seed_image(db_session, filename="fx4.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "fx4",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "effect": "explode",
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+
 # ── Source-delete guard ──
 
 
