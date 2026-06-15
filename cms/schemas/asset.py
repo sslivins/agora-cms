@@ -50,6 +50,18 @@ MIN_SLIDE_TRANSITION_MS = 0
 MAX_SLIDE_TRANSITION_MS = 5000
 DEFAULT_SLIDE_TRANSITION_MS = 600
 
+# Per-slide display effects (agora#7xx).  ``fit`` maps to CSS object-fit:
+# ``cover`` fills the cell and crops overflow, ``contain`` letterboxes to
+# show the whole frame.  ``effect`` is an optional animated treatment:
+# ``none`` is a static frame, ``ken_burns`` is a slow pan/zoom.  Both are
+# rendered by the chromium player and the composed-bundle slideshow
+# renderer.  Wire IDs are short snake_case so they round-trip through DB
+# CHECK + JSON cleanly.
+SLIDE_FITS = ("cover", "contain")
+DEFAULT_SLIDE_FIT = "cover"
+SLIDE_EFFECTS = ("none", "ken_burns")
+DEFAULT_SLIDE_EFFECT = "none"
+
 
 class AssetVariantOut(BaseModel):
     model_config = {"from_attributes": True}
@@ -181,6 +193,11 @@ class SlideIn(BaseModel):
         ge=MIN_SLIDE_TRANSITION_MS,
         le=MAX_SLIDE_TRANSITION_MS,
     )
+    # Per-slide display effects.  Optional on the wire — old clients that
+    # don't send them land on ``cover`` / ``none`` which is the
+    # pre-effects behaviour.
+    fit: str = Field(DEFAULT_SLIDE_FIT)
+    effect: str = Field(DEFAULT_SLIDE_EFFECT)
 
     @field_validator("transition")
     @classmethod
@@ -189,6 +206,20 @@ class SlideIn(BaseModel):
             raise ValueError(
                 f"transition must be one of {SLIDE_TRANSITIONS}, got {v!r}"
             )
+        return v
+
+    @field_validator("fit")
+    @classmethod
+    def _validate_fit(cls, v: str) -> str:
+        if v not in SLIDE_FITS:
+            raise ValueError(f"fit must be one of {SLIDE_FITS}, got {v!r}")
+        return v
+
+    @field_validator("effect")
+    @classmethod
+    def _validate_effect(cls, v: str) -> str:
+        if v not in SLIDE_EFFECTS:
+            raise ValueError(f"effect must be one of {SLIDE_EFFECTS}, got {v!r}")
         return v
 
 
@@ -207,6 +238,8 @@ class SlideOut(BaseModel):
     play_to_end: bool
     transition: str = DEFAULT_SLIDE_TRANSITION
     transition_ms: int = DEFAULT_SLIDE_TRANSITION_MS
+    fit: str = DEFAULT_SLIDE_FIT
+    effect: str = DEFAULT_SLIDE_EFFECT
     source_asset_id: uuid.UUID
     source_filename: str
     source_asset_type: AssetType

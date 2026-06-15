@@ -359,17 +359,31 @@ class MediaWidget(Widget):
             trans_ms = 0 if transition == "cut" else int(plan.transition_ms)
             trans_codes.append(_SS_TRANSITIONS.index(transition))
             trans_durations.append(trans_ms)
+            # Per-slide display effect (manifest schema 1.3).  ``fit`` is
+            # the CSS object-fit applied inline to this slide's media so it
+            # overrides the widget-wide ``config.object_fit`` default;
+            # ``ken_burns`` adds a slow zoom keyframe that runs while the
+            # slide is active (see ``css_out`` below).
+            fit = plan.fit if plan.fit in ("cover", "contain") else "cover"
+            fit_style = f"object-fit:{fit}"
+            kb = plan.effect == "ken_burns"
             # Per-slide resting default for the transition-duration custom
             # property the shared CSS reads.  The cycling JS overrides it
             # per-swap (and halves it for fade_black); this inline value is
-            # just a sensible default for a static t=0 snapshot.
-            slide_style = f"--cw-ss-ms:{trans_ms}ms"
+            # just a sensible default for a static t=0 snapshot.  The
+            # ``--cw-ss-kb-ms`` property spans the Ken Burns zoom across the
+            # slide's display time.
+            slide_style = (
+                f"--cw-ss-ms:{trans_ms}ms;"
+                f"--cw-ss-kb-ms:{int(plan.duration_ms)}ms"
+            )
 
             if source in ctx.sibling_asset_urls:
                 src = ctx.sibling_asset_urls[source]
                 src_escaped = _html.escape(src, quote=True)
                 inner = (
                     f'<video src="{src_escaped}" '
+                    f'style="{fit_style}" '
                     f"muted loop playsinline "
                     f'aria-label="{alt_escaped}"></video>'
                 )
@@ -389,6 +403,7 @@ class MediaWidget(Widget):
                 data_uri = f"data:{mime};base64,{b64}"
                 inner = (
                     f'<img src="{data_uri}" '
+                    f'style="{fit_style}" '
                     f'alt="{alt_escaped}" draggable="false" />'
                 )
             else:
@@ -401,7 +416,8 @@ class MediaWidget(Widget):
                     "asset_bytes nor sibling_asset_urls)"
                 )
 
-            slide_classes = f"cw-ss-slide{active} cw-ss-t-{transition}"
+            kb_class = " cw-ss-kb" if kb else ""
+            slide_classes = f"cw-ss-slide{active} cw-ss-t-{transition}{kb_class}"
             slide_html.append(
                 f'<div class="{slide_classes}" style="{slide_style}">'
                 f"{inner}</div>"
@@ -409,8 +425,10 @@ class MediaWidget(Widget):
 
         html_out = f'<div class="{css_class}">' + "".join(slide_html) + "</div>"
 
-        # Instance-scoped CSS holds only the container framing + media
-        # sizing (object-fit is per-config).  The slide-transition
+        # Instance-scoped CSS holds the container framing + media sizing.
+        # The widget-wide ``object-fit`` rule below is the default; each
+        # slideshow slide carries an inline ``object-fit`` (per-slide
+        # ``fit``, schema 1.3) that overrides it.  The slide-transition
         # mechanics live in the shared, global ``_SS_TRANSITION_CSS``
         # asset emitted below.
         css_out = (
@@ -429,6 +447,25 @@ class MediaWidget(Widget):
             f"  object-fit: {config.object_fit};\n"
             f"  object-position: center;\n"
             f"  user-select: none;\n"
+            f"}}\n"
+            # Ken Burns (manifest schema 1.3, per-slide effect='ken_burns').
+            # A slow zoom that spans the slide's display time, applied only
+            # while the slide is active so it restarts each time the slide
+            # comes back around.  The keyframe is instance-scoped so two
+            # cells on the same canvas don't share animation state.  Slides
+            # without the effect carry no ``cw-ss-kb`` class and render
+            # byte-identically to the pre-1.3 output.  The KB transform is
+            # on the media element while transitions animate the slide
+            # ``<div>``, so the two never fight over the same property.
+            f".{css_class} .cw-ss-slide.cw-ss-kb.cw-ss-active img,\n"
+            f".{css_class} .cw-ss-slide.cw-ss-kb.cw-ss-active video {{\n"
+            f"  animation: cw-kb-{instance_id} var(--cw-ss-kb-ms, 10000ms)"
+            f" ease-out forwards;\n"
+            f"  transform-origin: center center;\n"
+            f"}}\n"
+            f"@keyframes cw-kb-{instance_id} {{\n"
+            f"  from {{ transform: scale(1.0001); }}\n"
+            f"  to {{ transform: scale(1.08); }}\n"
             f"}}"
         )
 

@@ -424,7 +424,7 @@ class TestSlideshowResolver:
             ss, device, "https://cms.example", db_session,
         )
         assert fetch is not None
-        assert fetch.manifest_schema_version == "1.2"
+        assert fetch.manifest_schema_version == "1.3"
         assert fetch.cycle_duration_ms == 7500
         assert fetch.started_at is not None
         assert fetch.started_at.endswith("Z")

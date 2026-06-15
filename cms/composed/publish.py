@@ -252,6 +252,8 @@ async def publish_composed_slide(
                                 slide.transition
                             ),
                             transition_ms=int(slide.transition_ms),
+                            fit=slide.fit,
+                            effect=slide.effect,
                         )
                     )
                 slideshow_plans[aid] = plan

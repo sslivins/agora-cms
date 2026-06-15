@@ -86,11 +86,17 @@ CAPABILITY_SLIDESHOW_COMPOSED_V1 = "slideshow_composed_v1"
 #           ``slideshow_composed_v1`` capability — a slideshow containing
 #           composed members is only sent to devices that advertise it,
 #           so a 1.0/1.1 player never sees an unknown slide type.
+#   "1.3" — adds optional per-slide ``fit`` ("cover"/"contain") and
+#           ``effect`` ("none"/"ken_burns") on ``SlideDescriptor``.
+#           ``fit`` controls object-fit; ``effect`` enables a slow
+#           pan/zoom (Ken Burns) animation.  Devices that don't
+#           understand 1.3 ignore the extras and fall back to the
+#           previous cover/no-animation behaviour.
 #
 # Rule for future bumps: minor bumps are additive (old players ignore
 # unknown fields).  A breaking change bumps the *major* and is gated
 # via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
-SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.2"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.3"
 SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
@@ -340,6 +346,12 @@ class SlideDescriptor(BaseModel):
     # behaviour (``cut`` / 600 ms) matches the pre-versioning era.
     transition: str = "cut"
     transition_ms: int = 600
+    # Per-slide display effects (manifest schema 1.3).  Optional on the
+    # wire so v1.0–1.2 device parsers ignore them.  ``fit`` controls
+    # object-fit ("cover"/"contain"); ``effect`` enables a slow pan/zoom
+    # ("none"/"ken_burns").  Defaults match the pre-1.3 behaviour.
+    fit: str = "cover"
+    effect: str = "none"
     # Composed-slide sibling dependencies (manifest schema 1.2).  Only
     # present (non-None) when ``asset_type`` is ``"composed"``: the
     # resolved source assets (video / image / saved_stream) embedded in
@@ -380,6 +392,19 @@ class SlideDescriptor(BaseModel):
             raise ValueError(
                 f"SlideDescriptor.transition_ms must be in [0, 5000], "
                 f"got {self.transition_ms}"
+            )
+        # Keep these allow-lists in sync with cms.schemas.asset.SLIDE_FITS /
+        # SLIDE_EFFECTS and the JS shell's player allow-lists.
+        from cms.schemas.asset import SLIDE_EFFECTS, SLIDE_FITS
+        if self.fit not in SLIDE_FITS:
+            raise ValueError(
+                f"SlideDescriptor.fit must be one of {SLIDE_FITS}, "
+                f"got {self.fit!r}"
+            )
+        if self.effect not in SLIDE_EFFECTS:
+            raise ValueError(
+                f"SlideDescriptor.effect must be one of {SLIDE_EFFECTS}, "
+                f"got {self.effect!r}"
             )
         return self
 
