@@ -517,6 +517,17 @@
         </p>
         {% endif %}
 
+        <div class="form-group" style="margin-top:0.75rem; margin-bottom:0;">
+            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;"
+                   title="Play slides in a random order. The order is reshuffled each time the slideshow loops, and all devices stay in sync.">
+                <input type="checkbox" id="ss-shuffle" {% if deck_shuffle %}checked{% endif %}>
+                <span>Shuffle slide order</span>
+            </label>
+            <p class="text-muted" style="margin:0.25rem 0 0 1.6rem; font-size:0.8rem;">
+                Reshuffles every loop; devices stay in sync.
+            </p>
+        </div>
+
         <div style="margin-top:1.25rem;">
             <h3 style="margin:0 0 0.5rem; font-size:1rem; display:flex; align-items:center; gap:0.5rem;">
                 Library
@@ -614,6 +625,7 @@ const SS_MAX_SLIDES = 50;
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
 let availableAssets = [];
 let selectedGroupIds = [];
+let deckShuffle = {% if deck_shuffle %}true{% else %}false{% endif %};
 
 function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -758,6 +770,24 @@ function makeSlot(s, i) {
 
     const fitVal = (s.fit === 'contain' || s.fit === 'contain_blur') ? s.fit : 'cover';
     const effectVal = (s.effect === 'ken_burns') ? 'ken_burns' : 'none';
+    const KB_DIRS = ['in', 'out', 'left', 'right', 'up', 'down'];
+    const KB_DIR_LABELS = {
+        in: 'Zoom in', out: 'Zoom out',
+        left: 'Pan left', right: 'Pan right',
+        up: 'Pan up', down: 'Pan down',
+    };
+    const dirVal = KB_DIRS.includes(s.effect_direction) ? s.effect_direction : 'in';
+    const dirOptions = KB_DIRS
+        .map((d) => `<option value="${d}" ${dirVal === d ? 'selected' : ''}>${KB_DIR_LABELS[d]}</option>`)
+        .join('');
+    const dirCtl = `
+                <label class="ssb-slot-fx-item ssb-slot-kbdir" title="Ken Burns direction"
+                       style="${effectVal === 'ken_burns' ? '' : 'display:none;'}">
+                    <span>Direction</span>
+                    <select class="ssb-slot-effect-direction" aria-label="Ken Burns direction">
+                        ${dirOptions}
+                    </select>
+                </label>`;
     const fitEffectCtl = `
             <div class="ssb-slot-fx">
                 <label class="ssb-slot-fx-item" title="How the slide fills the screen">
@@ -775,6 +805,7 @@ function makeSlot(s, i) {
                         <option value="ken_burns" ${effectVal === 'ken_burns' ? 'selected' : ''}>Ken Burns</option>
                     </select>
                 </label>
+                ${dirCtl}
             </div>`;
 
     slot.innerHTML = `
@@ -817,6 +848,8 @@ function makeSlot(s, i) {
     if (fitSel) fitSel.addEventListener('change', (e) => updateSlideFit(i, e.target.value));
     const effectSel = slot.querySelector('.ssb-slot-effect');
     if (effectSel) effectSel.addEventListener('change', (e) => updateSlideEffect(i, e.target.value));
+    const dirSel = slot.querySelector('.ssb-slot-effect-direction');
+    if (dirSel) dirSel.addEventListener('change', (e) => updateSlideEffectDirection(i, e.target.value));
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
@@ -1026,6 +1059,15 @@ function updateSlideFit(i, value) {
 function updateSlideEffect(i, value) {
     slides[i].effect = (value === 'ken_burns') ? 'ken_burns' : 'none';
     markDirty();
+    // Re-render so the per-slide Ken Burns direction control shows/hides
+    // in step with the Motion selector.
+    renderTimeline();
+}
+
+function updateSlideEffectDirection(i, value) {
+    const KB_DIRS = ['in', 'out', 'left', 'right', 'up', 'down'];
+    slides[i].effect_direction = KB_DIRS.includes(value) ? value : 'in';
+    markDirty();
 }
 
 function removeSlide(i) {
@@ -1059,6 +1101,7 @@ function addSlideFromAsset(assetId, atIndex) {
         // cover / none matches the pre-effects behaviour.
         fit: 'cover',
         effect: 'none',
+        effect_direction: 'in',
         source_filename: a.display_name || a.original_filename || a.filename,
         source_asset_type: a.asset_type,
         source_duration_seconds: a.duration_seconds,
@@ -1262,12 +1305,13 @@ async function saveSlideshow(opts) {
             transition_ms: (typeof s.transition_ms === 'number') ? s.transition_ms : 600,
             fit: s.fit || 'cover',
             effect: s.effect || 'none',
+            effect_direction: s.effect_direction || 'in',
         }));
         if (SS_EDIT_MODE) {
             const r = await fetch(`/api/assets/${SS_ASSET_ID}/slides`, {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({slides: slidePayload}),
+                body: JSON.stringify({slides: slidePayload, shuffle: !!deckShuffle}),
             });
             if (!r.ok) {
                 const err = await r.json().catch(() => ({}));
@@ -1287,6 +1331,7 @@ async function saveSlideshow(opts) {
                 name,
                 slides: slidePayload,
                 group_ids: selectedGroupIds,
+                shuffle: !!deckShuffle,
             };
             const r = await fetch('/api/assets/slideshow', {
                 method: 'POST',
@@ -1377,6 +1422,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     loadAvailableAssets();
     initDirtyTracking();
+    const shuffleEl = document.getElementById('ss-shuffle');
+    if (shuffleEl) {
+        shuffleEl.addEventListener('change', (e) => {
+            deckShuffle = !!e.target.checked;
+            markDirty();
+        });
+    }
     // Safety net: if a drag ends anywhere (released outside any drop
     // zone, Esc-cancelled, etc.), make sure no gap is left "opened".
     const _clearDropActive = () => {
@@ -1512,6 +1564,11 @@ window.slideshowEditorBridge = {
         const data = await r.json().catch(() => null);
         if (!data || !Array.isArray(data.slides)) return false;
         slides = data.slides;
+        if (typeof data.shuffle === 'boolean') {
+            deckShuffle = data.shuffle;
+            const shuffleEl = document.getElementById('ss-shuffle');
+            if (shuffleEl) shuffleEl.checked = deckShuffle;
+        }
         renderTimeline();
         clearDirty();
         return true;
@@ -1553,12 +1610,13 @@ window.slideshowMintDraft = async function () {
         transition_ms: (typeof s.transition_ms === 'number') ? s.transition_ms : 600,
         fit: s.fit || 'cover',
         effect: s.effect || 'none',
+        effect_direction: s.effect_direction || 'in',
     }));
     try {
         const r = await fetch('/api/assets/slideshow', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name, slides: slidePayload, group_ids: selectedGroupIds}),
+            body: JSON.stringify({name, slides: slidePayload, group_ids: selectedGroupIds, shuffle: !!deckShuffle}),
         });
         if (!r.ok) {
             const err = await r.json().catch(() => ({}));

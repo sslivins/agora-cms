@@ -68,6 +68,13 @@ class Asset(Base):
     # Max capture duration in seconds (for SAVED_STREAM of live sources)
     capture_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Deck-level shuffle for SLIDESHOW assets (agora#261).  When true the
+    # device plays the slide order in a deterministic per-cycle shuffle.
+    # Slideshow-only meaning, like duration_seconds; default false for all
+    # other asset types.
+    shuffle: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Capture progress (SAVED_STREAM): 0.0-100.0 while ffmpeg runs, NULL when
     # not yet started.  Populated by worker during _capture_stream; cleared
     # on recapture.  Mirrors AssetVariant.progress so the UI can show a

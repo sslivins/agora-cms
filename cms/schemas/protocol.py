@@ -92,11 +92,22 @@ CAPABILITY_SLIDESHOW_COMPOSED_V1 = "slideshow_composed_v1"
 #           pan/zoom (Ken Burns) animation.  Devices that don't
 #           understand 1.3 ignore the extras and fall back to the
 #           previous cover/no-animation behaviour.
+#   "1.4" — adds optional per-slide ``effect_direction``
+#           ("in"/"out"/"left"/"right"/"up"/"down") on
+#           ``SlideDescriptor`` (the Ken Burns pan/zoom direction;
+#           only meaningful when ``effect == "ken_burns"``; default
+#           "in" reproduces the 1.3 zoom-in), plus deck-level
+#           ``shuffle`` (bool) + ``shuffle_seed`` (stable int) on
+#           ``FetchAssetMessage``.  When ``shuffle`` is set the device
+#           plays a deterministic per-cycle shuffle of the slide order
+#           seeded by ``(shuffle_seed, cycle_index)``.  Devices that
+#           don't understand 1.4 ignore both and play the authored
+#           order with the default zoom-in.
 #
 # Rule for future bumps: minor bumps are additive (old players ignore
 # unknown fields).  A breaking change bumps the *major* and is gated
 # via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
-SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.3"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.4"
 SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
@@ -328,6 +339,20 @@ class FetchAssetMessage(BaseMessage):
     # / None means "no siblings declared" (e.g. a composed slide that is
     # all text + clock widgets, or a draft with no referenced assets).
     siblings: Optional[list["Sibling"]] = None
+    # Deck-level shuffle (manifest schema 1.4).  Only present (non-None)
+    # when ``asset_type`` is ``slideshow``.  When ``shuffle`` is true the
+    # device plays a deterministic per-cycle shuffle of the authored slide
+    # order: for cycle index N (``elapsed_ms // cycle_duration_ms``) it
+    # derives a permutation seeded by ``(shuffle_seed, N)``, so every
+    # device in the fleet shows the same order for the same cycle and a
+    # reboot resyncs mid-cycle.  ``shuffle_seed`` is a stable integer
+    # derived from the asset id (identical across re-fetches) so it does
+    # NOT perturb the resolved manifest checksum; only the ``shuffle`` bool
+    # is folded into the checksum so toggling it re-pushes.  Optional /
+    # additive — devices that don't understand 1.4 ignore both and play
+    # the authored order.
+    shuffle: Optional[bool] = None
+    shuffle_seed: Optional[int] = None
 
 
 class SlideDescriptor(BaseModel):
@@ -352,6 +377,10 @@ class SlideDescriptor(BaseModel):
     # ("none"/"ken_burns").  Defaults match the pre-1.3 behaviour.
     fit: str = "cover"
     effect: str = "none"
+    # Ken Burns pan/zoom direction (manifest schema 1.4).  Optional on the
+    # wire so v1.0–1.3 device parsers ignore it.  Only meaningful when
+    # ``effect == "ken_burns"``; default "in" reproduces the 1.3 zoom-in.
+    effect_direction: str = "in"
     # Composed-slide sibling dependencies (manifest schema 1.2).  Only
     # present (non-None) when ``asset_type`` is ``"composed"``: the
     # resolved source assets (video / image / saved_stream) embedded in
@@ -405,6 +434,15 @@ class SlideDescriptor(BaseModel):
             raise ValueError(
                 f"SlideDescriptor.effect must be one of {SLIDE_EFFECTS}, "
                 f"got {self.effect!r}"
+            )
+        # Keep this allow-list in sync with
+        # cms.schemas.asset.KEN_BURNS_DIRECTIONS and the JS shell's player
+        # allow-list.
+        from cms.schemas.asset import KEN_BURNS_DIRECTIONS
+        if self.effect_direction not in KEN_BURNS_DIRECTIONS:
+            raise ValueError(
+                f"SlideDescriptor.effect_direction must be one of "
+                f"{KEN_BURNS_DIRECTIONS}, got {self.effect_direction!r}"
             )
         return self
 

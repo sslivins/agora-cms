@@ -99,6 +99,9 @@ class _SlidePlan:
     # pre-effects behaviour for slides created before the columns existed.
     fit: str = "cover"
     effect: str = "none"
+    # Ken Burns pan/zoom direction.  Default ``in`` matches the pre-1.4
+    # zoom-in behaviour for slides created before the column existed.
+    effect_direction: str = "in"
     # Populated for ready slides only:
     download_path: Optional[str] = None  # storage path for get_device_download_url
     api_url_path: Optional[str] = None  # CMS-relative API URL for fallback
@@ -360,6 +363,7 @@ async def plan_slideshow(
             transition_ms=slide_row.transition_ms,
             fit=slide_row.fit,
             effect=slide_row.effect,
+            effect_direction=slide_row.effect_direction,
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
@@ -442,7 +446,7 @@ async def plan_slideshow(
 
 
 def _compute_resolved_manifest_checksum(
-    asset_checksum: str, slides: list[_SlidePlan]
+    asset_checksum: str, slides: list[_SlidePlan], shuffle: bool = False
 ) -> str:
     """Per-device-profile resolved checksum.
 
@@ -450,14 +454,20 @@ def _compute_resolved_manifest_checksum(
     selected variant checksum (or source checksum) so that re-transcoding
     a single source variant flips the manifest hash for any device on
     that profile, prompting a refetch.
+
+    The deck-level ``shuffle`` bool is folded in so toggling it re-pushes
+    the manifest.  The companion ``shuffle_seed`` is intentionally NOT
+    folded — it's a stable function of the asset id so a re-fetch keeps
+    the same per-cycle order without perturbing the checksum.
     """
     h = hashlib.sha256()
     h.update((asset_checksum or "").encode())
+    h.update(f"|shuffle={int(bool(shuffle))}".encode())
     for s in slides:
         h.update(
             f"|{s.position}|{s.source_asset_id}|{s.checksum or ''}|"
             f"{s.duration_ms}|{int(s.play_to_end)}|{s.transition}|{s.transition_ms}|"
-            f"{s.fit}|{s.effect}".encode()
+            f"{s.fit}|{s.effect}|{s.effect_direction}".encode()
         )
         # Fold each composed sibling's checksum so a re-transcoded sibling
         # video flips the resolved hash and prompts a device refetch.
@@ -480,7 +490,9 @@ async def resolved_slideshow_checksum(
     plan = await plan_slideshow(asset, profile_id, db)
     if not plan.ready:
         return None
-    return _compute_resolved_manifest_checksum(asset.checksum or "", plan.slides)
+    return _compute_resolved_manifest_checksum(
+        asset.checksum or "", plan.slides, bool(asset.shuffle)
+    )
 
 
 async def build_fetch_for_slideshow(
@@ -545,15 +557,24 @@ async def build_fetch_for_slideshow(
                 transition_ms=sp.transition_ms,
                 fit=sp.fit,
                 effect=sp.effect,
+                effect_direction=sp.effect_direction,
                 siblings=wire_siblings,
             )
         )
 
-    resolved = _compute_resolved_manifest_checksum(asset.checksum or "", plan.slides)
+    resolved = _compute_resolved_manifest_checksum(
+        asset.checksum or "", plan.slides, bool(asset.shuffle)
+    )
 
     # Phase 1b of agora#226 — wall-clock anchor support.
     cycle_duration_ms = sum(sp.duration_ms for sp in plan.slides)
     started_at = _compute_cycle_anchor(cycle_duration_ms)
+
+    # Deck-level shuffle (agora#261).  Emit the bool + a stable per-asset
+    # seed so every device derives the same per-cycle permutation and a
+    # re-fetch keeps the same order (seed does not perturb the checksum).
+    shuffle = bool(asset.shuffle)
+    shuffle_seed = _shuffle_seed_for_asset(asset.id) if shuffle else None
 
     return FetchAssetMessage(
         asset_name=asset.filename,
@@ -565,7 +586,22 @@ async def build_fetch_for_slideshow(
         manifest_schema_version=SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST,
         cycle_duration_ms=cycle_duration_ms,
         started_at=started_at,
+        shuffle=shuffle,
+        shuffle_seed=shuffle_seed,
     )
+
+
+def _shuffle_seed_for_asset(asset_id: uuid.UUID) -> int:
+    """Stable, process-independent shuffle seed derived from the asset id.
+
+    Uses SHA-256 (not Python's salted ``hash()``) so the value is
+    identical across CMS processes, restarts, and re-fetches — the device
+    needs the same seed every time to keep a consistent per-cycle order.
+    Truncated to a 31-bit non-negative int (fits a signed 32-bit / JS
+    safe integer range comfortably).
+    """
+    digest = hashlib.sha256(asset_id.bytes).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
 
 
 def _compute_cycle_anchor(cycle_duration_ms: int) -> Optional[str]:

@@ -59,6 +59,7 @@ class SlideshowSlidePlan:
     transition_ms: int = 0
     fit: str = "cover"
     effect: str = "none"
+    effect_direction: str = "in"
 
 
 @dataclass

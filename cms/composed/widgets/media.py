@@ -75,6 +75,52 @@ _SS_TRANSITIONS: tuple[str, ...] = (
     "wipe",
     "zoom",
 )
+
+# Per-slide Ken Burns directions (manifest schema 1.4).  ``in`` is the
+# legacy zoom-in default rendered by the base ``cw-kb-{instance_id}``
+# keyframe; the other five pan in a constant-zoom direction.  Kept in
+# lockstep with ``cms.schemas.asset.KEN_BURNS_DIRECTIONS`` and the device
+# shell's directional keyframes (agora ``player.js`` / ``player.css``).
+_KB_DIRECTIONS: tuple[str, ...] = ("in", "out", "left", "right", "up", "down")
+
+# from/to transforms for each non-``in`` direction.  ``out`` reverses the
+# zoom; the pan directions hold the zoom constant and slide the framing.
+_KB_DIRECTION_TRANSFORMS: dict[str, tuple[str, str]] = {
+    "out": ("scale(1.08)", "scale(1.0001)"),
+    "left": ("scale(1.08) translate(2%, 0)", "scale(1.08) translate(-2%, 0)"),
+    "right": ("scale(1.08) translate(-2%, 0)", "scale(1.08) translate(2%, 0)"),
+    "up": ("scale(1.08) translate(0, 2%)", "scale(1.08) translate(0, -2%)"),
+    "down": ("scale(1.08) translate(0, -2%)", "scale(1.08) translate(0, 2%)"),
+}
+
+
+def _kb_direction_css(css_class: str, instance_id: str, dirs_used: set[str]) -> str:
+    """Override rules + keyframes for non-``in`` Ken Burns directions.
+
+    Emitted only for directions actually present on a slide so an
+    all-``in`` deck's CSS is byte-identical to the pre-1.4 output.  Each
+    direction swaps the ``animation-name`` on its slides' active media to
+    a direction-specific instance-scoped keyframe.
+    """
+    parts: list[str] = []
+    for direction in _KB_DIRECTIONS:
+        if direction == "in" or direction not in dirs_used:
+            continue
+        frm, to = _KB_DIRECTION_TRANSFORMS[direction]
+        kf = f"cw-kb-{direction}-{instance_id}"
+        parts.append(
+            f"\n.{css_class} .cw-ss-slide.cw-ss-kb-{direction}.cw-ss-active "
+            f"img:not(.cw-ss-blur-bg),\n"
+            f".{css_class} .cw-ss-slide.cw-ss-kb-{direction}.cw-ss-active video {{\n"
+            f"  animation-name: {kf};\n"
+            f"}}\n"
+            f"@keyframes {kf} {{\n"
+            f"  from {{ transform: {frm}; }}\n"
+            f"  to {{ transform: {to}; }}\n"
+            f"}}"
+        )
+    return "".join(parts)
+
 # The composed media cell renders slideshow transitions by PORTING the
 # device player shell's real transition mechanism — two crossfading
 # layers plus per-mode ``tx-*`` classes flipped by JS — rather than
@@ -343,6 +389,11 @@ class MediaWidget(Widget):
         durations: list[int] = []
         trans_codes: list[int] = []
         trans_durations: list[int] = []
+        # Per-slide Ken Burns directions (schema 1.4) actually used by KB
+        # slides, other than the default ``in``.  We only emit the extra
+        # directional keyframes/rules for directions that appear, so an
+        # all-``in`` deck stays byte-identical to the pre-1.4 output.
+        kb_dirs_used: set[str] = set()
 
         for idx, plan in enumerate(plans):
             source = plan.source_asset_id
@@ -448,6 +499,11 @@ class MediaWidget(Widget):
                 )
 
             kb_class = " cw-ss-kb" if kb else ""
+            if kb and plan.effect_direction in _KB_DIRECTIONS and (
+                plan.effect_direction != "in"
+            ):
+                kb_class += f" cw-ss-kb-{plan.effect_direction}"
+                kb_dirs_used.add(plan.effect_direction)
             slide_classes = f"cw-ss-slide{active} cw-ss-t-{transition}{kb_class}"
             slide_html.append(
                 f'<div class="{slide_classes}" style="{slide_style}">'
@@ -527,6 +583,15 @@ class MediaWidget(Widget):
             f"  to {{ transform: scale(1.08); }}\n"
             f"}}"
         )
+
+        # Schema 1.4 directional Ken Burns.  The base rule above bakes the
+        # default ``in`` (zoom-in) keyframe so an all-``in`` deck renders
+        # byte-identically.  For any non-``in`` direction actually used we
+        # append an override that swaps the animation-name to a
+        # direction-specific keyframe.  Kept in lockstep with the device
+        # shell's directional keyframes (agora player.js).
+        if kb_dirs_used:
+            css_out += _kb_direction_css(css_class, instance_id, kb_dirs_used)
 
         # Bake ONLY integer arrays into the runtime — never interpolate
         # raw config strings into JS.  ``types`` are indices into the JS
