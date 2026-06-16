@@ -68,11 +68,33 @@ DEFAULT_SLIDE_EFFECT = "none"
 
 # Per-slide Ken Burns pan/zoom direction (slideshow roadmap, agora#261).
 # Only meaningful when ``effect == "ken_burns"``; ignored otherwise.  The
-# default ``in`` reproduces the original ``fx-ken-burns`` keyframe exactly
-# (zoom-in + pan toward the top-left), so every pre-existing ken_burns slide
-# stays byte-identical.  Additive: a device that doesn't recognise the field
-# falls back to the default ``in`` animation (graceful).
-KEN_BURNS_DIRECTIONS = ("in", "out", "left", "right", "up", "down")
+# direction token encodes two orthogonal tracks: a ZOOM (``in`` | ``out``)
+# and an optional PAN (one of 8 compass directions, incl. diagonals).  The
+# default ``in`` is pure zoom-in and reproduces the original keyframe
+# exactly, so every pre-existing ken_burns slide stays byte-identical.
+# Wire grammar: ``in``/``out`` (pure zoom), ``in_<pan>``/``out_<pan>``
+# (zoom + pan), and legacy bare-pan aliases (``left`` ... render as
+# zoom-in pans, matching the device shell's ``kbDirectionClass`` parser).
+# Additive: a device that doesn't recognise the field falls back to the
+# default ``in`` animation (graceful).  Kept in lockstep with the composed
+# media widget (``cms.composed.widgets.media``) + agora player.js/css.
+_KEN_BURNS_PANS = (
+    "left",
+    "right",
+    "up",
+    "down",
+    "up_left",
+    "up_right",
+    "down_left",
+    "down_right",
+)
+KEN_BURNS_DIRECTIONS = (
+    "in",
+    "out",
+    *(f"in_{_p}" for _p in _KEN_BURNS_PANS),
+    *(f"out_{_p}" for _p in _KEN_BURNS_PANS),
+    *_KEN_BURNS_PANS,
+)
 DEFAULT_KEN_BURNS_DIRECTION = "in"
 
 

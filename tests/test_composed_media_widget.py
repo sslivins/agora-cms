@@ -597,3 +597,66 @@ class TestMediaWidgetSlideshowBranch:
         assert composed_cell_transition("bogus") == "fade"
         assert composed_cell_transition("") == "fade"
 
+
+class TestKenBurnsOrthogonalGrammar:
+    """Pins the orthogonal Ken Burns (zoom × pan) token grammar.
+
+    The CMS authoring popover (``slideshow_builder.html`` ``kbParse`` /
+    ``kbTransforms``) mirrors these helpers byte-for-byte so the live
+    mini-preview matches the device render. If these expectations move,
+    update the JS helpers in lockstep.
+    """
+
+    @pytest.mark.parametrize(
+        "token,expected",
+        [
+            ("", ("in", None)),
+            ("in", ("in", None)),
+            ("out", ("out", None)),
+            # legacy bare-pan aliases fold to a zoom-in pan
+            ("left", ("in", "left")),
+            ("down_right", ("in", "down_right")),
+            # composed tokens
+            ("in_up", ("in", "up")),
+            ("out_up_right", ("out", "up_right")),
+            ("out_down_left", ("out", "down_left")),
+            # garbage degrades to the safe pure-zoom-in default
+            ("diagonal", ("in", None)),
+            ("out_sideways", ("in", None)),
+        ],
+    )
+    def test_normalize(self, token, expected):
+        from cms.composed.widgets.media import _kb_normalize
+
+        assert _kb_normalize(token) == expected
+
+    def test_transform_pure_zoom(self):
+        from cms.composed.widgets.media import _kb_transform
+
+        assert _kb_transform("in", None) == ("scale(1.0001)", "scale(1.08)")
+        assert _kb_transform("out", None) == ("scale(1.08)", "scale(1.0001)")
+
+    def test_transform_zoom_out_up_right(self):
+        # The new authoring default: zoom-out drifting toward the
+        # up-right corner. Both axes carry an explicit ``%``.
+        from cms.composed.widgets.media import _kb_transform
+
+        assert _kb_transform("out", "up_right") == (
+            "scale(1.08) translate(-2%, 2%)",
+            "scale(1.0001) translate(2%, -2%)",
+        )
+
+    def test_transform_diagonals_are_corner_to_corner(self):
+        from cms.composed.widgets.media import _kb_transform
+
+        frm, to = _kb_transform("in", "down_left")
+        assert frm == "scale(1.0001) translate(2%, -2%)"
+        assert to == "scale(1.08) translate(-2%, 2%)"
+
+    def test_out_up_right_is_an_allowed_wire_token(self):
+        # The authoring default must survive schema validation.
+        from cms.schemas.asset import KEN_BURNS_DIRECTIONS
+
+        assert "out_up_right" in KEN_BURNS_DIRECTIONS
+
+

@@ -390,6 +390,114 @@
 }
 .ssb-trans-dur-unit { color: #888; }
 
+/* Ken Burns customize button + popover (compass + zoom + live preview) */
+.ssb-slot-kbbtn {
+    background: #2a2a2a;
+    color: #ddd;
+    border: 1px solid #444;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.4rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.3rem;
+    width: 100%;
+}
+.ssb-slot-kbbtn:hover { border-color: #1abc9c; }
+.ssb-slot-kbbtn .ssb-kbbtn-arrow { color: #1abc9c; font-size: 0.9rem; line-height: 1; }
+.ssb-kb-menu {
+    position: fixed;
+    margin: 0;
+    inset: auto;
+    background: #1f1f1f;
+    border: 1px solid #444;
+    border-radius: 0.4rem;
+    padding: 0.6rem;
+    width: 210px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+    color: #ddd;
+}
+.ssb-kb-menu:not(:popover-open) { display: none; }
+.ssb-kb-zoom {
+    display: flex;
+    gap: 0.3rem;
+    margin-bottom: 0.55rem;
+}
+.ssb-kb-zoom button {
+    flex: 1 1 0;
+    background: #2a2a2a;
+    color: #ccc;
+    border: 1px solid #444;
+    border-radius: 0.3rem;
+    padding: 0.3rem 0;
+    font-size: 0.72rem;
+    cursor: pointer;
+}
+.ssb-kb-zoom button.sel {
+    background: rgba(22,160,133,0.28);
+    border-color: #1abc9c;
+    color: #fff;
+    font-weight: 600;
+}
+.ssb-kb-body { display: flex; gap: 0.6rem; align-items: center; }
+.ssb-kb-compass {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 3px;
+    flex: 0 0 auto;
+}
+.ssb-kb-compass button {
+    width: 26px;
+    height: 26px;
+    background: #2a2a2a;
+    color: #aaa;
+    border: 1px solid #444;
+    border-radius: 0.25rem;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.ssb-kb-compass button:hover { border-color: #1abc9c; color: #fff; }
+.ssb-kb-compass button.sel {
+    background: rgba(22,160,133,0.3);
+    border-color: #1abc9c;
+    color: #fff;
+}
+.ssb-kb-preview {
+    flex: 1 1 auto;
+    height: 84px;
+    border: 1px solid #333;
+    border-radius: 0.3rem;
+    overflow: hidden;
+    background: #000;
+    position: relative;
+}
+.ssb-kb-preview img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    will-change: transform;
+}
+.ssb-kb-preview-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #666;
+    font-size: 0.65rem;
+    text-align: center;
+    padding: 0.2rem;
+}
+
 /* Drop zone at end of timeline / when empty */
 .ssb-end {
     flex: 0 0 180px;
@@ -631,6 +739,67 @@ function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// --- Ken Burns grammar (mirrors cms/composed/widgets/media.py) -------------
+// Orthogonal model: a zoom track (in/out) composed with an optional pan
+// (8 compass directions). Wire tokens: 'in', 'out', 'in_<pan>', 'out_<pan>',
+// and bare legacy '<pan>' (== zoom-in pan). Anything else -> 'in'.
+const KB_PANS = ['left', 'right', 'up', 'down', 'up_left', 'up_right', 'down_left', 'down_right'];
+// Per-pan offsets as [fromX, fromY, toX, toY] in percent. MUST match
+// _KB_PAN_OFFSETS in media.py / the firmware player.css keyframes.
+const KB_PAN_OFFSETS = {
+    left:       [2, 0, -2, 0],
+    right:      [-2, 0, 2, 0],
+    up:         [0, 2, 0, -2],
+    down:       [0, -2, 0, 2],
+    up_left:    [2, 2, -2, -2],
+    up_right:   [-2, 2, 2, -2],
+    down_left:  [2, -2, -2, 2],
+    down_right: [-2, -2, 2, 2],
+};
+const KB_ZOOM_SCALE = { 'in': [1.0001, 1.08], 'out': [1.08, 1.0001] };
+const KB_ARROWS = {
+    left: '←', right: '→', up: '↑', down: '↓',
+    up_left: '↖', up_right: '↗', down_left: '↙', down_right: '↘',
+};
+
+// token -> { zoom: 'in'|'out', pan: <pan>|null }
+function kbParse(token) {
+    const t = (token == null ? '' : String(token)).trim().toLowerCase();
+    if (t === 'in' || t === '') return { zoom: 'in', pan: null };
+    if (t === 'out') return { zoom: 'out', pan: null };
+    if (KB_PANS.includes(t)) return { zoom: 'in', pan: t };       // legacy bare pan
+    if (t.startsWith('out_') && KB_PANS.includes(t.slice(4))) return { zoom: 'out', pan: t.slice(4) };
+    if (t.startsWith('in_') && KB_PANS.includes(t.slice(3))) return { zoom: 'in', pan: t.slice(3) };
+    return { zoom: 'in', pan: null };
+}
+
+// { zoom, pan } -> canonical wire token
+function kbCompose(zoom, pan) {
+    const z = (zoom === 'out') ? 'out' : 'in';
+    if (!pan) return z;
+    return `${z}_${pan}`;
+}
+
+// Human summary label, e.g. "Zoom out ↗"
+function kbLabel(token) {
+    const { zoom, pan } = kbParse(token);
+    const z = zoom === 'out' ? 'Zoom out' : 'Zoom in';
+    return pan ? `${z} ${KB_ARROWS[pan]}` : z;
+}
+
+// CSS transform pair [from, to] for a token. scale() FIRST, then translate()
+// with explicit % on both axes — byte-identical to media.py / player.css.
+function kbTransforms(token) {
+    const { zoom, pan } = kbParse(token);
+    const [sFrom, sTo] = KB_ZOOM_SCALE[zoom];
+    let fx = 0, fy = 0, tx = 0, ty = 0;
+    if (pan) [fx, fy, tx, ty] = KB_PAN_OFFSETS[pan];
+    return [
+        `scale(${sFrom}) translate(${fx}%, ${fy}%)`,
+        `scale(${sTo}) translate(${tx}%, ${ty}%)`,
+    ];
+}
+
 function fmtDur(s) {
     if (!s && s !== 0) return '—';
     if (s < 60) return s.toFixed(1) + 's';
@@ -770,24 +939,19 @@ function makeSlot(s, i) {
 
     const fitVal = (s.fit === 'contain' || s.fit === 'contain_blur') ? s.fit : 'cover';
     const effectVal = (s.effect === 'ken_burns') ? 'ken_burns' : 'none';
-    const KB_DIRS = ['in', 'out', 'left', 'right', 'up', 'down'];
-    const KB_DIR_LABELS = {
-        in: 'Zoom in', out: 'Zoom out',
-        left: 'Pan left', right: 'Pan right',
-        up: 'Pan up', down: 'Pan down',
-    };
-    const dirVal = KB_DIRS.includes(s.effect_direction) ? s.effect_direction : 'in';
-    const dirOptions = KB_DIRS
-        .map((d) => `<option value="${d}" ${dirVal === d ? 'selected' : ''}>${KB_DIR_LABELS[d]}</option>`)
-        .join('');
+    const dirToken = (function () { const p = kbParse(s.effect_direction); return kbCompose(p.zoom, p.pan); })();
+    const kbMenuId = `ssb-kb-menu-${i}`;
     const dirCtl = `
-                <label class="ssb-slot-fx-item ssb-slot-kbdir" title="Ken Burns direction"
+                <label class="ssb-slot-fx-item ssb-slot-kbdir" title="Ken Burns motion"
                        style="${effectVal === 'ken_burns' ? '' : 'display:none;'}">
-                    <span>Direction</span>
-                    <select class="ssb-slot-effect-direction" aria-label="Ken Burns direction">
-                        ${dirOptions}
-                    </select>
-                </label>`;
+                    <span>Motion path</span>
+                    <button type="button" class="ssb-slot-kbbtn"
+                            aria-label="Customize Ken Burns motion">
+                        <span class="ssb-kbbtn-label">${escapeHtml(kbLabel(dirToken))}</span>
+                        <span class="ssb-kbbtn-arrow" aria-hidden="true">⚙</span>
+                    </button>
+                </label>
+                <div id="${kbMenuId}" class="ssb-kb-menu" popover="auto"></div>`;
     const fitEffectCtl = `
             <div class="ssb-slot-fx">
                 <label class="ssb-slot-fx-item" title="How the slide fills the screen">
@@ -848,8 +1012,13 @@ function makeSlot(s, i) {
     if (fitSel) fitSel.addEventListener('change', (e) => updateSlideFit(i, e.target.value));
     const effectSel = slot.querySelector('.ssb-slot-effect');
     if (effectSel) effectSel.addEventListener('change', (e) => updateSlideEffect(i, e.target.value));
-    const dirSel = slot.querySelector('.ssb-slot-effect-direction');
-    if (dirSel) dirSel.addEventListener('change', (e) => updateSlideEffectDirection(i, e.target.value));
+    const kbBtn = slot.querySelector('.ssb-slot-kbbtn');
+    if (kbBtn) {
+        kbBtn.addEventListener('click', () => {
+            const menu = slot.querySelector('.ssb-kb-menu');
+            if (menu) buildKbMenu(menu, kbBtn, i);
+        });
+    }
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
@@ -999,6 +1168,123 @@ function buildTransitionGap(gap, slideIdx, isLoop) {
         });
 }
 
+// Builds the Ken Burns motion popover (zoom toggle + 3x3 compass + a live
+// looping mini-preview) into ``menu`` bound to ``slides[i]``, then positions
+// and toggles it under ``btn``. The mini-preview uses the Web Animations API
+// with the EXACT same transform pair the device/composed pipeline emits
+// (kbTransforms ↔ media.py ↔ player.css) so authoring is true WYSIWYG.
+function buildKbMenu(menu, btn, i) {
+    const s = slides[i];
+    if (!s) return;
+
+    // Close any other open popover; if this one is already open, just close it.
+    const wasOpen = menu.matches(':popover-open');
+    document.querySelectorAll('.ssb-kb-menu, .ssb-trans-menu').forEach((m) => {
+        if (m !== menu) { try { m.hidePopover(); } catch {} }
+    });
+    if (wasOpen) { try { menu.hidePopover(); } catch {} return; }
+
+    const parsed = kbParse(s.effect_direction);
+    let zoom = parsed.zoom;   // 'in' | 'out'
+    let pan = parsed.pan;     // pan token | null
+
+    const thumbUrl = s.thumbnail_url
+        || (s.source_asset_id ? `/api/assets/${s.source_asset_id}/preview` : '');
+
+    // 3x3 compass; center (null) = no pan (zoom only).
+    const COMPASS = [
+        ['up_left', 'up', 'up_right'],
+        ['left', null, 'right'],
+        ['down_left', 'down', 'down_right'],
+    ];
+
+    menu.innerHTML = `
+        <div class="ssb-kb-zoom" role="group" aria-label="Zoom">
+            <button type="button" data-zoom="in">Zoom in</button>
+            <button type="button" data-zoom="out">Zoom out</button>
+        </div>
+        <div class="ssb-kb-body">
+            <div class="ssb-kb-compass" role="group" aria-label="Pan direction"></div>
+            <div class="ssb-kb-preview">${
+                thumbUrl
+                    ? `<img alt="" src="${escapeHtml(thumbUrl)}">`
+                    : '<div class="ssb-kb-preview-empty">No preview</div>'
+            }</div>
+        </div>`;
+
+    const compass = menu.querySelector('.ssb-kb-compass');
+    COMPASS.forEach((rowArr) => {
+        rowArr.forEach((p) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.dataset.pan = (p == null) ? '' : p;
+            b.textContent = (p == null) ? '•' : KB_ARROWS[p];
+            b.title = (p == null) ? 'No pan (zoom only)' : `Pan ${p.replace('_', '-')}`;
+            compass.appendChild(b);
+        });
+    });
+
+    const previewImg = menu.querySelector('.ssb-kb-preview img');
+    let previewAnim = null;
+
+    function refresh(persist) {
+        const token = kbCompose(zoom, pan);
+        menu.querySelectorAll('.ssb-kb-zoom button').forEach((zb) => {
+            zb.classList.toggle('sel', zb.dataset.zoom === zoom);
+        });
+        menu.querySelectorAll('.ssb-kb-compass button').forEach((cb) => {
+            cb.classList.toggle('sel', (cb.dataset.pan || null) === pan);
+        });
+        if (previewImg) {
+            if (previewAnim) { try { previewAnim.cancel(); } catch {} }
+            const [from, to] = kbTransforms(token);
+            try {
+                previewAnim = previewImg.animate(
+                    [{ transform: from }, { transform: to }],
+                    { duration: 3500, iterations: Infinity, easing: 'linear' }
+                );
+            } catch {}
+        }
+        const lbl = btn.querySelector('.ssb-kbbtn-label');
+        if (lbl) lbl.textContent = kbLabel(token);
+        if (persist && s.effect_direction !== token) {
+            s.effect_direction = token;
+            markDirty();
+        }
+    }
+
+    menu.querySelectorAll('.ssb-kb-zoom button').forEach((zb) => {
+        zb.addEventListener('click', (e) => {
+            e.stopPropagation();
+            zoom = (zb.dataset.zoom === 'out') ? 'out' : 'in';
+            refresh(true);
+        });
+    });
+    menu.querySelectorAll('.ssb-kb-compass button').forEach((cb) => {
+        cb.addEventListener('click', (e) => {
+            e.stopPropagation();
+            pan = cb.dataset.pan || null;
+            refresh(true);
+        });
+    });
+
+    // Stop the looping preview animation whenever the popover closes.
+    menu.addEventListener('toggle', (e) => {
+        if (e.newState === 'closed' && previewAnim) {
+            try { previewAnim.cancel(); } catch {}
+            previewAnim = null;
+        }
+    }, { once: true });
+
+    refresh(false);  // initialize selection + preview without persisting
+
+    const r = btn.getBoundingClientRect();
+    menu.style.top = (r.bottom + 6) + 'px';
+    menu.style.left = (r.left + r.width / 2) + 'px';
+    menu.style.transform = 'translateX(-50%)';
+    try { menu.showPopover(); } catch {}
+}
+
 function wireDropZone(el, dropIndex) {
     el.addEventListener('dragover', (e) => {
         if (!e.dataTransfer.types.includes('application/x-slideshow-source')) return;
@@ -1057,17 +1343,18 @@ function updateSlideFit(i, value) {
 }
 
 function updateSlideEffect(i, value) {
-    slides[i].effect = (value === 'ken_burns') ? 'ken_burns' : 'none';
+    const enabling = (value === 'ken_burns');
+    slides[i].effect = enabling ? 'ken_burns' : 'none';
+    // When a slide is newly switched to Ken Burns and still carries the
+    // bare default token, seed the nicer authoring default (zoom-out +
+    // up-right drift). Existing decks keep whatever token they stored.
+    if (enabling && (!slides[i].effect_direction || slides[i].effect_direction === 'in')) {
+        slides[i].effect_direction = 'out_up_right';
+    }
     markDirty();
     // Re-render so the per-slide Ken Burns direction control shows/hides
     // in step with the Motion selector.
     renderTimeline();
-}
-
-function updateSlideEffectDirection(i, value) {
-    const KB_DIRS = ['in', 'out', 'left', 'right', 'up', 'down'];
-    slides[i].effect_direction = KB_DIRS.includes(value) ? value : 'in';
-    markDirty();
 }
 
 function removeSlide(i) {

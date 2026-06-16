@@ -76,42 +76,114 @@ _SS_TRANSITIONS: tuple[str, ...] = (
     "zoom",
 )
 
-# Per-slide Ken Burns directions (manifest schema 1.4).  ``in`` is the
-# legacy zoom-in default rendered by the base ``cw-kb-{instance_id}``
-# keyframe; the other five pan in a constant-zoom direction.  Kept in
+# Per-slide Ken Burns motion (manifest schema 1.4 ``effect_direction``).
+# The token encodes two orthogonal tracks: a ZOOM (``in`` | ``out``) and an
+# optional PAN (one of 8 compass directions, incl. diagonals).  ``in``
+# (pure zoom-in) is the legacy default rendered by the base
+# ``cw-kb-{instance_id}`` keyframe; every other combo gets an
+# instance-scoped override keyframe emitted only when used.  Kept in
 # lockstep with ``cms.schemas.asset.KEN_BURNS_DIRECTIONS`` and the device
-# shell's directional keyframes (agora ``player.js`` / ``player.css``).
-_KB_DIRECTIONS: tuple[str, ...] = ("in", "out", "left", "right", "up", "down")
+# shell's ``fx-kb-*`` keyframes (agora ``player.js`` / ``player.css``).
+_KB_PANS: tuple[str, ...] = (
+    "left",
+    "right",
+    "up",
+    "down",
+    "up_left",
+    "up_right",
+    "down_left",
+    "down_right",
+)
 
-# from/to transforms for each non-``in`` direction.  ``out`` reverses the
-# zoom; the pan directions hold the zoom constant and slide the framing.
-_KB_DIRECTION_TRANSFORMS: dict[str, tuple[str, str]] = {
-    "out": ("scale(1.08)", "scale(1.0001)"),
-    "left": ("scale(1.08) translate(2%, 0)", "scale(1.08) translate(-2%, 0)"),
-    "right": ("scale(1.08) translate(-2%, 0)", "scale(1.08) translate(2%, 0)"),
-    "up": ("scale(1.08) translate(0, 2%)", "scale(1.08) translate(0, -2%)"),
-    "down": ("scale(1.08) translate(0, -2%)", "scale(1.08) translate(0, 2%)"),
+# Per-pan translate offsets ((from_x, from_y), (to_x, to_y)) in percent.
+# The image drifts TOWARD the named direction, so it animates from the
+# opposite corner to the named one.  Composed with the zoom track below.
+# Matches agora ``player.css`` exactly (incl. the ``%`` on both axes).
+_KB_PAN_OFFSETS: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
+    "left": ((2, 0), (-2, 0)),
+    "right": ((-2, 0), (2, 0)),
+    "up": ((0, 2), (0, -2)),
+    "down": ((0, -2), (0, 2)),
+    "up_left": ((2, 2), (-2, -2)),
+    "up_right": ((-2, 2), (2, -2)),
+    "down_left": ((2, -2), (-2, 2)),
+    "down_right": ((-2, -2), (2, 2)),
 }
 
 
-def _kb_direction_css(css_class: str, instance_id: str, dirs_used: set[str]) -> str:
-    """Override rules + keyframes for non-``in`` Ken Burns directions.
+def _kb_normalize(token: str) -> tuple[str, str | None]:
+    """Parse an ``effect_direction`` token into a (zoom, pan) pair.
 
-    Emitted only for directions actually present on a slide so an
-    all-``in`` deck's CSS is byte-identical to the pre-1.4 output.  Each
-    direction swaps the ``animation-name`` on its slides' active media to
-    a direction-specific instance-scoped keyframe.
+    Mirrors the device shell's ``kbDirectionClass`` parser.  Grammar:
+    ``in``/``out`` (pure zoom), ``in_<pan>``/``out_<pan>`` (zoom + pan),
+    bare ``<pan>`` (legacy 1.4 alias -> zoom-in pan).  Anything unknown or
+    absent degrades to ``("in", None)`` -- the safe pure-zoom-in default.
+    """
+    t = (token or "").strip().lower()
+    if t in ("", "in"):
+        return ("in", None)
+    if t == "out":
+        return ("out", None)
+    zoom, pan = "in", t
+    if t.startswith("in_"):
+        zoom, pan = "in", t[3:]
+    elif t.startswith("out_"):
+        zoom, pan = "out", t[4:]
+    if pan in _KB_PANS:
+        return (zoom, pan)
+    return ("in", None)
+
+
+def _kb_css_suffix(zoom: str, pan: str | None) -> str | None:
+    """CSS class/keyframe suffix for a (zoom, pan) combo.
+
+    Returns ``None`` for the base ``in`` (pure zoom-in), which uses the
+    base ``cw-kb-{instance_id}`` keyframe.  Wire tokens use underscores
+    (``out_up_right``); CSS identifiers use hyphens to mirror the device
+    shell (``cw-ss-kb-out-up-right``).
+    """
+    if zoom == "in" and pan is None:
+        return None
+    if pan is None:
+        return zoom
+    return f"{zoom}-{pan.replace('_', '-')}"
+
+
+def _kb_transform(zoom: str, pan: str | None) -> tuple[str, str]:
+    """from/to ``transform`` values for a (zoom, pan) combo."""
+    s_from, s_to = ("1.0001", "1.08") if zoom == "in" else ("1.08", "1.0001")
+    if pan is None:
+        return (f"scale({s_from})", f"scale({s_to})")
+    (fx, fy), (tx, ty) = _KB_PAN_OFFSETS[pan]
+    return (
+        f"scale({s_from}) translate({fx}%, {fy}%)",
+        f"scale({s_to}) translate({tx}%, {ty}%)",
+    )
+
+
+def _kb_direction_css(
+    css_class: str,
+    instance_id: str,
+    combos_used: set[tuple[str, str | None]],
+) -> str:
+    """Override rules + keyframes for non-base Ken Burns combos.
+
+    Emitted only for combos actually present on a slide so an all-``in``
+    deck's CSS is byte-identical to the pre-1.4 output.  Each combo swaps
+    the ``animation-name`` on its slides' active media to an
+    instance-scoped, combo-specific keyframe.
     """
     parts: list[str] = []
-    for direction in _KB_DIRECTIONS:
-        if direction == "in" or direction not in dirs_used:
+    for zoom, pan in sorted(combos_used, key=lambda c: (c[0], c[1] or "")):
+        suffix = _kb_css_suffix(zoom, pan)
+        if suffix is None:  # base ``in`` -- handled by the base rule
             continue
-        frm, to = _KB_DIRECTION_TRANSFORMS[direction]
-        kf = f"cw-kb-{direction}-{instance_id}"
+        frm, to = _kb_transform(zoom, pan)
+        kf = f"cw-kb-{suffix}-{instance_id}"
         parts.append(
-            f"\n.{css_class} .cw-ss-slide.cw-ss-kb-{direction}.cw-ss-active "
+            f"\n.{css_class} .cw-ss-slide.cw-ss-kb-{suffix}.cw-ss-active "
             f"img:not(.cw-ss-blur-bg),\n"
-            f".{css_class} .cw-ss-slide.cw-ss-kb-{direction}.cw-ss-active video {{\n"
+            f".{css_class} .cw-ss-slide.cw-ss-kb-{suffix}.cw-ss-active video {{\n"
             f"  animation-name: {kf};\n"
             f"}}\n"
             f"@keyframes {kf} {{\n"
@@ -393,7 +465,7 @@ class MediaWidget(Widget):
         # slides, other than the default ``in``.  We only emit the extra
         # directional keyframes/rules for directions that appear, so an
         # all-``in`` deck stays byte-identical to the pre-1.4 output.
-        kb_dirs_used: set[str] = set()
+        kb_combos_used: set[tuple[str, str | None]] = set()
 
         for idx, plan in enumerate(plans):
             source = plan.source_asset_id
@@ -499,11 +571,12 @@ class MediaWidget(Widget):
                 )
 
             kb_class = " cw-ss-kb" if kb else ""
-            if kb and plan.effect_direction in _KB_DIRECTIONS and (
-                plan.effect_direction != "in"
-            ):
-                kb_class += f" cw-ss-kb-{plan.effect_direction}"
-                kb_dirs_used.add(plan.effect_direction)
+            if kb:
+                zoom, pan = _kb_normalize(plan.effect_direction)
+                suffix = _kb_css_suffix(zoom, pan)
+                if suffix is not None:
+                    kb_class += f" cw-ss-kb-{suffix}"
+                    kb_combos_used.add((zoom, pan))
             slide_classes = f"cw-ss-slide{active} cw-ss-t-{transition}{kb_class}"
             slide_html.append(
                 f'<div class="{slide_classes}" style="{slide_style}">'
@@ -590,8 +663,8 @@ class MediaWidget(Widget):
         # append an override that swaps the animation-name to a
         # direction-specific keyframe.  Kept in lockstep with the device
         # shell's directional keyframes (agora player.js).
-        if kb_dirs_used:
-            css_out += _kb_direction_css(css_class, instance_id, kb_dirs_used)
+        if kb_combos_used:
+            css_out += _kb_direction_css(css_class, instance_id, kb_combos_used)
 
         # Bake ONLY integer arrays into the runtime — never interpolate
         # raw config strings into JS.  ``types`` are indices into the JS
