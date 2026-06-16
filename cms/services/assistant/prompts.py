@@ -161,6 +161,21 @@ Per-slide fields:
   **loop (last → first) transition**.  Set it when the operator wants
   the wrap-around to fade/dissolve instead of cutting.
 * ``transition_ms``: transition length, 0–5000 ms (default 600).
+* ``fit``: how the image/video fills the screen — one of:
+    - ``cover`` — fill the whole screen, cropping any overflow so there
+      are no bars (default).
+    - ``contain`` — show the entire frame, letterboxing with black bars
+      where the aspect ratio doesn't match the screen.
+    - ``contain_blur`` — like ``contain``, but the letterbox bars are
+      filled with a blurred, zoomed copy of the same image instead of
+      black ("blur fill" backdrop).  Use this when the operator wants
+      to see the whole image without ugly black bars.
+* ``effect``: an optional motion treatment applied while the slide is
+  on screen — one of:
+    - ``none`` — a static frame (default).
+    - ``ken_burns`` — a slow, cinematic pan-and-zoom across the image.
+  Effects render on images (and composed slides); a video slide plays
+  its own motion, so ``ken_burns`` has no visible effect there.
 
 Facts (fixed):
 * A slideshow can hold at most 50 slides.

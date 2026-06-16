@@ -227,6 +227,21 @@ class TestBuildSystemPrompt:
         assert "crossfade" in prompt
         assert "ask them which one" in prompt
 
+    def test_editor_prompt_documents_fit_and_effect(self):
+        """The per-slide ``fit`` (incl. blur-fill) and ``effect`` (Ken
+        Burns) options must be advertised so the assistant can set them."""
+        from cms.services.assistant.prompts import build_system_prompt
+
+        aid = str(uuid.uuid4())
+        prompt = build_system_prompt(
+            self._user(), mode="slideshow_editor", composed_asset_id=aid
+        )
+        # fit values + the blur-fill option are described.
+        assert "contain_blur" in prompt
+        assert "cover" in prompt
+        # effect values incl. Ken Burns are described.
+        assert "ken_burns" in prompt
+
     def test_slideshow_mode_without_id_falls_back_to_general(self):
         from cms.services.assistant.prompts import build_system_prompt
 
