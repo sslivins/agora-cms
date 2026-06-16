@@ -490,8 +490,12 @@ async def get_slideshow(asset_id: str) -> str:
 
     Returns ``{slideshow_id, slides}`` where each slide is
     ``{id, position, duration_ms, play_to_end, transition,
-    transition_ms, source_asset_id, source_filename,
+    transition_ms, fit, effect, source_asset_id, source_filename,
     source_asset_type, source_duration_seconds, thumbnail_url}``.
+
+    ``fit`` is one of ``cover`` / ``contain`` / ``contain_blur`` and
+    ``effect`` is one of ``none`` / ``ken_burns`` (see
+    ``set_slideshow_slides`` for their meanings).
 
     ``source_asset_id`` is the IMAGE / VIDEO / COMPOSED asset shown for
     that slide — pass these back to ``set_slideshow_slides`` to keep the
@@ -517,7 +521,7 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
     step).
 
     Each slide is ``{source_asset_id, duration_ms?, play_to_end?,
-    transition?, transition_ms?}``:
+    transition?, transition_ms?, fit?, effect?}``:
       - ``source_asset_id``: UUID of an IMAGE / VIDEO / COMPOSED asset
         (from ``list_assets`` or an existing slide's ``source_asset_id``).
       - ``duration_ms``: how long the slide shows, 500–3,600,000
@@ -528,6 +532,13 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
         ``fade_black``, ``dissolve``, ``push``, ``wipe``, ``zoom``
         (default ``cut``).
       - ``transition_ms``: transition length in ms, 0–5000 (default 600).
+      - ``fit``: how the asset fills the screen — ``cover`` (fill and
+        crop, no bars; default), ``contain`` (whole frame with black
+        letterbox bars), or ``contain_blur`` (whole frame with the bars
+        filled by a blurred zoomed copy of the image instead of black).
+      - ``effect``: optional motion — ``none`` (static; default) or
+        ``ken_burns`` (slow pan-and-zoom). Applies to image / composed
+        slides; videos play their own motion.
 
     A slideshow can hold up to 50 slides. On invalid input the call
     returns structured errors — fix and retry.
