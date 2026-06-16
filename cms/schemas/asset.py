@@ -50,14 +50,18 @@ MIN_SLIDE_TRANSITION_MS = 0
 MAX_SLIDE_TRANSITION_MS = 5000
 DEFAULT_SLIDE_TRANSITION_MS = 600
 
-# Per-slide display effects (agora#7xx).  ``fit`` maps to CSS object-fit:
-# ``cover`` fills the cell and crops overflow, ``contain`` letterboxes to
-# show the whole frame.  ``effect`` is an optional animated treatment:
-# ``none`` is a static frame, ``ken_burns`` is a slow pan/zoom.  Both are
-# rendered by the chromium player and the composed-bundle slideshow
-# renderer.  Wire IDs are short snake_case so they round-trip through DB
-# CHECK + JSON cleanly.
-SLIDE_FITS = ("cover", "contain")
+# Per-slide display effects (agora#7xx, #261).  ``fit`` maps to CSS
+# object-fit: ``cover`` fills the cell and crops overflow, ``contain``
+# letterboxes to show the whole frame.  ``contain_blur`` is a contained
+# foreground over a blurred, zoomed cover backdrop of the same image so
+# the letterbox bars are filled rather than black.  ``effect`` is an
+# optional animated treatment: ``none`` is a static frame, ``ken_burns``
+# is a slow pan/zoom.  Both are rendered by the chromium player and the
+# composed-bundle slideshow renderer.  Wire IDs are short snake_case so
+# they round-trip through DB CHECK + JSON cleanly.  ``contain_blur`` is
+# additive — a pre-blur device parser that doesn't recognise it falls
+# back to plain ``contain`` (black bars), which is a graceful downgrade.
+SLIDE_FITS = ("cover", "contain", "contain_blur")
 DEFAULT_SLIDE_FIT = "cover"
 SLIDE_EFFECTS = ("none", "ken_burns")
 DEFAULT_SLIDE_EFFECT = "none"

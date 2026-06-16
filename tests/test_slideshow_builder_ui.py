@@ -71,6 +71,12 @@ class TestSlideshowBuilderRoutes:
         # Library filter + fetch pull composed assets alongside image/video.
         assert "'image', 'video', 'composed'" in body
 
+    async def test_new_page_offers_blur_fill_fit_option(self, client):
+        """Blur-fill fit (agora#261) must be selectable in the builder."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        assert 'value="contain_blur"' in resp.text
+
     async def test_new_page_requires_write_permission(self, app, db_session):
         """Direct nav to /assets/new/slideshow must be gated on assets:write."""
         from tests.test_ui_overhaul import _create_user, _login_as

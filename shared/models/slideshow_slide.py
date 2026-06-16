@@ -55,7 +55,7 @@ class SlideshowSlide(Base):
         # validated in the Pydantic schema and re-asserted here as a guard
         # against out-of-band INSERTs.
         CheckConstraint(
-            "fit IN ('cover','contain')",
+            "fit IN ('cover','contain','contain_blur')",
             name="ck_slideshow_slide_fit_known",
         ),
         CheckConstraint(

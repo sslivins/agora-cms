@@ -742,6 +742,24 @@ class TestSlideFitEffect:
         assert slides[0]["fit"] == "contain"
         assert slides[0]["effect"] == "ken_burns"
 
+    async def test_create_round_trips_contain_blur_fit(self, client, db_session):
+        img = await _seed_image(db_session, filename="fxblur.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "fxblur",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 2000,
+                    "fit": "contain_blur",
+                }],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["fit"] == "contain_blur"
+
     async def test_rejects_unknown_fit(self, client, db_session):
         img = await _seed_image(db_session, filename="fx3.png", is_global=True)
         resp = await client.post(
