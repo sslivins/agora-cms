@@ -728,7 +728,9 @@ function makeSlot(s, i) {
     slot.dataset.slotIndex = String(i);
 
     const isVideo = s.source_asset_type === 'video';
-    const fit = (s.fit === 'contain') ? 'contain' : 'cover';
+    // The small slot thumbnail can't render the blurred backdrop, so
+    // ``contain_blur`` previews as a plain contained image here.
+    const fit = (s.fit === 'contain' || s.fit === 'contain_blur') ? 'contain' : 'cover';
     const fitStyle = `object-fit:${fit};`;
     // Prefer the small thumbnail-variant if available; only fall back to
     // the full-res preview while a fresh upload's thumbnail is still
@@ -754,7 +756,7 @@ function makeSlot(s, i) {
             </label>`
         : '';
 
-    const fitVal = (s.fit === 'contain') ? 'contain' : 'cover';
+    const fitVal = (s.fit === 'contain' || s.fit === 'contain_blur') ? s.fit : 'cover';
     const effectVal = (s.effect === 'ken_burns') ? 'ken_burns' : 'none';
     const fitEffectCtl = `
             <div class="ssb-slot-fx">
@@ -763,6 +765,7 @@ function makeSlot(s, i) {
                     <select class="ssb-slot-fit" aria-label="Fit">
                         <option value="cover" ${fitVal === 'cover' ? 'selected' : ''}>Fill (cover)</option>
                         <option value="contain" ${fitVal === 'contain' ? 'selected' : ''}>Fit (contain)</option>
+                        <option value="contain_blur" ${fitVal === 'contain_blur' ? 'selected' : ''}>Fit + blur fill</option>
                     </select>
                 </label>
                 <label class="ssb-slot-fx-item" title="Motion effect while the slide is shown">
@@ -1015,7 +1018,7 @@ function updateSlidePlayToEnd(i, checked) {
 }
 
 function updateSlideFit(i, value) {
-    slides[i].fit = (value === 'contain') ? 'contain' : 'cover';
+    slides[i].fit = (value === 'contain' || value === 'contain_blur') ? value : 'cover';
     markDirty();
     renderTimeline();
 }
