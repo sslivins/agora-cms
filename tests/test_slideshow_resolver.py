@@ -424,7 +424,7 @@ class TestSlideshowResolver:
             ss, device, "https://cms.example", db_session,
         )
         assert fetch is not None
-        assert fetch.manifest_schema_version == "1.3"
+        assert fetch.manifest_schema_version == "1.4"
         assert fetch.cycle_duration_ms == 7500
         assert fetch.started_at is not None
         assert fetch.started_at.endswith("Z")
@@ -876,3 +876,65 @@ class TestComposedCapabilityGate:
             },
         )
         assert resp.status_code == 201, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Pure-function tests: deck shuffle seed + resolved-checksum fold (agora#261)
+# ---------------------------------------------------------------------------
+
+class TestShuffleSeedAndChecksumFold:
+    """Unit coverage for the manifest 1.4 deck-shuffle + per-slide
+    effect_direction folding, exercised through the resolver's pure
+    helpers so we don't need the DB / variant pipeline.
+    """
+
+    def test_shuffle_seed_is_stable_and_js_safe(self) -> None:
+        from cms.services.slideshow_resolver import _shuffle_seed_for_asset
+
+        aid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        s1 = _shuffle_seed_for_asset(aid)
+        s2 = _shuffle_seed_for_asset(aid)
+        assert s1 == s2  # deterministic across calls / processes
+        assert 0 <= s1 <= 0x7FFFFFFF  # 31-bit, JS-safe non-negative int
+        # A different asset id yields a different seed (overwhelmingly likely).
+        other = _shuffle_seed_for_asset(uuid.uuid4())
+        assert isinstance(other, int)
+
+    def _plan(self, effect_direction: str = "in"):
+        from cms.services.slideshow_resolver import _SlidePlan
+
+        return _SlidePlan(
+            position=0,
+            source_asset_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            source_filename="a.png",
+            source_asset_type=AssetType.IMAGE,
+            duration_ms=2000,
+            play_to_end=False,
+            fit="cover",
+            effect="ken_burns",
+            effect_direction=effect_direction,
+            checksum="sha-a",
+        )
+
+    def test_shuffle_bool_folds_into_checksum(self) -> None:
+        from cms.services.slideshow_resolver import (
+            _compute_resolved_manifest_checksum,
+        )
+
+        slides = [self._plan()]
+        off = _compute_resolved_manifest_checksum("asset-sha", slides, shuffle=False)
+        on = _compute_resolved_manifest_checksum("asset-sha", slides, shuffle=True)
+        assert off != on  # toggling shuffle re-pushes the manifest
+
+    def test_effect_direction_folds_into_checksum(self) -> None:
+        from cms.services.slideshow_resolver import (
+            _compute_resolved_manifest_checksum,
+        )
+
+        in_ck = _compute_resolved_manifest_checksum(
+            "asset-sha", [self._plan("in")], shuffle=False
+        )
+        left_ck = _compute_resolved_manifest_checksum(
+            "asset-sha", [self._plan("left")], shuffle=False
+        )
+        assert in_ck != left_ck  # changing KB direction invalidates the cache

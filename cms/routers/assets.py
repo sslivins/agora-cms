@@ -1842,6 +1842,7 @@ async def create_slideshow_asset(
         url=None,
         duration_seconds=duration_seconds,
         is_global=make_global,
+        shuffle=bool(body.get("shuffle", False)),
         uploaded_by_user_id=user.id,
     )
     db.add(asset)
@@ -1933,6 +1934,7 @@ async def list_slideshow_slides(
                 "transition_ms": slide.transition_ms,
                 "fit": slide.fit,
                 "effect": slide.effect,
+                "effect_direction": slide.effect_direction,
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.filename,
                 "source_asset_type": src.asset_type.value,
@@ -1940,7 +1942,11 @@ async def list_slideshow_slides(
                 "thumbnail_url": src_thumb_map.get(src.id),
             }
         )
-    payload: dict = {"slideshow_id": str(asset_id), "slides": slides_out}
+    payload: dict = {
+        "slideshow_id": str(asset_id),
+        "slides": slides_out,
+        "shuffle": bool(asset.shuffle),
+    }
     if profile_id is not None:
         from cms.services.slideshow_resolver import slideshow_readiness
         payload["readiness"] = await slideshow_readiness(asset, profile_id, db)
@@ -1982,6 +1988,12 @@ async def replace_slideshow_slides(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid slide payload: {e}")
 
+    # Deck-level shuffle (slideshow roadmap, agora#261).  Optional on the
+    # wire — absent body key leaves the current value untouched so older UI
+    # clients that only PUT ``slides`` don't clobber it.
+    if "shuffle" in body:
+        asset.shuffle = bool(body.get("shuffle"))
+
     visible = await _visible_asset_ids(user, db)
     sources_by_id, source_groups = await _load_and_validate_slide_sources(
         slides, db, visible_ids=visible
@@ -2017,6 +2029,7 @@ async def replace_slideshow_slides(
                 transition_ms=s.transition_ms,
                 fit=s.fit,
                 effect=s.effect,
+                effect_direction=s.effect_direction,
             )
         )
     asset.duration_seconds = duration_seconds

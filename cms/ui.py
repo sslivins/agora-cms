@@ -1693,6 +1693,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         "slides": [],
         "asset_groups": [],
         "asset_is_global": False,
+        "deck_shuffle": False,
         "assistant_enabled": assistant_on,
     }
 
@@ -1727,6 +1728,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                 "transition_ms": slide.transition_ms,
                 "fit": slide.fit,
                 "effect": slide.effect,
+                "effect_direction": getattr(slide, "effect_direction", "in") or "in",
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.display_name or src.original_filename or src.filename,
                 "source_asset_type": src.asset_type.value,
@@ -1744,6 +1746,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
             "slides": slides,
             "asset_groups": [str(g) for g in asset_group_rows],
             "asset_is_global": bool(asset.is_global),
+            "deck_shuffle": bool(getattr(asset, "shuffle", False)),
         })
     return ctx
 

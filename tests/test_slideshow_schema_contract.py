@@ -151,9 +151,10 @@ class TestSlideshowV10Contract:
         # Phase 1b bumped LATEST to "1.1" (wall-clock fields); Phase 5
         # composed-in-slideshow bumped it to "1.2" (composed slide
         # descriptors + per-slide siblings); per-slide fit/effect bumps
-        # it to "1.3".  DEFAULT stays at "1.0" — that's the "no version
+        # it to "1.3"; per-slide effect_direction + deck shuffle bumps
+        # it to "1.4".  DEFAULT stays at "1.0" — that's the "no version
         # on the wire" fallback.
-        assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST == "1.3"
+        assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST == "1.4"
 
     def test_forward_wall_clock_fields_are_ignored(self):
         """Phase 1b adds ``cycle_duration_ms`` and ``started_at`` to
@@ -241,3 +242,102 @@ class TestSlideDescriptorTransitionAllowList:
                 transition="kaleidoscope",
                 transition_ms=600,
             )
+
+
+class TestSlideEffectDirectionAllowList:
+    """Schema 1.4: per-slide ``effect_direction`` (Ken Burns pan/zoom
+    direction).  The descriptor must accept every direction listed in
+    ``cms.schemas.asset.KEN_BURNS_DIRECTIONS`` and reject unknown ones,
+    mirroring the transition allow-list guard above.
+    """
+
+    @pytest.mark.parametrize(
+        "direction",
+        list(__import__("cms.schemas.asset", fromlist=["KEN_BURNS_DIRECTIONS"]).KEN_BURNS_DIRECTIONS),
+    )
+    def test_every_known_direction_accepted(self, direction: str) -> None:
+        sd = SlideDescriptor(
+            asset_name="slide.png",
+            asset_type="image",
+            download_url="/x",
+            checksum="a" * 64,
+            size_bytes=1024,
+            duration_ms=2000,
+            effect="ken_burns",
+            effect_direction=direction,
+        )
+        assert sd.effect_direction == direction
+
+    def test_unknown_direction_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            SlideDescriptor(
+                asset_name="slide.png",
+                asset_type="image",
+                download_url="/x",
+                checksum="a" * 64,
+                size_bytes=1024,
+                duration_ms=2000,
+                effect="ken_burns",
+                effect_direction="diagonal",
+            )
+
+    def test_effect_direction_defaults_to_in(self) -> None:
+        """An all-default slide serializes ``effect_direction="in"``, exactly
+        like the sibling ``fit``/``effect`` defaults (non-Optional scalars
+        that always appear on the wire since manifest 1.3).  Default ``in``
+        reproduces the pre-1.4 zoom-in keyframes byte-for-byte.
+        """
+        sd = SlideDescriptor(
+            asset_name="slide.png",
+            asset_type="image",
+            download_url="/x",
+            checksum="a" * 64,
+            size_bytes=1024,
+            duration_ms=2000,
+        )
+        assert sd.effect_direction == "in"
+        wire = json.loads(sd.model_dump_json(exclude_none=True))
+        assert wire["effect_direction"] == "in"
+
+    def test_v10_parser_ignores_effect_direction(self) -> None:
+        """A v1.0 device parser must silently drop ``effect_direction``."""
+        sd = SlideDescriptor(
+            asset_name="slide.png",
+            asset_type="image",
+            download_url="/x",
+            checksum="a" * 64,
+            size_bytes=1024,
+            duration_ms=2000,
+            effect="ken_burns",
+            effect_direction="left",
+        )
+        wire = json.loads(sd.model_dump_json())
+        assert wire["effect_direction"] == "left"
+        v10 = SlideDescriptorV10.model_validate(wire)
+        assert getattr(v10, "effect_direction", None) is None
+
+
+class TestSlideshowShuffleEnvelope:
+    """Schema 1.4: deck-level ``shuffle`` + stable ``shuffle_seed`` on the
+    slideshow ``FetchAssetMessage``.  Additive + forward-compatible.
+    """
+
+    def test_shuffle_fields_serialize_when_set(self) -> None:
+        msg = _build_cms_slideshow_msg(shuffle=True, shuffle_seed=12345)
+        wire = json.loads(msg.model_dump_json())
+        assert wire["shuffle"] is True
+        assert wire["shuffle_seed"] == 12345
+
+    def test_shuffle_fields_omitted_when_none(self) -> None:
+        msg = _build_cms_slideshow_msg()
+        wire = json.loads(msg.model_dump_json(exclude_none=True))
+        assert "shuffle" not in wire
+        assert "shuffle_seed" not in wire
+
+    def test_v10_parser_ignores_shuffle_fields(self) -> None:
+        msg = _build_cms_slideshow_msg(shuffle=True, shuffle_seed=777)
+        wire = json.loads(msg.model_dump_json())
+        v10 = FetchAssetMessageV10.model_validate(wire)
+        assert getattr(v10, "shuffle", None) is None
+        assert getattr(v10, "shuffle_seed", None) is None
+        assert v10.slides is not None and len(v10.slides) == 2

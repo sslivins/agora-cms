@@ -62,6 +62,14 @@ class SlideshowSlide(Base):
             "effect IN ('none','ken_burns')",
             name="ck_slideshow_slide_effect_known",
         ),
+        # Ken Burns pan/zoom direction (agora#261).  Only meaningful when
+        # ``effect == 'ken_burns'``; the default ``in`` reproduces the
+        # original zoom-in animation.  Validated in the Pydantic schema and
+        # re-asserted here against out-of-band INSERTs.
+        CheckConstraint(
+            "effect_direction IN ('in','out','left','right','up','down')",
+            name="ck_slideshow_slide_effect_direction_known",
+        ),
         # FK columns are not auto-indexed in Postgres; the source-delete guard
         # and ACL re-check queries scan by source_asset_id.
         Index("ix_slideshow_slides_source_asset_id", "source_asset_id"),
@@ -110,6 +118,14 @@ class SlideshowSlide(Base):
     # slideshow renderer.
     effect: Mapped[str] = mapped_column(
         String(16), nullable=False, default="none", server_default="none"
+    )
+    # Ken Burns pan/zoom direction.  Only meaningful when ``effect`` is
+    # ``ken_burns``.  ``in`` (default) reproduces the original zoom-in
+    # animation; ``out``/``left``/``right``/``up``/``down`` are the other
+    # presets.  Rendered by the chromium player and the composed-bundle
+    # slideshow renderer.
+    effect_direction: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="in", server_default="in"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

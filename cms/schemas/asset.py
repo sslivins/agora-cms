@@ -66,6 +66,15 @@ DEFAULT_SLIDE_FIT = "cover"
 SLIDE_EFFECTS = ("none", "ken_burns")
 DEFAULT_SLIDE_EFFECT = "none"
 
+# Per-slide Ken Burns pan/zoom direction (slideshow roadmap, agora#261).
+# Only meaningful when ``effect == "ken_burns"``; ignored otherwise.  The
+# default ``in`` reproduces the original ``fx-ken-burns`` keyframe exactly
+# (zoom-in + pan toward the top-left), so every pre-existing ken_burns slide
+# stays byte-identical.  Additive: a device that doesn't recognise the field
+# falls back to the default ``in`` animation (graceful).
+KEN_BURNS_DIRECTIONS = ("in", "out", "left", "right", "up", "down")
+DEFAULT_KEN_BURNS_DIRECTION = "in"
+
 
 class AssetVariantOut(BaseModel):
     model_config = {"from_attributes": True}
@@ -202,6 +211,10 @@ class SlideIn(BaseModel):
     # pre-effects behaviour.
     fit: str = Field(DEFAULT_SLIDE_FIT)
     effect: str = Field(DEFAULT_SLIDE_EFFECT)
+    # Ken Burns pan/zoom direction.  Only consulted when ``effect`` is
+    # ``ken_burns``; harmless otherwise.  Default ``in`` == the original
+    # zoom-in animation, so existing slides don't change.
+    effect_direction: str = Field(DEFAULT_KEN_BURNS_DIRECTION)
 
     @field_validator("transition")
     @classmethod
@@ -226,6 +239,15 @@ class SlideIn(BaseModel):
             raise ValueError(f"effect must be one of {SLIDE_EFFECTS}, got {v!r}")
         return v
 
+    @field_validator("effect_direction")
+    @classmethod
+    def _validate_effect_direction(cls, v: str) -> str:
+        if v not in KEN_BURNS_DIRECTIONS:
+            raise ValueError(
+                f"effect_direction must be one of {KEN_BURNS_DIRECTIONS}, got {v!r}"
+            )
+        return v
+
 
 class SlideOut(BaseModel):
     """One slide in a GET /slides response.
@@ -244,6 +266,7 @@ class SlideOut(BaseModel):
     transition_ms: int = DEFAULT_SLIDE_TRANSITION_MS
     fit: str = DEFAULT_SLIDE_FIT
     effect: str = DEFAULT_SLIDE_EFFECT
+    effect_direction: str = DEFAULT_KEN_BURNS_DIRECTION
     source_asset_id: uuid.UUID
     source_filename: str
     source_asset_type: AssetType
