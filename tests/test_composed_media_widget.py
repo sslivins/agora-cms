@@ -499,8 +499,86 @@ class TestMediaWidgetSlideshowBranch:
         # Shared transition CSS is always emitted (base slide mechanics).
         assert [a for a in r.static_assets if a.kind == "css"]
 
+    def test_contain_blur_image_emits_layered_blur_fill(self):
+        # Per-slide fit='contain_blur' on an IMAGE slide must render a
+        # blurred backdrop + a contained foreground (NOT a cropping
+        # object-fit:cover img), mirroring the device firmware.
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 3000, "transition": "cut",
+                   "fit": "contain_blur"}, "img", (_TINY_PNG, "image/png"))],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssBlur", ctx=ctx)
+        # Layered wrap: a backdrop and a foreground copy of the image.
+        assert "cw-ss-blur-wrap" in r.html
+        assert 'class="cw-ss-blur-bg"' in r.html
+        assert 'class="cw-ss-blur-fg"' in r.html
+        assert 'aria-hidden="true"' in r.html
+        # The bug we are fixing: contain_blur must NOT silently crop via
+        # an inline object-fit:cover on the slide image.
+        assert "object-fit:cover" not in r.html
+        # CSS gives the backdrop cover+blur and the foreground contain.
+        assert "img.cw-ss-blur-bg" in r.css
+        assert "filter: blur(24px)" in r.css
+        assert "transform: scale(1.12)" in r.css
+        assert "img.cw-ss-blur-fg" in r.css
 
-class TestComposedCellTransitionMapper:
+    def test_contain_blur_backdrop_excluded_from_ken_burns(self):
+        # Ken Burns must zoom only the foreground; the blurred backdrop's
+        # static scale(1.12) must not be overridden by the KB keyframe
+        # (which would reveal the black wrapper edges).
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 8000, "transition": "cut",
+                   "fit": "contain_blur", "effect": "ken_burns"},
+              "img", (_TINY_PNG, "image/png"))],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssKB", ctx=ctx)
+        assert "cw-ss-kb" in r.html
+        # KB animation selector excludes the blurred backdrop image.
+        assert "img:not(.cw-ss-blur-bg)" in r.css
+
+    def test_contain_blur_video_degrades_to_plain_contain(self):
+        # Video never gets a blurred backdrop in v1 — contain_blur on a
+        # video slide must fall through to a plain object-fit:contain
+        # <video>, with no blur-fill wrapper.
+        container = uuid.uuid4()
+        s1 = uuid.uuid4()
+        cfg = MediaWidgetConfig(asset_id=container)
+        ctx = self._ss_ctx(
+            container,
+            [(s1, {"duration_ms": 4000, "transition": "cut",
+                   "fit": "contain_blur"}, "vid",
+              "/assets/videos/clip.mp4")],
+        )
+        r = MediaWidget().render_html(cfg, _cell(), "ssBV", ctx=ctx)
+        assert "<video" in r.html
+        assert "object-fit:contain" in r.html
+        assert "cw-ss-blur-wrap" not in r.html
+
+    def test_plain_fits_unchanged_no_blur_markup(self):
+        # cover/contain slides must render byte-identically to before:
+        # a single inline-object-fit img, no blur-fill classes.
+        for fit in ("cover", "contain"):
+            container = uuid.uuid4()
+            s1 = uuid.uuid4()
+            cfg = MediaWidgetConfig(asset_id=container)
+            ctx = self._ss_ctx(
+                container,
+                [(s1, {"duration_ms": 3000, "transition": "cut",
+                       "fit": fit}, "img", (_TINY_PNG, "image/png"))],
+            )
+            r = MediaWidget().render_html(cfg, _cell(), "ssPlain", ctx=ctx)
+            assert f"object-fit:{fit}" in r.html
+            assert "cw-ss-blur-wrap" not in r.html
+
+
     """``composed_cell_transition`` now passes the full validated
     repertoire through (was: collapse everything but cut -> fade)."""
 

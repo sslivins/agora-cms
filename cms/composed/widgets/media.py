@@ -364,7 +364,22 @@ class MediaWidget(Widget):
             # overrides the widget-wide ``config.object_fit`` default;
             # ``ken_burns`` adds a slow zoom keyframe that runs while the
             # slide is active (see ``css_out`` below).
-            fit = plan.fit if plan.fit in ("cover", "contain") else "cover"
+            #
+            # ``contain_blur`` is NOT a plain object-fit value — it renders
+            # the image contained over a blurred, zoomed copy of itself
+            # (filling the letterbox bars).  Mirrors the device firmware
+            # (agora/player/shell/player.js + player.css ``fit-blur-*``):
+            # for images we emit a wrapper (backdrop + foreground); video
+            # never gets a blurred backdrop in v1 and degrades to plain
+            # ``contain``.
+            blur_fill = plan.fit == "contain_blur"
+            if plan.fit in ("cover", "contain"):
+                fit = plan.fit
+            elif blur_fill:
+                # Foreground / video fallback object-fit.
+                fit = "contain"
+            else:
+                fit = "cover"
             fit_style = f"object-fit:{fit}"
             kb = plan.effect == "ken_burns"
             # Per-slide resting default for the transition-duration custom
@@ -401,11 +416,27 @@ class MediaWidget(Widget):
                     )
                 b64 = base64.b64encode(blob).decode("ascii")
                 data_uri = f"data:{mime};base64,{b64}"
-                inner = (
-                    f'<img src="{data_uri}" '
-                    f'style="{fit_style}" '
-                    f'alt="{alt_escaped}" draggable="false" />'
-                )
+                if blur_fill:
+                    # Blur-fill: a blurred, zoomed backdrop copy fills the
+                    # letterbox bars while the foreground stays contained.
+                    # Backdrop/foreground object-fit comes from the
+                    # ``cw-ss-blur-*`` classes (see ``css_out``); the
+                    # backdrop is hidden from a11y and excluded from Ken
+                    # Burns so the static scale never gets overridden.
+                    inner = (
+                        '<div class="cw-ss-blur-wrap">'
+                        f'<img src="{data_uri}" class="cw-ss-blur-bg" '
+                        f'aria-hidden="true" draggable="false" />'
+                        f'<img src="{data_uri}" class="cw-ss-blur-fg" '
+                        f'alt="{alt_escaped}" draggable="false" />'
+                        "</div>"
+                    )
+                else:
+                    inner = (
+                        f'<img src="{data_uri}" '
+                        f'style="{fit_style}" '
+                        f'alt="{alt_escaped}" draggable="false" />'
+                    )
             else:
                 # Same contract violation as the standalone else branch:
                 # the build layer must route every per-slide source into
@@ -448,6 +479,33 @@ class MediaWidget(Widget):
             f"  object-position: center;\n"
             f"  user-select: none;\n"
             f"}}\n"
+            # Blur-fill (per-slide fit='contain_blur', image slides only).
+            # The foreground image is contained; a second copy is blown up
+            # and blurred behind it to fill the letterbox bars, mirroring
+            # the device firmware's ``fit-blur-*`` rules.  Two-class
+            # selectors outrank the base ``object-fit`` above.  scale(1.12)
+            # hides the blur halo's transparent edge.
+            f".{css_class} .cw-ss-blur-wrap {{\n"
+            f"  position: absolute;\n"
+            f"  inset: 0;\n"
+            f"  width: 100%;\n"
+            f"  height: 100%;\n"
+            f"  overflow: hidden;\n"
+            f"}}\n"
+            f".{css_class} img.cw-ss-blur-bg,\n"
+            f".{css_class} img.cw-ss-blur-fg {{\n"
+            f"  position: absolute;\n"
+            f"  top: 0;\n"
+            f"  left: 0;\n"
+            f"}}\n"
+            f".{css_class} img.cw-ss-blur-bg {{\n"
+            f"  object-fit: cover;\n"
+            f"  transform: scale(1.12);\n"
+            f"  filter: blur(24px);\n"
+            f"}}\n"
+            f".{css_class} img.cw-ss-blur-fg {{\n"
+            f"  object-fit: contain;\n"
+            f"}}\n"
             # Ken Burns (manifest schema 1.3, per-slide effect='ken_burns').
             # A slow zoom that spans the slide's display time, applied only
             # while the slide is active so it restarts each time the slide
@@ -457,7 +515,8 @@ class MediaWidget(Widget):
             # byte-identically to the pre-1.3 output.  The KB transform is
             # on the media element while transitions animate the slide
             # ``<div>``, so the two never fight over the same property.
-            f".{css_class} .cw-ss-slide.cw-ss-kb.cw-ss-active img,\n"
+            f".{css_class} .cw-ss-slide.cw-ss-kb.cw-ss-active "
+            f"img:not(.cw-ss-blur-bg),\n"
             f".{css_class} .cw-ss-slide.cw-ss-kb.cw-ss-active video {{\n"
             f"  animation: cw-kb-{instance_id} var(--cw-ss-kb-ms, 10000ms)"
             f" ease-out forwards;\n"
