@@ -19,6 +19,16 @@ paths = [
     '''tests/nightly/\.env\.nightly''',
     '''docs/security/.*''',
     '''alembic/versions/.*''',  # schema migrations reference column names like api_key_hash
+    # MCP auth/key unit-test fixtures use fake high-entropy keys (e.g.
+    # "agora_mcp_test_key_...") that the generic-api-key rule flags. These
+    # files exist specifically to exercise secret handling with dummy values.
+    # Path-allowlisting them is durable across history; per-commit
+    # .gitleaksignore fingerprints are not (they break as new fixtures land).
+    '''tests/test_mcp_auth\.py''',
+    '''tests/test_mcp_keyvault\.py''',
+    '''tests/test_mcp_reload_key\.py''',
+    '''tests/nightly/conftest\.py''',
+    '''tests/nightly/test_09_device_commands\.py''',
 ]
 
 # Specific literal values that look secret-shaped but are either
