@@ -77,6 +77,19 @@ class TestSlideshowBuilderRoutes:
         assert resp.status_code == 200, resp.text
         assert 'value="contain_blur"' in resp.text
 
+    async def test_blur_fill_slot_preview_is_wysiwyg(self, client):
+        """The slot thumbnail must render a blurred cover backdrop for
+        ``contain_blur`` so the letterbox bars match the device player
+        instead of showing plain black bars."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        # CSS for the blur backdrop + foreground layers.
+        assert "ssb-slot-thumb-backdrop" in resp.text
+        assert "ssb-slot-thumb-fg" in resp.text
+        assert "filter: blur(" in resp.text
+        # makeSlot() gates the backdrop on contain_blur images only.
+        assert "s.fit === 'contain_blur' && !isVideo" in resp.text
+
     async def test_new_page_requires_write_permission(self, app, db_session):
         """Direct nav to /assets/new/slideshow must be gated on assets:write."""
         from tests.test_ui_overhaul import _create_user, _login_as
