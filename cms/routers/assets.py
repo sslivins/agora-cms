@@ -1863,6 +1863,7 @@ async def create_slideshow_asset(
                 transition_ms=s.transition_ms,
                 fit=s.fit,
                 effect=s.effect,
+                effect_direction=s.effect_direction,
             )
         )
 
