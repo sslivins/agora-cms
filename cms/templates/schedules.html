@@ -1280,6 +1280,7 @@ function editSchedule(s) {
                 }
             }
             if (wasExpired !== newIsExpired) {
+                _suppressUnloadGuard = true;
                 location.reload();
                 return;
             }
@@ -1287,6 +1288,7 @@ function editSchedule(s) {
                 await _replaceScheduleRow(s.id);
                 showToast('Schedule updated');
             } else {
+                _suppressUnloadGuard = true;
                 location.reload();
             }
         }
@@ -1303,6 +1305,12 @@ function editSchedule(s) {
 // uses the browser's native beforeunload prompt; the edit modal uses showConfirm.
 let _createFormSnapshot = null;
 let _editModalDirtyTracker = null;
+// Set true immediately before an intentional programmatic reload that
+// follows a successful save, so the beforeunload guard below doesn't
+// prompt "Reload Site?" for changes that are in fact already persisted.
+// The page is unloading anyway, so the flag never needs resetting.
+let _suppressUnloadGuard = false;
+window.cwSuppressUnloadGuard = () => { _suppressUnloadGuard = true; };
 
 function _serializeFormInputs(root) {
     if (!root) return "";
@@ -1342,6 +1350,7 @@ function _isEditModalDirty() {
 }
 
 window.addEventListener('beforeunload', (e) => {
+    if (_suppressUnloadGuard) return;
     if (_isCreateFormDirty() || _isEditModalDirty()) {
         e.preventDefault();
         // Modern browsers ignore custom text; setting returnValue triggers the prompt.
