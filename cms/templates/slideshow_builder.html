@@ -136,6 +136,28 @@
     height: 100%;
     object-fit: cover;
     pointer-events: none;
+    position: relative;
+}
+/* Blur-fill preview, mirroring the device player (.fit-blur-* in
+ * player.css). For ``contain_blur`` the slot thumbnail renders the
+ * contained foreground over a blurred, zoomed cover copy so the
+ * letterbox bars fill with the image's own colours — WYSIWYG with
+ * the device instead of plain black bars. */
+.ssb-slot-thumb-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scale(1.12);
+    filter: blur(8px);
+    pointer-events: none;
+    z-index: 0;
+}
+.ssb-slot-thumb-fg {
+    position: relative;
+    z-index: 1;
 }
 .ssb-slot-pos {
     position: absolute;
@@ -916,21 +938,27 @@ function makeSlot(s, i) {
     slot.dataset.slotIndex = String(i);
 
     const isVideo = s.source_asset_type === 'video';
-    // The small slot thumbnail can't render the blurred backdrop, so
-    // ``contain_blur`` previews as a plain contained image here.
+    // ``contain_blur`` letterboxes a contained image over a blurred cover
+    // backdrop on the device. Video never uses the blurred backdrop (matches
+    // player.js), so it previews as plain contain.
+    const isBlur = s.fit === 'contain_blur' && !isVideo;
     const fit = (s.fit === 'contain' || s.fit === 'contain_blur') ? 'contain' : 'cover';
     const fitStyle = `object-fit:${fit};`;
     // Prefer the small thumbnail-variant if available; only fall back to
     // the full-res preview while a fresh upload's thumbnail is still
     // transcoding.
     let thumb;
-    if (s.thumbnail_url) {
-        thumb = `<img class="ssb-slot-thumb" style="${fitStyle}" src="${s.thumbnail_url}" alt="" loading="lazy">`;
+    const thumbSrc = s.thumbnail_url || `/api/assets/${s.source_asset_id}/preview`;
+    if (s.thumbnail_url || !isVideo) {
+        const fgClass = isBlur ? 'ssb-slot-thumb ssb-slot-thumb-fg' : 'ssb-slot-thumb';
+        // The blurred cover backdrop fills the letterbox bars with the
+        // image's own colours, mirroring the device player.
+        const backdrop = isBlur
+            ? `<img class="ssb-slot-thumb-backdrop" src="${thumbSrc}" alt="" aria-hidden="true" loading="lazy">`
+            : '';
+        thumb = `${backdrop}<img class="${fgClass}" style="${fitStyle}" src="${thumbSrc}" alt="" loading="lazy">`;
     } else {
-        const previewUrl = `/api/assets/${s.source_asset_id}/preview`;
-        thumb = isVideo
-            ? `<video class="ssb-slot-thumb" style="${fitStyle}" src="${previewUrl}" preload="metadata" muted playsinline></video>`
-            : `<img class="ssb-slot-thumb" style="${fitStyle}" src="${previewUrl}" alt="" loading="lazy">`;
+        thumb = `<video class="ssb-slot-thumb" style="${fitStyle}" src="${thumbSrc}" preload="metadata" muted playsinline></video>`;
     }
     const effectiveSec = s.play_to_end && isVideo && s.source_duration_seconds
         ? s.source_duration_seconds
