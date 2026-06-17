@@ -89,6 +89,12 @@ class TestSlideshowBuilderRoutes:
         assert "filter: blur(" in resp.text
         # makeSlot() gates the backdrop on contain_blur images only.
         assert "s.fit === 'contain_blur' && !isVideo" in resp.text
+        # The slide-number / remove / move overlays must sit above the
+        # blur foreground (z-index 1) so they aren't hidden under it.
+        for cls in (".ssb-slot-pos", ".ssb-slot-remove", ".ssb-slot-move"):
+            start = resp.text.index(cls + " {")
+            block = resp.text[start:start + 400]
+            assert "z-index: 2" in block, f"{cls} missing z-index above blur fg"
 
     async def test_create_mode_preview_btn_hidden_until_mint(self, client):
         """Bug: AI-assistant slideshow create left the page in create-mode
