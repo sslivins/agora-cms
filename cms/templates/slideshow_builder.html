@@ -225,6 +225,7 @@
 }
 .ssb-slot-fx {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.4rem;
     margin-top: 0.2rem;
 }
@@ -236,6 +237,12 @@
     color: #888;
     flex: 1 1 0;
     min-width: 0;
+}
+/* Ken Burns "Motion path" control wraps onto its own full-width row so
+   the Fit/Motion selects above it stay readable instead of being
+   squeezed into cramped thirds. */
+.ssb-slot-kbdir {
+    flex: 1 1 100%;
 }
 .ssb-slot-fx-item select {
     background: #2a2a2a;
@@ -1278,11 +1285,33 @@ function buildKbMenu(menu, btn, i) {
 
     refresh(false);  // initialize selection + preview without persisting
 
+    // Show first, then measure-and-place. The popover is position:fixed in
+    // viewport coords, so we can flip it above the button when there isn't
+    // room below and clamp it inside the viewport — otherwise the bottom
+    // compass row (down-left/down/down-right) can land off-screen.
     const r = btn.getBoundingClientRect();
-    menu.style.top = (r.bottom + 6) + 'px';
-    menu.style.left = (r.left + r.width / 2) + 'px';
-    menu.style.transform = 'translateX(-50%)';
+    menu.style.transform = 'none';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
     try { menu.showPopover(); } catch {}
+
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    const gap = 6;
+
+    const spaceBelow = vh - r.bottom;
+    let top = (spaceBelow >= mh + gap + 6 || spaceBelow >= r.top)
+        ? r.bottom + gap
+        : r.top - mh - gap;
+    top = Math.max(8, Math.min(top, vh - mh - 8));
+
+    let left = r.left + r.width / 2 - mw / 2;
+    left = Math.max(8, Math.min(left, vw - mw - 8));
+
+    menu.style.top = top + 'px';
+    menu.style.left = left + 'px';
 }
 
 function wireDropZone(el, dropIndex) {
