@@ -41,6 +41,65 @@ def test_ken_burns_directions_model_matches_schema():
     assert tuple(MODEL_DIRS) == tuple(SCHEMA_DIRS)
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # already-canonical pass through unchanged
+        ("in", "in"),
+        ("out_down_right", "out_down_right"),
+        ("down", "down"),
+        # separators don't matter
+        ("out-down-right", "out_down_right"),
+        ("out down right", "out_down_right"),
+        ("out/down/right", "out_down_right"),
+        ("OUT_DOWN_RIGHT", "out_down_right"),
+        # word ORDER doesn't matter (the user's exact case)
+        ("out-right-down", "out_down_right"),
+        ("zoom out right down", "out_down_right"),
+        ("right_down", "down_right"),
+        ("up-left", "up_left"),
+        ("left up", "up_left"),
+        # filler words stripped
+        ("zoom in", "in"),
+        ("zoom out going up left", "out_up_left"),
+        # legacy bare pan
+        ("up right", "up_right"),
+    ],
+)
+def test_normalize_effect_direction_canonicalizes(raw, expected):
+    from cms.schemas.asset import (
+        KEN_BURNS_DIRECTIONS,
+        normalize_effect_direction,
+    )
+
+    out = normalize_effect_direction(raw)
+    assert out == expected
+    assert out in KEN_BURNS_DIRECTIONS
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "diagonal",          # unknown token
+        "up_down",           # two verticals — not a valid pan
+        "left_right",        # two horizontals
+        "in_out",            # contradictory zoom
+        "sideways",          # gibberish
+    ],
+)
+def test_normalize_effect_direction_passes_invalid_through(raw):
+    """Un-normalizable input is returned unchanged so the validator still
+    raises its descriptive error (rather than silently coercing)."""
+    from cms.schemas.asset import (
+        KEN_BURNS_DIRECTIONS,
+        normalize_effect_direction,
+    )
+
+    out = normalize_effect_direction(raw)
+    assert out == raw
+    assert out not in KEN_BURNS_DIRECTIONS
+
+
 # ── Helpers ──
 
 
@@ -906,6 +965,38 @@ class TestSlideFitEffect:
             },
         )
         assert resp.status_code in (400, 422), resp.text
+
+    @pytest.mark.parametrize(
+        "loose,canonical",
+        [
+            ("out-right-down", "out_down_right"),  # the user's MCP case
+            ("zoom out right down", "out_down_right"),
+            ("right_down", "down_right"),
+            ("ZOOM IN UP LEFT", "in_up_left"),
+        ],
+    )
+    async def test_create_normalizes_loose_effect_direction(
+        self, client, db_session, loose, canonical
+    ):
+        img = await _seed_image(
+            db_session, filename=f"kbn_{canonical}.png", is_global=True
+        )
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": f"kbn-{canonical}",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 2000,
+                    "effect": "ken_burns",
+                    "effect_direction": loose,
+                }],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["effect_direction"] == canonical
 
 
 # ── Source-delete guard ──

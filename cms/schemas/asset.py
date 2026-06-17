@@ -98,6 +98,69 @@ KEN_BURNS_DIRECTIONS = (
 DEFAULT_KEN_BURNS_DIRECTION = "in"
 
 
+# Filler words that may appear when a human (or an LLM relaying a human
+# request) describes a direction, e.g. "zoom out going right-down".
+_KEN_BURNS_FILLER_WORDS = frozenset(
+    {"zoom", "pan", "and", "going", "go", "to", "the", "then", "motion", "drift"}
+)
+
+
+def normalize_effect_direction(value: str) -> str:
+    """Best-effort canonicalisation of a Ken Burns direction token.
+
+    The canonical grammar is ZOOM (``in``/``out``) + an optional PAN, with
+    diagonals written vertical-first (``out_down_right``).  Humans — and the
+    assistant relaying them — naturally write these in any order and with any
+    separator: ``"out-right-down"``, ``"zoom out right down"``,
+    ``"right_down"`` all mean ``out_down_right`` (or ``down_right``).
+
+    This collapses separators (``-``/space/``/``/``+`` → ``_``), drops filler
+    words, and reorders the pan components so order never matters.  If the
+    input can be mapped onto a canonical token it returns that token;
+    otherwise it returns ``value`` unchanged so the caller's membership check
+    raises the usual descriptive error.
+    """
+    if not isinstance(value, str):
+        return value
+    raw = value.strip().lower()
+    if raw in KEN_BURNS_DIRECTIONS:
+        return raw
+    for sep in ("-", " ", "/", "+", ","):
+        raw = raw.replace(sep, "_")
+    parts = [p for p in raw.split("_") if p and p not in _KEN_BURNS_FILLER_WORDS]
+
+    zoom: str | None = None
+    vert: list[str] = []
+    horiz: list[str] = []
+    for p in parts:
+        if p in ("in", "out"):
+            if zoom is not None and zoom != p:
+                return value  # contradictory zoom (e.g. "in_out")
+            zoom = p
+        elif p in ("up", "down"):
+            if p not in vert:
+                vert.append(p)
+        elif p in ("left", "right"):
+            if p not in horiz:
+                horiz.append(p)
+        else:
+            return value  # unknown token — let the validator reject it
+
+    if len(vert) > 1 or len(horiz) > 1:
+        return value  # e.g. "up_down" / "left_right" — not a valid pan
+    pan = "_".join(vert + horiz)  # vertical-first, matching the canonical set
+
+    if zoom and pan:
+        candidate = f"{zoom}_{pan}"
+    elif zoom:
+        candidate = zoom
+    elif pan:
+        candidate = pan  # legacy bare-pan alias (zoom-in pan)
+    else:
+        return value
+    return candidate if candidate in KEN_BURNS_DIRECTIONS else value
+
+
 class AssetVariantOut(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -264,6 +327,7 @@ class SlideIn(BaseModel):
     @field_validator("effect_direction")
     @classmethod
     def _validate_effect_direction(cls, v: str) -> str:
+        v = normalize_effect_direction(v)
         if v not in KEN_BURNS_DIRECTIONS:
             raise ValueError(
                 f"effect_direction must be one of {KEN_BURNS_DIRECTIONS}, got {v!r}"

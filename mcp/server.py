@@ -539,6 +539,15 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
       - ``effect``: optional motion — ``none`` (static; default) or
         ``ken_burns`` (slow pan-and-zoom). Applies to image / composed
         slides; videos play their own motion.
+      - ``effect_direction``: the Ken Burns motion path (only meaningful
+        when ``effect`` is ``ken_burns``). A zoom — ``in`` or ``out`` —
+        optionally combined with a pan direction: ``up``, ``down``,
+        ``left``, ``right``, or a diagonal (``up_left``, ``up_right``,
+        ``down_left``, ``down_right``). Examples: ``in`` (zoom in, no
+        pan), ``out_down_right`` (zoom out drifting toward the
+        bottom-right). Word order and separators DON'T matter —
+        ``"zoom out right down"`` and ``"out-right-down"`` are both
+        accepted and normalized to ``out_down_right``. Defaults to ``in``.
 
     A slideshow can hold up to 50 slides. On invalid input the call
     returns structured errors — fix and retry.
