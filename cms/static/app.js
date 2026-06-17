@@ -2465,7 +2465,7 @@ async function toggleSchedule(scheduleId, enabled) {
 async function _replaceScheduleRow(scheduleId) {
     try {
         const rowResp = await fetch(`/api/schedules/${scheduleId}/row`);
-        if (!rowResp.ok) { location.reload(); return; }
+        if (!rowResp.ok) { window.cwSuppressUnloadGuard?.(); location.reload(); return; }
         const html = await rowResp.text();
         const tmp = document.createElement('tbody');
         tmp.innerHTML = html;
@@ -2475,7 +2475,7 @@ async function _replaceScheduleRow(scheduleId) {
             existing.replaceWith(fresh);
         } else {
             const tbody = document.getElementById('active-schedules-tbody');
-            if (!tbody) { location.reload(); return; }
+            if (!tbody) { window.cwSuppressUnloadGuard?.(); location.reload(); return; }
             // Remove placeholder "No schedules yet" row if present.
             const empty = tbody.querySelector('tr[data-empty-row]');
             if (empty) empty.remove();
@@ -2512,6 +2512,7 @@ async function _replaceScheduleRow(scheduleId) {
             window._rememberSchedule(scheduleId, scheduleData);
         }
     } catch (e) {
+        window.cwSuppressUnloadGuard?.();
         location.reload();
     }
 }
@@ -2577,6 +2578,7 @@ async function createSchedule(form) {
             form.reset();
             showToast("Schedule created");
         } else {
+            window.cwSuppressUnloadGuard?.();
             location.reload();
         }
     } else if (resp) {
