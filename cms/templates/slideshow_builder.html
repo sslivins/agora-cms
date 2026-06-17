@@ -722,9 +722,9 @@
         <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
             <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
-            {% if edit_mode %}
-            <button type="button" class="btn btn-secondary" id="ss-preview-btn" onclick="previewSlideshowFromEditor()" title="Preview the saved slideshow">Preview</button>
-            {% endif %}
+            <!-- Rendered hidden in create mode; revealed by applyEditModeChrome()
+                 once the AI assistant mints a draft (slideshowMintDraft). -->
+            <button type="button" class="btn btn-secondary" id="ss-preview-btn" onclick="previewSlideshowFromEditor()" title="Preview the saved slideshow"{% if not edit_mode %} hidden{% endif %}>Preview</button>
             <a href="/assets" class="btn btn-secondary">Cancel</a>
         </div>
     </form>
@@ -1803,6 +1803,18 @@ function clearDirty() {
     _setSubmitEnabled(false);
 }
 
+// Flip the page chrome from create-mode to edit-mode after the AI
+// assistant mints a draft (slideshowMintDraft). In create mode the
+// submit button is labeled "Create" and the Preview button is rendered
+// hidden; once a real asset exists those should match edit mode. Mirrors
+// the server-side edit_mode template branches. Idempotent.
+function applyEditModeChrome() {
+    const submit = document.getElementById('ss-submit');
+    if (submit) submit.textContent = 'Save';
+    const preview = document.getElementById('ss-preview-btn');
+    if (preview) preview.hidden = false;
+}
+
 // Custom 3-button modal for unsaved-changes navigation: Save / Discard /
 // Cancel. Visually matches showConfirm in app.js by reusing the same
 // modal-overlay / modal-box / modal-actions classes via createModal().
@@ -1973,6 +1985,7 @@ window.slideshowMintDraft = async function () {
         SS_ASSET_ID = newId;
         SS_EDIT_MODE = true;
         SS_ORIG_NAME = name;
+        applyEditModeChrome();
         clearDirty();
         setStatus('Created.');
         try {
