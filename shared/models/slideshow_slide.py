@@ -26,6 +26,35 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from shared.database import Base
 
 
+# Canonical Ken Burns direction grammar — kept in lockstep with
+# ``cms.schemas.asset.KEN_BURNS_DIRECTIONS`` (the Pydantic-layer source of
+# truth) and the JS shell allow-list in ``agora/player/shell/player.js``.
+# Defined locally (rather than imported from the cms app layer) so this
+# shared model has no upward dependency on ``cms`` and stays import-cycle
+# free.  ZOOM (``in``/``out``) × optional PAN (8 compass dirs), plus legacy
+# bare-pan aliases.  The DB CHECK constraint below is derived from this
+# tuple so the two can never drift (the original drift caused a 500 on
+# saving any diagonal/zoom+pan Ken Burns slide — see migration 0044).
+_KEN_BURNS_PANS = (
+    "left",
+    "right",
+    "up",
+    "down",
+    "up_left",
+    "up_right",
+    "down_left",
+    "down_right",
+)
+KEN_BURNS_DIRECTIONS = (
+    "in",
+    "out",
+    *(f"in_{_p}" for _p in _KEN_BURNS_PANS),
+    *(f"out_{_p}" for _p in _KEN_BURNS_PANS),
+    *_KEN_BURNS_PANS,
+)
+_KEN_BURNS_DIRECTION_SQL_LIST = ",".join(f"'{_d}'" for _d in KEN_BURNS_DIRECTIONS)
+
+
 class SlideshowSlide(Base):
     """One slide inside a slideshow asset."""
 
@@ -65,9 +94,15 @@ class SlideshowSlide(Base):
         # Ken Burns pan/zoom direction (agora#261).  Only meaningful when
         # ``effect == 'ken_burns'``; the default ``in`` reproduces the
         # original zoom-in animation.  Validated in the Pydantic schema and
-        # re-asserted here against out-of-band INSERTs.
+        # re-asserted here against out-of-band INSERTs.  The token grammar
+        # encodes a ZOOM (``in``/``out``) and an optional PAN (8 compass
+        # directions incl. diagonals): ``in``/``out`` (pure zoom),
+        # ``in_<pan>``/``out_<pan>`` (zoom + pan), and legacy bare-pan
+        # aliases (``left`` ... = zoom-in pans).  Kept in lockstep with the
+        # canonical ``cms.schemas.asset.KEN_BURNS_DIRECTIONS`` tuple — see
+        # migration 0044 for the matching DB constraint.
         CheckConstraint(
-            "effect_direction IN ('in','out','left','right','up','down')",
+            f"effect_direction IN ({_KEN_BURNS_DIRECTION_SQL_LIST})",
             name="ck_slideshow_slide_effect_direction_known",
         ),
         # FK columns are not auto-indexed in Postgres; the source-delete guard
@@ -121,9 +156,10 @@ class SlideshowSlide(Base):
     )
     # Ken Burns pan/zoom direction.  Only meaningful when ``effect`` is
     # ``ken_burns``.  ``in`` (default) reproduces the original zoom-in
-    # animation; ``out``/``left``/``right``/``up``/``down`` are the other
-    # presets.  Rendered by the chromium player and the composed-bundle
-    # slideshow renderer.
+    # animation; the full grammar is a ZOOM (``in``/``out``) plus an
+    # optional PAN (8 compass directions incl. diagonals) — e.g.
+    # ``out_up_right``.  Rendered by the chromium player and the
+    # composed-bundle slideshow renderer.  Allowed set: ``KEN_BURNS_DIRECTIONS``.
     effect_direction: Mapped[str] = mapped_column(
         String(16), nullable=False, default="in", server_default="in"
     )

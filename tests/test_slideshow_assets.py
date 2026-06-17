@@ -28,6 +28,19 @@ from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.user import User
 
 
+def test_ken_burns_directions_model_matches_schema():
+    """The DB CHECK constraint (shared model) must allow exactly the same
+    direction tokens the Pydantic schema accepts.  Drift between the two is
+    what caused the HTTP 500 on Ken Burns save (schema widened to the full
+    zoom+pan grammar, DB CHECK left at the original 6 tokens).  Lock them
+    together so the next person who adds a direction can't reintroduce it.
+    """
+    from cms.schemas.asset import KEN_BURNS_DIRECTIONS as SCHEMA_DIRS
+    from shared.models.slideshow_slide import KEN_BURNS_DIRECTIONS as MODEL_DIRS
+
+    assert tuple(MODEL_DIRS) == tuple(SCHEMA_DIRS)
+
+
 # ── Helpers ──
 
 
@@ -785,6 +798,110 @@ class TestSlideFitEffect:
                     "source_asset_id": str(img.id),
                     "duration_ms": 1000,
                     "effect": "explode",
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+    # ── Ken Burns effect_direction (agora#261) ──
+    # Regression for the HTTP 500 on save: the Ken Burns authoring UI emits
+    # the full direction grammar (ZOOM in/out + optional 8-way PAN incl.
+    # diagonals, e.g. ``out_up_right``), and the Pydantic schema allows it,
+    # but the DB CHECK constraint from migration 0043 only permitted the
+    # original six tokens.  Saving any diagonal/zoom+pan direction passed
+    # validation then violated the constraint on INSERT/UPDATE → 500.
+    # These go through the real DB, so they exercise the CHECK constraint
+    # widened in migration 0044.
+
+    @pytest.mark.parametrize(
+        "direction",
+        [
+            "in",
+            "out",
+            "out_up_right",  # the authoring default for a new ken_burns slide
+            "in_down_left",
+            "out_left",
+            "up_right",  # legacy bare-pan alias
+            "down",
+        ],
+    )
+    async def test_create_round_trips_effect_direction(
+        self, client, db_session, direction
+    ):
+        img = await _seed_image(
+            db_session, filename=f"kb_{direction}.png", is_global=True
+        )
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": f"kb-{direction}",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 2000,
+                    "effect": "ken_burns",
+                    "effect_direction": direction,
+                }],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["effect"] == "ken_burns"
+        assert slides[0]["effect_direction"] == direction
+
+    async def test_replace_round_trips_diagonal_effect_direction(
+        self, client, db_session
+    ):
+        img = await _seed_image(db_session, filename="kbrepl.png", is_global=True)
+        sid = (await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "kbrepl",
+                "slides": [{"source_asset_id": str(img.id), "duration_ms": 1000}],
+            },
+        )).json()["id"]
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{
+                "source_asset_id": str(img.id),
+                "duration_ms": 1000,
+                "effect": "ken_burns",
+                "effect_direction": "out_down_right",
+            }]},
+        )
+        assert put.status_code == 200, put.text
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["effect_direction"] == "out_down_right"
+
+    async def test_create_defaults_effect_direction_in(self, client, db_session):
+        img = await _seed_image(db_session, filename="kbdef.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "kbdef",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "effect": "ken_burns",
+                }],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+        slides = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"]
+        assert slides[0]["effect_direction"] == "in"
+
+    async def test_rejects_unknown_effect_direction(self, client, db_session):
+        img = await _seed_image(db_session, filename="kbbad.png", is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "kbbad",
+                "slides": [{
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "effect": "ken_burns",
+                    "effect_direction": "diagonal",
                 }],
             },
         )
