@@ -90,6 +90,23 @@ class TestSlideshowBuilderRoutes:
         # makeSlot() gates the backdrop on contain_blur images only.
         assert "s.fit === 'contain_blur' && !isVideo" in resp.text
 
+    async def test_create_mode_preview_btn_hidden_until_mint(self, client):
+        """Bug: AI-assistant slideshow create left the page in create-mode
+        chrome — Create button never flipped to Save and no Preview button
+        appeared. The Preview button must be rendered (hidden) in create
+        mode, and slideshowMintDraft must reveal it + relabel submit via
+        applyEditModeChrome()."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Preview button is present in create mode but hidden, so JS can
+        # reveal it after minting (rather than not existing at all).
+        assert 'id="ss-preview-btn"' in body
+        assert 'title="Preview the saved slideshow" hidden' in body
+        assert "applyEditModeChrome" in body
+        # The mint path flips the chrome to edit mode.
+        assert "applyEditModeChrome();" in body
+
     async def test_new_page_requires_write_permission(self, app, db_session):
         """Direct nav to /assets/new/slideshow must be gated on assets:write."""
         from tests.test_ui_overhaul import _create_user, _login_as
