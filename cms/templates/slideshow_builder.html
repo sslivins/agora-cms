@@ -659,17 +659,6 @@
         </p>
         {% endif %}
 
-        <div class="form-group" style="margin-top:0.75rem; margin-bottom:0;">
-            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;"
-                   title="Play slides in a random order. The order is reshuffled each time the slideshow loops, and all devices stay in sync.">
-                <input type="checkbox" id="ss-shuffle" {% if deck_shuffle %}checked{% endif %}>
-                <span>Shuffle slide order</span>
-            </label>
-            <p class="text-muted" style="margin:0.25rem 0 0 1.6rem; font-size:0.8rem;">
-                Reshuffles every loop; devices stay in sync.
-            </p>
-        </div>
-
         <div style="margin-top:1.25rem;">
             <h3 style="margin:0 0 0.5rem; font-size:1rem; display:flex; align-items:center; gap:0.5rem;">
                 Library
@@ -701,6 +690,12 @@
         <div class="ssb-timeline-head">
             <h3>Timeline</h3>
             <div class="ssb-totals">
+                <label style="font-weight:normal; font-size:0.85rem; color:#aaa; display:inline-flex; align-items:center; gap:0.3rem; cursor:pointer;"
+                       title="Play slides in a random order. The order is reshuffled each time the slideshow loops, and all devices stay in sync.">
+                    <input type="checkbox" id="ss-shuffle" {% if deck_shuffle %}checked{% endif %}>
+                    Shuffle
+                </label>
+                &nbsp;·&nbsp;
                 <label style="font-weight:normal; font-size:0.85rem; color:#888; display:inline-flex; align-items:center; gap:0.3rem;">
                     Set all to
                     <input type="number" id="ss-bulk-dur" min="1" max="3600" step="1" value="10"
