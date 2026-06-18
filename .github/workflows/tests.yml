@@ -249,6 +249,7 @@ jobs:
         with:
           name: test-durations
           path: .test_durations
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
 
