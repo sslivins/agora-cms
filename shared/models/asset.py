@@ -75,6 +75,18 @@ class Asset(Base):
     shuffle: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Deck-level cycle anchor for SLIDESHOW assets (hybrid tag timeline,
+    # agora#806 successor).  Set once when a slideshow first gains a
+    # dynamic (tag-kind) slide and then NEVER re-floored, so growing a tag
+    # block leaves every existing slide's cycle offset stable — the
+    # on-screen slide does not jump (the firmware loop-boundary apply
+    # handles mid-timeline growth seamlessly).  NULL means "no persisted
+    # anchor"; the resolver then floors ``now`` to a cycle boundary on each
+    # build (the original manual-slideshow behaviour).  Slideshow-only
+    # meaning, like ``shuffle``; NULL for all other asset types.
+    slideshow_anchor_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Capture progress (SAVED_STREAM): 0.0-100.0 while ffmpeg runs, NULL when
     # not yet started.  Populated by worker during _capture_stream; cleared
     # on recapture.  Mirrors AssetVariant.progress so the UI can show a

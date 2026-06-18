@@ -108,6 +108,25 @@ class SlideshowSlide(Base):
         # FK columns are not auto-indexed in Postgres; the source-delete guard
         # and ACL re-check queries scan by source_asset_id.
         Index("ix_slideshow_slides_source_asset_id", "source_asset_id"),
+        # Hybrid tag timeline (agora#806 successor).  A slide is one of two
+        # kinds: a static ``asset`` entry (a specific source asset — the
+        # original slide) or a dynamic ``tag`` entry (a tag that expands
+        # in-place at resolve time to every non-deleted asset carrying it).
+        CheckConstraint(
+            "kind IN ('asset','tag')",
+            name="ck_slideshow_slide_kind_known",
+        ),
+        # Kind/columns invariant: an ``asset`` entry pins a source asset and
+        # carries no tag; a ``tag`` entry pins a tag and carries no source
+        # asset (its source assets are resolved dynamically from membership).
+        CheckConstraint(
+            "(kind = 'asset' AND source_asset_id IS NOT NULL AND tag_id IS NULL) "
+            "OR (kind = 'tag' AND tag_id IS NOT NULL AND source_asset_id IS NULL)",
+            name="ck_slideshow_slide_kind_columns",
+        ),
+        # FK columns aren't auto-indexed; tag-block expansion + the
+        # tag-delete guard scan by tag_id.
+        Index("ix_slideshow_slides_tag_id", "tag_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -119,10 +138,35 @@ class SlideshowSlide(Base):
         nullable=False,
         index=True,
     )
-    source_asset_id: Mapped[uuid.UUID] = mapped_column(
+    # Slide kind discriminator.  ``asset`` (default) is a static slide
+    # pinning ``source_asset_id``; ``tag`` is a dynamic block pinning
+    # ``tag_id`` that expands in-place to current tag membership at resolve
+    # time, every expanded member inheriting this row's playback columns
+    # (duration/transition/fit/effect) as deck-defaults.
+    kind: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="asset", server_default="asset"
+    )
+    # For ``asset`` kind: the pinned source media (RESTRICT — can't be
+    # deleted while referenced).  NULL for ``tag`` kind, where the source
+    # assets are resolved dynamically from tag membership.
+    source_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("assets.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
+    )
+    # For ``tag`` kind: the tag whose members make up this block.  CASCADE
+    # so deleting a tag removes its dynamic blocks from every slideshow.
+    # NULL for ``asset`` kind.
+    tag_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tags.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # For ``tag`` kind: how members are ordered within the block.  Only
+    # ``tagged_at`` (AssetTag.created_at asc) is supported in v1, matching
+    # the retired SlideshowTagRule.  NULL/ignored for ``asset`` kind.
+    tag_order_by: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)

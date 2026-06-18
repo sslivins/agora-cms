@@ -331,25 +331,25 @@ _TAG_MEMBER_ASSET_TYPES = (
 async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
     """Produce the ordered list of :class:`_SlideSpec` for ``asset``.
 
-    Tag mode (a :class:`SlideshowTagRule` exists) builds the deck from
-    current tag membership, ordered by ``asset_tags.created_at`` so a
-    newly tagged asset always sorts to the tail; every member inherits
-    the rule's deck-level playback defaults.  Manual mode maps each
-    ``SlideshowSlide`` row to a spec, preserving per-slide settings.
+    Two deck sources, transparently unified:
+
+    * **Hybrid timeline** (agora#806 successor) — the ordered
+      ``SlideshowSlide`` rows.  Each row is either a static ``asset``
+      slide (one spec, its own playback settings) or a dynamic ``tag``
+      block that expands in-place to current tag membership, every
+      expanded member inheriting the row's playback columns as
+      deck-defaults.  A deck with only ``asset`` rows behaves exactly as
+      a classic manual slideshow.
+    * **Legacy tag rule** (agora#806/#810) — when a 1:1
+      :class:`SlideshowTagRule` exists *and* the deck has no
+      ``SlideshowSlide`` rows, the whole deck is that rule's tag
+      membership.  Retained for backward compatibility with decks created
+      before the hybrid timeline; superseded by ``tag``-kind slides and
+      removed once those decks are migrated.
     """
     rule = await _get_tag_rule(asset.id, db)
     if rule is not None:
-        result = await db.execute(
-            select(Asset.id)
-            .join(AssetTag, AssetTag.asset_id == Asset.id)
-            .where(
-                AssetTag.tag_id == rule.tag_id,
-                Asset.deleted_at.is_(None),
-                Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
-            )
-            .order_by(AssetTag.created_at.asc(), AssetTag.id.asc())
-        )
-        member_ids = result.scalars().all()
+        member_ids = await _expand_tag_members(rule.tag_id, db)
         return [
             _SlideSpec(
                 position=i,
@@ -365,25 +365,86 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
             for i, aid in enumerate(member_ids)
         ]
 
+    # Hybrid timeline (agora#806 successor): a single ordered list of
+    # SlideshowSlide rows where each row is either a static ``asset`` slide
+    # or a dynamic ``tag`` block that expands in-place to current tag
+    # membership.  Walk in position order, assigning a running deck index
+    # so expanded members get unique, contiguous positions.  This subsumes
+    # the legacy manual-only mapping (a deck with no tag rows behaves
+    # exactly as before).
     rows_result = await db.execute(
         select(SlideshowSlide)
         .where(SlideshowSlide.slideshow_asset_id == asset.id)
         .order_by(SlideshowSlide.position.asc())
     )
-    return [
-        _SlideSpec(
-            position=row.position,
-            source_asset_id=row.source_asset_id,
-            duration_ms=row.duration_ms,
-            play_to_end=row.play_to_end,
-            transition=row.transition,
-            transition_ms=row.transition_ms,
-            fit=row.fit,
-            effect=row.effect,
-            effect_direction=row.effect_direction,
+    rows = rows_result.scalars().all()
+
+    specs: list[_SlideSpec] = []
+    pos = 0
+    for row in rows:
+        if row.kind == "tag":
+            if row.tag_id is None:  # defensive — CHECK constraint forbids
+                continue
+            member_ids = await _expand_tag_members(row.tag_id, db)
+            for aid in member_ids:
+                specs.append(
+                    _SlideSpec(
+                        position=pos,
+                        source_asset_id=aid,
+                        duration_ms=row.duration_ms,
+                        # Tag-block members never play-to-end — the block
+                        # owns a single deck-default dwell time.
+                        play_to_end=False,
+                        transition=row.transition,
+                        transition_ms=row.transition_ms,
+                        fit=row.fit,
+                        effect=row.effect,
+                        effect_direction=row.effect_direction,
+                    )
+                )
+                pos += 1
+        else:
+            if row.source_asset_id is None:  # defensive — CHECK forbids
+                continue
+            specs.append(
+                _SlideSpec(
+                    position=pos,
+                    source_asset_id=row.source_asset_id,
+                    duration_ms=row.duration_ms,
+                    play_to_end=row.play_to_end,
+                    transition=row.transition,
+                    transition_ms=row.transition_ms,
+                    fit=row.fit,
+                    effect=row.effect,
+                    effect_direction=row.effect_direction,
+                )
+            )
+            pos += 1
+    return specs
+
+
+async def _expand_tag_members(
+    tag_id: uuid.UUID, db: AsyncSession
+) -> list[uuid.UUID]:
+    """Return the ordered source-asset ids for a tag block.
+
+    Members are every non-deleted, directly-displayable asset currently
+    carrying ``tag_id``, ordered by ``asset_tags.created_at`` ascending
+    (tagged-at order) so a newly tagged asset always sorts to the tail of
+    its block — the firmware applies the new deck at a loop boundary so the
+    insert is seamless.
+    """
+    result = await db.execute(
+        select(Asset.id)
+        .join(AssetTag, AssetTag.asset_id == Asset.id)
+        .where(
+            AssetTag.tag_id == tag_id,
+            Asset.deleted_at.is_(None),
+            Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
         )
-        for row in rows_result.scalars().all()
-    ]
+        .order_by(AssetTag.created_at.asc(), AssetTag.id.asc())
+    )
+    return list(result.scalars().all())
 
 
 async def plan_slideshow(
@@ -682,12 +743,17 @@ async def build_fetch_for_slideshow(
     # Tag-mode decks (agora#806, Option B) carry a persisted anchor that is
     # set once and NEVER re-floored, so appending a newly-tagged slide at
     # the tail leaves every existing slide's cycle offset unchanged — the
-    # on-screen slide does not move.  Manual decks (and tag rules created
-    # before anchor support, where anchor_at is NULL) fall back to flooring
-    # ``now`` to a cycle boundary on every build.
+    # on-screen slide does not move.  Both the hybrid timeline
+    # (``asset.slideshow_anchor_at``, set once a tag block first appears)
+    # and the legacy tag rule (``rule.anchor_at``) supply such an anchor.
+    # Plain manual decks (and pre-anchor tag rules where the anchor is
+    # NULL) fall back to flooring ``now`` to a cycle boundary on every
+    # build.
     rule = await _get_tag_rule(asset.id, db)
     if rule is not None and rule.anchor_at is not None:
         started_at = _format_anchor(rule.anchor_at)
+    elif asset.slideshow_anchor_at is not None:
+        started_at = _format_anchor(asset.slideshow_anchor_at)
     else:
         started_at = _compute_cycle_anchor(cycle_duration_ms)
 
