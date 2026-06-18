@@ -1695,6 +1695,11 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         "asset_is_global": False,
         "deck_shuffle": False,
         "assistant_enabled": assistant_on,
+        # Tag-based dynamic playlist rule (agora-cms#806). None == manual
+        # deck; a dict flips the builder into "tag mode" on load. Only ever
+        # populated in edit mode (the tag-rule API requires an existing
+        # slideshow asset).
+        "tag_rule": None,
     }
 
     if asset_id is not None:
@@ -1738,6 +1743,35 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         asset_group_rows = (await db.execute(
             select(GroupAsset.group_id).where(GroupAsset.asset_id == asset_id)
         )).scalars().all()
+        # If this slideshow is in tag mode, surface the rule so the builder
+        # can prefill the tag-mode panel (otherwise it defaults to manual).
+        from cms.models.slideshow_tag_rule import SlideshowTagRule
+        tag_rule_row = (await db.execute(
+            select(SlideshowTagRule).where(
+                SlideshowTagRule.slideshow_asset_id == asset_id
+            )
+        )).scalar_one_or_none()
+        tag_rule_ctx = None
+        if tag_rule_row is not None:
+            from cms.routers.assets import _count_tag_members
+            tr_tag_name = (await db.execute(
+                select(Tag.name).where(Tag.id == tag_rule_row.tag_id)
+            )).scalar_one_or_none()
+            tag_rule_ctx = {
+                "tag_id": str(tag_rule_row.tag_id),
+                "tag_name": tr_tag_name,
+                "default_duration_ms": tag_rule_row.default_duration_ms,
+                "default_transition": tag_rule_row.default_transition,
+                "default_transition_ms": tag_rule_row.default_transition_ms,
+                "default_fit": tag_rule_row.default_fit,
+                "default_effect": tag_rule_row.default_effect,
+                "default_effect_direction": tag_rule_row.default_effect_direction,
+                "anchor_at": (
+                    tag_rule_row.anchor_at.isoformat()
+                    if tag_rule_row.anchor_at else None
+                ),
+                "member_count": await _count_tag_members(tag_rule_row.tag_id, db),
+            }
         ctx.update({
             "edit_mode": True,
             "asset": asset,
@@ -1747,6 +1781,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
             "asset_groups": [str(g) for g in asset_group_rows],
             "asset_is_global": bool(asset.is_global),
             "deck_shuffle": bool(getattr(asset, "shuffle", False)),
+            "tag_rule": tag_rule_ctx,
         })
     return ctx
 
