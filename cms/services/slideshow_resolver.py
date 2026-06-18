@@ -35,6 +35,8 @@ import logging
 
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device
+from cms.models.slideshow_tag_rule import SlideshowTagRule
+from cms.models.tag import AssetTag
 from cms.schemas.protocol import (
     FetchAssetMessage,
     SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST,
@@ -111,6 +113,28 @@ class _SlidePlan:
     # siblings the device pre-fetches before showing the bundle.  Empty
     # for image/video slides.
     siblings: list[_SiblingPlan] = field(default_factory=list)
+
+
+@dataclass
+class _SlideSpec:
+    """A slide's *source-and-playback* description, before variant
+    resolution.  Abstracts over the two deck sources so
+    :func:`plan_slideshow` can iterate one uniform list:
+
+    * manual slideshows map each ``SlideshowSlide`` row → one spec;
+    * tag-mode decks (agora#806) map each tagged asset → one spec,
+      filling playback fields from the ``SlideshowTagRule`` defaults.
+    """
+
+    position: int
+    source_asset_id: uuid.UUID
+    duration_ms: int
+    play_to_end: bool
+    transition: str
+    transition_ms: int
+    fit: str
+    effect: str
+    effect_direction: str
 
 
 @dataclass
@@ -279,10 +303,103 @@ async def _plan_composed_siblings(
     return siblings
 
 
+async def _get_tag_rule(
+    asset_id: uuid.UUID, db: AsyncSession
+) -> Optional[SlideshowTagRule]:
+    """Return the :class:`SlideshowTagRule` for ``asset_id`` if the
+    slideshow is in tag mode, else ``None`` (manual mode).  Indexed PK
+    lookup — cheap to call on every resolve/build."""
+    result = await db.execute(
+        select(SlideshowTagRule).where(
+            SlideshowTagRule.slideshow_asset_id == asset_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+# Leaf, directly-displayable asset types a tag-mode deck may include.
+# SLIDESHOW is excluded to prevent nesting/recursion; WEBPAGE is excluded
+# (not a cacheable single-file display asset on this path).
+_TAG_MEMBER_ASSET_TYPES = (
+    AssetType.IMAGE,
+    AssetType.VIDEO,
+    AssetType.SAVED_STREAM,
+    AssetType.COMPOSED,
+)
+
+
+async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
+    """Produce the ordered list of :class:`_SlideSpec` for ``asset``.
+
+    Tag mode (a :class:`SlideshowTagRule` exists) builds the deck from
+    current tag membership, ordered by ``asset_tags.created_at`` so a
+    newly tagged asset always sorts to the tail; every member inherits
+    the rule's deck-level playback defaults.  Manual mode maps each
+    ``SlideshowSlide`` row to a spec, preserving per-slide settings.
+    """
+    rule = await _get_tag_rule(asset.id, db)
+    if rule is not None:
+        result = await db.execute(
+            select(Asset.id)
+            .join(AssetTag, AssetTag.asset_id == Asset.id)
+            .where(
+                AssetTag.tag_id == rule.tag_id,
+                Asset.deleted_at.is_(None),
+                Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
+            )
+            .order_by(AssetTag.created_at.asc(), AssetTag.id.asc())
+        )
+        member_ids = result.scalars().all()
+        return [
+            _SlideSpec(
+                position=i,
+                source_asset_id=aid,
+                duration_ms=rule.default_duration_ms,
+                play_to_end=False,
+                transition=rule.default_transition,
+                transition_ms=rule.default_transition_ms,
+                fit=rule.default_fit,
+                effect=rule.default_effect,
+                effect_direction=rule.default_effect_direction,
+            )
+            for i, aid in enumerate(member_ids)
+        ]
+
+    rows_result = await db.execute(
+        select(SlideshowSlide)
+        .where(SlideshowSlide.slideshow_asset_id == asset.id)
+        .order_by(SlideshowSlide.position.asc())
+    )
+    return [
+        _SlideSpec(
+            position=row.position,
+            source_asset_id=row.source_asset_id,
+            duration_ms=row.duration_ms,
+            play_to_end=row.play_to_end,
+            transition=row.transition,
+            transition_ms=row.transition_ms,
+            fit=row.fit,
+            effect=row.effect,
+            effect_direction=row.effect_direction,
+        )
+        for row in rows_result.scalars().all()
+    ]
+
+
 async def plan_slideshow(
     asset: Asset, profile_id: Optional[uuid.UUID], db: AsyncSession
 ) -> SlideshowPlan:
     """Resolve every slide of ``asset`` against ``profile_id``.
+
+    The slide list comes from one of two sources, transparently to the
+    rest of this function (see :func:`_load_slide_specs`):
+
+    * **Manual mode** — explicit ``slideshow_slides`` rows, ordered by
+      ``position``.
+    * **Tag mode** (agora#806) — when a :class:`SlideshowTagRule` exists
+      for ``asset``, the deck is the set of assets currently carrying the
+      rule's tag, ordered by tag-membership creation time so a newly
+      tagged asset always lands at the tail (Option B seamless insert).
 
     For each slide the planner picks the latest READY variant for the
     device's profile when one exists; otherwise falls back to the raw
@@ -293,17 +410,11 @@ async def plan_slideshow(
     Two batched queries by source-asset-id keep this O(1) in slide count
     regardless of slideshow size.
     """
-    rows = (
-        await db.execute(
-            select(SlideshowSlide)
-            .where(SlideshowSlide.slideshow_asset_id == asset.id)
-            .order_by(SlideshowSlide.position.asc())
-        )
-    ).scalars().all()
-    if not rows:
+    specs = await _load_slide_specs(asset, db)
+    if not specs:
         return SlideshowPlan()
 
-    source_ids = [r.source_asset_id for r in rows]
+    source_ids = [s.source_asset_id for s in specs]
     sources_result = await db.execute(
         select(Asset).where(Asset.id.in_(source_ids))
     )
@@ -339,13 +450,13 @@ async def plan_slideshow(
                 ready_by_source[sid] = v
 
     plan = SlideshowPlan()
-    for slide_row in rows:
-        sid = slide_row.source_asset_id
+    for spec in specs:
+        sid = spec.source_asset_id
         src = sources_by_id.get(sid)
         if src is None or src.deleted_at is not None:
             plan.blockers.append(
                 SlideshowBlocker(
-                    slide_position=slide_row.position,
+                    slide_position=spec.position,
                     source_asset_id=sid,
                     source_filename=src.filename if src else "",
                     status=BLOCKER_SOURCE_DELETED,
@@ -353,17 +464,17 @@ async def plan_slideshow(
             )
             continue
         sp = _SlidePlan(
-            position=slide_row.position,
+            position=spec.position,
             source_asset_id=sid,
             source_filename=src.filename,
             source_asset_type=src.asset_type,
-            duration_ms=slide_row.duration_ms,
-            play_to_end=slide_row.play_to_end,
-            transition=slide_row.transition,
-            transition_ms=slide_row.transition_ms,
-            fit=slide_row.fit,
-            effect=slide_row.effect,
-            effect_direction=slide_row.effect_direction,
+            duration_ms=spec.duration_ms,
+            play_to_end=spec.play_to_end,
+            transition=spec.transition,
+            transition_ms=spec.transition_ms,
+            fit=spec.fit,
+            effect=spec.effect,
+            effect_direction=spec.effect_direction,
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
@@ -375,7 +486,7 @@ async def plan_slideshow(
             if composed_unpublished_reason(src) is not None:
                 plan.blockers.append(
                     SlideshowBlocker(
-                        slide_position=slide_row.position,
+                        slide_position=spec.position,
                         source_asset_id=sid,
                         source_filename=src.filename,
                         status=BLOCKER_SOURCE_UNPUBLISHED,
@@ -386,7 +497,7 @@ async def plan_slideshow(
             if sib == _SIBLINGS_INFLIGHT:
                 plan.blockers.append(
                     SlideshowBlocker(
-                        slide_position=slide_row.position,
+                        slide_position=spec.position,
                         source_asset_id=sid,
                         source_filename=src.filename,
                         status=BLOCKER_VARIANT_PROCESSING,
@@ -424,7 +535,7 @@ async def plan_slideshow(
                         status = BLOCKER_VARIANT_CANCELLED
                     plan.blockers.append(
                         SlideshowBlocker(
-                            slide_position=slide_row.position,
+                            slide_position=spec.position,
                             source_asset_id=sid,
                             source_filename=src.filename,
                             status=status,
@@ -568,7 +679,17 @@ async def build_fetch_for_slideshow(
 
     # Phase 1b of agora#226 — wall-clock anchor support.
     cycle_duration_ms = sum(sp.duration_ms for sp in plan.slides)
-    started_at = _compute_cycle_anchor(cycle_duration_ms)
+    # Tag-mode decks (agora#806, Option B) carry a persisted anchor that is
+    # set once and NEVER re-floored, so appending a newly-tagged slide at
+    # the tail leaves every existing slide's cycle offset unchanged — the
+    # on-screen slide does not move.  Manual decks (and tag rules created
+    # before anchor support, where anchor_at is NULL) fall back to flooring
+    # ``now`` to a cycle boundary on every build.
+    rule = await _get_tag_rule(asset.id, db)
+    if rule is not None and rule.anchor_at is not None:
+        started_at = _format_anchor(rule.anchor_at)
+    else:
+        started_at = _compute_cycle_anchor(cycle_duration_ms)
 
     # Deck-level shuffle (agora#261).  Emit the bool + a stable per-asset
     # seed so every device derives the same per-cycle permutation and a
@@ -624,6 +745,18 @@ def _compute_cycle_anchor(cycle_duration_ms: int) -> Optional[str]:
     anchor = datetime.fromtimestamp(floor_ms / 1000, tz=timezone.utc)
     # ISO-8601 with millisecond precision, "Z" suffix for UTC.
     iso = anchor.isoformat(timespec="milliseconds")
+    return iso.replace("+00:00", "Z")
+
+
+def _format_anchor(dt: datetime) -> str:
+    """Format a UTC ``datetime`` as the same ISO-8601 ``Z`` string the
+    cycle-anchor helper emits, so a persisted tag-rule anchor is wire
+    identical to a computed one.  Naive datetimes are assumed UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    iso = dt.isoformat(timespec="milliseconds")
     return iso.replace("+00:00", "Z")
 
 

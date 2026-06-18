@@ -938,3 +938,213 @@ class TestShuffleSeedAndChecksumFold:
             "asset-sha", [self._plan("left")], shuffle=False
         )
         assert in_ck != left_ck  # changing KB direction invalidates the cache
+
+
+# ---------------------------------------------------------------------------
+# Tag-mode dynamic playlists (agora#806)
+# ---------------------------------------------------------------------------
+
+async def _seed_tag(db, name="promo"):
+    from cms.models.tag import Tag
+
+    t = Tag(name=name)
+    db.add(t)
+    await db.commit()
+    await db.refresh(t)
+    return t
+
+
+async def _tag_asset(db, *, asset, tag, when):
+    """Create an ``AssetTag`` with an explicit ``created_at`` so tests can
+    control the ``tagged_at`` ordering that tag-mode decks rely on."""
+    from cms.models.tag import AssetTag
+
+    at = AssetTag(asset_id=asset.id, tag_id=tag.id, created_at=when)
+    db.add(at)
+    await db.commit()
+    await db.refresh(at)
+    return at
+
+
+async def _seed_tag_rule(
+    db, *, slideshow, tag, anchor_at=None, default_duration_ms=8000
+):
+    from cms.models.slideshow_tag_rule import SlideshowTagRule
+
+    r = SlideshowTagRule(
+        slideshow_asset_id=slideshow.id,
+        tag_id=tag.id,
+        default_duration_ms=default_duration_ms,
+        anchor_at=anchor_at,
+    )
+    db.add(r)
+    await db.commit()
+    await db.refresh(r)
+    return r
+
+
+@pytest.mark.asyncio
+class TestTagModeSlideshow:
+    async def test_resolves_members_in_tagged_at_order(self, db_session):
+        """A tag-mode deck builds its slide list from current tag
+        membership, ordered by ``asset_tags.created_at`` (tagged_at)."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "ptag1")
+        tag = await _seed_tag(db_session, "promo1")
+        a = await _seed_image(db_session, filename="a.png")
+        b = await _seed_image(db_session, filename="b.png")
+        c = await _seed_image(db_session, filename="c.png")
+        for img, ck in ((a, "va"), (b, "vb"), (c, "vc")):
+            await _seed_variant(
+                db_session, source=img, profile=profile, checksum=ck, ext="jpg",
+            )
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # Tag order (non-alphabetical): c (oldest) -> a -> b (newest).
+        await _tag_asset(db_session, asset=c, tag=tag, when=base)
+        await _tag_asset(db_session, asset=a, tag=tag, when=base + timedelta(seconds=10))
+        await _tag_asset(db_session, asset=b, tag=tag, when=base + timedelta(seconds=20))
+
+        ss = await _seed_slideshow(
+            db_session, name="tagdeck", slides_data=[], checksum="tag-base",
+        )
+        await _seed_tag_rule(db_session, slideshow=ss, tag=tag)
+
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        assert [s.source_filename for s in plan.slides] == ["c.png", "a.png", "b.png"]
+        assert [s.position for s in plan.slides] == [0, 1, 2]
+        # Every member inherits the rule's deck-level duration default.
+        assert all(s.duration_ms == 8000 for s in plan.slides)
+
+    async def test_newly_tagged_asset_appends_at_tail(self, db_session):
+        """Tagging a new asset appends it at the tail, leaving existing
+        members in place (Option B no-restart guarantee)."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "ptag2")
+        tag = await _seed_tag(db_session, "promo2")
+        a = await _seed_image(db_session, filename="first.png")
+        b = await _seed_image(db_session, filename="second.png")
+        for img in (a, b):
+            await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+        base = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        await _tag_asset(db_session, asset=a, tag=tag, when=base)
+        await _tag_asset(db_session, asset=b, tag=tag, when=base + timedelta(seconds=10))
+        ss = await _seed_slideshow(
+            db_session, name="tagdeck2", slides_data=[], checksum="tb",
+        )
+        await _seed_tag_rule(db_session, slideshow=ss, tag=tag)
+
+        plan1 = await plan_slideshow(ss, profile.id, db_session)
+        assert [s.source_filename for s in plan1.slides] == ["first.png", "second.png"]
+
+        c = await _seed_image(db_session, filename="third.png")
+        await _seed_variant(db_session, source=c, profile=profile, ext="jpg")
+        await _tag_asset(db_session, asset=c, tag=tag, when=base + timedelta(seconds=20))
+
+        plan2 = await plan_slideshow(ss, profile.id, db_session)
+        assert [s.source_filename for s in plan2.slides] == [
+            "first.png", "second.png", "third.png",
+        ]
+        assert [s.position for s in plan2.slides] == [0, 1, 2]
+
+    async def test_tag_rule_overrides_manual_slides(self, db_session):
+        """When a SlideshowTagRule exists, the deck comes from tag
+        membership even if stale SlideshowSlide rows are also present."""
+        from datetime import datetime, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "ptag3")
+        manual_img = await _seed_image(db_session, filename="manual.png")
+        await _seed_variant(db_session, source=manual_img, profile=profile, ext="jpg")
+        ss = await _seed_slideshow(
+            db_session, name="tagdeck3",
+            slides_data=[(manual_img, 5000, False)], checksum="tb3",
+        )
+        tag = await _seed_tag(db_session, "promo3")
+        tag_img = await _seed_image(db_session, filename="tagged.png")
+        await _seed_variant(db_session, source=tag_img, profile=profile, ext="jpg")
+        await _tag_asset(
+            db_session, asset=tag_img, tag=tag,
+            when=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        )
+        await _seed_tag_rule(db_session, slideshow=ss, tag=tag)
+
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert [s.source_filename for s in plan.slides] == ["tagged.png"]
+
+    async def test_persisted_anchor_emitted_verbatim(self, db_session, app):
+        """A tag rule with a persisted ``anchor_at`` emits it verbatim as
+        ``started_at`` — NOT floored to a cycle boundary — so tail appends
+        never shift the on-screen slide."""
+        from datetime import datetime, timezone
+
+        from cms.services.slideshow_resolver import (
+            _format_anchor,
+            build_fetch_for_slideshow,
+        )
+
+        profile = await _seed_profile(db_session, "ptag4")
+        group = await _seed_group(db_session, "gtag4")
+        device = await _seed_device(
+            db_session, did="dtag4", group=group, profile=profile,
+        )
+        tag = await _seed_tag(db_session, "promo4")
+        img = await _seed_image(db_session, filename="anchor.png")
+        await _seed_variant(
+            db_session, source=img, profile=profile, checksum="av", ext="jpg",
+        )
+        await _tag_asset(
+            db_session, asset=img, tag=tag,
+            when=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        ss = await _seed_slideshow(
+            db_session, name="tagdeck4", slides_data=[], checksum="tb4",
+        )
+        anchor = datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc)
+        await _seed_tag_rule(db_session, slideshow=ss, tag=tag, anchor_at=anchor)
+
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        assert fetch.started_at == _format_anchor(anchor)
+
+    async def test_null_anchor_falls_back_to_floored(self, db_session, app):
+        """A tag rule with NULL ``anchor_at`` (created before anchor
+        support) falls back to the floored-to-cycle-boundary anchor."""
+        from datetime import datetime, timezone
+
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "ptag5")
+        group = await _seed_group(db_session, "gtag5")
+        device = await _seed_device(
+            db_session, did="dtag5", group=group, profile=profile,
+        )
+        tag = await _seed_tag(db_session, "promo5")
+        img = await _seed_image(db_session, filename="floor.png")
+        await _seed_variant(
+            db_session, source=img, profile=profile, checksum="fv", ext="jpg",
+        )
+        await _tag_asset(
+            db_session, asset=img, tag=tag,
+            when=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+        ss = await _seed_slideshow(
+            db_session, name="tagdeck5", slides_data=[], checksum="tb5",
+        )
+        await _seed_tag_rule(db_session, slideshow=ss, tag=tag, anchor_at=None)
+
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        anchor = datetime.fromisoformat(fetch.started_at.replace("Z", "+00:00"))
+        assert int(anchor.timestamp() * 1000) % fetch.cycle_duration_ms == 0
