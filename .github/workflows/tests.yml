@@ -233,10 +233,24 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-timeout pytest-cov pytest-xdist httpx aiosqlite psycopg2-binary
+          pip install pytest pytest-asyncio pytest-timeout pytest-cov pytest-xdist pytest-split httpx aiosqlite psycopg2-binary
 
+      # Phase 0 (measurement-only): --store-durations writes a machine-readable
+      # per-test timing map (.test_durations) used by pytest-split to balance
+      # shards. --durations=50 prints the 50 slowest tests to the log. Neither
+      # changes pass/fail behaviour; this run is otherwise identical to the
+      # normal gate. Remove both flags once the durations map is committed.
       - name: Run tests
-        run: python -m pytest tests/ --ignore=tests/e2e -n auto --dist=loadfile --tb=short -q -rs --durations=20 --cov=cms --cov=shared --cov-report=xml --cov-report=term --cov-fail-under=50
+        run: python -m pytest tests/ --ignore=tests/e2e -n auto --dist=loadfile --tb=short -q -rs --durations=50 --store-durations --durations-path .test_durations --cov=cms --cov=shared --cov-report=xml --cov-report=term --cov-fail-under=50
+
+      - name: Upload test durations map
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations
+          path: .test_durations
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload coverage report
         if: always()
