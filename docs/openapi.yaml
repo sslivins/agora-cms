@@ -1375,6 +1375,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/assets/{asset_id}/tag-rule:
+    get:
+      summary: Get Slideshow Tag Rule
+      description: |-
+        Return the tag rule for a slideshow, or 404 if it's in manual mode.
+
+        A slideshow is in *tag mode* when a :class:`SlideshowTagRule` row
+        exists; its deck is resolved live from assets carrying the rule's
+        tag rather than from hand-authored ``slideshow_slides`` rows.
+      operationId: get_slideshow_tag_rule_api_assets__asset_id__tag_rule_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagRuleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Put Slideshow Tag Rule
+      description: |-
+        Create or replace a slideshow's tag rule (flip it into tag mode).
+
+        On create, ``anchor_at`` is stamped to *now* so the resolver anchors
+        the playback cycle at the moment tag mode was enabled. On edit, the
+        existing ``anchor_at`` is preserved so the on-screen slide never jumps
+        (the no-restart guarantee for agora-cms#806). Manual ``slideshow_slides``
+        rows are left intact so DELETE reverts cleanly to the manual deck.
+
+        Device propagation is automatic: ``build_device_sync`` re-resolves
+        every slideshow through the (tag-aware) resolver each scheduler tick,
+        so connected devices pick up the new deck within one eval interval —
+        no explicit push needed.
+      operationId: put_slideshow_tag_rule_api_assets__asset_id__tag_rule_put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagRuleIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagRuleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Slideshow Tag Rule
+      description: |-
+        Delete a slideshow's tag rule, reverting it to manual mode.
+
+        Returns 404 if the slideshow has no tag rule. Manual ``slideshow_slides``
+        rows were never touched by tag mode, so the slideshow falls straight
+        back to its previously-authored deck (empty if none).
+      operationId: delete_slideshow_tag_rule_api_assets__asset_id__tag_rule_delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Delete Slideshow Tag Rule Api Assets  Asset Id  Tag Rule Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/assets/{asset_id}/assistant/thread:
     post:
       summary: Slideshow Assistant Thread
@@ -7190,6 +7296,121 @@ components:
       type: object
       title: TagPatch
       description: Request body for ``PATCH /api/tags/{id}``.  All fields optional.
+    TagRuleIn:
+      properties:
+        tag_id:
+          type: string
+          format: uuid
+          title: Tag Id
+        default_duration_ms:
+          type: integer
+          maximum: 3600000.0
+          minimum: 500.0
+          title: Default Duration Ms
+          default: 8000
+        default_transition:
+          type: string
+          title: Default Transition
+          default: cut
+        default_transition_ms:
+          type: integer
+          maximum: 5000.0
+          minimum: 0.0
+          title: Default Transition Ms
+          default: 600
+        default_fit:
+          type: string
+          title: Default Fit
+          default: cover
+        default_effect:
+          type: string
+          title: Default Effect
+          default: none
+        default_effect_direction:
+          type: string
+          title: Default Effect Direction
+          default: in
+      type: object
+      required:
+      - tag_id
+      title: TagRuleIn
+      description: |-
+        Request body to create/replace a slideshow's tag rule (agora-cms#806).
+
+        Putting a tag rule on a slideshow asset flips it into *tag mode*: the
+        deck is resolved live from the set of assets carrying ``tag_id`` rather
+        than from hand-authored ``slideshow_slides`` rows.  ``order_by`` is not
+        exposed on the wire — v1 is hardcoded to ``tagged_at`` (the only value
+        that preserves the no-restart, append-at-tail guarantee).
+
+        The ``default_*`` fields apply uniformly to every resolved member, since
+        a tag deck has no per-slide authoring UI.  Their validators mirror
+        :class:`SlideIn` exactly so a tag deck behaves like a hand-built one
+        with default slides.
+    TagRuleOut:
+      properties:
+        slideshow_asset_id:
+          type: string
+          format: uuid
+          title: Slideshow Asset Id
+        tag_id:
+          type: string
+          format: uuid
+          title: Tag Id
+        tag_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tag Name
+        order_by:
+          type: string
+          title: Order By
+          default: tagged_at
+        default_duration_ms:
+          type: integer
+          title: Default Duration Ms
+          default: 8000
+        default_transition:
+          type: string
+          title: Default Transition
+          default: cut
+        default_transition_ms:
+          type: integer
+          title: Default Transition Ms
+          default: 600
+        default_fit:
+          type: string
+          title: Default Fit
+          default: cover
+        default_effect:
+          type: string
+          title: Default Effect
+          default: none
+        default_effect_direction:
+          type: string
+          title: Default Effect Direction
+          default: in
+        anchor_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Anchor At
+        member_count:
+          type: integer
+          title: Member Count
+          default: 0
+      type: object
+      required:
+      - slideshow_asset_id
+      - tag_id
+      title: TagRuleOut
+      description: |-
+        A slideshow's tag rule, as returned by GET/PUT ``/{id}/tag-rule``.
+
+        ``member_count`` is the number of assets currently resolved into the
+        deck (eligible asset types carrying the tag), surfaced so the builder
+        UI can show "N items match" without a second round-trip.
     ToggleRequest:
       properties:
         enabled:

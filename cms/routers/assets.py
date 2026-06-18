@@ -25,6 +25,7 @@ from cms.models.device_profile import DeviceProfile
 from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
 from cms.models.slideshow_slide import SlideshowSlide
+from cms.models.slideshow_tag_rule import SlideshowTagRule
 from cms.models.tag import AssetTag, Tag
 from cms.models.user import User
 from cms.models.chat_thread import ChatThread
@@ -40,6 +41,8 @@ from cms.schemas.asset import (
     MAX_SLIDE_DURATION_MS,
     MAX_SLIDESHOW_SLIDES,
     SlideIn,
+    TagRuleIn,
+    TagRuleOut,
 )
 from cms.schemas.tag import TagOut
 from cms.services.audit_service import audit_log, compute_diff
@@ -2087,6 +2090,196 @@ async def _load_slideshow_for_write(
             status_code=403, detail="Only the slideshow owner can edit its slides"
         )
     return asset
+
+
+async def _count_tag_members(tag_id: uuid.UUID, db: AsyncSession) -> int:
+    """Count assets that would resolve into a tag-mode deck for ``tag_id``.
+
+    Mirrors the resolver's membership query (same eligible asset types,
+    same deleted-row exclusion) so the ``member_count`` surfaced by the
+    tag-rule API matches what the device will actually play.
+    """
+    from cms.services.slideshow_resolver import _TAG_MEMBER_ASSET_TYPES
+
+    return int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(Asset)
+                .join(AssetTag, AssetTag.asset_id == Asset.id)
+                .where(
+                    AssetTag.tag_id == tag_id,
+                    Asset.deleted_at.is_(None),
+                    Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def _tag_rule_out(
+    rule: SlideshowTagRule, db: AsyncSession
+) -> TagRuleOut:
+    """Build the API representation of a tag rule (tag name + live count)."""
+    tag_name = (
+        await db.execute(select(Tag.name).where(Tag.id == rule.tag_id))
+    ).scalar_one_or_none()
+    out = TagRuleOut.model_validate(rule)
+    out.tag_name = tag_name
+    out.member_count = await _count_tag_members(rule.tag_id, db)
+    return out
+
+
+@router.get("/{asset_id}/tag-rule")
+async def get_slideshow_tag_rule(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+) -> TagRuleOut:
+    """Return the tag rule for a slideshow, or 404 if it's in manual mode.
+
+    A slideshow is in *tag mode* when a :class:`SlideshowTagRule` row
+    exists; its deck is resolved live from assets carrying the rule's
+    tag rather than from hand-authored ``slideshow_slides`` rows.
+    """
+    await _load_slideshow_for_write(asset_id, request, db)
+    rule = (
+        await db.execute(
+            select(SlideshowTagRule).where(
+                SlideshowTagRule.slideshow_asset_id == asset_id
+            )
+        )
+    ).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Slideshow has no tag rule")
+    return await _tag_rule_out(rule, db)
+
+
+@router.put("/{asset_id}/tag-rule")
+async def put_slideshow_tag_rule(
+    asset_id: uuid.UUID,
+    body: TagRuleIn,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+) -> TagRuleOut:
+    """Create or replace a slideshow's tag rule (flip it into tag mode).
+
+    On create, ``anchor_at`` is stamped to *now* so the resolver anchors
+    the playback cycle at the moment tag mode was enabled. On edit, the
+    existing ``anchor_at`` is preserved so the on-screen slide never jumps
+    (the no-restart guarantee for agora-cms#806). Manual ``slideshow_slides``
+    rows are left intact so DELETE reverts cleanly to the manual deck.
+
+    Device propagation is automatic: ``build_device_sync`` re-resolves
+    every slideshow through the (tag-aware) resolver each scheduler tick,
+    so connected devices pick up the new deck within one eval interval —
+    no explicit push needed.
+    """
+    asset = await _load_slideshow_for_write(asset_id, request, db)
+
+    tag = (
+        await db.execute(select(Tag).where(Tag.id == body.tag_id))
+    ).scalar_one_or_none()
+    if tag is None:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    rule = (
+        await db.execute(
+            select(SlideshowTagRule).where(
+                SlideshowTagRule.slideshow_asset_id == asset_id
+            )
+        )
+    ).scalar_one_or_none()
+
+    created = rule is None
+    if rule is None:
+        rule = SlideshowTagRule(
+            slideshow_asset_id=asset_id,
+            anchor_at=datetime.now(timezone.utc),
+        )
+        db.add(rule)
+
+    rule.tag_id = body.tag_id
+    rule.order_by = "tagged_at"
+    rule.default_duration_ms = body.default_duration_ms
+    rule.default_transition = body.default_transition
+    rule.default_transition_ms = body.default_transition_ms
+    rule.default_fit = body.default_fit
+    rule.default_effect = body.default_effect
+    rule.default_effect_direction = body.default_effect_direction
+
+    await audit_log(
+        db,
+        user=user,
+        action="asset.set_tag_rule",
+        resource_type="asset",
+        resource_id=str(asset_id),
+        description=(
+            f"{'Enabled' if created else 'Updated'} tag mode on slideshow "
+            f"'{asset.display_name or asset.original_filename or asset.filename}' "
+            f"(tag '{tag.name}')"
+        ),
+        details={
+            "filename": asset.display_name or asset.original_filename or asset.filename,
+            "tag_id": str(body.tag_id),
+            "tag_name": tag.name,
+            "created": created,
+        },
+        request=request,
+    )
+    await db.commit()
+    await db.refresh(rule)
+    return await _tag_rule_out(rule, db)
+
+
+@router.delete("/{asset_id}/tag-rule")
+async def delete_slideshow_tag_rule(
+    asset_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_permission(ASSETS_WRITE)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a slideshow's tag rule, reverting it to manual mode.
+
+    Returns 404 if the slideshow has no tag rule. Manual ``slideshow_slides``
+    rows were never touched by tag mode, so the slideshow falls straight
+    back to its previously-authored deck (empty if none).
+    """
+    asset = await _load_slideshow_for_write(asset_id, request, db)
+    rule = (
+        await db.execute(
+            select(SlideshowTagRule).where(
+                SlideshowTagRule.slideshow_asset_id == asset_id
+            )
+        )
+    ).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Slideshow has no tag rule")
+
+    await db.execute(
+        delete(SlideshowTagRule).where(
+            SlideshowTagRule.slideshow_asset_id == asset_id
+        )
+    )
+    await audit_log(
+        db,
+        user=user,
+        action="asset.delete_tag_rule",
+        resource_type="asset",
+        resource_id=str(asset_id),
+        description=(
+            f"Disabled tag mode on slideshow "
+            f"'{asset.display_name or asset.original_filename or asset.filename}'"
+        ),
+        details={
+            "filename": asset.display_name or asset.original_filename or asset.filename,
+        },
+        request=request,
+    )
+    await db.commit()
+    return {"slideshow_id": str(asset_id), "tag_rule": None}
 
 
 @router.post("/{asset_id}/assistant/thread")

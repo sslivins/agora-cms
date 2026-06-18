@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from cms.models.asset import AssetType, VariantStatus
+from cms.models.slideshow_tag_rule import DEFAULT_TAG_SLIDE_DURATION_MS
 from cms.schemas.tag import TagOut
 
 
@@ -358,4 +359,93 @@ class SlideOut(BaseModel):
     source_asset_type: AssetType
     source_duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
+
+
+class TagRuleIn(BaseModel):
+    """Request body to create/replace a slideshow's tag rule (agora-cms#806).
+
+    Putting a tag rule on a slideshow asset flips it into *tag mode*: the
+    deck is resolved live from the set of assets carrying ``tag_id`` rather
+    than from hand-authored ``slideshow_slides`` rows.  ``order_by`` is not
+    exposed on the wire — v1 is hardcoded to ``tagged_at`` (the only value
+    that preserves the no-restart, append-at-tail guarantee).
+
+    The ``default_*`` fields apply uniformly to every resolved member, since
+    a tag deck has no per-slide authoring UI.  Their validators mirror
+    :class:`SlideIn` exactly so a tag deck behaves like a hand-built one
+    with default slides.
+    """
+
+    tag_id: uuid.UUID
+    default_duration_ms: int = Field(
+        DEFAULT_TAG_SLIDE_DURATION_MS,
+        ge=MIN_SLIDE_DURATION_MS,
+        le=MAX_SLIDE_DURATION_MS,
+    )
+    default_transition: str = Field(DEFAULT_SLIDE_TRANSITION)
+    default_transition_ms: int = Field(
+        DEFAULT_SLIDE_TRANSITION_MS,
+        ge=MIN_SLIDE_TRANSITION_MS,
+        le=MAX_SLIDE_TRANSITION_MS,
+    )
+    default_fit: str = Field(DEFAULT_SLIDE_FIT)
+    default_effect: str = Field(DEFAULT_SLIDE_EFFECT)
+    default_effect_direction: str = Field(DEFAULT_KEN_BURNS_DIRECTION)
+
+    @field_validator("default_transition")
+    @classmethod
+    def _validate_transition(cls, v: str) -> str:
+        if v not in SLIDE_TRANSITIONS:
+            raise ValueError(
+                f"default_transition must be one of {SLIDE_TRANSITIONS}, got {v!r}"
+            )
+        return v
+
+    @field_validator("default_fit")
+    @classmethod
+    def _validate_fit(cls, v: str) -> str:
+        if v not in SLIDE_FITS:
+            raise ValueError(f"default_fit must be one of {SLIDE_FITS}, got {v!r}")
+        return v
+
+    @field_validator("default_effect")
+    @classmethod
+    def _validate_effect(cls, v: str) -> str:
+        if v not in SLIDE_EFFECTS:
+            raise ValueError(f"default_effect must be one of {SLIDE_EFFECTS}, got {v!r}")
+        return v
+
+    @field_validator("default_effect_direction")
+    @classmethod
+    def _validate_effect_direction(cls, v: str) -> str:
+        v = normalize_effect_direction(v)
+        if v not in KEN_BURNS_DIRECTIONS:
+            raise ValueError(
+                f"default_effect_direction must be one of {KEN_BURNS_DIRECTIONS}, got {v!r}"
+            )
+        return v
+
+
+class TagRuleOut(BaseModel):
+    """A slideshow's tag rule, as returned by GET/PUT ``/{id}/tag-rule``.
+
+    ``member_count`` is the number of assets currently resolved into the
+    deck (eligible asset types carrying the tag), surfaced so the builder
+    UI can show "N items match" without a second round-trip.
+    """
+
+    model_config = {"from_attributes": True}
+
+    slideshow_asset_id: uuid.UUID
+    tag_id: uuid.UUID
+    tag_name: Optional[str] = None
+    order_by: str = "tagged_at"
+    default_duration_ms: int = DEFAULT_TAG_SLIDE_DURATION_MS
+    default_transition: str = DEFAULT_SLIDE_TRANSITION
+    default_transition_ms: int = DEFAULT_SLIDE_TRANSITION_MS
+    default_fit: str = DEFAULT_SLIDE_FIT
+    default_effect: str = DEFAULT_SLIDE_EFFECT
+    default_effect_direction: str = DEFAULT_KEN_BURNS_DIRECTION
+    anchor_at: Optional[datetime] = None
+    member_count: int = 0
 
