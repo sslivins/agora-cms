@@ -292,6 +292,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     services:
       postgres:
         image: postgres:16-alpine
@@ -342,6 +343,7 @@ jobs:
 
       - name: Install Playwright system deps only
         if: steps.pw-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 4
         run: python -m playwright install-deps chromium
 
       - name: Wait for PostgreSQL database
