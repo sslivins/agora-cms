@@ -8,6 +8,8 @@ import pytest
 
 from cms.models.asset import Asset, AssetType
 from cms.models.slideshow_slide import SlideshowSlide
+from cms.models.slideshow_tag_rule import SlideshowTagRule
+from cms.models.tag import AssetTag, Tag
 from cms.models.user import User
 
 
@@ -255,3 +257,79 @@ class TestSlideshowLoopTransitionUI:
         assert "slides.length >= 2" in body
         # Loop control binds to slides[0].
         assert "buildTransitionGap(gap, 0, /*isLoop*/ true)" in body
+
+
+class TestSlideshowBuilderTagMode:
+    """Builder "Deck source" toggle / tag-mode panel (agora-cms#806).
+
+    The panel is edit-mode only (the tag-rule API needs an existing
+    slideshow asset) and prefills from any existing SlideshowTagRule.
+    """
+
+    async def test_edit_page_renders_deck_source_toggle(self, client, db_session):
+        asset = await _seed_slideshow(db_session, name="Toggleable", slides=2)
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Deck-source segmented toggle + tag-mode panel are present.
+        assert 'id="ss-mode-manual"' in body
+        assert 'id="ss-mode-tag"' in body
+        assert 'id="ss-tagmode-panel"' in body
+        # Live member-count preview + apply/disable controls are wired in.
+        assert 'id="ss-tag-count"' in body
+        assert "function applyTagRule(" in body
+        assert "function disableTagMode(" in body
+
+    async def test_new_page_omits_tag_mode_panel(self, client):
+        """Create mode has no asset yet, so the tag-rule API can't be
+        called — the panel/toggle must be gated out entirely."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert 'id="ss-tagmode-panel"' not in body
+        assert 'id="ss-mode-tag"' not in body
+
+    async def test_edit_page_manual_deck_has_null_tag_rule(self, client, db_session):
+        """A manual slideshow (no rule) seeds the JSON island with null so
+        the builder boots in manual mode."""
+        asset = await _seed_slideshow(db_session, name="Manual", slides=1)
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert 'id="ss-initial-tagrule"' in body
+        # tag_rule context is None -> the island renders JSON null.
+        assert '<script id="ss-initial-tagrule" type="application/json">null</script>' in body
+
+    async def test_edit_page_prefills_existing_tag_rule(self, client, db_session):
+        """A tag-mode slideshow surfaces its rule (tag id, member count,
+        defaults) in the JSON island the builder hydrates from."""
+        asset = await _seed_slideshow(db_session, name="TagMode", slides=0)
+        tag = Tag(name="Weekly Sale", color="#ff0000")
+        db_session.add(tag)
+        await db_session.flush()
+        # One eligible member so member_count is a non-zero, asserted value.
+        member = Asset(
+            filename="promo.png", asset_type=AssetType.IMAGE,
+            size_bytes=10, is_global=True,
+        )
+        db_session.add(member)
+        await db_session.flush()
+        db_session.add(AssetTag(asset_id=member.id, tag_id=tag.id))
+        db_session.add(SlideshowTagRule(
+            slideshow_asset_id=asset.id,
+            tag_id=tag.id,
+            default_duration_ms=12000,
+            default_transition="fade",
+            default_fit="contain",
+        ))
+        await db_session.commit()
+
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # The rule's tag id + live member count ride in the hydration island.
+        assert str(tag.id) in body
+        assert '"member_count": 1' in body or '"member_count":1' in body
+        assert '"default_duration_ms": 12000' in body or '"default_duration_ms":12000' in body
+        # Tag name is available for the picker / chrome.
+        assert "Weekly Sale" in body

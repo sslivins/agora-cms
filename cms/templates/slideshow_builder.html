@@ -611,6 +611,57 @@
     align-items: flex-end;
 }
 .ssb-toolbar > * { flex: 1; min-width: 200px; }
+
+/* Deck source toggle + tag-mode panel */
+.ssb-decksource {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+    padding: 0.85rem 1rem;
+    background: #1b1b1f;
+    border: 1px solid #333;
+    border-radius: 8px;
+}
+.ssb-decksource-label { font-weight: 600; }
+.ssb-decksource-hint { font-size: 0.8rem; flex-basis: 100%; }
+.ssb-seg { display: inline-flex; border: 1px solid #444; border-radius: 6px; overflow: hidden; }
+.ssb-seg-btn {
+    background: #232327;
+    color: #ccc;
+    border: 0;
+    padding: 0.45rem 0.95rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+.ssb-seg-btn + .ssb-seg-btn { border-left: 1px solid #444; }
+.ssb-seg-btn.active { background: #16a085; color: #fff; font-weight: 600; }
+.ssb-active-mode { font-size: 0.8rem; color: #9aa; }
+.ssb-active-mode .dot { color: #16a085; }
+
+.ssb-tagpanel {
+    margin-top: 1rem;
+    padding: 1.1rem 1.2rem;
+    background: #1b1b1f;
+    border: 1px solid #333;
+    border-radius: 8px;
+}
+.ssb-tag-defaults {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 0.85rem;
+    margin-top: 0.5rem;
+}
+.ssb-tag-count { font-size: 0.85rem; margin: 0.35rem 0 0; }
+.ssb-tag-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+.ssb-tag-anchor { font-size: 0.8rem; }
 </style>
 
 <h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}
@@ -657,9 +708,99 @@
         <p class="text-muted" style="font-size:0.85rem; margin-top:0.5rem;">
             Group assignments are managed via the Assets page actions.
         </p>
+
+        <div class="ssb-decksource">
+            <span class="ssb-decksource-label">Deck source</span>
+            <div class="ssb-seg" role="tablist" aria-label="Deck source">
+                <button type="button" class="ssb-seg-btn" id="ss-mode-manual"
+                        data-mode="manual" onclick="setDeckMode('manual')">Manual deck</button>
+                <button type="button" class="ssb-seg-btn" id="ss-mode-tag"
+                        data-mode="tag" onclick="setDeckMode('tag')">By tag</button>
+            </div>
+            <span class="ssb-active-mode" id="ss-active-mode"></span>
+            <span class="text-muted ssb-decksource-hint">
+                Tag mode resolves the deck live from every asset carrying the
+                chosen tag — newly-tagged assets appear automatically, no
+                re-save needed.
+            </span>
+        </div>
+
+        <div id="ss-tagmode-panel" class="ssb-tagpanel" hidden>
+            <div class="form-group" style="margin-bottom:0.5rem;">
+                <label for="ss-tag-select">Tag</label>
+                <select id="ss-tag-select" class="form-control"
+                        onchange="onTagFieldChange(); refreshTagMemberPreview();">
+                    <option value="">— Select a tag —</option>
+                    {% for t in all_tags %}
+                    <option value="{{ t.id }}">{{ t.name }}</option>
+                    {% endfor %}
+                </select>
+                <p class="ssb-tag-count text-muted" id="ss-tag-count">
+                    Pick a tag to see how many assets match.
+                </p>
+            </div>
+
+            <h4 style="margin:0.75rem 0 0; font-size:0.9rem;">Defaults for tagged slides</h4>
+            <div class="ssb-tag-defaults">
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="ss-tag-duration">Slide duration (s)</label>
+                    <input type="number" id="ss-tag-duration" class="form-control"
+                           min="1" max="3600" step="1" value="8" onchange="onTagFieldChange()">
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="ss-tag-transition">Transition</label>
+                    <select id="ss-tag-transition" class="form-control" onchange="onTagFieldChange()">
+                        <option value="cut">Cut (none)</option>
+                        <option value="fade">Fade</option>
+                        <option value="fade_black">Fade through black</option>
+                        <option value="dissolve">Dissolve</option>
+                        <option value="push">Push</option>
+                        <option value="wipe">Wipe</option>
+                        <option value="zoom">Zoom</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="ss-tag-transition-ms">Transition (ms)</label>
+                    <input type="number" id="ss-tag-transition-ms" class="form-control"
+                           min="0" max="5000" step="50" value="600" onchange="onTagFieldChange()">
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="ss-tag-fit">Fit</label>
+                    <select id="ss-tag-fit" class="form-control" onchange="onTagFieldChange()">
+                        <option value="cover">Cover (crop to fill)</option>
+                        <option value="contain">Contain (letterbox)</option>
+                        <option value="contain_blur">Contain (blurred bg)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="ss-tag-effect">Effect</label>
+                    <select id="ss-tag-effect" class="form-control"
+                            onchange="onTagFieldChange(); syncTagEffectDir()">
+                        <option value="none">None</option>
+                        <option value="ken_burns">Ken Burns (pan/zoom)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="ss-tag-effectdir">Ken Burns direction</label>
+                    <select id="ss-tag-effectdir" class="form-control" onchange="onTagFieldChange()">
+                        <option value="in">Zoom in</option>
+                        <option value="out">Zoom out</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="ssb-tag-actions">
+                <button type="button" class="btn btn-primary" id="ss-tag-apply"
+                        onclick="applyTagRule()">Apply tag rule</button>
+                <button type="button" class="btn btn-secondary" id="ss-tag-disable"
+                        onclick="disableTagMode()" hidden>Switch to manual deck</button>
+                <span class="ssb-tag-anchor text-muted" id="ss-tag-anchor" hidden></span>
+            </div>
+            <div id="ss-tag-status" class="form-status" style="margin-top:0.5rem;"></div>
+        </div>
         {% endif %}
 
-        <div style="margin-top:1.25rem;">
+        <div class="ss-manual-only" style="margin-top:1.25rem;">
             <h3 style="margin:0 0 0.5rem; font-size:1rem; display:flex; align-items:center; gap:0.5rem;">
                 Library
                 <span class="text-muted" style="font-weight:normal; font-size:0.85rem;">— drag onto the timeline, or click to append</span>
@@ -687,7 +828,7 @@
             </div>
         </div>
 
-        <div class="ssb-timeline-head">
+        <div class="ssb-timeline-head ss-manual-only">
             <h3>Timeline</h3>
             <div class="ssb-totals">
                 <label style="font-weight:normal; font-size:0.85rem; color:#aaa; display:inline-flex; align-items:center; gap:0.3rem; cursor:pointer;"
@@ -712,7 +853,7 @@
                 Total: <strong id="ss-total">0.0s</strong>
             </div>
         </div>
-        <div id="ss-timeline-wrap" class="ssb-timeline-wrap">
+        <div id="ss-timeline-wrap" class="ssb-timeline-wrap ss-manual-only">
             <div id="ss-timeline" class="ssb-timeline"></div>
         </div>
 
@@ -721,7 +862,7 @@
 
         <div id="ss-status" class="form-status" style="margin-top:0.75rem;"></div>
         <div style="display:flex; gap:0.5rem; margin-top:1rem;">
-            <button type="submit" class="btn btn-primary" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
+            <button type="submit" class="btn btn-primary ss-manual-only" id="ss-submit" disabled>{% if edit_mode %}Save{% else %}Create{% endif %}</button>
             <!-- Rendered hidden in create mode; revealed by applyEditModeChrome()
                  once the AI assistant mints a draft (slideshowMintDraft). -->
             <button type="button" class="btn btn-secondary" id="ss-preview-btn" onclick="previewSlideshowFromEditor()" title="Preview the saved slideshow"{% if not edit_mode %} hidden{% endif %}>Preview</button>
@@ -748,6 +889,7 @@
 {% endif %}
 
 <script id="ss-initial-slides" type="application/json">{{ slides | tojson }}</script>
+<script id="ss-initial-tagrule" type="application/json">{{ tag_rule | tojson }}</script>
 <script>
 let SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
 let SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
@@ -760,6 +902,7 @@ let SS_ORIG_NAME = {% if edit_mode %}{{ asset_name | tojson }}{% else %}""{% end
 const SS_MAX_SLIDES = 50;
 
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
+let SS_TAG_RULE = JSON.parse(document.getElementById('ss-initial-tagrule').textContent || 'null');
 let availableAssets = [];
 let selectedGroupIds = [];
 let deckShuffle = {% if deck_shuffle %}true{% else %}false{% endif %};
@@ -1781,7 +1924,187 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     document.addEventListener('dragend', _clearDropActive);
     document.addEventListener('drop', _clearDropActive);
+
+    initTagMode();
 });
+
+// ---------- Tag-based dynamic deck (agora-cms#806) ----------
+// The "Deck source" toggle only switches which editor is visible; the
+// persisted mode is changed by the explicit Apply / Switch-to-manual
+// buttons, which call PUT / DELETE /api/assets/{id}/tag-rule.
+let SS_DECK_MODE = 'manual';
+
+function _tagPanelEl(id) { return document.getElementById(id); }
+
+function initTagMode() {
+    if (!SS_EDIT_MODE) return;
+    if (SS_TAG_RULE) {
+        prefillTagFields(SS_TAG_RULE);
+    }
+    setDeckMode(SS_TAG_RULE ? 'tag' : 'manual', true);
+    syncTagEffectDir();
+    updateTagModeChrome();
+}
+
+function prefillTagFields(rule) {
+    const set = (id, val) => { const e = _tagPanelEl(id); if (e != null && val != null) e.value = val; };
+    set('ss-tag-select', rule.tag_id);
+    if (rule.default_duration_ms != null) {
+        set('ss-tag-duration', Math.round(rule.default_duration_ms / 1000));
+    }
+    set('ss-tag-transition', rule.default_transition);
+    set('ss-tag-transition-ms', rule.default_transition_ms);
+    set('ss-tag-fit', rule.default_fit);
+    set('ss-tag-effect', rule.default_effect);
+    set('ss-tag-effectdir', rule.default_effect_direction);
+}
+
+function setDeckMode(mode, silent) {
+    SS_DECK_MODE = (mode === 'tag') ? 'tag' : 'manual';
+    const isTag = SS_DECK_MODE === 'tag';
+    document.querySelectorAll('.ss-manual-only').forEach(el => { el.hidden = isTag; });
+    const panel = _tagPanelEl('ss-tagmode-panel');
+    if (panel) panel.hidden = !isTag;
+    const mBtn = _tagPanelEl('ss-mode-manual');
+    const tBtn = _tagPanelEl('ss-mode-tag');
+    if (mBtn) mBtn.classList.toggle('active', !isTag);
+    if (tBtn) tBtn.classList.toggle('active', isTag);
+    if (isTag && !silent) refreshTagMemberPreview();
+}
+
+// Reflects the *persisted* mode + active-rule chrome (badge, anchor,
+// Switch-to-manual visibility). Call after any PUT/DELETE.
+function updateTagModeChrome() {
+    const active = !!SS_TAG_RULE;
+    const badge = _tagPanelEl('ss-active-mode');
+    if (badge) {
+        badge.innerHTML = active
+            ? `<span class="dot">●</span> Active: <strong>By tag</strong>`
+            : `Active: <strong>Manual deck</strong>`;
+    }
+    const disableBtn = _tagPanelEl('ss-tag-disable');
+    if (disableBtn) disableBtn.hidden = !active;
+    const anchor = _tagPanelEl('ss-tag-anchor');
+    if (anchor) {
+        if (active && SS_TAG_RULE.anchor_at) {
+            const d = new Date(SS_TAG_RULE.anchor_at);
+            anchor.textContent = `Anchored ${isNaN(d) ? SS_TAG_RULE.anchor_at : d.toLocaleString()}`;
+            anchor.hidden = false;
+        } else {
+            anchor.hidden = true;
+        }
+    }
+    const applyBtn = _tagPanelEl('ss-tag-apply');
+    if (applyBtn) applyBtn.textContent = active ? 'Update tag rule' : 'Apply tag rule';
+}
+
+function syncTagEffectDir() {
+    const eff = _tagPanelEl('ss-tag-effect');
+    const dir = _tagPanelEl('ss-tag-effectdir');
+    if (eff && dir) dir.disabled = (eff.value === 'none');
+}
+
+function onTagFieldChange() { /* placeholder for future live validation */ }
+
+function _setTagStatus(msg, isError) {
+    const el = _tagPanelEl('ss-tag-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.color = isError ? '#e74c3c' : '#16a085';
+}
+
+async function refreshTagMemberPreview() {
+    const sel = _tagPanelEl('ss-tag-select');
+    const countEl = _tagPanelEl('ss-tag-count');
+    if (!sel || !countEl) return;
+    const tagId = sel.value;
+    if (!tagId) {
+        countEl.textContent = 'Pick a tag to see how many assets match.';
+        return;
+    }
+    countEl.textContent = 'Counting matching assets…';
+    try {
+        const qs = 'type=image&type=video&type=composed&page_size=1&tag_id=' + encodeURIComponent(tagId);
+        const r = await fetch('/api/assets/page?' + qs, { headers: {'Accept': 'application/json'} });
+        if (!r.ok) throw new Error('count failed');
+        const data = await r.json();
+        const n = (data.total_estimate != null) ? data.total_estimate : (data.items ? data.items.length : 0);
+        countEl.textContent = `~${n} asset${n === 1 ? '' : 's'} currently match this tag.`;
+    } catch (e) {
+        countEl.textContent = 'Could not load the match count.';
+    }
+}
+
+function _collectTagRuleBody() {
+    const sel = _tagPanelEl('ss-tag-select');
+    const durS = parseInt(_tagPanelEl('ss-tag-duration').value, 10);
+    const tms = parseInt(_tagPanelEl('ss-tag-transition-ms').value, 10);
+    return {
+        tag_id: sel.value,
+        default_duration_ms: (isNaN(durS) ? 8 : durS) * 1000,
+        default_transition: _tagPanelEl('ss-tag-transition').value,
+        default_transition_ms: isNaN(tms) ? 600 : tms,
+        default_fit: _tagPanelEl('ss-tag-fit').value,
+        default_effect: _tagPanelEl('ss-tag-effect').value,
+        default_effect_direction: _tagPanelEl('ss-tag-effectdir').value,
+    };
+}
+
+async function applyTagRule() {
+    if (!SS_EDIT_MODE || !SS_ASSET_ID) return;
+    const body = _collectTagRuleBody();
+    if (!body.tag_id) { _setTagStatus('Select a tag first.', true); return; }
+    const btn = _tagPanelEl('ss-tag-apply');
+    if (btn) btn.disabled = true;
+    _setTagStatus('Applying…', false);
+    try {
+        const r = await fetch(`/api/assets/${SS_ASSET_ID}/tag-rule`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+            let detail = 'Could not apply the tag rule.';
+            try { const j = await r.json(); if (j.detail) detail = (typeof j.detail === 'string') ? j.detail : JSON.stringify(j.detail); } catch (e) {}
+            _setTagStatus(detail, true);
+            return;
+        }
+        const out = await r.json();
+        SS_TAG_RULE = out;
+        const n = out.member_count;
+        const countEl = _tagPanelEl('ss-tag-count');
+        if (countEl && n != null) countEl.textContent = `${n} asset${n === 1 ? '' : 's'} match this tag right now.`;
+        updateTagModeChrome();
+        _setTagStatus('Tag rule applied — devices update within ~15s.', false);
+    } catch (e) {
+        _setTagStatus('Network error applying the tag rule.', true);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function disableTagMode() {
+    if (!SS_EDIT_MODE || !SS_ASSET_ID) return;
+    if (!await showConfirm('Switch back to a manual deck? The tag rule will be removed; your existing slides are kept.')) return;
+    const btn = _tagPanelEl('ss-tag-disable');
+    if (btn) btn.disabled = true;
+    _setTagStatus('Switching…', false);
+    try {
+        const r = await fetch(`/api/assets/${SS_ASSET_ID}/tag-rule`, { method: 'DELETE' });
+        if (!r.ok && r.status !== 404) {
+            _setTagStatus('Could not switch to manual deck.', true);
+            return;
+        }
+        SS_TAG_RULE = null;
+        updateTagModeChrome();
+        _setTagStatus('', false);
+        setDeckMode('manual');
+    } catch (e) {
+        _setTagStatus('Network error switching to manual deck.', true);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
 
 // ---------- Unsaved-changes tracking ----------
 let __ssDirty = false;
