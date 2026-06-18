@@ -1714,18 +1714,55 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
             return None
         slide_rows = (await db.execute(
             select(SlideshowSlide, Asset)
-            .join(Asset, Asset.id == SlideshowSlide.source_asset_id)
+            .outerjoin(Asset, Asset.id == SlideshowSlide.source_asset_id)
             .where(SlideshowSlide.slideshow_asset_id == asset_id)
             .order_by(SlideshowSlide.position.asc())
         )).all()
-        from cms.routers.assets import _thumbnail_urls_for
+        from cms.routers.assets import _thumbnail_urls_for, _load_tag_members
         src_thumb_map = await _thumbnail_urls_for(
-            [src.id for _, src in slide_rows], db
+            [src.id for _, src in slide_rows if src is not None], db
         )
+        # Tag blocks: resolve display name + live member count so the
+        # builder can render a dynamic-tag tile placeholder in-line.
+        tag_ids = [
+            slide.tag_id for slide, _ in slide_rows
+            if slide.kind == "tag" and slide.tag_id is not None
+        ]
+        tag_name_map: dict = {}
+        tag_member_counts: dict = {}
+        if tag_ids:
+            tag_name_map = {
+                tid: name for (tid, name) in (
+                    await db.execute(
+                        select(Tag.id, Tag.name).where(Tag.id.in_(tag_ids))
+                    )
+                ).all()
+            }
+            members = await _load_tag_members(list(set(tag_ids)), db)
+            tag_member_counts = {tid: len(members.get(tid, [])) for tid in tag_ids}
         slides = []
         for slide, src in slide_rows:
+            if slide.kind == "tag":
+                slides.append({
+                    "id": str(slide.id),
+                    "kind": "tag",
+                    "position": slide.position,
+                    "duration_ms": slide.duration_ms,
+                    "play_to_end": False,
+                    "transition": slide.transition,
+                    "transition_ms": slide.transition_ms,
+                    "fit": slide.fit,
+                    "effect": slide.effect,
+                    "effect_direction": getattr(slide, "effect_direction", "in") or "in",
+                    "tag_id": str(slide.tag_id) if slide.tag_id else None,
+                    "tag_name": tag_name_map.get(slide.tag_id),
+                    "tag_order_by": slide.tag_order_by,
+                    "member_count": tag_member_counts.get(slide.tag_id, 0),
+                })
+                continue
             slides.append({
                 "id": str(slide.id),
+                "kind": "asset",
                 "position": slide.position,
                 "duration_ms": slide.duration_ms,
                 "play_to_end": slide.play_to_end,
@@ -1735,43 +1772,18 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                 "effect": slide.effect,
                 "effect_direction": getattr(slide, "effect_direction", "in") or "in",
                 "source_asset_id": str(slide.source_asset_id),
-                "source_filename": src.display_name or src.original_filename or src.filename,
-                "source_asset_type": src.asset_type.value,
-                "source_duration_seconds": src.duration_seconds,
-                "thumbnail_url": src_thumb_map.get(src.id),
+                "source_filename": (
+                    src.display_name or src.original_filename or src.filename
+                ) if src is not None else None,
+                "source_asset_type": src.asset_type.value if src is not None else None,
+                "source_duration_seconds": (
+                    src.duration_seconds if src is not None else None
+                ),
+                "thumbnail_url": src_thumb_map.get(src.id) if src is not None else None,
             })
         asset_group_rows = (await db.execute(
             select(GroupAsset.group_id).where(GroupAsset.asset_id == asset_id)
         )).scalars().all()
-        # If this slideshow is in tag mode, surface the rule so the builder
-        # can prefill the tag-mode panel (otherwise it defaults to manual).
-        from cms.models.slideshow_tag_rule import SlideshowTagRule
-        tag_rule_row = (await db.execute(
-            select(SlideshowTagRule).where(
-                SlideshowTagRule.slideshow_asset_id == asset_id
-            )
-        )).scalar_one_or_none()
-        tag_rule_ctx = None
-        if tag_rule_row is not None:
-            from cms.routers.assets import _count_tag_members
-            tr_tag_name = (await db.execute(
-                select(Tag.name).where(Tag.id == tag_rule_row.tag_id)
-            )).scalar_one_or_none()
-            tag_rule_ctx = {
-                "tag_id": str(tag_rule_row.tag_id),
-                "tag_name": tr_tag_name,
-                "default_duration_ms": tag_rule_row.default_duration_ms,
-                "default_transition": tag_rule_row.default_transition,
-                "default_transition_ms": tag_rule_row.default_transition_ms,
-                "default_fit": tag_rule_row.default_fit,
-                "default_effect": tag_rule_row.default_effect,
-                "default_effect_direction": tag_rule_row.default_effect_direction,
-                "anchor_at": (
-                    tag_rule_row.anchor_at.isoformat()
-                    if tag_rule_row.anchor_at else None
-                ),
-                "member_count": await _count_tag_members(tag_rule_row.tag_id, db),
-            }
         ctx.update({
             "edit_mode": True,
             "asset": asset,
@@ -1781,7 +1793,7 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
             "asset_groups": [str(g) for g in asset_group_rows],
             "asset_is_global": bool(asset.is_global),
             "deck_shuffle": bool(getattr(asset, "shuffle", False)),
-            "tag_rule": tag_rule_ctx,
+            "tag_rule": None,
         })
     return ctx
 

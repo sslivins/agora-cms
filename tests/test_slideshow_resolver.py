@@ -969,18 +969,36 @@ async def _tag_asset(db, *, asset, tag, when):
 async def _seed_tag_rule(
     db, *, slideshow, tag, anchor_at=None, default_duration_ms=8000
 ):
-    from cms.models.slideshow_tag_rule import SlideshowTagRule
+    """Seed a tag-mode deck the hybrid way: append a single ``kind='tag'``
+    block to ``slideshow`` and persist the cycle anchor on the asset.
 
-    r = SlideshowTagRule(
+    The legacy 1:1 ``SlideshowTagRule`` model was retired in Phase 1; a
+    tag-mode slideshow is now expressed as a slideshow whose deck is one
+    tag block, so this helper inserts that block at the next free position.
+    """
+    from sqlalchemy import func, select
+
+    next_pos = (
+        await db.execute(
+            select(func.coalesce(func.max(SlideshowSlide.position) + 1, 0)).where(
+                SlideshowSlide.slideshow_asset_id == slideshow.id
+            )
+        )
+    ).scalar_one()
+    s = SlideshowSlide(
         slideshow_asset_id=slideshow.id,
+        kind="tag",
+        source_asset_id=None,
         tag_id=tag.id,
-        default_duration_ms=default_duration_ms,
-        anchor_at=anchor_at,
+        tag_order_by="tagged_at",
+        position=next_pos,
+        duration_ms=default_duration_ms,
     )
-    db.add(r)
+    db.add(s)
+    slideshow.slideshow_anchor_at = anchor_at
     await db.commit()
-    await db.refresh(r)
-    return r
+    await db.refresh(s)
+    return s
 
 
 @pytest.mark.asyncio
@@ -1052,32 +1070,6 @@ class TestTagModeSlideshow:
             "first.png", "second.png", "third.png",
         ]
         assert [s.position for s in plan2.slides] == [0, 1, 2]
-
-    async def test_tag_rule_overrides_manual_slides(self, db_session):
-        """When a SlideshowTagRule exists, the deck comes from tag
-        membership even if stale SlideshowSlide rows are also present."""
-        from datetime import datetime, timezone
-
-        from cms.services.slideshow_resolver import plan_slideshow
-
-        profile = await _seed_profile(db_session, "ptag3")
-        manual_img = await _seed_image(db_session, filename="manual.png")
-        await _seed_variant(db_session, source=manual_img, profile=profile, ext="jpg")
-        ss = await _seed_slideshow(
-            db_session, name="tagdeck3",
-            slides_data=[(manual_img, 5000, False)], checksum="tb3",
-        )
-        tag = await _seed_tag(db_session, "promo3")
-        tag_img = await _seed_image(db_session, filename="tagged.png")
-        await _seed_variant(db_session, source=tag_img, profile=profile, ext="jpg")
-        await _tag_asset(
-            db_session, asset=tag_img, tag=tag,
-            when=datetime(2026, 3, 1, tzinfo=timezone.utc),
-        )
-        await _seed_tag_rule(db_session, slideshow=ss, tag=tag)
-
-        plan = await plan_slideshow(ss, profile.id, db_session)
-        assert [s.source_filename for s in plan.slides] == ["tagged.png"]
 
     async def test_persisted_anchor_emitted_verbatim(self, db_session, app):
         """A tag rule with a persisted ``anchor_at`` emits it verbatim as

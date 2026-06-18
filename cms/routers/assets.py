@@ -25,7 +25,6 @@ from cms.models.device_profile import DeviceProfile
 from cms.models.group_asset import GroupAsset
 from cms.models.schedule import Schedule
 from cms.models.slideshow_slide import SlideshowSlide
-from cms.models.slideshow_tag_rule import SlideshowTagRule
 from cms.models.tag import AssetTag, Tag
 from cms.models.user import User
 from cms.models.chat_thread import ChatThread
@@ -41,8 +40,6 @@ from cms.schemas.asset import (
     MAX_SLIDE_DURATION_MS,
     MAX_SLIDESHOW_SLIDES,
     SlideIn,
-    TagRuleIn,
-    TagRuleOut,
 )
 from cms.schemas.tag import TagOut
 from cms.services.audit_service import audit_log, compute_diff
@@ -1479,18 +1476,116 @@ async def create_stream_asset(
 # ── Slideshow assets ──
 
 
+async def _load_tag_members(
+    tag_ids: list[uuid.UUID],
+    db: AsyncSession,
+) -> dict[uuid.UUID, list[tuple[uuid.UUID, str]]]:
+    """Return ordered ``(member_id, checksum)`` per tag.
+
+    Mirrors the resolver's ``_expand_tag_members`` ordering exactly
+    (``AssetTag.created_at`` asc, ``AssetTag.id`` asc) and the same eligible
+    asset-type filter, so duration/hash/member-count computed here match
+    what the device actually plays.  Membership is dynamic — this is a
+    point-in-time snapshot used for the manifest content hash and the
+    builder's "N items" badge, not a static ACL.
+    """
+    from cms.services.slideshow_resolver import _TAG_MEMBER_ASSET_TYPES
+
+    out: dict[uuid.UUID, list[tuple[uuid.UUID, str]]] = {tid: [] for tid in tag_ids}
+    if not tag_ids:
+        return out
+    rows = (
+        await db.execute(
+            select(AssetTag.tag_id, Asset.id, Asset.checksum)
+            .join(Asset, Asset.id == AssetTag.asset_id)
+            .where(
+                AssetTag.tag_id.in_(tag_ids),
+                Asset.deleted_at.is_(None),
+                Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
+            )
+            .order_by(AssetTag.created_at.asc(), AssetTag.id.asc())
+        )
+    ).all()
+    for tag_id, asset_id, checksum in rows:
+        out.setdefault(tag_id, []).append((asset_id, checksum or ""))
+    return out
+
+
+def _slide_row(slideshow_asset_id: uuid.UUID, idx: int, s: SlideIn) -> SlideshowSlide:
+    """Build one ordered ``SlideshowSlide`` ORM row from a validated ``SlideIn``.
+
+    Handles both the static ``asset`` kind and the dynamic ``tag`` kind.
+    Columns that don't apply to a kind are left NULL (the model's CHECK
+    constraints enforce the kind/column invariant).
+    """
+    if s.kind == "tag":
+        return SlideshowSlide(
+            slideshow_asset_id=slideshow_asset_id,
+            kind="tag",
+            source_asset_id=None,
+            tag_id=s.tag_id,
+            tag_order_by=s.tag_order_by,
+            position=idx,
+            duration_ms=s.duration_ms,
+            play_to_end=False,
+            transition=s.transition,
+            transition_ms=s.transition_ms,
+            fit=s.fit,
+            effect=s.effect,
+            effect_direction=s.effect_direction,
+        )
+    return SlideshowSlide(
+        slideshow_asset_id=slideshow_asset_id,
+        kind="asset",
+        source_asset_id=s.source_asset_id,
+        tag_id=None,
+        tag_order_by=None,
+        position=idx,
+        duration_ms=s.duration_ms,
+        play_to_end=s.play_to_end,
+        transition=s.transition,
+        transition_ms=s.transition_ms,
+        fit=s.fit,
+        effect=s.effect,
+        effect_direction=s.effect_direction,
+    )
+
+
+def _apply_slideshow_anchor(asset: Asset, slides: list[SlideIn]) -> None:
+    """Set/preserve/clear ``Asset.slideshow_anchor_at`` from the FINAL deck.
+
+    The anchor is the wall-clock instant the tag-driven cycle is measured
+    from (the resolver rotates dynamic tag membership against it so a long
+    deck advances over time).  Semantics, decided from the final slide list:
+
+    * final deck has ≥1 tag block AND none was set before → stamp ``now()``
+    * final deck has ≥1 tag block AND one was already set → preserve it
+    * final deck has 0 tag blocks → clear to NULL (no dynamic content)
+    """
+    has_tag = any(s.kind == "tag" for s in slides)
+    if not has_tag:
+        asset.slideshow_anchor_at = None
+        return
+    if asset.slideshow_anchor_at is None:
+        asset.slideshow_anchor_at = datetime.now(timezone.utc)
+
+
 async def _load_and_validate_slide_sources(
     slides: list[SlideIn],
     db: AsyncSession,
     *,
     visible_ids: list[uuid.UUID] | None,
 ) -> tuple[dict[uuid.UUID, Asset], dict[uuid.UUID, set[uuid.UUID]]]:
-    """Validate the slide list against the source assets it references.
+    """Validate the slide list against the source assets / tags it references.
 
     Returns ``(sources_by_id, source_groups)`` where ``sources_by_id`` maps
-    each source asset id to its loaded ``Asset`` row, and ``source_groups``
-    maps each source id to the set of group ids it has been shared with.
-    Raises HTTPException for any validation failure.
+    each *asset-kind* slide's source asset id to its loaded ``Asset`` row,
+    and ``source_groups`` maps each source id to the set of group ids it has
+    been shared with.  Dynamic ``tag``-kind slides only have their tag's
+    existence validated here (membership is resolved at device-fetch time,
+    so members are intentionally NOT statically ACL-checked — mirroring the
+    retired tag-rule behaviour).  Raises HTTPException for any validation
+    failure.
     """
     if not slides:
         raise HTTPException(status_code=400, detail="Slideshow must have at least one slide")
@@ -1500,22 +1595,49 @@ async def _load_and_validate_slide_sources(
             detail=f"Slideshow exceeds {MAX_SLIDESHOW_SLIDES} slide cap",
         )
 
-    source_ids = list({s.source_asset_id for s in slides})
-    rows = (
-        await db.execute(
-            select(Asset).where(Asset.id.in_(source_ids), Asset.deleted_at.is_(None))
-        )
-    ).scalars().all()
-    sources_by_id: dict[uuid.UUID, Asset] = {a.id: a for a in rows}
+    asset_slides = [s for s in slides if s.kind != "tag"]
+    tag_slides = [s for s in slides if s.kind == "tag"]
 
-    missing = [str(s.source_asset_id) for s in slides if s.source_asset_id not in sources_by_id]
+    # Validate referenced tags exist.  Tags are CMS-global (no per-group
+    # ACL), so existence is the only check — member ACL is dynamic.
+    tag_ids = list({s.tag_id for s in tag_slides})
+    if tag_ids:
+        found_tags = set(
+            (
+                await db.execute(select(Tag.id).where(Tag.id.in_(tag_ids)))
+            ).scalars().all()
+        )
+        missing_tags = sorted(str(t) for t in tag_ids if t not in found_tags)
+        if missing_tags:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tag(s) not found: {', '.join(missing_tags)}",
+            )
+
+    source_ids = list({s.source_asset_id for s in asset_slides})
+    sources_by_id: dict[uuid.UUID, Asset] = {}
+    if source_ids:
+        rows = (
+            await db.execute(
+                select(Asset).where(
+                    Asset.id.in_(source_ids), Asset.deleted_at.is_(None)
+                )
+            )
+        ).scalars().all()
+        sources_by_id = {a.id: a for a in rows}
+
+    missing = [
+        str(s.source_asset_id)
+        for s in asset_slides
+        if s.source_asset_id not in sources_by_id
+    ]
     if missing:
         raise HTTPException(
             status_code=404,
             detail=f"Source asset(s) not found: {', '.join(sorted(set(missing)))}",
         )
 
-    for s in slides:
+    for s in asset_slides:
         src = sources_by_id[s.source_asset_id]
         if src.asset_type not in (AssetType.IMAGE, AssetType.VIDEO, AssetType.COMPOSED):
             raise HTTPException(
@@ -1552,7 +1674,7 @@ async def _load_and_validate_slide_sources(
         visible_set = set(visible_ids)
         unseen = sorted({
             str(s.source_asset_id)
-            for s in slides
+            for s in asset_slides
             if s.source_asset_id not in visible_set
         })
         if unseen:
@@ -1561,16 +1683,17 @@ async def _load_and_validate_slide_sources(
                 detail=f"Not authorised for source asset(s): {', '.join(unseen)}",
             )
 
-    ga_rows = (
-        await db.execute(
-            select(GroupAsset.asset_id, GroupAsset.group_id).where(
-                GroupAsset.asset_id.in_(source_ids)
-            )
-        )
-    ).all()
     source_groups: dict[uuid.UUID, set[uuid.UUID]] = {sid: set() for sid in source_ids}
-    for asset_id, group_id in ga_rows:
-        source_groups[asset_id].add(group_id)
+    if source_ids:
+        ga_rows = (
+            await db.execute(
+                select(GroupAsset.asset_id, GroupAsset.group_id).where(
+                    GroupAsset.asset_id.in_(source_ids)
+                )
+            )
+        ).all()
+        for asset_id, group_id in ga_rows:
+            source_groups[asset_id].add(group_id)
 
     return sources_by_id, source_groups
 
@@ -1626,16 +1749,25 @@ def _validate_slideshow_acl(
 
 
 def _compute_slideshow_duration_seconds(
-    slides: list[SlideIn], sources_by_id: dict[uuid.UUID, Asset]
+    slides: list[SlideIn],
+    sources_by_id: dict[uuid.UUID, Asset],
+    tag_members: dict[uuid.UUID, list[tuple[uuid.UUID, str]]] | None = None,
 ) -> float:
     """Sum slide durations for ``Asset.duration_seconds`` denormalisation.
 
     For ``play_to_end`` on a video, use the source's known media duration
     when available; otherwise fall back to the configured ``duration_ms``.
-    Image slides always use the configured duration.
+    Image slides always use the configured duration.  A ``tag`` block
+    contributes ``member_count × duration_ms`` (each expanded member plays
+    for the block's configured per-slide duration).
     """
+    tag_members = tag_members or {}
     total_ms = 0.0
     for s in slides:
+        if s.kind == "tag":
+            member_count = len(tag_members.get(s.tag_id, ()))
+            total_ms += member_count * s.duration_ms
+            continue
         src = sources_by_id[s.source_asset_id]
         if (
             s.play_to_end
@@ -1649,14 +1781,19 @@ def _compute_slideshow_duration_seconds(
 
 
 def _compute_slideshow_manifest_content_hash(
-    slides: list[SlideIn], sources_by_id: dict[uuid.UUID, Asset]
+    slides: list[SlideIn],
+    sources_by_id: dict[uuid.UUID, Asset],
+    tag_members: dict[uuid.UUID, list[tuple[uuid.UUID, str]]] | None = None,
 ) -> str:
     """Structural manifest content hash stored on ``Asset.checksum``.
 
     Hashes ordered slide structure plus each source asset's own checksum
     so that any change to the slide list (reorder, add/remove, durations,
     play_to_end) or to a source's content invalidates schedule pushes.
-    The *resolved* per-device checksum (which additionally folds in the
+    For ``tag`` blocks, the tag id plus the ordered point-in-time member
+    ids/checksums are folded in, so a membership change (asset tagged or
+    untagged, or a member's content edited) also invalidates pushes.  The
+    *resolved* per-device checksum (which additionally folds in the
     selected READY variant checksum for the device's profile) is computed
     at sync/resolve time on top of this base value.
 
@@ -1667,8 +1804,17 @@ def _compute_slideshow_manifest_content_hash(
     the hash detects content edits, the schema version describes which
     fields the wire format carries.
     """
+    tag_members = tag_members or {}
     h = hashlib.sha256()
     for idx, s in enumerate(slides):
+        if s.kind == "tag":
+            members = tag_members.get(s.tag_id, [])
+            member_blob = ",".join(f"{mid}:{csum}" for mid, csum in members)
+            h.update(
+                f"{idx}|tag|{s.tag_id}|{s.tag_order_by}|{member_blob}|"
+                f"{s.duration_ms}|{s.transition}|{s.transition_ms}|".encode()
+            )
+            continue
         src = sources_by_id[s.source_asset_id]
         src_checksum = src.checksum or ""
         h.update(
@@ -1832,8 +1978,15 @@ async def create_slideshow_asset(
         set(resolved_groups), make_global, sources_by_id, source_groups
     )
 
-    duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
-    manifest_content_hash = _compute_slideshow_manifest_content_hash(slides, sources_by_id)
+    tag_members = await _load_tag_members(
+        list({s.tag_id for s in slides if s.kind == "tag"}), db
+    )
+    duration_seconds = _compute_slideshow_duration_seconds(
+        slides, sources_by_id, tag_members
+    )
+    manifest_content_hash = _compute_slideshow_manifest_content_hash(
+        slides, sources_by_id, tag_members
+    )
 
     filename = await _unique_filename(db, name)
 
@@ -1848,6 +2001,7 @@ async def create_slideshow_asset(
         shuffle=bool(body.get("shuffle", False)),
         uploaded_by_user_id=user.id,
     )
+    _apply_slideshow_anchor(asset, slides)
     db.add(asset)
     await db.flush()
 
@@ -1855,20 +2009,7 @@ async def create_slideshow_asset(
         db.add(GroupAsset(asset_id=asset.id, group_id=gid))
 
     for idx, s in enumerate(slides):
-        db.add(
-            SlideshowSlide(
-                slideshow_asset_id=asset.id,
-                source_asset_id=s.source_asset_id,
-                position=idx,
-                duration_ms=s.duration_ms,
-                play_to_end=s.play_to_end,
-                transition=s.transition,
-                transition_ms=s.transition_ms,
-                fit=s.fit,
-                effect=s.effect,
-                effect_direction=s.effect_direction,
-            )
-        )
+        db.add(_slide_row(asset.id, idx, s))
 
     await audit_log(
         db, user=user, action="asset.create_slideshow", resource_type="asset",
@@ -1918,20 +2059,59 @@ async def list_slideshow_slides(
     rows = (
         await db.execute(
             select(SlideshowSlide, Asset)
-            .join(Asset, Asset.id == SlideshowSlide.source_asset_id)
+            .outerjoin(Asset, Asset.id == SlideshowSlide.source_asset_id)
             .where(SlideshowSlide.slideshow_asset_id == asset_id)
             .order_by(SlideshowSlide.position.asc())
         )
     ).all()
 
-    src_thumb_map = await _thumbnail_urls_for([src.id for _, src in rows], db)
+    src_thumb_map = await _thumbnail_urls_for(
+        [src.id for _, src in rows if src is not None], db
+    )
+
+    # Resolve tag names + point-in-time member counts for any tag blocks.
+    tag_ids = [slide.tag_id for slide, _ in rows if slide.kind == "tag" and slide.tag_id]
+    tag_name_map: dict[uuid.UUID, str] = {}
+    tag_member_counts: dict[uuid.UUID, int] = {}
+    if tag_ids:
+        uniq_tag_ids = list({t for t in tag_ids})
+        tag_name_map = dict(
+            (
+                await db.execute(
+                    select(Tag.id, Tag.name).where(Tag.id.in_(uniq_tag_ids))
+                )
+            ).all()
+        )
+        members = await _load_tag_members(uniq_tag_ids, db)
+        tag_member_counts = {tid: len(m) for tid, m in members.items()}
 
     slides_out = []
     for slide, src in rows:
+        if slide.kind == "tag":
+            slides_out.append(
+                {
+                    "id": str(slide.id),
+                    "position": slide.position,
+                    "kind": "tag",
+                    "duration_ms": slide.duration_ms,
+                    "play_to_end": slide.play_to_end,
+                    "transition": slide.transition,
+                    "transition_ms": slide.transition_ms,
+                    "fit": slide.fit,
+                    "effect": slide.effect,
+                    "effect_direction": slide.effect_direction,
+                    "tag_id": str(slide.tag_id) if slide.tag_id else None,
+                    "tag_name": tag_name_map.get(slide.tag_id),
+                    "tag_order_by": slide.tag_order_by,
+                    "member_count": tag_member_counts.get(slide.tag_id, 0),
+                }
+            )
+            continue
         slides_out.append(
             {
                 "id": str(slide.id),
                 "position": slide.position,
+                "kind": "asset",
                 "duration_ms": slide.duration_ms,
                 "play_to_end": slide.play_to_end,
                 "transition": slide.transition,
@@ -1940,10 +2120,10 @@ async def list_slideshow_slides(
                 "effect": slide.effect,
                 "effect_direction": slide.effect_direction,
                 "source_asset_id": str(slide.source_asset_id),
-                "source_filename": src.filename,
-                "source_asset_type": src.asset_type.value,
-                "source_duration_seconds": src.duration_seconds,
-                "thumbnail_url": src_thumb_map.get(src.id),
+                "source_filename": src.filename if src else None,
+                "source_asset_type": src.asset_type.value if src else None,
+                "source_duration_seconds": src.duration_seconds if src else None,
+                "thumbnail_url": src_thumb_map.get(src.id) if src else None,
             }
         )
     payload: dict = {
@@ -1992,6 +2172,36 @@ async def replace_slideshow_slides(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid slide payload: {e}")
 
+    # Tag-unaware-replace guard.  A tag-capable builder always stamps a
+    # ``kind`` discriminator on every slide it PUTs.  If the existing deck
+    # already contains ≥1 dynamic tag block but the incoming non-empty
+    # payload carries ZERO ``kind`` keys, the caller is an old/tag-unaware
+    # client that would silently drop those tag rows.  Reject loudly (409)
+    # rather than destroying dynamic content.
+    if raw_slides and not any(isinstance(s, dict) and "kind" in s for s in raw_slides):
+        existing_tag_count = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(SlideshowSlide)
+                    .where(
+                        SlideshowSlide.slideshow_asset_id == asset_id,
+                        SlideshowSlide.kind == "tag",
+                    )
+                )
+            ).scalar_one()
+        )
+        if existing_tag_count:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This slideshow contains dynamic tag blocks, but the "
+                    "submitted slide list doesn't carry per-slide 'kind' "
+                    "markers — saving it would drop the tag blocks. Reload "
+                    "the builder and try again."
+                ),
+            )
+
     # Deck-level shuffle (slideshow roadmap, agora#261).  Optional on the
     # wire — absent body key leaves the current value untouched so older UI
     # clients that only PUT ``slides`` don't clobber it.
@@ -2014,30 +2224,25 @@ async def replace_slideshow_slides(
         existing_groups, asset.is_global, sources_by_id, source_groups
     )
 
-    duration_seconds = _compute_slideshow_duration_seconds(slides, sources_by_id)
-    manifest_content_hash = _compute_slideshow_manifest_content_hash(slides, sources_by_id)
+    tag_members = await _load_tag_members(
+        list({s.tag_id for s in slides if s.kind == "tag"}), db
+    )
+    duration_seconds = _compute_slideshow_duration_seconds(
+        slides, sources_by_id, tag_members
+    )
+    manifest_content_hash = _compute_slideshow_manifest_content_hash(
+        slides, sources_by_id, tag_members
+    )
 
     await db.execute(
         delete(SlideshowSlide).where(SlideshowSlide.slideshow_asset_id == asset_id)
     )
     await db.flush()
     for idx, s in enumerate(slides):
-        db.add(
-            SlideshowSlide(
-                slideshow_asset_id=asset_id,
-                source_asset_id=s.source_asset_id,
-                position=idx,
-                duration_ms=s.duration_ms,
-                play_to_end=s.play_to_end,
-                transition=s.transition,
-                transition_ms=s.transition_ms,
-                fit=s.fit,
-                effect=s.effect,
-                effect_direction=s.effect_direction,
-            )
-        )
+        db.add(_slide_row(asset_id, idx, s))
     asset.duration_seconds = duration_seconds
     asset.checksum = manifest_content_hash
+    _apply_slideshow_anchor(asset, slides)
 
     await audit_log(
         db, user=user, action="asset.replace_slides", resource_type="asset",
@@ -2090,196 +2295,6 @@ async def _load_slideshow_for_write(
             status_code=403, detail="Only the slideshow owner can edit its slides"
         )
     return asset
-
-
-async def _count_tag_members(tag_id: uuid.UUID, db: AsyncSession) -> int:
-    """Count assets that would resolve into a tag-mode deck for ``tag_id``.
-
-    Mirrors the resolver's membership query (same eligible asset types,
-    same deleted-row exclusion) so the ``member_count`` surfaced by the
-    tag-rule API matches what the device will actually play.
-    """
-    from cms.services.slideshow_resolver import _TAG_MEMBER_ASSET_TYPES
-
-    return int(
-        (
-            await db.execute(
-                select(func.count())
-                .select_from(Asset)
-                .join(AssetTag, AssetTag.asset_id == Asset.id)
-                .where(
-                    AssetTag.tag_id == tag_id,
-                    Asset.deleted_at.is_(None),
-                    Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
-                )
-            )
-        ).scalar_one()
-    )
-
-
-async def _tag_rule_out(
-    rule: SlideshowTagRule, db: AsyncSession
-) -> TagRuleOut:
-    """Build the API representation of a tag rule (tag name + live count)."""
-    tag_name = (
-        await db.execute(select(Tag.name).where(Tag.id == rule.tag_id))
-    ).scalar_one_or_none()
-    out = TagRuleOut.model_validate(rule)
-    out.tag_name = tag_name
-    out.member_count = await _count_tag_members(rule.tag_id, db)
-    return out
-
-
-@router.get("/{asset_id}/tag-rule")
-async def get_slideshow_tag_rule(
-    asset_id: uuid.UUID,
-    request: Request,
-    user: User = Depends(require_permission(ASSETS_WRITE)),
-    db: AsyncSession = Depends(get_db),
-) -> TagRuleOut:
-    """Return the tag rule for a slideshow, or 404 if it's in manual mode.
-
-    A slideshow is in *tag mode* when a :class:`SlideshowTagRule` row
-    exists; its deck is resolved live from assets carrying the rule's
-    tag rather than from hand-authored ``slideshow_slides`` rows.
-    """
-    await _load_slideshow_for_write(asset_id, request, db)
-    rule = (
-        await db.execute(
-            select(SlideshowTagRule).where(
-                SlideshowTagRule.slideshow_asset_id == asset_id
-            )
-        )
-    ).scalar_one_or_none()
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Slideshow has no tag rule")
-    return await _tag_rule_out(rule, db)
-
-
-@router.put("/{asset_id}/tag-rule")
-async def put_slideshow_tag_rule(
-    asset_id: uuid.UUID,
-    body: TagRuleIn,
-    request: Request,
-    user: User = Depends(require_permission(ASSETS_WRITE)),
-    db: AsyncSession = Depends(get_db),
-) -> TagRuleOut:
-    """Create or replace a slideshow's tag rule (flip it into tag mode).
-
-    On create, ``anchor_at`` is stamped to *now* so the resolver anchors
-    the playback cycle at the moment tag mode was enabled. On edit, the
-    existing ``anchor_at`` is preserved so the on-screen slide never jumps
-    (the no-restart guarantee for agora-cms#806). Manual ``slideshow_slides``
-    rows are left intact so DELETE reverts cleanly to the manual deck.
-
-    Device propagation is automatic: ``build_device_sync`` re-resolves
-    every slideshow through the (tag-aware) resolver each scheduler tick,
-    so connected devices pick up the new deck within one eval interval —
-    no explicit push needed.
-    """
-    asset = await _load_slideshow_for_write(asset_id, request, db)
-
-    tag = (
-        await db.execute(select(Tag).where(Tag.id == body.tag_id))
-    ).scalar_one_or_none()
-    if tag is None:
-        raise HTTPException(status_code=404, detail="Tag not found")
-
-    rule = (
-        await db.execute(
-            select(SlideshowTagRule).where(
-                SlideshowTagRule.slideshow_asset_id == asset_id
-            )
-        )
-    ).scalar_one_or_none()
-
-    created = rule is None
-    if rule is None:
-        rule = SlideshowTagRule(
-            slideshow_asset_id=asset_id,
-            anchor_at=datetime.now(timezone.utc),
-        )
-        db.add(rule)
-
-    rule.tag_id = body.tag_id
-    rule.order_by = "tagged_at"
-    rule.default_duration_ms = body.default_duration_ms
-    rule.default_transition = body.default_transition
-    rule.default_transition_ms = body.default_transition_ms
-    rule.default_fit = body.default_fit
-    rule.default_effect = body.default_effect
-    rule.default_effect_direction = body.default_effect_direction
-
-    await audit_log(
-        db,
-        user=user,
-        action="asset.set_tag_rule",
-        resource_type="asset",
-        resource_id=str(asset_id),
-        description=(
-            f"{'Enabled' if created else 'Updated'} tag mode on slideshow "
-            f"'{asset.display_name or asset.original_filename or asset.filename}' "
-            f"(tag '{tag.name}')"
-        ),
-        details={
-            "filename": asset.display_name or asset.original_filename or asset.filename,
-            "tag_id": str(body.tag_id),
-            "tag_name": tag.name,
-            "created": created,
-        },
-        request=request,
-    )
-    await db.commit()
-    await db.refresh(rule)
-    return await _tag_rule_out(rule, db)
-
-
-@router.delete("/{asset_id}/tag-rule")
-async def delete_slideshow_tag_rule(
-    asset_id: uuid.UUID,
-    request: Request,
-    user: User = Depends(require_permission(ASSETS_WRITE)),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Delete a slideshow's tag rule, reverting it to manual mode.
-
-    Returns 404 if the slideshow has no tag rule. Manual ``slideshow_slides``
-    rows were never touched by tag mode, so the slideshow falls straight
-    back to its previously-authored deck (empty if none).
-    """
-    asset = await _load_slideshow_for_write(asset_id, request, db)
-    rule = (
-        await db.execute(
-            select(SlideshowTagRule).where(
-                SlideshowTagRule.slideshow_asset_id == asset_id
-            )
-        )
-    ).scalar_one_or_none()
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Slideshow has no tag rule")
-
-    await db.execute(
-        delete(SlideshowTagRule).where(
-            SlideshowTagRule.slideshow_asset_id == asset_id
-        )
-    )
-    await audit_log(
-        db,
-        user=user,
-        action="asset.delete_tag_rule",
-        resource_type="asset",
-        resource_id=str(asset_id),
-        description=(
-            f"Disabled tag mode on slideshow "
-            f"'{asset.display_name or asset.original_filename or asset.filename}'"
-        ),
-        details={
-            "filename": asset.display_name or asset.original_filename or asset.filename,
-        },
-        request=request,
-    )
-    await db.commit()
-    return {"slideshow_id": str(asset_id), "tag_rule": None}
 
 
 @router.post("/{asset_id}/assistant/thread")

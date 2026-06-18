@@ -4,10 +4,9 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from cms.models.asset import AssetType, VariantStatus
-from cms.models.slideshow_tag_rule import DEFAULT_TAG_SLIDE_DURATION_MS
 from cms.schemas.tag import TagOut
 
 
@@ -28,6 +27,20 @@ MAX_SLIDE_DURATION_MS = 60 * 60 * 1000
 # schema default in sync with that contract means an assistant-built slide
 # that omits the field no longer 400s.
 DEFAULT_SLIDE_DURATION_MS = 7000
+
+# Default per-slide duration for a dynamic *tag block* when a client omits
+# ``duration_ms``.  Relocated here from the retired ``slideshow_tag_rule``
+# model (the hybrid tag-timeline redesign folded tag rules into ordinary
+# ``slideshow_slides`` rows of ``kind='tag'``).  Still consumed by the
+# builder UI default + migration 0047.
+DEFAULT_TAG_SLIDE_DURATION_MS = 8000
+
+# How members of a dynamic tag block are ordered.  Only ``tagged_at`` is
+# supported in v1 (AssetTag.created_at asc — the order that preserves the
+# no-restart, append-at-tail guarantee).  Relocated from the retired
+# ``slideshow_tag_rule`` model.
+SLIDESHOW_TAG_ORDER_BY_VALUES = ("tagged_at",)
+DEFAULT_SLIDESHOW_TAG_ORDER_BY = "tagged_at"
 
 # Per-slide transition controls (Phase 1a of agora#226, expanded in 0029).
 # ``cut`` is an instant swap (no transition) and is the only mode the
@@ -275,9 +288,29 @@ class AssetBulkOut(BaseModel):
 
 
 class SlideIn(BaseModel):
-    """One slide in a create/replace slideshow request body."""
+    """One slide in a create/replace slideshow request body.
 
-    source_asset_id: uuid.UUID
+    A slide is one of two *kinds* (hybrid tag-timeline redesign):
+
+    * ``asset`` (default — and what every pre-redesign client sends, since
+      they omit ``kind`` entirely): a static slide pinning a specific
+      ``source_asset_id``.
+    * ``tag``: a dynamic block pinning a ``tag_id`` that expands in-place
+      at resolve time to every non-deleted asset carrying the tag (ordered
+      by ``tag_order_by``).  Carries no ``source_asset_id``; its playback
+      fields (duration/transition/fit/effect) become the deck-defaults
+      every expanded member inherits.
+    """
+
+    # Slide-kind discriminator.  Absent ⇒ ``asset`` so old tag-unaware
+    # clients round-trip unchanged.
+    kind: str = Field("asset")
+    # Required for ``asset`` kind, must be absent for ``tag`` kind (enforced
+    # by the model validator below).
+    source_asset_id: Optional[uuid.UUID] = None
+    # Required for ``tag`` kind, must be absent for ``asset`` kind.
+    tag_id: Optional[uuid.UUID] = None
+    tag_order_by: str = Field(DEFAULT_SLIDESHOW_TAG_ORDER_BY)
     duration_ms: int = Field(
         DEFAULT_SLIDE_DURATION_MS, ge=MIN_SLIDE_DURATION_MS, le=MAX_SLIDE_DURATION_MS
     )
@@ -301,6 +334,22 @@ class SlideIn(BaseModel):
     # ``ken_burns``; harmless otherwise.  Default ``in`` == the original
     # zoom-in animation, so existing slides don't change.
     effect_direction: str = Field(DEFAULT_KEN_BURNS_DIRECTION)
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, v: str) -> str:
+        if v not in ("asset", "tag"):
+            raise ValueError(f"kind must be 'asset' or 'tag', got {v!r}")
+        return v
+
+    @field_validator("tag_order_by")
+    @classmethod
+    def _validate_tag_order_by(cls, v: str) -> str:
+        if v not in SLIDESHOW_TAG_ORDER_BY_VALUES:
+            raise ValueError(
+                f"tag_order_by must be one of {SLIDESHOW_TAG_ORDER_BY_VALUES}, got {v!r}"
+            )
+        return v
 
     @field_validator("transition")
     @classmethod
@@ -335,18 +384,44 @@ class SlideIn(BaseModel):
             )
         return v
 
+    @model_validator(mode="after")
+    def _validate_kind_columns(self) -> "SlideIn":
+        """Enforce the kind/columns invariant mirroring the DB CHECK.
+
+        ``asset`` ⇒ ``source_asset_id`` set, ``tag_id`` absent.
+        ``tag``   ⇒ ``tag_id`` set, ``source_asset_id`` absent, and
+        ``play_to_end`` not allowed (a dynamic block has no single member
+        to play to its natural end).
+        """
+        if self.kind == "asset":
+            if self.source_asset_id is None:
+                raise ValueError("asset slide requires source_asset_id")
+            if self.tag_id is not None:
+                raise ValueError("asset slide must not carry tag_id")
+        else:  # tag
+            if self.tag_id is None:
+                raise ValueError("tag slide requires tag_id")
+            if self.source_asset_id is not None:
+                raise ValueError("tag slide must not carry source_asset_id")
+            if self.play_to_end:
+                raise ValueError("tag slide cannot set play_to_end")
+        return self
+
 
 class SlideOut(BaseModel):
     """One slide in a GET /slides response.
 
     Embeds source-asset metadata the builder UI needs (filename, type,
-    duration_seconds) so it doesn't have to round-trip per slide.
+    duration_seconds) so it doesn't have to round-trip per slide.  For a
+    dynamic ``tag`` slide the source fields are null and ``tag_id`` /
+    ``tag_name`` / ``member_count`` describe the block instead.
     """
 
     model_config = {"from_attributes": True}
 
     id: uuid.UUID
     position: int
+    kind: str = "asset"
     duration_ms: int
     play_to_end: bool
     transition: str = DEFAULT_SLIDE_TRANSITION
@@ -354,98 +429,15 @@ class SlideOut(BaseModel):
     fit: str = DEFAULT_SLIDE_FIT
     effect: str = DEFAULT_SLIDE_EFFECT
     effect_direction: str = DEFAULT_KEN_BURNS_DIRECTION
-    source_asset_id: uuid.UUID
-    source_filename: str
-    source_asset_type: AssetType
+    # Populated for ``asset`` kind; null for ``tag`` kind.
+    source_asset_id: Optional[uuid.UUID] = None
+    source_filename: Optional[str] = None
+    source_asset_type: Optional[AssetType] = None
     source_duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
-
-
-class TagRuleIn(BaseModel):
-    """Request body to create/replace a slideshow's tag rule (agora-cms#806).
-
-    Putting a tag rule on a slideshow asset flips it into *tag mode*: the
-    deck is resolved live from the set of assets carrying ``tag_id`` rather
-    than from hand-authored ``slideshow_slides`` rows.  ``order_by`` is not
-    exposed on the wire — v1 is hardcoded to ``tagged_at`` (the only value
-    that preserves the no-restart, append-at-tail guarantee).
-
-    The ``default_*`` fields apply uniformly to every resolved member, since
-    a tag deck has no per-slide authoring UI.  Their validators mirror
-    :class:`SlideIn` exactly so a tag deck behaves like a hand-built one
-    with default slides.
-    """
-
-    tag_id: uuid.UUID
-    default_duration_ms: int = Field(
-        DEFAULT_TAG_SLIDE_DURATION_MS,
-        ge=MIN_SLIDE_DURATION_MS,
-        le=MAX_SLIDE_DURATION_MS,
-    )
-    default_transition: str = Field(DEFAULT_SLIDE_TRANSITION)
-    default_transition_ms: int = Field(
-        DEFAULT_SLIDE_TRANSITION_MS,
-        ge=MIN_SLIDE_TRANSITION_MS,
-        le=MAX_SLIDE_TRANSITION_MS,
-    )
-    default_fit: str = Field(DEFAULT_SLIDE_FIT)
-    default_effect: str = Field(DEFAULT_SLIDE_EFFECT)
-    default_effect_direction: str = Field(DEFAULT_KEN_BURNS_DIRECTION)
-
-    @field_validator("default_transition")
-    @classmethod
-    def _validate_transition(cls, v: str) -> str:
-        if v not in SLIDE_TRANSITIONS:
-            raise ValueError(
-                f"default_transition must be one of {SLIDE_TRANSITIONS}, got {v!r}"
-            )
-        return v
-
-    @field_validator("default_fit")
-    @classmethod
-    def _validate_fit(cls, v: str) -> str:
-        if v not in SLIDE_FITS:
-            raise ValueError(f"default_fit must be one of {SLIDE_FITS}, got {v!r}")
-        return v
-
-    @field_validator("default_effect")
-    @classmethod
-    def _validate_effect(cls, v: str) -> str:
-        if v not in SLIDE_EFFECTS:
-            raise ValueError(f"default_effect must be one of {SLIDE_EFFECTS}, got {v!r}")
-        return v
-
-    @field_validator("default_effect_direction")
-    @classmethod
-    def _validate_effect_direction(cls, v: str) -> str:
-        v = normalize_effect_direction(v)
-        if v not in KEN_BURNS_DIRECTIONS:
-            raise ValueError(
-                f"default_effect_direction must be one of {KEN_BURNS_DIRECTIONS}, got {v!r}"
-            )
-        return v
-
-
-class TagRuleOut(BaseModel):
-    """A slideshow's tag rule, as returned by GET/PUT ``/{id}/tag-rule``.
-
-    ``member_count`` is the number of assets currently resolved into the
-    deck (eligible asset types carrying the tag), surfaced so the builder
-    UI can show "N items match" without a second round-trip.
-    """
-
-    model_config = {"from_attributes": True}
-
-    slideshow_asset_id: uuid.UUID
-    tag_id: uuid.UUID
+    # Populated for ``tag`` kind; null for ``asset`` kind.
+    tag_id: Optional[uuid.UUID] = None
     tag_name: Optional[str] = None
-    order_by: str = "tagged_at"
-    default_duration_ms: int = DEFAULT_TAG_SLIDE_DURATION_MS
-    default_transition: str = DEFAULT_SLIDE_TRANSITION
-    default_transition_ms: int = DEFAULT_SLIDE_TRANSITION_MS
-    default_fit: str = DEFAULT_SLIDE_FIT
-    default_effect: str = DEFAULT_SLIDE_EFFECT
-    default_effect_direction: str = DEFAULT_KEN_BURNS_DIRECTION
-    anchor_at: Optional[datetime] = None
-    member_count: int = 0
+    tag_order_by: Optional[str] = None
+    member_count: Optional[int] = None
 
