@@ -1148,3 +1148,240 @@ class TestTagModeSlideshow:
         assert fetch is not None
         anchor = datetime.fromisoformat(fetch.started_at.replace("Z", "+00:00"))
         assert int(anchor.timestamp() * 1000) % fetch.cycle_duration_ms == 0
+
+
+
+async def _seed_hybrid_slideshow(db, *, name, entries, checksum="", anchor_at=None):
+    """Seed a hybrid-timeline slideshow directly.
+
+    ``entries`` is an ordered list of dicts, each either:
+      * ``{"asset": <Asset>, "duration_ms": int, ...}`` — a static slide
+      * ``{"tag": <Tag>, "duration_ms": int, ...}`` — a dynamic tag block
+
+    Optional per-entry overrides: ``play_to_end``, ``transition``,
+    ``transition_ms``, ``fit``, ``effect``, ``effect_direction``.
+    ``anchor_at`` sets the persisted per-slideshow cycle anchor.
+    """
+    ss = Asset(
+        filename=name,
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum=checksum,
+        is_global=True,
+        slideshow_anchor_at=anchor_at,
+    )
+    db.add(ss)
+    await db.commit()
+    await db.refresh(ss)
+    for idx, e in enumerate(entries):
+        is_tag = "tag" in e
+        db.add(SlideshowSlide(
+            slideshow_asset_id=ss.id,
+            kind="tag" if is_tag else "asset",
+            source_asset_id=None if is_tag else e["asset"].id,
+            tag_id=e["tag"].id if is_tag else None,
+            tag_order_by="tagged_at" if is_tag else None,
+            position=idx,
+            duration_ms=e.get("duration_ms", 5000),
+            play_to_end=e.get("play_to_end", False),
+            transition=e.get("transition", "cut"),
+            transition_ms=e.get("transition_ms", 600),
+            fit=e.get("fit", "cover"),
+            effect=e.get("effect", "none"),
+            effect_direction=e.get("effect_direction", "in"),
+        ))
+    await db.commit()
+    await db.refresh(ss)
+    return ss
+
+
+@pytest.mark.asyncio
+class TestHybridTagTimeline:
+    """Phase 0 of the hybrid tag-timeline redesign (agora#806 successor):
+    a deck is an ordered list of static ``asset`` slides and dynamic
+    ``tag`` blocks that expand in-place at resolve time."""
+
+    async def test_asset_only_timeline_unchanged(self, db_session):
+        """A timeline of only ``asset``-kind slides resolves exactly like a
+        classic manual slideshow (backward-compatibility regression)."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "phyb1")
+        a = await _seed_image(db_session, filename="one.png")
+        b = await _seed_image(db_session, filename="two.png")
+        for img in (a, b):
+            await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hyb1",
+            entries=[
+                {"asset": a, "duration_ms": 4000},
+                {"asset": b, "duration_ms": 6000},
+            ],
+            checksum="hb1",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        assert [s.source_filename for s in plan.slides] == ["one.png", "two.png"]
+        assert [s.position for s in plan.slides] == [0, 1]
+        assert [s.duration_ms for s in plan.slides] == [4000, 6000]
+
+    async def test_tag_block_expands_in_place(self, db_session):
+        """A ``tag``-kind slide expands to its members in tagged_at order,
+        each inheriting the row's playback columns."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "phyb2")
+        tag = await _seed_tag(db_session, "promoH2")
+        x = await _seed_image(db_session, filename="x.png")
+        y = await _seed_image(db_session, filename="y.png")
+        for img in (x, y):
+            await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+        base = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        await _tag_asset(db_session, asset=y, tag=tag, when=base)
+        await _tag_asset(db_session, asset=x, tag=tag, when=base + timedelta(seconds=5))
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hyb2",
+            entries=[{"tag": tag, "duration_ms": 7000, "transition": "fade"}],
+            checksum="hb2",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        # tagged_at order: y (older) then x.
+        assert [s.source_filename for s in plan.slides] == ["y.png", "x.png"]
+        assert [s.position for s in plan.slides] == [0, 1]
+        # Members inherit the tag row's playback columns.
+        assert all(s.duration_ms == 7000 for s in plan.slides)
+        assert all(s.transition == "fade" for s in plan.slides)
+        # Tag members never play-to-end.
+        assert all(s.play_to_end is False for s in plan.slides)
+
+    async def test_hybrid_ordering_contiguous_positions(self, db_session):
+        """asset, tag(block of 2), asset -> a single contiguous position
+        sequence with the tag members spliced in the middle."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "phyb3")
+        tag = await _seed_tag(db_session, "promoH3")
+        head = await _seed_image(db_session, filename="head.png")
+        tail = await _seed_image(db_session, filename="tail.png")
+        m1 = await _seed_image(db_session, filename="m1.png")
+        m2 = await _seed_image(db_session, filename="m2.png")
+        for img in (head, tail, m1, m2):
+            await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+        base = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        await _tag_asset(db_session, asset=m1, tag=tag, when=base)
+        await _tag_asset(db_session, asset=m2, tag=tag, when=base + timedelta(seconds=5))
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hyb3",
+            entries=[
+                {"asset": head, "duration_ms": 3000},
+                {"tag": tag, "duration_ms": 5000},
+                {"asset": tail, "duration_ms": 9000},
+            ],
+            checksum="hb3",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        assert [s.source_filename for s in plan.slides] == [
+            "head.png", "m1.png", "m2.png", "tail.png",
+        ]
+        assert [s.position for s in plan.slides] == [0, 1, 2, 3]
+        # Static slides keep their own durations; tag members inherit 5000.
+        assert [s.duration_ms for s in plan.slides] == [3000, 5000, 5000, 9000]
+
+    async def test_static_plus_tag_member_dedup_plays_twice(self, db_session):
+        """A static slide for asset X and a tag block also containing X
+        intentionally yields X twice (no dedup in v1)."""
+        from datetime import datetime, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "phyb4")
+        tag = await _seed_tag(db_session, "promoH4")
+        dup = await _seed_image(db_session, filename="dup.png")
+        await _seed_variant(db_session, source=dup, profile=profile, ext="jpg")
+        await _tag_asset(
+            db_session, asset=dup, tag=tag,
+            when=datetime(2026, 6, 3, tzinfo=timezone.utc),
+        )
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hyb4",
+            entries=[
+                {"asset": dup, "duration_ms": 4000},
+                {"tag": tag, "duration_ms": 5000},
+            ],
+            checksum="hb4",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        assert [s.source_filename for s in plan.slides] == ["dup.png", "dup.png"]
+        assert [s.position for s in plan.slides] == [0, 1]
+
+    async def test_persisted_slideshow_anchor_emitted_verbatim(self, db_session, app):
+        """``assets.slideshow_anchor_at`` is emitted verbatim as
+        ``started_at`` for a hybrid deck (no flooring), so tag-block growth
+        leaves the on-screen slide stable."""
+        from datetime import datetime, timezone
+
+        from cms.services.slideshow_resolver import (
+            _format_anchor,
+            build_fetch_for_slideshow,
+        )
+
+        profile = await _seed_profile(db_session, "phyb5")
+        group = await _seed_group(db_session, "ghyb5")
+        device = await _seed_device(
+            db_session, did="dhyb5", group=group, profile=profile,
+        )
+        tag = await _seed_tag(db_session, "promoH5")
+        img = await _seed_image(db_session, filename="anc.png")
+        await _seed_variant(
+            db_session, source=img, profile=profile, checksum="ancv", ext="jpg",
+        )
+        await _tag_asset(
+            db_session, asset=img, tag=tag,
+            when=datetime(2026, 6, 4, tzinfo=timezone.utc),
+        )
+        anchor = datetime(2026, 6, 4, 9, 30, 0, tzinfo=timezone.utc)
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hyb5",
+            entries=[{"tag": tag, "duration_ms": 5000}],
+            checksum="hb5", anchor_at=anchor,
+        )
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        assert fetch.started_at == _format_anchor(anchor)
+
+    async def test_null_slideshow_anchor_falls_back_to_floored(self, db_session, app):
+        """A hybrid deck with NULL ``slideshow_anchor_at`` floors ``now`` to
+        a cycle boundary (classic manual-slideshow behaviour)."""
+        from datetime import datetime
+
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "phyb6")
+        group = await _seed_group(db_session, "ghyb6")
+        device = await _seed_device(
+            db_session, did="dhyb6", group=group, profile=profile,
+        )
+        a = await _seed_image(db_session, filename="floorhyb.png")
+        await _seed_variant(
+            db_session, source=a, profile=profile, checksum="fhv", ext="jpg",
+        )
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hyb6",
+            entries=[{"asset": a, "duration_ms": 5000}],
+            checksum="hb6",
+        )
+        fetch = await build_fetch_for_slideshow(
+            ss, device, "https://cms.example", db_session,
+        )
+        assert fetch is not None
+        anchor = datetime.fromisoformat(fetch.started_at.replace("Z", "+00:00"))
+        assert int(anchor.timestamp() * 1000) % fetch.cycle_duration_ms == 0
