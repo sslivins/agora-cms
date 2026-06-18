@@ -2085,7 +2085,7 @@ async function applyTagRule() {
 
 async function disableTagMode() {
     if (!SS_EDIT_MODE || !SS_ASSET_ID) return;
-    if (!confirm('Switch back to a manual deck? The tag rule will be removed; your existing slides are kept.')) return;
+    if (!await showConfirm('Switch back to a manual deck? The tag rule will be removed; your existing slides are kept.')) return;
     const btn = _tagPanelEl('ss-tag-disable');
     if (btn) btn.disabled = true;
     _setTagStatus('Switching…', false);
