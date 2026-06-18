@@ -662,6 +662,55 @@
     margin-top: 1rem;
 }
 .ssb-tag-anchor { font-size: 0.8rem; }
+.ssb-tags-palette {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: var(--bg-elev, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 0.4rem;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.ssb-tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.3rem 0.55rem;
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 1rem;
+    cursor: grab;
+    user-select: none;
+    font-size: 0.8rem;
+    line-height: 1.2;
+    transition: transform 0.08s, box-shadow 0.08s, border-color 0.08s;
+}
+.ssb-tag-chip:hover {
+    border-color: #16a085;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(22,160,133,0.2);
+}
+.ssb-tag-chip:active { cursor: grabbing; }
+.ssb-tag-chip.ssb-dragging { opacity: 0.4; }
+.ssb-tag-chip-swatch {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    border: 1px solid rgba(255,255,255,0.25);
+    pointer-events: none;
+}
+.ssb-tag-chip-name { font-weight: 600; pointer-events: none; }
+.ssb-tag-chip-count { color: #888; font-size: 0.72rem; pointer-events: none; }
+.ssb-tag-chip-count.is-empty { color: #e6a23c; }
+.ssb-tag-chip.is-added { opacity: 0.45; cursor: default; }
+.ssb-tags-empty {
+    padding: 0.75rem 0.5rem;
+    color: #888;
+    font-size: 0.82rem;
+}
 </style>
 
 <h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}
@@ -739,6 +788,21 @@
             </div>
         </div>
 
+        <div class="ss-manual-only" id="ss-tags-section" style="margin-top:1.25rem;">
+            <h3 style="margin:0 0 0.35rem; font-size:1rem; display:flex; align-items:center; gap:0.5rem;">
+                Dynamic tags
+                <span class="text-muted" style="font-weight:normal; font-size:0.85rem;">— drag onto the timeline, or click to append a live tag block</span>
+            </h3>
+            <p class="text-muted" style="margin:0 0 0.5rem; font-size:0.8rem;">
+                A tag block plays every asset that has the tag, in the order it was tagged.
+                It stays live: tag or untag an asset and it appears or drops from the running
+                slideshow on the next loop — no need to edit this deck.
+            </p>
+            <div id="ss-tags-palette" class="ssb-tags-palette">
+                <div class="ssb-tags-empty">Loading tags…</div>
+            </div>
+        </div>
+
         <div class="ssb-timeline-head ss-manual-only">
             <h3>Timeline</h3>
             <div class="ssb-totals">
@@ -800,6 +864,7 @@
 {% endif %}
 
 <script id="ss-initial-slides" type="application/json">{{ slides | tojson }}</script>
+<script id="ss-all-tags" type="application/json">{{ all_tags | tojson }}</script>
 <script>
 let SS_EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
 let SS_ASSET_ID = {{ asset_id | tojson if asset_id else 'null' }};
@@ -812,6 +877,8 @@ let SS_ORIG_NAME = {% if edit_mode %}{{ asset_name | tojson }}{% else %}""{% end
 const SS_MAX_SLIDES = 50;
 
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
+const SS_ALL_TAGS = JSON.parse(document.getElementById('ss-all-tags').textContent || '[]');
+const SS_TAG_DEFAULT_DURATION_MS = 8000;
 let availableAssets = [];
 let selectedGroupIds = [];
 let deckShuffle = {% if deck_shuffle %}true{% else %}false{% endif %};
@@ -946,6 +1013,86 @@ function renderLibrary() {
     });
 }
 
+// Render the static palette of dynamic-tag chips (built once from the
+// server-injected SS_ALL_TAGS — no fetch). Clicking or dragging a chip
+// appends a live "tag block" to the timeline. Chips already present in
+// the deck are shown dimmed and non-draggable so a tag can't be added
+// twice (it would double-play its members).
+function renderTagPalette() {
+    const root = document.getElementById('ss-tags-palette');
+    if (!root) return;
+    if (!SS_ALL_TAGS.length) {
+        root.innerHTML = '<div class="ssb-tags-empty">No tags yet. Create tags on the Assets page and apply them to images, videos, or composed slides — then drop a live tag block here.</div>';
+        return;
+    }
+    root.innerHTML = '';
+    SS_ALL_TAGS.forEach(t => {
+        const count = Number.isFinite(t.member_count) ? t.member_count : 0;
+        const already = slides.some(s => s.kind === 'tag' && s.tag_id === t.id);
+        const swatch = /^#[0-9a-fA-F]{3,8}$/.test(t.color || '') ? t.color : '#888';
+        const countText = count === 0 ? 'no items yet' : (count === 1 ? '1 item' : count + ' items');
+        const countCls = count === 0 ? 'ssb-tag-chip-count is-empty' : 'ssb-tag-chip-count';
+        const chip = document.createElement('div');
+        chip.className = 'ssb-tag-chip' + (already ? ' is-added' : '');
+        chip.draggable = !already;
+        chip.dataset.tagId = t.id;
+        chip.title = already
+            ? '#' + t.name + ' is already in this slideshow'
+            : '#' + t.name + ' — ' + countText + '\nClick to append, or drag onto the timeline';
+        chip.innerHTML = `
+            <span class="ssb-tag-chip-swatch" style="background:${swatch};"></span>
+            <span class="ssb-tag-chip-name">#${escapeHtml(t.name)}</span>
+            <span class="${countCls}">${escapeHtml(countText)}</span>`;
+        if (!already) {
+            chip.addEventListener('click', () => addTagBlock(t.id, slides.length));
+            chip.addEventListener('dragstart', (e) => {
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('application/x-slideshow-source', JSON.stringify({kind: 'tag', tag_id: t.id}));
+                chip.classList.add('ssb-dragging');
+            });
+            chip.addEventListener('dragend', () => chip.classList.remove('ssb-dragging'));
+        }
+        root.appendChild(chip);
+    });
+}
+
+// Append (or insert) a live tag block. Mirrors addSlideFromAsset, but the
+// in-memory object carries kind:'tag' (shape consumed by makeTagSlot +
+// serializeSlide). A tag block counts as ONE row against SS_MAX_SLIDES.
+function addTagBlock(tagId, atIndex) {
+    if (slides.length >= SS_MAX_SLIDES) {
+        setStatus('Slide cap reached (' + SS_MAX_SLIDES + ').', true);
+        return;
+    }
+    const t = SS_ALL_TAGS.find(x => x.id === tagId);
+    if (!t) {
+        setStatus('Tag not found.', true);
+        return;
+    }
+    if (slides.some(s => s.kind === 'tag' && s.tag_id === tagId)) {
+        setStatus('“#' + t.name + '” is already in this slideshow.', true);
+        return;
+    }
+    const slide = {
+        kind: 'tag',
+        tag_id: t.id,
+        tag_name: t.name,
+        tag_order_by: 'tagged_at',
+        member_count: Number.isFinite(t.member_count) ? t.member_count : 0,
+        duration_ms: SS_TAG_DEFAULT_DURATION_MS,
+        transition: 'cut',
+        transition_ms: 600,
+        fit: 'cover',
+        effect: 'none',
+        effect_direction: 'in',
+    };
+    const idx = Math.max(0, Math.min(atIndex, slides.length));
+    slides.splice(idx, 0, slide);
+    markDirty();
+    setStatus('');
+    renderTimeline();
+}
+
 function renderTimeline() {
     const root = document.getElementById('ss-timeline');
     root.innerHTML = '';
@@ -954,10 +1101,11 @@ function renderTimeline() {
         const end = document.createElement('div');
         end.className = 'ssb-end';
         end.dataset.dropIndex = '0';
-        end.innerHTML = '🎬 Drag a clip from the library to begin';
+        end.innerHTML = '🎬 Drag a clip from the library, or a dynamic tag, to begin';
         wireDropZone(end, 0);
         root.appendChild(end);
         updateTotals();
+        renderTagPalette();
         return;
     }
 
@@ -981,6 +1129,7 @@ function renderTimeline() {
     root.appendChild(append);
 
     updateTotals();
+    renderTagPalette();
 }
 
 function makeSlot(s, i) {
@@ -1478,6 +1627,8 @@ function wireDropZone(el, dropIndex) {
             addSlideFromAsset(payload.asset_id, targetIdx);
         } else if (payload.kind === 'reorder') {
             reorderSlide(payload.from_index, targetIdx);
+        } else if (payload.kind === 'tag') {
+            addTagBlock(payload.tag_id, targetIdx);
         }
     });
 }

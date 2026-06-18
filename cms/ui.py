@@ -1670,11 +1670,34 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         )).all()
         uploader_map = {str(u.id): u.username or u.email for u in uploaders}
 
-    from cms.models.tag import Tag
-    all_tags_q = await db.execute(select(Tag).order_by(Tag.name))
+    from cms.models.tag import AssetTag, Tag
+    from cms.services.slideshow_resolver import _TAG_MEMBER_ASSET_TYPES
+
+    all_tag_rows = (await db.execute(select(Tag).order_by(Tag.name))).scalars().all()
+    # Playable member counts per tag for the builder's dynamic-tag palette.
+    # Uses the same eligibility filter as the resolver / _load_tag_members
+    # (image/video/composed, non-deleted) so the palette's "N items" equals
+    # what a saved tag tile shows after enrichment — no jump on reload.
+    tag_count_rows = (
+        await db.execute(
+            select(AssetTag.tag_id, func.count(Asset.id))
+            .join(Asset, Asset.id == AssetTag.asset_id)
+            .where(
+                Asset.deleted_at.is_(None),
+                Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
+            )
+            .group_by(AssetTag.tag_id)
+        )
+    ).all()
+    tag_counts = {tid: int(c or 0) for tid, c in tag_count_rows}
     all_tags = [
-        {"id": str(t.id), "name": t.name, "color": t.color}
-        for t in all_tags_q.scalars().all()
+        {
+            "id": str(t.id),
+            "name": t.name,
+            "color": t.color,
+            "member_count": tag_counts.get(t.id, 0),
+        }
+        for t in all_tag_rows
     ]
 
     from cms.services.assistant_flag import assistant_enabled_for
@@ -1695,11 +1718,6 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
         "asset_is_global": False,
         "deck_shuffle": False,
         "assistant_enabled": assistant_on,
-        # Tag-based dynamic playlist rule (agora-cms#806). None == manual
-        # deck; a dict flips the builder into "tag mode" on load. Only ever
-        # populated in edit mode (the tag-rule API requires an existing
-        # slideshow asset).
-        "tag_rule": None,
     }
 
     if asset_id is not None:
@@ -1793,7 +1811,6 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
             "asset_groups": [str(g) for g in asset_group_rows],
             "asset_is_global": bool(asset.is_global),
             "deck_shuffle": bool(getattr(asset, "shuffle", False)),
-            "tag_rule": None,
         })
     return ctx
 

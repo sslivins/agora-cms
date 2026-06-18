@@ -256,3 +256,70 @@ class TestSlideshowLoopTransitionUI:
         assert "slides.length >= 2" in body
         # Loop control binds to slides[0].
         assert "buildTransitionGap(gap, 0, /*isLoop*/ true)" in body
+
+
+class TestSlideshowBuilderTagPalette:
+    """Phase 2: the dynamic-tags palette lets users author live tag
+    blocks visually (click/drag a tag chip onto the timeline)."""
+
+    async def _seed_tag(self, db_session, *, name="Promos", color="#1f9d55", members=0):
+        tag = Tag(name=name, color=color)
+        db_session.add(tag)
+        await db_session.flush()
+        for _ in range(members):
+            src = Asset(
+                filename=f"src-{uuid.uuid4().hex[:6]}.png",
+                asset_type=AssetType.IMAGE,
+                size_bytes=100,
+                is_global=True,
+            )
+            db_session.add(src)
+            await db_session.flush()
+            db_session.add(AssetTag(asset_id=src.id, tag_id=tag.id))
+        await db_session.commit()
+        return tag
+
+    async def test_palette_renders_in_create_mode(self, client, db_session):
+        """The palette markup + JS + the ss-all-tags JSON island must be
+        baked into a fresh (create-mode) builder page."""
+        await self._seed_tag(db_session, name="Promos", members=2)
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Palette container + section heading.
+        assert 'id="ss-tags-palette"' in body
+        assert "Dynamic tags" in body
+        # JSON island feeding the palette + the JS that consumes it.
+        assert 'id="ss-all-tags"' in body
+        assert "renderTagPalette" in body
+        assert "function addTagBlock(" in body
+
+    async def test_all_tags_island_carries_member_count(self, client, db_session):
+        """Each tag in the ss-all-tags island must include its playable
+        member_count so the chip can show how many assets it resolves to
+        and updateTotals can estimate run time."""
+        await self._seed_tag(db_session, name="Featured", members=3)
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "Featured" in body
+        assert "member_count" in body
+
+    async def test_tag_drop_branch_wired(self, client):
+        """The timeline drop handler must dispatch the tag payload kind
+        to addTagBlock (drag a chip onto the timeline)."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "payload.kind === 'tag'" in body
+
+    async def test_palette_renders_in_edit_mode(self, client, db_session):
+        """The palette must also be present when editing a saved
+        slideshow, not just on the create page."""
+        await self._seed_tag(db_session, name="Promos", members=1)
+        asset = await _seed_slideshow(db_session, name="Editable", slides=1)
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert 'id="ss-tags-palette"' in body
+        assert 'id="ss-all-tags"' in body
