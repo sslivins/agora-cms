@@ -2031,6 +2031,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/tags/{tag_id}/members:
+    get:
+      summary: List Tag Members
+      description: |-
+        Return a tag's current member assets in device-resolve order.
+
+        Powers the slideshow builder's collapsible tag-block preview. The
+        members are exactly what the slideshow resolver would expand this tag
+        into — eligible asset types only, ordered ``tagged_at`` ascending —
+        intersected with the caller's visible-asset ACL and enriched with each
+        asset's ready thumbnail URL. Membership is dynamic, so this is a
+        point-in-time snapshot, not a stored ordering.
+
+        Reuses :func:`cms.services.slideshow_resolver.expand_tag_members` so the
+        preview can't drift from the order the device actually plays.
+      operationId: list_tag_members_api_tags__tag_id__members_get
+      parameters:
+      - name: tag_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Tag Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/asset-views:
     get:
       summary: List Views

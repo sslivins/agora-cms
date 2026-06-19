@@ -179,3 +179,74 @@ async def delete_tag(
         request=request,
     )
     await db.commit()
+
+
+@router.get(
+    "/{tag_id}/members",
+    dependencies=[Depends(require_permission(ASSETS_READ))],
+)
+async def list_tag_members(
+    tag_id: uuid.UUID,
+    user: User = Depends(require_permission(ASSETS_READ)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a tag's current member assets in device-resolve order.
+
+    Powers the slideshow builder's collapsible tag-block preview. The
+    members are exactly what the slideshow resolver would expand this tag
+    into — eligible asset types only, ordered ``tagged_at`` ascending —
+    intersected with the caller's visible-asset ACL and enriched with each
+    asset's ready thumbnail URL. Membership is dynamic, so this is a
+    point-in-time snapshot, not a stored ordering.
+
+    Reuses :func:`cms.services.slideshow_resolver.expand_tag_members` so the
+    preview can't drift from the order the device actually plays.
+    """
+    from cms.models.asset import Asset
+    from cms.routers.assets import _thumbnail_urls_for, _visible_asset_ids
+    from cms.services.slideshow_resolver import expand_tag_members
+
+    tag = (
+        await db.execute(select(Tag).where(Tag.id == tag_id))
+    ).scalar_one_or_none()
+    if tag is None:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    member_ids = await expand_tag_members(tag_id, db)
+
+    # Intersect with the caller's visible set (None = unrestricted/admin),
+    # preserving resolve order.
+    visible = await _visible_asset_ids(user, db)
+    if visible is not None:
+        allowed = set(visible)
+        member_ids = [aid for aid in member_ids if aid in allowed]
+
+    total = len(member_ids)
+    thumbs = await _thumbnail_urls_for(member_ids, db) if member_ids else {}
+
+    detail: dict[uuid.UUID, dict] = {}
+    if member_ids:
+        rows = (
+            await db.execute(
+                select(
+                    Asset.id,
+                    Asset.asset_type,
+                    Asset.display_name,
+                    Asset.original_filename,
+                    Asset.filename,
+                    Asset.duration_seconds,
+                ).where(Asset.id.in_(member_ids))
+            )
+        ).all()
+        for aid, atype, dname, ofn, fn, dur in rows:
+            type_str = atype.value if hasattr(atype, "value") else str(atype)
+            detail[aid] = {
+                "id": str(aid),
+                "asset_type": type_str,
+                "name": dname or ofn or fn or str(aid),
+                "thumbnail_url": thumbs.get(aid),
+                "duration_seconds": dur,
+            }
+
+    members = [detail[aid] for aid in member_ids if aid in detail]
+    return {"tag_id": str(tag_id), "total": total, "members": members}
