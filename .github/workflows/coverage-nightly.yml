@@ -1,0 +1,105 @@
+name: Coverage (nightly)
+
+# Full-suite unit-test line-coverage gate. This used to run inline on every
+# PR (the `test` job in tests.yml with --cov-fail-under=50), but that job is
+# now sharded 8 ways for speed and combining coverage across shards costs more
+# than it's worth on the PR critical path. Coverage therefore moved here: the
+# whole unit suite runs once, unsharded, on a daily schedule (and on demand).
+# This job is deliberately OFF the PR and deploy critical paths -- it reports /
+# fails for visibility only and gates nothing.
+
+on:
+  schedule:
+    # 09:00 UTC daily (~02:00 PT) -- well clear of interactive hours.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+  # Also run when this workflow itself changes, so edits are validated in PR.
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/coverage-nightly.yml"
+
+concurrency:
+  group: coverage-nightly
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Full-suite unit coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agora_test
+          POSTGRES_PASSWORD: agora_test
+          POSTGRES_DB: agora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agora_test -d agora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-shared.txt
+
+      # Needed by tests/test_template_inline_js_syntax.py (runs `node --check`
+      # on every template's inline <script>).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ffmpeg
+            /usr/local/bin/ffprobe
+          key: ffmpeg-8.1-${{ runner.arch }}
+
+      - name: Install FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          ARCH=$(dpkg --print-architecture)
+          case "$ARCH" in
+            arm64|aarch64) FFARCH=linuxarm64 ;;
+            *)             FFARCH=linux64 ;;
+          esac
+          curl -fSL "https://github.com/sslivins/agora-cms/releases/download/ffmpeg-8.1/ffmpeg-${FFARCH}.tar.xz" | \
+            sudo tar -xJ --strip-components=1 -C /usr/local
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265 mtools parted xz-utils
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout pytest-cov pytest-xdist httpx aiosqlite psycopg2-binary
+
+      - name: Run full suite with coverage
+        run: |
+          python -m pytest tests/ --ignore=tests/e2e \
+            -n auto --dist=loadfile --tb=short -q -rs \
+            --cov=cms --cov=shared --cov-report=xml --cov-report=term --cov-fail-under=50
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 14
