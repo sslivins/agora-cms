@@ -344,7 +344,27 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
             if row.tag_id is None:  # defensive — CHECK constraint forbids
                 continue
             member_ids = await expand_tag_members(row.tag_id, db)
-            for aid in member_ids:
+            # Per-member transition: member 0 keeps the block's own
+            # ``transition`` (the transition INTO the block, owned by the
+            # timeline gap to its left).  Members 1..N use
+            # ``member_transition`` — the "between items" control — falling
+            # back to the block transition when it's NULL (the pre-feature
+            # behaviour where every member shared one transition).
+            for member_idx, aid in enumerate(member_ids):
+                if member_idx == 0:
+                    m_trans = row.transition
+                    m_trans_ms = row.transition_ms
+                else:
+                    m_trans = (
+                        row.member_transition
+                        if row.member_transition is not None
+                        else row.transition
+                    )
+                    m_trans_ms = (
+                        row.member_transition_ms
+                        if row.member_transition_ms is not None
+                        else row.transition_ms
+                    )
                 specs.append(
                     _SlideSpec(
                         position=pos,
@@ -353,8 +373,8 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
                         # Tag-block members never play-to-end — the block
                         # owns a single deck-default dwell time.
                         play_to_end=False,
-                        transition=row.transition,
-                        transition_ms=row.transition_ms,
+                        transition=m_trans,
+                        transition_ms=m_trans_ms,
                         fit=row.fit,
                         effect=row.effect,
                         effect_direction=row.effect_direction,

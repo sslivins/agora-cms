@@ -298,3 +298,133 @@ class TestSlideshowAnchor:
         db_session.expire(ss)
         ss = await db_session.get(Asset, uuid.UUID(sid))
         assert ss.slideshow_anchor_at is None
+
+
+@pytest.mark.asyncio
+class TestTagBlockMemberTransition:
+    """The member-transition control on a tag block governs the transition
+    between expanded members (members 1..N), distinct from the slide's own
+    ``transition`` (the transition INTO the block, owned by member 0).
+    Nullable: NULL = inherit the slide ``transition``."""
+
+    async def test_create_member_transition_defaults_null(self, client, db_session):
+        tag = await _seed_tag(db_session, name="mt-default")
+        create = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "mt-default-show",
+                "slides": [{"kind": "tag", "tag_id": str(tag.id), "duration_ms": 1000}],
+            },
+        )
+        assert create.status_code == 201, create.text
+        sid = create.json()["id"]
+        s = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"][0]
+        assert s["member_transition"] is None
+        assert s["member_transition_ms"] is None
+
+    async def test_create_round_trips_member_transition(self, client, db_session):
+        tag = await _seed_tag(db_session, name="mt-explicit")
+        create = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "mt-explicit-show",
+                "slides": [{
+                    "kind": "tag",
+                    "tag_id": str(tag.id),
+                    "duration_ms": 1000,
+                    "transition": "fade",
+                    "transition_ms": 600,
+                    "member_transition": "wipe",
+                    "member_transition_ms": 250,
+                }],
+            },
+        )
+        assert create.status_code == 201, create.text
+        sid = create.json()["id"]
+        s = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"][0]
+        assert s["transition"] == "fade"
+        assert s["transition_ms"] == 600
+        assert s["member_transition"] == "wipe"
+        assert s["member_transition_ms"] == 250
+
+    async def test_replace_round_trips_member_transition(self, client, db_session):
+        tag = await _seed_tag(db_session, name="mt-replace")
+        sid = (await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "mt-replace-show",
+                "slides": [{"kind": "tag", "tag_id": str(tag.id), "duration_ms": 1000}],
+            },
+        )).json()["id"]
+        put = await client.put(
+            f"/api/assets/{sid}/slides",
+            json={"slides": [{
+                "kind": "tag",
+                "tag_id": str(tag.id),
+                "duration_ms": 1000,
+                "member_transition": "dissolve",
+                "member_transition_ms": 1500,
+            }]},
+        )
+        assert put.status_code == 200, put.text
+        s = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"][0]
+        assert s["member_transition"] == "dissolve"
+        assert s["member_transition_ms"] == 1500
+
+    async def test_rejects_unknown_member_transition(self, client, db_session):
+        tag = await _seed_tag(db_session, name="mt-bad")
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "mt-bad-show",
+                "slides": [{
+                    "kind": "tag",
+                    "tag_id": str(tag.id),
+                    "duration_ms": 1000,
+                    "member_transition": "warp_speed",
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+    async def test_rejects_member_transition_ms_above_cap(self, client, db_session):
+        tag = await _seed_tag(db_session, name="mt-cap")
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "mt-cap-show",
+                "slides": [{
+                    "kind": "tag",
+                    "tag_id": str(tag.id),
+                    "duration_ms": 1000,
+                    "member_transition": "fade",
+                    "member_transition_ms": 99999,
+                }],
+            },
+        )
+        assert resp.status_code in (400, 422), resp.text
+
+    async def test_asset_slide_forces_member_transition_null(self, client, db_session):
+        """An ``asset``-kind slide must never carry member-transition data —
+        the schema forces both columns NULL regardless of input."""
+        img = await _seed_image(db_session, filename="mt-asset.png")
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "mt-asset-show",
+                "slides": [{
+                    "kind": "asset",
+                    "source_asset_id": str(img.id),
+                    "duration_ms": 1000,
+                    "member_transition": "wipe",
+                    "member_transition_ms": 250,
+                }],
+            },
+        )
+        # Either rejected, or accepted with the fields coerced to NULL.
+        assert resp.status_code in (200, 201, 400, 422), resp.text
+        if resp.status_code in (200, 201):
+            sid = resp.json()["id"]
+            s = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"][0]
+            assert s.get("member_transition") in (None, "")
+            assert s.get("member_transition_ms") in (None,)

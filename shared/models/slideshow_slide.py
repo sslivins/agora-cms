@@ -78,6 +78,24 @@ class SlideshowSlide(Base):
             "transition_ms >= 0 AND transition_ms <= 5000",
             name="ck_slideshow_slide_transition_ms_range",
         ),
+        # Tag-block member transition (agora tag-timeline).  Only meaningful
+        # for ``tag`` kind: controls the transition BETWEEN expanded members
+        # (members 1..N), distinct from ``transition`` which is the
+        # transition INTO the block (the first member).  NULL means "inherit
+        # ``transition``" — the pre-feature behaviour where every member
+        # shared the block's transition — so existing rows render unchanged.
+        # The CHECK allows NULL (NULL passes an ``IN`` test) and otherwise
+        # constrains to the same transition vocabulary.
+        CheckConstraint(
+            "member_transition IS NULL OR member_transition IN "
+            "('cut','fade','fade_black','dissolve','push','wipe','zoom')",
+            name="ck_slideshow_slide_member_transition_known",
+        ),
+        CheckConstraint(
+            "member_transition_ms IS NULL OR "
+            "(member_transition_ms >= 0 AND member_transition_ms <= 5000)",
+            name="ck_slideshow_slide_member_transition_ms_range",
+        ),
         # Per-slide display effects (agora#7xx).  ``fit`` controls how the
         # media is scaled into the cell (object-fit); ``effect`` is an
         # optional animated treatment (Ken Burns slow pan/zoom).  Both are
@@ -184,6 +202,19 @@ class SlideshowSlide(Base):
     )
     transition_ms: Mapped[int] = mapped_column(
         Integer, nullable=False, default=600, server_default="600"
+    )
+    # Tag-block member transition (agora tag-timeline).  Controls the
+    # transition between expanded ``tag``-block members (members 1..N);
+    # ``transition`` above stays the transition INTO the block (member 0).
+    # NULL == inherit ``transition`` (the original behaviour where every
+    # member shared the block's transition), so existing decks are
+    # byte-identical until a user sets a distinct "between items" value.
+    # Ignored for ``asset`` kind.
+    member_transition: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    member_transition_ms: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
     )
     # How the media scales into the slide cell.  ``cover`` (default) fills
     # the frame and crops overflow; ``contain`` letterboxes to show the

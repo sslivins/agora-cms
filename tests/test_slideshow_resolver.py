@@ -1151,7 +1151,8 @@ async def _seed_hybrid_slideshow(db, *, name, entries, checksum="", anchor_at=No
       * ``{"tag": <Tag>, "duration_ms": int, ...}`` — a dynamic tag block
 
     Optional per-entry overrides: ``play_to_end``, ``transition``,
-    ``transition_ms``, ``fit``, ``effect``, ``effect_direction``.
+    ``transition_ms``, ``fit``, ``effect``, ``effect_direction``,
+    ``member_transition``, ``member_transition_ms`` (tag blocks only).
     ``anchor_at`` sets the persisted per-slideshow cycle anchor.
     """
     ss = Asset(
@@ -1181,6 +1182,8 @@ async def _seed_hybrid_slideshow(db, *, name, entries, checksum="", anchor_at=No
             fit=e.get("fit", "cover"),
             effect=e.get("effect", "none"),
             effect_direction=e.get("effect_direction", "in"),
+            member_transition=e.get("member_transition") if is_tag else None,
+            member_transition_ms=e.get("member_transition_ms") if is_tag else None,
         ))
     await db.commit()
     await db.refresh(ss)
@@ -1249,7 +1252,74 @@ class TestHybridTagTimeline:
         # Tag members never play-to-end.
         assert all(s.play_to_end is False for s in plan.slides)
 
-    async def test_hybrid_ordering_contiguous_positions(self, db_session):
+    async def test_member_transition_applies_to_rest_only(self, db_session):
+        """When ``member_transition`` is set, member 0 keeps the block's
+        own ``transition`` (the transition INTO the block) while members
+        1..N use ``member_transition``/``member_transition_ms``."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pmt1")
+        tag = await _seed_tag(db_session, "promoMT1")
+        imgs = []
+        for n in ("a", "b", "c"):
+            img = await _seed_image(db_session, filename=f"{n}.png")
+            await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+            imgs.append(img)
+        base = datetime(2026, 6, 3, tzinfo=timezone.utc)
+        for k, img in enumerate(imgs):
+            await _tag_asset(
+                db_session, asset=img, tag=tag, when=base + timedelta(seconds=k)
+            )
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="mt1",
+            entries=[{
+                "tag": tag, "duration_ms": 5000,
+                "transition": "fade", "transition_ms": 600,
+                "member_transition": "wipe", "member_transition_ms": 250,
+            }],
+            checksum="mt1",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        # member 0 = block transition; members 1..N = member_transition.
+        assert [s.transition for s in plan.slides] == ["fade", "wipe", "wipe"]
+        assert [s.transition_ms for s in plan.slides] == [600, 250, 250]
+
+    async def test_member_transition_null_inherits_block(self, db_session):
+        """A NULL ``member_transition`` resolves byte-identically to the
+        pre-feature behaviour: every member shares the block transition."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pmt2")
+        tag = await _seed_tag(db_session, "promoMT2")
+        imgs = []
+        for n in ("p", "q"):
+            img = await _seed_image(db_session, filename=f"{n}.png")
+            await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+            imgs.append(img)
+        base = datetime(2026, 6, 4, tzinfo=timezone.utc)
+        for k, img in enumerate(imgs):
+            await _tag_asset(
+                db_session, asset=img, tag=tag, when=base + timedelta(seconds=k)
+            )
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="mt2",
+            entries=[{
+                "tag": tag, "duration_ms": 5000,
+                "transition": "dissolve", "transition_ms": 800,
+                # member_transition left unset -> NULL -> inherit.
+            }],
+            checksum="mt2",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        assert all(s.transition == "dissolve" for s in plan.slides)
+        assert all(s.transition_ms == 800 for s in plan.slides)
+
         """asset, tag(block of 2), asset -> a single contiguous position
         sequence with the tag members spliced in the middle."""
         from datetime import datetime, timedelta, timezone
