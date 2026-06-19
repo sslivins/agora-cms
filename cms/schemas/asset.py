@@ -325,6 +325,18 @@ class SlideIn(BaseModel):
         ge=MIN_SLIDE_TRANSITION_MS,
         le=MAX_SLIDE_TRANSITION_MS,
     )
+    # Tag-block member transition (only meaningful for ``tag`` kind):
+    # the transition BETWEEN expanded members (members 1..N), distinct
+    # from ``transition`` which is the transition INTO the block.  Both
+    # optional/nullable — ``None`` means "inherit ``transition``" (the
+    # original behaviour), so an old client that never sends them yields
+    # byte-identical output.  Ignored / forced None for ``asset`` kind.
+    member_transition: Optional[str] = None
+    member_transition_ms: Optional[int] = Field(
+        None,
+        ge=MIN_SLIDE_TRANSITION_MS,
+        le=MAX_SLIDE_TRANSITION_MS,
+    )
     # Per-slide display effects.  Optional on the wire — old clients that
     # don't send them land on ``cover`` / ``none`` which is the
     # pre-effects behaviour.
@@ -357,6 +369,15 @@ class SlideIn(BaseModel):
         if v not in SLIDE_TRANSITIONS:
             raise ValueError(
                 f"transition must be one of {SLIDE_TRANSITIONS}, got {v!r}"
+            )
+        return v
+
+    @field_validator("member_transition")
+    @classmethod
+    def _validate_member_transition(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in SLIDE_TRANSITIONS:
+            raise ValueError(
+                f"member_transition must be one of {SLIDE_TRANSITIONS}, got {v!r}"
             )
         return v
 
@@ -398,6 +419,11 @@ class SlideIn(BaseModel):
                 raise ValueError("asset slide requires source_asset_id")
             if self.tag_id is not None:
                 raise ValueError("asset slide must not carry tag_id")
+            # Member transition is a tag-block-only concept; drop it for
+            # asset slides rather than 422-ing a client that sends a stray
+            # value, so the DB never stores a meaningless member_transition.
+            self.member_transition = None
+            self.member_transition_ms = None
         else:  # tag
             if self.tag_id is None:
                 raise ValueError("tag slide requires tag_id")
@@ -426,6 +452,10 @@ class SlideOut(BaseModel):
     play_to_end: bool
     transition: str = DEFAULT_SLIDE_TRANSITION
     transition_ms: int = DEFAULT_SLIDE_TRANSITION_MS
+    # Tag-block member transition; null for ``asset`` kind and for ``tag``
+    # blocks that inherit the block transition between members.
+    member_transition: Optional[str] = None
+    member_transition_ms: Optional[int] = None
     fit: str = DEFAULT_SLIDE_FIT
     effect: str = DEFAULT_SLIDE_EFFECT
     effect_direction: str = DEFAULT_KEN_BURNS_DIRECTION

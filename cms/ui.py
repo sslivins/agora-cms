@@ -1769,6 +1769,8 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                     "play_to_end": False,
                     "transition": slide.transition,
                     "transition_ms": slide.transition_ms,
+                    "member_transition": slide.member_transition,
+                    "member_transition_ms": slide.member_transition_ms,
                     "fit": slide.fit,
                     "effect": slide.effect,
                     "effect_direction": getattr(slide, "effect_direction", "in") or "in",
