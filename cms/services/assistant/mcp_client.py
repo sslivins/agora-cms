@@ -254,9 +254,15 @@ COMPOSED_EDITOR_TOOLS: frozenset[str] = (
 )
 
 # The slideshow-editor tool profile: discover/select assets + read+write
-# the current slideshow's slides.
+# the current slideshow's slides.  ``list_tags`` is included (read-only)
+# so the assistant can resolve a tag NAME (e.g. "summer-sale") to the
+# ``tag_id`` that a dynamic ``kind="tag"`` block requires.  Populating a
+# tag's membership (``tag_asset`` / ``untag_asset``) is deliberately NOT
+# here — those touch *other* assets, outside this mode's "only the
+# slideshow you have open" guardrail; membership is managed from the
+# library view.
 SLIDESHOW_EDITOR_TOOLS: frozenset[str] = (
-    frozenset({"list_assets", "get_asset"})
+    frozenset({"list_assets", "get_asset", "list_tags"})
     | SLIDESHOW_READ_TOOLS
     | SLIDESHOW_WRITE_TOOLS
 )
