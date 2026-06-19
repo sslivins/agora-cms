@@ -330,6 +330,18 @@ class CMSClient:
     async def delete_tag(self, tag_id: str) -> str:
         return await self._delete(f"/api/tags/{tag_id}")
 
+    async def tag_assets(self, tag_id: str, asset_ids: list[str]) -> dict:
+        return await self._post(
+            "/api/assets/bulk",
+            json={"action": "add_tag", "tag_id": tag_id, "asset_ids": asset_ids},
+        )
+
+    async def untag_assets(self, tag_id: str, asset_ids: list[str]) -> dict:
+        return await self._post(
+            "/api/assets/bulk",
+            json={"action": "remove_tag", "tag_id": tag_id, "asset_ids": asset_ids},
+        )
+
     # -- Saved asset views --
 
     async def list_asset_views(self) -> list:

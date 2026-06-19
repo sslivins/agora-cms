@@ -121,6 +121,8 @@ WRITE_TOOLS: frozenset[str] = frozenset(
         "create_tag",
         "update_tag",
         "delete_tag",
+        "tag_asset",
+        "untag_asset",
         # schedules
         "create_schedule",
         "update_schedule",
