@@ -313,6 +313,26 @@ class TestSlideshowBuilderTagPalette:
         body = resp.text
         assert "payload.kind === 'tag'" in body
 
+    async def test_tag_block_exposes_fit_and_motion_controls(self, client):
+        """A dynamic tag block must expose the same Fit + Motion controls
+        as an asset slide. The chosen values become the deck-default every
+        expanded member inherits (the write path already serializes
+        fit/effect/effect_direction for kind='tag'). Regression for the
+        builder gap where makeTagSlot rendered no fit/motion controls, so a
+        tag block was silently locked to cover/none."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Shared helpers exist (asset + tag tiles render identical controls).
+        assert "function fitEffectCtlHtml(" in body
+        assert "function wireFitEffectCtls(" in body
+        # makeTagSlot wires both the markup and the listeners.
+        start = body.index("function makeTagSlot(")
+        end = body.index("function ", start + 1)
+        tag_fn = body[start:end]
+        assert "fitEffectCtlHtml(s, i)" in tag_fn
+        assert "wireFitEffectCtls(slot, i)" in tag_fn
+
     async def test_palette_renders_in_edit_mode(self, client, db_session):
         """The palette must also be present when editing a saved
         slideshow, not just on the create page."""

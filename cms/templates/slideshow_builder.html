@@ -1132,6 +1132,65 @@ function renderTimeline() {
     renderTagPalette();
 }
 
+// Shared per-slide Fit + Motion (Ken Burns) control block. Used by both
+// the static-asset tile (makeSlot) and the dynamic tag-block tile
+// (makeTagSlot) so the two never drift. The controls bind to
+// ``slides[i].fit`` / ``.effect`` / ``.effect_direction`` via the
+// kind-agnostic update handlers; for a tag block the chosen fit/motion
+// becomes the deck-default every expanded member inherits.
+function fitEffectCtlHtml(s, i) {
+    const fitVal = (s.fit === 'contain' || s.fit === 'contain_blur') ? s.fit : 'cover';
+    const effectVal = (s.effect === 'ken_burns') ? 'ken_burns' : 'none';
+    const dirToken = (function () { const p = kbParse(s.effect_direction); return kbCompose(p.zoom, p.pan); })();
+    const kbMenuId = `ssb-kb-menu-${i}`;
+    const dirCtl = `
+                <label class="ssb-slot-fx-item ssb-slot-kbdir" title="Ken Burns motion"
+                       style="${effectVal === 'ken_burns' ? '' : 'display:none;'}">
+                    <span>Motion path</span>
+                    <button type="button" class="ssb-slot-kbbtn"
+                            aria-label="Customize Ken Burns motion">
+                        <span class="ssb-kbbtn-label">${escapeHtml(kbLabel(dirToken))}</span>
+                        <span class="ssb-kbbtn-arrow" aria-hidden="true">⚙</span>
+                    </button>
+                </label>
+                <div id="${kbMenuId}" class="ssb-kb-menu" popover="auto"></div>`;
+    return `
+            <div class="ssb-slot-fx">
+                <label class="ssb-slot-fx-item" title="How the slide fills the screen">
+                    <span>Fit</span>
+                    <select class="ssb-slot-fit" aria-label="Fit">
+                        <option value="cover" ${fitVal === 'cover' ? 'selected' : ''}>Fill (cover)</option>
+                        <option value="contain" ${fitVal === 'contain' ? 'selected' : ''}>Fit (contain)</option>
+                        <option value="contain_blur" ${fitVal === 'contain_blur' ? 'selected' : ''}>Fit + blur fill</option>
+                    </select>
+                </label>
+                <label class="ssb-slot-fx-item" title="Motion effect while the slide is shown">
+                    <span>Motion</span>
+                    <select class="ssb-slot-effect" aria-label="Motion effect">
+                        <option value="none" ${effectVal === 'none' ? 'selected' : ''}>None</option>
+                        <option value="ken_burns" ${effectVal === 'ken_burns' ? 'selected' : ''}>Ken Burns</option>
+                    </select>
+                </label>
+                ${dirCtl}
+            </div>`;
+}
+
+// Attach the change/click listeners for a Fit + Motion control block
+// previously rendered via ``fitEffectCtlHtml`` into ``slot``.
+function wireFitEffectCtls(slot, i) {
+    const fitSel = slot.querySelector('.ssb-slot-fit');
+    if (fitSel) fitSel.addEventListener('change', (e) => updateSlideFit(i, e.target.value));
+    const effectSel = slot.querySelector('.ssb-slot-effect');
+    if (effectSel) effectSel.addEventListener('change', (e) => updateSlideEffect(i, e.target.value));
+    const kbBtn = slot.querySelector('.ssb-slot-kbbtn');
+    if (kbBtn) {
+        kbBtn.addEventListener('click', () => {
+            const menu = slot.querySelector('.ssb-kb-menu');
+            if (menu) buildKbMenu(menu, kbBtn, i);
+        });
+    }
+}
+
 function makeSlot(s, i) {
     const slot = document.createElement('div');
     slot.className = 'ssb-slot';
@@ -1182,40 +1241,7 @@ function makeSlot(s, i) {
             </label>`
         : '';
 
-    const fitVal = (s.fit === 'contain' || s.fit === 'contain_blur') ? s.fit : 'cover';
-    const effectVal = (s.effect === 'ken_burns') ? 'ken_burns' : 'none';
-    const dirToken = (function () { const p = kbParse(s.effect_direction); return kbCompose(p.zoom, p.pan); })();
-    const kbMenuId = `ssb-kb-menu-${i}`;
-    const dirCtl = `
-                <label class="ssb-slot-fx-item ssb-slot-kbdir" title="Ken Burns motion"
-                       style="${effectVal === 'ken_burns' ? '' : 'display:none;'}">
-                    <span>Motion path</span>
-                    <button type="button" class="ssb-slot-kbbtn"
-                            aria-label="Customize Ken Burns motion">
-                        <span class="ssb-kbbtn-label">${escapeHtml(kbLabel(dirToken))}</span>
-                        <span class="ssb-kbbtn-arrow" aria-hidden="true">⚙</span>
-                    </button>
-                </label>
-                <div id="${kbMenuId}" class="ssb-kb-menu" popover="auto"></div>`;
-    const fitEffectCtl = `
-            <div class="ssb-slot-fx">
-                <label class="ssb-slot-fx-item" title="How the slide fills the screen">
-                    <span>Fit</span>
-                    <select class="ssb-slot-fit" aria-label="Fit">
-                        <option value="cover" ${fitVal === 'cover' ? 'selected' : ''}>Fill (cover)</option>
-                        <option value="contain" ${fitVal === 'contain' ? 'selected' : ''}>Fit (contain)</option>
-                        <option value="contain_blur" ${fitVal === 'contain_blur' ? 'selected' : ''}>Fit + blur fill</option>
-                    </select>
-                </label>
-                <label class="ssb-slot-fx-item" title="Motion effect while the slide is shown">
-                    <span>Motion</span>
-                    <select class="ssb-slot-effect" aria-label="Motion effect">
-                        <option value="none" ${effectVal === 'none' ? 'selected' : ''}>None</option>
-                        <option value="ken_burns" ${effectVal === 'ken_burns' ? 'selected' : ''}>Ken Burns</option>
-                    </select>
-                </label>
-                ${dirCtl}
-            </div>`;
+    const fitEffectCtl = fitEffectCtlHtml(s, i);
 
     slot.innerHTML = `
         <div class="ssb-slot-thumb-wrap">
@@ -1253,17 +1279,7 @@ function makeSlot(s, i) {
     slot.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
     const pte = slot.querySelector('input[type=checkbox]');
     if (pte) pte.addEventListener('change', (e) => updateSlidePlayToEnd(i, e.target.checked));
-    const fitSel = slot.querySelector('.ssb-slot-fit');
-    if (fitSel) fitSel.addEventListener('change', (e) => updateSlideFit(i, e.target.value));
-    const effectSel = slot.querySelector('.ssb-slot-effect');
-    if (effectSel) effectSel.addEventListener('change', (e) => updateSlideEffect(i, e.target.value));
-    const kbBtn = slot.querySelector('.ssb-slot-kbbtn');
-    if (kbBtn) {
-        kbBtn.addEventListener('click', () => {
-            const menu = slot.querySelector('.ssb-kb-menu');
-            if (menu) buildKbMenu(menu, kbBtn, i);
-        });
-    }
+    wireFitEffectCtls(slot, i);
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
@@ -1275,9 +1291,12 @@ function makeSlot(s, i) {
     return slot;
 }
 
-// Render a dynamic tag block as a distinct timeline tile. No asset preview,
-// no fit/effect/play-to-end controls. Reuses the standard remove/move/
-// duration wiring so the block can be reordered, removed, and re-timed.
+// Render a dynamic tag block as a distinct timeline tile. No asset preview
+// and no play-to-end control (members are timed per-item, not per-video),
+// but it does expose the same Fit + Motion controls as an asset slot — the
+// chosen values become the deck-default every expanded member inherits.
+// Reuses the standard remove/move/duration wiring so the block can be
+// reordered, removed, and re-timed.
 function makeTagSlot(s, i) {
     const slot = document.createElement('div');
     slot.className = 'ssb-slot ssb-slot-tag';
@@ -1306,6 +1325,7 @@ function makeTagSlot(s, i) {
                        aria-label="Per-item duration in seconds">
                 <span style="color:#888;">s each</span>
             </div>
+            ${fitEffectCtlHtml(s, i)}
         </div>`;
 
     slot.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
@@ -1321,6 +1341,8 @@ function makeTagSlot(s, i) {
         moveSlide(i, +1);
     });
     slot.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
+    // Fit/motion picked here is the deck-default every expanded member inherits.
+    wireFitEffectCtls(slot, i);
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
