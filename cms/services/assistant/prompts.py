@@ -177,6 +177,24 @@ Per-slide fields:
   Effects render on images (and composed slides); a video slide plays
   its own motion, so ``ken_burns`` has no visible effect there.
 
+Dynamic tag blocks:
+* A slide can instead be a **tag block** that auto-expands at play
+  time to every asset carrying a given tag — great for "show all our
+  current promos" without re-editing the show as assets come and go.
+  Set ``kind: "tag"`` and ``tag_id`` (from ``list_tags`` /
+  ``create_tag``) INSTEAD of ``source_asset_id``.
+* A tag block has no ``play_to_end`` (it isn't one clip). Its
+  ``duration_ms`` / ``transition`` / ``fit`` / ``effect`` become the
+  defaults every expanded member inherits. VIDEO members
+  automatically play their full length; ``duration_ms`` only governs
+  image/composed members.
+* ``transition`` is the transition INTO the block; ``member_transition``
+  (+ ``member_transition_ms``) is the transition used BETWEEN the
+  block's members. Omit them to reuse ``transition`` / ``transition_ms``.
+* To control what shows in a tag block, manage the tag's membership:
+  ``tag_asset(tag_id, asset_ids)`` adds the tag to assets,
+  ``untag_asset(tag_id, asset_ids)`` removes it. Both are idempotent.
+
 Facts (fixed):
 * A slideshow can hold at most 50 slides.
 

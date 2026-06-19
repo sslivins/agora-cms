@@ -86,6 +86,8 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "create_tag": "assets:write",
     "update_tag": "assets:write",
     "delete_tag": "assets:write",
+    "tag_asset": "assets:write",
+    "untag_asset": "assets:write",
     "list_asset_views": None,
     "create_asset_view": None,
     "update_asset_view": None,
@@ -488,19 +490,27 @@ async def set_composed_widgets(
 async def get_slideshow(asset_id: str) -> str:
     """Get the ordered slides of a slideshow asset.
 
-    Returns ``{slideshow_id, slides}`` where each slide is
-    ``{id, position, duration_ms, play_to_end, transition,
-    transition_ms, fit, effect, source_asset_id, source_filename,
-    source_asset_type, source_duration_seconds, thumbnail_url}``.
+    Each slide has a ``kind``: ``"asset"`` (a static slide pinning one
+    asset) or ``"tag"`` (a *dynamic tag block* that expands at play time
+    to every asset carrying a tag). Shared fields on every slide:
+    ``{id, position, kind, duration_ms, play_to_end, transition,
+    transition_ms, member_transition, member_transition_ms, fit,
+    effect, effect_direction}``.
+
+    ``asset`` slides also carry ``{source_asset_id, source_filename,
+    source_asset_type, source_duration_seconds, thumbnail_url}`` (the
+    tag fields are null). ``tag`` slides also carry ``{tag_id, tag_name,
+    tag_order_by, member_count}`` (the source fields are null);
+    ``member_count`` is how many assets currently match the tag.
 
     ``fit`` is one of ``cover`` / ``contain`` / ``contain_blur`` and
     ``effect`` is one of ``none`` / ``ken_burns`` (see
     ``set_slideshow_slides`` for their meanings).
 
-    ``source_asset_id`` is the IMAGE / VIDEO / COMPOSED asset shown for
-    that slide — pass these back to ``set_slideshow_slides`` to keep the
-    same members. Call this before editing so you preserve the existing
-    order and timing.
+    For ``asset`` slides, ``source_asset_id`` is the IMAGE / VIDEO /
+    COMPOSED asset shown — pass these back to ``set_slideshow_slides`` to
+    keep the same members; for ``tag`` slides pass back ``tag_id``. Call
+    this before editing so you preserve the existing order and timing.
 
     Args:
         asset_id: UUID of the slideshow asset being edited.
@@ -520,8 +530,12 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
     saved and goes LIVE immediately (slideshows have no draft/publish
     step).
 
-    Each slide is ``{source_asset_id, duration_ms?, play_to_end?,
-    transition?, transition_ms?, fit?, effect?}``:
+    Each slide has a ``kind``: ``"asset"`` (default, a static slide) or
+    ``"tag"`` (a dynamic tag block). ``kind`` may be omitted for asset
+    slides.
+
+    ASSET slides — ``{source_asset_id, duration_ms?, play_to_end?,
+    transition?, transition_ms?, fit?, effect?, effect_direction?}``:
       - ``source_asset_id``: UUID of an IMAGE / VIDEO / COMPOSED asset
         (from ``list_assets`` or an existing slide's ``source_asset_id``).
       - ``duration_ms``: how long the slide shows, 500–3,600,000
@@ -548,6 +562,31 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
         bottom-right). Word order and separators DON'T matter —
         ``"zoom out right down"`` and ``"out-right-down"`` are both
         accepted and normalized to ``out_down_right``. Defaults to ``in``.
+
+    TAG slides (dynamic blocks) — set ``kind: "tag"`` and ``tag_id``
+    instead of ``source_asset_id``. A tag block expands at play time to
+    every non-deleted asset carrying that tag, so it stays in sync as you
+    tag/untag assets (use ``tag_asset`` / ``untag_asset`` to manage
+    membership). Rules and extra fields:
+      - ``tag_id``: UUID of the tag (from ``list_tags`` / ``create_tag``).
+        Required; a tag slide must NOT carry ``source_asset_id``.
+      - ``play_to_end`` is NOT allowed on a tag slide (a dynamic block
+        has no single member to play to its natural end).
+      - ``tag_order_by``: order of expanded members — only ``"tagged_at"``
+        (default) is supported.
+      - The playback fields above (``duration_ms``, ``transition``,
+        ``transition_ms``, ``fit``, ``effect``, ``effect_direction``) act
+        as deck-defaults that EVERY expanded member inherits.
+      - VIDEO members of a tag block automatically play their full
+        natural length; ``duration_ms`` only governs image/composed
+        members. (You don't set ``play_to_end`` for this — it's automatic.)
+      - ``member_transition``: the transition used BETWEEN expanded
+        members (one of the same transition names as ``transition``).
+        ``transition`` is the transition INTO the block; this is the one
+        between its members. Omit / null ⇒ inherit ``transition``.
+      - ``member_transition_ms``: that transition's length in ms, 0–5000.
+        Null ⇒ inherit ``transition_ms``. Both member fields are
+        tag-only and ignored for asset slides.
 
     A slideshow can hold up to 50 slides. On invalid input the call
     returns structured errors — fix and retry.
@@ -988,6 +1027,47 @@ async def delete_tag(tag_id: str) -> str:
         return err
     await _call_api("delete_tag", tag_id)
     return f"Tag {tag_id} deleted"
+
+
+@mcp.tool()
+async def tag_asset(tag_id: str, asset_ids: list[str]) -> str:
+    """Apply a tag to one or more assets.
+
+    This is how you populate a *dynamic tag block* in a slideshow: a tag
+    block (a ``kind="tag"`` slide in ``set_slideshow_slides``) expands at
+    play time to every asset carrying its tag, so to add an asset to a
+    tag block you tag the asset here. Idempotent — re-tagging an
+    already-tagged asset is a no-op.
+
+    Get ``tag_id`` from ``list_tags`` (or ``create_tag``) and the asset
+    UUIDs from ``list_assets`` / ``list_assets_paged``. Returns
+    ``{succeeded, failed}`` (per-asset; a bad id fails just that id, not
+    the batch).
+
+    Args:
+        tag_id: UUID of the tag to apply.
+        asset_ids: UUIDs of the assets to tag (1-500).
+    """
+    if err := _check_permission("tag_asset"):
+        return err
+    return _json_result(await _call_api("tag_assets", tag_id, asset_ids))
+
+
+@mcp.tool()
+async def untag_asset(tag_id: str, asset_ids: list[str]) -> str:
+    """Remove a tag from one or more assets.
+
+    The inverse of ``tag_asset`` — removes the asset from any dynamic tag
+    block built on this tag. Idempotent (removing an absent tag is a
+    no-op). Returns ``{succeeded, failed}``.
+
+    Args:
+        tag_id: UUID of the tag to remove.
+        asset_ids: UUIDs of the assets to untag (1-500).
+    """
+    if err := _check_permission("untag_asset"):
+        return err
+    return _json_result(await _call_api("untag_assets", tag_id, asset_ids))
 
 
 # ── Saved asset views ──
