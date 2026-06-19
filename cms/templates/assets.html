@@ -224,7 +224,7 @@
         {% if user_groups | length > 0 or is_admin %}
         <span class="bulk-group-picker" style="position:relative; display:inline-block;">
             <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="event.stopPropagation(); document.getElementById('bulk-add-group-popup').showPopover()">+ Add to group</button>
+                    popovertarget="bulk-add-group-popup">+ Add to group</button>
             <div id="bulk-add-group-popup" popover class="group-popup">
                 {% for g in user_groups %}
                 <button type="button" class="group-popup-item"
@@ -237,7 +237,7 @@
         </span>
         <span class="bulk-group-picker" style="position:relative; display:inline-block;">
             <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="event.stopPropagation(); document.getElementById('bulk-remove-group-popup').showPopover()">− Remove from group</button>
+                    popovertarget="bulk-remove-group-popup">− Remove from group</button>
             <div id="bulk-remove-group-popup" popover class="group-popup">
                 {% for g in user_groups %}
                 <button type="button" class="group-popup-item"
@@ -252,7 +252,7 @@
         {% if all_tags | length > 0 %}
         <span class="bulk-tag-picker" style="position:relative; display:inline-block;">
             <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="event.stopPropagation(); document.getElementById('bulk-add-tag-popup').showPopover()">🏷 Add tag</button>
+                    popovertarget="bulk-add-tag-popup">🏷 Add tag</button>
             <div id="bulk-add-tag-popup" popover class="group-popup">
                 {% for t in all_tags %}
                 <button type="button" class="group-popup-item"
@@ -264,7 +264,7 @@
         </span>
         <span class="bulk-tag-picker" style="position:relative; display:inline-block;">
             <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="event.stopPropagation(); document.getElementById('bulk-remove-tag-popup').showPopover()">− Remove tag</button>
+                    popovertarget="bulk-remove-tag-popup">− Remove tag</button>
             <div id="bulk-remove-tag-popup" popover class="group-popup">
                 {% for t in all_tags %}
                 <button type="button" class="group-popup-item"
@@ -2064,14 +2064,16 @@ function fallbackCopy(text, onSuccess) {
             } else if (hint) {
                 hint.style.display = 'none';
             }
-            // Position near the clicked + button.
+            // Open first so the top-layer popover has a measurable size, then
+            // anchor it to the clicked "+ tag" button using the shared,
+            // viewport-aware positioner (handles below/above flip + horizontal
+            // clamp). The old manual math added window.scrollY/scrollX, which
+            // pushed a top-layer (fixed) popover off-screen on a scrolled page.
             const target = (ev && ev.currentTarget) || (ev && ev.target);
-            if (target && pop.style) {
-                const rect = target.getBoundingClientRect();
-                pop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
-                pop.style.left = (rect.left + window.scrollX) + 'px';
-            }
             try { pop.showPopover(); } catch (e) {}
+            if (target && typeof positionPopover === 'function') {
+                positionPopover(pop, { placement: 'below', align: 'left', anchor: target });
+            }
         },
         addTagToCurrentRow: async (tagId) => {
             const pop = document.getElementById('row-add-tag-popup');
