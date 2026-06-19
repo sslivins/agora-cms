@@ -39,6 +39,24 @@ async def _seed_image(db_session, *, filename="img.png", is_global=True, checksu
     return asset
 
 
+async def _seed_video(
+    db_session, *, filename="clip.mp4", is_global=True, checksum="vid-cs",
+    duration_seconds=30.0,
+):
+    asset = Asset(
+        filename=filename,
+        asset_type=AssetType.VIDEO,
+        size_bytes=4321,
+        checksum=checksum,
+        is_global=is_global,
+        duration_seconds=duration_seconds,
+    )
+    db_session.add(asset)
+    await db_session.commit()
+    await db_session.refresh(asset)
+    return asset
+
+
 async def _seed_tag(db_session, *, name="weekly-sale"):
     tag = Tag(name=name)
     db_session.add(tag)
@@ -147,6 +165,36 @@ class TestSlideshowTagBlockCreate:
         ss = await db_session.get(Asset, uuid.UUID(create.json()["id"]))
         await db_session.refresh(ss)
         assert ss.duration_seconds == pytest.approx(6.0)
+
+    async def test_create_tag_block_video_member_uses_natural_duration(
+        self, client, db_session
+    ):
+        """A VIDEO member of a tag block contributes its full natural
+        length to the denormalised slideshow duration, not the block's
+        per-slide dwell.  This mirrors the resolver flipping video members
+        to play-to-end, so schedule end-times stay correct."""
+        tag = await _seed_tag(db_session, name="vid-dur")
+        img = await _seed_image(db_session, filename="still.png")
+        vid = await _seed_video(
+            db_session, filename="clip.mp4", duration_seconds=30.0
+        )
+        await _tag_asset(db_session, img, tag)
+        await _tag_asset(db_session, vid, tag)
+
+        create = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "vid-dur-show",
+                "slides": [
+                    {"kind": "tag", "tag_id": str(tag.id), "duration_ms": 8000},
+                ],
+            },
+        )
+        assert create.status_code == 201, create.text
+        # image member: 8s dwell; video member: 30s natural => 38.0 s total.
+        ss = await db_session.get(Asset, uuid.UUID(create.json()["id"]))
+        await db_session.refresh(ss)
+        assert ss.duration_seconds == pytest.approx(38.0)
 
 
 @pytest.mark.asyncio
