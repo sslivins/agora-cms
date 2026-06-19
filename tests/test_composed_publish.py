@@ -21,6 +21,7 @@ from cms.composed.schema import (
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
 from cms.models.slideshow_slide import SlideshowSlide
+from cms.models.tag import AssetTag, Tag
 
 
 def _text_layout(text: str = "hello world") -> Layout:
@@ -477,6 +478,148 @@ async def _make_slideshow_asset(db_session, members, filename="show.slideshow") 
         ))
     await db_session.flush()
     return ss
+
+
+async def _make_tag(db_session, name="promo"):
+    tag = Tag(name=name)
+    db_session.add(tag)
+    await db_session.flush()
+    return tag
+
+
+async def _tag_asset(db_session, asset, tag):
+    db_session.add(AssetTag(asset_id=asset.id, tag_id=tag.id))
+    await db_session.flush()
+
+
+async def _make_slideshow_with_tag_block(
+    db_session, tag, *, duration_ms=4500, transition="fade", transition_ms=600,
+    filename="tagshow.slideshow",
+) -> Asset:
+    """Seed a SLIDESHOW container whose only slide is a ``kind='tag'`` block.
+
+    Tag blocks have ``source_asset_id IS NULL``; they expand at read time to
+    the tag's current membership.  This is the Phase 1 hybrid-timeline shape
+    that previously broke ``load_slideshow_members`` (NULL source -> 422).
+    """
+    ss = Asset(
+        filename=filename,
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum="",
+    )
+    db_session.add(ss)
+    await db_session.flush()
+    db_session.add(SlideshowSlide(
+        slideshow_asset_id=ss.id,
+        kind="tag",
+        source_asset_id=None,
+        tag_id=tag.id,
+        tag_order_by="tagged_at",
+        position=0,
+        duration_ms=duration_ms,
+        play_to_end=False,
+        transition=transition,
+        transition_ms=transition_ms,
+    ))
+    await db_session.flush()
+    return ss
+
+
+@pytest.mark.asyncio
+async def test_publish_slideshow_tag_block_expands_members(
+    db_session, mock_storage_and_dir
+):
+    """A composed slide embedding a tag-mode slideshow publishes its members.
+
+    Regression: ``load_slideshow_members`` used to read ``source_asset_id``
+    blindly (NULL for tag rows) -> ``(slide, None)`` -> PublishError
+    "references a missing source asset".
+    """
+    _, tmp_path = mock_storage_and_dir
+    img1 = await _make_image_asset(db_session, tmp_path, "p1.png")
+    img2 = await _make_image_asset(db_session, tmp_path, "p2.png")
+    tag = await _make_tag(db_session)
+    await _tag_asset(db_session, img1, tag)
+    await _tag_asset(db_session, img2, tag)
+    ss = await _make_slideshow_with_tag_block(db_session, tag)
+    asset, cs = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    await publish_composed_slide(asset.id, db_session)
+
+    bundle_html = (tmp_path / asset.filename).read_text()
+    # Both tagged images expanded into stacked, client-cycled slides.
+    assert bundle_html.count("data:image/png;base64,") == 2
+    assert "cw-ss-slide" in bundle_html
+
+    await db_session.refresh(cs)
+    sources = {str(x) for x in cs.bundle_source_asset_ids}
+    # Tag MEMBER ids are tracked, not the container or the tag.
+    assert sources == {str(img1.id), str(img2.id)}
+    assert str(ss.id) not in sources
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_empty_tag_block_slideshow(
+    db_session, mock_storage_and_dir
+):
+    """A slideshow whose only slide is an empty tag block has no members."""
+    tag = await _make_tag(db_session, name="empty")
+    ss = await _make_slideshow_with_tag_block(db_session, tag)
+    asset, _ = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    with pytest.raises(PublishError, match="has no slides"):
+        await publish_composed_slide(asset.id, db_session)
+
+
+@pytest.mark.asyncio
+async def test_publish_slideshow_mixed_asset_and_tag_rows(
+    db_session, mock_storage_and_dir
+):
+    """A deck mixing a static asset slide and a tag block expands both."""
+    _, tmp_path = mock_storage_and_dir
+    static_img = await _make_image_asset(db_session, tmp_path, "static.png")
+    tagged_img = await _make_image_asset(db_session, tmp_path, "tagged.png")
+    tag = await _make_tag(db_session, name="mix")
+    await _tag_asset(db_session, tagged_img, tag)
+
+    ss = Asset(
+        filename="mixshow.slideshow",
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum="",
+    )
+    db_session.add(ss)
+    await db_session.flush()
+    db_session.add(SlideshowSlide(
+        slideshow_asset_id=ss.id,
+        source_asset_id=static_img.id,
+        position=0,
+        duration_ms=4000,
+        play_to_end=False,
+        transition="cut",
+        transition_ms=600,
+    ))
+    db_session.add(SlideshowSlide(
+        slideshow_asset_id=ss.id,
+        kind="tag",
+        source_asset_id=None,
+        tag_id=tag.id,
+        tag_order_by="tagged_at",
+        position=1,
+        duration_ms=4000,
+        play_to_end=False,
+        transition="fade",
+        transition_ms=600,
+    ))
+    await db_session.flush()
+    asset, cs = await _make_composed(db_session, layout=_media_layout(ss.id))
+
+    await publish_composed_slide(asset.id, db_session)
+
+    await db_session.refresh(cs)
+    sources = {str(x) for x in cs.bundle_source_asset_ids}
+    assert sources == {str(static_img.id), str(tagged_img.id)}
 
 
 @pytest.mark.asyncio

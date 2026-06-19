@@ -1482,7 +1482,7 @@ async def _load_tag_members(
 ) -> dict[uuid.UUID, list[tuple[uuid.UUID, str]]]:
     """Return ordered ``(member_id, checksum)`` per tag.
 
-    Mirrors the resolver's ``_expand_tag_members`` ordering exactly
+    Mirrors the resolver's ``expand_tag_members`` ordering exactly
     (``AssetTag.created_at`` asc, ``AssetTag.id`` asc) and the same eligible
     asset-type filter, so duration/hash/member-count computed here match
     what the device actually plays.  Membership is dynamic — this is a

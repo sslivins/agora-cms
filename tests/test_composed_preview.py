@@ -10,6 +10,7 @@ from cms.composed.schema import Cell, Layout, WidgetInstance, empty_layout
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
 from cms.models.slideshow_slide import SlideshowSlide
+from cms.models.tag import AssetTag, Tag
 
 
 def _text_layout(text: str = "hello preview") -> Layout:
@@ -515,6 +516,55 @@ class TestComposedPreviewSlideshowMedia:
         assert body.count("data:image/png;base64,") == 2
         assert "cw-ss-slide" in body
         assert "/assets/videos/" not in body
+
+    async def _make_slideshow_tag_block(self, db_session, tag):
+        ss = Asset(
+            filename=f"tagshow-{uuid.uuid4()}.slideshow",
+            asset_type=AssetType.SLIDESHOW,
+            size_bytes=0,
+            checksum="",
+            is_global=True,
+        )
+        db_session.add(ss)
+        await db_session.flush()
+        db_session.add(SlideshowSlide(
+            slideshow_asset_id=ss.id,
+            kind="tag",
+            source_asset_id=None,
+            tag_id=tag.id,
+            tag_order_by="tagged_at",
+            position=0,
+            duration_ms=4000,
+            play_to_end=False,
+            transition="fade",
+            transition_ms=600,
+        ))
+        await db_session.flush()
+        return ss
+
+    async def test_preview_slideshow_tag_block_inlines_members(
+        self, client, db_session, tmp_path
+    ):
+        # Regression: a tag-mode slideshow member used to 422 with
+        # "references a missing source asset" because tag rows have a
+        # NULL source_asset_id.
+        storage = _storage_dir(tmp_path)
+        img1 = await self._make_image(db_session, storage, "t1.png")
+        img2 = await self._make_image(db_session, storage, "t2.png")
+        tag = Tag(name="promo")
+        db_session.add(tag)
+        await db_session.flush()
+        db_session.add(AssetTag(asset_id=img1.id, tag_id=tag.id))
+        db_session.add(AssetTag(asset_id=img2.id, tag_id=tag.id))
+        await db_session.flush()
+        ss = await self._make_slideshow_tag_block(db_session, tag)
+        asset = await self._make_composed_with(db_session, _media_layout(ss.id))
+
+        resp = await client.get(f"/composed/{asset.id}/preview")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert body.count("data:image/png;base64,") == 2
+        assert "cw-ss-slide" in body
 
     async def test_preview_empty_slideshow_is_422(
         self, client, db_session, tmp_path

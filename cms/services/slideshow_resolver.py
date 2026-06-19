@@ -343,7 +343,7 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
         if row.kind == "tag":
             if row.tag_id is None:  # defensive — CHECK constraint forbids
                 continue
-            member_ids = await _expand_tag_members(row.tag_id, db)
+            member_ids = await expand_tag_members(row.tag_id, db)
             for aid in member_ids:
                 specs.append(
                     _SlideSpec(
@@ -381,7 +381,7 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
     return specs
 
 
-async def _expand_tag_members(
+async def expand_tag_members(
     tag_id: uuid.UUID, db: AsyncSession
 ) -> list[uuid.UUID]:
     """Return the ordered source-asset ids for a tag block.
@@ -391,6 +391,10 @@ async def _expand_tag_members(
     (tagged-at order) so a newly tagged asset always sorts to the tail of
     its block — the firmware applies the new deck at a loop boundary so the
     insert is seamless.
+
+    Shared with :func:`cms.composed.slideshow_expand.load_slideshow_members`
+    so the device-resolve and composed-embed paths can't drift on tag-block
+    membership/ordering.
     """
     result = await db.execute(
         select(Asset.id)
