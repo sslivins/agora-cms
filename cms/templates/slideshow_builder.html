@@ -711,6 +711,160 @@
     color: #888;
     font-size: 0.82rem;
 }
+
+/* ---- Dynamic tag block: icon + collapsible member-preview group ---- */
+.ssb-slot-tag-thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #15413a, #0f2c27);
+}
+.ssb-slot-tag-icon {
+    font-size: 2.6rem;
+    font-weight: 700;
+    color: #1abc9c;
+    opacity: 0.85;
+    line-height: 1;
+}
+/* Show/Hide members toggle, centred along the bottom of the tag thumb
+   (between the ‹ › move buttons). */
+.ssb-group-chev {
+    position: absolute;
+    bottom: 0.3rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+    background: rgba(26,188,156,0.92);
+    color: #06251f;
+    border: none;
+    border-radius: 0.8rem;
+    padding: 0.08rem 0.55rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+}
+.ssb-group-chev:hover { background: #1abc9c; }
+.ssb-group-chev-ico { font-size: 0.68rem; line-height: 1; }
+
+/* A tag slot turns into a horizontal group container when expanded: the
+   compact header tile on the left, a scrollable member tray on the right.
+   It stays a SINGLE flex item so drag-index math is unchanged. */
+.ssb-slot-group {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: stretch;
+}
+.ssb-slot-group .ssb-group-head {
+    flex: 0 0 180px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.ssb-slot-group.ssb-expanded { border-color: #1abc9c; }
+
+.ssb-group-tray {
+    display: flex;
+    align-items: stretch;
+    gap: 0.4rem;
+    padding: 0.5rem;
+    background: rgba(26,188,156,0.06);
+    border-left: 2px dashed rgba(26,188,156,0.4);
+    overflow-x: auto;
+    max-width: 760px;
+}
+.ssb-group-tray-loading,
+.ssb-group-tray-empty {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: #8fd6c6;
+    font-size: 0.8rem;
+    padding: 0 0.75rem;
+    white-space: nowrap;
+}
+.ssb-group-retry {
+    background: rgba(26,188,156,0.15);
+    color: #1abc9c;
+    border: 1px solid rgba(26,188,156,0.5);
+    border-radius: 0.25rem;
+    font-size: 0.72rem;
+    padding: 0.1rem 0.4rem;
+    cursor: pointer;
+}
+.ssb-group-retry:hover { background: rgba(26,188,156,0.3); }
+.ssb-member {
+    flex: 0 0 120px;
+    display: flex;
+    flex-direction: column;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 0.3rem;
+    overflow: hidden;
+}
+.ssb-member-thumb-wrap {
+    position: relative;
+    aspect-ratio: 16/9;
+    background: #000;
+    overflow: hidden;
+}
+.ssb-member-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    pointer-events: none;
+}
+.ssb-member-ord {
+    position: absolute;
+    top: 0.2rem;
+    left: 0.2rem;
+    background: rgba(0,0,0,0.75);
+    color: #fff;
+    font-size: 0.66rem;
+    font-weight: 700;
+    padding: 0.05rem 0.35rem;
+    border-radius: 0.2rem;
+}
+.ssb-member-badge {
+    position: absolute;
+    bottom: 0.2rem;
+    right: 0.2rem;
+    background: rgba(0,0,0,0.72);
+    color: #1abc9c;
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.2rem;
+}
+.ssb-member-name {
+    padding: 0.25rem 0.35rem;
+    font-size: 0.68rem;
+    color: #bbb;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ssb-member-more {
+    flex: 0 0 96px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    background: rgba(26,188,156,0.1);
+    border: 1px dashed rgba(26,188,156,0.5);
+    border-radius: 0.3rem;
+    color: #1abc9c;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.ssb-member-more:hover { background: rgba(26,188,156,0.2); }
 </style>
 
 <h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}
@@ -879,6 +1033,12 @@ const SS_MAX_SLIDES = 50;
 let slides = JSON.parse(document.getElementById('ss-initial-slides').textContent || '[]');
 const SS_ALL_TAGS = JSON.parse(document.getElementById('ss-all-tags').textContent || '[]');
 const SS_TAG_DEFAULT_DURATION_MS = 8000;
+// Lazily-fetched, point-in-time member previews for an expanded tag block,
+// keyed by tag_id -> {status:'loading'|'ready'|'error', members:[], total}.
+// UI-only (never serialized); membership is dynamic so this is a snapshot.
+const SS_TAG_MEMBER_CACHE = {};
+// How many member tiles a tag tray shows before the "+N more" reveal.
+const SS_TAG_TRAY_PREVIEW = 6;
 let availableAssets = [];
 let selectedGroupIds = [];
 let deckShuffle = {% if deck_shuffle %}true{% else %}false{% endif %};
@@ -1291,15 +1451,17 @@ function makeSlot(s, i) {
     return slot;
 }
 
-// Render a dynamic tag block as a distinct timeline tile. No asset preview
-// and no play-to-end control (members are timed per-item, not per-video),
-// but it does expose the same Fit + Motion controls as an asset slot — the
-// chosen values become the deck-default every expanded member inherits.
-// Reuses the standard remove/move/duration wiring so the block can be
-// reordered, removed, and re-timed.
+// Render a dynamic tag block as a collapsible timeline group. Collapsed it
+// is a compact header tile (the same Fit + Motion + per-item duration as an
+// asset slot, plus a Show/Hide toggle); expanded it widens into a scrollable
+// tray of read-only member previews — lazily fetched, point-in-time, in the
+// exact tagged-at order the device resolves. The group is a SINGLE flex item
+// so drag/reorder index math is untouched. Members are timed per-item (no
+// play-to-end). Fit/Motion picked here is the deck-default every expanded
+// member inherits.
 function makeTagSlot(s, i) {
     const slot = document.createElement('div');
-    slot.className = 'ssb-slot ssb-slot-tag';
+    slot.className = 'ssb-slot ssb-slot-tag ssb-slot-group' + (s._expanded ? ' ssb-expanded' : '');
     slot.draggable = true;
     slot.dataset.slotIndex = String(i);
 
@@ -1307,14 +1469,21 @@ function makeTagSlot(s, i) {
     const tagName = s.tag_name || 'tag';
     const perSec = Math.max(1, Math.round((s.duration_ms || 8000) / 1000));
     const countLabel = memberCount === 1 ? '1 item' : `${memberCount} items`;
+    const chevIco = s._expanded ? '▾' : '▸';
+    const chevTxt = s._expanded ? 'Hide' : 'Show';
 
-    slot.innerHTML = `
+    const head = document.createElement('div');
+    head.className = 'ssb-group-head';
+    head.innerHTML = `
         <div class="ssb-slot-thumb-wrap ssb-slot-tag-thumb">
             <div class="ssb-slot-tag-icon" aria-hidden="true">#</div>
             <div class="ssb-slot-pos">${i + 1}</div>
             <button type="button" class="ssb-slot-remove" title="Remove" aria-label="Remove">✕</button>
             <button type="button" class="ssb-slot-move left"  title="Move left"  aria-label="Move left"  ${i === 0 ? 'disabled' : ''}>‹</button>
             <button type="button" class="ssb-slot-move right" title="Move right" aria-label="Move right" ${i === slides.length - 1 ? 'disabled' : ''}>›</button>
+            <button type="button" class="ssb-group-chev" aria-expanded="${s._expanded ? 'true' : 'false'}" title="${chevTxt} member assets">
+                <span class="ssb-group-chev-ico" aria-hidden="true">${chevIco}</span><span>${chevTxt}</span>
+            </button>
         </div>
         <div class="ssb-slot-meta">
             <div class="ssb-slot-name" title="Dynamic tag: ${escapeHtml(tagName)}">#${escapeHtml(tagName)}</div>
@@ -1327,22 +1496,32 @@ function makeTagSlot(s, i) {
             </div>
             ${fitEffectCtlHtml(s, i)}
         </div>`;
+    slot.appendChild(head);
 
-    slot.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
+    head.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
         e.stopPropagation();
         removeSlide(i);
     });
-    slot.querySelector('.ssb-slot-move.left').addEventListener('click', (e) => {
+    head.querySelector('.ssb-slot-move.left').addEventListener('click', (e) => {
         e.stopPropagation();
         moveSlide(i, -1);
     });
-    slot.querySelector('.ssb-slot-move.right').addEventListener('click', (e) => {
+    head.querySelector('.ssb-slot-move.right').addEventListener('click', (e) => {
         e.stopPropagation();
         moveSlide(i, +1);
     });
-    slot.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
-    // Fit/motion picked here is the deck-default every expanded member inherits.
+    head.querySelector('input[type=number]').addEventListener('change', (e) => updateSlideDuration(i, e.target.value));
+    head.querySelector('.ssb-group-chev').addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleTagExpand(i);
+    });
+    // Query scope is the whole slot, but the fit/effect controls live in head
+    // (already appended), so this wires them correctly.
     wireFitEffectCtls(slot, i);
+
+    if (s._expanded) {
+        slot.appendChild(makeTagTray(s));
+    }
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
@@ -1353,6 +1532,132 @@ function makeTagSlot(s, i) {
 
     return slot;
 }
+
+// Build the expanded member tray for a tag block from the lazy cache. Shows
+// up to SS_TAG_TRAY_PREVIEW tiles, then a "+N more" reveal (sets s._showAll).
+function makeTagTray(s) {
+    const tray = document.createElement('div');
+    tray.className = 'ssb-group-tray';
+    const cache = SS_TAG_MEMBER_CACHE[s.tag_id];
+
+    if (!cache || cache.status === 'loading') {
+        tray.innerHTML = '<div class="ssb-group-tray-loading">Loading members…</div>';
+        return tray;
+    }
+    if (cache.status === 'error') {
+        tray.innerHTML = '<div class="ssb-group-tray-empty">Couldn’t load members. ' +
+            '<button type="button" class="ssb-group-retry">Retry</button></div>';
+        tray.querySelector('.ssb-group-retry').addEventListener('click', (e) => {
+            e.stopPropagation();
+            loadTagMembers(s.tag_id, true);
+        });
+        return tray;
+    }
+
+    const members = cache.members || [];
+    if (!members.length) {
+        tray.innerHTML = '<div class="ssb-group-tray-empty">No matching assets carry this tag yet.</div>';
+        return tray;
+    }
+
+    const showAll = !!s._showAll;
+    const shown = showAll ? members : members.slice(0, SS_TAG_TRAY_PREVIEW);
+    shown.forEach((m, idx) => tray.appendChild(makeMemberTile(m, idx)));
+
+    const remaining = members.length - shown.length;
+    if (remaining > 0) {
+        const more = document.createElement('div');
+        more.className = 'ssb-member-more';
+        more.setAttribute('role', 'button');
+        more.tabIndex = 0;
+        more.textContent = '+' + remaining + ' more';
+        more.title = 'Show all ' + members.length + ' members';
+        more.addEventListener('click', (e) => {
+            e.stopPropagation();
+            s._showAll = true;
+            renderTimeline();
+        });
+        tray.appendChild(more);
+    }
+    return tray;
+}
+
+// One read-only member preview tile. Mirrors makeSlot's image/video thumb
+// logic so a video member renders exactly like a standalone video slot.
+function makeMemberTile(m, idx) {
+    const tile = document.createElement('div');
+    tile.className = 'ssb-member';
+
+    const isVideo = m.asset_type === 'video';
+    const isComposed = m.asset_type === 'composed';
+    const thumbSrc = m.thumbnail_url || ('/api/assets/' + m.id + '/preview');
+    let inner;
+    if (m.thumbnail_url || !isVideo) {
+        inner = '<img class="ssb-member-thumb" src="' + escapeHtml(thumbSrc) + '" alt="" loading="lazy">';
+    } else {
+        inner = '<video class="ssb-member-thumb" src="' + escapeHtml(thumbSrc) + '" preload="metadata" muted playsinline></video>';
+    }
+    const badge = isVideo
+        ? '<div class="ssb-member-badge">video</div>'
+        : (isComposed ? '<div class="ssb-member-badge">slide</div>' : '');
+    const name = m.name || m.id;
+
+    tile.innerHTML =
+        '<div class="ssb-member-thumb-wrap">' +
+            inner +
+            '<div class="ssb-member-ord">' + (idx + 1) + '</div>' +
+            badge +
+        '</div>' +
+        '<div class="ssb-member-name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</div>';
+    return tile;
+}
+
+// Toggle a tag block's expanded state. Lazy-fetches members on first expand
+// (or after a prior error). UI-only flags live on the slide object and are
+// never serialized.
+function toggleTagExpand(i) {
+    const s = slides[i];
+    if (!s || s.kind !== 'tag') return;
+    s._expanded = !s._expanded;
+    if (!s._expanded) {
+        renderTimeline();
+        return;
+    }
+    const cache = SS_TAG_MEMBER_CACHE[s.tag_id];
+    if (!cache || cache.status === 'error') {
+        loadTagMembers(s.tag_id, true);  // sets loading + re-renders, then again on resolve
+    } else {
+        renderTimeline();
+    }
+}
+
+// Fetch a tag's member previews into SS_TAG_MEMBER_CACHE and re-render. Cached
+// per tag_id; pass force=true to refetch (retry / explicit refresh).
+function loadTagMembers(tagId, force) {
+    const existing = SS_TAG_MEMBER_CACHE[tagId];
+    if (existing && existing.status === 'loading') return;
+    if (existing && existing.status === 'ready' && !force) return;
+
+    SS_TAG_MEMBER_CACHE[tagId] = { status: 'loading', members: [], total: 0 };
+    renderTimeline();
+
+    fetch('/api/tags/' + encodeURIComponent(tagId) + '/members', { headers: { 'Accept': 'application/json' } })
+        .then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+        .then((data) => {
+            const members = Array.isArray(data.members) ? data.members : [];
+            SS_TAG_MEMBER_CACHE[tagId] = {
+                status: 'ready',
+                members: members,
+                total: Number.isFinite(data.total) ? data.total : members.length,
+            };
+            renderTimeline();
+        })
+        .catch(() => {
+            SS_TAG_MEMBER_CACHE[tagId] = { status: 'error', members: [], total: 0 };
+            renderTimeline();
+        });
+}
+
 // The mpv-based legacy fleet renders any non-``cut`` value as an instant
 // swap (it ignores transitions entirely); the chromium-player shell that
 // ships on every supported Pi today renders the rest. ``cut`` keeps

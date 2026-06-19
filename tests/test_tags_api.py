@@ -210,3 +210,99 @@ class TestAssetBulkTagActions:
         assert sorted(data["succeeded"]) == sorted(str(a.id) for a in assets)
         assert len(data["failed"]) == 1
         assert data["failed"][0]["status"] == 404
+
+
+@pytest.mark.asyncio
+class TestTagMembersEndpoint:
+    """GET /api/tags/{tag_id}/members — the slideshow-builder tag preview."""
+
+    async def _tag_assets(self, db_session, tag_id, assets, base_ts):
+        """Attach assets to a tag with strictly increasing tagged-at order."""
+        import datetime as _dt
+
+        from cms.models.tag import AssetTag
+
+        for offset, a in enumerate(assets):
+            db_session.add(
+                AssetTag(
+                    asset_id=a.id,
+                    tag_id=tag_id,
+                    created_at=base_ts + _dt.timedelta(seconds=offset),
+                )
+            )
+        await db_session.commit()
+
+    async def test_404_when_tag_missing(self, client):
+        resp = await client.get(
+            "/api/tags/00000000-0000-0000-0000-000000000000/members"
+        )
+        assert resp.status_code == 404
+
+    async def test_returns_members_in_tagged_at_order(self, client, db_session):
+        import datetime as _dt
+        import uuid as _uuid
+
+        assets = await _seed_assets(db_session, n=3)
+        t = await _create_tag(client, "ordered")
+        tid = _uuid.UUID(t["id"])
+        # Attach in reverse asset order so insertion order != id order; the
+        # endpoint must echo tagged-at (created_at) ascending.
+        expected = list(reversed(assets))
+        await self._tag_assets(
+            db_session, tid, expected, _dt.datetime(2026, 1, 1, 12, 0, 0)
+        )
+
+        resp = await client.get(f"/api/tags/{t['id']}/members")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["tag_id"] == t["id"]
+        assert data["total"] == 3
+        assert [m["id"] for m in data["members"]] == [str(a.id) for a in expected]
+        # Shape: every tile carries the fields the builder tray reads.
+        first = data["members"][0]
+        assert set(first) >= {
+            "id",
+            "asset_type",
+            "name",
+            "thumbnail_url",
+            "duration_seconds",
+        }
+        assert first["asset_type"] == "image"
+
+    async def test_excludes_ineligible_asset_types(self, client, db_session):
+        import datetime as _dt
+        import uuid as _uuid
+
+        from cms.models.asset import Asset, AssetType
+
+        img = (await _seed_assets(db_session, n=1))[0]
+        # A WEBPAGE is not a tag-deck-eligible leaf type and must be filtered.
+        web = Asset(
+            filename="page.url",
+            original_filename="page.url",
+            asset_type=AssetType.WEBPAGE,
+            size_bytes=10,
+            checksum="webchk",
+        )
+        db_session.add(web)
+        await db_session.commit()
+        await db_session.refresh(web)
+
+        t = await _create_tag(client, "mixed")
+        tid = _uuid.UUID(t["id"])
+        await self._tag_assets(
+            db_session, tid, [img, web], _dt.datetime(2026, 1, 1, 12, 0, 0)
+        )
+
+        resp = await client.get(f"/api/tags/{t['id']}/members")
+        assert resp.status_code == 200, resp.text
+        ids = [m["id"] for m in resp.json()["members"]]
+        assert ids == [str(img.id)]
+
+    async def test_empty_tag_returns_no_members(self, client):
+        t = await _create_tag(client, "lonely")
+        resp = await client.get(f"/api/tags/{t['id']}/members")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
+        assert data["members"] == []
