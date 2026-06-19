@@ -2255,4 +2255,99 @@ function fallbackCopy(text, onSuccess) {
     }
 })();
 </script>
+
+{# ── Hover thumbnail preview (table view): a floating image that follows
+      the cursor when hovering an asset name, sourced from the row's
+      data-thumbnail-url (kept fresh by the status poller). Assets without a
+      ready thumbnail simply don't trigger a preview. The grid view already
+      shows thumbnails, so this is intentionally table-only. ── #}
+<style>
+#asset-name-hover-preview {
+    position: fixed;
+    z-index: 9999;
+    pointer-events: none;
+    display: none;
+    padding: 4px;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+#asset-name-hover-preview img {
+    display: block;
+    width: 240px;
+    max-width: 240px;
+    height: auto;
+    max-height: 180px;
+    border-radius: calc(var(--radius) - 2px);
+    background: #0a0a0a;
+    object-fit: contain;
+}
+</style>
+<script>
+(function () {
+    // Single reusable floating preview element.
+    const preview = document.createElement('div');
+    preview.id = 'asset-name-hover-preview';
+    const img = document.createElement('img');
+    img.alt = '';
+    preview.appendChild(img);
+    document.body.appendChild(preview);
+
+    let currentUrl = null;
+
+    function hide() {
+        preview.style.display = 'none';
+        currentUrl = null;
+    }
+
+    function position(clientX, clientY) {
+        const gap = 16;
+        const w = preview.offsetWidth || 248;
+        const h = preview.offsetHeight || 188;
+        let x = clientX + gap;
+        let y = clientY + gap;
+        if (x + w > window.innerWidth - 8) x = clientX - gap - w;   // flip left
+        if (y + h > window.innerHeight - 8) y = window.innerHeight - 8 - h; // clamp up
+        if (x < 8) x = 8;
+        if (y < 8) y = 8;
+        preview.style.left = x + 'px';
+        preview.style.top = y + 'px';
+    }
+
+    // Delegated hover handling so it works for poller-added / re-rendered rows.
+    document.addEventListener('mouseover', function (e) {
+        const nameEl = e.target.closest && e.target.closest('.asset-filename-truncate');
+        if (!nameEl) return;
+        const row = nameEl.closest('tr.asset-row');
+        if (!row) return;
+        const url = row.dataset.thumbnailUrl;
+        if (!url) { hide(); return; }   // no ready thumbnail → no preview
+        if (url !== currentUrl) {
+            currentUrl = url;
+            img.src = url;
+        }
+        preview.style.display = 'block';
+        position(e.clientX, e.clientY);
+    });
+
+    document.addEventListener('mousemove', function (e) {
+        if (preview.style.display !== 'block') return;
+        const nameEl = e.target.closest && e.target.closest('.asset-filename-truncate');
+        if (!nameEl) { hide(); return; }
+        position(e.clientX, e.clientY);
+    });
+
+    document.addEventListener('mouseout', function (e) {
+        const nameEl = e.target.closest && e.target.closest('.asset-filename-truncate');
+        if (!nameEl) return;
+        // Hide unless moving into a child of the same name span.
+        if (e.relatedTarget && nameEl.contains(e.relatedTarget)) return;
+        hide();
+    });
+
+    // Don't leave a stale preview pinned mid-screen during scroll.
+    window.addEventListener('scroll', hide, true);
+})();
+</script>
 {% endblock %}
