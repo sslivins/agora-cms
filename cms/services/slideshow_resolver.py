@@ -26,9 +26,9 @@ import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import logging
@@ -427,6 +427,68 @@ async def expand_tag_members(
         .order_by(AssetTag.created_at.asc(), AssetTag.id.asc())
     )
     return list(result.scalars().all())
+
+
+async def effective_slide_counts(
+    slideshow_ids: Sequence[uuid.UUID], db: AsyncSession
+) -> dict[uuid.UUID, int]:
+    """Return the *effective* slide count for each slideshow asset id.
+
+    A static ``asset`` slide counts as one.  A dynamic ``tag`` block counts
+    as the number of assets it currently expands to (its live tag
+    membership) — exactly what the device/preview renders — so a deck of
+    "2 static + 1 tag" reports ``2 + N`` rather than ``3``.  An empty tag
+    block (no current members) contributes ``0``, matching the resolver.
+
+    Done in two batched queries (one for the slide rows, one grouped
+    member count over every distinct tag referenced), so it stays O(1) in
+    deck length and membership size regardless of how many slideshows are
+    passed.
+    """
+    counts: dict[uuid.UUID, int] = {sid: 0 for sid in slideshow_ids}
+    if not slideshow_ids:
+        return counts
+
+    rows = (
+        await db.execute(
+            select(
+                SlideshowSlide.slideshow_asset_id,
+                SlideshowSlide.kind,
+                SlideshowSlide.tag_id,
+            ).where(SlideshowSlide.slideshow_asset_id.in_(slideshow_ids))
+        )
+    ).all()
+
+    # (slideshow_id, tag_id) for every tag block — kept per-row (not
+    # de-duplicated) so two blocks pointing at the same tag both expand.
+    tag_rows: list[tuple[uuid.UUID, uuid.UUID]] = []
+    tag_ids: set[uuid.UUID] = set()
+    for sid, kind, tag_id in rows:
+        if kind == "tag":
+            if tag_id is not None:
+                tag_rows.append((sid, tag_id))
+                tag_ids.add(tag_id)
+        else:
+            counts[sid] = counts.get(sid, 0) + 1
+
+    if tag_ids:
+        member_rows = (
+            await db.execute(
+                select(AssetTag.tag_id, func.count())
+                .join(Asset, Asset.id == AssetTag.asset_id)
+                .where(
+                    AssetTag.tag_id.in_(tag_ids),
+                    Asset.deleted_at.is_(None),
+                    Asset.asset_type.in_(_TAG_MEMBER_ASSET_TYPES),
+                )
+                .group_by(AssetTag.tag_id)
+            )
+        ).all()
+        member_counts = {tid: cnt for tid, cnt in member_rows}
+        for sid, tag_id in tag_rows:
+            counts[sid] = counts.get(sid, 0) + member_counts.get(tag_id, 0)
+
+    return counts
 
 
 async def plan_slideshow(

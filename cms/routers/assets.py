@@ -268,15 +268,13 @@ async def assets_status_json(
     # Slide counts for slideshow assets so the page poller can re-render the
     # "N slides" badge without it flipping back to "none" (the JS poller
     # would otherwise treat a slideshow with 0 variants as a generic asset).
+    # A dynamic ``tag`` block counts as its live expanded membership so the
+    # badge matches what the device/preview renders (see the helper).
     slide_counts: dict = {}
     slideshow_ids = [a.id for a in all_assets if a.asset_type == AssetType.SLIDESHOW]
     if slideshow_ids:
-        sc_rows = (await db.execute(
-            select(SlideshowSlide.slideshow_asset_id, sa_func.count())
-            .where(SlideshowSlide.slideshow_asset_id.in_(slideshow_ids))
-            .group_by(SlideshowSlide.slideshow_asset_id)
-        )).all()
-        slide_counts = {sid: cnt for sid, cnt in sc_rows}
+        from cms.services.slideshow_resolver import effective_slide_counts
+        slide_counts = await effective_slide_counts(slideshow_ids, db)
 
     assets_detail = []
     thumb_map = await _thumbnail_urls_for([a.id for a in all_assets], db)
