@@ -242,6 +242,33 @@ class TestBuildSystemPrompt:
         # effect values incl. Ken Burns are described.
         assert "ken_burns" in prompt
 
+    def test_editor_prompt_documents_tag_block_styling(self):
+        """The tag-block section must teach the assistant that it can
+        style/time blocks (incl. member_transition + effect_direction),
+        that members are dynamic (no per-member styling), and that
+        membership/tag-creation is NOT done from the editor."""
+        from cms.services.assistant.prompts import build_system_prompt
+
+        aid = str(uuid.uuid4())
+        prompt = build_system_prompt(
+            self._user(), mode="slideshow_editor", composed_asset_id=aid
+        )
+        # Tag-block playback controls are advertised.
+        assert "tag block" in prompt
+        assert "member_transition" in prompt
+        assert "effect_direction" in prompt
+        # Resolving a tag name to its id is via list_tags.
+        assert "list_tags" in prompt
+        # Members are dynamic — the assistant must NOT think it can style
+        # them one at a time.
+        assert "dynamic" in prompt.lower()
+        # Membership / tag creation is library-side; the editor prompt must
+        # NOT promise membership/creation tools it cannot call in this mode.
+        assert "tag_asset" not in prompt
+        assert "untag_asset" not in prompt
+        assert "create_tag" not in prompt
+        assert "library" in prompt.lower()
+
     def test_slideshow_mode_without_id_falls_back_to_general(self):
         from cms.services.assistant.prompts import build_system_prompt
 
@@ -255,6 +282,38 @@ class TestBuildSystemPrompt:
 
         prompt = build_system_prompt(self._user())
         assert "Slideshow Assistant" not in prompt
+
+
+class TestSlideshowEditorToolProfile:
+    """The slideshow-editor mode exposes exactly the tools needed to
+    discover assets/tags and read+write the open slideshow — and nothing
+    that would let it mutate other assets, tag membership, or global tags.
+    """
+
+    def test_list_tags_is_in_editor_profile(self):
+        """``list_tags`` (read) lets the assistant resolve a tag name to
+        the ``tag_id`` a dynamic tag block requires."""
+        from cms.services.assistant.mcp_client import (
+            MODE_SLIDESHOW_EDITOR,
+            tools_for_mode,
+        )
+
+        tools = tools_for_mode(MODE_SLIDESHOW_EDITOR)
+        assert "list_tags" in tools
+        assert "set_slideshow_slides" in tools
+        assert "get_slideshow" in tools
+
+    def test_membership_and_tag_creation_excluded_from_editor(self):
+        """Editor mode must stay tight: no tag-membership writes (which
+        touch OTHER assets) and no global tag CRUD."""
+        from cms.services.assistant.mcp_client import (
+            MODE_SLIDESHOW_EDITOR,
+            tools_for_mode,
+        )
+
+        tools = tools_for_mode(MODE_SLIDESHOW_EDITOR)
+        for forbidden in ("tag_asset", "untag_asset", "create_tag", "delete_tag"):
+            assert forbidden not in tools
 
 
 # ── builder template drawer gating (feature-flag-gated, both modes) ──

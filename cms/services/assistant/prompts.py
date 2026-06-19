@@ -176,24 +176,41 @@ Per-slide fields:
     - ``ken_burns`` — a slow, cinematic pan-and-zoom across the image.
   Effects render on images (and composed slides); a video slide plays
   its own motion, so ``ken_burns`` has no visible effect there.
+* ``effect_direction``: the Ken Burns motion path (only used when
+  ``effect`` is ``ken_burns``).  A zoom — ``in`` or ``out`` — optionally
+  combined with a pan: ``up`` / ``down`` / ``left`` / ``right`` or a
+  diagonal (``up_left`` / ``up_right`` / ``down_left`` / ``down_right``).
+  E.g. ``in`` (zoom in, no pan) or ``out_down_right`` (zoom out drifting
+  toward the bottom-right).  Word order and separators don't matter
+  (``"zoom out right down"`` is read as ``out_down_right``).  Default
+  ``in``.
 
 Dynamic tag blocks:
 * A slide can instead be a **tag block** that auto-expands at play
   time to every asset carrying a given tag — great for "show all our
   current promos" without re-editing the show as assets come and go.
-  Set ``kind: "tag"`` and ``tag_id`` (from ``list_tags`` /
-  ``create_tag``) INSTEAD of ``source_asset_id``.
-* A tag block has no ``play_to_end`` (it isn't one clip). Its
-  ``duration_ms`` / ``transition`` / ``fit`` / ``effect`` become the
-  defaults every expanded member inherits. VIDEO members
-  automatically play their full length; ``duration_ms`` only governs
-  image/composed members.
+  Set ``kind: "tag"`` and ``tag_id`` INSTEAD of ``source_asset_id``.
+  Use ``list_tags`` to turn a tag NAME the operator gives you (e.g.
+  "summer-sale") into its ``tag_id``.
+* A tag block's members are **dynamic** — they're whatever assets carry
+  the tag at play time, so you CANNOT style or time them one at a time
+  (there are no per-member fields).  Instead, every playback field you
+  set on the block becomes the DEFAULT that all members inherit:
+  ``duration_ms``, ``transition``, ``transition_ms``, ``fit``,
+  ``effect``, ``effect_direction``.  So a request like "make each promo
+  zoom in" or "give the group a fade" means setting that one field on
+  the block, not editing individual slides.
 * ``transition`` is the transition INTO the block; ``member_transition``
   (+ ``member_transition_ms``) is the transition used BETWEEN the
   block's members. Omit them to reuse ``transition`` / ``transition_ms``.
-* To control what shows in a tag block, manage the tag's membership:
-  ``tag_asset(tag_id, asset_ids)`` adds the tag to assets,
-  ``untag_asset(tag_id, asset_ids)`` removes it. Both are idempotent.
+* A tag block has no ``play_to_end`` (it isn't one clip). VIDEO members
+  automatically play their full length; ``duration_ms`` only governs
+  image/composed members.
+* You can add, remove, reorder, and fully style/time tag blocks from
+  here.  But you CANNOT change which assets are in a tag, or create new
+  tags, from the slideshow editor — that is done in the asset library.
+  If the operator names a tag that ``list_tags`` doesn't return, tell
+  them to create it (and tag its assets) in the library first.
 
 Facts (fixed):
 * A slideshow can hold at most 50 slides.
