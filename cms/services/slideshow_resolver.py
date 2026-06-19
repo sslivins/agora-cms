@@ -134,6 +134,12 @@ class _SlideSpec:
     fit: str
     effect: str
     effect_direction: str
+    # True when this spec was expanded from a dynamic ``tag`` block.  The
+    # block owns a single dwell time for all members, but a VIDEO member
+    # should still play its full natural length rather than being truncated
+    # to that dwell — so the resolver flips ``play_to_end`` on for video
+    # members once the member's asset type is known (agora#806 follow-up).
+    tag_member: bool = False
 
 
 @dataclass
@@ -370,9 +376,15 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
                         position=pos,
                         source_asset_id=aid,
                         duration_ms=row.duration_ms,
-                        # Tag-block members never play-to-end — the block
-                        # owns a single deck-default dwell time.
+                        # Tag-block members share the block's single dwell
+                        # time, but a VIDEO member plays to its natural end
+                        # instead of being clipped to that dwell.  We don't
+                        # know the member's asset type here (it's resolved
+                        # later from ``sources_by_id``), so mark the spec as a
+                        # tag member and let ``_plan_slides`` flip
+                        # ``play_to_end`` on for videos.
                         play_to_end=False,
+                        tag_member=True,
                         transition=m_trans,
                         transition_ms=m_trans_ms,
                         fit=row.fit,
@@ -575,7 +587,14 @@ async def plan_slideshow(
             source_filename=src.filename,
             source_asset_type=src.asset_type,
             duration_ms=spec.duration_ms,
-            play_to_end=spec.play_to_end,
+            # A VIDEO member of a dynamic tag block plays its full natural
+            # length rather than being clipped to the block's dwell time
+            # (matches a standalone video slide with play_to_end on).  Other
+            # member types (image, saved_stream, composed) keep the dwell.
+            play_to_end=(
+                spec.play_to_end
+                or (spec.tag_member and src.asset_type == AssetType.VIDEO)
+            ),
             transition=spec.transition,
             transition_ms=spec.transition_ms,
             fit=spec.fit,

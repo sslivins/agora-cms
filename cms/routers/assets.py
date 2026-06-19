@@ -1509,6 +1509,30 @@ async def _load_tag_members(
     return out
 
 
+async def _load_tag_member_meta(
+    tag_members: dict[uuid.UUID, list[tuple[uuid.UUID, str]]],
+    db: AsyncSession,
+) -> dict[uuid.UUID, tuple[AssetType, float | None]]:
+    """Fetch ``(asset_type, duration_seconds)`` for every tag-block member.
+
+    Used by :func:`_compute_slideshow_duration_seconds` so a VIDEO member's
+    natural length feeds the denormalised slideshow duration (and therefore
+    schedule end-time math), matching the resolver which plays video
+    members to their natural end rather than the block's dwell time.
+    """
+    member_ids = {mid for members in tag_members.values() for mid, _ in members}
+    if not member_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Asset.id, Asset.asset_type, Asset.duration_seconds).where(
+                Asset.id.in_(member_ids)
+            )
+        )
+    ).all()
+    return {aid: (atype, dur) for aid, atype, dur in rows}
+
+
 def _slide_row(slideshow_asset_id: uuid.UUID, idx: int, s: SlideIn) -> SlideshowSlide:
     """Build one ordered ``SlideshowSlide`` ORM row from a validated ``SlideIn``.
 
@@ -1752,21 +1776,30 @@ def _compute_slideshow_duration_seconds(
     slides: list[SlideIn],
     sources_by_id: dict[uuid.UUID, Asset],
     tag_members: dict[uuid.UUID, list[tuple[uuid.UUID, str]]] | None = None,
+    member_meta: dict[uuid.UUID, tuple[AssetType, float | None]] | None = None,
 ) -> float:
     """Sum slide durations for ``Asset.duration_seconds`` denormalisation.
 
     For ``play_to_end`` on a video, use the source's known media duration
     when available; otherwise fall back to the configured ``duration_ms``.
     Image slides always use the configured duration.  A ``tag`` block
-    contributes ``member_count × duration_ms`` (each expanded member plays
-    for the block's configured per-slide duration).
+    contributes the sum of its members' play durations: a VIDEO member
+    plays its full natural length (``member_meta`` duration when known,
+    falling back to ``duration_ms``) — mirroring the resolver, which flips
+    ``play_to_end`` on for video tag-members — while every other member
+    type uses the block's configured per-slide ``duration_ms``.
     """
     tag_members = tag_members or {}
+    member_meta = member_meta or {}
     total_ms = 0.0
     for s in slides:
         if s.kind == "tag":
-            member_count = len(tag_members.get(s.tag_id, ()))
-            total_ms += member_count * s.duration_ms
+            for member_id, _csum in tag_members.get(s.tag_id, ()):
+                m_type, m_dur = member_meta.get(member_id, (None, None))
+                if m_type == AssetType.VIDEO and m_dur:
+                    total_ms += m_dur * 1000.0
+                else:
+                    total_ms += s.duration_ms
             continue
         src = sources_by_id[s.source_asset_id]
         if (
@@ -1981,8 +2014,9 @@ async def create_slideshow_asset(
     tag_members = await _load_tag_members(
         list({s.tag_id for s in slides if s.kind == "tag"}), db
     )
+    member_meta = await _load_tag_member_meta(tag_members, db)
     duration_seconds = _compute_slideshow_duration_seconds(
-        slides, sources_by_id, tag_members
+        slides, sources_by_id, tag_members, member_meta
     )
     manifest_content_hash = _compute_slideshow_manifest_content_hash(
         slides, sources_by_id, tag_members
@@ -2229,8 +2263,9 @@ async def replace_slideshow_slides(
     tag_members = await _load_tag_members(
         list({s.tag_id for s in slides if s.kind == "tag"}), db
     )
+    member_meta = await _load_tag_member_meta(tag_members, db)
     duration_seconds = _compute_slideshow_duration_seconds(
-        slides, sources_by_id, tag_members
+        slides, sources_by_id, tag_members, member_meta
     )
     manifest_content_hash = _compute_slideshow_manifest_content_hash(
         slides, sources_by_id, tag_members

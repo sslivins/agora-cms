@@ -1249,8 +1249,41 @@ class TestHybridTagTimeline:
         # Members inherit the tag row's playback columns.
         assert all(s.duration_ms == 7000 for s in plan.slides)
         assert all(s.transition == "fade" for s in plan.slides)
-        # Tag members never play-to-end.
+        # Image tag members never play-to-end (they use the block dwell).
         assert all(s.play_to_end is False for s in plan.slides)
+
+    async def test_tag_block_video_member_plays_to_end(self, db_session):
+        """A VIDEO member of a tag block plays its full natural length
+        (``play_to_end`` True), while image members in the same block keep
+        the block's dwell time (``play_to_end`` False).  The block owns one
+        dwell time, but a video shouldn't be truncated to it."""
+        from datetime import datetime, timedelta, timezone
+
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "phybvid")
+        tag = await _seed_tag(db_session, "promoVid")
+        img = await _seed_image(db_session, filename="still.png")
+        vid = await _seed_video(db_session, filename="clip.mp4", duration=30.0)
+        await _seed_variant(db_session, source=img, profile=profile, ext="jpg")
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        base = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        await _tag_asset(db_session, asset=img, tag=tag, when=base)
+        await _tag_asset(
+            db_session, asset=vid, tag=tag, when=base + timedelta(seconds=5)
+        )
+        ss = await _seed_hybrid_slideshow(
+            db_session, name="hybvid",
+            entries=[{"tag": tag, "duration_ms": 8000}],
+            checksum="hbv",
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session)
+        assert plan.ready
+        by_name = {s.source_filename: s for s in plan.slides}
+        # Image member: clipped to the block's 8s dwell.
+        assert by_name["still.png"].play_to_end is False
+        # Video member: plays its full natural length.
+        assert by_name["clip.mp4"].play_to_end is True
 
     async def test_member_transition_applies_to_rest_only(self, db_session):
         """When ``member_transition`` is set, member 0 keeps the block's
