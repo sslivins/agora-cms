@@ -531,6 +531,21 @@
     text-align: center;
     padding: 0.2rem;
 }
+/* Corner badge marking the mini-preview as a representative stand-in (stock
+   art or a tag block's first member) rather than the slide's own source. */
+.ssb-kb-preview-tag {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    padding: 1px 5px;
+    border-radius: 0.25rem;
+    background: rgba(0,0,0,0.55);
+    color: #eee;
+    font-size: 0.58rem;
+    line-height: 1.3;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+}
 
 /* Drop zone at end of timeline / when empty */
 .ssb-end {
@@ -1069,6 +1084,44 @@ const KB_ARROWS = {
     left: '←', right: '→', up: '↑', down: '↓',
     up_left: '↖', up_right: '↗', down_left: '↙', down_right: '↘',
 };
+
+// Stock placeholder used by the Ken Burns mini-preview when a slide has no
+// single source image to animate (e.g. a tag block, which is a dynamic group
+// of assets). It only needs enough visual detail — sun, clouds, layered hills
+// — that the pan/zoom motion reads clearly. Members are dynamic, so for tag
+// blocks the popover prefers a real cached member thumbnail and only falls
+// back to this sample. Built as a URL-encoded data URI so escapeHtml leaves it
+// intact (no raw <, >, ", ' or & survive the encode).
+const KB_STOCK_PREVIEW = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">' +
+    '<rect width="320" height="180" fill="#2b5876"/>' +
+    '<rect width="320" height="120" fill="#3a6ea5" opacity="0.5"/>' +
+    '<circle cx="246" cy="46" r="24" fill="#ffd166"/>' +
+    '<ellipse cx="70" cy="40" rx="34" ry="13" fill="#ffffff" opacity="0.35"/>' +
+    '<ellipse cx="150" cy="64" rx="26" ry="10" fill="#ffffff" opacity="0.25"/>' +
+    '<path d="M0 132 L70 96 L130 124 L200 84 L320 126 L320 180 L0 180 Z" fill="#1d6f5c"/>' +
+    '<path d="M0 152 L90 122 L170 150 L260 118 L320 150 L320 180 L0 180 Z" fill="#14503f"/>' +
+    '</svg>'
+);
+
+// Resolve the best image to animate in the Ken Burns mini-preview for slide s.
+// Returns { url, sample } where sample=true means it's a representative stand-in
+// (stock art or a tag block's first member) rather than the slide's own source.
+function kbPreviewSource(s) {
+    if (!s) return { url: '', sample: false };
+    if (s.thumbnail_url) return { url: s.thumbnail_url, sample: false };
+    if (s.source_asset_id) return { url: `/api/assets/${s.source_asset_id}/preview`, sample: false };
+    if (s.kind === 'tag') {
+        // Prefer a real, already-cached member thumbnail (true WYSIWYG); else
+        // fall back to the stock sample. Never trigger a fetch here.
+        const cache = SS_TAG_MEMBER_CACHE[s.tag_id];
+        const members = (cache && cache.status === 'ready' && cache.members) || [];
+        const withThumb = members.find((m) => m && m.thumbnail_url);
+        if (withThumb) return { url: withThumb.thumbnail_url, sample: true };
+        return { url: KB_STOCK_PREVIEW, sample: true };
+    }
+    return { url: '', sample: false };
+}
 
 // token -> { zoom: 'in'|'out', pan: <pan>|null }
 function kbParse(token) {
@@ -1815,8 +1868,9 @@ function buildKbMenu(menu, btn, i) {
     let zoom = parsed.zoom;   // 'in' | 'out'
     let pan = parsed.pan;     // pan token | null
 
-    const thumbUrl = s.thumbnail_url
-        || (s.source_asset_id ? `/api/assets/${s.source_asset_id}/preview` : '');
+    const previewSrc = kbPreviewSource(s);
+    const thumbUrl = previewSrc.url;
+    const isSample = previewSrc.sample;
 
     // 3x3 compass; center (null) = no pan (zoom only).
     const COMPASS = [
@@ -1834,7 +1888,9 @@ function buildKbMenu(menu, btn, i) {
             <div class="ssb-kb-compass" role="group" aria-label="Pan direction"></div>
             <div class="ssb-kb-preview">${
                 thumbUrl
-                    ? `<img alt="" src="${escapeHtml(thumbUrl)}">`
+                    ? `<img alt="" src="${escapeHtml(thumbUrl)}">${
+                        isSample ? '<div class="ssb-kb-preview-tag">Sample</div>' : ''
+                      }`
                     : '<div class="ssb-kb-preview-empty">No preview</div>'
             }</div>
         </div>`;
