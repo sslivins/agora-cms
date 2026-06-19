@@ -781,8 +781,10 @@
     text-align: center;
     max-width: 4.2rem;
 }
-/* Show/Hide members toggle, centred along the bottom of the tag thumb
-   (between the ‹ › move buttons). */
+/* "Expand members" control, centred along the bottom of the tag thumb
+   (between the ‹ › move buttons). A stacked-cards glyph (⧉) that implies
+   unstacking the tag block into its tagged member assets; the adjacent
+   label is the live member count when collapsed, ✕ when expanded. */
 .ssb-group-chev {
     position: absolute;
     bottom: 0.3rem;
@@ -793,17 +795,17 @@
     color: #06251f;
     border: none;
     border-radius: 0.8rem;
-    padding: 0.08rem 0.55rem;
-    font-size: 0.7rem;
-    font-weight: 700;
+    padding: 0.1rem 0.55rem;
+    font-size: 0.78rem;
+    font-weight: 800;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3rem;
     white-space: nowrap;
 }
 .ssb-group-chev:hover { background: #1abc9c; }
-.ssb-group-chev-ico { font-size: 0.68rem; line-height: 1; }
+.ssb-group-chev-ico { font-size: 1.05rem; line-height: 1; }
 
 /* A tag slot turns into a horizontal group container when expanded: the
    compact header tile on the left, a scrollable member tray on the right.
@@ -1548,7 +1550,7 @@ function makeSlot(s, i) {
 
 // Render a dynamic tag block as a collapsible timeline group. Collapsed it
 // is a compact header tile (the same Fit + Motion + per-item duration as an
-// asset slot, plus a Show/Hide toggle); expanded it widens into a scrollable
+// asset slot, plus an expand control); expanded it widens into a scrollable
 // tray of read-only member previews — lazily fetched, point-in-time, in the
 // exact tagged-at order the device resolves. The group is a SINGLE flex item
 // so drag/reorder index math is untouched. Members are timed per-item (no
@@ -1564,8 +1566,11 @@ function makeTagSlot(s, i) {
     const tagName = s.tag_name || 'tag';
     const perSec = Math.max(1, Math.round((s.duration_ms || 8000) / 1000));
     const countLabel = memberCount === 1 ? '1 item' : `${memberCount} items`;
-    const chevIco = s._expanded ? '▾' : '▸';
-    const chevTxt = s._expanded ? 'Hide' : 'Show';
+    // Expand affordance: a stacked-cards glyph (⧉) implying "unstack into the
+    // tagged member assets". Collapsed shows the live member count; expanded
+    // shows ✕ to read as "close/restack". Text-free + obvious it expands.
+    const expandLabel = s._expanded ? '✕' : String(memberCount);
+    const expandTitle = s._expanded ? 'Collapse member assets' : 'Expand member assets';
 
     const head = document.createElement('div');
     head.className = 'ssb-group-head';
@@ -1576,8 +1581,8 @@ function makeTagSlot(s, i) {
             <button type="button" class="ssb-slot-remove" title="Remove" aria-label="Remove">✕</button>
             <button type="button" class="ssb-slot-move left"  title="Move left"  aria-label="Move left"  ${i === 0 ? 'disabled' : ''}>‹</button>
             <button type="button" class="ssb-slot-move right" title="Move right" aria-label="Move right" ${i === slides.length - 1 ? 'disabled' : ''}>›</button>
-            <button type="button" class="ssb-group-chev" aria-expanded="${s._expanded ? 'true' : 'false'}" title="${chevTxt} member assets">
-                <span class="ssb-group-chev-ico" aria-hidden="true">${chevIco}</span><span>${chevTxt}</span>
+            <button type="button" class="ssb-group-chev${s._expanded ? ' is-open' : ''}" aria-expanded="${s._expanded ? 'true' : 'false'}" title="${expandTitle}" aria-label="${expandTitle}">
+                <span class="ssb-group-chev-ico" aria-hidden="true">⧉</span><span>${expandLabel}</span>
             </button>
         </div>
         <div class="ssb-slot-meta">
@@ -1902,7 +1907,7 @@ function wireTransitionMenu(btn, menu, slideIdx, opts) {
             }
             btn.textContent = t.icon;
             btn.title = `${t.label}${titleSuffix} — click to change`;
-            // Refresh duration input enabled state without closing the popover.
+            // Refresh the duration input so it's correct on the next open.
             const di = menu.querySelector('.ssb-trans-dur-input');
             if (di) {
                 di.disabled = (t.id === 'cut');
@@ -1911,6 +1916,10 @@ function wireTransitionMenu(btn, menu, slideIdx, opts) {
             // Mark selected option visually.
             menu.querySelectorAll('.ssb-trans-opt').forEach(o => o.classList.remove('ssb-trans-opt-sel'));
             opt.classList.add('ssb-trans-opt-sel');
+            // Picking a transition commits the choice — close the popover.
+            // (The duration footer stays editable because its own handlers
+            //  stopPropagation, so adjusting ms never reaches here.)
+            try { menu.hidePopover(); } catch {}
         });
         if (t.id === current.id) opt.classList.add('ssb-trans-opt-sel');
         menu.appendChild(opt);

@@ -428,3 +428,73 @@ class TestTagBlockMemberTransition:
             s = (await client.get(f"/api/assets/{sid}/slides")).json()["slides"][0]
             assert s.get("member_transition") in (None, "")
             assert s.get("member_transition_ms") in (None,)
+
+
+@pytest.mark.asyncio
+class TestEffectiveSlideCounts:
+    """agora#806 nit: the library table/grid "N slides" badge must count a
+    dynamic ``tag`` block as its *live* expanded membership, not as 1, so the
+    badge matches what the device/preview actually renders."""
+
+    async def test_tag_block_counts_live_membership(self, client, db_session):
+        from cms.services.slideshow_resolver import effective_slide_counts
+
+        # 2 static images + a tag carrying 3 members → effective count 5.
+        s1 = await _seed_image(db_session, filename="s1.png", checksum="s1")
+        s2 = await _seed_image(db_session, filename="s2.png", checksum="s2")
+        tag = await _seed_tag(db_session, name="promo-count")
+        for n in range(3):
+            m = await _seed_image(
+                db_session, filename=f"mem{n}.png", checksum=f"mem{n}"
+            )
+            await _tag_asset(db_session, m, tag)
+
+        create = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "count-show",
+                "slides": [
+                    {"kind": "asset", "source_asset_id": str(s1.id), "duration_ms": 1000},
+                    {"kind": "tag", "tag_id": str(tag.id), "duration_ms": 1000},
+                    {"kind": "asset", "source_asset_id": str(s2.id), "duration_ms": 1000},
+                ],
+            },
+        )
+        assert create.status_code == 201, create.text
+        sid = uuid.UUID(create.json()["id"])
+
+        counts = await effective_slide_counts([sid], db_session)
+        assert counts[sid] == 5  # 2 static + 3 tag members
+
+        # Tagging one more asset bumps the live count without editing the deck.
+        extra = await _seed_image(db_session, filename="mem3.png", checksum="mem3")
+        await _tag_asset(db_session, extra, tag)
+        counts2 = await effective_slide_counts([sid], db_session)
+        assert counts2[sid] == 6
+
+    async def test_empty_tag_block_contributes_zero(self, client, db_session):
+        from cms.services.slideshow_resolver import effective_slide_counts
+
+        s1 = await _seed_image(db_session, filename="e1.png", checksum="e1")
+        tag = await _seed_tag(db_session, name="empty-tag")  # no members
+
+        create = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "empty-tag-show",
+                "slides": [
+                    {"kind": "asset", "source_asset_id": str(s1.id), "duration_ms": 1000},
+                    {"kind": "tag", "tag_id": str(tag.id), "duration_ms": 1000},
+                ],
+            },
+        )
+        assert create.status_code == 201, create.text
+        sid = uuid.UUID(create.json()["id"])
+
+        counts = await effective_slide_counts([sid], db_session)
+        assert counts[sid] == 1  # the lone static slide; empty tag adds 0
+
+    async def test_empty_input_returns_empty_mapping(self, db_session):
+        from cms.services.slideshow_resolver import effective_slide_counts
+
+        assert await effective_slide_counts([], db_session) == {}

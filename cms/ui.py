@@ -1494,17 +1494,15 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     sched_counts = dict(sched_counts_q.all())
 
     # Slide counts for slideshow assets — used by the assets table to show
-    # "N slides" in lieu of a transcoding-status badge.
+    # "N slides" in lieu of a transcoding-status badge.  A dynamic ``tag``
+    # block counts as its live expanded membership, so the badge matches
+    # what the device/preview actually renders (see effective_slide_counts).
     slide_counts: dict = {}
     if assets:
         slideshow_ids = [a.id for a in assets if a.asset_type == AssetType.SLIDESHOW]
         if slideshow_ids:
-            sc_rows = (await db.execute(
-                select(SlideshowSlide.slideshow_asset_id, func.count())
-                .where(SlideshowSlide.slideshow_asset_id.in_(slideshow_ids))
-                .group_by(SlideshowSlide.slideshow_asset_id)
-            )).all()
-            slide_counts = {sid: cnt for sid, cnt in sc_rows}
+            from cms.services.slideshow_resolver import effective_slide_counts
+            slide_counts = await effective_slide_counts(slideshow_ids, db)
 
     # Annotate each asset with variant summary + schedule count + group info
     all_group_assets = {}
