@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models.asset import Asset
 from shared.models.slideshow_slide import SlideshowSlide
 from cms.schemas.asset import SLIDE_TRANSITIONS
+from cms.services.slideshow_resolver import expand_tag_members
 
 
 def composed_cell_transition(transition: str) -> str:
@@ -60,11 +61,23 @@ async def load_slideshow_members(
 ) -> list[tuple[SlideshowSlide, Asset | None]]:
     """Return the slideshow's slides in ``position`` order with their sources.
 
-    Each tuple is ``(slide, source_asset)``; ``source_asset`` is ``None``
-    when the slide's source row is missing (or, with
-    ``exclude_deleted=True``, soft-deleted).  Callers decide whether a
-    missing source is an error.  Returns an empty list when the slideshow
-    has no slides.
+    The deck is the hybrid tag-timeline: an ordered list of
+    :class:`~shared.models.slideshow_slide.SlideshowSlide` rows, each either
+    a static ``asset`` slide or a dynamic ``tag`` block.  A ``tag`` block is
+    expanded **in place** into its current members (via
+    :func:`~cms.services.slideshow_resolver.expand_tag_members`, the same
+    ordering the device resolver uses) so the caller never sees a tag row.
+    Every expanded member reuses the *same* tag-block row, inheriting its
+    playback columns (duration / transition / fit / effect) as deck-defaults
+    — matching the device-resolve path.
+
+    Each returned tuple is ``(slide, source_asset)``; ``source_asset`` is
+    ``None`` only when a static ``asset`` slide's source row is missing (or,
+    with ``exclude_deleted=True``, soft-deleted).  Callers decide whether a
+    missing source is an error.  Tag-block members are always non-deleted
+    (the expansion filters them), so they never yield a ``None`` source.
+    Returns an empty list when the slideshow has no slides (or expands to
+    none, e.g. only empty tag blocks).
     """
     slide_rows = (
         await db.execute(
@@ -76,11 +89,31 @@ async def load_slideshow_members(
     if not slide_rows:
         return []
 
-    src_ids = [s.source_asset_id for s in slide_rows]
-    src_q = select(Asset).where(Asset.id.in_(src_ids))
-    if exclude_deleted:
-        src_q = src_q.where(Asset.deleted_at.is_(None))
-    src_rows = (await db.execute(src_q)).scalars().all()
-    by_id = {a.id: a for a in src_rows}
+    # Walk the hybrid deck in position order, expanding each ``tag`` block
+    # into its ordered members.  A tag member inherits the block row's
+    # playback columns, so we pair every member with the same row object.
+    pairs: list[tuple[SlideshowSlide, uuid.UUID | None]] = []
+    for s in slide_rows:
+        if s.kind == "tag":
+            if s.tag_id is None:  # defensive — CHECK constraint forbids
+                continue
+            for member_id in await expand_tag_members(s.tag_id, db):
+                pairs.append((s, member_id))
+        else:
+            pairs.append((s, s.source_asset_id))
 
-    return [(s, by_id.get(s.source_asset_id)) for s in slide_rows]
+    if not pairs:
+        return []
+
+    src_ids = [mid for _s, mid in pairs if mid is not None]
+    by_id: dict[uuid.UUID, Asset] = {}
+    if src_ids:
+        src_q = select(Asset).where(Asset.id.in_(src_ids))
+        if exclude_deleted:
+            src_q = src_q.where(Asset.deleted_at.is_(None))
+        src_rows = (await db.execute(src_q)).scalars().all()
+        by_id = {a.id: a for a in src_rows}
+
+    return [
+        (s, by_id.get(mid) if mid is not None else None) for s, mid in pairs
+    ]
