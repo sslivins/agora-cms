@@ -2914,7 +2914,10 @@ window.addEventListener("pageshow", _rerunAllGates);
 // opts.align:     "right" (default — right-edge to right-edge of anchor)
 //                 or "left" (left-edge to left-edge of anchor)
 function positionPopover(popover, opts = {}) {
-    let btn = document.querySelector(`[popovertarget="${popover.id}"]`);
+    // An explicit anchor wins — needed for shared popovers reused across many
+    // rows (e.g. the per-row "+ tag" picker), where a popovertarget lookup
+    // would resolve to the first matching button, not the clicked one.
+    let btn = opts.anchor || document.querySelector(`[popovertarget="${popover.id}"]`);
     if (!btn) {
         // Fallback for popovers opened via onclick (e.g. group-popup, whose
         // `+` button lives as a sibling inside a .group-picker-wrap and does
