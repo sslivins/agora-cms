@@ -1776,6 +1776,11 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                     "tag_name": tag_name_map.get(slide.tag_id),
                     "tag_order_by": slide.tag_order_by,
                     "member_count": tag_member_counts.get(slide.tag_id, 0),
+                    "valid_from": slide.valid_from.isoformat() if slide.valid_from else None,
+                    "valid_to": slide.valid_to.isoformat() if slide.valid_to else None,
+                    "active_days": slide.active_days,
+                    "active_start": slide.active_start.isoformat() if slide.active_start else None,
+                    "active_end": slide.active_end.isoformat() if slide.active_end else None,
                 })
                 continue
             slides.append({
@@ -1798,6 +1803,11 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                     src.duration_seconds if src is not None else None
                 ),
                 "thumbnail_url": src_thumb_map.get(src.id) if src is not None else None,
+                "valid_from": slide.valid_from.isoformat() if slide.valid_from else None,
+                "valid_to": slide.valid_to.isoformat() if slide.valid_to else None,
+                "active_days": slide.active_days,
+                "active_start": slide.active_start.isoformat() if slide.active_start else None,
+                "active_end": slide.active_end.isoformat() if slide.active_end else None,
             })
         asset_group_rows = (await db.execute(
             select(GroupAsset.group_id).where(GroupAsset.asset_id == asset_id)

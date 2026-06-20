@@ -19,7 +19,11 @@ from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
-from cms.schemas.protocol import ScheduleEntry, SyncMessage
+from cms.schemas.protocol import (
+    CAPABILITY_SLIDESHOW_VISIBILITY_V1,
+    ScheduleEntry,
+    SyncMessage,
+)
 from cms.services.transport import get_transport
 from cms import metrics as _metrics
 
@@ -1058,7 +1062,13 @@ async def build_device_sync(
         if key in slideshow_checksums:
             return slideshow_checksums[key]
         resolved = await resolved_slideshow_checksum(
-            asset, dev.profile_id, db, local_now=device_local_now
+            asset,
+            dev.profile_id,
+            db,
+            local_now=device_local_now,
+            emit_windows=(
+                CAPABILITY_SLIDESHOW_VISIBILITY_V1 in (dev.capabilities or [])
+            ),
         )
         if resolved is not None:
             slideshow_checksums[key] = resolved

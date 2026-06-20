@@ -113,6 +113,16 @@ class _SlidePlan:
     # siblings the device pre-fetches before showing the bundle.  Empty
     # for image/video slides.
     siblings: list[_SiblingPlan] = field(default_factory=list)
+    # Per-slide visibility window (manifest schema 1.5).  Populated only on
+    # the device-evaluated (capability) path; None on the Phase-1 server-drop
+    # path so the resolved checksum and emitted descriptor stay byte-identical
+    # for devices without ``slideshow_visibility_v1``.  Carry the typed DB
+    # values; serialization to wire strings happens at emit/fold time.
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    active_days: Optional[list[int]] = None
+    active_start: Optional[time] = None
+    active_end: Optional[time] = None
 
 
 @dataclass
@@ -141,7 +151,13 @@ class _SlideSpec:
     # to that dwell — so the resolver flips ``play_to_end`` on for video
     # members once the member's asset type is known (agora#806 follow-up).
     tag_member: bool = False
-
+    # Per-slide visibility window — carried only on the capability path
+    # (``emit_windows=True`` in :func:`_load_slide_specs`); None otherwise.
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    active_days: Optional[list[int]] = None
+    active_start: Optional[time] = None
+    active_end: Optional[time] = None
 
 @dataclass
 class SlideshowBlocker:
@@ -383,8 +399,57 @@ def _slide_window_open(row: SlideshowSlide, local_now: datetime) -> bool:
     return True
 
 
+# Per-slide visibility window helpers (manifest schema 1.5) ------------------
+
+#: An "all-None" window kwargs bundle, used on the Phase-1 server-drop path
+#: so :class:`_SlideSpec` / :class:`_SlidePlan` carry no window metadata.
+_EMPTY_WINDOW: dict = dict(
+    valid_from=None,
+    valid_to=None,
+    active_days=None,
+    active_start=None,
+    active_end=None,
+)
+
+
+def _row_window_kwargs(row: SlideshowSlide) -> dict:
+    """Extract a row's typed visibility-window columns as ``_SlideSpec``
+    constructor kwargs.  ``active_days`` is normalised so a falsy value
+    (``None`` or empty list) becomes ``None`` ("every day") — matching the
+    CMS write-side normaliser and the firmware predicate.
+    """
+    return dict(
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+        active_days=(list(row.active_days) if row.active_days else None),
+        active_start=row.active_start,
+        active_end=row.active_end,
+    )
+
+
+def _window_wire_fields(p) -> dict:
+    """Serialize a plan's typed window values to their wire form.
+
+    Dates → ``"YYYY-MM-DD"``, times → ``"HH:MM:SS[.ffffff]"`` (full
+    ``.isoformat()`` precision so the firmware's ``time.fromisoformat``
+    round-trips verbatim — never truncate to ``HH:MM``).  ``active_days``
+    is emitted as a plain ``list[int]`` (or ``None``).
+    """
+    ad = p.active_days
+    return dict(
+        valid_from=p.valid_from.isoformat() if p.valid_from is not None else None,
+        valid_to=p.valid_to.isoformat() if p.valid_to is not None else None,
+        active_days=(list(ad) if ad else None),
+        active_start=p.active_start.isoformat() if p.active_start is not None else None,
+        active_end=p.active_end.isoformat() if p.active_end is not None else None,
+    )
+
+
 async def _load_slide_specs(
-    asset: Asset, db: AsyncSession, local_now: datetime | None = None
+    asset: Asset,
+    db: AsyncSession,
+    local_now: datetime | None = None,
+    emit_windows: bool = False,
 ) -> list[_SlideSpec]:
     """Produce the ordered list of :class:`_SlideSpec` for ``asset``.
 
@@ -394,14 +459,18 @@ async def _load_slide_specs(
     tag membership, every expanded member inheriting the row's playback
     columns as deck-defaults.  A deck with only ``asset`` rows behaves
     exactly as a classic manual slideshow.
+
+    Per-slide visibility windows (manifest schema 1.5) have two paths:
+
+    * ``emit_windows=False`` (default — devices without
+      ``slideshow_visibility_v1`` and every non-device caller): closed
+      slides are *dropped server-side* when ``local_now`` is supplied
+      (Phase-1 behaviour); specs carry no window metadata.
+    * ``emit_windows=True`` (capability devices): closed slides are
+      *kept* and their window columns are copied onto every emitted spec
+      (including each expanded tag member) so the device evaluates the
+      window itself at exact local-clock boundaries, including offline.
     """
-    # Hybrid timeline: a single ordered list of SlideshowSlide rows where
-    # each row is either a static ``asset`` slide or a dynamic ``tag``
-    # block that expands in-place to current tag membership.  Walk in
-    # position order, assigning a running deck index so expanded members
-    # get unique, contiguous positions.  This subsumes the legacy
-    # manual-only mapping (a deck with no tag rows behaves exactly as
-    # before).
     rows_result = await db.execute(
         select(SlideshowSlide)
         .where(SlideshowSlide.slideshow_asset_id == asset.id)
@@ -412,14 +481,18 @@ async def _load_slide_specs(
     specs: list[_SlideSpec] = []
     pos = 0
     for row in rows:
-        # Per-slide visibility window (agora#…): when a device-local now is
-        # supplied, drop rows whose window is closed.  ``local_now is None``
-        # (the API/builder readiness path) means "show every slide" so the
-        # editor preview and existing tests are unaffected.  Applies to both
-        # ``asset`` and ``tag`` rows; a closed ``tag`` row skips its whole
-        # in-place expansion.
-        if local_now is not None and not _slide_window_open(row, local_now):
-            continue
+        # Per-slide visibility window (schema 1.5).  On the server-drop
+        # path, when a device-local now is supplied, drop rows whose window
+        # is closed.  ``local_now is None`` (the API/builder readiness path)
+        # means "show every slide" so the editor preview and existing tests
+        # are unaffected.  Applies to both ``asset`` and ``tag`` rows; a
+        # closed ``tag`` row skips its whole in-place expansion.  On the
+        # capability path (``emit_windows``) closed rows are KEPT and their
+        # window is carried onto each spec for device-side evaluation.
+        if not emit_windows:
+            if local_now is not None and not _slide_window_open(row, local_now):
+                continue
+        win = _row_window_kwargs(row) if emit_windows else _EMPTY_WINDOW
         if row.kind == "tag":
             if row.tag_id is None:  # defensive — CHECK constraint forbids
                 continue
@@ -464,6 +537,7 @@ async def _load_slide_specs(
                         fit=row.fit,
                         effect=row.effect,
                         effect_direction=row.effect_direction,
+                        **win,
                     )
                 )
                 pos += 1
@@ -481,6 +555,7 @@ async def _load_slide_specs(
                     fit=row.fit,
                     effect=row.effect,
                     effect_direction=row.effect_direction,
+                    **win,
                 )
             )
             pos += 1
@@ -582,6 +657,7 @@ async def plan_slideshow(
     profile_id: Optional[uuid.UUID],
     db: AsyncSession,
     local_now: datetime | None = None,
+    emit_windows: bool = False,
 ) -> SlideshowPlan:
     """Resolve every slide of ``asset`` against ``profile_id``.
 
@@ -605,7 +681,9 @@ async def plan_slideshow(
     Two batched queries by source-asset-id keep this O(1) in slide count
     regardless of slideshow size.
     """
-    specs = await _load_slide_specs(asset, db, local_now=local_now)
+    specs = await _load_slide_specs(
+        asset, db, local_now=local_now, emit_windows=emit_windows
+    )
     if not specs:
         return SlideshowPlan()
 
@@ -677,6 +755,15 @@ async def plan_slideshow(
             fit=spec.fit,
             effect=spec.effect,
             effect_direction=spec.effect_direction,
+            # Carry the per-slide visibility window through to the emitted
+            # descriptor + resolved checksum.  None on the server-drop path
+            # (emit_windows=False) → byte-identical wire + hash for devices
+            # without ``slideshow_visibility_v1``.
+            valid_from=spec.valid_from,
+            valid_to=spec.valid_to,
+            active_days=spec.active_days,
+            active_start=spec.active_start,
+            active_end=spec.active_end,
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
@@ -759,7 +846,10 @@ async def plan_slideshow(
 
 
 def _compute_resolved_manifest_checksum(
-    asset_checksum: str, slides: list[_SlidePlan], shuffle: bool = False
+    asset_checksum: str,
+    slides: list[_SlidePlan],
+    shuffle: bool = False,
+    emit_windows: bool = False,
 ) -> str:
     """Per-device-profile resolved checksum.
 
@@ -772,6 +862,15 @@ def _compute_resolved_manifest_checksum(
     the manifest.  The companion ``shuffle_seed`` is intentionally NOT
     folded — it's a stable function of the asset id so a re-fetch keeps
     the same per-cycle order without perturbing the checksum.
+
+    Per-slide visibility windows (schema 1.5) are folded **only** when
+    ``emit_windows`` is True (the capability path).  This keeps the digest
+    byte-identical to the pre-1.5 behaviour for every device that doesn't
+    advertise ``slideshow_visibility_v1`` — so bumping the resolver does
+    NOT trigger a fleet-wide one-shot re-push.  On the capability path the
+    *window definitions* (time-invariant) are folded, not their evaluated
+    open/closed state, so the hash is stable across scheduler ticks and an
+    author pushes the change exactly once.
     """
     h = hashlib.sha256()
     h.update((asset_checksum or "").encode())
@@ -788,6 +887,13 @@ def _compute_resolved_manifest_checksum(
         # siblings — intentional, avoids serving a stale cached bundle.)
         for sib in s.siblings:
             h.update(f"|sib|{sib.source_asset_id}|{sib.checksum or ''}".encode())
+        if emit_windows:
+            w = _window_wire_fields(s)
+            days = ",".join(str(d) for d in (w["active_days"] or []))
+            h.update(
+                f"|w|{w['valid_from'] or ''}|{w['valid_to'] or ''}|{days}|"
+                f"{w['active_start'] or ''}|{w['active_end'] or ''}".encode()
+            )
     return h.hexdigest()
 
 
@@ -796,6 +902,7 @@ async def resolved_slideshow_checksum(
     profile_id: Optional[uuid.UUID],
     db: AsyncSession,
     local_now: datetime | None = None,
+    emit_windows: bool = False,
 ) -> Optional[str]:
     """Return the resolved manifest checksum for ``asset`` on a given profile.
 
@@ -804,15 +911,21 @@ async def resolved_slideshow_checksum(
     and ``default_asset_checksum`` reflect per-profile variant choice.
 
     ``local_now`` (device effective local time) drives per-slide visibility
-    windows: closed slides are dropped before the checksum is computed, so a
-    slide opening/closing flips the resolved hash and triggers a one-shot
-    device manifest refresh.
+    windows.  With ``emit_windows=False`` (devices without
+    ``slideshow_visibility_v1``) closed slides are dropped before the
+    checksum is computed, so a slide opening/closing flips the resolved hash
+    and triggers a one-shot device manifest refresh.  With
+    ``emit_windows=True`` closed slides are KEPT and their time-invariant
+    window definitions are folded, so the device evaluates the window itself
+    and the hash only changes when an author edits the window.
     """
-    plan = await plan_slideshow(asset, profile_id, db, local_now=local_now)
+    plan = await plan_slideshow(
+        asset, profile_id, db, local_now=local_now, emit_windows=emit_windows
+    )
     if not plan.ready:
         return None
     return _compute_resolved_manifest_checksum(
-        asset.checksum or "", plan.slides, bool(asset.shuffle)
+        asset.checksum or "", plan.slides, bool(asset.shuffle), emit_windows
     )
 
 
@@ -846,6 +959,7 @@ async def build_fetch_for_slideshow(
     base_url: str,
     db: AsyncSession,
     local_now: datetime | None = None,
+    emit_windows: bool = False,
 ) -> Optional[FetchAssetMessage]:
     """Build a slideshow ``FetchAssetMessage`` for ``device``.
 
@@ -853,9 +967,15 @@ async def build_fetch_for_slideshow(
     contract as the existing video/image resolver.
 
     ``local_now`` (device effective local time) drives per-slide visibility
-    windows; closed slides are dropped from the emitted manifest.
+    windows.  With ``emit_windows=False`` closed slides are dropped from the
+    emitted manifest (server-side evaluation).  With ``emit_windows=True``
+    (devices advertising ``slideshow_visibility_v1``) closed slides are KEPT
+    and their window metadata is carried on each ``SlideDescriptor`` so the
+    device evaluates the window itself at exact local-clock boundaries.
     """
-    plan = await plan_slideshow(asset, device.profile_id, db, local_now=local_now)
+    plan = await plan_slideshow(
+        asset, device.profile_id, db, local_now=local_now, emit_windows=emit_windows
+    )
     if not plan.ready:
         return None
 
@@ -893,6 +1013,7 @@ async def build_fetch_for_slideshow(
                     )
                 )
 
+        win = _window_wire_fields(sp) if emit_windows else _EMPTY_WINDOW
         descriptors.append(
             SlideDescriptor(
                 asset_name=sp.source_filename,
@@ -908,11 +1029,16 @@ async def build_fetch_for_slideshow(
                 effect=sp.effect,
                 effect_direction=sp.effect_direction,
                 siblings=wire_siblings,
+                valid_from=win["valid_from"],
+                valid_to=win["valid_to"],
+                active_days=win["active_days"],
+                active_start=win["active_start"],
+                active_end=win["active_end"],
             )
         )
 
     resolved = _compute_resolved_manifest_checksum(
-        asset.checksum or "", plan.slides, bool(asset.shuffle)
+        asset.checksum or "", plan.slides, bool(asset.shuffle), emit_windows
     )
 
     # Phase 1b of agora#226 — wall-clock anchor support.

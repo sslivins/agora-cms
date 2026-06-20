@@ -29,6 +29,7 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLogEvent
 from cms.schemas.protocol import (
     CAPABILITY_COMPOSED_SIBLINGS_V1,
+    CAPABILITY_SLIDESHOW_VISIBILITY_V1,
     ConfigMessage,
     FetchAssetMessage,
     MessageType,
@@ -270,7 +271,14 @@ async def _resolve_asset_for_device(
         # and the resolved checksum agree.
         local_now = await device_local_now(device, db)
         return await build_fetch_for_slideshow(
-            asset, device, base_url, db, local_now=local_now
+            asset,
+            device,
+            base_url,
+            db,
+            local_now=local_now,
+            emit_windows=(
+                CAPABILITY_SLIDESHOW_VISIBILITY_V1 in (device.capabilities or [])
+            ),
         )
 
     storage = get_storage()
