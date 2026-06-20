@@ -998,6 +998,17 @@ async def build_device_sync(
     if not dev:
         return None
 
+    # Device effective local time for per-slide visibility windows.  A
+    # per-device IANA tz override takes precedence over the CMS global tz
+    # (it mirrors the wire ``timezone`` the device itself applies), falling
+    # back to the CMS tz when unset/invalid.  Distinct from ``local_now``
+    # above, which is intentionally CMS-global for schedule-date eval.
+    try:
+        device_tz = ZoneInfo(dev.timezone or cms_tz)
+    except Exception:
+        device_tz = ZoneInfo(cms_tz)
+    device_local_now = now.astimezone(device_tz)
+
     # Resolve default asset (device → group fallback)
     default_asset_name = None
     default_asset_checksum = None
@@ -1046,7 +1057,9 @@ async def build_device_sync(
         key = str(asset.id)
         if key in slideshow_checksums:
             return slideshow_checksums[key]
-        resolved = await resolved_slideshow_checksum(asset, dev.profile_id, db)
+        resolved = await resolved_slideshow_checksum(
+            asset, dev.profile_id, db, local_now=device_local_now
+        )
         if resolved is not None:
             slideshow_checksums[key] = resolved
         return resolved

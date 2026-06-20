@@ -8,22 +8,32 @@ slideshow (CASCADE on parent delete) and pin their source assets in place
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
+    Time,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.database import Base
+
+# ``active_days`` is a Postgres ``smallint[]`` so a Mon/Wed/Fri window is a
+# single column we can constrain with ``<@``.  On SQLite (the unit-test
+# matrix) ARRAY has no type compiler, so fall back to JSON storage of the
+# same list — identical Python round-trip, Postgres keeps the native array.
+_SMALLINT_ARRAY = ARRAY(SmallInteger).with_variant(JSON(), "sqlite")
 
 
 # Canonical Ken Burns direction grammar — kept in lockstep with
@@ -145,6 +155,41 @@ class SlideshowSlide(Base):
         # FK columns aren't auto-indexed; tag-block expansion + the
         # tag-delete guard scan by tag_id.
         Index("ix_slideshow_slides_tag_id", "tag_id"),
+        # Per-slide visibility window (agora per-slide-visibility).  All five
+        # columns are NULL by default, meaning "always visible" — existing
+        # rows are byte-identical and unaffected.  When set they restrict the
+        # slide to a local-calendar date range (``valid_from``..``valid_to``,
+        # inclusive both ends), a set of weekdays (``active_days``, 0=Mon..
+        # 6=Sun; NULL/empty = every day) and/or a local time-of-day window
+        # (``active_start``..``active_end``, end-exclusive, wrap-around
+        # allowed when start > end).  The device-effective-local-time
+        # predicate is evaluated server-side in the slideshow resolver; the
+        # closed slide is simply dropped from the resolved deck.  These DB
+        # CHECKs mirror the Pydantic validators as belt-and-braces guards
+        # against out-of-band INSERTs.
+        #
+        # Date range coherent: a single-day window (from == to) is allowed.
+        CheckConstraint(
+            "valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from",
+            name="ck_slideshow_slide_valid_range",
+        ),
+        # Time window non-degenerate: equal start/end would be an empty (or
+        # full) window depending on interpretation, so reject it.  A
+        # wrap-around window (start > end, e.g. 22:00..02:00) is allowed.
+        CheckConstraint(
+            "active_start IS NULL OR active_end IS NULL OR active_start <> active_end",
+            name="ck_slideshow_slide_time_window",
+        ),
+        # Weekday set stays within 0..6 (Mon..Sun).  ``<@`` is Postgres array
+        # containment: every element of ``active_days`` must be in the
+        # canonical weekday set.  The operator is Postgres-only, so the CHECK
+        # is emitted only on the ``postgresql`` dialect — on the SQLite test
+        # schema ``active_days`` is a JSON column and this guard is supplied
+        # instead by the ``SlideIn`` Pydantic validator.
+        CheckConstraint(
+            "active_days IS NULL OR active_days <@ '{0,1,2,3,4,5,6}'::smallint[]",
+            name="ck_slideshow_slide_active_days",
+        ).ddl_if(dialect="postgresql"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -238,6 +283,32 @@ class SlideshowSlide(Base):
     effect_direction: Mapped[str] = mapped_column(
         String(16), nullable=False, default="in", server_default="in"
     )
+    # ── Per-slide visibility window (all NULL = always visible) ──
+    #
+    # These five nullable columns restrict WHEN a slide is eligible to be
+    # shown.  They are evaluated server-side in the slideshow resolver
+    # against the requesting device's effective local time; a slide whose
+    # window is closed is dropped from the resolved deck (which changes the
+    # manifest checksum and triggers a single push).  NULL means
+    # "unrestricted on this axis", so a row with all five NULL is always
+    # visible — exactly the pre-feature behaviour.
+    #
+    # Local-calendar date range, INCLUSIVE both ends (floating dates, not
+    # timestamps — a Christmas slide set 2026-12-01..2026-12-26 means those
+    # local calendar days regardless of tz).
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Weekdays the slide may show on, 0=Mon..6=Sun.  NULL or empty = every
+    # day.  Stored as a smallint[] so a Mon/Wed/Fri window is one column.
+    active_days: Mapped[list[int] | None] = mapped_column(
+        _SMALLINT_ARRAY, nullable=True
+    )
+    # Local time-of-day window.  ``active_start`` is INCLUSIVE, ``active_end``
+    # is EXCLUSIVE.  When start > end the window wraps past midnight
+    # (e.g. 22:00..02:00).  Either bound may be NULL for an open-ended
+    # one-sided window.
+    active_start: Mapped[time | None] = mapped_column(Time, nullable=True)
+    active_end: Mapped[time | None] = mapped_column(Time, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

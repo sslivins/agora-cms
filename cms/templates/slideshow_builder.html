@@ -281,6 +281,120 @@
     width: 100%;
 }
 
+/* ---- Per-slide visibility window ---- */
+.ssb-slot-vis {
+    border-top: 1px dashed #3a3a3a;
+    margin-top: 0.1rem;
+    padding-top: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+.ssb-vis-head {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    color: #bbb;
+    font-size: 0.72rem;
+    font-weight: 600;
+    user-select: none;
+}
+.ssb-vis-chev {
+    color: #1abc9c;
+    font-size: 0.65rem;
+    transition: transform 0.12s ease;
+    display: inline-block;
+}
+.ssb-vis-head.ssb-open .ssb-vis-chev { transform: rotate(90deg); }
+.ssb-vis-state { color: #666; font-weight: 400; margin-left: auto; }
+.ssb-vis-state.ssb-on { color: #1abc9c; }
+.ssb-vis-body { display: none; flex-direction: column; gap: 0.5rem; }
+.ssb-vis-body.ssb-open { display: flex; }
+.ssb-vis-radio { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: #ccc; }
+.ssb-vis-radio label { display: flex; gap: 0.4rem; align-items: center; cursor: pointer; }
+.ssb-vis-radio input { accent-color: #1abc9c; }
+.ssb-vis-fields { display: flex; flex-direction: column; gap: 0.45rem; }
+.ssb-vis-fs {
+    border: 1px solid #333;
+    border-radius: 6px;
+    margin: 0;
+    padding: 0.4rem 0.5rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.ssb-vis-fs legend {
+    font-size: 0.6rem;
+    color: #8fd9c9;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0 0.3rem;
+}
+.ssb-vis-pair { display: flex; gap: 0.4rem; align-items: center; }
+.ssb-vis-pair input[type=date],
+.ssb-vis-pair input[type=time] {
+    background: #2a2a2a;
+    color: #eee;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 0.18rem 0.3rem;
+    font-size: 0.72rem;
+    flex: 1 1 0;
+    min-width: 0;
+    color-scheme: dark;
+}
+.ssb-vis-to { color: #777; font-size: 0.7rem; flex: 0 0 auto; }
+.ssb-vis-days { display: flex; gap: 3px; flex-wrap: wrap; }
+.ssb-vis-day {
+    width: 26px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #444;
+    border-radius: 5px;
+    background: #242424;
+    color: #888;
+    font-size: 0.66rem;
+    cursor: pointer;
+    user-select: none;
+}
+.ssb-vis-day.ssb-on {
+    background: #16a085;
+    border-color: #1abc9c;
+    color: #06231d;
+    font-weight: 700;
+}
+.ssb-vis-summary {
+    font-size: 0.66rem;
+    color: #8fd9c9;
+    background: rgba(26,188,156,0.08);
+    border: 1px solid rgba(26,188,156,0.25);
+    border-radius: 5px;
+    padding: 0.35rem 0.45rem;
+    line-height: 1.3;
+}
+/* thumbnail clock badge marking a windowed slide */
+.ssb-slot-vbadge {
+    position: absolute;
+    bottom: 0.3rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(26,188,156,0.92);
+    color: #06231d;
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 10px;
+    z-index: 2;
+    pointer-events: none;
+    max-width: calc(100% - 3.4rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* Transition gap between slots */
 .ssb-gap {
     flex: 0 0 44px;
@@ -1448,6 +1562,210 @@ function wireFitEffectCtls(slot, i) {
     }
 }
 
+// ---- Per-slide visibility window (CMS-side scheduling of a single slide) ----
+// A slide may be limited to a future date range, a time-of-day window
+// (overnight wrap supported), specific weekdays, or any mixture. NULL/empty on
+// every field == "always show". These fields are persisted per-slide and
+// evaluated server-side by the resolver; the device manifest simply omits a
+// closed slide. UI-only flags ``s._visOpen`` / ``s._visLimit`` survive
+// re-render and are never serialized.
+const VIS_DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];          // 0=Mon..6=Sun
+const VIS_DAY_FULL = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const VIS_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// True iff the slide carries any real window constraint.
+function visHasWindow(s) {
+    if (!s) return false;
+    return !!(s.valid_from || s.valid_to || s.active_start || s.active_end ||
+              (Array.isArray(s.active_days) && s.active_days.length));
+}
+
+// 'YYYY-MM-DD' -> 'Dec 1' (parsed by hand to avoid any timezone shift).
+function visFmtDate(d) {
+    if (!d) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d));
+    if (!m) return String(d);
+    return `${VIS_MONTHS[parseInt(m[2], 10) - 1]} ${parseInt(m[3], 10)}`;
+}
+
+// 'HH:MM[:SS]' -> '1:00 PM'.
+function visFmtTime(t) {
+    if (!t) return '';
+    const m = /^(\d{2}):(\d{2})/.exec(String(t));
+    if (!m) return String(t);
+    let h = parseInt(m[1], 10);
+    const min = m[2];
+    const ap = h < 12 ? 'AM' : 'PM';
+    h = h % 12; if (h === 0) h = 12;
+    return `${h}:${min} ${ap}`;
+}
+
+// '<input type=time>' wants 'HH:MM' (or HH:MM:SS); trim the server's seconds.
+function visTimeInputVal(t) { return t ? String(t).slice(0, 5) : ''; }
+
+// Render an active_days array into 'Mon–Fri' (contiguous) or 'Mon, Wed, Fri'.
+function visDaysLabel(days) {
+    if (!Array.isArray(days) || !days.length) return '';
+    const ds = Array.from(new Set(days)).filter((d) => d >= 0 && d <= 6).sort((a, b) => a - b);
+    if (!ds.length) return '';
+    if (ds.length === 7) return 'Every day';
+    let contiguous = true;
+    for (let k = 1; k < ds.length; k++) { if (ds[k] !== ds[k - 1] + 1) { contiguous = false; break; } }
+    if (contiguous && ds.length > 2) return `${VIS_DAY_FULL[ds[0]]}–${VIS_DAY_FULL[ds[ds.length - 1]]}`;
+    return ds.map((d) => VIS_DAY_FULL[d]).join(', ');
+}
+
+// Plain-language summary line, e.g. "Dec 1 – Dec 26 · 9:00 AM – 5:00 PM · Mon–Fri".
+function visSummary(s) {
+    const parts = [];
+    if (s.valid_from && s.valid_to) parts.push(`${visFmtDate(s.valid_from)} – ${visFmtDate(s.valid_to)}`);
+    else if (s.valid_from) parts.push(`From ${visFmtDate(s.valid_from)}`);
+    else if (s.valid_to) parts.push(`Until ${visFmtDate(s.valid_to)}`);
+    if (s.active_start && s.active_end) parts.push(`${visFmtTime(s.active_start)} – ${visFmtTime(s.active_end)}`);
+    else if (s.active_start) parts.push(`From ${visFmtTime(s.active_start)}`);
+    else if (s.active_end) parts.push(`Until ${visFmtTime(s.active_end)}`);
+    const dl = visDaysLabel(s.active_days);
+    if (dl) parts.push(dl);
+    return parts.length ? parts.join(' · ') : 'Always visible';
+}
+
+// Compact thumbnail badge for a windowed slide (clock glyph + short summary).
+function visBadgeHtml(s) {
+    if (!visHasWindow(s)) return '';
+    return `<div class="ssb-slot-vbadge" title="${escapeHtml(visSummary(s))}">⏱ ${escapeHtml(visSummary(s))}</div>`;
+}
+
+// The collapsible "Visibility" control block appended into ``.ssb-slot-meta``.
+function visibilityCtlHtml(s, i) {
+    const limit = !!(s._visLimit || visHasWindow(s));
+    const open = !!s._visOpen;
+    const stateTxt = limit ? 'Limited' : 'Always';
+    const fieldsStyle = limit ? '' : 'display:none;';
+    const daysChips = VIS_DAY_LABELS.map((lab, d) => {
+        const on = Array.isArray(s.active_days) && s.active_days.includes(d);
+        return `<span class="ssb-vis-day${on ? ' ssb-on' : ''}" data-day="${d}" role="button" tabindex="0" title="${VIS_DAY_FULL[d]}">${lab}</span>`;
+    }).join('');
+    const summary = limit && visHasWindow(s)
+        ? `<div class="ssb-vis-summary">${escapeHtml(visSummary(s))}</div>`
+        : '';
+    return `
+        <div class="ssb-slot-vis">
+            <div class="ssb-vis-head${open ? ' ssb-open' : ''}" role="button" tabindex="0" aria-expanded="${open ? 'true' : 'false'}">
+                <span class="ssb-vis-chev" aria-hidden="true">▶</span>
+                <span>Visibility</span>
+                <span class="ssb-vis-state${limit ? ' ssb-on' : ''}">${stateTxt}</span>
+            </div>
+            <div class="ssb-vis-body${open ? ' ssb-open' : ''}">
+                <div class="ssb-vis-radio">
+                    <label><input type="radio" name="ssb-vis-mode-${i}" value="always" ${limit ? '' : 'checked'}><span>Always show this slide</span></label>
+                    <label><input type="radio" name="ssb-vis-mode-${i}" value="limit" ${limit ? 'checked' : ''}><span>Limit when this slide shows</span></label>
+                </div>
+                <div class="ssb-vis-fields" style="${fieldsStyle}">
+                    <fieldset class="ssb-vis-fs">
+                        <legend>Date range</legend>
+                        <div class="ssb-vis-pair">
+                            <input type="date" class="ssb-vis-valid-from" value="${escapeHtml(s.valid_from || '')}" aria-label="Start date">
+                            <span class="ssb-vis-to">to</span>
+                            <input type="date" class="ssb-vis-valid-to" value="${escapeHtml(s.valid_to || '')}" aria-label="End date">
+                        </div>
+                    </fieldset>
+                    <fieldset class="ssb-vis-fs">
+                        <legend>Time of day</legend>
+                        <div class="ssb-vis-pair">
+                            <input type="time" class="ssb-vis-active-start" value="${escapeHtml(visTimeInputVal(s.active_start))}" aria-label="Start time">
+                            <span class="ssb-vis-to">to</span>
+                            <input type="time" class="ssb-vis-active-end" value="${escapeHtml(visTimeInputVal(s.active_end))}" aria-label="End time">
+                        </div>
+                    </fieldset>
+                    <fieldset class="ssb-vis-fs">
+                        <legend>Days of week</legend>
+                        <div class="ssb-vis-days">${daysChips}</div>
+                    </fieldset>
+                    ${summary}
+                </div>
+            </div>
+        </div>`;
+}
+
+// Attach listeners for a visibility control block previously rendered into ``slot``.
+function wireVisibilityCtls(slot, i) {
+    const head = slot.querySelector('.ssb-vis-head');
+    if (head) {
+        head.addEventListener('click', () => toggleSlideVisOpen(i));
+        head.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSlideVisOpen(i); }
+        });
+    }
+    slot.querySelectorAll(`input[name="ssb-vis-mode-${i}"]`).forEach((r) => {
+        r.addEventListener('change', (e) => setSlideVisMode(i, e.target.value));
+    });
+    const bind = (sel, field) => {
+        const el = slot.querySelector(sel);
+        if (el) el.addEventListener('change', (e) => updateSlideVisField(i, field, e.target.value));
+    };
+    bind('.ssb-vis-valid-from', 'valid_from');
+    bind('.ssb-vis-valid-to', 'valid_to');
+    bind('.ssb-vis-active-start', 'active_start');
+    bind('.ssb-vis-active-end', 'active_end');
+    slot.querySelectorAll('.ssb-vis-day').forEach((chip) => {
+        const d = Number(chip.dataset.day);
+        chip.addEventListener('click', () => toggleSlideVisDay(i, d));
+        chip.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSlideVisDay(i, d); }
+        });
+    });
+}
+
+function toggleSlideVisOpen(i) {
+    const s = slides[i];
+    if (!s) return;
+    s._visOpen = !s._visOpen;
+    renderTimeline();
+}
+
+// Switch a slide between "always" and "limited" visibility. Choosing "always"
+// clears every window field; choosing "limit" just opens the editor (fields
+// start empty and the slide stays always-visible until the user fills one in).
+function setSlideVisMode(i, mode) {
+    const s = slides[i];
+    if (!s) return;
+    if (mode === 'always') {
+        s._visLimit = false;
+        s.valid_from = null;
+        s.valid_to = null;
+        s.active_start = null;
+        s.active_end = null;
+        s.active_days = null;
+    } else {
+        s._visLimit = true;
+        s._visOpen = true;
+    }
+    markDirty();
+    renderTimeline();
+}
+
+function updateSlideVisField(i, field, value) {
+    const s = slides[i];
+    if (!s) return;
+    s[field] = value ? value : null;
+    if (visHasWindow(s)) s._visLimit = true;
+    markDirty();
+    renderTimeline();
+}
+
+function toggleSlideVisDay(i, day) {
+    const s = slides[i];
+    if (!s || day < 0 || day > 6) return;
+    let days = Array.isArray(s.active_days) ? s.active_days.slice() : [];
+    const at = days.indexOf(day);
+    if (at >= 0) days.splice(at, 1); else days.push(day);
+    days = Array.from(new Set(days)).sort((a, b) => a - b);
+    s.active_days = days.length ? days : null;
+    if (visHasWindow(s)) s._visLimit = true;
+    markDirty();
+    renderTimeline();
+}
+
 function makeSlot(s, i) {
     const slot = document.createElement('div');
     slot.className = 'ssb-slot';
@@ -1507,6 +1825,7 @@ function makeSlot(s, i) {
             <button type="button" class="ssb-slot-remove" title="Remove" aria-label="Remove">✕</button>
             <button type="button" class="ssb-slot-move left"  title="Move left"  aria-label="Move left"  ${i === 0 ? 'disabled' : ''}>‹</button>
             <button type="button" class="ssb-slot-move right" title="Move right" aria-label="Move right" ${i === slides.length - 1 ? 'disabled' : ''}>›</button>
+            ${visBadgeHtml(s)}
         </div>
         <div class="ssb-slot-meta">
             <div class="ssb-slot-name" title="${escapeHtml(s.source_filename || '')}">${escapeHtml(s.source_filename || s.source_asset_id)}</div>
@@ -1519,6 +1838,7 @@ function makeSlot(s, i) {
             </div>
             ${playToEndCtl}
             ${fitEffectCtl}
+            ${visibilityCtlHtml(s, i)}
         </div>`;
 
     slot.querySelector('.ssb-slot-remove').addEventListener('click', (e) => {
@@ -1537,6 +1857,7 @@ function makeSlot(s, i) {
     const pte = slot.querySelector('input[type=checkbox]');
     if (pte) pte.addEventListener('change', (e) => updateSlidePlayToEnd(i, e.target.checked));
     wireFitEffectCtls(slot, i);
+    wireVisibilityCtls(slot, i);
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
@@ -1584,6 +1905,7 @@ function makeTagSlot(s, i) {
             <button type="button" class="ssb-group-chev${s._expanded ? ' is-open' : ''}" aria-expanded="${s._expanded ? 'true' : 'false'}" title="${expandTitle}" aria-label="${expandTitle}">
                 <span class="ssb-group-chev-ico" aria-hidden="true">⧉</span><span>${expandLabel}</span>
             </button>
+            ${visBadgeHtml(s)}
         </div>
         <div class="ssb-slot-meta">
             <div class="ssb-slot-tag-sub text-muted" style="font-size:0.78rem;">Dynamic · ${escapeHtml(countLabel)}</div>
@@ -1594,6 +1916,7 @@ function makeTagSlot(s, i) {
                 <span style="color:#888;">s each</span>
             </div>
             ${fitEffectCtlHtml(s, i)}
+            ${visibilityCtlHtml(s, i)}
         </div>`;
     slot.appendChild(head);
 
@@ -1617,6 +1940,7 @@ function makeTagSlot(s, i) {
     // Query scope is the whole slot, but the fit/effect controls live in head
     // (already appended), so this wires them correctly.
     wireFitEffectCtls(slot, i);
+    wireVisibilityCtls(slot, i);
 
     if (s._expanded) {
         slot.appendChild(makeTagTray(s, i));
@@ -2177,6 +2501,7 @@ function serializeSlide(s) {
             fit: s.fit || 'cover',
             effect: s.effect || 'none',
             effect_direction: s.effect_direction || 'in',
+            ...serializeVisibility(s),
         };
     }
     return {
@@ -2189,6 +2514,19 @@ function serializeSlide(s) {
         fit: s.fit || 'cover',
         effect: s.effect || 'none',
         effect_direction: s.effect_direction || 'in',
+        ...serializeVisibility(s),
+    };
+}
+
+// Per-slide visibility-window fields, shared by both serialize branches. NULL /
+// empty == always visible. UI-only flags (_visOpen/_visLimit) are never emitted.
+function serializeVisibility(s) {
+    return {
+        valid_from: s.valid_from || null,
+        valid_to: s.valid_to || null,
+        active_days: (Array.isArray(s.active_days) && s.active_days.length) ? s.active_days : null,
+        active_start: s.active_start || null,
+        active_end: s.active_end || null,
     };
 }
 
