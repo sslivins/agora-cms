@@ -1,7 +1,7 @@
 """Pydantic schemas for asset API."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -347,6 +347,25 @@ class SlideIn(BaseModel):
     # zoom-in animation, so existing slides don't change.
     effect_direction: str = Field(DEFAULT_KEN_BURNS_DIRECTION)
 
+    # ── Per-slide visibility window (all None = always visible) ──
+    #
+    # Restrict WHEN this slide is eligible to show.  Evaluated server-side
+    # against the requesting device's effective local time; a closed slide
+    # is dropped from the resolved deck.  Every field is optional — omitting
+    # all five (what every pre-feature client does) means "always visible".
+    # These fields apply to BOTH ``asset`` and ``tag`` kinds.
+    #
+    # Local-calendar date range, INCLUSIVE both ends.
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    # Weekdays the slide may show on, 0=Mon..6=Sun.  None/empty = every day.
+    # Normalised (de-duped, sorted, ``[]`` → None) by the validator below.
+    active_days: Optional[list[int]] = None
+    # Local time-of-day window: ``active_start`` inclusive, ``active_end``
+    # exclusive; start > end wraps past midnight (e.g. 22:00..02:00).
+    active_start: Optional[time] = None
+    active_end: Optional[time] = None
+
     @field_validator("kind")
     @classmethod
     def _validate_kind(cls, v: str) -> str:
@@ -405,6 +424,50 @@ class SlideIn(BaseModel):
             )
         return v
 
+    @field_validator("active_days")
+    @classmethod
+    def _validate_active_days(cls, v: Optional[list[int]]) -> Optional[list[int]]:
+        """Normalise the weekday set: de-dupe, sort, ``[]`` → None.
+
+        Each entry must be 0..6 (Mon..Sun).  An empty list is treated as
+        "no restriction" (same as None / every day) so a client that clears
+        all weekday chips round-trips to the always-visible state rather
+        than a slide that can never show.
+        """
+        if v is None:
+            return None
+        for d in v:
+            if d < 0 or d > 6:
+                raise ValueError(
+                    f"active_days entries must be 0..6 (Mon..Sun), got {d}"
+                )
+        uniq = sorted(set(v))
+        return uniq or None
+
+    @model_validator(mode="after")
+    def _validate_visibility_window(self) -> "SlideIn":
+        """Cross-field visibility-window coherence (mirrors DB CHECKs).
+
+        * ``valid_to`` must be >= ``valid_from`` when both set (single-day
+          window allowed).
+        * ``active_start`` and ``active_end`` must differ when both set
+          (equal would be a degenerate empty window; a wrap-around window
+          where start > end is fine and means "spans midnight").
+        """
+        if (
+            self.valid_from is not None
+            and self.valid_to is not None
+            and self.valid_to < self.valid_from
+        ):
+            raise ValueError("valid_to must be on or after valid_from")
+        if (
+            self.active_start is not None
+            and self.active_end is not None
+            and self.active_start == self.active_end
+        ):
+            raise ValueError("active_start and active_end must differ")
+        return self
+
     @model_validator(mode="after")
     def _validate_kind_columns(self) -> "SlideIn":
         """Enforce the kind/columns invariant mirroring the DB CHECK.
@@ -459,7 +522,12 @@ class SlideOut(BaseModel):
     fit: str = DEFAULT_SLIDE_FIT
     effect: str = DEFAULT_SLIDE_EFFECT
     effect_direction: str = DEFAULT_KEN_BURNS_DIRECTION
-    # Populated for ``asset`` kind; null for ``tag`` kind.
+    # Per-slide visibility window; all null = always visible.
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    active_days: Optional[list[int]] = None
+    active_start: Optional[time] = None
+    active_end: Optional[time] = None
     source_asset_id: Optional[uuid.UUID] = None
     source_filename: Optional[str] = None
     source_asset_type: Optional[AssetType] = None

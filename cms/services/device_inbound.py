@@ -260,8 +260,18 @@ async def _resolve_asset_for_device(
     """
     if asset.asset_type == AssetType.SLIDESHOW:
         # Lazy import — avoids a circular reference at module import time.
-        from cms.services.slideshow_resolver import build_fetch_for_slideshow
-        return await build_fetch_for_slideshow(asset, device, base_url, db)
+        from cms.services.slideshow_resolver import (
+            build_fetch_for_slideshow,
+            device_local_now,
+        )
+
+        # Device effective local time drives per-slide visibility windows;
+        # the scheduler tick uses the same predicate so the emitted manifest
+        # and the resolved checksum agree.
+        local_now = await device_local_now(device, db)
+        return await build_fetch_for_slideshow(
+            asset, device, base_url, db, local_now=local_now
+        )
 
     storage = get_storage()
 

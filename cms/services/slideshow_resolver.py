@@ -25,8 +25,9 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -319,7 +320,72 @@ _TAG_MEMBER_ASSET_TYPES = (
 )
 
 
-async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
+def _slide_window_open(row: SlideshowSlide, local_now: datetime) -> bool:
+    """Return True iff ``row``'s per-slide visibility window is open at
+    ``local_now`` (a tz-aware datetime in the device's effective local
+    timezone).
+
+    A slide is VISIBLE iff ALL configured constraints pass.  Any unset
+    (NULL) constraint is "always open" for that dimension, so a row with
+    no window columns set is always visible (byte-identical to the
+    pre-feature behaviour).
+
+    Constraints (see per-slide-visibility-design.md):
+      * Date range ``[valid_from, valid_to]`` — both ends INCLUSIVE,
+        floating local-calendar dates.
+      * Weekday set ``active_days`` (0=Mon .. 6=Sun) — empty/None = all.
+      * Time-of-day ``[active_start, active_end)`` — start INCLUSIVE,
+        end EXCLUSIVE; ``active_start > active_end`` is an overnight
+        wrap (e.g. 22:00..02:00).
+
+    Wrap + weekday interaction: for the post-midnight tail of a wrapped
+    window the effective weekday is *yesterday's* (the window "belongs"
+    to the day it opened), so a Fri 22:00..02:00 slide is still open at
+    Sat 00:30 when ``active_days`` lists Friday only.
+    """
+    d: date = local_now.date()
+    t: time = local_now.time()
+
+    # 1. Date range (inclusive both ends).
+    if row.valid_from is not None and d < row.valid_from:
+        return False
+    if row.valid_to is not None and d > row.valid_to:
+        return False
+
+    start = row.active_start
+    end = row.active_end
+
+    # 2. Effective weekday — shift to yesterday for a wrapped window's tail.
+    if start is not None and end is not None and start > end and t < end:
+        effective_wd = (local_now - timedelta(days=1)).weekday()
+    else:
+        effective_wd = local_now.weekday()
+
+    # 3. Weekday set.
+    if row.active_days and effective_wd not in row.active_days:
+        return False
+
+    # 4. Time-of-day window.
+    if start is not None and end is not None:
+        if start < end:
+            if not (start <= t < end):
+                return False
+        else:  # overnight wrap
+            if not (t >= start or t < end):
+                return False
+    elif start is not None:
+        if t < start:
+            return False
+    elif end is not None:
+        if t >= end:
+            return False
+
+    return True
+
+
+async def _load_slide_specs(
+    asset: Asset, db: AsyncSession, local_now: datetime | None = None
+) -> list[_SlideSpec]:
     """Produce the ordered list of :class:`_SlideSpec` for ``asset``.
 
     The deck is a single ordered list of ``SlideshowSlide`` rows.  Each
@@ -346,6 +412,14 @@ async def _load_slide_specs(asset: Asset, db: AsyncSession) -> list[_SlideSpec]:
     specs: list[_SlideSpec] = []
     pos = 0
     for row in rows:
+        # Per-slide visibility window (agora#…): when a device-local now is
+        # supplied, drop rows whose window is closed.  ``local_now is None``
+        # (the API/builder readiness path) means "show every slide" so the
+        # editor preview and existing tests are unaffected.  Applies to both
+        # ``asset`` and ``tag`` rows; a closed ``tag`` row skips its whole
+        # in-place expansion.
+        if local_now is not None and not _slide_window_open(row, local_now):
+            continue
         if row.kind == "tag":
             if row.tag_id is None:  # defensive — CHECK constraint forbids
                 continue
@@ -504,7 +578,10 @@ async def effective_slide_counts(
 
 
 async def plan_slideshow(
-    asset: Asset, profile_id: Optional[uuid.UUID], db: AsyncSession
+    asset: Asset,
+    profile_id: Optional[uuid.UUID],
+    db: AsyncSession,
+    local_now: datetime | None = None,
 ) -> SlideshowPlan:
     """Resolve every slide of ``asset`` against ``profile_id``.
 
@@ -528,7 +605,7 @@ async def plan_slideshow(
     Two batched queries by source-asset-id keep this O(1) in slide count
     regardless of slideshow size.
     """
-    specs = await _load_slide_specs(asset, db)
+    specs = await _load_slide_specs(asset, db, local_now=local_now)
     if not specs:
         return SlideshowPlan()
 
@@ -715,15 +792,23 @@ def _compute_resolved_manifest_checksum(
 
 
 async def resolved_slideshow_checksum(
-    asset: Asset, profile_id: Optional[uuid.UUID], db: AsyncSession
+    asset: Asset,
+    profile_id: Optional[uuid.UUID],
+    db: AsyncSession,
+    local_now: datetime | None = None,
 ) -> Optional[str]:
     """Return the resolved manifest checksum for ``asset`` on a given profile.
 
     ``None`` if the slideshow isn't ready for the profile (any blockers).
     Used by :func:`build_device_sync` so ``ScheduleEntry.asset_checksum``
     and ``default_asset_checksum`` reflect per-profile variant choice.
+
+    ``local_now`` (device effective local time) drives per-slide visibility
+    windows: closed slides are dropped before the checksum is computed, so a
+    slide opening/closing flips the resolved hash and triggers a one-shot
+    device manifest refresh.
     """
-    plan = await plan_slideshow(asset, profile_id, db)
+    plan = await plan_slideshow(asset, profile_id, db, local_now=local_now)
     if not plan.ready:
         return None
     return _compute_resolved_manifest_checksum(
@@ -731,18 +816,46 @@ async def resolved_slideshow_checksum(
     )
 
 
+async def device_local_now(device: Device, db: AsyncSession) -> datetime:
+    """Return the current time in ``device``'s effective local timezone.
+
+    A per-device IANA tz override takes precedence over the CMS global
+    ``timezone`` setting (mirroring the wire ``timezone`` the device
+    applies locally); falls back to UTC when neither is set or the value
+    is invalid.  Drives per-slide visibility-window evaluation in
+    :func:`build_fetch_for_slideshow` / :func:`resolved_slideshow_checksum`.
+    """
+    from cms.models.setting import CMSSetting  # lazy: avoid import cycle
+
+    tz_name = getattr(device, "timezone", None)
+    if not tz_name:
+        row = await db.execute(
+            select(CMSSetting.value).where(CMSSetting.key == "timezone")
+        )
+        tz_name = row.scalar_one_or_none() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return datetime.now(timezone.utc).astimezone(tz)
+
+
 async def build_fetch_for_slideshow(
     asset: Asset,
     device: Device,
     base_url: str,
     db: AsyncSession,
+    local_now: datetime | None = None,
 ) -> Optional[FetchAssetMessage]:
     """Build a slideshow ``FetchAssetMessage`` for ``device``.
 
     Returns ``None`` if the slideshow isn't ready (any blockers) — same
     contract as the existing video/image resolver.
+
+    ``local_now`` (device effective local time) drives per-slide visibility
+    windows; closed slides are dropped from the emitted manifest.
     """
-    plan = await plan_slideshow(asset, device.profile_id, db)
+    plan = await plan_slideshow(asset, device.profile_id, db, local_now=local_now)
     if not plan.ready:
         return None
 

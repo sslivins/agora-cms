@@ -1557,6 +1557,11 @@ def _slide_row(slideshow_asset_id: uuid.UUID, idx: int, s: SlideIn) -> Slideshow
             fit=s.fit,
             effect=s.effect,
             effect_direction=s.effect_direction,
+            valid_from=s.valid_from,
+            valid_to=s.valid_to,
+            active_days=s.active_days,
+            active_start=s.active_start,
+            active_end=s.active_end,
         )
     return SlideshowSlide(
         slideshow_asset_id=slideshow_asset_id,
@@ -1572,6 +1577,11 @@ def _slide_row(slideshow_asset_id: uuid.UUID, idx: int, s: SlideIn) -> Slideshow
         fit=s.fit,
         effect=s.effect,
         effect_direction=s.effect_direction,
+        valid_from=s.valid_from,
+        valid_to=s.valid_to,
+        active_days=s.active_days,
+        active_start=s.active_start,
+        active_end=s.active_end,
     )
 
 
@@ -2136,6 +2146,19 @@ async def list_slideshow_slides(
                     "fit": slide.fit,
                     "effect": slide.effect,
                     "effect_direction": slide.effect_direction,
+                    "valid_from": slide.valid_from.isoformat()
+                    if slide.valid_from
+                    else None,
+                    "valid_to": slide.valid_to.isoformat()
+                    if slide.valid_to
+                    else None,
+                    "active_days": slide.active_days,
+                    "active_start": slide.active_start.isoformat()
+                    if slide.active_start
+                    else None,
+                    "active_end": slide.active_end.isoformat()
+                    if slide.active_end
+                    else None,
                     "tag_id": str(slide.tag_id) if slide.tag_id else None,
                     "tag_name": tag_name_map.get(slide.tag_id),
                     "tag_order_by": slide.tag_order_by,
@@ -2155,6 +2178,17 @@ async def list_slideshow_slides(
                 "fit": slide.fit,
                 "effect": slide.effect,
                 "effect_direction": slide.effect_direction,
+                "valid_from": slide.valid_from.isoformat()
+                if slide.valid_from
+                else None,
+                "valid_to": slide.valid_to.isoformat() if slide.valid_to else None,
+                "active_days": slide.active_days,
+                "active_start": slide.active_start.isoformat()
+                if slide.active_start
+                else None,
+                "active_end": slide.active_end.isoformat()
+                if slide.active_end
+                else None,
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.filename if src else None,
                 "source_asset_type": src.asset_type.value if src else None,
