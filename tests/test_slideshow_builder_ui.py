@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, time
 
 import pytest
 
@@ -17,7 +18,7 @@ pytestmark = pytest.mark.asyncio
 
 async def _seed_slideshow(
     db_session, *, name="My Show", is_global=True, slides=0,
-    slide_fit="cover", slide_effect="none",
+    slide_fit="cover", slide_effect="none", slide_window=None,
 ):
     asset = Asset(
         filename=name,
@@ -48,6 +49,7 @@ async def _seed_slideshow(
                 play_to_end=False,
                 fit=slide_fit,
                 effect=slide_effect,
+                **(slide_window or {}),
             ))
     await db_session.commit()
     return asset
@@ -168,6 +170,31 @@ class TestSlideshowBuilderRoutes:
         body = resp.text
         assert '"fit": "contain"' in body or '"fit":"contain"' in body
         assert '"effect": "ken_burns"' in body or '"effect":"ken_burns"' in body
+
+    async def test_edit_page_hydrates_visibility_windows(self, client, db_session):
+        """Regression: per-slide visibility windows must survive the
+        save -> reopen round-trip. The edit-page JSON island
+        (ss-initial-slides) is the hydration source; if the window
+        columns are dropped here the editor shows blank visibility on
+        reload even though the rule is still applied server-side."""
+        asset = await _seed_slideshow(
+            db_session, name="VisShow", slides=1,
+            slide_window={
+                "valid_from": date(2026, 12, 1),
+                "valid_to": date(2026, 12, 26),
+                "active_start": time(13, 0),
+                "active_end": time(14, 0),
+                "active_days": [0, 1, 2, 3, 4],
+            },
+        )
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "2026-12-01" in body
+        assert "2026-12-26" in body
+        assert "13:00:00" in body
+        assert "14:00:00" in body
+        assert '"active_days": [0, 1, 2, 3, 4]' in body or '"active_days":[0,1,2,3,4]' in body
 
     async def test_edit_page_wires_in_editor_rename(self, client, db_session):
         """Edit mode must persist a renamed slideshow in-editor. The /slides

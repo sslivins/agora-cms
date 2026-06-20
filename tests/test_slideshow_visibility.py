@@ -309,3 +309,96 @@ class TestLoadSlideSpecsWindowing:
         now = datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
         specs = await _load_slide_specs(ss, db_session, now)
         assert specs == []
+
+
+@pytest.mark.asyncio
+class TestLoadSlideSpecsEmitWindows:
+    """``emit_windows=True`` (the capability path) keeps closed slides and
+    carries their typed window columns onto the spec so the device evaluates
+    the window itself."""
+
+    async def test_closed_slide_kept_and_window_carried(self, db_session):
+        a = await _seed_image(db_session, filename="always2.png")
+        b = await _seed_image(db_session, filename="xmas2.png")
+        win = {"valid_from": date(2026, 12, 1), "valid_to": date(2026, 12, 26)}
+        ss = await _seed_slideshow_with_windows(db_session, [(a, {}), (b, win)])
+        # June is outside the December window, but emit_windows keeps it.
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        specs = await _load_slide_specs(ss, db_session, now, emit_windows=True)
+        assert {s.source_asset_id for s in specs} == {a.id, b.id}
+        bspec = next(s for s in specs if s.source_asset_id == b.id)
+        assert bspec.valid_from == date(2026, 12, 1)
+        assert bspec.valid_to == date(2026, 12, 26)
+        # The unwindowed slide carries all-None window fields.
+        aspec = next(s for s in specs if s.source_asset_id == a.id)
+        assert aspec.valid_from is None and aspec.valid_to is None
+
+    async def test_active_days_normalised_to_none_when_empty(self, db_session):
+        a = await _seed_image(db_session, filename="daily.png")
+        ss = await _seed_slideshow_with_windows(db_session, [(a, {})])
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        specs = await _load_slide_specs(ss, db_session, now, emit_windows=True)
+        assert specs[0].active_days is None
+
+
+class TestResolvedChecksumWindows:
+    """Pure-function tests for the ``emit_windows`` checksum fold.
+
+    These pin the R1 regression guarantee: the non-capability digest is
+    byte-identical regardless of window definitions (no spurious fleet
+    re-push), while the capability digest folds the time-invariant window
+    definition (author edits → exactly one re-push, stable across ticks).
+    """
+
+    def _plan(self, pos, *, checksum, **win):
+        from cms.models.asset import AssetType as _AT
+        from cms.services.slideshow_resolver import _SlidePlan
+        return _SlidePlan(
+            position=pos,
+            source_asset_id=uuid4(),
+            source_filename=f"s{pos}.png",
+            source_asset_type=_AT.IMAGE,
+            duration_ms=5000,
+            play_to_end=False,
+            checksum=checksum,
+            **win,
+        )
+
+    def test_noncap_digest_ignores_window_definitions(self):
+        from cms.services.slideshow_resolver import (
+            _compute_resolved_manifest_checksum as cs,
+        )
+        plain = self._plan(0, checksum="x")
+        windowed = self._plan(
+            0, checksum="x", valid_from=date(2026, 12, 1), valid_to=date(2026, 12, 26)
+        )
+        # Same source id so the only difference is the window definition.
+        windowed.source_asset_id = plain.source_asset_id
+        windowed.source_filename = plain.source_filename
+        assert cs("a", [plain], False, False) == cs("a", [windowed], False, False)
+
+    def test_cap_digest_folds_window_definition(self):
+        from cms.services.slideshow_resolver import (
+            _compute_resolved_manifest_checksum as cs,
+        )
+        plain = self._plan(0, checksum="x")
+        windowed = self._plan(0, checksum="x", active_start=time(13, 0), active_end=time(14, 0))
+        windowed.source_asset_id = plain.source_asset_id
+        windowed.source_filename = plain.source_filename
+        # On the capability path the window is folded → different digest.
+        assert cs("a", [plain], False, True) != cs("a", [windowed], False, True)
+
+    def test_cap_digest_stable_across_ticks(self):
+        from cms.services.slideshow_resolver import (
+            _compute_resolved_manifest_checksum as cs,
+        )
+        p = self._plan(0, checksum="x", valid_from=date(2026, 12, 1))
+        # Two folds of the identical time-invariant window → identical digest.
+        assert cs("a", [p], False, True) == cs("a", [p], False, True)
+
+    def test_cap_digest_differs_from_noncap_when_windowed(self):
+        from cms.services.slideshow_resolver import (
+            _compute_resolved_manifest_checksum as cs,
+        )
+        p = self._plan(0, checksum="x", valid_from=date(2026, 12, 1))
+        assert cs("a", [p], False, True) != cs("a", [p], False, False)

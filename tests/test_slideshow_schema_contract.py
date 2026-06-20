@@ -152,9 +152,10 @@ class TestSlideshowV10Contract:
         # composed-in-slideshow bumped it to "1.2" (composed slide
         # descriptors + per-slide siblings); per-slide fit/effect bumps
         # it to "1.3"; per-slide effect_direction + deck shuffle bumps
-        # it to "1.4".  DEFAULT stays at "1.0" — that's the "no version
-        # on the wire" fallback.
-        assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST == "1.4"
+        # it to "1.4"; per-slide visibility windows (device-evaluated,
+        # capability slideshow_visibility_v1) bumps it to "1.5".  DEFAULT
+        # stays at "1.0" — that's the "no version on the wire" fallback.
+        assert SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST == "1.5"
 
     def test_forward_wall_clock_fields_are_ignored(self):
         """Phase 1b adds ``cycle_duration_ms`` and ``started_at`` to

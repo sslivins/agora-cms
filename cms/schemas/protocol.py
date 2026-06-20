@@ -5,7 +5,7 @@ Protocol version: 2
 Any changes to this file MUST be mirrored in the device-side implementation.
 """
 
-from datetime import datetime
+from datetime import date as _date, datetime, time as _time
 from enum import Enum
 import re
 from typing import Literal, Optional
@@ -60,6 +60,23 @@ CAPABILITY_COMPOSED_SIBLINGS_V1 = "composed_siblings_v1"
 # slideshow-loop composed branch.
 CAPABILITY_SLIDESHOW_COMPOSED_V1 = "slideshow_composed_v1"
 
+# Per-slide visibility windows, evaluated *on the device* (Phase 2 of the
+# slideshow visibility feature).  A device advertising this capability is
+# sent EVERY slide of a windowed slideshow — including ones whose window is
+# currently closed — together with the window definition on each
+# ``SlideDescriptor`` (``valid_from``/``valid_to`` date range, ``active_days``
+# weekday mask, ``active_start``/``active_end`` time-of-day window).  The
+# player evaluates the window against the device's local wall clock and
+# shows/hides slides at exact local-clock boundaries (sub-scheduler-tick,
+# and while offline).  Because the emitted manifest carries the *definition*
+# (time-invariant) rather than a point-in-time resolved set, the resolved
+# checksum no longer changes every time a window opens/closes — the author
+# pushes once.  Devices WITHOUT this capability keep the Phase-1 behaviour:
+# the CMS resolver drops closed slides server-side each tick and re-pushes
+# when the visible set changes.  Pairs with the agora firmware PR that ports
+# the window predicate into the slideshow player.
+CAPABILITY_SLIDESHOW_VISIBILITY_V1 = "slideshow_visibility_v1"
+
 # Slideshow manifest schema version (semver, additive minor bumps).  The
 # wire format of the slideshow manifest is independent of the
 # higher-level ``PROTOCOL_VERSION``: protocol bumps describe the WS
@@ -103,11 +120,24 @@ CAPABILITY_SLIDESHOW_COMPOSED_V1 = "slideshow_composed_v1"
 #           seeded by ``(shuffle_seed, cycle_index)``.  Devices that
 #           don't understand 1.4 ignore both and play the authored
 #           order with the default zoom-in.
+#   "1.5" — adds optional per-slide visibility-window fields on
+#           ``SlideDescriptor``: ``valid_from``/``valid_to`` ("YYYY-MM-DD"
+#           inclusive date range), ``active_days`` (list[int], 0=Mon..6=Sun;
+#           None/empty = every day), and ``active_start``/``active_end``
+#           ("HH:MM:SS[.ffffff]" time-of-day window, start-inclusive /
+#           end-exclusive, wrapping past midnight when start > end).  All
+#           default None.  Only emitted to devices advertising
+#           ``slideshow_visibility_v1``; such devices receive ALL slides
+#           (including currently-closed ones) and evaluate visibility in the
+#           device's local timezone.  Devices that don't understand 1.5
+#           ignore the extras and keep the Phase-1 server-side drop.  Times
+#           and dates are serialized via ``isoformat()`` (full precision) so
+#           the firmware predicate is bit-for-bit identical to the CMS one.
 #
 # Rule for future bumps: minor bumps are additive (old players ignore
 # unknown fields).  A breaking change bumps the *major* and is gated
 # via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
-SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.4"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.5"
 SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
@@ -389,6 +419,24 @@ class SlideDescriptor(BaseModel):
     # asset's ``FetchAssetMessage.siblings``.  Empty / None means the
     # composed slide has no media siblings (all-text/clock bundle).
     siblings: Optional[list["Sibling"]] = None
+    # Per-slide visibility window (manifest schema 1.5).  All optional on the
+    # wire so v1.0–1.4 parsers ignore them; only emitted to devices that
+    # advertise ``slideshow_visibility_v1``.  When present the device shows
+    # the slide only when ALL set sub-conditions hold against its local wall
+    # clock.  Serialized via ``isoformat()`` (date: "YYYY-MM-DD"; time:
+    # "HH:MM:SS[.ffffff]") for exact CMS↔firmware predicate parity.
+    #   * ``valid_from`` / ``valid_to``  — inclusive calendar-date range.
+    #   * ``active_days``                — weekday allow-list, 0=Mon..6=Sun;
+    #                                      None or [] means "every day".
+    #   * ``active_start`` / ``active_end`` — time-of-day window,
+    #                                      start-inclusive / end-exclusive,
+    #                                      wrapping past midnight when
+    #                                      start > end.
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    active_days: Optional[list[int]] = None
+    active_start: Optional[str] = None
+    active_end: Optional[str] = None
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> "SlideDescriptor":
@@ -444,6 +492,35 @@ class SlideDescriptor(BaseModel):
                 f"SlideDescriptor.effect_direction must be one of "
                 f"{KEN_BURNS_DIRECTIONS}, got {self.effect_direction!r}"
             )
+        # Visibility-window fields (1.5) must round-trip through
+        # date/time.fromisoformat verbatim so the firmware predicate parses
+        # the exact same instant the CMS resolver compared against.
+        for _name in ("valid_from", "valid_to"):
+            _v = getattr(self, _name)
+            if _v is not None:
+                try:
+                    _date.fromisoformat(_v)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"SlideDescriptor.{_name} must be an ISO date "
+                        f"'YYYY-MM-DD', got {_v!r}"
+                    ) from exc
+        for _name in ("active_start", "active_end"):
+            _v = getattr(self, _name)
+            if _v is not None:
+                try:
+                    _time.fromisoformat(_v)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"SlideDescriptor.{_name} must be an ISO time "
+                        f"'HH:MM:SS[.ffffff]', got {_v!r}"
+                    ) from exc
+        if self.active_days is not None:
+            if any((not isinstance(d, int)) or d < 0 or d > 6 for d in self.active_days):
+                raise ValueError(
+                    "SlideDescriptor.active_days must be ints in [0, 6] "
+                    f"(0=Mon..6=Sun), got {self.active_days!r}"
+                )
         return self
 
 
