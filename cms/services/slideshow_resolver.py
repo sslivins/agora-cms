@@ -123,6 +123,15 @@ class _SlidePlan:
     active_days: Optional[list[int]] = None
     active_start: Optional[time] = None
     active_end: Optional[time] = None
+    # Per-slide video clip (P2).  ``clip_start_ms`` is the *emitted*
+    # (effective) source seek offset — already gated to 0 on the
+    # non-capable / non-device path by :func:`_effective_slide_playback`, so
+    # the wire descriptor and resolved checksum stay byte-identical for
+    # devices without ``slideshow_clip_v1``.  ``clip_duration_ms`` is the raw
+    # authored bound, carried for reference only (the slot is encoded by
+    # ``duration_ms``); it is NOT emitted on the wire or folded into the hash.
+    clip_start_ms: int = 0
+    clip_duration_ms: Optional[int] = None
 
 
 @dataclass
@@ -158,6 +167,13 @@ class _SlideSpec:
     active_days: Optional[list[int]] = None
     active_start: Optional[time] = None
     active_end: Optional[time] = None
+    # Per-slide video clip (P2) — raw authored values from the asset-kind
+    # row.  ``clip_start_ms`` is the source seek offset; ``clip_duration_ms``
+    # the bounded playback length (None = "to natural end").  Always 0 / None
+    # for tag-block members (the SlideIn schema rejects clip on tag kind).
+    clip_start_ms: int = 0
+    clip_duration_ms: Optional[int] = None
+
 
 @dataclass
 class SlideshowBlocker:
@@ -555,6 +571,8 @@ async def _load_slide_specs(
                     fit=row.fit,
                     effect=row.effect,
                     effect_direction=row.effect_direction,
+                    clip_start_ms=row.clip_start_ms or 0,
+                    clip_duration_ms=row.clip_duration_ms,
                     **win,
                 )
             )
@@ -652,12 +670,115 @@ async def effective_slide_counts(
     return counts
 
 
+def _effective_slide_playback(
+    spec: "_SlideSpec",
+    src: Asset,
+    *,
+    tag_member_play_to_end: bool,
+    emit_clip: bool,
+) -> tuple[int, bool, int]:
+    """Compute a slide's emitted ``(duration_ms, play_to_end, clip_start_ms)``.
+
+    This is the single place that reconciles three playback modes against the
+    anchored-cycle invariant — *the emitted ``duration_ms`` MUST equal the
+    real on-screen time the slide occupies* — so the wall-clock anchor math
+    in ``plan_slideshow`` (``cycle_duration_ms = sum(duration_ms)``) and the
+    firmware loop stay in lock-step:
+
+    ====================  ==========  ===========  =====================
+    mode                  duration_ms play_to_end  clip_start_ms (emitted)
+    ====================  ==========  ===========  =====================
+    image / plain         auth dwell  False        0
+    play_to_end video     real_dur    True         0
+    bounded clip          clip_dur    False        clip_start (if emit_clip)
+    clip → natural end    real_dur−X  True         clip_start (if emit_clip)
+    ====================  ==========  ===========  =====================
+
+    **P1 fix (play_to_end → real-duration slot) is UNCONDITIONAL** — every
+    device gets the correct slot length so the anchored cycle is right even
+    on firmware that ignores ``play_to_end``.  Only the *seek offset*
+    (``clip_start_ms``) is gated by ``emit_clip`` (capability
+    ``slideshow_clip_v1``).
+
+    On the non-capable / non-device path (``emit_clip=False``) a bounded or
+    clip→end slide is emitted **length-preserving**: the slot length is kept
+    (so the cycle stays correct) but ``clip_start_ms`` is forced to 0 and
+    ``play_to_end`` to False — the device plays the *wrong window* of the
+    source from t=0 for the right number of ms, never the full source.  This
+    keeps the resolved checksum byte-identical to a pre-clip deck for those
+    devices except where the slot length itself genuinely changed.
+    """
+    is_video = src.asset_type in (AssetType.VIDEO, AssetType.SAVED_STREAM)
+
+    # Real source length in ms (rounded).  None for un-probed assets.
+    real_ms: Optional[int] = None
+    if is_video and src.duration_seconds is not None:
+        real_ms = int(round(src.duration_seconds * 1000))
+
+    start = spec.clip_start_ms or 0
+    clip_dur = spec.clip_duration_ms
+    wants_play_to_end = (
+        spec.play_to_end or (tag_member_play_to_end and is_video)
+    )
+
+    # Bounded clip: a video member with an explicit clip length.
+    if is_video and clip_dur is not None and clip_dur > 0:
+        if not emit_clip:
+            # Length-preserving fallback: keep the slot, drop the offset.
+            return clip_dur, False, 0
+        return clip_dur, False, start
+
+    # Clip → natural end (offset only, no explicit length) OR a plain
+    # play_to_end video.  Slot is the real remaining length.
+    if wants_play_to_end:
+        if real_ms is None:
+            # Un-probed video: we can't compute the real slot.  Fall back to
+            # the authored dwell (degraded — matches pre-fix behaviour) and
+            # warn loudly so the operator re-probes the source.
+            logger.warning(
+                "slideshow slide %s: play_to_end video %s has no probed "
+                "duration_seconds; falling back to authored dwell %dms "
+                "(slot may be wrong)",
+                spec.position,
+                src.filename,
+                spec.duration_ms,
+            )
+            # Offset still honored if capable, but the slot is the dwell.
+            return spec.duration_ms, True, (start if emit_clip else 0)
+        slot = real_ms - start
+        if slot <= 0:
+            # Defensive: offset at/after EOF — should be rejected at input.
+            logger.warning(
+                "slideshow slide %s: clip_start_ms %d >= real duration %dms "
+                "for %s; using authored dwell",
+                spec.position,
+                start,
+                real_ms,
+                src.filename,
+            )
+            return spec.duration_ms, True, 0
+        if real_ms > 4 * 60 * 60 * 1000:
+            logger.info(
+                "slideshow slide %s: very long play_to_end video %s "
+                "(%dms ≈ %.1fh) — anchored cycle slot is large",
+                spec.position,
+                src.filename,
+                real_ms,
+                real_ms / 3_600_000.0,
+            )
+        return slot, True, (start if emit_clip else 0)
+
+    # Plain image / non-play_to_end slide: authored dwell, no clip.
+    return spec.duration_ms, False, 0
+
+
 async def plan_slideshow(
     asset: Asset,
     profile_id: Optional[uuid.UUID],
     db: AsyncSession,
     local_now: datetime | None = None,
     emit_windows: bool = False,
+    emit_clip: bool = False,
 ) -> SlideshowPlan:
     """Resolve every slide of ``asset`` against ``profile_id``.
 
@@ -736,20 +857,23 @@ async def plan_slideshow(
                 )
             )
             continue
+        eff_duration_ms, eff_play_to_end, eff_clip_start_ms = (
+            _effective_slide_playback(
+                spec,
+                src,
+                # A VIDEO member of a dynamic tag block plays its full natural
+                # length rather than being clipped to the block's dwell time.
+                tag_member_play_to_end=spec.tag_member,
+                emit_clip=emit_clip,
+            )
+        )
         sp = _SlidePlan(
             position=spec.position,
             source_asset_id=sid,
             source_filename=src.filename,
             source_asset_type=src.asset_type,
-            duration_ms=spec.duration_ms,
-            # A VIDEO member of a dynamic tag block plays its full natural
-            # length rather than being clipped to the block's dwell time
-            # (matches a standalone video slide with play_to_end on).  Other
-            # member types (image, saved_stream, composed) keep the dwell.
-            play_to_end=(
-                spec.play_to_end
-                or (spec.tag_member and src.asset_type == AssetType.VIDEO)
-            ),
+            duration_ms=eff_duration_ms,
+            play_to_end=eff_play_to_end,
             transition=spec.transition,
             transition_ms=spec.transition_ms,
             fit=spec.fit,
@@ -764,6 +888,11 @@ async def plan_slideshow(
             active_days=spec.active_days,
             active_start=spec.active_start,
             active_end=spec.active_end,
+            # Emitted (effective) clip offset — 0 unless the device advertises
+            # ``slideshow_clip_v1`` (emit_clip).  ``clip_duration_ms`` is
+            # carried for reference; the slot is encoded by ``duration_ms``.
+            clip_start_ms=eff_clip_start_ms,
+            clip_duration_ms=spec.clip_duration_ms,
         )
         # File-asset slides need a download URL.  Saved streams are
         # behaviourally videos; treat them as such for variant lookup.
@@ -881,6 +1010,14 @@ def _compute_resolved_manifest_checksum(
             f"{s.duration_ms}|{int(s.play_to_end)}|{s.transition}|{s.transition_ms}|"
             f"{s.fit}|{s.effect}|{s.effect_direction}".encode()
         )
+        # Fold the *emitted* clip offset only when non-zero.  It's already 0
+        # on the non-capable path (``_effective_slide_playback`` gates it on
+        # ``emit_clip``), so this keeps the digest byte-identical for devices
+        # without ``slideshow_clip_v1`` while still re-pushing once when an
+        # author trims a clip for a capable device.  The clip *length* needs
+        # no separate fold — it always flows through ``duration_ms`` above.
+        if s.clip_start_ms:
+            h.update(f"|clip={s.clip_start_ms}".encode())
         # Fold each composed sibling's checksum so a re-transcoded sibling
         # video flips the resolved hash and prompts a device refetch.
         # (Stricter than the standalone-composed path, which doesn't fold
@@ -903,6 +1040,7 @@ async def resolved_slideshow_checksum(
     db: AsyncSession,
     local_now: datetime | None = None,
     emit_windows: bool = False,
+    emit_clip: bool = False,
 ) -> Optional[str]:
     """Return the resolved manifest checksum for ``asset`` on a given profile.
 
@@ -920,7 +1058,12 @@ async def resolved_slideshow_checksum(
     and the hash only changes when an author edits the window.
     """
     plan = await plan_slideshow(
-        asset, profile_id, db, local_now=local_now, emit_windows=emit_windows
+        asset,
+        profile_id,
+        db,
+        local_now=local_now,
+        emit_windows=emit_windows,
+        emit_clip=emit_clip,
     )
     if not plan.ready:
         return None
@@ -960,6 +1103,7 @@ async def build_fetch_for_slideshow(
     db: AsyncSession,
     local_now: datetime | None = None,
     emit_windows: bool = False,
+    emit_clip: bool = False,
 ) -> Optional[FetchAssetMessage]:
     """Build a slideshow ``FetchAssetMessage`` for ``device``.
 
@@ -974,7 +1118,12 @@ async def build_fetch_for_slideshow(
     device evaluates the window itself at exact local-clock boundaries.
     """
     plan = await plan_slideshow(
-        asset, device.profile_id, db, local_now=local_now, emit_windows=emit_windows
+        asset,
+        device.profile_id,
+        db,
+        local_now=local_now,
+        emit_windows=emit_windows,
+        emit_clip=emit_clip,
     )
     if not plan.ready:
         return None
@@ -1023,6 +1172,7 @@ async def build_fetch_for_slideshow(
                 size_bytes=sp.size_bytes or 0,
                 duration_ms=sp.duration_ms,
                 play_to_end=sp.play_to_end,
+                clip_start_ms=sp.clip_start_ms,
                 transition=sp.transition,
                 transition_ms=sp.transition_ms,
                 fit=sp.fit,

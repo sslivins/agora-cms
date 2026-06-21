@@ -311,6 +311,38 @@
 .ssb-vis-state.ssb-on { color: #1abc9c; }
 .ssb-vis-body { display: none; flex-direction: column; gap: 0.5rem; }
 .ssb-vis-body.ssb-open { display: flex; }
+/* Per-slide video trim (clip) control — same grammar as the visibility block. */
+.ssb-slot-trim {
+    border-top: 1px dashed #3a3a3a;
+    margin-top: 0.1rem;
+    padding-top: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+.ssb-trim-head {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    color: #bbb;
+    font-size: 0.72rem;
+    font-weight: 600;
+    user-select: none;
+}
+.ssb-trim-chev {
+    color: #1abc9c;
+    font-size: 0.65rem;
+    transition: transform 0.12s ease;
+    display: inline-block;
+}
+.ssb-trim-head.ssb-open .ssb-trim-chev { transform: rotate(90deg); }
+.ssb-trim-state { color: #666; font-weight: 400; margin-left: auto; }
+.ssb-trim-state.ssb-on { color: #1abc9c; }
+.ssb-trim-body { display: flex; flex-direction: column; gap: 0.4rem; }
+.ssb-trim-start { display: flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; color: #ccc; }
+.ssb-trim-start input { width: 4.5rem; }
+.ssb-trim-summary { font-size: 0.72rem; color: #8fd9c9; }
 .ssb-vis-radio { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: #ccc; }
 .ssb-vis-radio label { display: flex; gap: 0.4rem; align-items: center; cursor: pointer; }
 .ssb-vis-radio input { accent-color: #1abc9c; }
@@ -1795,6 +1827,152 @@ function toggleSlideVisDay(i, day) {
     renderTimeline();
 }
 
+// ---- Per-slide video clip / trim (CMS-side sub-range of a video source) ----
+// A video slide may play only a sub-range of its source: a start offset
+// (``clip_start_ms``) plus, when "play to end" is off, a fixed length
+// (``clip_duration_ms`` == the slide's ``duration_ms``).  Offset 0 + no fixed
+// length == the legacy whole-video behaviour and is serialized byte-identically
+// (clip_start_ms 0 / clip_duration_ms null), so untouched decks never change.
+// Images never carry a clip.  ``s._trimOpen`` is a UI-only flag and is never
+// serialized.  The on-device seek (clip_start_ms) only takes effect on devices
+// advertising the ``slideshow_clip_v1`` capability; the length math is honoured
+// everywhere.
+
+// Milliseconds -> "M:SS" (e.g. 65000 -> "1:05").
+function clipFmtTime(ms) {
+    const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+    const m = Math.floor(total / 60);
+    const sec = total % 60;
+    return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+// True iff a video slide carries a real start offset (the only field that
+// distinguishes a clipped slide from a plain dwell/whole-video slide).
+function trimIsClipped(s) {
+    return s && s.source_asset_type === 'video' && (s.clip_start_ms || 0) > 0;
+}
+
+// Effective on-screen playback length (ms) for a slide, accounting for trim:
+//   - play to end:  source length minus the start offset (or dwell when the
+//                   source duration isn't probed yet)
+//   - otherwise:    ``duration_ms`` (which holds the clip length when clipped,
+//                   or the plain dwell when not)
+function effectivePlaybackMs(s) {
+    if (!s || s.source_asset_type !== 'video') return s ? s.duration_ms : 0;
+    const startMs = s.clip_start_ms || 0;
+    if (s.play_to_end) {
+        if (s.source_duration_seconds) {
+            return Math.max(1000, Math.round(s.source_duration_seconds * 1000) - startMs);
+        }
+        return s.duration_ms;
+    }
+    return s.duration_ms;
+}
+
+// Plain-language description of the playing window, e.g. "0:05 → end (≈ 1:21)"
+// or "0:05 – 0:13 (8s)".
+function trimSummary(s) {
+    const startMs = s.clip_start_ms || 0;
+    if (s.play_to_end) {
+        const eff = effectivePlaybackMs(s);
+        return s.source_duration_seconds
+            ? `${clipFmtTime(startMs)} → end (≈ ${clipFmtTime(eff)})`
+            : `${clipFmtTime(startMs)} → end`;
+    }
+    const lenMs = s.duration_ms || 0;
+    const lenSec = Math.max(1, Math.round(lenMs / 1000));
+    return `${clipFmtTime(startMs)} – ${clipFmtTime(startMs + lenMs)} (${lenSec}s)`;
+}
+
+// The collapsible "Trim" control block appended into ``.ssb-slot-meta`` for
+// video slides only.  Holds the start-offset input plus a live hint; the
+// playback *length* stays owned by the existing duration / play-to-end
+// controls above (no duplicate play-to-end here).
+function trimCtlHtml(s, i) {
+    if (s.source_asset_type !== 'video') return '';
+    const clipped = trimIsClipped(s);
+    const open = !!s._trimOpen || clipped;
+    const stateTxt = clipped ? 'Trimmed' : 'Full';
+    const fieldsStyle = open ? '' : 'display:none;';
+    const startSec = (s.clip_start_ms || 0) / 1000;
+    // Round to a whole second for the input, but allow 0.
+    const startVal = startSec ? String(Math.round(startSec * 10) / 10) : '0';
+    const maxStart = s.source_duration_seconds
+        ? Math.max(0, Math.floor(s.source_duration_seconds) - 1)
+        : 3600;
+    const hint = clipped
+        ? `<div class="ssb-trim-summary">${escapeHtml(trimSummary(s))}</div>`
+        : '';
+    return `
+        <div class="ssb-slot-trim">
+            <div class="ssb-trim-head${open ? ' ssb-open' : ''}" role="button" tabindex="0" aria-expanded="${open ? 'true' : 'false'}">
+                <span class="ssb-trim-chev" aria-hidden="true">▶</span>
+                <span>Trim</span>
+                <span class="ssb-trim-state${clipped ? ' ssb-on' : ''}">${stateTxt}</span>
+            </div>
+            <div class="ssb-trim-body" style="${fieldsStyle}">
+                <label class="ssb-trim-start" title="Skip this many seconds into the video before it starts playing">
+                    <span>Start at</span>
+                    <input type="number" class="ssb-trim-start-input" min="0" max="${maxStart}" step="1"
+                           value="${escapeHtml(startVal)}" aria-label="Start offset in seconds">
+                    <span style="color:#888;">s</span>
+                </label>
+                <div class="ssb-trim-note text-muted" style="font-size:0.72rem;">
+                    Length is set by the duration / play-to-end controls above.
+                </div>
+                ${hint}
+            </div>
+        </div>`;
+}
+
+// Attach listeners for a trim control block previously rendered into ``slot``.
+function wireTrimCtls(slot, i) {
+    const head = slot.querySelector('.ssb-trim-head');
+    if (head) {
+        head.addEventListener('click', () => toggleSlideTrimOpen(i));
+        head.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSlideTrimOpen(i); }
+        });
+    }
+    const startInput = slot.querySelector('.ssb-trim-start-input');
+    if (startInput) {
+        startInput.addEventListener('change', (e) => updateSlideClipStart(i, e.target.value));
+    }
+}
+
+function toggleSlideTrimOpen(i) {
+    const s = slides[i];
+    if (!s) return;
+    s._trimOpen = !s._trimOpen;
+    renderTimeline();
+}
+
+// Set a video slide's start offset (seconds).  Clamps to [0, sourceLen-1] and,
+// when a fixed clip length is in play (play-to-end off), shrinks the length so
+// start + length never exceeds the source — mirroring the server-side bound.
+function updateSlideClipStart(i, v) {
+    const s = slides[i];
+    if (!s || s.source_asset_type !== 'video') return;
+    let sec = parseFloat(v);
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const durMs = s.source_duration_seconds
+        ? Math.round(s.source_duration_seconds * 1000)
+        : null;
+    let startMs = Math.round(sec * 1000);
+    if (durMs != null) startMs = Math.min(startMs, Math.max(0, durMs - 1000));
+    s.clip_start_ms = startMs;
+    // Keep the open state sticky once the user has engaged the control so the
+    // section doesn't collapse out from under them when they zero the offset.
+    if (startMs > 0) s._trimOpen = true;
+    // Re-clamp a fixed clip length against the new offset.
+    if (durMs != null && !s.play_to_end && startMs > 0) {
+        const maxLen = durMs - startMs;
+        if (maxLen > 0 && s.duration_ms > maxLen) s.duration_ms = maxLen;
+    }
+    markDirty();
+    renderTimeline();
+}
+
 function makeSlot(s, i) {
     const slot = document.createElement('div');
     slot.className = 'ssb-slot';
@@ -1833,10 +2011,7 @@ function makeSlot(s, i) {
     } else {
         thumb = `<video class="ssb-slot-thumb" style="${fitStyle}" src="${thumbSrc}" preload="metadata" muted playsinline></video>`;
     }
-    const effectiveSec = s.play_to_end && isVideo && s.source_duration_seconds
-        ? s.source_duration_seconds
-        : (s.duration_ms / 1000);
-    const displaySec = Math.max(1, Math.round(effectiveSec));
+    const displaySec = Math.max(1, Math.round(effectivePlaybackMs(s) / 1000));
 
     const playToEndCtl = isVideo
         ? `<label class="ssb-slot-pte" title="Play the full video">
@@ -1867,6 +2042,7 @@ function makeSlot(s, i) {
             </div>
             ${playToEndCtl}
             ${fitEffectCtl}
+            ${trimCtlHtml(s, i)}
             ${visibilityCtlHtml(s, i)}
         </div>`;
 
@@ -1887,6 +2063,7 @@ function makeSlot(s, i) {
     if (pte) pte.addEventListener('change', (e) => updateSlidePlayToEnd(i, e.target.checked));
     wireFitEffectCtls(slot, i);
     wireVisibilityCtls(slot, i);
+    wireTrimCtls(slot, i);
 
     slot.addEventListener('dragstart', (e) => {
         e.dataTransfer.effectAllowed = 'copyMove';
@@ -2495,9 +2672,7 @@ function updateTotals() {
             return;
         }
         const isVideo = s.source_asset_type === 'video';
-        const dur = s.play_to_end && isVideo && s.source_duration_seconds
-            ? Math.round(s.source_duration_seconds * 1000)
-            : s.duration_ms;
+        const dur = isVideo ? effectivePlaybackMs(s) : s.duration_ms;
         totalMs += dur;
     });
     document.getElementById('ss-total').textContent = fmtDur(totalMs / 1000);
@@ -2507,7 +2682,24 @@ function updateTotals() {
 function updateSlideDuration(i, v) {
     const seconds = parseFloat(v);
     if (!isFinite(seconds) || seconds <= 0) return;
-    slides[i].duration_ms = Math.round(seconds * 1000);
+    const s = slides[i];
+    let ms = Math.round(seconds * 1000);
+    // For a bounded clip (video, fixed length, with a start offset), the clip
+    // can't run past the end of the source — mirror the server-side bound.
+    if (s.source_asset_type === 'video' && !s.play_to_end
+            && (s.clip_start_ms || 0) > 0 && s.source_duration_seconds) {
+        const maxLen = Math.round(s.source_duration_seconds * 1000) - (s.clip_start_ms || 0);
+        if (maxLen > 0 && ms > maxLen) {
+            ms = maxLen;
+            // The input over-shot the clip window; re-render so the field
+            // reflects the clamp and the trim hint updates.
+            slides[i].duration_ms = ms;
+            markDirty();
+            renderTimeline();
+            return;
+        }
+    }
+    slides[i].duration_ms = ms;
     markDirty();
     updateTotals();
 }
@@ -2533,11 +2725,24 @@ function serializeSlide(s) {
             ...serializeVisibility(s),
         };
     }
+    // Clip (trim) fields. A start offset of 0 with no fixed clip length is the
+    // legacy whole-video / plain-dwell behaviour and MUST serialize as
+    // clip_start_ms:0 / clip_duration_ms:null so untouched decks stay
+    // byte-identical. A fixed clip length is engaged ONLY for a video with a
+    // real start offset and play-to-end off; otherwise duration_ms is the
+    // authority and clip_duration_ms stays null.
+    const isVideoSlide = s.source_asset_type === 'video';
+    const clipStartMs = isVideoSlide ? (s.clip_start_ms || 0) : 0;
+    const clipDurationMs = (isVideoSlide && !s.play_to_end && clipStartMs > 0)
+        ? s.duration_ms
+        : null;
     return {
         kind: 'asset',
         source_asset_id: s.source_asset_id,
         duration_ms: s.duration_ms,
         play_to_end: !!s.play_to_end,
+        clip_start_ms: clipStartMs,
+        clip_duration_ms: clipDurationMs,
         transition: s.transition || 'cut',
         transition_ms: (typeof s.transition_ms === 'number') ? s.transition_ms : 600,
         fit: s.fit || 'cover',
@@ -2621,6 +2826,8 @@ function addSlideFromAsset(assetId, atIndex) {
         source_filename: a.display_name || a.original_filename || a.filename,
         source_asset_type: a.asset_type,
         source_duration_seconds: a.duration_seconds,
+        clip_start_ms: 0,
+        clip_duration_ms: null,
         thumbnail_url: a.thumbnail_url || null,
     };
     const idx = Math.max(0, Math.min(atIndex, slides.length));
@@ -2656,6 +2863,8 @@ function addAllVisible() {
             source_filename: a.display_name || a.original_filename || a.filename,
             source_asset_type: a.asset_type,
             source_duration_seconds: a.duration_seconds,
+            clip_start_ms: 0,
+            clip_duration_ms: null,
             thumbnail_url: a.thumbnail_url || null,
         };
         slides.push(slide);

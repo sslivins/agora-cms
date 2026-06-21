@@ -370,3 +370,102 @@ class TestSlideshowBuilderTagPalette:
         body = resp.text
         assert 'id="ss-tags-palette"' in body
         assert 'id="ss-all-tags"' in body
+
+
+async def _seed_clipped_video_slideshow(db_session, *, start_ms, clip_ms):
+    """Seed a slideshow with one VIDEO slide carrying a clip (trim) window."""
+    show = Asset(
+        filename="ClipShow",
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum="v1",
+        duration_seconds=10.0,
+        is_global=True,
+    )
+    db_session.add(show)
+    await db_session.flush()
+    src = Asset(
+        filename=f"clip-{uuid.uuid4().hex[:6]}.mp4",
+        asset_type=AssetType.VIDEO,
+        size_bytes=1000,
+        duration_seconds=86.0,
+        is_global=True,
+    )
+    db_session.add(src)
+    await db_session.flush()
+    db_session.add(SlideshowSlide(
+        slideshow_asset_id=show.id,
+        source_asset_id=src.id,
+        position=0,
+        duration_ms=clip_ms if clip_ms is not None else 5000,
+        play_to_end=clip_ms is None,
+        clip_start_ms=start_ms,
+        clip_duration_ms=clip_ms,
+    ))
+    await db_session.commit()
+    return show
+
+
+class TestSlideshowBuilderTrimUI:
+    """The per-slide video trim (clip) control."""
+
+    async def test_builder_bakes_trim_helpers(self, client):
+        """Trim render + wiring + the effective-playback helper must be
+        baked into the builder JS."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "function trimCtlHtml(" in body
+        assert "function wireTrimCtls(" in body
+        assert "function effectivePlaybackMs(" in body
+        assert "function updateSlideClipStart(" in body
+        # The trim block is only rendered for video slides.
+        assert "if (s.source_asset_type !== 'video') return '';" in body
+        # Trim block is appended into the slot meta + wired up.
+        assert "${trimCtlHtml(s, i)}" in body
+        assert "wireTrimCtls(slot, i);" in body
+
+    async def test_serialize_uses_byte_identical_clip_rule(self, client):
+        """clip_duration_ms must stay null unless a video has a real start
+        offset AND play-to-end is off, so un-trimmed decks serialize
+        byte-identically (clip_start_ms:0 / clip_duration_ms:null)."""
+        resp = await client.get("/assets/new/slideshow")
+        body = resp.text
+        # The serialize rule predicate.
+        assert "(isVideoSlide && !s.play_to_end && clipStartMs > 0)" in body
+        # clip fields are emitted on the asset wire shape.
+        assert "clip_start_ms: clipStartMs," in body
+        assert "clip_duration_ms: clipDurationMs," in body
+
+    async def test_new_slides_init_clip_defaults(self, client):
+        """Fresh slides (single + bulk add) start un-trimmed."""
+        resp = await client.get("/assets/new/slideshow")
+        body = resp.text
+        assert body.count("clip_start_ms: 0,") >= 2
+        assert body.count("clip_duration_ms: null,") >= 2
+
+    async def test_edit_page_hydrates_clip_fields(self, client, db_session):
+        """Regression: a clipped video slide must round-trip its clip
+        window through the ss-initial-slides hydration island, otherwise
+        the trim UI shows 'Full' on reload even though the server still
+        clips the playback."""
+        asset = await _seed_clipped_video_slideshow(
+            db_session, start_ms=5000, clip_ms=8000,
+        )
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert '"clip_start_ms": 5000' in body or '"clip_start_ms":5000' in body
+        assert '"clip_duration_ms": 8000' in body or '"clip_duration_ms":8000' in body
+
+    async def test_edit_page_hydrates_play_to_end_clip(self, client, db_session):
+        """A clip-from-offset-to-end slide (play_to_end, start>0, no fixed
+        length) hydrates with clip_start_ms set and clip_duration_ms null."""
+        asset = await _seed_clipped_video_slideshow(
+            db_session, start_ms=5000, clip_ms=None,
+        )
+        resp = await client.get(f"/assets/{asset.id}/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert '"clip_start_ms": 5000' in body or '"clip_start_ms":5000' in body
+        assert '"clip_duration_ms": null' in body or '"clip_duration_ms":null' in body

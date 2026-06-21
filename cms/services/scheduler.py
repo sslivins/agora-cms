@@ -20,6 +20,7 @@ from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
 from cms.schemas.protocol import (
+    CAPABILITY_SLIDESHOW_CLIP_V1,
     CAPABILITY_SLIDESHOW_VISIBILITY_V1,
     ScheduleEntry,
     SyncMessage,
@@ -1068,6 +1069,9 @@ async def build_device_sync(
             local_now=device_local_now,
             emit_windows=(
                 CAPABILITY_SLIDESHOW_VISIBILITY_V1 in (dev.capabilities or [])
+            ),
+            emit_clip=(
+                CAPABILITY_SLIDESHOW_CLIP_V1 in (dev.capabilities or [])
             ),
         )
         if resolved is not None:

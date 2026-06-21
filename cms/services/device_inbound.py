@@ -29,6 +29,7 @@ from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLogEvent
 from cms.schemas.protocol import (
     CAPABILITY_COMPOSED_SIBLINGS_V1,
+    CAPABILITY_SLIDESHOW_CLIP_V1,
     CAPABILITY_SLIDESHOW_VISIBILITY_V1,
     ConfigMessage,
     FetchAssetMessage,
@@ -278,6 +279,9 @@ async def _resolve_asset_for_device(
             local_now=local_now,
             emit_windows=(
                 CAPABILITY_SLIDESHOW_VISIBILITY_V1 in (device.capabilities or [])
+            ),
+            emit_clip=(
+                CAPABILITY_SLIDESHOW_CLIP_V1 in (device.capabilities or [])
             ),
         )
 
