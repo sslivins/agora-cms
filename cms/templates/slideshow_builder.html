@@ -1656,7 +1656,10 @@ function visibilityCtlHtml(s, i) {
     const stateTxt = limit ? 'Limited' : 'Always';
     const fieldsStyle = limit ? '' : 'display:none;';
     const daysChips = VIS_DAY_LABELS.map((lab, d) => {
-        const on = Array.isArray(s.active_days) && s.active_days.includes(d);
+        // No weekday restriction (null/empty) == every day, so render all
+        // chips on. The user unchecks days to restrict; a zero-day state is
+        // unreachable (see toggleSlideVisDay).
+        const on = !Array.isArray(s.active_days) || !s.active_days.length || s.active_days.includes(d);
         return `<span class="ssb-vis-day${on ? ' ssb-on' : ''}" data-day="${d}" role="button" tabindex="0" title="${VIS_DAY_FULL[d]}">${lab}</span>`;
     }).join('');
     const summary = limit && visHasWindow(s)
@@ -1770,11 +1773,23 @@ function updateSlideVisField(i, field, value) {
 function toggleSlideVisDay(i, day) {
     const s = slides[i];
     if (!s || day < 0 || day > 6) return;
-    let days = Array.isArray(s.active_days) ? s.active_days.slice() : [];
+    // null/empty == "every day", so start from the full set: the first click
+    // removes a day rather than adding to an empty set.
+    let days = (Array.isArray(s.active_days) && s.active_days.length)
+        ? s.active_days.slice()
+        : [0, 1, 2, 3, 4, 5, 6];
     const at = days.indexOf(day);
-    if (at >= 0) days.splice(at, 1); else days.push(day);
+    if (at >= 0) {
+        if (days.length === 1) return;  // at least one day must stay selected
+        days.splice(at, 1);
+    } else {
+        days.push(day);
+    }
     days = Array.from(new Set(days)).sort((a, b) => a - b);
-    s.active_days = days.length ? days : null;
+    // All seven selected == no weekday restriction; persist as null so it
+    // doesn't masquerade as a window dimension (visHasWindow) or wake the
+    // device at midnight for a boundary that never changes the visible set.
+    s.active_days = (days.length >= 7) ? null : days;
     if (visHasWindow(s)) s._visLimit = true;
     markDirty();
     renderTimeline();
