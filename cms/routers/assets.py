@@ -1711,7 +1711,14 @@ async def _load_and_validate_slide_sources(
         # probes the upload; if it's still None we can't verify the bound, so
         # reject with a "still processing" message rather than emit a clip the
         # resolver can't validate.
-        if s.clip_start_ms is not None or s.clip_duration_ms is not None:
+        #
+        # NOTE: a *no-op* clip (``clip_start_ms`` 0/None AND ``clip_duration_ms``
+        # None) is the legacy whole-asset default that EVERY slide serializes
+        # (images included, so untouched decks stay byte-identical).  It must
+        # not trip the video-only / still-processing checks below -- only an
+        # actual clip (start > 0 or a fixed duration) engages them.
+        has_clip = bool(s.clip_start_ms) or s.clip_duration_ms is not None
+        if has_clip:
             if src.asset_type != AssetType.VIDEO:
                 raise HTTPException(
                     status_code=400,

@@ -349,6 +349,67 @@ class TestSlideshowCreate:
         assert resp.status_code == 400
         assert "play_to_end" in resp.json()["detail"]
 
+    async def test_allows_noop_clip_on_image(self, client, db_session):
+        # Every slide the builder serializes carries clip_start_ms:0 /
+        # clip_duration_ms:null (the legacy whole-asset default). That no-op
+        # must NOT trip the video-only clip guard on an image source.
+        img = await _seed_image(db_session, is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "x",
+                "slides": [
+                    {
+                        "source_asset_id": str(img.id),
+                        "duration_ms": 1000,
+                        "clip_start_ms": 0,
+                        "clip_duration_ms": None,
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+
+    async def test_rejects_real_clip_on_image(self, client, db_session):
+        # An actual clip (start > 0) on an image is still rejected.
+        img = await _seed_image(db_session, is_global=True)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "x",
+                "slides": [
+                    {
+                        "source_asset_id": str(img.id),
+                        "duration_ms": 1000,
+                        "clip_start_ms": 5000,
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 400
+        assert "video clipping" in resp.json()["detail"]
+
+    async def test_allows_noop_clip_on_unprobed_video(self, client, db_session):
+        # A plain untrimmed video whose duration hasn't been probed yet
+        # (duration_seconds is None) must still save -- the no-op clip
+        # default must not trip the "still being processed" guard.
+        vid = await _seed_video(db_session, is_global=True, duration=None)
+        resp = await client.post(
+            "/api/assets/slideshow",
+            json={
+                "name": "x",
+                "slides": [
+                    {
+                        "source_asset_id": str(vid.id),
+                        "duration_ms": 1000,
+                        "clip_start_ms": 0,
+                        "clip_duration_ms": None,
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+
     async def test_rejects_duration_too_small(self, client, db_session):
         img = await _seed_image(db_session, is_global=True)
         resp = await client.post(
