@@ -1802,6 +1802,8 @@ async def _slideshow_builder_context(request, db, *, asset_id=None):
                 "source_duration_seconds": (
                     src.duration_seconds if src is not None else None
                 ),
+                "clip_start_ms": slide.clip_start_ms,
+                "clip_duration_ms": slide.clip_duration_ms,
                 "thumbnail_url": src_thumb_map.get(src.id) if src is not None else None,
                 "valid_from": slide.valid_from.isoformat() if slide.valid_from else None,
                 "valid_to": slide.valid_to.isoformat() if slide.valid_to else None,

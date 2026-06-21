@@ -366,7 +366,18 @@ class SlideIn(BaseModel):
     active_start: Optional[time] = None
     active_end: Optional[time] = None
 
-    @field_validator("kind")
+    # ── Per-slide video clip (both None = play whole source) ──
+    #
+    # Restrict a VIDEO ``asset`` slide to a sub-range of its source.
+    # ``clip_start_ms`` is the offset the device seeks to; ``clip_duration_ms``
+    # (None = "to the natural end") bounds how long to play from there.  Only
+    # meaningful for an ``asset`` slide whose source is a VIDEO — enforced
+    # against the resolved source type at the service/resolver layer (the
+    # source's asset_type isn't known to this schema).  Omitting both (what
+    # every pre-feature client does) means "play the whole source / honour
+    # play_to_end", so output is byte-identical.
+    clip_start_ms: Optional[int] = Field(None, ge=0)
+    clip_duration_ms: Optional[int] = Field(None, ge=MIN_SLIDE_DURATION_MS)
     @classmethod
     def _validate_kind(cls, v: str) -> str:
         if v not in ("asset", "tag"):
@@ -494,6 +505,11 @@ class SlideIn(BaseModel):
                 raise ValueError("tag slide must not carry source_asset_id")
             if self.play_to_end:
                 raise ValueError("tag slide cannot set play_to_end")
+            # A dynamic tag block expands to many members; there is no single
+            # source to clip, so reject clip fields rather than silently
+            # dropping them.
+            if self.clip_start_ms is not None or self.clip_duration_ms is not None:
+                raise ValueError("tag slide cannot set clip_start_ms/clip_duration_ms")
         return self
 
 
@@ -528,6 +544,9 @@ class SlideOut(BaseModel):
     active_days: Optional[list[int]] = None
     active_start: Optional[time] = None
     active_end: Optional[time] = None
+    # Per-slide video clip; both null = play whole source.
+    clip_start_ms: Optional[int] = None
+    clip_duration_ms: Optional[int] = None
     source_asset_id: Optional[uuid.UUID] = None
     source_filename: Optional[str] = None
     source_asset_type: Optional[AssetType] = None

@@ -24,6 +24,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.schemas.protocol import (
+    CAPABILITY_SLIDESHOW_CLIP_V1,
     CAPABILITY_SLIDESHOW_COMPOSED_V1,
     CAPABILITY_SLIDESHOW_V1,
 )
@@ -162,6 +163,41 @@ async def _seed_slideshow(db, *, name, slides_data, checksum=""):
     return ss
 
 
+async def _seed_clip_slideshow(db, *, name, slides_data, checksum=""):
+    """Seed a slideshow whose slides may carry clip fields.
+
+    ``slides_data`` is a list of
+    ``(source_asset, duration_ms, play_to_end, clip_start_ms, clip_duration_ms)``.
+    ``clip_start_ms`` is an int; ``clip_duration_ms`` is an int or ``None``.
+    Used by the video-clip resolver tests.
+    """
+    ss = Asset(
+        filename=name,
+        asset_type=AssetType.SLIDESHOW,
+        size_bytes=0,
+        checksum=checksum,
+        is_global=True,
+    )
+    db.add(ss)
+    await db.commit()
+    await db.refresh(ss)
+    for idx, (src, dur_ms, pte, clip_start, clip_dur) in enumerate(slides_data):
+        db.add(SlideshowSlide(
+            slideshow_asset_id=ss.id,
+            source_asset_id=src.id,
+            position=idx,
+            duration_ms=dur_ms,
+            play_to_end=pte,
+            transition="cut",
+            transition_ms=600,
+            clip_start_ms=clip_start,
+            clip_duration_ms=clip_dur,
+        ))
+    await db.commit()
+    await db.refresh(ss)
+    return ss
+
+
 async def _seed_group(db, name="g"):
     g = DeviceGroup(name=name)
     db.add(g)
@@ -216,7 +252,10 @@ class TestSlideshowResolver:
         plan = await plan_slideshow(ss, profile.id, db_session)
         assert plan.ready
         assert [s.checksum for s in plan.slides] == ["img-variant", "vid-variant"]
-        assert [s.duration_ms for s in plan.slides] == [5000, 8000]
+        # P1 fix: a play_to_end video slide is sized to its REAL duration
+        # (10000ms) rather than its authored dwell (8000ms), so the anchored
+        # cycle math matches the real on-screen time.
+        assert [s.duration_ms for s in plan.slides] == [5000, 10000]
         assert plan.slides[1].play_to_end is True
 
     async def test_empty_slideshow_is_not_ready(self, db_session):
@@ -424,7 +463,7 @@ class TestSlideshowResolver:
             ss, device, "https://cms.example", db_session,
         )
         assert fetch is not None
-        assert fetch.manifest_schema_version == "1.5"
+        assert fetch.manifest_schema_version == "1.6"
         assert fetch.cycle_duration_ms == 7500
         assert fetch.started_at is not None
         assert fetch.started_at.endswith("Z")
@@ -1480,3 +1519,196 @@ class TestHybridTagTimeline:
         assert fetch is not None
         anchor = datetime.fromisoformat(fetch.started_at.replace("Z", "+00:00"))
         assert int(anchor.timestamp() * 1000) % fetch.cycle_duration_ms == 0
+
+
+# ---------------------------------------------------------------------------
+# Video clip / play_to_end slot tests (P1 fix + slideshow_clip_v1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestSlideshowVideoClip:
+    """Cover ``_effective_slide_playback`` end-to-end through the resolver:
+
+    - P1 fix: play_to_end videos report their REAL duration (unconditional).
+    - Bounded clips + clip-to-natural-end gated by ``slideshow_clip_v1``
+      (``emit_clip``).
+    - Non-capable devices get a length-preserving slot (clip_start forced 0).
+    - Checksum byte-identity for non-capable decks.
+    """
+
+    async def test_play_to_end_uses_real_duration_unconditionally(self, db_session):
+        """A play_to_end video is sized to its real length even when the
+        device can't clip (P1 fix is unconditional)."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pclip1")
+        vid = await _seed_video(db_session, filename="pte.mp4", duration=20.0)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-pte",
+            slides_data=[(vid, 8000, True, 0, None)],
+        )
+        # emit_clip=False (non-capable) still gets the real 20000ms slot.
+        plan = await plan_slideshow(ss, profile.id, db_session, emit_clip=False)
+        assert plan.ready
+        assert plan.slides[0].duration_ms == 20000
+        assert plan.slides[0].play_to_end is True
+        assert plan.slides[0].clip_start_ms == 0
+
+    async def test_play_to_end_unprobed_video_falls_back_to_dwell(self, db_session):
+        """An un-probed (duration_seconds=None) play_to_end video can't be
+        sized to real length, so it falls back to the authored dwell."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pclip2")
+        vid = await _seed_video(db_session, filename="noprobe.mp4", duration=None)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-noprobe",
+            slides_data=[(vid, 7000, True, 0, None)],
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session, emit_clip=True)
+        assert plan.ready
+        assert plan.slides[0].duration_ms == 7000
+        assert plan.slides[0].play_to_end is True
+
+    async def test_bounded_clip_capable_device(self, db_session):
+        """A bounded clip on a capable device: slot = clip length, NOT
+        play_to_end, and the seek offset is emitted."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pclip3")
+        vid = await _seed_video(db_session, filename="bounded.mp4", duration=20.0)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-bounded",
+            slides_data=[(vid, 8000, False, 3000, 5000)],
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session, emit_clip=True)
+        assert plan.ready
+        assert plan.slides[0].duration_ms == 5000
+        assert plan.slides[0].play_to_end is False
+        assert plan.slides[0].clip_start_ms == 3000
+
+    async def test_bounded_clip_noncapable_is_length_preserving(self, db_session):
+        """A bounded clip on a NON-capable device keeps the slot length but
+        forces the seek offset to 0 (plays the wrong window, right length)."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pclip4")
+        vid = await _seed_video(db_session, filename="bounded2.mp4", duration=20.0)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-bounded-nc",
+            slides_data=[(vid, 8000, False, 3000, 5000)],
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session, emit_clip=False)
+        assert plan.ready
+        assert plan.slides[0].duration_ms == 5000
+        assert plan.slides[0].play_to_end is False
+        assert plan.slides[0].clip_start_ms == 0
+
+    async def test_clip_to_natural_end_capable(self, db_session):
+        """Offset-only clip (no explicit length) with play_to_end: slot is
+        the real remaining length and the offset is emitted."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pclip5")
+        vid = await _seed_video(db_session, filename="tonatend.mp4", duration=20.0)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-tonatend",
+            slides_data=[(vid, 8000, True, 3000, None)],
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session, emit_clip=True)
+        assert plan.ready
+        assert plan.slides[0].duration_ms == 17000  # 20000 - 3000
+        assert plan.slides[0].play_to_end is True
+        assert plan.slides[0].clip_start_ms == 3000
+
+    async def test_clip_offset_past_eof_falls_back_to_dwell(self, db_session):
+        """A clip_start at/after EOF can't yield a positive slot, so it
+        defensively falls back to the authored dwell with no offset."""
+        from cms.services.slideshow_resolver import plan_slideshow
+
+        profile = await _seed_profile(db_session, "pclip6")
+        vid = await _seed_video(db_session, filename="pasteof.mp4", duration=20.0)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-pasteof",
+            slides_data=[(vid, 8000, True, 25000, None)],
+        )
+        plan = await plan_slideshow(ss, profile.id, db_session, emit_clip=True)
+        assert plan.ready
+        assert plan.slides[0].duration_ms == 8000
+        assert plan.slides[0].clip_start_ms == 0
+
+    async def test_wire_emits_clip_start_for_capable_device(self, db_session):
+        """build_fetch_for_slideshow emits ``clip_start_ms`` on the wire
+        descriptor for a capable device and 0 for a non-capable one."""
+        from cms.services.slideshow_resolver import build_fetch_for_slideshow
+
+        profile = await _seed_profile(db_session, "pclip7")
+        group = await _seed_group(db_session, "gclip7")
+        vid = await _seed_video(db_session, filename="wireclip.mp4", duration=20.0)
+        await _seed_variant(db_session, source=vid, profile=profile, ext="mp4")
+        ss = await _seed_clip_slideshow(
+            db_session, name="clip-wire",
+            slides_data=[(vid, 8000, False, 3000, 5000)],
+        )
+        cap_dev = await _seed_device(
+            db_session, did="dclip-cap", group=group, profile=profile,
+            capabilities=[CAPABILITY_SLIDESHOW_V1, CAPABILITY_SLIDESHOW_CLIP_V1],
+        )
+        nc_dev = await _seed_device(
+            db_session, did="dclip-nc", group=group, profile=profile,
+            capabilities=[CAPABILITY_SLIDESHOW_V1],
+        )
+        cap_fetch = await build_fetch_for_slideshow(
+            ss, cap_dev, "https://cms.example", db_session,
+            emit_clip=True,
+        )
+        nc_fetch = await build_fetch_for_slideshow(
+            ss, nc_dev, "https://cms.example", db_session,
+            emit_clip=False,
+        )
+        assert cap_fetch is not None and nc_fetch is not None
+        assert cap_fetch.slides[0].clip_start_ms == 3000
+        assert nc_fetch.slides[0].clip_start_ms == 0
+
+    async def test_noncapable_clip_checksum_is_byte_identical(self, db_session):
+        """A non-capable device's resolved checksum for a clipped deck is
+        identical to a plain deck with the same slot length (the clip offset
+        is never folded on the non-capable path)."""
+        from cms.services.slideshow_resolver import resolved_slideshow_checksum
+
+        profile = await _seed_profile(db_session, "pclip8")
+        vid = await _seed_video(
+            db_session, filename="cksum.mp4", duration=20.0, checksum="vsha",
+        )
+        await _seed_variant(
+            db_session, source=vid, profile=profile, checksum="vv", ext="mp4",
+        )
+        clipped = await _seed_clip_slideshow(
+            db_session, name="cksum-clip",
+            slides_data=[(vid, 8000, False, 3000, 5000)],
+            checksum="base",
+        )
+        plain = await _seed_clip_slideshow(
+            db_session, name="cksum-plain",
+            slides_data=[(vid, 5000, False, 0, None)],
+            checksum="base",
+        )
+        cs_clip = await resolved_slideshow_checksum(
+            clipped, profile.id, db_session, emit_clip=False,
+        )
+        cs_plain = await resolved_slideshow_checksum(
+            plain, profile.id, db_session, emit_clip=False,
+        )
+        assert cs_clip is not None
+        assert cs_clip == cs_plain
+        # And a capable device DOES fold the offset -> different hash.
+        cs_clip_cap = await resolved_slideshow_checksum(
+            clipped, profile.id, db_session, emit_clip=True,
+        )
+        assert cs_clip_cap != cs_clip

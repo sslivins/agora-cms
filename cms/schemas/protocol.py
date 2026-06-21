@@ -77,6 +77,23 @@ CAPABILITY_SLIDESHOW_COMPOSED_V1 = "slideshow_composed_v1"
 # the window predicate into the slideshow player.
 CAPABILITY_SLIDESHOW_VISIBILITY_V1 = "slideshow_visibility_v1"
 
+# Per-slide video clipping (manifest schema 1.6).  A device advertising
+# this capability is sent an optional per-slide ``clip_start_ms`` on the
+# ``SlideDescriptor`` (offset, in milliseconds, into the source video at
+# which playback of that slide begins).  The clip *length* is NOT a
+# separate wire field — it is already encoded by ``duration_ms`` (the
+# slot the device must fill on screen), so the source seek is
+# ``clip_start_ms + within_slot_offset`` and playback runs for
+# ``duration_ms``.  Only the seek offset is gated by this capability;
+# the underlying "``duration_ms`` == real on-screen playback time"
+# invariant (which also fixes ``play_to_end`` slots being clipped to the
+# authored dwell) is UNCONDITIONAL and applies to every device.  A
+# device WITHOUT this capability is sent ``clip_start_ms=0`` (the slot is
+# still length-correct — it just plays from the source's t=0 rather than
+# from the author's offset).  Pairs with the agora firmware PR that adds
+# the per-slide source seek to the slideshow player.
+CAPABILITY_SLIDESHOW_CLIP_V1 = "slideshow_clip_v1"
+
 # Slideshow manifest schema version (semver, additive minor bumps).  The
 # wire format of the slideshow manifest is independent of the
 # higher-level ``PROTOCOL_VERSION``: protocol bumps describe the WS
@@ -133,11 +150,26 @@ CAPABILITY_SLIDESHOW_VISIBILITY_V1 = "slideshow_visibility_v1"
 #           ignore the extras and keep the Phase-1 server-side drop.  Times
 #           and dates are serialized via ``isoformat()`` (full precision) so
 #           the firmware predicate is bit-for-bit identical to the CMS one.
+#   "1.6" — adds optional per-slide ``clip_start_ms`` (int, default 0) on
+#           ``SlideDescriptor``: the millisecond offset into the source
+#           video at which this slide's playback begins.  The clip length
+#           is carried by the existing ``duration_ms`` (the on-screen
+#           slot), so the device seeks the source to
+#           ``clip_start_ms + within_slot_offset`` and plays for
+#           ``duration_ms``.  Only emitted non-zero to devices advertising
+#           ``slideshow_clip_v1``; others receive ``clip_start_ms=0`` and
+#           play the (still length-correct) slot from t=0.  Independent of
+#           the clip seek, schema 1.6 also pins the invariant that a
+#           slide's ``duration_ms`` always equals its real on-screen
+#           playback time — in particular a ``play_to_end`` video slot is
+#           the video's full real length, not the authored dwell.  That
+#           invariant is unconditional (all schema versions / all
+#           devices); 1.6 only adds the optional non-zero start offset.
 #
 # Rule for future bumps: minor bumps are additive (old players ignore
 # unknown fields).  A breaking change bumps the *major* and is gated
 # via a new capability string (mirrors ``CAPABILITY_SLIDESHOW_V1``).
-SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.5"
+SLIDESHOW_MANIFEST_SCHEMA_VERSION_LATEST = "1.6"
 SLIDESHOW_MANIFEST_SCHEMA_VERSION_DEFAULT = "1.0"
 
 # Binary-frame magic for chunked log responses (Stage 3c of #345).  Pi
@@ -437,6 +469,14 @@ class SlideDescriptor(BaseModel):
     active_days: Optional[list[int]] = None
     active_start: Optional[str] = None
     active_end: Optional[str] = None
+    # Per-slide video clip start offset (manifest schema 1.6).  Optional on
+    # the wire (default 0) so v1.0–1.5 parsers ignore it; only emitted
+    # non-zero to devices advertising ``slideshow_clip_v1``.  Milliseconds
+    # into the source video at which this slide begins playing.  The clip
+    # *length* is the existing ``duration_ms`` slot, so the device seeks the
+    # source to ``clip_start_ms + within_slot_offset`` and plays for
+    # ``duration_ms``.  Only meaningful for ``asset_type == "video"``.
+    clip_start_ms: int = 0
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> "SlideDescriptor":
@@ -452,6 +492,15 @@ class SlideDescriptor(BaseModel):
         if self.play_to_end and self.asset_type != "video":
             raise ValueError(
                 "SlideDescriptor.play_to_end=True is only valid for video sources"
+            )
+        if self.clip_start_ms < 0:
+            raise ValueError(
+                "SlideDescriptor.clip_start_ms must be >= 0, "
+                f"got {self.clip_start_ms}"
+            )
+        if self.clip_start_ms > 0 and self.asset_type != "video":
+            raise ValueError(
+                "SlideDescriptor.clip_start_ms > 0 is only valid for video sources"
             )
         if self.siblings is not None and self.asset_type != "composed":
             raise ValueError(

@@ -190,6 +190,27 @@ class SlideshowSlide(Base):
             "active_days IS NULL OR active_days <@ '{0,1,2,3,4,5,6}'::smallint[]",
             name="ck_slideshow_slide_active_days",
         ).ddl_if(dialect="postgresql"),
+        # ── Per-slide video clip (agora video-clip) ──
+        #
+        # Restrict a VIDEO slide to a sub-range of its source.  Both NULL by
+        # default = "play the whole source / honour play_to_end" — existing
+        # rows are byte-identical and unaffected.  ``clip_start_ms`` is the
+        # offset into the source the device seeks to before playing;
+        # ``clip_duration_ms`` is how long to play from that offset (NULL =
+        # "to the natural end").  The resolver turns these into the emitted
+        # ``duration_ms`` slot + wire ``clip_start_ms`` seek; the playback
+        # bound (start+duration) must stay within the source's real length,
+        # enforced in the resolver against the probed ``Asset.duration_seconds``
+        # (not knowable at the DB layer).  These CHECKs are belt-and-braces
+        # shape guards mirroring the Pydantic validators.
+        CheckConstraint(
+            "clip_start_ms IS NULL OR clip_start_ms >= 0",
+            name="ck_slideshow_slide_clip_start_nonneg",
+        ),
+        CheckConstraint(
+            "clip_duration_ms IS NULL OR clip_duration_ms > 0",
+            name="ck_slideshow_slide_clip_duration_pos",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -309,6 +330,13 @@ class SlideshowSlide(Base):
     # one-sided window.
     active_start: Mapped[time | None] = mapped_column(Time, nullable=True)
     active_end: Mapped[time | None] = mapped_column(Time, nullable=True)
+    # ── Per-slide video clip (agora video-clip) ──
+    # Both NULL = play the whole source (honour play_to_end / dwell).
+    # ``clip_start_ms`` seeks into the source; ``clip_duration_ms`` (NULL =
+    # to natural end) bounds how long to play.  The resolver maps these to
+    # the emitted ``duration_ms`` slot + wire ``clip_start_ms`` seek.
+    clip_start_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clip_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -1582,6 +1582,8 @@ def _slide_row(slideshow_asset_id: uuid.UUID, idx: int, s: SlideIn) -> Slideshow
         active_days=s.active_days,
         active_start=s.active_start,
         active_end=s.active_end,
+        clip_start_ms=s.clip_start_ms,
+        clip_duration_ms=s.clip_duration_ms,
     )
 
 
@@ -1703,6 +1705,51 @@ async def _load_and_validate_slide_sources(
                     "play_to_end is only valid for video sources"
                 ),
             )
+        # Per-slide video clip: only valid on a VIDEO source, and the clip
+        # window (start + duration) must fit inside the source's real probed
+        # length.  ``duration_seconds`` is populated once the transcoder
+        # probes the upload; if it's still None we can't verify the bound, so
+        # reject with a "still processing" message rather than emit a clip the
+        # resolver can't validate.
+        if s.clip_start_ms is not None or s.clip_duration_ms is not None:
+            if src.asset_type != AssetType.VIDEO:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Slide source '{src.filename}' is a "
+                        f"{src.asset_type.value}; video clipping "
+                        "(clip_start_ms/clip_duration_ms) is only valid for "
+                        "video sources"
+                    ),
+                )
+            if src.duration_seconds is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Slide source '{src.filename}' is still being "
+                        "processed; its duration isn't known yet, so it can't "
+                        "be clipped. Try again once processing finishes."
+                    ),
+                )
+            real_ms = round(src.duration_seconds * 1000)
+            start = s.clip_start_ms or 0
+            if start >= real_ms:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"clip_start_ms ({start}) is at or past the end of "
+                        f"'{src.filename}' ({real_ms} ms)"
+                    ),
+                )
+            if s.clip_duration_ms is not None and start + s.clip_duration_ms > real_ms:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Clip window for '{src.filename}' "
+                        f"(start {start} ms + duration {s.clip_duration_ms} ms) "
+                        f"exceeds the source length ({real_ms} ms)"
+                    ),
+                )
 
     if visible_ids is not None:
         visible_set = set(visible_ids)
@@ -2189,6 +2236,8 @@ async def list_slideshow_slides(
                 "active_end": slide.active_end.isoformat()
                 if slide.active_end
                 else None,
+                "clip_start_ms": slide.clip_start_ms,
+                "clip_duration_ms": slide.clip_duration_ms,
                 "source_asset_id": str(slide.source_asset_id),
                 "source_filename": src.filename if src else None,
                 "source_asset_type": src.asset_type.value if src else None,
