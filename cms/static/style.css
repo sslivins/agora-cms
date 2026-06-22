@@ -1149,6 +1149,16 @@ tr.highlight-new td {
 .inline-label { font-size: 0.9rem; color: var(--text-muted); white-space: nowrap; }
 .group-body { padding: 0 1rem 0.75rem; }
 .group-body table { margin: 0; }
+/* Device-row badge tooltips (e.g. the "Update available" pill) point
+   upward; on the top row of a group panel they extend above the table.
+   `.card .table-wrap` sets `overflow-x: auto`, which makes the browser
+   compute `overflow-y` to `auto` as well, clipping that tooltip at the
+   table's top edge -- right where the group name sits, so the top of
+   the tooltip disappears. Let the grouped table overflow visibly so the
+   tooltip escapes (same tooltip-escape pattern as `.detail-value`
+   above). The global/ungrouped `.card .table-wrap` keeps its horizontal
+   scroll untouched. */
+.group-panel .group-body .table-wrap { overflow: visible; }
 .inline-edit-sm { font-size: 0.9rem; padding: 0.2rem 1.6rem 0.2rem 0.4rem; min-width: 11rem; }
 
 /* Draggable devices */
