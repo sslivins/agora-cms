@@ -10,7 +10,7 @@ involved.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -46,7 +46,9 @@ class TestSlideshowPreview:
         await db_session.flush()
         return img
 
-    async def _make_slideshow(self, db_session, members, *, is_global=True):
+    async def _make_slideshow(
+        self, db_session, members, *, is_global=True, windows=None
+    ):
         ss = Asset(
             filename=f"show-{uuid.uuid4()}.slideshow",
             asset_type=AssetType.SLIDESHOW,
@@ -57,6 +59,7 @@ class TestSlideshowPreview:
         db_session.add(ss)
         await db_session.flush()
         for idx, src in enumerate(members):
+            window = (windows[idx] if windows else None) or {}
             db_session.add(
                 SlideshowSlide(
                     slideshow_asset_id=ss.id,
@@ -66,6 +69,7 @@ class TestSlideshowPreview:
                     play_to_end=False,
                     transition="fade",
                     transition_ms=600,
+                    **window,
                 )
             )
         await db_session.flush()
@@ -141,6 +145,70 @@ class TestSlideshowPreview:
         resp = await client.get(f"/composed/slideshow/{ss.id}/preview")
         assert resp.status_code == 422, resp.text
         assert "can only cycle IMAGE and VIDEO" in resp.text
+
+    async def test_closed_window_slide_is_skipped_in_preview(
+        self, client, db_session, tmp_path
+    ):
+        # A per-slide visibility window in the past (valid_to long ago) is
+        # CLOSED right now, so the preview must drop that member and inline
+        # only the windowless (always-open) one -- matching what a device
+        # would currently play.
+        storage = _storage_dir(tmp_path)
+        open_img = await self._make_image(db_session, storage, "open.png")
+        closed_img = await self._make_image(db_session, storage, "closed.png")
+        ss = await self._make_slideshow(
+            db_session,
+            [open_img, closed_img],
+            windows=[None, {"valid_to": date(2000, 1, 1)}],
+        )
+
+        resp = await client.get(f"/composed/slideshow/{ss.id}/preview")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Only the always-open member is inlined; the closed one is dropped.
+        assert body.count("data:image/png;base64,") == 1
+        assert "cw-ss-slide" in body
+
+    async def test_windowless_slide_always_kept_in_preview(
+        self, client, db_session, tmp_path
+    ):
+        # A slide with no window columns set is always open, so the preview
+        # is byte-for-byte the pre-feature behaviour (both members inlined).
+        storage = _storage_dir(tmp_path)
+        img1 = await self._make_image(db_session, storage, "w1.png")
+        img2 = await self._make_image(db_session, storage, "w2.png")
+        ss = await self._make_slideshow(
+            db_session, [img1, img2], windows=[None, None]
+        )
+
+        resp = await client.get(f"/composed/slideshow/{ss.id}/preview")
+        assert resp.status_code == 200, resp.text
+        assert resp.text.count("data:image/png;base64,") == 2
+
+    async def test_all_windows_closed_gives_friendly_422(
+        self, client, db_session, tmp_path
+    ):
+        # Every member's window is closed right now (all in the past): the
+        # preview must NOT 500 and must NOT report "has no slides" (the deck
+        # is structurally non-empty) -- it should surface the friendly
+        # "nothing scheduled right now" message.
+        storage = _storage_dir(tmp_path)
+        a = await self._make_image(db_session, storage, "pa.png")
+        b = await self._make_image(db_session, storage, "pb.png")
+        ss = await self._make_slideshow(
+            db_session,
+            [a, b],
+            windows=[
+                {"valid_to": date(2000, 1, 1)},
+                {"valid_to": date(1999, 6, 1)},
+            ],
+        )
+
+        resp = await client.get(f"/composed/slideshow/{ss.id}/preview")
+        assert resp.status_code == 422, resp.text
+        assert "scheduled to show right now" in resp.text
+        # Must not be confused with a structurally-empty slideshow.
+        assert "has no slides\"" not in resp.text
 
     async def test_csp_header_is_locked_down(self, client, db_session, tmp_path):
         storage = _storage_dir(tmp_path)

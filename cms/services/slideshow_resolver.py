@@ -1072,13 +1072,15 @@ async def resolved_slideshow_checksum(
     )
 
 
-async def device_local_now(device: Device, db: AsyncSession) -> datetime:
+async def device_local_now(device: Device | None, db: AsyncSession) -> datetime:
     """Return the current time in ``device``'s effective local timezone.
 
     A per-device IANA tz override takes precedence over the CMS global
     ``timezone`` setting (mirroring the wire ``timezone`` the device
     applies locally); falls back to UTC when neither is set or the value
-    is invalid.  Drives per-slide visibility-window evaluation in
+    is invalid.  Passing ``device=None`` (e.g. the editor preview, which
+    has no specific device) skips the per-device override and uses the
+    CMS global ``timezone`` setting.  Drives per-slide visibility-window evaluation in
     :func:`build_fetch_for_slideshow` / :func:`resolved_slideshow_checksum`.
     """
     from cms.models.setting import CMSSetting  # lazy: avoid import cycle
