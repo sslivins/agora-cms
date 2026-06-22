@@ -391,24 +391,12 @@
     letter-spacing: 0.04em;
     padding-left: 0.1rem;
 }
-/* Start input + quick-fill chip share one row; the input flexes, chip hugs. */
-.ssb-vis-inrow { display: flex; align-items: center; gap: 0.25rem; }
-.ssb-vis-inrow input[type=date],
-.ssb-vis-inrow input[type=time] { flex: 1 1 auto; width: auto; }
-.ssb-vis-nowbtn {
-    flex: 0 0 auto;
-    background: #2a2a2a;
-    color: #8fd9c9;
-    border: 1px solid #3a6f64;
-    border-radius: 4px;
-    padding: 0.16rem 0.4rem;
-    font-size: 0.62rem;
-    font-weight: 600;
-    line-height: 1;
-    cursor: pointer;
-    white-space: nowrap;
-}
-.ssb-vis-nowbtn:hover { background: #1abc9c; color: #10241f; border-color: #1abc9c; }
+/* Quick-fill "Set to now / today" popup chips reuse the global scheduler
+   chip styles (.time-now-wrap / .time-now-chip in style.css): a floating
+   pill that appears above the Start input only while it (or the chip) has
+   focus, so it never competes with the native picker. The wrap is a normal
+   full-width column child of .ssb-vis-pair; the chip is absolutely
+   positioned and so has no layout impact. */
 .ssb-vis-days { display: flex; gap: 3px; flex-wrap: wrap; }
 .ssb-vis-day {
     width: 26px;
@@ -1731,9 +1719,9 @@ function visibilityCtlHtml(s, i) {
                     <fieldset class="ssb-vis-fs">
                         <legend>Date range</legend>
                         <div class="ssb-vis-pair">
-                            <div class="ssb-vis-inrow">
+                            <div class="time-now-wrap ssb-vis-nowwrap">
+                                <button type="button" class="time-now-chip ssb-vis-today-btn" tabindex="-1">📅 Set to today</button>
                                 <input type="date" class="ssb-vis-valid-from" value="${escapeHtml(s.valid_from || '')}" aria-label="Start date">
-                                <button type="button" class="ssb-vis-nowbtn ssb-vis-today-btn" title="Set start date to today">📅 Today</button>
                             </div>
                             <span class="ssb-vis-to">to</span>
                             <input type="date" class="ssb-vis-valid-to" value="${escapeHtml(s.valid_to || '')}" aria-label="End date">
@@ -1742,9 +1730,9 @@ function visibilityCtlHtml(s, i) {
                     <fieldset class="ssb-vis-fs">
                         <legend>Time of day</legend>
                         <div class="ssb-vis-pair">
-                            <div class="ssb-vis-inrow">
+                            <div class="time-now-wrap ssb-vis-nowwrap">
+                                <button type="button" class="time-now-chip ssb-vis-now-btn" tabindex="-1">⏱ Set to now</button>
                                 <input type="time" class="ssb-vis-active-start" value="${escapeHtml(visTimeInputVal(s.active_start))}" aria-label="Start time">
-                                <button type="button" class="ssb-vis-nowbtn ssb-vis-now-btn" title="Set start time to now (fills End +1h if empty)">⏱ Now</button>
                             </div>
                             <span class="ssb-vis-to">to</span>
                             <input type="time" class="ssb-vis-active-end" value="${escapeHtml(visTimeInputVal(s.active_end))}" aria-label="End time">
@@ -1780,10 +1768,11 @@ function wireVisibilityCtls(slot, i) {
     bind('.ssb-vis-valid-to', 'valid_to');
     bind('.ssb-vis-active-start', 'active_start');
     bind('.ssb-vis-active-end', 'active_end');
-    const nowBtn = slot.querySelector('.ssb-vis-now-btn');
-    if (nowBtn) nowBtn.addEventListener('click', () => setSlideVisNow(i));
-    const todayBtn = slot.querySelector('.ssb-vis-today-btn');
-    if (todayBtn) todayBtn.addEventListener('click', () => setSlideVisToday(i));
+    // Focus-reveal quick-fill popup chips (same UX as the scheduler edit
+    // modal): the chip floats above its Start input only while that input
+    // (or the chip) is focused, and never replaces the native picker.
+    wireVisChip(slot, '.ssb-vis-now-btn', '.ssb-vis-active-start', visNowLabelTime, () => setSlideVisNow(i));
+    wireVisChip(slot, '.ssb-vis-today-btn', '.ssb-vis-valid-from', visNowLabelToday, () => setSlideVisToday(i));
     slot.querySelectorAll('.ssb-vis-day').forEach((chip) => {
         const d = Number(chip.dataset.day);
         chip.addEventListener('click', () => toggleSlideVisDay(i, d));
@@ -1819,6 +1808,61 @@ function setSlideVisMode(i, mode) {
     }
     markDirty();
     renderTimeline();
+}
+
+// Wire one focus-reveal quick-fill chip: the chip (``chipSel``) floats above
+// its Start ``input`` only while the input or chip is focused — mirroring the
+// scheduler edit modal — and fills the field via ``onClick`` when pressed.
+// ``labelFn`` returns the live chip label (e.g. "⏱ Set to now (3:15 PM)"),
+// refreshed each time the input is focused so the displayed value stays
+// current. The visibility block is rebuilt by renderTimeline() on every
+// change, so this is re-invoked against fresh DOM each render; that's fine —
+// the chip is purely ephemeral and a fill simply re-renders it away.
+function wireVisChip(slot, chipSel, inputSel, labelFn, onClick) {
+    const chip = slot.querySelector(chipSel);
+    const input = slot.querySelector(inputSel);
+    if (!chip || !input) return;
+    const wrap = chip.closest('.time-now-wrap');
+    const refresh = () => { chip.textContent = labelFn(); };
+    refresh();
+    input.addEventListener('focus', () => { refresh(); if (wrap) wrap.classList.add('focused'); });
+    input.addEventListener('blur', () => {
+        // Delay so a click on the chip still registers before we hide it; if
+        // the user is mid-click the chip is the activeElement by the time
+        // this fires.
+        setTimeout(() => {
+            if (wrap && document.activeElement !== chip) wrap.classList.remove('focused');
+        }, 120);
+    });
+    // Keep the chip's mousedown from blurring the input before its click fires.
+    chip.addEventListener('mousedown', (e) => e.preventDefault());
+    chip.addEventListener('click', onClick);
+}
+
+// Live label for the time-of-day "Set to now" chip — current wall-clock time
+// in the author's browser locale (which is the device timezone; the
+// visibility block has no separate tz selector).
+function visNowLabelTime() {
+    let txt;
+    try {
+        txt = new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    } catch (e) {
+        const n = new Date();
+        txt = String(n.getHours()).padStart(2, '0') + ':' + String(n.getMinutes()).padStart(2, '0');
+    }
+    return '⏱ Set to now (' + txt + ')';
+}
+
+// Live label for the date-range "Set to today" chip — today's calendar date
+// in the author's browser locale.
+function visNowLabelToday() {
+    let txt;
+    try {
+        txt = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (e) {
+        txt = new Date().toLocaleDateString('en-CA');
+    }
+    return '📅 Set to today (' + txt + ')';
 }
 
 // "Set to now" quick-fill for the Time of day window. Fills Start with the

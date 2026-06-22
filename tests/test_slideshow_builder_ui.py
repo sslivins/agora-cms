@@ -100,14 +100,26 @@ class TestSlideshowBuilderRoutes:
             assert "z-index: 2" in block, f"{cls} missing z-index above blur fg"
 
     async def test_visibility_block_has_quick_fill_chips(self, client):
-        """The per-slide Visibility block offers scheduler-style quick-fill
-        chips: a "Now" chip for the time-of-day Start and a "Today" chip for
-        the date-range Start, each wired to a handler."""
+        """The per-slide Visibility block offers scheduler-style focus-reveal
+        quick-fill popup chips: a "Now" chip for the time-of-day Start and a
+        "Today" chip for the date-range Start, each wired to a handler. The
+        chips reuse the global ``.time-now-wrap``/``.time-now-chip`` pattern
+        and appear only while the Start input (or chip) is focused — they are
+        NOT permanent inline buttons."""
         resp = await client.get("/assets/new/slideshow")
         assert resp.status_code == 200, resp.text
         # Chip buttons in visibilityCtlHtml.
         assert "ssb-vis-now-btn" in resp.text
         assert "ssb-vis-today-btn" in resp.text
+        # Popup-chip pattern: reuse the scheduler chip classes, not permanent
+        # inline buttons.
+        assert "time-now-chip" in resp.text
+        assert "time-now-wrap" in resp.text
+        # The old permanent-button markup must be gone.
+        assert "ssb-vis-nowbtn" not in resp.text
+        # Focus-reveal wiring via the shared chip helper + .focused class.
+        assert "wireVisChip(" in resp.text
+        assert "classList.add('focused')" in resp.text
         # Click handlers wired in wireVisibilityCtls.
         assert "setSlideVisNow(i)" in resp.text
         assert "setSlideVisToday(i)" in resp.text
