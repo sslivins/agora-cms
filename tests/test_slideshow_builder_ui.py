@@ -99,6 +99,22 @@ class TestSlideshowBuilderRoutes:
             block = resp.text[start:start + 400]
             assert "z-index: 2" in block, f"{cls} missing z-index above blur fg"
 
+    async def test_visibility_block_has_quick_fill_chips(self, client):
+        """The per-slide Visibility block offers scheduler-style quick-fill
+        chips: a "Now" chip for the time-of-day Start and a "Today" chip for
+        the date-range Start, each wired to a handler."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        # Chip buttons in visibilityCtlHtml.
+        assert "ssb-vis-now-btn" in resp.text
+        assert "ssb-vis-today-btn" in resp.text
+        # Click handlers wired in wireVisibilityCtls.
+        assert "setSlideVisNow(i)" in resp.text
+        assert "setSlideVisToday(i)" in resp.text
+        # "Set to now" seeds End +1h ONLY when End is empty (open-ended
+        # windows typed by hand stay open).
+        assert "if (!s.active_end)" in resp.text
+
     async def test_create_mode_preview_btn_hidden_until_mint(self, client):
         """Bug: AI-assistant slideshow create left the page in create-mode
         chrome — Create button never flipped to Save and no Preview button
