@@ -1149,25 +1149,55 @@ tr.highlight-new td {
 .inline-label { font-size: 0.9rem; color: var(--text-muted); white-space: nowrap; }
 .group-body { padding: 0 1rem 0.75rem; }
 .group-body table { margin: 0; }
-/* Device-row badge tooltips (e.g. the "Update available" pill) point
-   upward; on the top row of a group panel they extend above the table,
-   into the group-name/header area. `.card .table-wrap` sets
-   `overflow-x: auto`, and per spec a non-`visible` value on one axis
-   forces the other axis to compute to `auto` too -- so `overflow-y`
-   silently became `auto` and clipped that tooltip at the table's top
-   edge (the top of the tooltip vanished right where the group name
-   sits). We can't make a single scroll container both scroll
-   horizontally and let the tooltip escape vertically, so keep the
-   horizontal scroll (the wide grouped device table must stay contained
-   -- see tests_e2e/test_layout_devices.py) and switch the vertical axis
-   to `clip` with an `overflow-clip-margin` large enough for the upward
-   tooltip. `overflow-clip-margin` extends the clip region outward
-   without changing layout or adding scrollbars; browsers without
-   support fall back to plain vertical clipping (today's behavior). */
+/* The wide grouped device table must stay horizontally contained
+   (see tests_e2e/test_layout_devices.py), so `.table-wrap` keeps
+   `overflow-x: auto`. Per the CSS overflow spec a non-`visible` value
+   on one axis forces the other axis to compute to `auto` as well, so
+   this element is unavoidably a scroll container that clips BOTH axes
+   at its padding edge -- there is no CSS way to let a child tooltip
+   escape it (`overflow-clip-margin` is spec-ignored on scroll
+   containers, so the earlier attempt was a no-op). Device-row badge
+   tooltips (e.g. the "Update available" pill) therefore can't render
+   inside the container without being clipped at the top edge, right
+   where the group name sits. Instead we suppress the native CSS
+   tooltip for any `.has-tooltip` inside a `.table-wrap` and render it
+   through a body-level fixed portal in app.js (see initTooltipPortal),
+   which escapes every clipping/stacking context. */
 .group-panel .group-body .table-wrap {
     overflow-x: auto;
-    overflow-y: clip;
-    overflow-clip-margin: 4rem;
+}
+/* Tooltips inside a scroll container are clipped at its padding edge;
+   the JS portal renders them at the document level instead. */
+.table-wrap .has-tooltip > .tooltip {
+    display: none;
+}
+
+/* Body-level tooltip portal (escapes scroll-container clipping). */
+#tooltip-portal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    max-width: 280px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.85rem;
+    font-size: 0.8rem;
+    font-weight: 400;
+    line-height: 1.45;
+    white-space: normal;
+    box-shadow: 0 4px 20px rgba(233, 69, 96, 0.15), 0 2px 8px rgba(0, 0, 0, 0.3);
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+    z-index: 4000;
+    text-transform: none;
+}
+#tooltip-portal.visible {
+    opacity: 1;
+    visibility: visible;
 }
 .inline-edit-sm { font-size: 0.9rem; padding: 0.2rem 1.6rem 0.2rem 0.4rem; min-width: 11rem; }
 

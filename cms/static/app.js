@@ -3016,3 +3016,87 @@ function _repositionAllOpenPopovers() {
 }
 window.addEventListener("scroll", _repositionAllOpenPopovers, true);
 window.addEventListener("resize", _repositionAllOpenPopovers);
+
+// ── Tooltip portal ────────────────────────────────────────────────────
+// Tooltips that live inside a horizontally-scrolling container
+// (`.table-wrap`, e.g. the grouped device table) are clipped at the
+// container's padding edge -- a scroll container clips BOTH axes and no
+// CSS (overflow-clip-margin is spec-ignored on scroll containers) lets a
+// child escape it. The canonical victim is the "Update available" pill on
+// the top device row, whose upward tooltip was cut off where the group
+// name sits. We hide the native CSS tooltip for any `.has-tooltip` inside
+// a `.table-wrap` (see style.css) and re-render it here in a single
+// body-level fixed element that escapes every clipping/stacking context.
+(function initTooltipPortal() {
+    let portal = null;
+    let activeTrigger = null;
+
+    function getPortal() {
+        if (!portal) {
+            portal = document.createElement("div");
+            portal.id = "tooltip-portal";
+            portal.setAttribute("role", "tooltip");
+            document.body.appendChild(portal);
+        }
+        return portal;
+    }
+
+    function hide() {
+        activeTrigger = null;
+        if (portal) portal.classList.remove("visible");
+    }
+
+    function show(trigger) {
+        const tip = trigger.querySelector(":scope > .tooltip");
+        if (!tip) return;
+        if (!tip.textContent.trim()) return;
+        activeTrigger = trigger;
+        const p = getPortal();
+        // Mirror the native tooltip's markup (already CMS-rendered and
+        // escaped) so multi-line `<div>` tooltips keep their structure.
+        p.innerHTML = tip.innerHTML;
+        // Lay out at the origin first so we can measure natural size.
+        p.style.left = "0px";
+        p.style.top = "0px";
+        p.classList.add("visible");
+        const PAD = 8, GAP = 10;
+        const r = trigger.getBoundingClientRect();
+        const pr = p.getBoundingClientRect();
+        let top = r.top - pr.height - GAP;          // prefer above
+        if (top < PAD) top = r.bottom + GAP;        // flip below if no room
+        let left = r.left + r.width / 2 - pr.width / 2;   // center on trigger
+        left = Math.max(PAD, Math.min(left, window.innerWidth - pr.width - PAD));
+        p.style.left = left + "px";
+        p.style.top = top + "px";
+    }
+
+    function candidate(target) {
+        if (!(target instanceof Element)) return null;
+        const trigger = target.closest(".has-tooltip");
+        if (!trigger) return null;
+        // Only portal tooltips that would otherwise be clipped by a
+        // scroll container; everything else keeps its native CSS tooltip.
+        if (!trigger.closest(".table-wrap")) return null;
+        return trigger;
+    }
+
+    document.addEventListener("pointerover", (e) => {
+        const trigger = candidate(e.target);
+        if (trigger && trigger !== activeTrigger) show(trigger);
+    });
+    document.addEventListener("pointerout", (e) => {
+        if (!activeTrigger) return;
+        const to = e.relatedTarget;
+        if (to instanceof Element && activeTrigger.contains(to)) return;
+        hide();
+    });
+    document.addEventListener("focusin", (e) => {
+        const trigger = candidate(e.target);
+        if (trigger) show(trigger);
+    });
+    document.addEventListener("focusout", hide);
+    // The portal is fixed-positioned off the trigger's rect; any scroll
+    // or resize invalidates it, so dismiss (re-shows on next hover).
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+})();
