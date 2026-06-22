@@ -1149,6 +1149,26 @@ tr.highlight-new td {
 .inline-label { font-size: 0.9rem; color: var(--text-muted); white-space: nowrap; }
 .group-body { padding: 0 1rem 0.75rem; }
 .group-body table { margin: 0; }
+/* Device-row badge tooltips (e.g. the "Update available" pill) point
+   upward; on the top row of a group panel they extend above the table,
+   into the group-name/header area. `.card .table-wrap` sets
+   `overflow-x: auto`, and per spec a non-`visible` value on one axis
+   forces the other axis to compute to `auto` too -- so `overflow-y`
+   silently became `auto` and clipped that tooltip at the table's top
+   edge (the top of the tooltip vanished right where the group name
+   sits). We can't make a single scroll container both scroll
+   horizontally and let the tooltip escape vertically, so keep the
+   horizontal scroll (the wide grouped device table must stay contained
+   -- see tests_e2e/test_layout_devices.py) and switch the vertical axis
+   to `clip` with an `overflow-clip-margin` large enough for the upward
+   tooltip. `overflow-clip-margin` extends the clip region outward
+   without changing layout or adding scrollbars; browsers without
+   support fall back to plain vertical clipping (today's behavior). */
+.group-panel .group-body .table-wrap {
+    overflow-x: auto;
+    overflow-y: clip;
+    overflow-clip-margin: 4rem;
+}
 .inline-edit-sm { font-size: 0.9rem; padding: 0.2rem 1.6rem 0.2rem 0.4rem; min-width: 11rem; }
 
 /* Draggable devices */
