@@ -23,6 +23,7 @@ routing and builds the
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +31,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models.asset import Asset
 from shared.models.slideshow_slide import SlideshowSlide
 from cms.schemas.asset import SLIDE_TRANSITIONS
-from cms.services.slideshow_resolver import expand_tag_members
+from cms.services.slideshow_resolver import (
+    _slide_window_open,
+    expand_tag_members,
+)
 
 
 def composed_cell_transition(transition: str) -> str:
@@ -58,6 +62,7 @@ async def load_slideshow_members(
     slideshow_asset_id: uuid.UUID,
     *,
     exclude_deleted: bool,
+    drop_closed_at: datetime | None = None,
 ) -> list[tuple[SlideshowSlide, Asset | None]]:
     """Return the slideshow's slides in ``position`` order with their sources.
 
@@ -78,6 +83,15 @@ async def load_slideshow_members(
     (the expansion filters them), so they never yield a ``None`` source.
     Returns an empty list when the slideshow has no slides (or expands to
     none, e.g. only empty tag blocks).
+
+    Per-slide visibility windows (manifest schema 1.5): when
+    ``drop_closed_at`` is supplied (a tz-aware local-now), any slide whose
+    visibility window is *closed* at that instant is dropped — so the
+    caller sees only the slides that are live right now.  This is the
+    device-faithful preview behaviour (the Pi drops closed slides too).
+    The default ``None`` means "show every slide" so the device-publish
+    path (which delegates window handling to the slideshow resolver) and
+    the structural pickability check in the editor are unaffected.
     """
     slide_rows = (
         await db.execute(
@@ -114,6 +128,11 @@ async def load_slideshow_members(
         src_rows = (await db.execute(src_q)).scalars().all()
         by_id = {a.id: a for a in src_rows}
 
-    return [
+    result = [
         (s, by_id.get(mid) if mid is not None else None) for s, mid in pairs
     ]
+    if drop_closed_at is not None:
+        result = [
+            pair for pair in result if _slide_window_open(pair[0], drop_closed_at)
+        ]
+    return result

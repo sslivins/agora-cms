@@ -75,6 +75,7 @@ from cms.composed.slideshow_expand import (
 from cms.composed.validate import validate_layout
 from cms.models.asset import Asset, AssetType
 from cms.models.composed_slide import ComposedSlide
+from cms.services.slideshow_resolver import device_local_now
 
 # Widgets allowed to render a VIDEO asset. The ImageWidget only knows how
 # to emit an <img> from inline bytes, so routing a video to it would raise
@@ -331,6 +332,14 @@ async def _render_layout_to_html(
     sibling_asset_urls: dict[uuid.UUID, str] = {}
     slideshow_plans: dict[uuid.UUID, list[SlideshowSlidePlan]] = {}
 
+    # Preview/thumbnail render reflects what's live *right now*: any
+    # embedded-slideshow member whose per-slide visibility window is closed
+    # at the current CMS-local time is dropped, exactly like the device
+    # does.  No specific device here, so use the CMS global timezone.
+    # Computed lazily (only when an embedded slideshow is actually present)
+    # to avoid an extra timezone-setting read on the common no-slideshow path.
+    preview_now: datetime | None = None
+
     if declared_ids:
         storage_dir = settings.asset_storage_path
         rows = await db.execute(
@@ -411,11 +420,30 @@ async def _render_layout_to_html(
             if ref.asset_type == AssetType.SLIDESHOW:
                 # The render/preview path excludes deleted source assets
                 # (it reflects the live editor state, not a frozen device
-                # snapshot).
+                # snapshot).  It also drops members whose per-slide
+                # visibility window is closed at ``preview_now``, so the
+                # preview shows only what a device would currently play.
+                if preview_now is None:
+                    preview_now = await device_local_now(None, db)
                 members = await load_slideshow_members(
-                    db, aid, exclude_deleted=True
+                    db, aid, exclude_deleted=True, drop_closed_at=preview_now
                 )
                 if not members:
+                    # Disambiguate a structurally-empty slideshow from one
+                    # whose every member is simply outside its visibility
+                    # window right now (a transient, expected state).
+                    any_members = await load_slideshow_members(
+                        db, aid, exclude_deleted=True
+                    )
+                    if any_members:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Slideshow {aid} has no slides scheduled to "
+                                "show right now (all per-slide visibility "
+                                "windows are currently closed)"
+                            ),
+                        )
                     raise HTTPException(
                         status_code=422,
                         detail=(
