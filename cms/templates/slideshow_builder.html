@@ -391,6 +391,24 @@
     letter-spacing: 0.04em;
     padding-left: 0.1rem;
 }
+/* Start input + quick-fill chip share one row; the input flexes, chip hugs. */
+.ssb-vis-inrow { display: flex; align-items: center; gap: 0.25rem; }
+.ssb-vis-inrow input[type=date],
+.ssb-vis-inrow input[type=time] { flex: 1 1 auto; width: auto; }
+.ssb-vis-nowbtn {
+    flex: 0 0 auto;
+    background: #2a2a2a;
+    color: #8fd9c9;
+    border: 1px solid #3a6f64;
+    border-radius: 4px;
+    padding: 0.16rem 0.4rem;
+    font-size: 0.62rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.ssb-vis-nowbtn:hover { background: #1abc9c; color: #10241f; border-color: #1abc9c; }
 .ssb-vis-days { display: flex; gap: 3px; flex-wrap: wrap; }
 .ssb-vis-day {
     width: 26px;
@@ -1713,7 +1731,10 @@ function visibilityCtlHtml(s, i) {
                     <fieldset class="ssb-vis-fs">
                         <legend>Date range</legend>
                         <div class="ssb-vis-pair">
-                            <input type="date" class="ssb-vis-valid-from" value="${escapeHtml(s.valid_from || '')}" aria-label="Start date">
+                            <div class="ssb-vis-inrow">
+                                <input type="date" class="ssb-vis-valid-from" value="${escapeHtml(s.valid_from || '')}" aria-label="Start date">
+                                <button type="button" class="ssb-vis-nowbtn ssb-vis-today-btn" title="Set start date to today">📅 Today</button>
+                            </div>
                             <span class="ssb-vis-to">to</span>
                             <input type="date" class="ssb-vis-valid-to" value="${escapeHtml(s.valid_to || '')}" aria-label="End date">
                         </div>
@@ -1721,7 +1742,10 @@ function visibilityCtlHtml(s, i) {
                     <fieldset class="ssb-vis-fs">
                         <legend>Time of day</legend>
                         <div class="ssb-vis-pair">
-                            <input type="time" class="ssb-vis-active-start" value="${escapeHtml(visTimeInputVal(s.active_start))}" aria-label="Start time">
+                            <div class="ssb-vis-inrow">
+                                <input type="time" class="ssb-vis-active-start" value="${escapeHtml(visTimeInputVal(s.active_start))}" aria-label="Start time">
+                                <button type="button" class="ssb-vis-nowbtn ssb-vis-now-btn" title="Set start time to now (fills End +1h if empty)">⏱ Now</button>
+                            </div>
                             <span class="ssb-vis-to">to</span>
                             <input type="time" class="ssb-vis-active-end" value="${escapeHtml(visTimeInputVal(s.active_end))}" aria-label="End time">
                         </div>
@@ -1756,6 +1780,10 @@ function wireVisibilityCtls(slot, i) {
     bind('.ssb-vis-valid-to', 'valid_to');
     bind('.ssb-vis-active-start', 'active_start');
     bind('.ssb-vis-active-end', 'active_end');
+    const nowBtn = slot.querySelector('.ssb-vis-now-btn');
+    if (nowBtn) nowBtn.addEventListener('click', () => setSlideVisNow(i));
+    const todayBtn = slot.querySelector('.ssb-vis-today-btn');
+    if (todayBtn) todayBtn.addEventListener('click', () => setSlideVisToday(i));
     slot.querySelectorAll('.ssb-vis-day').forEach((chip) => {
         const d = Number(chip.dataset.day);
         chip.addEventListener('click', () => toggleSlideVisDay(i, d));
@@ -1789,6 +1817,43 @@ function setSlideVisMode(i, mode) {
         s._visLimit = true;
         s._visOpen = true;
     }
+    markDirty();
+    renderTimeline();
+}
+
+// "Set to now" quick-fill for the Time of day window. Fills Start with the
+// current wall-clock time (browser local). End is seeded to Start+1h ONLY
+// when End is empty, so typing Start by hand still leaves an open-ended
+// (until-midnight) window untouched. A start near midnight wraps the End
+// past 00:00 — a legitimate overnight window the resolver supports.
+function setSlideVisNow(i) {
+    const s = slides[i];
+    if (!s) return;
+    const now = new Date();
+    const startMins = now.getHours() * 60 + now.getMinutes();
+    s.active_start = String(now.getHours()).padStart(2, '0') + ':' +
+                     String(now.getMinutes()).padStart(2, '0');
+    if (!s.active_end) {
+        const endMins = (startMins + 60) % 1440;
+        s.active_end = String(Math.floor(endMins / 60)).padStart(2, '0') + ':' +
+                       String(endMins % 60).padStart(2, '0');
+    }
+    s._visLimit = true;
+    markDirty();
+    renderTimeline();
+}
+
+// "Set to today" quick-fill for the Date range window. Fills the Start date
+// with today's local calendar date and leaves the End date open ("from today
+// onward"), unless an existing End is now in the past, which would make an
+// impossible range — in that case it's pulled up to today.
+function setSlideVisToday(i) {
+    const s = slides[i];
+    if (!s) return;
+    const today = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD, browser local
+    s.valid_from = today;
+    if (s.valid_to && s.valid_to < today) s.valid_to = today;
+    s._visLimit = true;
     markDirty();
     renderTimeline();
 }
