@@ -220,34 +220,42 @@ class TestPlaybackAssetTooltip:
             tooltip_trigger = detail.locator(".has-tooltip", has_text=asset_name).first
             expect(tooltip_trigger).to_be_visible(timeout=10_000)
 
-            # Hover to reveal the tooltip
+            # Hover to reveal the tooltip. Tooltips inside the device
+            # `.table-wrap` (a horizontal scroll container) are rendered
+            # through the body-level `#tooltip-portal` instead of their
+            # native `.tooltip` child, so they escape scroll-container
+            # clipping (see app.js initTooltipPortal / the "Update
+            # available" pill clipping bug).
             tooltip_trigger.hover()
 
-            # The .tooltip child should become visible and contain the full filename
-            tooltip = tooltip_trigger.locator(".tooltip")
-            expect(tooltip).to_be_visible(timeout=3000)
-            expect(tooltip).to_contain_text(asset_name)
+            # The native child stays hidden inside the scroll container...
+            native_tooltip = tooltip_trigger.locator(".tooltip")
+            expect(native_tooltip).to_be_hidden()
 
-            # Verify the tooltip is not clipped by overflow:hidden ancestors.
-            # A clipped tooltip would have a zero or near-zero visible height.
+            # ...and the portal becomes visible with the full filename.
+            portal = page.locator("#tooltip-portal")
+            expect(portal).to_be_visible(timeout=3000)
+            expect(portal).to_contain_text(asset_name)
+
+            # The portal is fixed-positioned at the document body, so it is
+            # never clipped by an overflow ancestor. Assert it isn't nested
+            # inside any clipping container and has real visible height.
             clip_info = page.evaluate("""(el) => {
                 const rect = el.getBoundingClientRect();
+                if (rect.height < 2) return { clipped: true, reason: 'zero-height' };
                 let ancestor = el.parentElement;
-                while (ancestor) {
+                while (ancestor && ancestor !== document.body) {
                     const style = window.getComputedStyle(ancestor);
-                    if (style.overflow === 'hidden' || style.overflowY === 'hidden') {
-                        const aRect = ancestor.getBoundingClientRect();
-                        // Check if tooltip extends outside the overflow container
-                        if (rect.top < aRect.top || rect.bottom > aRect.bottom) {
-                            return { clipped: true, tooltipTop: rect.top, ancestorTop: aRect.top };
-                        }
+                    if (style.overflow === 'hidden' || style.overflowY === 'hidden'
+                        || style.overflowX === 'auto' || style.overflowX === 'scroll') {
+                        return { clipped: true, reason: 'scroll-ancestor' };
                     }
                     ancestor = ancestor.parentElement;
                 }
                 return { clipped: false };
-            }""", tooltip.element_handle())
+            }""", portal.element_handle())
             assert not clip_info["clipped"], (
-                f"Tooltip is clipped by an overflow:hidden ancestor: {clip_info}"
+                f"Portal tooltip is clipped: {clip_info}"
             )
         finally:
             stop_event.set()
