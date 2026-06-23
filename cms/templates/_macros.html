@@ -184,7 +184,7 @@
                     <button type="button" class="asset-add-tag-btn" data-asset-id="{{ a.id }}"
                             onclick="event.stopPropagation(); window._assetLibrary && window._assetLibrary.openRowAddTagPicker('{{ a.id }}', event)"
                             title="Add tag"
-                            style="margin-left:0.35rem; background:transparent; color:var(--text-muted, #999); border:1px dashed rgba(255,255,255,0.25); font-size:0.7rem; padding:0.02rem 0.4rem; border-radius:999px; cursor:pointer; line-height:1.4; vertical-align:middle;">+ tag</button>
+                            style="margin-left:0.35rem; background:transparent; color:var(--text-muted, #999); border:1px dashed var(--overlay-strong); font-size:0.7rem; padding:0.02rem 0.4rem; border-radius:999px; cursor:pointer; line-height:1.4; vertical-align:middle;">+ tag</button>
                     {% endif %}
                     {% if a.uploaded_by_user_id and uploader_map.get(a.uploaded_by_user_id | string) %}
                     <div class="text-muted" style="font-size:0.75rem; margin-top:0.15rem;">by {{ uploader_map[a.uploaded_by_user_id | string] }}</div>
