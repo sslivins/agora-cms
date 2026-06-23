@@ -1146,6 +1146,124 @@
     cursor: pointer;
 }
 .ssb-member-more:hover { background: rgba(26,188,156,0.2); }
+
+/* ──────────────────────────────────────────────────────────────────────
+   Light-theme chrome overrides for the slideshow builder.
+
+   The base styles above use neutral near-black greys appropriate for the
+   dark UI. In light mode we repaint only the editor *chrome* surfaces;
+   media letterboxes (#000/#111 thumbnails), saturated accent colours
+   (teal/purple/red) and slide-content colours are deliberately left as-is
+   so previews still match true device output. Two synced blocks: explicit
+   Light, and Auto (no explicit choice) + OS-light. Explicit Dark keeps the
+   original greys.
+   ────────────────────────────────────────────────────────────────────── */
+:root[data-theme="light"] .ssb-library { background:var(--surface-alt);border-color:var(--border); }
+:root[data-theme="light"] .ssb-decksource { background:var(--surface-alt);border-color:var(--border); }
+:root[data-theme="light"] .ssb-tagpanel { background:var(--surface-alt);border-color:var(--border); }
+:root[data-theme="light"] .ssb-tags-palette { background:var(--surface-alt);border-color:var(--border); }
+:root[data-theme="light"] .ssb-lib-meta { background:var(--surface-alt); }
+:root[data-theme="light"] .ssb-slot-meta { background:var(--surface-alt); }
+:root[data-theme="light"] .ssb-lib-tile { background:var(--surface);border-color:var(--border); }
+:root[data-theme="light"] .ssb-slot { background:var(--surface);border-color:var(--border); }
+:root[data-theme="light"] .ssb-tag-chip { background:var(--surface);border-color:var(--border); }
+:root[data-theme="light"] .ssb-member { background:var(--surface);border-color:var(--border); }
+:root[data-theme="light"] .ssb-seg { border-color:var(--border); }
+:root[data-theme="light"] .ssb-seg-btn { background:var(--surface);color:var(--text); }
+:root[data-theme="light"] .ssb-seg-btn + .ssb-seg-btn { border-left-color:var(--border); }
+:root[data-theme="light"] .ssb-slot-dur input[type=number] { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-slot-fx-item select { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-vis-pair input[type=date],
+:root[data-theme="light"] .ssb-vis-pair input[type=time] { background:var(--surface);color:var(--text);border-color:var(--border);color-scheme:light; }
+:root[data-theme="light"] .ssb-slot-kbbtn { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-kb-zoom button { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-kb-compass button { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-trans-dur-input { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-vis-day { background:var(--surface);color:var(--text-muted);border-color:var(--border); }
+:root[data-theme="light"] .ssb-gap-btn { background:var(--surface-alt);color:var(--text);border-color:var(--border); }
+:root[data-theme="light"] .ssb-trim-track { background:var(--surface-alt); }
+:root[data-theme="light"] .ssb-trans-menu { background:var(--surface);border-color:var(--border); }
+:root[data-theme="light"] .ssb-kb-menu { background:var(--surface);border-color:var(--border);color:var(--text); }
+:root[data-theme="light"] .ssb-trans-opt { color:var(--text); }
+:root[data-theme="light"] .ssb-vis-fs { border-color:var(--border); }
+:root[data-theme="light"] .ssb-slot-vis { border-top-color:var(--border); }
+:root[data-theme="light"] .ssb-slot-trim { border-top-color:var(--border); }
+:root[data-theme="light"] .ssb-trans-dur { border-top-color:var(--border);color:var(--text-muted); }
+:root[data-theme="light"] .ssb-end { border-color:var(--border);color:var(--text-muted); }
+:root[data-theme="light"] .ssb-append { border-color:var(--border);color:var(--text-muted); }
+:root[data-theme="light"] .ssb-slot-name { color:var(--text); }
+:root[data-theme="light"] .ssb-trim-start { color:var(--text); }
+:root[data-theme="light"] .ssb-trim-ctls { color:var(--text); }
+:root[data-theme="light"] .ssb-vis-radio { color:var(--text); }
+:root[data-theme="light"] .ssb-slot-pte { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-slot-fx-item { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-vis-head { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-trim-head { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-totals { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-active-mode { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-member-name { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-lib-type { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-lib-empty { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-empty-message { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-tags-empty { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-trans-opt-soon { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-trans-dur-unit { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-vis-to { color:var(--text-muted); }
+:root[data-theme="light"] .ssb-kb-preview-empty { color:var(--text-muted); }
+@media (prefers-color-scheme: light) {
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-library { background:var(--surface-alt);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-decksource { background:var(--surface-alt);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-tagpanel { background:var(--surface-alt);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-tags-palette { background:var(--surface-alt);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-lib-meta { background:var(--surface-alt); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-meta { background:var(--surface-alt); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-lib-tile { background:var(--surface);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot { background:var(--surface);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-tag-chip { background:var(--surface);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-member { background:var(--surface);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-seg { border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-seg-btn { background:var(--surface);color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-seg-btn + .ssb-seg-btn { border-left-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-dur input[type=number] { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-fx-item select { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-pair input[type=date],
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-pair input[type=time] { background:var(--surface);color:var(--text);border-color:var(--border);color-scheme:light; }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-kbbtn { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-kb-zoom button { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-kb-compass button { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trans-dur-input { background:var(--surface);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-day { background:var(--surface);color:var(--text-muted);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-gap-btn { background:var(--surface-alt);color:var(--text);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trim-track { background:var(--surface-alt); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trans-menu { background:var(--surface);border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-kb-menu { background:var(--surface);border-color:var(--border);color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trans-opt { color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-fs { border-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-vis { border-top-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-trim { border-top-color:var(--border); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trans-dur { border-top-color:var(--border);color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-end { border-color:var(--border);color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-append { border-color:var(--border);color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-name { color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trim-start { color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trim-ctls { color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-radio { color:var(--text); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-pte { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-slot-fx-item { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-head { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trim-head { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-totals { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-active-mode { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-member-name { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-lib-type { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-lib-empty { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-empty-message { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-tags-empty { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trans-opt-soon { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-trans-dur-unit { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-vis-to { color:var(--text-muted); }
+:root:not([data-theme="dark"]):not([data-theme="light"]) .ssb-kb-preview-empty { color:var(--text-muted); }
+}
 </style>
 
 <h1>{% if edit_mode %}Edit Slideshow{% else %}New Slideshow{% endif %}
