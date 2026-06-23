@@ -2186,11 +2186,12 @@ function trimSummary(s) {
 function trimCtlHtml(s, i) {
     if (s.source_asset_type !== 'video') return '';
     const clipped = trimIsClipped(s);
-    const open = !!s._trimOpen || clipped;
+    const open = trimSectionOpen(s);
     const stateTxt = clipped ? 'Trimmed' : 'Full';
     const fieldsStyle = open ? '' : 'display:none;';
     const startSec = (s.clip_start_ms || 0) / 1000;
-    // Round to a whole second for the input, but allow 0.
+    // Show the offset at 0.1s precision (the trim editor can set a fractional
+    // start); 0 stays "0".
     const startVal = startSec ? String(Math.round(startSec * 10) / 10) : '0';
     const maxStart = s.source_duration_seconds
         ? Math.max(0, Math.floor(s.source_duration_seconds) - 1)
@@ -2208,7 +2209,7 @@ function trimCtlHtml(s, i) {
             <div class="ssb-trim-body" style="${fieldsStyle}">
                 <label class="ssb-trim-start" title="Skip this many seconds into the video before it starts playing">
                     <span>Start at</span>
-                    <input type="number" class="ssb-trim-start-input" min="0" max="${maxStart}" step="1"
+                    <input type="number" class="ssb-trim-start-input" min="0" max="${maxStart}" step="0.1"
                            value="${escapeHtml(startVal)}" aria-label="Start offset in seconds">
                     <span style="color:#888;">s</span>
                 </label>
@@ -2248,8 +2249,23 @@ function wireTrimCtls(slot, i) {
 function toggleSlideTrimOpen(i) {
     const s = slides[i];
     if (!s) return;
-    s._trimOpen = !s._trimOpen;
+    // Flip the effective open state. _trimOpen is the explicit override; when
+    // unset it defaults to "open if clipped", so the first toggle on a trimmed
+    // slide correctly collapses it.
+    s._trimOpen = !trimSectionOpen(s);
     renderTimeline();
+}
+
+// Whether the per-slide Trim section is expanded. _trimOpen is an explicit
+// user override (true/false); when undefined the section defaults to open for
+// an already-trimmed slide and closed otherwise. Keeping this as the single
+// source of truth lets the user collapse a trimmed slide (the old
+// "open = _trimOpen || clipped" pinned it open forever).
+function trimSectionOpen(s) {
+    if (!s) return false;
+    return (s._trimOpen === undefined || s._trimOpen === null)
+        ? trimIsClipped(s)
+        : !!s._trimOpen;
 }
 
 // Set a video slide's start offset (seconds).  Clamps to [0, sourceLen-1] and,
@@ -2263,7 +2279,7 @@ function updateSlideClipStart(i, v) {
     const durMs = s.source_duration_seconds
         ? Math.round(s.source_duration_seconds * 1000)
         : null;
-    let startMs = Math.round(sec * 1000);
+    let startMs = Math.round(sec * 10) * 100;
     if (durMs != null) startMs = Math.min(startMs, Math.max(0, durMs - 1000));
     s.clip_start_ms = startMs;
     // Keep the open state sticky once the user has engaged the control so the
