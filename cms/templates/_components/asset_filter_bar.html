@@ -35,7 +35,7 @@
     is_admin=False,
     search_placeholder="Search name / filename…"
 ) %}
-<div id="{{ prefix }}-bar" class="asset-filter-bar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem; padding:0.5rem; background:var(--bg-subtle, rgba(255,255,255,0.03)); border-radius:4px;">
+<div id="{{ prefix }}-bar" class="asset-filter-bar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem; padding:0.5rem; background:var(--bg-subtle, var(--overlay-faint)); border-radius:4px;">
     <input type="search" id="{{ prefix }}-q" placeholder="{{ search_placeholder }}"
            style="flex:1 1 220px; min-width:180px; max-width:360px; padding:0.4rem 0.65rem; font-size:0.88rem;"
            autocomplete="off" spellcheck="false">

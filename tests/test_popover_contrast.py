@@ -7,10 +7,21 @@ and/or `background: var(--surface-alt)` (a very slightly lighter navy),
 which made the popover edges nearly invisible against the page.
 
 The fix is the same pattern used by `.card-highlight`: paint the popover
-with the darker `--surface` and draw a neutral light border using
-`rgba(255, 255, 255, 0.25)`. These tests pin both declarations so a stray
-refactor of the dark-blue tokens can't silently re-introduce the
-low-contrast styling.
+with the darker `--surface` plus a translucent contrast overlay, and draw
+a neutral contrast border. Since the introduction of the light theme these
+are expressed with the theme-aware overlay tokens rather than raw white
+literals:
+
+    border:     1px solid var(--overlay-strong)
+    background: linear-gradient(var(--overlay-hover), var(--overlay-hover)),
+                var(--surface)
+
+In the dark theme ``--overlay-strong``/``--overlay-hover`` resolve to
+``rgba(255,255,255,0.25)``/``rgba(255,255,255,0.08)`` (the historical
+values); in the light theme they flip to black overlays so the border
+stays visible against a light page. These tests pin the token usage so a
+stray refactor can't silently re-introduce the low-contrast styling or
+hardcode a single-theme literal.
 """
 
 from pathlib import Path
@@ -39,36 +50,54 @@ def _rule_body(css: str, selector: str) -> str:
 
 def test_kebab_menu_uses_light_contrast_border(css: str) -> None:
     body = _rule_body(css, ".kebab-menu[popover]")
-    assert "rgba(255, 255, 255, 0.25)" in body, (
-        "Kebab popover border must use the standard light contrast color "
-        "(rgba(255, 255, 255, 0.25)) — the dark-blue --border token blends "
-        "into the page. Rule body was:\n" + body
+    assert "var(--overlay-strong)" in body, (
+        "Kebab popover border must use the theme-aware contrast token "
+        "var(--overlay-strong) — the dark-blue --border token blends into "
+        "the page, and a raw white literal would vanish on a light page. "
+        "Rule body was:\n" + body
     )
-    assert "rgba(255, 255, 255, 0.08)" in body and "var(--surface)" in body, (
-        "Kebab popover background must layer a translucent white overlay "
-        "(rgba(255, 255, 255, 0.08)) over var(--surface) so the menu reads "
-        "as lifted above surrounding cards."
+    assert "var(--border)" not in body and "var(--primary)" not in body, (
+        "Kebab popover border must not use the dark-blue --border/--primary "
+        "tokens (blue-on-blue, nearly invisible). Rule body was:\n" + body
     )
-    assert "rgba(255, 255, 255, 0.08)" in body, (
-        "Kebab popover overlay must be ~8% white over --surface so the menu "
-        "reads as lifted above surrounding cards without overpowering them."
+    assert "var(--overlay-hover)" in body and "var(--surface)" in body, (
+        "Kebab popover background must layer the translucent overlay token "
+        "var(--overlay-hover) over var(--surface) so the menu reads as "
+        "lifted above surrounding cards in both themes."
     )
 
 
 def test_group_popup_uses_light_contrast_border(css: str) -> None:
     body = _rule_body(css, ".group-popup[popover]")
-    assert "rgba(255, 255, 255, 0.25)" in body, (
-        "Group action popover border must use the standard light contrast "
-        "color (rgba(255, 255, 255, 0.25)). Rule body was:\n" + body
+    assert "var(--overlay-strong)" in body, (
+        "Group action popover border must use the theme-aware contrast token "
+        "var(--overlay-strong). Rule body was:\n" + body
     )
-    assert "rgba(255, 255, 255, 0.08)" in body and "var(--surface)" in body, (
-        "Group action popover background must layer a translucent white "
-        "overlay over var(--surface). --surface-alt alone is too close to "
-        "the --primary family and loses contrast against neighbouring cards."
+    assert "var(--border)" not in body and "var(--primary)" not in body, (
+        "Group action popover border must not use the dark-blue "
+        "--border/--primary tokens. Rule body was:\n" + body
     )
-    assert "rgba(255, 255, 255, 0.08)" in body, (
-        "Group action popover overlay must be at least 20% white so it "
-        "reads as distinctly lifted above the page."
+    assert "var(--overlay-hover)" in body and "var(--surface)" in body, (
+        "Group action popover background must layer var(--overlay-hover) "
+        "over var(--surface). --surface-alt alone is too close to the "
+        "--primary family and loses contrast against neighbouring cards."
+    )
+
+
+def test_overlay_tokens_match_legacy_dark_values(css: str) -> None:
+    """The overlay tokens used by the popovers must resolve to the historical
+    white-contrast literals in the dark (`:root`) theme, so the dark-mode
+    appearance is unchanged by the move from raw literals to tokens."""
+    root_idx = css.find(":root")
+    assert root_idx != -1
+    block = css[root_idx : css.find("}", root_idx)]
+    assert "--overlay-strong: rgba(255,255,255,0.25)" in block, (
+        "Dark --overlay-strong must stay rgba(255,255,255,0.25) so the "
+        "popover border matches its historical appearance."
+    )
+    assert "--overlay-hover: rgba(255,255,255,0.08)" in block, (
+        "Dark --overlay-hover must stay rgba(255,255,255,0.08) so the "
+        "popover background overlay matches its historical appearance."
     )
 
 

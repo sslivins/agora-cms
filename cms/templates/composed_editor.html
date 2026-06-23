@@ -169,7 +169,7 @@
     .palette-btn.active {
         border-color: var(--accent);
         background: var(--primary);
-        color: var(--text);
+        color: var(--text-on-accent);
     }
     #palette-search {
         display: block;
@@ -402,14 +402,15 @@
     .wx-results { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
     .wx-result {
         text-align: left;
-        background: var(--bg-subtle, #f6f8fa);
-        border: 1px solid var(--border, #d0d7de);
+        background: var(--surface-alt);
+        color: var(--text);
+        border: 1px solid var(--border);
         border-radius: 5px;
         padding: 0.3rem 0.5rem;
         font-size: 0.8rem;
         cursor: pointer;
     }
-    .wx-result:hover { background: var(--bg-hover, #eaeef2); }
+    .wx-result:hover { background: var(--surface); }
     .cw-prev-media { width: 100%; height: 100%; position: relative; }
     .cw-prev-media img { width: 100%; height: 100%; display: block; }
     .cw-prev-media-badge {
@@ -3184,7 +3185,7 @@ function renderComposedGroupBadges() {
         const span = document.createElement("span");
         span.className = "group-badge";
         span.style.cssText =
-            "background:#444;color:#fff;padding:0.15rem 0.5rem;border-radius:0.5rem;font-size:0.8rem;cursor:pointer;";
+            "background:var(--surface-alt);color:var(--text);border:1px solid var(--border);padding:0.15rem 0.5rem;border-radius:0.5rem;font-size:0.8rem;cursor:pointer;";
         span.textContent = btn.dataset.groupName + " ✕";
         span.onclick = () => {
             window.composedSelectedGroupIds =

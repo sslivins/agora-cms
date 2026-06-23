@@ -6,6 +6,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Agora CMS{% endblock %}</title>
+    {# Apply the saved theme before the stylesheet loads to avoid a flash of
+       the wrong theme. "auto" (or no saved value) falls back to the OS
+       preference via the prefers-color-scheme media query in style.css. #}
+    <script>
+    (function () {
+        try {
+            var t = localStorage.getItem('agora-theme');
+            document.documentElement.setAttribute(
+                'data-theme', (t === 'light' || t === 'dark') ? t : 'auto');
+        } catch (e) {
+            document.documentElement.setAttribute('data-theme', 'auto');
+        }
+    })();
+    </script>
     <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -38,6 +52,12 @@
             </span>
             {% endif %}
             {% endif %}
+            <button type="button" class="header-icon has-tooltip" id="theme-toggle" data-mode="auto" aria-label="Theme">
+                <svg class="ti ti-auto" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor" stroke="none"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/></svg>
+                <svg class="ti ti-light" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                <svg class="ti ti-dark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                <span class="tooltip">Theme</span>
+            </button>
             <div class="notification-bell-wrapper" id="notification-bell-wrapper">
                 <button class="header-icon" id="notification-bell" aria-label="Notifications" onclick="toggleNotificationPanel()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
@@ -120,6 +140,40 @@
     <script src="/static/asset_filter.js?v={{ static_version }}"></script>
     <script src="/static/app.js?v={{ static_version }}"></script>
     <script>
+    /* ── Theme toggle (Auto / Light / Dark) ── */
+    (function () {
+        var btn = document.getElementById('theme-toggle');
+        if (!btn) return;
+        var root = document.documentElement;
+        var order = ['auto', 'light', 'dark'];
+        var labels = {
+            auto: 'Theme: Auto (follows system)',
+            light: 'Theme: Light',
+            dark: 'Theme: Dark',
+        };
+        function current() {
+            var t = null;
+            try { t = localStorage.getItem('agora-theme'); } catch (e) { /* ignore */ }
+            return (t === 'light' || t === 'dark') ? t : 'auto';
+        }
+        function apply(mode) {
+            root.setAttribute('data-theme', mode);
+            btn.setAttribute('data-mode', mode);
+            var tip = btn.querySelector('.tooltip');
+            if (tip) tip.textContent = labels[mode];
+            btn.setAttribute('aria-label', labels[mode]);
+        }
+        apply(current());
+        btn.addEventListener('click', function () {
+            var next = order[(order.indexOf(current()) + 1) % order.length];
+            try {
+                if (next === 'auto') localStorage.removeItem('agora-theme');
+                else localStorage.setItem('agora-theme', next);
+            } catch (e) { /* ignore */ }
+            apply(next);
+        });
+    })();
+
     /* ── Notification bell ── */
     let _notifPanelOpen = false;
 

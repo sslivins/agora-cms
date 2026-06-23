@@ -176,7 +176,7 @@
                     <div id="views-menu-list" style="max-height:280px; overflow-y:auto;">
                         <!-- populated by JS -->
                     </div>
-                    <div style="border-top:1px solid rgba(255,255,255,0.08); margin-top:0.35rem; padding-top:0.35rem;">
+                    <div style="border-top:1px solid var(--overlay-hover); margin-top:0.35rem; padding-top:0.35rem;">
                         <button type="button" class="btn btn-link btn-sm" style="width:100%; text-align:left; padding:0.4rem 0.75rem; background:none; border:0; color:var(--text); cursor:pointer;"
                                 onclick="window._assetLibrary && window._assetLibrary.openSaveViewModal()">&#x2795; Save current as view&hellip;</button>
                         <button type="button" class="btn btn-link btn-sm" id="views-manage-btn" style="display:none; width:100%; text-align:left; padding:0.4rem 0.75rem; background:none; border:0; color:var(--text); cursor:pointer;"
@@ -336,7 +336,7 @@
             <div id="tag-manager-list" style="max-height:360px; overflow-y:auto; margin-bottom:0.75rem;">
                 <!-- populated by JS -->
             </div>
-            <div style="border-top:1px solid rgba(255,255,255,0.08); padding-top:0.75rem;">
+            <div style="border-top:1px solid var(--overlay-hover); padding-top:0.75rem;">
                 <label style="display:block; margin-bottom:0.3rem; font-size:0.85rem; color:var(--text-muted);">Create new tag</label>
                 <div style="display:flex; gap:0.5rem; align-items:center;">
                     <input type="text" id="new-tag-name" placeholder="Tag name" maxlength="64"
@@ -1366,7 +1366,7 @@ function fallbackCopy(text, onSuccess) {
         const card = document.createElement('div');
         card.className = 'asset-grid-card';
         card.setAttribute('data-grid-card', a.id);
-        card.style.cssText = 'border:1px solid var(--border, #444); border-radius:6px; overflow:hidden; background:var(--bg-card, #1a1a1a); position:relative;';
+        card.style.cssText = 'border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--surface); position:relative;';
         const name = a.display_name || a.original_filename || a.filename;
         const tags = Array.isArray(a.tags) ? a.tags : [];
         const tagChipsHtml = tags.length
@@ -1698,7 +1698,7 @@ function fallbackCopy(text, onSuccess) {
             const safeName = v.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             return '<button type="button" class="views-menu-item" data-view-id="' + v.id + '"'
                 + ' style="display:flex; width:100%; align-items:center; padding:0.4rem 0.75rem; background:none; border:0; color:var(--text); cursor:pointer; text-align:left; font-size:0.9rem;"'
-                + ' onmouseover="this.style.background=\'rgba(255,255,255,0.06)\'" onmouseout="this.style.background=\'none\'"'
+                + ' onmouseover="this.style.background=\'var(--overlay-hover)\'" onmouseout="this.style.background=\'none\'"'
                 + ' onclick="window._assetLibrary && window._assetLibrary.applyView(\'' + v.id + '\')">'
                 + star + '<span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeName + '</span></button>';
         }).join('');
@@ -1799,7 +1799,7 @@ function fallbackCopy(text, onSuccess) {
         }
         const rows = state.views.map(v => {
             const safeName = v.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return '<div data-view-id="' + v.id + '" style="display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.25rem; border-bottom:1px solid rgba(255,255,255,0.06);">'
+            return '<div data-view-id="' + v.id + '" style="display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.25rem; border-bottom:1px solid var(--overlay-hover);">'
                 + '<input type="radio" name="default-view-radio" ' + (v.is_default ? 'checked' : '')
                 + ' onchange="window._assetLibrary && window._assetLibrary.setDefaultView(\'' + v.id + '\')" title="Set as default">'
                 + '<input type="text" class="manage-view-name" value="' + safeName.replace(/"/g, '&quot;') + '" maxlength="80"'
@@ -2204,7 +2204,7 @@ function fallbackCopy(text, onSuccess) {
             // JSON.stringify emits, otherwise inline onclick="..." breaks.
             const _attr = (s) => JSON.stringify(s).replace(/"/g, '&quot;');
             list.innerHTML = tags.map(t =>
-                '<div class="tag-mgr-row" style="display:flex; align-items:center; gap:0.4rem; padding:0.35rem 0.2rem; border-bottom:1px solid rgba(255,255,255,0.06);">' +
+                '<div class="tag-mgr-row" style="display:flex; align-items:center; gap:0.4rem; padding:0.35rem 0.2rem; border-bottom:1px solid var(--overlay-hover);">' +
                     '<input type="color" value="' + _escHtml(t.color) + '" title="Color" ' +
                         'onchange="window._assetLibrary && window._assetLibrary.recolorTag(\'' + _escHtml(t.id) + '\', this.value)" ' +
                         'style="width:1.8rem; height:1.6rem; padding:0; border:none; background:transparent; flex:0 0 auto; cursor:pointer;">' +

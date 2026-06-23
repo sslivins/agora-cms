@@ -1,20 +1,114 @@
+/* ──────────────────────────────────────────────────────────────────────
+   Theme tokens.
+
+   :root holds the DARK theme (the historical default — values are
+   unchanged). The light palette lives in two places that share the same
+   token values:
+     • :root[data-theme="light"]  — user explicitly chose Light.
+     • @media (prefers-color-scheme: light) on :root:not([data-theme="dark"])
+       — user is on "Auto" (no explicit choice / data-theme="auto") and
+       their OS prefers light.
+   An explicit data-theme="dark" always wins over the OS preference.
+
+   When adding a themeable colour, add a token here AND a light override in
+   BOTH light blocks below. Brand colours that read well on any background
+   (--accent, --primary used as a chip background, --text-on-accent) are
+   intentionally theme-invariant.
+   ────────────────────────────────────────────────────────────────────── */
 :root {
     --bg: #1a1a2e;
     --surface: #16213e;
+    --surface-alt: #1e2d50;
+    --surface-2: rgba(0,0,0,0.06);
+    --card-bg: var(--surface);
     --primary: #0f3460;
     --accent: #e94560;
     --accent-hover: #d63050;
     --text: #eee;
     --text-muted: #999;
-    --surface-alt: #1e2d50;
+    --text-on-accent: #fff;
     --success: #2ecc71;
     --warning: #f39c12;
     --danger: #e74c3c;
     --radius: 8px;
     --border: #0f3460;
     --select-bg: var(--bg);
-    --select-border: var(--primary);
+    --select-border: var(--border);
+    --color-scheme: dark;
+    /* Translucent overlays (lighten-on-hover, subtle tints, raised borders).
+       Dark theme layers white at low alpha; light theme layers black. */
+    --overlay-hover: rgba(255,255,255,0.08);
+    --overlay-subtle: rgba(255,255,255,0.04);
+    --overlay-faint: rgba(255,255,255,0.03);
+    --overlay-faintest: rgba(255,255,255,0.02);
+    --overlay-border: rgba(255,255,255,0.05);
+    --overlay-strong: rgba(255,255,255,0.25);
+    --overlay-row: rgba(255,255,255,0.05);
+    --overlay-row-hover: rgba(255,255,255,0.09);
+    --overlay-img-border: rgba(255,255,255,0.18);
+    /* Neutral elevation shadows. */
+    --shadow-sm: 0 4px 16px rgba(0,0,0,0.3);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.4);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.4);
 }
+
+/* Light palette — keep these two blocks in sync. */
+:root[data-theme="light"] {
+    --bg: #f4f5f8;
+    --surface: #ffffff;
+    --surface-alt: #eceef3;
+    --surface-2: rgba(0,0,0,0.05);
+    --text: #1b2333;
+    --text-muted: #5b6472;
+    --success: #1e9e57;
+    --warning: #b9770e;
+    --danger: #c0392b;
+    --border: #d6dae2;
+    --select-bg: #ffffff;
+    --color-scheme: light;
+    --overlay-hover: rgba(0,0,0,0.06);
+    --overlay-subtle: rgba(0,0,0,0.04);
+    --overlay-faint: rgba(0,0,0,0.03);
+    --overlay-faintest: rgba(0,0,0,0.02);
+    --overlay-border: rgba(0,0,0,0.08);
+    --overlay-strong: rgba(0,0,0,0.12);
+    --overlay-row: rgba(0,0,0,0.03);
+    --overlay-row-hover: rgba(0,0,0,0.06);
+    --overlay-img-border: rgba(0,0,0,0.15);
+    --shadow-sm: 0 4px 16px rgba(0,0,0,0.10);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.12);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.14);
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]):not([data-theme="light"]) {
+        --bg: #f4f5f8;
+        --surface: #ffffff;
+        --surface-alt: #eceef3;
+        --surface-2: rgba(0,0,0,0.05);
+        --text: #1b2333;
+        --text-muted: #5b6472;
+        --success: #1e9e57;
+        --warning: #b9770e;
+        --danger: #c0392b;
+        --border: #d6dae2;
+        --select-bg: #ffffff;
+        --color-scheme: light;
+        --overlay-hover: rgba(0,0,0,0.06);
+        --overlay-subtle: rgba(0,0,0,0.04);
+        --overlay-faint: rgba(0,0,0,0.03);
+        --overlay-faintest: rgba(0,0,0,0.02);
+        --overlay-border: rgba(0,0,0,0.08);
+        --overlay-strong: rgba(0,0,0,0.12);
+        --overlay-row: rgba(0,0,0,0.03);
+        --overlay-row-hover: rgba(0,0,0,0.06);
+        --overlay-img-border: rgba(0,0,0,0.15);
+        --shadow-sm: 0 4px 16px rgba(0,0,0,0.10);
+        --shadow-md: 0 8px 24px rgba(0,0,0,0.12);
+        --shadow-lg: 0 8px 32px rgba(0,0,0,0.14);
+    }
+}
+
+html { color-scheme: var(--color-scheme); }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -27,7 +121,7 @@ select {
     padding: 0.4rem 1.8rem 0.4rem 0.5rem;
     font-size: 0.9rem;
     cursor: pointer;
-    color-scheme: dark;
+    color-scheme: var(--color-scheme);
     -webkit-appearance: none;
     appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
@@ -52,7 +146,7 @@ body {
 /* Navigation */
 header {
     background: var(--surface);
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
     padding: 1rem 1.5rem;
     display: flex;
     justify-content: space-between;
@@ -138,8 +232,14 @@ header {
 }
 .header-icon:hover {
     color: var(--text);
-    background: rgba(255,255,255,0.08);
+    background: var(--overlay-hover);
 }
+
+/* Theme toggle: show only the icon for the current mode. */
+#theme-toggle .ti { display: none; }
+#theme-toggle[data-mode="auto"] .ti-auto { display: block; }
+#theme-toggle[data-mode="light"] .ti-light { display: block; }
+#theme-toggle[data-mode="dark"] .ti-dark { display: block; }
 
 /* ── Notification bell ── */
 .notification-bell-wrapper {
@@ -169,9 +269,9 @@ header {
     width: 380px;
     max-height: 450px;
     background: var(--surface);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    box-shadow: var(--shadow-md);
     z-index: 1000;
     overflow: hidden;
 }
@@ -180,7 +280,7 @@ header {
     justify-content: space-between;
     align-items: center;
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
 }
 .notification-panel-actions { display: flex; gap: 0.4rem; }
 .btn-danger-subtle { color: var(--danger); border-color: var(--danger); }
@@ -191,12 +291,12 @@ header {
 }
 .notification-item {
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid var(--overlay-row);
     cursor: pointer;
     transition: background 0.15s;
     position: relative;
 }
-.notification-item:hover { background: rgba(255,255,255,0.04); }
+.notification-item:hover { background: var(--overlay-subtle); }
 .notification-item.unread { border-left: 3px solid var(--accent); }
 .notification-item.notif-error .notif-title { color: var(--danger); }
 .notification-item.notif-warning .notif-title { color: var(--warning); }
@@ -216,7 +316,7 @@ header {
 
 nav {
     background: var(--surface);
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
     padding: 0 1.5rem;
     display: flex;
     align-items: center;
@@ -250,7 +350,7 @@ nav {
     display: flex;
     gap: 0.25rem;
     margin-bottom: 1.5rem;
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
 }
 .sub-tab {
     padding: 0.5rem 1rem;
@@ -285,8 +385,8 @@ h2 { font-size: 1.2rem; margin-bottom: 1rem; }
     overflow: visible;
 }
 .card-highlight {
-    border: 1px solid rgba(255,255,255,0.25);
-    background: linear-gradient(135deg, var(--surface) 0%, rgba(255,255,255,0.04) 100%);
+    border: 1px solid var(--overlay-strong);
+    background: linear-gradient(135deg, var(--surface) 0%, var(--overlay-subtle) 100%);
 }
 .card-playing {
     border: 1px solid var(--success);
@@ -337,7 +437,7 @@ table {
 th, td {
     text-align: left;
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
     white-space: nowrap;
 }
 td.wrap { white-space: normal; word-break: break-word; }
@@ -347,7 +447,7 @@ th {
     color: var(--text-muted);
     font-weight: 600;
 }
-tr:hover td { background: rgba(255,255,255,0.02); }
+tr:hover td { background: var(--overlay-faintest); }
 
 /* Status badges */
 .badge {
@@ -364,14 +464,14 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-offline { background: #7f8c8d; color: #fff; }
 .badge-online { background: var(--success); color: #000; }
 .badge-splash { background: #f39c12; color: #000; }
-.badge-video { background: var(--primary); color: var(--text); }
-.badge-image { background: #8e44ad; color: var(--text); }
-.badge-webpage { background: #2980b9; color: var(--text); }
-.badge-stream { background: #e67e22; color: var(--text); }
-.badge-saved_stream { background: #d35400; color: var(--text); }
-.badge-slideshow { background: #16a085; color: var(--text); }
-.badge-composed { background: #6366f1; color: var(--text); }
-.badge-builtin { background: var(--primary); color: var(--text); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
+.badge-video { background: var(--primary); color: var(--text-on-accent); }
+.badge-image { background: #8e44ad; color: var(--text-on-accent); }
+.badge-webpage { background: #2980b9; color: var(--text-on-accent); }
+.badge-stream { background: #e67e22; color: var(--text-on-accent); }
+.badge-saved_stream { background: #d35400; color: var(--text-on-accent); }
+.badge-slideshow { background: #16a085; color: var(--text-on-accent); }
+.badge-composed { background: #6366f1; color: var(--text-on-accent); }
+.badge-builtin { background: var(--primary); color: var(--text-on-accent); font-size: 0.65rem; margin-left: 0.3rem; vertical-align: middle; }
 .badge-processing { background: #3498db; color: #fff; margin-left: 0.4rem; }
 /* Progress-fill badge: darker "filled" region on the left grows to the
  * right as --pct advances, while the right side stays the base blue.
@@ -475,7 +575,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .btn-success { background: var(--success); color: #000; }
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-warn { background: var(--warning); color: #000; }
-.btn-secondary { background: var(--primary); color: var(--text); }
+.btn-secondary { background: var(--primary); color: var(--text-on-accent); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 .btn:disabled, .btn[disabled] { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
 .inline-edit { background-color: var(--select-bg); border: 1px solid var(--select-border); color: var(--text); padding: 0.2rem 0.4rem; border-radius: var(--radius); width: 100%; font-size: 0.9rem; min-width: 8rem; }
@@ -483,7 +583,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .inline-edit:focus { border-color: var(--accent); outline: none; }
 select.inline-edit { width: 100%; min-width: 8rem; }
 select.inline-edit:hover { border-color: var(--accent); }
-.btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text); }
+.btn-small { padding: 0.25rem 0.5rem; font-size: 0.75rem; border: none; border-radius: var(--radius); cursor: pointer; background: var(--primary); color: var(--text-on-accent); }
 .btn-small:hover { opacity: 0.85; }
 .btn-small.btn-warn { background: var(--warning); color: #000; }
 .btn-small.btn-danger { background: var(--danger); color: #fff; }
@@ -517,7 +617,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     border: 1px solid var(--select-border);
     border-radius: var(--radius);
     font-size: 0.9rem;
-    color-scheme: dark;
+    color-scheme: var(--color-scheme);
 }
 .form-group select {
     padding-right: 1.8rem;
@@ -530,7 +630,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     border: 1px solid var(--select-border);
     border-radius: var(--radius);
     font-size: 0.9rem;
-    color-scheme: dark;
+    color-scheme: var(--color-scheme);
 }
 .form-group input[type="time"],
 .form-group input[type="number"] {
@@ -635,7 +735,7 @@ select.inline-edit:hover { border-color: var(--accent); }
 
 /* Upload */
 .upload-area {
-    border: 2px dashed var(--primary);
+    border: 2px dashed var(--border);
     border-radius: var(--radius);
     padding: 2rem;
     text-align: center;
@@ -701,12 +801,12 @@ select.inline-edit:hover { border-color: var(--accent); }
 
 .modal-box {
     background: var(--surface);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 1.5rem;
     min-width: 320px;
     max-width: 440px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-lg);
 }
 
 .modal-box p {
@@ -719,7 +819,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     padding: 0.5rem 0.75rem;
     margin-bottom: 1.25rem;
     background: var(--bg);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     color: var(--text);
     font-size: 0.95rem;
@@ -753,7 +853,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     justify-content: space-between;
     align-items: center;
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
     font-size: 0.9rem;
     color: var(--text-muted);
 }
@@ -808,7 +908,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     width: calc(100% - 8px) !important;
     height: calc(100% - 8px) !important;
     object-fit: cover;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    border: 1px solid var(--overlay-img-border);
     border-radius: 3px;
     box-shadow: 4px 4px 0 0 #2c2c2c, 8px 8px 0 0 #1c1c1c;
 }
@@ -833,7 +933,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     min-width: 280px;
     max-width: 480px;
     background: var(--surface);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 0.85rem 1rem 0.85rem 1rem;
     color: var(--text);
@@ -841,7 +941,7 @@ select.inline-edit:hover { border-color: var(--accent); }
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-sm);
     z-index: 1001;
     animation: slideUp 0.2s ease, fadeOut 0.3s ease 2.7s forwards;
 }
@@ -964,13 +1064,13 @@ tr.highlight-new td {
 
 /* Expandable device rows */
 .device-row { cursor: pointer; }
-.device-row:hover td { background: rgba(255,255,255,0.04); }
+.device-row:hover td { background: var(--overlay-subtle); }
 
 /* Expandable asset rows */
 .asset-row { cursor: pointer; }
-.asset-row:hover td { background: rgba(255,255,255,0.04); }
+.asset-row:hover td { background: var(--overlay-subtle); }
 .asset-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
-.asset-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.asset-detail td { border-bottom: 1px solid var(--border); padding: 0 1rem 1rem; }
 .asset-detail td:first-child { padding: 0; }
 .variants-table { width: 100%; border-collapse: collapse; }
 .variants-table th { text-align: left; font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
@@ -984,10 +1084,10 @@ tr.highlight-new td {
     user-select: none;
 }
 .device-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
-.device-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.device-detail td { border-bottom: 1px solid var(--border); padding: 0 1rem 1rem; }
 .device-detail td:first-child { padding: 0; }
 .audit-row { cursor: pointer; }
-.audit-row:hover td { background: rgba(255,255,255,0.04); }
+.audit-row:hover td { background: var(--overlay-subtle); }
 .audit-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
 /* Description cell: ellipsise long text; full text shown via title= and
    in the expanded row's Description detail-item. */
@@ -997,11 +1097,11 @@ tr.highlight-new td {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.audit-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.audit-detail td { border-bottom: 1px solid var(--border); padding: 0 1rem 1rem; }
 .audit-detail td:first-child { padding: 0; }
 /* Event log table — same expand/detail pattern as audit log. */
 .event-row { cursor: pointer; }
-.event-row:hover td { background: rgba(255,255,255,0.04); }
+.event-row:hover td { background: var(--overlay-subtle); }
 .event-row.expanded .expand-toggle { transform: rotate(90deg); display: inline-block; }
 .event-description { overflow: hidden; }
 .event-description > div {
@@ -1009,7 +1109,7 @@ tr.highlight-new td {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.event-detail td { border-bottom: 1px solid var(--primary); padding: 0 1rem 1rem; }
+.event-detail td { border-bottom: 1px solid var(--border); padding: 0 1rem 1rem; }
 .event-detail td:first-child { padding: 0; }
 /* Diff table inside the expand panel — field | from → to */
 .audit-changes {
@@ -1029,7 +1129,7 @@ tr.highlight-new td {
 .audit-changes .diff-old { color: var(--text-muted); text-decoration: line-through; }
 .audit-changes .diff-new { color: var(--text); font-weight: 500; }
 .audit-json {
-    background: var(--bg-dark, #1a1a2e);
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0.75rem 1rem;
@@ -1083,11 +1183,11 @@ tr.highlight-new td {
        a translucent white overlay. Matches the standard light-border
        contrast pattern (see .card-highlight). */
     background:
-        linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)),
+        linear-gradient(var(--overlay-hover), var(--overlay-hover)),
         var(--surface);
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid var(--overlay-strong);
     border-radius: 0.5rem;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    box-shadow: var(--shadow-md);
     display: none;
     flex-direction: column;
     min-width: 10rem;
@@ -1097,14 +1197,14 @@ tr.highlight-new td {
 }
 .group-popup[popover]:popover-open { display: flex; }
 .group-popup-item { background: none; border: none; color: var(--text); cursor: pointer; padding: 0.4rem 0.75rem; text-align: left; font-size: 0.85rem; white-space: nowrap; }
-.group-popup-item:hover { background: var(--primary); color: #fff; }
+.group-popup-item:hover { background: var(--primary); color: var(--text-on-accent); }
 .detail-toolbar { padding: 0.75rem 0 0; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.75rem; }
 
 /* Group panels */
-.group-panel { border: 1px solid var(--primary); border-radius: var(--radius); margin-bottom: 0.75rem; overflow: visible; transition: border-color 0.2s; }
+.group-panel { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 0.75rem; overflow: visible; transition: border-color 0.2s; }
 .group-panel.drag-over { border-color: var(--accent); background: rgba(233,69,96,0.05); }
 .group-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; cursor: pointer; user-select: none; }
-.group-header:hover { background: rgba(255,255,255,0.03); }
+.group-header:hover { background: var(--overlay-faint); }
 .group-header .expand-toggle { font-size: 0.7rem; transition: transform 0.15s; }
 .group-panel.expanded .group-header .expand-toggle { transform: rotate(90deg); display: inline-block; }
 /* #569: more pronounced device-group child indent + faded chevron + row
@@ -1135,15 +1235,15 @@ tr.highlight-new td {
    relatively-positioned <tr>. Avoids the "darker stripe in the first
    2.5rem" double-tint that happens if both the chevron td and the
    adjacent in-flow td paint their own backgrounds at the same alpha. */
-.group-panel .device-row { background: rgba(255,255,255,0.05); }
-.group-panel .device-row:hover { background: rgba(255,255,255,0.09); }
+.group-panel .device-row { background: var(--overlay-row); }
+.group-panel .device-row:hover { background: var(--overlay-row-hover); }
 /* Neutralize the global `.device-row:hover td` rule (line ~895) inside
    group panels. Without this, in-flow tds would stack their own 0.04
    tint on top of the row's hover tint, producing a darker band on every
    cell except the absolutely-positioned chevron td (which isn't covered
    by the global rule). Row-level hover is sufficient here. */
 .group-panel .device-row:hover td { background: transparent; }
-.group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text); padding: 0.15rem 0.5rem; border-radius: 10px; }
+.group-header .badge-count { font-size: 0.75rem; background: var(--primary); color: var(--text-on-accent); padding: 0.15rem 0.5rem; border-radius: 10px; }
 .group-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 .group-actions .btn-sm { font-size: 0.9rem; }
 .inline-label { font-size: 0.9rem; color: var(--text-muted); white-space: nowrap; }
@@ -1294,7 +1394,7 @@ tr.highlight-new td {
 .sub-tab {
     padding: 0.5rem 1.2rem;
     background: var(--surface);
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-bottom: none;
     color: var(--text-muted);
     cursor: pointer;
@@ -1305,7 +1405,7 @@ tr.highlight-new td {
 .sub-tab:last-child  { border-radius: 0 6px 0 0; }
 .sub-tab.active {
     background: var(--primary);
-    color: var(--text);
+    color: var(--text-on-accent);
     font-weight: 600;
 }
 .sub-tab:hover:not(.active) { background: rgba(15, 52, 96, 0.5); }
@@ -1374,12 +1474,12 @@ tr.highlight-new td {
 
 .permissions-table td {
     padding: 0.35rem 0.6rem;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    border-bottom: 1px solid var(--overlay-subtle);
     vertical-align: middle;
 }
 
 .permissions-table tbody tr:hover {
-    background: rgba(255,255,255,0.03);
+    background: var(--overlay-faint);
 }
 
 .permissions-table input[type="checkbox"] {
@@ -1393,8 +1493,8 @@ tr.highlight-new td {
     font-size: 0.78rem;
     font-family: monospace;
     background: rgba(15, 52, 96, 0.6);
-    color: var(--text);
-    border: 1px solid var(--primary);
+    color: var(--text-on-accent);
+    border: 1px solid var(--border);
 }
 
 /* ── Collapsible permission groups ── */
@@ -1409,16 +1509,16 @@ tr.highlight-new td {
 .btn-xs {
     padding: 0.15rem 0.45rem;
     font-size: 0.72rem;
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     background: transparent;
     color: var(--text-muted);
     cursor: pointer;
 }
-.btn-xs:hover { background: var(--primary); color: var(--text); }
+.btn-xs:hover { background: var(--primary); color: var(--text-on-accent); }
 
 .perm-group {
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid var(--overlay-hover);
     border-radius: 6px;
     margin-bottom: 0.35rem;
     background: rgba(22, 33, 62, 0.3);
@@ -1462,7 +1562,7 @@ tr.highlight-new td {
 .role-card {
     padding: 0.8rem;
     margin-bottom: 0.6rem;
-    border: 1px solid var(--primary);
+    border: 1px solid var(--border);
     border-radius: 6px;
     background: rgba(22, 33, 62, 0.4);
 }
@@ -1584,7 +1684,7 @@ tr.highlight-new td {
     align-items: center;
     margin-bottom: 1rem;
     padding-bottom: 0.6rem;
-    border-bottom: 1px solid var(--primary);
+    border-bottom: 1px solid var(--border);
 }
 .modal-header h3 { margin: 0; }
 .modal-close {
@@ -1602,7 +1702,7 @@ tr.highlight-new td {
     gap: 0.5rem;
     margin-top: 1rem;
     padding-top: 0.8rem;
-    border-top: 1px solid var(--primary);
+    border-top: 1px solid var(--border);
 }
 
 
@@ -1667,11 +1767,11 @@ textarea:not(:-webkit-autofill) {
        --primary so would disappear against the page; use the standard
        light-contrast border token instead (matches .card-highlight). */
     background:
-        linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)),
+        linear-gradient(var(--overlay-hover), var(--overlay-hover)),
         var(--surface);
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid var(--overlay-strong);
     border-radius: var(--radius);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--shadow-md);
     padding: 0.25rem;
     display: flex;
     flex-direction: column;
