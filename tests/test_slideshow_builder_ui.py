@@ -453,6 +453,30 @@ class TestSlideshowBuilderTrimUI:
         assert "${trimCtlHtml(s, i)}" in body
         assert "wireTrimCtls(slot, i);" in body
 
+    async def test_builder_bakes_trim_preview_editor(self, client):
+        """The visual "Preview & trim" modal (scrub bar + in/out handles +
+        play-selection) must be baked into the builder JS and wired to a
+        button in the trim section."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Entry-point button rendered in trimCtlHtml + wired in wireTrimCtls.
+        assert "ssb-trim-preview-btn" in body
+        assert "openTrimEditor(i)" in body
+        # The modal builder + write-back helpers exist.
+        assert "function openTrimEditor(" in body
+        assert "function applyTrim(" in body
+        # Reuses the shared lightbox chrome, not a bespoke modal.
+        assert "createModal(" in body
+        # Two-handle scrub bar + play-selection loop.
+        assert "ssb-trim-in" in body
+        assert "ssb-trim-out" in body
+        assert "Play selection" in body
+        # Write-back keeps the existing clip grammar: out-point at the source
+        # end is play-to-end, an earlier out-point pins a fixed length.
+        assert "s.clip_start_ms = inMs;" in body
+        assert "s.duration_ms = outMs - inMs;" in body
+
     async def test_serialize_uses_byte_identical_clip_rule(self, client):
         """clip_duration_ms must stay null unless a video has a real start
         offset AND play-to-end is off, so un-trimmed decks serialize

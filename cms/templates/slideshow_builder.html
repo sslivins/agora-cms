@@ -343,6 +343,65 @@
 .ssb-trim-start { display: flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; color: #ccc; }
 .ssb-trim-start input { width: 4.5rem; }
 .ssb-trim-summary { font-size: 0.72rem; color: #8fd9c9; }
+.ssb-trim-preview-btn { align-self: flex-start; margin-top: 0.15rem; }
+
+/* Visual "Preview & trim" modal: scrub bar + in/out handles. Reuses the
+   global .preview-box / .preview-media lightbox chrome. */
+.ssb-trim-modal { max-width: 760px; width: 92vw; }
+.ssb-trim-bar { padding: 1.4rem 0.75rem 0.4rem; }
+.ssb-trim-track {
+    position: relative;
+    height: 10px;
+    background: #333;
+    border-radius: 5px;
+    cursor: pointer;
+}
+.ssb-trim-sel {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: var(--accent, #1abc9c);
+    opacity: 0.45;
+    border-radius: 5px;
+    pointer-events: none;
+}
+.ssb-trim-playhead {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 16px;
+    background: #fff;
+    margin-left: -1px;
+    pointer-events: none;
+}
+.ssb-trim-handle {
+    position: absolute;
+    top: 50%;
+    width: 14px;
+    height: 22px;
+    margin-left: -7px;
+    transform: translateY(-50%);
+    background: var(--accent, #1abc9c);
+    border: 1px solid #0d6e5d;
+    border-radius: 3px;
+    cursor: ew-resize;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.ssb-trim-handle:focus { outline: 2px solid #fff; outline-offset: 1px; }
+.ssb-trim-ctls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    padding: 0.4rem 0.75rem 0.8rem;
+    font-size: 0.78rem;
+    color: #ccc;
+}
+.ssb-trim-readout { display: flex; align-items: center; gap: 0.6rem; }
+.ssb-trim-readout label { display: flex; align-items: center; gap: 0.3rem; }
+.ssb-trim-readout input { width: 4.5rem; }
+.ssb-trim-len { color: #8fd9c9; font-weight: 600; }
+.ssb-trim-cap-hint { font-size: 0.7rem; color: #d6a85f; }
 .ssb-vis-radio { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: #ccc; }
 .ssb-vis-radio label { display: flex; gap: 0.4rem; align-items: center; cursor: pointer; }
 .ssb-vis-radio input { accent-color: #1abc9c; }
@@ -2030,6 +2089,8 @@ function trimCtlHtml(s, i) {
                     Length is set by the duration / play-to-end controls above.
                 </div>
                 ${hint}
+                <button type="button" class="btn btn-secondary btn-sm ssb-trim-preview-btn"
+                        title="Scrub the video and set the start/end points visually">▶ Preview &amp; trim</button>
             </div>
         </div>`;
 }
@@ -2046,6 +2107,14 @@ function wireTrimCtls(slot, i) {
     const startInput = slot.querySelector('.ssb-trim-start-input');
     if (startInput) {
         startInput.addEventListener('change', (e) => updateSlideClipStart(i, e.target.value));
+    }
+    const previewBtn = slot.querySelector('.ssb-trim-preview-btn');
+    if (previewBtn) {
+        previewBtn.addEventListener('click', (e) => {
+            // Don't let the click bubble to the .ssb-trim-head toggle.
+            e.stopPropagation();
+            openTrimEditor(i);
+        });
     }
 }
 
@@ -2078,6 +2147,257 @@ function updateSlideClipStart(i, v) {
         const maxLen = durMs - startMs;
         if (maxLen > 0 && s.duration_ms > maxLen) s.duration_ms = maxLen;
     }
+    markDirty();
+    renderTimeline();
+}
+
+// ---- Visual "Preview & trim" modal -----------------------------------------
+// Opens a lightbox with the source <video>, a two-handle scrub bar (in/out)
+// and a "Play selection" loop, then writes the chosen window back onto the
+// slide using the same clip grammar as the inline controls:
+//   in == 0 & out == end  -> whole video (play_to_end on, clip_start 0)
+//   in == 0 & out <  end  -> play_to_end off, duration_ms = out (works on all
+//                            devices; no on-device seek needed)
+//   in >  0               -> clip_start_ms = in; out < end also sets
+//                            play_to_end off + duration_ms = out - in. The
+//                            on-device seek requires the slideshow_clip_v1
+//                            capability (length math is honoured everywhere).
+const TRIM_MIN_LEN_MS = 1000;   // never let a clip be shorter than 1s
+const TRIM_NUDGE_MS = 100;      // arrow-key nudge step
+
+function openTrimEditor(i) {
+    const s = slides[i];
+    if (!s || s.source_asset_type !== 'video' || !s.source_asset_id) return;
+
+    // Source length: prefer the probed asset duration; fall back to whatever
+    // the <video> reports once metadata loads.
+    let sourceMs = s.source_duration_seconds
+        ? Math.round(s.source_duration_seconds * 1000)
+        : 0;
+
+    // Seed in/out from the slide's current window.
+    let inMs = Math.max(0, s.clip_start_ms || 0);
+    let outMs;
+    if (s.play_to_end) {
+        outMs = sourceMs || (inMs + (s.duration_ms || TRIM_MIN_LEN_MS));
+    } else {
+        outMs = inMs + (s.duration_ms || TRIM_MIN_LEN_MS);
+    }
+
+    const { box, close } = createModal({ closeOnBackdrop: true, closeOnEsc: true });
+    box.classList.add('preview-box', 'ssb-trim-modal');
+
+    const header = document.createElement('div');
+    header.className = 'preview-header';
+    const title = document.createElement('span');
+    title.textContent = 'Preview & trim';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'btn btn-secondary btn-sm';
+    closeBtn.textContent = 'Cancel';
+    closeBtn.onclick = () => close();
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    box.appendChild(header);
+
+    const video = document.createElement('video');
+    video.src = `/api/assets/${s.source_asset_id}/preview`;
+    video.className = 'preview-media';
+    video.muted = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    box.appendChild(video);
+
+    // Scrub bar: a track with a highlighted selection band and two handles.
+    const bar = document.createElement('div');
+    bar.className = 'ssb-trim-bar';
+    bar.innerHTML = `
+        <div class="ssb-trim-track">
+            <div class="ssb-trim-sel"></div>
+            <div class="ssb-trim-playhead"></div>
+            <div class="ssb-trim-handle ssb-trim-in" tabindex="0" role="slider" aria-label="Start point"></div>
+            <div class="ssb-trim-handle ssb-trim-out" tabindex="0" role="slider" aria-label="End point"></div>
+        </div>`;
+    box.appendChild(bar);
+    const track = bar.querySelector('.ssb-trim-track');
+    const selEl = bar.querySelector('.ssb-trim-sel');
+    const playheadEl = bar.querySelector('.ssb-trim-playhead');
+    const inEl = bar.querySelector('.ssb-trim-in');
+    const outEl = bar.querySelector('.ssb-trim-out');
+
+    // Controls row: play-selection + live readouts + Apply.
+    const ctls = document.createElement('div');
+    ctls.className = 'ssb-trim-ctls';
+    ctls.innerHTML = `
+        <button type="button" class="btn btn-secondary btn-sm ssb-trim-play">▶ Play selection</button>
+        <button type="button" class="btn btn-secondary btn-sm ssb-trim-mute">🔇 Unmute</button>
+        <span class="ssb-trim-readout">
+            <label>Start <input type="number" class="ssb-trim-in-num" min="0" step="0.1"></label>
+            <label>End <input type="number" class="ssb-trim-out-num" min="0" step="0.1"></label>
+            <span class="ssb-trim-len"></span>
+        </span>
+        <span class="ssb-trim-cap-hint" style="display:none;"></span>
+        <button type="button" class="btn btn-primary btn-sm ssb-trim-apply" style="margin-left:auto;">Apply</button>`;
+    box.appendChild(ctls);
+    const playBtn = ctls.querySelector('.ssb-trim-play');
+    const muteBtn = ctls.querySelector('.ssb-trim-mute');
+    const inNum = ctls.querySelector('.ssb-trim-in-num');
+    const outNum = ctls.querySelector('.ssb-trim-out-num');
+    const lenEl = ctls.querySelector('.ssb-trim-len');
+    const capHint = ctls.querySelector('.ssb-trim-cap-hint');
+    const applyBtn = ctls.querySelector('.ssb-trim-apply');
+
+    let looping = false;
+
+    function pct(ms) { return sourceMs > 0 ? (ms / sourceMs) * 100 : 0; }
+
+    function refresh() {
+        // Keep ordering sane and clamp to source + min length.
+        if (sourceMs > 0) {
+            inMs = Math.min(Math.max(0, inMs), Math.max(0, sourceMs - TRIM_MIN_LEN_MS));
+            outMs = Math.min(Math.max(inMs + TRIM_MIN_LEN_MS, outMs), sourceMs);
+        }
+        inEl.style.left = pct(inMs) + '%';
+        outEl.style.left = pct(outMs) + '%';
+        selEl.style.left = pct(inMs) + '%';
+        selEl.style.width = Math.max(0, pct(outMs) - pct(inMs)) + '%';
+        inNum.value = (inMs / 1000).toFixed(1);
+        outNum.value = (outMs / 1000).toFixed(1);
+        lenEl.textContent = 'Length ' + clipFmtTime(outMs - inMs);
+        const showHint = inMs > 0;
+        capHint.style.display = showHint ? '' : 'none';
+        if (showHint) {
+            capHint.textContent = 'Start offset plays only on devices with the trim capability.';
+        }
+    }
+
+    function seekTo(ms) {
+        if (!isFinite(video.duration)) return;
+        video.currentTime = Math.min(Math.max(0, ms / 1000), video.duration);
+    }
+
+    video.addEventListener('loadedmetadata', () => {
+        if (!sourceMs && isFinite(video.duration)) {
+            sourceMs = Math.round(video.duration * 1000);
+            if (outMs > sourceMs) outMs = sourceMs;
+        }
+        refresh();
+        seekTo(inMs);
+    });
+
+    // While looping the selection, snap back to the in-point when we pass out.
+    video.addEventListener('timeupdate', () => {
+        if (sourceMs > 0) playheadEl.style.left = pct(video.currentTime * 1000) + '%';
+        if (looping && video.currentTime * 1000 >= outMs) seekTo(inMs);
+    });
+
+    // ---- Handle dragging ----
+    function dragHandle(which, clientX) {
+        const rect = track.getBoundingClientRect();
+        const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+        const ms = Math.round(frac * sourceMs);
+        if (which === 'in') { inMs = ms; refresh(); seekTo(inMs); }
+        else { outMs = ms; refresh(); seekTo(outMs); }
+    }
+    function startDrag(which) {
+        return (ev) => {
+            ev.preventDefault();
+            looping = false;
+            video.pause();
+            const move = (e) => dragHandle(which, (e.touches ? e.touches[0] : e).clientX);
+            const up = () => {
+                document.removeEventListener('mousemove', move);
+                document.removeEventListener('mouseup', up);
+                document.removeEventListener('touchmove', move);
+                document.removeEventListener('touchend', up);
+            };
+            document.addEventListener('mousemove', move);
+            document.addEventListener('mouseup', up);
+            document.addEventListener('touchmove', move, { passive: false });
+            document.addEventListener('touchend', up);
+        };
+    }
+    inEl.addEventListener('mousedown', startDrag('in'));
+    inEl.addEventListener('touchstart', startDrag('in'), { passive: false });
+    outEl.addEventListener('mousedown', startDrag('out'));
+    outEl.addEventListener('touchstart', startDrag('out'), { passive: false });
+
+    // Arrow-key nudge for the focused handle.
+    function nudge(which) {
+        return (e) => {
+            let delta = 0;
+            if (e.key === 'ArrowLeft') delta = -TRIM_NUDGE_MS;
+            else if (e.key === 'ArrowRight') delta = TRIM_NUDGE_MS;
+            else return;
+            e.preventDefault();
+            if (which === 'in') { inMs += delta; refresh(); seekTo(inMs); }
+            else { outMs += delta; refresh(); seekTo(outMs); }
+        };
+    }
+    inEl.addEventListener('keydown', nudge('in'));
+    outEl.addEventListener('keydown', nudge('out'));
+
+    // Numeric entry.
+    inNum.addEventListener('change', () => {
+        const v = parseFloat(inNum.value);
+        if (isFinite(v)) { inMs = Math.round(v * 1000); refresh(); seekTo(inMs); }
+    });
+    outNum.addEventListener('change', () => {
+        const v = parseFloat(outNum.value);
+        if (isFinite(v)) { outMs = Math.round(v * 1000); refresh(); seekTo(outMs); }
+    });
+
+    // Play just the [in, out] selection on a loop.
+    playBtn.addEventListener('click', () => {
+        if (looping && !video.paused) {
+            looping = false;
+            video.pause();
+            playBtn.textContent = '▶ Play selection';
+            return;
+        }
+        looping = true;
+        seekTo(inMs);
+        video.play();
+        playBtn.textContent = '⏸ Pause';
+    });
+    video.addEventListener('pause', () => { playBtn.textContent = '▶ Play selection'; });
+    video.addEventListener('play', () => { if (looping) playBtn.textContent = '⏸ Pause'; });
+
+    muteBtn.addEventListener('click', () => {
+        video.muted = !video.muted;
+        muteBtn.textContent = video.muted ? '🔇 Unmute' : '🔊 Mute';
+    });
+
+    applyBtn.addEventListener('click', () => {
+        applyTrim(i, inMs, outMs, sourceMs);
+        close();
+    });
+
+    refresh();
+}
+
+// Write the chosen [inMs, outMs] window back onto slide i using the existing
+// clip grammar (see openTrimEditor's header). Keeps untouched whole-video
+// slides byte-identical.
+function applyTrim(i, inMs, outMs, sourceMs) {
+    const s = slides[i];
+    if (!s || s.source_asset_type !== 'video') return;
+    inMs = Math.max(0, Math.round(inMs));
+    outMs = Math.max(inMs + TRIM_MIN_LEN_MS, Math.round(outMs));
+    if (sourceMs > 0) {
+        inMs = Math.min(inMs, Math.max(0, sourceMs - TRIM_MIN_LEN_MS));
+        outMs = Math.min(outMs, sourceMs);
+    }
+    s.clip_start_ms = inMs;
+    // Out-point at (or beyond) the source end means "play to end"; an earlier
+    // out-point pins a fixed length.
+    const atEnd = sourceMs > 0 && outMs >= sourceMs;
+    if (atEnd) {
+        s.play_to_end = true;
+    } else {
+        s.play_to_end = false;
+        s.duration_ms = outMs - inMs;
+    }
+    if (inMs > 0 || !atEnd) s._trimOpen = true;
     markDirty();
     renderTimeline();
 }
