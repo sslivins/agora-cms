@@ -2036,6 +2036,16 @@ function effectivePlaybackMs(s) {
     return s.duration_ms;
 }
 
+// Format a duration (ms) for the timeline card's seconds input: a plain
+// integer when whole ("15") or one decimal when fractional ("15.3"), at 0.1s
+// resolution. Trims set via the Preview & trim modal can land on a fractional
+// length, so the card must render and accept that rather than rounding it to
+// a whole second. Floored at 1s to match the input's min.
+function fmtDurSec(ms) {
+    const sec = Math.max(1, Math.round((Number(ms) || 0) / 100) / 10);
+    return Number.isInteger(sec) ? String(sec) : sec.toFixed(1);
+}
+
 // Plain-language description of the playing window, e.g. "0:05 → end (≈ 1:21)"
 // or "0:05 – 0:13 (8s)".
 function trimSummary(s) {
@@ -2438,7 +2448,7 @@ function makeSlot(s, i) {
     } else {
         thumb = `<video class="ssb-slot-thumb" style="${fitStyle}" src="${thumbSrc}" preload="metadata" muted playsinline></video>`;
     }
-    const displaySec = Math.max(1, Math.round(effectivePlaybackMs(s) / 1000));
+    const displaySec = fmtDurSec(effectivePlaybackMs(s));
 
     const playToEndCtl = isVideo
         ? `<label class="ssb-slot-pte" title="Play the full video">
@@ -2461,7 +2471,7 @@ function makeSlot(s, i) {
         <div class="ssb-slot-meta">
             <div class="ssb-slot-name" title="${escapeHtml(s.source_filename || '')}">${escapeHtml(s.source_filename || s.source_asset_id)}</div>
             <div class="ssb-slot-dur">
-                <input type="number" min="1" max="3600" step="1"
+                <input type="number" min="1" max="3600" step="0.1"
                        value="${displaySec}"
                        ${s.play_to_end && isVideo ? 'disabled' : ''}
                        aria-label="Duration in seconds">
@@ -2518,7 +2528,7 @@ function makeTagSlot(s, i) {
 
     const memberCount = Number.isFinite(s.member_count) ? s.member_count : 0;
     const tagName = s.tag_name || 'tag';
-    const perSec = Math.max(1, Math.round((s.duration_ms || 8000) / 1000));
+    const perSec = fmtDurSec(s.duration_ms || 8000);
     const countLabel = memberCount === 1 ? '1 item' : `${memberCount} items`;
     // Expand affordance: a stacked-cards glyph (⧉) implying "unstack into the
     // tagged member assets". Collapsed shows the live member count; expanded
@@ -2543,7 +2553,7 @@ function makeTagSlot(s, i) {
         <div class="ssb-slot-meta">
             <div class="ssb-slot-tag-sub text-muted" style="font-size:0.78rem;">Dynamic · ${escapeHtml(countLabel)}</div>
             <div class="ssb-slot-dur">
-                <input type="number" min="1" max="3600" step="1"
+                <input type="number" min="1" max="3600" step="0.1"
                        value="${perSec}"
                        aria-label="Per-item duration in seconds">
                 <span style="color:#888;">s each</span>
@@ -3110,7 +3120,8 @@ function updateSlideDuration(i, v) {
     const seconds = parseFloat(v);
     if (!isFinite(seconds) || seconds <= 0) return;
     const s = slides[i];
-    let ms = Math.round(seconds * 1000);
+    // Snap to 0.1s so the value round-trips cleanly through fmtDurSec.
+    let ms = Math.round(seconds * 10) * 100;
     // For a bounded clip (video, fixed length, with a start offset), the clip
     // can't run past the end of the source — mirror the server-side bound.
     if (s.source_asset_type === 'video' && !s.play_to_end
