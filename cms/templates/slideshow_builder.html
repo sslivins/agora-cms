@@ -401,7 +401,6 @@
 .ssb-trim-readout label { display: flex; align-items: center; gap: 0.3rem; }
 .ssb-trim-readout input { width: 4.5rem; }
 .ssb-trim-len { color: #8fd9c9; font-weight: 600; }
-.ssb-trim-cap-hint { font-size: 0.7rem; color: #d6a85f; }
 .ssb-vis-radio { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: #ccc; }
 .ssb-vis-radio label { display: flex; gap: 0.4rem; align-items: center; cursor: pointer; }
 .ssb-vis-radio input { accent-color: #1abc9c; }
@@ -2235,7 +2234,6 @@ function openTrimEditor(i) {
             <label>End <input type="number" class="ssb-trim-out-num" min="0" step="0.1"></label>
             <span class="ssb-trim-len"></span>
         </span>
-        <span class="ssb-trim-cap-hint" style="display:none;"></span>
         <button type="button" class="btn btn-primary btn-sm ssb-trim-apply" style="margin-left:auto;">Apply</button>`;
     box.appendChild(ctls);
     const playBtn = ctls.querySelector('.ssb-trim-play');
@@ -2243,7 +2241,6 @@ function openTrimEditor(i) {
     const inNum = ctls.querySelector('.ssb-trim-in-num');
     const outNum = ctls.querySelector('.ssb-trim-out-num');
     const lenEl = ctls.querySelector('.ssb-trim-len');
-    const capHint = ctls.querySelector('.ssb-trim-cap-hint');
     const applyBtn = ctls.querySelector('.ssb-trim-apply');
 
     let looping = false;
@@ -2262,12 +2259,9 @@ function openTrimEditor(i) {
         selEl.style.width = Math.max(0, pct(outMs) - pct(inMs)) + '%';
         inNum.value = (inMs / 1000).toFixed(1);
         outNum.value = (outMs / 1000).toFixed(1);
-        lenEl.textContent = 'Length ' + clipFmtTime(outMs - inMs);
-        const showHint = inMs > 0;
-        capHint.style.display = showHint ? '' : 'none';
-        if (showHint) {
-            capHint.textContent = 'Start offset plays only on devices with the trim capability.';
-        }
+        // Start/end are settable to 0.1s, so show the length to the same
+        // 0.1s precision rather than rounding to a whole second.
+        lenEl.textContent = 'Length ' + ((outMs - inMs) / 1000).toFixed(1) + 's';
     }
 
     function seekTo(ms) {
@@ -2301,6 +2295,10 @@ function openTrimEditor(i) {
     function startDrag(which) {
         return (ev) => {
             ev.preventDefault();
+            // preventDefault() suppresses the native focus, so focus the
+            // handle explicitly — otherwise the arrow-key nudge (which is
+            // keyed off the focused handle) never works after a click/drag.
+            (which === 'in' ? inEl : outEl).focus();
             looping = false;
             video.pause();
             const move = (e) => dragHandle(which, (e.touches ? e.touches[0] : e).clientX);
