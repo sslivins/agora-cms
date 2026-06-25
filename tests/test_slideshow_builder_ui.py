@@ -127,6 +127,25 @@ class TestSlideshowBuilderRoutes:
         # windows typed by hand stay open).
         assert "if (!s.active_end)" in resp.text
 
+    async def test_visibility_block_warns_on_expired_window(self, client):
+        """A slide whose visibility window has fully closed (an end date in the
+        past) can never appear, so the builder must surface it three ways: a
+        ``visIsExpired`` predicate (matching the server-side definition), an
+        inline warning in the Visibility block + a flagged thumbnail badge, and
+        a save-time confirm so it can't be saved silently."""
+        resp = await client.get("/assets/new/slideshow")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Predicate: strict valid_to < today (mirrors expired_slide_counts).
+        assert "function visIsExpired(s)" in body
+        assert "function visTodayLocal()" in body
+        # Inline editor warning + flagged thumb badge.
+        assert "ssb-vis-warn" in body
+        assert "ssb-slot-vbadge--expired" in body
+        # Save-time guard: confirm before persisting expired slides.
+        assert "slides.filter(visIsExpired)" in body
+        assert "await showConfirm(" in body
+
     async def test_create_mode_preview_btn_hidden_until_mint(self, client):
         """Bug: AI-assistant slideshow create left the page in create-mode
         chrome — Create button never flipped to Save and no Preview button
