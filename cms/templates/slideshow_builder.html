@@ -504,6 +504,22 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* Expired-window variant of both the inline summary and the thumb badge:
+   the slide's date range has fully closed, so it can never show again. */
+.ssb-vis-warn {
+    font-size: 0.66rem;
+    color: #f5c6a5;
+    background: rgba(230,126,34,0.12);
+    border: 1px solid rgba(230,126,34,0.45);
+    border-radius: 5px;
+    padding: 0.35rem 0.45rem;
+    line-height: 1.3;
+    margin-top: 0.35rem;
+}
+.ssb-slot-vbadge--expired {
+    background: rgba(230,126,34,0.95);
+    color: #2a1402;
+}
 
 /* Transition gap between slots */
 .ssb-gap {
@@ -1808,6 +1824,20 @@ function visHasWindow(s) {
               (Array.isArray(s.active_days) && s.active_days.length));
 }
 
+// Today's calendar date in the author's browser locale, as 'YYYY-MM-DD'.
+// Matches the basis the "Set to today" chip uses, and lets us string-compare
+// against the ISO date inputs without any timezone shift.
+function visTodayLocal() { return new Date().toLocaleDateString('en-CA'); }
+
+// True iff the slide's visibility window has *permanently* closed: it carries
+// an end date (valid_to) strictly before today, so it can never show again.
+// Mirrors the server-side expired_slide_counts definition (strict ``<`` — a
+// window ending today is still live). An open-ended window (no valid_to)
+// never counts, regardless of any weekday / time-of-day restriction.
+function visIsExpired(s) {
+    return !!(s && s.valid_to && String(s.valid_to) < visTodayLocal());
+}
+
 // 'YYYY-MM-DD' -> 'Dec 1' (parsed by hand to avoid any timezone shift).
 function visFmtDate(d) {
     if (!d) return '';
@@ -1860,6 +1890,10 @@ function visSummary(s) {
 // Compact thumbnail badge for a windowed slide (clock glyph + short summary).
 function visBadgeHtml(s) {
     if (!visHasWindow(s)) return '';
+    if (visIsExpired(s)) {
+        const t = `Expired — this slide can never show (window ended ${visFmtDate(s.valid_to)}).`;
+        return `<div class="ssb-slot-vbadge ssb-slot-vbadge--expired" title="${escapeHtml(t)}">⚠ ${escapeHtml(visSummary(s))}</div>`;
+    }
     return `<div class="ssb-slot-vbadge" title="${escapeHtml(visSummary(s))}">⏱ ${escapeHtml(visSummary(s))}</div>`;
 }
 
@@ -1878,6 +1912,9 @@ function visibilityCtlHtml(s, i) {
     }).join('');
     const summary = limit && visHasWindow(s)
         ? `<div class="ssb-vis-summary">${escapeHtml(visSummary(s))}</div>`
+        : '';
+    const warning = limit && visIsExpired(s)
+        ? `<div class="ssb-vis-warn">⚠ This end date (${escapeHtml(visFmtDate(s.valid_to))}) has already passed, so this slide will never appear. Update the dates or remove the slide.</div>`
         : '';
     return `
         <div class="ssb-slot-vis">
@@ -1919,6 +1956,7 @@ function visibilityCtlHtml(s, i) {
                         <div class="ssb-vis-days">${daysChips}</div>
                     </fieldset>
                     ${summary}
+                    ${warning}
                 </div>
             </div>
         </div>`;
@@ -3590,6 +3628,21 @@ async function saveSlideshow(opts) {
     if (!name) { setStatus('Name is required', true); return false; }
     if (slides.length === 0) { setStatus('Add at least one slide', true); return false; }
     if (slides.length > SS_MAX_SLIDES) { setStatus('Too many slides', true); return false; }
+
+    // Guard against silently saving slides whose visibility window has already
+    // closed — they would never appear on any device. Surface a confirm (not a
+    // hard block: editing an expired window back into the future is a valid
+    // reason to keep the slide) so the author makes a deliberate choice.
+    const expired = slides.filter(visIsExpired);
+    if (expired.length) {
+        const n = expired.length;
+        const ok = await showConfirm(
+            `${n} slide${n === 1 ? '' : 's'} ` +
+            `${n === 1 ? 'has' : 'have'} an end date in the past and will never ` +
+            `appear on any device. Save anyway?`
+        );
+        if (!ok) { setStatus('Save cancelled — fix the expired slide dates.', true); return false; }
+    }
 
     const submit = document.getElementById('ss-submit');
     submit.disabled = true;
