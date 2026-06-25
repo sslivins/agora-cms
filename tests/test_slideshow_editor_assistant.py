@@ -269,6 +269,41 @@ class TestBuildSystemPrompt:
         assert "create_tag" not in prompt
         assert "library" in prompt.lower()
 
+    def test_editor_prompt_documents_visibility_window(self):
+        """The per-slide visibility window (date range, time-of-day,
+        weekdays) must be advertised so the assistant can set/clear it."""
+        from cms.services.assistant.prompts import build_system_prompt
+
+        aid = str(uuid.uuid4())
+        prompt = build_system_prompt(
+            self._user(), mode="slideshow_editor", composed_asset_id=aid
+        )
+        # All five window fields are named.
+        assert "valid_from" in prompt
+        assert "valid_to" in prompt
+        assert "active_start" in prompt
+        assert "active_end" in prompt
+        assert "active_days" in prompt
+        # The weekday encoding is spelled out so the assistant maps words
+        # like "weekdays" correctly.
+        assert "0" in prompt and "Mon" in prompt
+        # Evaluation is device-local.
+        assert "local time" in prompt.lower()
+
+    def test_editor_prompt_documents_video_trim(self):
+        """The per-slide video trim fields must be advertised so the
+        assistant can play a sub-range of a video source."""
+        from cms.services.assistant.prompts import build_system_prompt
+
+        aid = str(uuid.uuid4())
+        prompt = build_system_prompt(
+            self._user(), mode="slideshow_editor", composed_asset_id=aid
+        )
+        assert "clip_start_ms" in prompt
+        assert "clip_duration_ms" in prompt
+        # Trim is video-only.
+        assert "VIDEO" in prompt or "video" in prompt
+
     def test_slideshow_mode_without_id_falls_back_to_general(self):
         from cms.services.assistant.prompts import build_system_prompt
 
