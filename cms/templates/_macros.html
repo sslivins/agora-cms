@@ -336,6 +336,22 @@
                             </span>
                         </div>
                         {% endif %}
+                        {% if 'assets:write' in user_perms %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">Description</span>
+                            <span class="detail-value editable-name{% if not a.description %} is-placeholder{% endif %}"
+                                  onclick="event.stopPropagation(); editAssetDescription(this)"
+                                  data-asset-id="{{ a.id }}"
+                                  data-placeholder="Add a description…"
+                                  title="Click to edit"
+                                  style="white-space:pre-wrap; word-break:break-word; cursor:text;">{{ a.description or 'Add a description…' }}</span>
+                        </div>
+                        {% elif a.description %}
+                        <div class="detail-item detail-item-wide">
+                            <span class="detail-label">Description</span>
+                            <span class="detail-value" style="white-space:pre-wrap; word-break:break-word;">{{ a.description }}</span>
+                        </div>
+                        {% endif %}
                         <div class="detail-item">
                             <span class="detail-label">Uploaded</span>
                             <span class="detail-value" data-utc="{{ a.uploaded_at.isoformat() }}">{{ a.uploaded_at.strftime('%b %d, %Y %I:%M %p') }}</span>

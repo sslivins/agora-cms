@@ -90,6 +90,30 @@ class TestAssetsPage:
         assert len(items) == 1
         assert items[0]["filename"] == "holiday-promo-2026.mp4"
 
+    async def test_substring_search_matches_description(self, client, db_session):
+        """``q`` also matches the user-editable free-text description, so an
+        asset is findable by notes even when its name doesn't contain the
+        search term."""
+        from cms.models.asset import AssetType
+
+        created = await _seed_assets(
+            db_session,
+            [
+                ("clip-001.mp4", AssetType.VIDEO),
+                ("clip-002.mp4", AssetType.VIDEO),
+            ],
+        )
+        created[0].description = "Footage from the Seattle waterfront gala"
+        await db_session.commit()
+
+        # Term appears only in the description, not in any name field.
+        resp = await client.get("/api/assets/page", params={"q": "waterfront"})
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["filename"] == "clip-001.mp4"
+        assert items[0]["description"] == "Footage from the Seattle waterfront gala"
+
     async def test_type_filter_repeatable(self, client, db_session):
         from cms.models.asset import AssetType
 

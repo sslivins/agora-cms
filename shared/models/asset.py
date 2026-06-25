@@ -36,6 +36,11 @@ class Asset(Base):
     filename: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)  # set when converted (e.g. HEIC→JPG)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)  # user-editable friendly name
+    # User-editable free-text description. Included (alongside the name
+    # fields) in the case-insensitive substring search powering the asset
+    # library's ``q`` filter, so users can find assets by notes they've
+    # written rather than only by filename.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     asset_type: Mapped[AssetType] = mapped_column(Enum(AssetType), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     checksum: Mapped[str] = mapped_column(String(64), default="")  # SHA-256
@@ -126,6 +131,12 @@ class Asset(Base):
             "display_name",
             postgresql_using="gin",
             postgresql_ops={"display_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_assets_description_trgm",
+            "description",
+            postgresql_using="gin",
+            postgresql_ops={"description": "gin_trgm_ops"},
         ),
         Index(
             "idx_assets_original_filename_trgm",

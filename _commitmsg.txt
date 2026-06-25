@@ -1,0 +1,20 @@
+feat: searchable user-editable asset description
+
+Add a free-text ``description`` to library assets that users can edit
+inline from the expanded asset-detail row, and include it in the asset
+library's substring search so an asset is findable by notes the user
+has written rather than only by its filename.
+
+- model: new nullable ``Asset.description`` (Text) + trigram GIN index
+  ``idx_assets_description_trgm`` mirroring the existing name-field
+  search indexes (migration 0051; pg_trgm best-effort, skipped on
+  SQLite/unallow-listed PG exactly like 0030).
+- search: ``GET /api/assets/page`` ``q`` now also matches description.
+- edit: ``PATCH /api/assets/{id}`` accepts ``description`` (trimmed,
+  empty -> NULL, max 2000 chars); ``AssetOut`` returns it.
+- UI: inline multi-line editor in the asset-detail row (Enter/blur
+  saves, Shift+Enter newline, Escape reverts) reusing the existing
+  /api/assets/{id}/row server fragment so search results get it too.
+- docs/openapi.yaml regenerated.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

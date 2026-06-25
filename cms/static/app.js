@@ -1710,6 +1710,75 @@ async function editAssetName(el) {
     });
 }
 
+// Inline-edit an asset's free-text description from the expanded asset
+// detail row. Mirrors editAssetName but uses a multi-line <textarea>
+// (descriptions run longer than names) and PATCHes the same
+// /api/assets/{id} endpoint with {description}. Empty saves as null.
+// Blur or Enter commits; Shift+Enter inserts a newline; Escape reverts.
+async function editAssetDescription(el) {
+    const assetId = el.dataset.assetId;
+    const placeholder = el.dataset.placeholder || 'Add a description…';
+    const isPlaceholder = el.classList.contains('is-placeholder');
+    const currentText = isPlaceholder ? '' : el.textContent;
+
+    const input = document.createElement('textarea');
+    input.value = currentText;
+    input.placeholder = placeholder;
+    input.className = 'form-control';
+    input.rows = 3;
+    input.maxLength = 2000;
+    input.style.cssText = 'font-size:0.85rem; padding:0.25rem 0.4rem; width:100%; max-width:480px; resize:vertical;';
+
+    const parent = el.parentElement;
+    parent.replaceChild(input, el);
+    input.focus();
+
+    function render(text) {
+        if (text) {
+            el.textContent = text;
+            el.classList.remove('is-placeholder');
+        } else {
+            el.textContent = placeholder;
+            el.classList.add('is-placeholder');
+        }
+    }
+
+    function revert() {
+        render(currentText);
+        parent.replaceChild(el, input);
+    }
+
+    async function save() {
+        const newText = input.value.trim();
+        if (newText === currentText) { revert(); return; }
+        try {
+            const resp = await fetch(`/api/assets/${assetId}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({description: newText || null}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                showToast(extractErrorMsg(err) || 'Update failed', true);
+                revert();
+                return;
+            }
+            render(newText);
+            parent.replaceChild(el, input);
+        } catch (e) {
+            showToast('Update failed: ' + e.message, true);
+            revert();
+        }
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); revert(); }
+    });
+    input.addEventListener('click', (e) => e.stopPropagation());
+}
+
 async function deleteAsset(assetId, filename) {
     if (!await showConfirm("Delete \"" + (filename || "this asset") + "\"?")) return;
     const resp = await apiCall("DELETE", `/api/assets/${assetId}`);
