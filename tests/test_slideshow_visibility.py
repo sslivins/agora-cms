@@ -402,3 +402,73 @@ class TestResolvedChecksumWindows:
         )
         p = self._plan(0, checksum="x", valid_from=date(2026, 12, 1))
         assert cs("a", [p], False, True) != cs("a", [p], False, False)
+
+
+# ---------------------------------------------------------------------------
+# expired_slide_counts — library "will never show again" warning helper
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+class TestExpiredSlideCounts:
+    """A slide counts as permanently expired only when ``valid_to`` is set and
+    strictly before the supplied ``today_local`` — the library badge basis."""
+
+    TODAY = date(2026, 6, 15)
+
+    async def test_past_valid_to_counts(self, db_session):
+        from cms.services.slideshow_resolver import expired_slide_counts
+
+        a = await _seed_image(db_session, filename="exp-past.png")
+        ss = await _seed_slideshow_with_windows(
+            db_session, [(a, {"valid_to": date(2026, 6, 14)})]
+        )
+        counts = await expired_slide_counts([ss.id], self.TODAY, db_session)
+        assert counts[ss.id] == 1
+
+    async def test_today_valid_to_not_expired(self, db_session):
+        """``valid_to == today`` is still showing today — not expired."""
+        from cms.services.slideshow_resolver import expired_slide_counts
+
+        a = await _seed_image(db_session, filename="exp-today.png")
+        ss = await _seed_slideshow_with_windows(
+            db_session, [(a, {"valid_to": self.TODAY})]
+        )
+        counts = await expired_slide_counts([ss.id], self.TODAY, db_session)
+        assert counts[ss.id] == 0
+
+    async def test_future_and_null_valid_to_not_expired(self, db_session):
+        from cms.services.slideshow_resolver import expired_slide_counts
+
+        future = await _seed_image(db_session, filename="exp-future.png")
+        recurring = await _seed_image(db_session, filename="exp-recurring.png")
+        ss = await _seed_slideshow_with_windows(
+            db_session,
+            [
+                (future, {"valid_to": date(2026, 12, 25)}),
+                # No valid_to, only a weekday window → recurs forever.
+                (recurring, {"active_days": [0, 1, 2]}),
+            ],
+        )
+        counts = await expired_slide_counts([ss.id], self.TODAY, db_session)
+        assert counts[ss.id] == 0
+
+    async def test_multiple_expired_sum(self, db_session):
+        from cms.services.slideshow_resolver import expired_slide_counts
+
+        a = await _seed_image(db_session, filename="exp-m1.png")
+        b = await _seed_image(db_session, filename="exp-m2.png")
+        c = await _seed_image(db_session, filename="exp-m3.png")
+        ss = await _seed_slideshow_with_windows(
+            db_session,
+            [
+                (a, {"valid_to": date(2025, 1, 1)}),
+                (b, {"valid_from": date(2026, 1, 1), "valid_to": date(2026, 6, 1)}),
+                (c, {}),  # always-on, not expired
+            ],
+        )
+        counts = await expired_slide_counts([ss.id], self.TODAY, db_session)
+        assert counts[ss.id] == 2
+
+    async def test_empty_input_returns_empty_mapping(self, db_session):
+        from cms.services.slideshow_resolver import expired_slide_counts
+
+        assert await expired_slide_counts([], self.TODAY, db_session) == {}

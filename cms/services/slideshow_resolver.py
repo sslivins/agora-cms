@@ -670,6 +670,50 @@ async def effective_slide_counts(
     return counts
 
 
+async def expired_slide_counts(
+    slideshow_ids: Sequence[uuid.UUID],
+    today_local: date,
+    db: AsyncSession,
+) -> dict[uuid.UUID, int]:
+    """Return, per slideshow asset id, the count of *permanently-expired* slides.
+
+    A slide is permanently expired when it carries a visibility end date
+    (``valid_to``) that is strictly before ``today_local`` — its window has
+    closed and, because ``valid_to`` is the absolute latest calendar date the
+    slide may show, it can never appear again.  Such a slide is silently
+    skipped forever, so the library surfaces it as a warning the operator can
+    act on (edit or remove the slide).
+
+    Slides with no ``valid_to`` never count, regardless of any weekday /
+    time-of-day window — those recur indefinitely.  A future ``valid_to`` is
+    not expired (the slide simply hasn't reached its end yet).
+
+    ``today_local`` is the current date in the CMS's effective timezone (the
+    same basis the Schedules page uses for its "expired schedules" section), so
+    the warning flips at the local midnight boundary, not UTC's.
+
+    One grouped query, O(1) in deck length.
+    """
+    counts: dict[uuid.UUID, int] = {sid: 0 for sid in slideshow_ids}
+    if not slideshow_ids:
+        return counts
+
+    rows = (
+        await db.execute(
+            select(SlideshowSlide.slideshow_asset_id, func.count())
+            .where(
+                SlideshowSlide.slideshow_asset_id.in_(slideshow_ids),
+                SlideshowSlide.valid_to.is_not(None),
+                SlideshowSlide.valid_to < today_local,
+            )
+            .group_by(SlideshowSlide.slideshow_asset_id)
+        )
+    ).all()
+    for sid, cnt in rows:
+        counts[sid] = cnt
+    return counts
+
+
 def _effective_slide_playback(
     spec: "_SlideSpec",
     src: Asset,

@@ -1498,11 +1498,23 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
     # block counts as its live expanded membership, so the badge matches
     # what the device/preview actually renders (see effective_slide_counts).
     slide_counts: dict = {}
+    expired_slide_counts_map: dict = {}
     if assets:
         slideshow_ids = [a.id for a in assets if a.asset_type == AssetType.SLIDESHOW]
         if slideshow_ids:
-            from cms.services.slideshow_resolver import effective_slide_counts
+            from cms.services.slideshow_resolver import (
+                effective_slide_counts,
+                expired_slide_counts,
+            )
             slide_counts = await effective_slide_counts(slideshow_ids, db)
+            # "today" in the CMS's effective timezone (matches the Schedules
+            # page's expired-schedule basis) so the expired-slide warning flips
+            # at local midnight, not UTC's.
+            _tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+            _today_local = datetime.now(_tz.utc).astimezone(ZoneInfo(_tz_name)).date()
+            expired_slide_counts_map = await expired_slide_counts(
+                slideshow_ids, _today_local, db
+            )
 
     # Annotate each asset with variant summary + schedule count + group info
     all_group_assets = {}
@@ -1558,6 +1570,7 @@ async def assets_page(request: Request, db: AsyncSession = Depends(get_db)):
             a.variant_aggregate_progress = 0.0
         a.schedule_count = sched_counts.get(a.id, 0)
         a.slide_count = slide_counts.get(a.id, 0)
+        a.expired_slide_count = expired_slide_counts_map.get(a.id, 0)
         entries = all_group_assets.get(a.id, [])
         # Non-admin users should only see group entries for their own groups
         if group_ids is not None:

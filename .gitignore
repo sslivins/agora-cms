@@ -55,3 +55,5 @@ tests/nightly/coverage-data/
 
 
 test_run*.log
+_commitmsg.txt
+_prbody.md

@@ -133,7 +133,7 @@
             {% set thumb_url = thumbnail_url_map.get(a.id, '') %}
             {% set asset_tags = tags_map.get(a.id | string, []) %}
             {% set asset_usage = usage_map.get(a.id | string, None) %}
-            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}" data-thumbnail-url="{{ thumb_url }}" data-url="{{ a.url or '' }}" data-filename="{{ a.filename or '' }}" data-schedule-count="{{ a.schedule_count or 0 }}" data-slide-count="{{ a.slide_count or 0 }}" data-tags="{{ asset_tags | tojson | forceescape }}">
+            <tr class="asset-row" onclick="toggleAsset(this)" data-asset-id="{{ a.id }}" data-asset-type="{{ a.asset_type.value }}" data-uploaded-at="{{ a.uploaded_at.isoformat() if a.uploaded_at else '' }}" data-size-bytes="{{ a.size_bytes or 0 }}" data-duration-seconds="{{ a.duration_seconds or '' }}" data-uploader-id="{{ a.uploaded_by_user_id or '' }}" data-is-global="{{ '1' if a.is_global else '0' }}" data-thumbnail-url="{{ thumb_url }}" data-url="{{ a.url or '' }}" data-filename="{{ a.filename or '' }}" data-schedule-count="{{ a.schedule_count or 0 }}" data-slide-count="{{ a.slide_count or 0 }}" data-expired-slide-count="{{ a.expired_slide_count or 0 }}" data-tags="{{ asset_tags | tojson | forceescape }}">
                 <td class="expand-toggle" style="white-space:nowrap;">
                     {% if 'assets:write' in user_perms %}
                     <input type="checkbox" class="bulk-select-row" data-asset-id="{{ a.id }}" onclick="event.stopPropagation()" style="margin-right:0.25rem; vertical-align:middle;">
@@ -225,6 +225,9 @@
                         <span class="badge badge-ready">{{ a.slide_count }} slide{{ 's' if a.slide_count != 1 else '' }}</span>
                         {% else %}
                         <span class="badge badge-pending">Empty</span>
+                        {% endif %}
+                        {% if a.expired_slide_count is defined and a.expired_slide_count > 0 %}
+                        <span class="has-tooltip"><span class="badge badge-warning" style="margin-left:0.4rem;">{{ a.expired_slide_count }} expired slide{{ 's' if a.expired_slide_count != 1 else '' }}</span><span class="tooltip">{{ a.expired_slide_count }} slide{{ 's' if a.expired_slide_count != 1 else '' }} {{ 'have' if a.expired_slide_count != 1 else 'has' }} a visibility end date in the past and will never show again. Edit or remove {{ 'them' if a.expired_slide_count != 1 else 'it' }} in the slideshow editor.</span></span>
                         {% endif %}
                     {% elif a.variant_total > 0 %}
                     {% if a.variant_failed > 0 and a.variant_ready > 0 %}

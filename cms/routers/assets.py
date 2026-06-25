@@ -271,10 +271,22 @@ async def assets_status_json(
     # A dynamic ``tag`` block counts as its live expanded membership so the
     # badge matches what the device/preview renders (see the helper).
     slide_counts: dict = {}
+    expired_slide_counts_map: dict = {}
     slideshow_ids = [a.id for a in all_assets if a.asset_type == AssetType.SLIDESHOW]
     if slideshow_ids:
-        from cms.services.slideshow_resolver import effective_slide_counts
+        from zoneinfo import ZoneInfo
+
+        from cms.auth import SETTING_TIMEZONE, get_setting
+        from cms.services.slideshow_resolver import (
+            effective_slide_counts,
+            expired_slide_counts,
+        )
         slide_counts = await effective_slide_counts(slideshow_ids, db)
+        _tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+        _today_local = datetime.now(timezone.utc).astimezone(ZoneInfo(_tz_name)).date()
+        expired_slide_counts_map = await expired_slide_counts(
+            slideshow_ids, _today_local, db
+        )
 
     assets_detail = []
     thumb_map = await _thumbnail_urls_for([a.id for a in all_assets], db)
@@ -354,6 +366,7 @@ async def assets_status_json(
                 if user_group_ids is None or ga.group_id in user_group_ids
             ],
             "slide_count": slide_counts.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
+            "expired_slide_count": expired_slide_counts_map.get(a.id, 0) if a.asset_type == AssetType.SLIDESHOW else None,
             "thumbnail_url": thumb_map.get(a.id),
             # Mirror the main-list AssetOut.unpublished so the status poller's
             # buildVariantBadge() keeps the "Unpublished" badge instead of
@@ -2686,6 +2699,20 @@ async def get_asset_row(asset_id: uuid.UUID, request: Request, db: AsyncSession 
         select(func.count()).select_from(Schedule).where(Schedule.asset_id == asset.id)
     )).scalar() or 0
     asset.schedule_count = sc
+    if asset.asset_type == AssetType.SLIDESHOW:
+        from zoneinfo import ZoneInfo
+
+        from cms.auth import SETTING_TIMEZONE, get_setting
+        from cms.services.slideshow_resolver import (
+            effective_slide_counts,
+            expired_slide_counts,
+        )
+        _sc_map = await effective_slide_counts([asset.id], db)
+        asset.slide_count = _sc_map.get(asset.id, 0)
+        _tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+        _today_local = datetime.now(timezone.utc).astimezone(ZoneInfo(_tz_name)).date()
+        _exp_map = await expired_slide_counts([asset.id], _today_local, db)
+        asset.expired_slide_count = _exp_map.get(asset.id, 0)
     ga_rows = (await db.execute(
         select(GroupAsset).where(GroupAsset.asset_id == asset.id)
     )).scalars().all()
