@@ -51,9 +51,9 @@
         gap: 0.85rem;
         align-items: flex-start;
         padding: 1rem;
-        border: 1px solid var(--border-color, #d0d7de);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        background: var(--card-bg, #fff);
+        background: var(--card-bg);
         text-decoration: none;
         color: inherit;
         transition: border-color .12s ease, box-shadow .12s ease,
@@ -61,7 +61,7 @@
     }
     .builder-tile:hover,
     .builder-tile:focus-visible {
-        border-color: var(--accent-color, #0969da);
+        border-color: var(--accent);
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
         transform: translateY(-1px);
         text-decoration: none;
@@ -75,19 +75,19 @@
     .builder-tile-title {
         margin: 0 0 0.25rem;
         font-size: 1.05rem;
-        color: var(--text-color, #1f2328);
+        color: var(--text);
         display: flex;
         align-items: center;
         gap: 0.5rem;
     }
     .builder-tile:hover .builder-tile-title,
     .builder-tile:focus-visible .builder-tile-title {
-        color: var(--accent-color, #0969da);
+        color: var(--accent);
     }
     .builder-tile-desc {
         margin: 0;
         font-size: 0.9rem;
-        color: var(--text-muted, #57606a);
+        color: var(--text-muted);
     }
     .builder-tile-badge {
         font-size: 0.7rem;
@@ -96,8 +96,8 @@
         letter-spacing: 0.04em;
         padding: 0.1rem 0.45rem;
         border-radius: 999px;
-        background: var(--badge-bg, #eaeef2);
-        color: var(--text-muted, #57606a);
+        background: var(--surface-alt);
+        color: var(--text-muted);
     }
     .builder-tile-disabled {
         opacity: 0.55;
@@ -105,13 +105,13 @@
     }
     .builder-tile-disabled:hover,
     .builder-tile-disabled:focus-visible {
-        border-color: var(--border-color, #d0d7de);
+        border-color: var(--border);
         box-shadow: none;
         transform: none;
     }
     .builder-tile-disabled:hover .builder-tile-title,
     .builder-tile-disabled:focus-visible .builder-tile-title {
-        color: var(--text-color, #1f2328);
+        color: var(--text);
     }
 </style>
 {% endblock %}
