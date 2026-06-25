@@ -185,6 +185,39 @@ Per-slide fields:
   (``"zoom out right down"`` is read as ``out_down_right``).  Default
   ``in``.
 
+Per-slide visibility window (when a slide is allowed to show):
+By default a slide always shows.  You can limit a slide to a date
+range, a time of day, and/or certain weekdays — outside its window the
+slide is silently skipped (the rest of the show plays normally).  All
+of these are optional and combine (a slide shows only when EVERY set
+condition is met).  They apply to BOTH asset slides and tag blocks.
+* ``valid_from`` / ``valid_to``: an inclusive calendar-date range as
+  ``"YYYY-MM-DD"`` strings (e.g. a Christmas slide ``valid_from``
+  ``"2026-12-01"`` ``valid_to`` ``"2026-12-26"``).  Either end may be
+  omitted for an open-ended range.  ``valid_to`` must be on or after
+  ``valid_from``.
+* ``active_start`` / ``active_end``: a time-of-day window as ``"HH:MM"``
+  (24-hour) — ``active_start`` inclusive, ``active_end`` exclusive.  A
+  window that wraps past midnight is allowed (set ``active_start`` later
+  than ``active_end``, e.g. ``"22:00"``–``"06:00"`` for overnight).
+* ``active_days``: a list of weekdays the slide may show, as integers
+  ``0``=Mon … ``6``=Sun (e.g. ``[0,1,2,3,4]`` for weekdays).  Omit or
+  use ``[]`` for every day.
+All windows are evaluated in the playing device's local time.  When the
+operator describes a window in words ("only show this in December",
+"weekday mornings", "weekends after 5pm"), translate it into these
+fields.  To clear a window, set the relevant fields back to null.
+
+Per-slide video trim (asset slides only, VIDEO sources only):
+A video slide can play just a sub-range of its source instead of the
+whole clip.
+* ``clip_start_ms``: the offset INTO the source video to start at, in
+  milliseconds (e.g. ``10000`` starts 10 seconds in).  Default 0.
+* ``clip_duration_ms``: how long to play from that start, in
+  milliseconds.  Omit / null to play to the natural end of the source.
+The trim must fit inside the source's real length; the source must have
+finished processing.  Trim is rejected on non-video and on tag blocks.
+
 Dynamic tag blocks:
 * A slide can instead be a **tag block** that auto-expands at play
   time to every asset carrying a given tag — great for "show all our

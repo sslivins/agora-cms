@@ -495,11 +495,16 @@ async def get_slideshow(asset_id: str) -> str:
     to every asset carrying a tag). Shared fields on every slide:
     ``{id, position, kind, duration_ms, play_to_end, transition,
     transition_ms, member_transition, member_transition_ms, fit,
-    effect, effect_direction}``.
+    effect, effect_direction, valid_from, valid_to, active_days,
+    active_start, active_end}``.  The last five are the per-slide
+    visibility window (all null = always shows; see
+    ``set_slideshow_slides`` for their meaning).
 
     ``asset`` slides also carry ``{source_asset_id, source_filename,
-    source_asset_type, source_duration_seconds, thumbnail_url}`` (the
-    tag fields are null). ``tag`` slides also carry ``{tag_id, tag_name,
+    source_asset_type, source_duration_seconds, thumbnail_url,
+    clip_start_ms, clip_duration_ms}`` (the tag fields are null;
+    ``clip_*`` are the per-slide video trim, both null = whole clip).
+    ``tag`` slides also carry ``{tag_id, tag_name,
     tag_order_by, member_count}`` (the source fields are null);
     ``member_count`` is how many assets currently match the tag.
 
@@ -535,7 +540,9 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
     slides.
 
     ASSET slides — ``{source_asset_id, duration_ms?, play_to_end?,
-    transition?, transition_ms?, fit?, effect?, effect_direction?}``:
+    transition?, transition_ms?, fit?, effect?, effect_direction?,
+    valid_from?, valid_to?, active_start?, active_end?, active_days?,
+    clip_start_ms?, clip_duration_ms?}``:
       - ``source_asset_id``: UUID of an IMAGE / VIDEO / COMPOSED asset
         (from ``list_assets`` or an existing slide's ``source_asset_id``).
       - ``duration_ms``: how long the slide shows, 500–3,600,000
@@ -562,6 +569,32 @@ async def set_slideshow_slides(asset_id: str, slides: list[dict]) -> str:
         bottom-right). Word order and separators DON'T matter —
         ``"zoom out right down"`` and ``"out-right-down"`` are both
         accepted and normalized to ``out_down_right``. Defaults to ``in``.
+
+    Per-slide VISIBILITY WINDOW (optional; on asset AND tag slides) —
+    limit WHEN a slide is allowed to show.  A slide with no window always
+    shows; outside its window it is silently skipped.  The conditions
+    combine (the slide shows only when EVERY set one is met) and are
+    evaluated in the playing device's local time:
+      - ``valid_from`` / ``valid_to``: inclusive calendar-date range as
+        ``"YYYY-MM-DD"`` strings.  Either end may be omitted.
+        ``valid_to`` must be on or after ``valid_from``.
+      - ``active_start`` / ``active_end``: time-of-day window as
+        ``"HH:MM"`` (24-hour); start inclusive, end exclusive.  Set
+        start later than end for a window that wraps past midnight
+        (e.g. ``"22:00"``–``"06:00"``).
+      - ``active_days``: weekdays the slide may show, ints ``0``=Mon …
+        ``6``=Sun (e.g. ``[0,1,2,3,4]`` = weekdays).  Omit / ``[]`` =
+        every day.
+      Set any field to null to clear that part of the window.
+
+    Per-slide VIDEO TRIM (optional; asset slides with a VIDEO source
+    only) — play just a sub-range of the source clip:
+      - ``clip_start_ms``: offset INTO the source to start at, in ms
+        (default 0).
+      - ``clip_duration_ms``: how long to play from that start, in ms;
+        omit / null to play to the source's natural end.
+      The trim must fit inside the source's real length.  Rejected on
+      non-video sources and on tag slides.
 
     TAG slides (dynamic blocks) — set ``kind: "tag"`` and ``tag_id``
     instead of ``source_asset_id``. A tag block expands at play time to
