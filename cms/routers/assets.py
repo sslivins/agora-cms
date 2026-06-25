@@ -716,10 +716,11 @@ async def list_assets_paged(
     """Paginated + filtered asset listing for the asset library UI.
 
     All filters are AND-composed. ``q`` is a case-insensitive substring
-    match against ``display_name``, ``original_filename``, and
-    ``filename`` (Postgres-side this hits a trigram GIN index; SQLite
-    falls back to a sequential scan in tests). The caller's group ACL
-    is applied last and cannot be widened by URL parameters.
+    match against ``display_name``, ``original_filename``,
+    ``description``, and ``filename`` (Postgres-side this hits a trigram
+    GIN index; SQLite falls back to a sequential scan in tests). The
+    caller's group ACL is applied last and cannot be widened by URL
+    parameters.
     """
     # ── Parse + validate order ──
     descending = order.startswith("-")
@@ -763,6 +764,7 @@ async def list_assets_paged(
         filter_clauses.append(
             func.coalesce(Asset.display_name, "").ilike(like)
             | func.coalesce(Asset.original_filename, "").ilike(like)
+            | func.coalesce(Asset.description, "").ilike(like)
             | Asset.filename.ilike(like)
         )
 
@@ -2488,7 +2490,7 @@ async def update_asset(
     user: User = Depends(require_permission(ASSETS_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update asset properties (currently: display_name)."""
+    """Update asset properties (currently: display_name, description, url)."""
     result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))
     asset = result.scalar_one_or_none()
     if not asset:
@@ -2503,6 +2505,14 @@ async def update_asset(
         if name and len(name) > 255:
             raise HTTPException(status_code=400, detail="Name too long (max 255 characters)")
         incoming["display_name"] = name if name else None
+
+    if "description" in body:
+        desc = (body["description"] or "").strip()
+        if len(desc) > 2000:
+            raise HTTPException(
+                status_code=400, detail="Description too long (max 2000 characters)"
+            )
+        incoming["description"] = desc if desc else None
 
     if "url" in body:
         # URL editing is only supported for webpage assets. Stream URLs drive

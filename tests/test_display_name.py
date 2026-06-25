@@ -134,6 +134,73 @@ class TestPatchAssetDisplayName:
         assert resp.json()["display_name"] is None
 
 
+# ── PATCH /api/assets/{id} — description ──
+
+
+@pytest.mark.asyncio
+class TestPatchAssetDescription:
+    """Test the PATCH endpoint for setting/clearing the free-text description."""
+
+    async def test_set_description(self, client, db_session):
+        asset = await _create_asset(db_session)
+        await db_session.commit()
+
+        resp = await client.patch(
+            f"/api/assets/{asset.id}",
+            json={"description": "Lobby loop, shot 2026 Q1"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["description"] == "Lobby loop, shot 2026 Q1"
+
+    async def test_clear_description(self, client, db_session):
+        asset = await _create_asset(db_session)
+        asset.description = "old notes"
+        await db_session.commit()
+
+        resp = await client.patch(
+            f"/api/assets/{asset.id}",
+            json={"description": ""},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["description"] is None
+
+    async def test_description_strips_whitespace(self, client, db_session):
+        asset = await _create_asset(db_session)
+        await db_session.commit()
+
+        resp = await client.patch(
+            f"/api/assets/{asset.id}",
+            json={"description": "  padded notes  "},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["description"] == "padded notes"
+
+    async def test_description_too_long(self, client, db_session):
+        asset = await _create_asset(db_session)
+        await db_session.commit()
+
+        resp = await client.patch(
+            f"/api/assets/{asset.id}",
+            json={"description": "x" * 2001},
+        )
+        assert resp.status_code == 400
+        assert "too long" in resp.json()["detail"].lower()
+
+    async def test_description_independent_of_display_name(self, client, db_session):
+        """Patching description leaves display_name untouched and vice-versa."""
+        asset = await _create_asset(db_session, display_name="Keep Me")
+        await db_session.commit()
+
+        resp = await client.patch(
+            f"/api/assets/{asset.id}",
+            json={"description": "just a note"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["description"] == "just a note"
+        assert data["display_name"] == "Keep Me"
+
+
 # ── _asset_display_name() priority logic ──
 
 

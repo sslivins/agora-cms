@@ -1090,10 +1090,11 @@ paths:
         Paginated + filtered asset listing for the asset library UI.
 
         All filters are AND-composed. ``q`` is a case-insensitive substring
-        match against ``display_name``, ``original_filename``, and
-        ``filename`` (Postgres-side this hits a trigram GIN index; SQLite
-        falls back to a sequential scan in tests). The caller's group ACL
-        is applied last and cannot be widened by URL parameters.
+        match against ``display_name``, ``original_filename``,
+        ``description``, and ``filename`` (Postgres-side this hits a trigram
+        GIN index; SQLite falls back to a sequential scan in tests). The
+        caller's group ACL is applied last and cannot be widened by URL
+        parameters.
       operationId: list_assets_paged_api_assets_page_get
       parameters:
       - name: q
@@ -1422,7 +1423,7 @@ paths:
   /api/assets/{asset_id}:
     patch:
       summary: Update Asset
-      description: 'Update asset properties (currently: display_name).'
+      description: 'Update asset properties (currently: display_name, description, url).'
       operationId: update_asset_api_assets__asset_id__patch
       parameters:
       - name: asset_id
@@ -4790,6 +4791,11 @@ components:
           - type: string
           - type: 'null'
           title: Display Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
         asset_type:
           $ref: '#/components/schemas/AssetType'
         size_bytes:
