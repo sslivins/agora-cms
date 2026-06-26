@@ -48,7 +48,7 @@ from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.group_asset import GroupAsset
-from cms.models.user import User, UserGroup, setup_token_is_expired
+from cms.models.user import User, UserGroup, setup_token_is_expired, reset_token_is_expired
 from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
@@ -343,6 +343,208 @@ async def logout():
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+# ── Forgot password / self-service reset (issue #231) ──
+
+# Tiny per-IP token bucket (mirrors cms/routers/bootstrap.py) so password-reset
+# requests can't be used to spray reset emails or to enumerate which addresses
+# have accounts via timing. Per-replica state is fine here — this is bot/abuse
+# deterrence, not a security boundary (the real defences are the generic
+# response below and the 1-hour single-use token).
+import time as _time
+from collections import defaultdict as _defaultdict, deque as _deque
+
+_reset_buckets: dict[tuple[str, str], "_deque[float]"] = _defaultdict(_deque)
+
+
+def _reset_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _reset_ratelimited(request: Request, *, key: str, limit: int, window_sec: int) -> bool:
+    """Return True (and record the hit) when under the limit; False when over."""
+    bucket = _reset_buckets[(key, _reset_ip(request))]
+    now = _time.monotonic()
+    cutoff = now - window_sec
+    while bucket and bucket[0] < cutoff:
+        bucket.popleft()
+    if len(bucket) >= limit:
+        return False
+    bucket.append(now)
+    return True
+
+
+# Shown for every /forgot-password POST regardless of whether the address
+# matched an account — never reveal which emails are registered.
+_RESET_SENT_MSG = (
+    "If an account exists for that email address, we've sent a link to reset "
+    "the password. Check your inbox (and spam folder)."
+)
+
+
+@router.get("/forgot-password", response_class=HTMLResponse)
+async def forgot_password_page(request: Request):
+    return templates.TemplateResponse(
+        request, "forgot_password.html", {"error": None, "sent": False}
+    )
+
+
+@router.post("/forgot-password", response_class=HTMLResponse)
+async def forgot_password_submit(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
+):
+    """Issue a password-reset token and email it, without leaking account existence.
+
+    Always renders the same generic "if an account exists…" confirmation so the
+    endpoint can't be used to enumerate registered email addresses. The token is
+    NOT exposed in the response — it only travels via the emailed link.
+    """
+    if not _reset_ratelimited(request, key="forgot-password", limit=5, window_sec=300):
+        return templates.TemplateResponse(
+            request, "forgot_password.html",
+            {"error": "Too many reset requests. Please wait a few minutes and try again.",
+             "sent": False},
+            status_code=429,
+        )
+
+    form = await request.form()
+    email = (form.get("email", "") or "").strip()
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    # Only mint+send for an active account with SMTP configured. Every branch
+    # below still returns the identical generic page so the caller learns
+    # nothing about the address.
+    if user is not None and user.is_active:
+        from cms.services.email_service import (
+            get_smtp_settings,
+            send_password_reset_email_background,
+        )
+        smtp_cfg = await get_smtp_settings(db)
+        if smtp_cfg.get("host") and smtp_cfg.get("from_email"):
+            import secrets
+            reset_token = secrets.token_urlsafe(32)
+            user.reset_token = reset_token
+            user.reset_token_created_at = datetime.now(_tz.utc)
+            await audit_log(
+                db, user=user, action="auth.password_reset_requested",
+                resource_type="user", resource_id=str(user.id),
+                details={"email": user.email}, request=request,
+            )
+            await db.commit()
+
+            base = (settings.base_url or request.base_url._url).rstrip("/")
+            reset_url = f"{base}/reset-password?token={reset_token}"
+            from starlette.background import BackgroundTask
+            task = BackgroundTask(
+                send_password_reset_email_background,
+                smtp_cfg=smtp_cfg,
+                to_email=user.email,
+                display_name=user.display_name,
+                reset_url=reset_url,
+            )
+            return templates.TemplateResponse(
+                request, "forgot_password.html",
+                {"error": None, "sent": True, "message": _RESET_SENT_MSG},
+                background=task,
+            )
+
+    return templates.TemplateResponse(
+        request, "forgot_password.html",
+        {"error": None, "sent": True, "message": _RESET_SENT_MSG},
+    )
+
+
+@router.get("/reset-password", response_class=HTMLResponse)
+async def reset_password_page(
+    request: Request,
+    token: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show the new-password form for a valid reset token.
+
+    Mirrors /setup-account: the token is intentionally NOT consumed here so an
+    email-security prefetcher (Defender Safe Links, Proofpoint, etc.) that GETs
+    the link can't burn it before the human clicks. It is burned only on a
+    successful POST below.
+    """
+    result = await db.execute(select(User).where(User.reset_token == token))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active or reset_token_is_expired(user):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": "This password-reset link is invalid or has expired. "
+                      "Please request a new one."},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        request, "reset_password.html", {"error": None, "token": token}
+    )
+
+
+@router.post("/reset-password", response_class=HTMLResponse)
+async def reset_password_submit(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate the reset token and set the new password, then burn the token."""
+    form = await request.form()
+    token = form.get("token", "")
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+
+    result = await db.execute(select(User).where(User.reset_token == token))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active or reset_token_is_expired(user):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": "This password-reset link is invalid or has expired. "
+                      "Please request a new one."},
+            status_code=400,
+        )
+
+    if len(new_password) < 6:
+        return templates.TemplateResponse(
+            request, "reset_password.html",
+            {"error": "Password must be at least 6 characters", "token": token},
+            status_code=400,
+        )
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            request, "reset_password.html",
+            {"error": "Passwords do not match", "token": token},
+            status_code=400,
+        )
+
+    user.password_hash = hash_password(new_password)
+    # Burn the reset token — single-use. Also clear any pending forced change
+    # and a stale setup token so the account is fully re-credentialed.
+    user.reset_token = None
+    user.reset_token_created_at = None
+    user.must_change_password = False
+    user.setup_token = None
+    user.setup_token_created_at = None
+    await audit_log(
+        db, user=user, action="auth.password_reset_completed",
+        resource_type="user", resource_id=str(user.id),
+        details={"email": user.email}, request=request,
+    )
+    await db.commit()
+
+    # Do not auto-login from a reset link; require a fresh sign-in with the new
+    # password so possession of the email link alone never yields a session.
+    return templates.TemplateResponse(
+        request, "login.html",
+        {"error": None,
+         "notice": "Your password has been reset. Please sign in with your new password."},
+    )
 
 
 # ── Force password change ──
