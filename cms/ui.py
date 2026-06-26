@@ -48,7 +48,7 @@ from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.group_asset import GroupAsset
-from cms.models.user import User, UserGroup
+from cms.models.user import User, UserGroup, setup_token_is_expired
 from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
@@ -232,6 +232,16 @@ async def setup_account(
         select(User).where(User.setup_token == token, User.is_active.is_(True))
     )
     user = result.scalar_one_or_none()
+    if user and setup_token_is_expired(user):
+        # The token matched a real pending invite but its TTL has elapsed.
+        # Give a distinct, actionable message (vs. the generic invalid/used
+        # case below) so the user knows to ask for a fresh invitation.
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": "This setup link has expired. Please ask an administrator "
+                      "to resend your invitation."},
+            status_code=400,
+        )
     if not user:
         return templates.TemplateResponse(
             request, "login.html",
@@ -397,6 +407,7 @@ async def force_password_change_submit(
     # that the human actually completed setup. See setup_account() for why
     # we defer this from the GET handler.
     user.setup_token = None
+    user.setup_token_created_at = None
     # First real authentication moment: stamp last_login_at here (was
     # previously stamped on every GET /setup-account, but that fires for
     # URL prefetchers before the user even clicks -- see setup_account()).

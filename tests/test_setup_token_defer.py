@@ -23,6 +23,7 @@ endpoint specifically from the ``must_change_password`` redirect.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -30,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.auth import hash_password
-from cms.models.user import Role, User
+from cms.models.user import SETUP_TOKEN_TTL, Role, User, setup_token_is_expired
 
 
 async def _get_role_id(db: AsyncSession, name: str) -> uuid.UUID:
@@ -44,8 +45,14 @@ async def _create_pending_user(
     email: str = "pending@test.com",
     setup_token: str = "test-setup-token-abc123",
     temp_password: str = "temp-password-1",
+    setup_token_created_at: datetime | None = ...,  # type: ignore[assignment]
 ) -> User:
     role_id = await _get_role_id(db, "Viewer")
+    # Default to a fresh issue timestamp so a just-created pending invite is
+    # within its TTL. Pass an explicit value (including None) to simulate aged
+    # or legacy tokens.
+    if setup_token_created_at is ...:
+        setup_token_created_at = datetime.now(timezone.utc)
     user = User(
         username=email.split("@")[0],
         email=email,
@@ -55,6 +62,7 @@ async def _create_pending_user(
         is_active=True,
         must_change_password=True,
         setup_token=setup_token,
+        setup_token_created_at=setup_token_created_at,
     )
     db.add(user)
     await db.commit()
@@ -448,3 +456,146 @@ async def test_password_change_with_wrong_current_password_does_not_burn_token(
 
     assert await _reload_setup_token(db_session, user_id) == "tok-burn-3"
     assert await _reload_must_change(db_session, user_id) is True
+
+
+async def _reload_setup_token_created_at(db: AsyncSession, user_id: uuid.UUID):
+    result = await db.execute(
+        select(User.setup_token_created_at).where(User.id == user_id)
+    )
+    return result.scalar_one()
+
+
+# -- setup-token TTL / expiry (issue #599) ---------------------------------
+
+
+def test_setup_token_is_expired_predicate():
+    """Unit-test the pure predicate: present-and-aged → expired; fresh →
+    not; missing timestamp → fail closed; no token → not expired."""
+    now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
+
+    fresh = User(setup_token="t", setup_token_created_at=now - timedelta(days=1))
+    assert setup_token_is_expired(fresh, now=now) is False
+
+    aged = User(
+        setup_token="t",
+        setup_token_created_at=now - (SETUP_TOKEN_TTL + timedelta(seconds=1)),
+    )
+    assert setup_token_is_expired(aged, now=now) is True
+
+    # Exactly at the TTL boundary is still valid (strict ``>``).
+    boundary = User(setup_token="t", setup_token_created_at=now - SETUP_TOKEN_TTL)
+    assert setup_token_is_expired(boundary, now=now) is False
+
+    # Token present but no issue timestamp → treated as expired (fail closed).
+    no_ts = User(setup_token="t", setup_token_created_at=None)
+    assert setup_token_is_expired(no_ts, now=now) is True
+
+    # No token at all → nothing to validate, not "expired".
+    none = User(setup_token=None, setup_token_created_at=None)
+    assert setup_token_is_expired(none, now=now) is False
+
+
+def test_setup_token_is_expired_tolerates_naive_timestamp():
+    """SQLite (the CI unit matrix) returns naive datetimes; the predicate
+    must assume UTC rather than raising on a naive/aware comparison."""
+    now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
+    naive_fresh = User(
+        setup_token="t",
+        setup_token_created_at=datetime(2026, 6, 24, 12, 0),  # naive, 1 day old
+    )
+    assert setup_token_is_expired(naive_fresh, now=now) is False
+
+
+@pytest.mark.asyncio
+async def test_setup_account_get_rejects_expired_token(
+    app, unauthed_client, db_session
+):
+    """GET /setup-account with a token past its TTL must NOT log the user in;
+    it returns the expired-link page (400) and leaves the token intact so the
+    distinct message can keep being shown until an admin resends."""
+    user = await _create_pending_user(
+        db_session,
+        email="expired1@test.com",
+        setup_token="tok-expired-1",
+        setup_token_created_at=datetime.now(timezone.utc)
+        - (SETUP_TOKEN_TTL + timedelta(days=1)),
+    )
+    user_id = user.id
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-expired-1", follow_redirects=False
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "expired" in resp.text.lower()
+    # No session cookie minted.
+    assert "set-cookie" not in {k.lower() for k in resp.headers}
+    # Token untouched (not burned) by the failed GET.
+    assert await _reload_setup_token(db_session, user_id) == "tok-expired-1"
+
+
+@pytest.mark.asyncio
+async def test_setup_account_get_accepts_token_within_ttl(
+    app, unauthed_client, db_session
+):
+    """A token issued just inside the TTL window still works."""
+    await _create_pending_user(
+        db_session,
+        email="fresh1@test.com",
+        setup_token="tok-fresh-1",
+        setup_token_created_at=datetime.now(timezone.utc)
+        - (SETUP_TOKEN_TTL - timedelta(hours=1)),
+    )
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-fresh-1", follow_redirects=False
+    )
+    assert resp.status_code == 303, resp.text
+    assert resp.headers["location"] == "/force-password-change"
+
+
+@pytest.mark.asyncio
+async def test_setup_account_get_rejects_tokenless_timestamp(
+    app, unauthed_client, db_session
+):
+    """A legacy row with a token but no issue timestamp fails closed (treated
+    as expired) so a timestamp-less token can't grant indefinite access."""
+    await _create_pending_user(
+        db_session,
+        email="legacy1@test.com",
+        setup_token="tok-legacy-1",
+        setup_token_created_at=None,
+    )
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-legacy-1", follow_redirects=False
+    )
+    assert resp.status_code == 400, resp.text
+    assert "expired" in resp.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_force_password_change_clears_setup_token_created_at(
+    app, unauthed_client, db_session
+):
+    """Completing setup burns the token AND clears its issue timestamp, so a
+    finished row carries no stale TTL state."""
+    user = await _create_pending_user(
+        db_session, email="clearts1@test.com", setup_token="tok-clearts-1"
+    )
+    user_id = user.id
+
+    resp = await unauthed_client.get(
+        "/setup-account?token=tok-clearts-1", follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    resp = await unauthed_client.post(
+        "/force-password-change",
+        data={"new_password": "brand-new-pw-1", "confirm_password": "brand-new-pw-1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+
+    assert await _reload_setup_token(db_session, user_id) is None
+    assert await _reload_setup_token_created_at(db_session, user_id) is None
