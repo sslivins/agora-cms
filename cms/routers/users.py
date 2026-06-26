@@ -2,6 +2,7 @@
 
 import secrets
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -89,6 +90,7 @@ async def change_my_password(
     # that the human actually completed setup. See cms/ui.py::setup_account
     # for why we defer this from the GET handler.
     current_user.setup_token = None
+    current_user.setup_token_created_at = None
     if was_setup_completion:
         # This call was the user finishing first-time setup, so it doubles
         # as their first real authentication. Stamp last_login_at to match
@@ -191,6 +193,7 @@ async def create_user(
         is_active=True,
         must_change_password=True,
         setup_token=setup_token,
+        setup_token_created_at=datetime.now(timezone.utc),
     )
     db.add(user)
     await db.flush()
@@ -351,9 +354,10 @@ async def resend_invite(
             detail="SMTP is not configured. Set up email in Settings → SMTP first.",
         )
 
-    # Regenerate setup token (invalidates old link)
+    # Regenerate setup token (invalidates old link) and restart its TTL clock.
     new_token = secrets.token_urlsafe(32)
     user.setup_token = new_token
+    user.setup_token_created_at = datetime.now(timezone.utc)
     await db.commit()
 
     base = (get_settings().base_url or request.base_url._url).rstrip("/")
