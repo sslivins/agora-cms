@@ -48,4 +48,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("users", "setup_token_created_at")
+    # Project policy (tests/test_migration_policy.py): downgrades are not
+    # supported — forward-only migrations.
+    raise NotImplementedError("downgrade not supported")
