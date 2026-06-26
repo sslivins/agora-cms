@@ -9,6 +9,9 @@
 <div class="login-wrap">
     <div class="card login-card">
         <h2>Sign In</h2>
+        {% if notice %}
+        <div class="login-error" style="background:rgba(76,175,80,0.15); border-color:#4caf50; color:#a5d6a7;">{{ notice }}</div>
+        {% endif %}
         {% if error %}
         <div class="login-error">{{ error }}</div>
         {% endif %}
@@ -25,6 +28,9 @@
             </div>
             <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.5rem;">Sign In</button>
         </form>
+        <p style="margin-top:1rem; text-align:center; font-size:0.9rem;">
+            <a href="/forgot-password">Forgot password?</a>
+        </p>
     </div>
 </div>
 {% endblock %}

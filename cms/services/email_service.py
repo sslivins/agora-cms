@@ -179,6 +179,73 @@ def send_welcome_email_background(
         )
 
 
+def send_password_reset_email_sync(
+    smtp_cfg: dict,
+    to_email: str,
+    display_name: str,
+    reset_url: str,
+) -> bool:
+    """Send a password-reset email synchronously (for use in BackgroundTasks)."""
+    greeting = display_name or to_email
+
+    html_body = f"""\
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+    <div style="background: #1a1a2e; color: #e0e0e0; padding: 2rem; border-radius: 8px;">
+        <h1 style="color: #7c83ff; margin-top: 0;">Reset your password</h1>
+        <p>Hi {greeting},</p>
+        <p>We received a request to reset the password for your Agora CMS account.</p>
+        <p>Click the button below to choose a new password:</p>
+        <p style="margin-top: 1.5rem;">
+            <a href="{reset_url}" style="background: #7c83ff; color: #fff; padding: 0.6rem 1.5rem; border-radius: 4px; text-decoration: none; font-weight: 600;">Reset My Password</a>
+        </p>
+        <p style="margin-top: 1.5rem; font-size: 0.9rem; color: #aaa;">If the button doesn't work, copy and paste this link into your browser:</p>
+        <p style="font-size: 0.85rem; word-break: break-all;"><a href="{reset_url}" style="color: #7c83ff;">{reset_url}</a></p>
+        <hr style="border: none; border-top: 1px solid #0f3460; margin: 2rem 0;">
+        <p style="font-size: 0.85rem; color: #888;">This link is single-use and expires in 1 hour.</p>
+        <p style="font-size: 0.85rem; color: #888;">If you didn't request a password reset, you can safely ignore this email — your password will not change.</p>
+        <p style="font-size: 0.85rem; color: #888;">This is an automated message from Agora CMS. Do not reply to this email.</p>
+    </div>
+</body>
+</html>"""
+
+    text_body = (
+        f"Reset your password\n\n"
+        f"Hi {greeting},\n\n"
+        f"We received a request to reset the password for your Agora CMS account.\n\n"
+        f"Choose a new password by visiting:\n{reset_url}\n\n"
+        f"This link is single-use and expires in 1 hour.\n"
+        f"If you didn't request a password reset, you can safely ignore this email.\n"
+    )
+
+    ok, _ = _send_email(smtp_cfg, to_email, "Reset your Agora CMS password", html_body, text_body)
+    return ok
+
+
+def send_password_reset_email_background(
+    smtp_cfg: dict,
+    to_email: str,
+    display_name: str,
+    reset_url: str,
+) -> None:
+    """Send password-reset email and create a notification on failure."""
+    ok = send_password_reset_email_sync(
+        smtp_cfg=smtp_cfg,
+        to_email=to_email,
+        display_name=display_name,
+        reset_url=reset_url,
+    )
+    if not ok:
+        _create_notification_sync(
+            level="error",
+            title="Password-reset email failed",
+            message=f"Failed to send a password-reset email to {to_email}. "
+                    "If this account is locked out, an administrator can reset the "
+                    "password from the CLI: python -m cms reset-password <email>.",
+            details={"to_email": to_email, "display_name": display_name},
+        )
+
+
 def test_smtp_connection(smtp_cfg: dict, test_to_email: str) -> tuple[bool, str]:
     """Test SMTP connection by sending a test email. Returns (success, message)."""
     html_body = """\
