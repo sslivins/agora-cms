@@ -103,6 +103,49 @@ class TestAnimationRender:
         assert IID2 not in c1
 
 
+class TestAnimationPause:
+    def test_default_pause_zero_no_hold(self):
+        # pause=0 → fraction 1.0 → keyframes end exactly at the effect's
+        # last stop (100%), no extra hold, duration == active duration.
+        r = _render(text="Hi", animation="big", animation_speed="fast")
+        assert "1.68s" in r.css  # 2.8 * 0.6, no pause added
+
+    def test_pause_extends_total_duration(self):
+        r = _render(
+            text="Hi", animation="big", animation_speed="normal",
+            animation_pause_s=5,
+        )
+        # active 2.8s + 5s pause = 7.8s total cycle
+        assert "7.8s" in r.css
+
+    def test_pause_compresses_keyframes_and_holds(self):
+        r = _render(text="Hi", animation="float", animation_pause_s=4)
+        # active 2.4 + 4 = 6.4 total; fraction = 2.4/6.4 = 0.375
+        # float's 50% stop maps to 18.75%, 100% stop maps to 37.5%, then
+        # a 100% hold of the resting state is appended.
+        assert "18.75%" in r.css
+        assert "37.5%" in r.css
+        assert r.css.count("100%{") == 1  # the appended hold
+
+    def test_pause_out_of_range_rejected(self):
+        for bad in (-1, 31, 100):
+            with pytest.raises(ValidationError):
+                TextWidgetConfig(text="hi", animation="big", animation_pause_s=bad)
+
+    def test_pause_boundary_ok(self):
+        TextWidgetConfig(text="hi", animation="big", animation_pause_s=0)
+        TextWidgetConfig(text="hi", animation="big", animation_pause_s=30)
+
+    def test_pause_applies_in_shrink_path(self):
+        r = _render(
+            text="Hi", animation="pulse", shrink_to_fit=True,
+            animation_pause_s=3,
+        )
+        # active 1.8 + 3 = 4.8s
+        assert "4.8s" in r.css
+        assert f"#cw-text-inner-{IID} {{" in r.css
+
+
 class TestAnimationHelper:
     def test_none_returns_none(self):
         assert build_animation_css("none", instance_id=IID, anim_selector=".x") is None

@@ -285,43 +285,11 @@
         word-wrap: break-word;
         line-height: 1.1;
     }
-    /* ── Animated text effects (live preview) ───────────────────────
-       Mirrors the server-side catalog in
-       cms/composed/widgets/_animation.py. Effect = class cw-fx-<slug>;
-       animation-duration is set inline by the preview JS from the
-       per-effect base duration × the speed factor, so the editor
-       preview matches the published bundle. All loop (signage mode). */
-    .cw-fx-big,.cw-fx-nod,.cw-fx-shake,.cw-fx-pulse,.cw-fx-float,
-    .cw-fx-glow,.cw-fx-shimmer,.cw-fx-flip,.cw-fx-neon,.cw-fx-bloom {
-        display: inline-block;
-        animation-iteration-count: infinite;
-    }
-    .cw-fx-big { animation-name: cw-fx-big; animation-timing-function: ease-in-out; animation-duration: 2.8s; }
-    .cw-fx-nod { animation-name: cw-fx-nod; animation-timing-function: ease-in-out; animation-duration: 2.8s; }
-    .cw-fx-shake { animation-name: cw-fx-shake; animation-timing-function: linear; animation-duration: 0.9s; }
-    .cw-fx-pulse { animation-name: cw-fx-pulse; animation-timing-function: ease-in-out; animation-duration: 1.8s; }
-    .cw-fx-float { animation-name: cw-fx-float; animation-timing-function: ease-in-out; animation-duration: 2.4s; }
-    .cw-fx-glow { animation-name: cw-fx-glow; animation-timing-function: ease-in-out; animation-duration: 1.8s; }
-    .cw-fx-flip { animation-name: cw-fx-flip; animation-timing-function: ease-in-out; animation-duration: 3.2s; }
-    .cw-fx-neon { animation-name: cw-fx-neon; animation-timing-function: linear; animation-duration: 3s; }
-    .cw-fx-bloom { animation-name: cw-fx-bloom; animation-timing-function: ease-out; animation-duration: 3s; }
-    .cw-fx-shimmer {
-        animation-name: cw-fx-shimmer; animation-timing-function: linear; animation-duration: 2.6s;
-        background: linear-gradient(100deg, currentColor 0%, currentColor 38%, #7c83ff 50%, currentColor 62%, currentColor 100%);
-        background-size: 200% auto;
-        -webkit-background-clip: text; background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-    @keyframes cw-fx-big { 0%,100%{transform:scale(1);} 15%{transform:scale(1.45);} 30%{transform:scale(0.92);} 45%{transform:scale(1.08);} 60%{transform:scale(1);} }
-    @keyframes cw-fx-nod { 0%,100%{transform:rotateX(0deg);} 20%{transform:rotateX(55deg);} 40%{transform:rotateX(-15deg);} 55%{transform:rotateX(8deg);} 70%{transform:rotateX(0deg);} }
-    @keyframes cw-fx-shake { 0%,100%{transform:translate(0,0) rotate(0deg);} 10%{transform:translate(-3px,1px) rotate(-2deg);} 20%{transform:translate(3px,-1px) rotate(2deg);} 30%{transform:translate(-3px,0) rotate(-1deg);} 40%{transform:translate(3px,1px) rotate(1.5deg);} 50%{transform:translate(-2px,-1px) rotate(-1.5deg);} 60%{transform:translate(2px,1px) rotate(1deg);} 70%{transform:translate(-2px,0) rotate(-1deg);} 80%{transform:translate(2px,-1px) rotate(1deg);} 90%{transform:translate(-1px,1px) rotate(-0.5deg);} }
-    @keyframes cw-fx-pulse { 0%,100%{transform:scale(1);opacity:0.85;} 50%{transform:scale(1.12);opacity:1;} }
-    @keyframes cw-fx-float { 0%,100%{transform:translateY(8px);} 50%{transform:translateY(-8px);} }
-    @keyframes cw-fx-glow { 0%,100%{text-shadow:0 0 4px rgba(124,131,255,0.4);} 50%{text-shadow:0 0 18px rgba(124,131,255,0.95),0 0 36px rgba(124,131,255,0.6);} }
-    @keyframes cw-fx-shimmer { 0%{background-position:-200% 0;} 100%{background-position:200% 0;} }
-    @keyframes cw-fx-flip { 0%{transform:rotateY(0deg);} 100%{transform:rotateY(360deg);} }
-    @keyframes cw-fx-neon { 0%,19%,21%,23%,80%,100%{opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;} 20%,22%,60%{opacity:0.55;text-shadow:none;} }
-    @keyframes cw-fx-bloom { 0%{transform:scale(0.6);filter:blur(14px);opacity:0;} 40%{transform:scale(1.06);filter:blur(0);opacity:1;} 70%{transform:scale(1);} 100%{transform:scale(1);filter:blur(0);opacity:1;} }
+    /* Animated text effects: the live preview generates per-instance
+       @keyframes in JS (applyTextAnim in the editor script) so the
+       "pause between plays" cadence — which reshapes the keyframe
+       timeline — matches the server-side bundle exactly. Catalog mirror:
+       cms/composed/widgets/_animation.py. */
     .cw-prev-clock {
         width: 100%;
         height: 100%;
@@ -690,36 +658,91 @@ function fontStack(slug) { return FONT_STACKS[slug] || FONT_STACKS.sans; }
 // Mirror of cms/composed/widgets/_animation.py: effect base durations
 // (seconds, speed=normal) + 3D flag, and the speed multipliers. Keep in
 // sync with the server so the live preview matches the published bundle.
+// Mirror of cms/composed/widgets/_animation.py: per-effect stops
+// (percent, css-body), base duration (s, speed=normal), timing, any
+// extra element CSS, and the 3D flag. The live preview generates a
+// scoped @keyframes from these so the "pause between plays" cadence
+// matches the published bundle. Keep in sync with the server catalog.
 const CW_ANIM = {
-    big:     {dur: 2.8, d3: false},
-    nod:     {dur: 2.8, d3: true},
-    shake:   {dur: 0.9, d3: false},
-    pulse:   {dur: 1.8, d3: false},
-    float:   {dur: 2.4, d3: false},
-    glow:    {dur: 1.8, d3: false},
-    shimmer: {dur: 2.6, d3: false},
-    flip:    {dur: 3.2, d3: true},
-    neon:    {dur: 3.0, d3: false},
-    bloom:   {dur: 3.0, d3: false},
+    big: {dur: 2.8, timing: "ease-in-out", d3: false, stops: [
+        [0,"transform:scale(1);"],[15,"transform:scale(1.45);"],[30,"transform:scale(0.92);"],
+        [45,"transform:scale(1.08);"],[60,"transform:scale(1);"],[100,"transform:scale(1);"]]},
+    nod: {dur: 2.8, timing: "ease-in-out", d3: true, stops: [
+        [0,"transform:rotateX(0deg);"],[20,"transform:rotateX(55deg);"],[40,"transform:rotateX(-15deg);"],
+        [55,"transform:rotateX(8deg);"],[70,"transform:rotateX(0deg);"],[100,"transform:rotateX(0deg);"]]},
+    shake: {dur: 0.9, timing: "linear", d3: false, stops: [
+        [0,"transform:translate(0,0) rotate(0deg);"],[10,"transform:translate(-3px,1px) rotate(-2deg);"],
+        [20,"transform:translate(3px,-1px) rotate(2deg);"],[30,"transform:translate(-3px,0) rotate(-1deg);"],
+        [40,"transform:translate(3px,1px) rotate(1.5deg);"],[50,"transform:translate(-2px,-1px) rotate(-1.5deg);"],
+        [60,"transform:translate(2px,1px) rotate(1deg);"],[70,"transform:translate(-2px,0) rotate(-1deg);"],
+        [80,"transform:translate(2px,-1px) rotate(1deg);"],[90,"transform:translate(-1px,1px) rotate(-0.5deg);"],
+        [100,"transform:translate(0,0) rotate(0deg);"]]},
+    pulse: {dur: 1.8, timing: "ease-in-out", d3: false, stops: [
+        [0,"transform:scale(1);opacity:0.85;"],[50,"transform:scale(1.12);opacity:1;"],[100,"transform:scale(1);opacity:0.85;"]]},
+    float: {dur: 2.4, timing: "ease-in-out", d3: false, stops: [
+        [0,"transform:translateY(8px);"],[50,"transform:translateY(-8px);"],[100,"transform:translateY(8px);"]]},
+    glow: {dur: 1.8, timing: "ease-in-out", d3: false, stops: [
+        [0,"text-shadow:0 0 4px rgba(124,131,255,0.4);"],
+        [50,"text-shadow:0 0 18px rgba(124,131,255,0.95),0 0 36px rgba(124,131,255,0.6);"],
+        [100,"text-shadow:0 0 4px rgba(124,131,255,0.4);"]]},
+    shimmer: {dur: 2.6, timing: "linear", d3: false,
+        extra: "background:linear-gradient(100deg,currentColor 0%,currentColor 38%,#7c83ff 50%,currentColor 62%,currentColor 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;",
+        stops: [[0,"background-position:-200% 0;"],[100,"background-position:200% 0;"]]},
+    flip: {dur: 3.2, timing: "ease-in-out", d3: true, stops: [
+        [0,"transform:rotateY(0deg);"],[100,"transform:rotateY(360deg);"]]},
+    neon: {dur: 3.0, timing: "linear", d3: false, stops: [
+        [0,"opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;"],
+        [19,"opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;"],
+        [20,"opacity:0.55;text-shadow:none;"],
+        [21,"opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;"],
+        [22,"opacity:0.55;text-shadow:none;"],
+        [23,"opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;"],
+        [60,"opacity:0.55;text-shadow:none;"],
+        [80,"opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;"],
+        [100,"opacity:1;text-shadow:0 0 6px #ff4ecd,0 0 14px #ff4ecd,0 0 28px #b026ff;"]]},
+    bloom: {dur: 3.0, timing: "ease-out", d3: false, stops: [
+        [0,"transform:scale(0.6);filter:blur(14px);opacity:0;"],
+        [40,"transform:scale(1.06);filter:blur(0);opacity:1;"],
+        [70,"transform:scale(1);"],
+        [100,"transform:scale(1);filter:blur(0);opacity:1;"]]},
 };
 const ANIM_OPTIONS = ["none", "big", "nod", "shake", "pulse", "float",
                       "glow", "shimmer", "flip", "neon", "bloom"];
 const ANIM_SPEED_OPTIONS = ["slow", "normal", "fast"];
 const ANIM_SPEED_FACTORS = {slow: 1.6, normal: 1.0, fast: 0.6};
-// Apply a live animation effect to `el` inside `container`. Sets the
-// cw-fx-<slug> class (defined in the page <style>) and overrides the
-// inline animation-duration from the base duration × speed factor.
-function applyTextAnim(container, el, slug, speed) {
+const ANIM_PAUSE_MIN = 0, ANIM_PAUSE_MAX = 30;
+let _cwAnimSeq = 0;
+// Build a scoped @keyframes string, compressing motion into the front
+// `fraction` of the timeline and holding the resting state after (mirror
+// of _emit_keyframes in the server catalog).
+function cwBuildKeyframes(name, stops, fraction) {
+    let parts = "";
+    for (const [pct, body] of stops) parts += (pct * fraction) + "%{" + body + "}";
+    if (fraction < 1.0) parts += "100%{" + stops[stops.length - 1][1] + "}";
+    return "@keyframes " + name + " {" + parts + "}";
+}
+// Apply a live animation effect to `el` inside `container`. Generates a
+// per-instance @keyframes (with optional pause-between-plays) into a
+// <style> appended inside the canvas (wiped on each renderCanvas), so
+// the editor preview matches the published bundle.
+function applyTextAnim(container, el, slug, speed, pauseS) {
     const spec = CW_ANIM[slug];
     if (!spec) return;
-    el.classList.add("cw-fx-" + slug);
+    const active = spec.dur * (ANIM_SPEED_FACTORS[speed] || 1.0);
+    const pause = Math.max(ANIM_PAUSE_MIN, Math.min(ANIM_PAUSE_MAX, Number(pauseS) || 0));
+    const total = active + pause;
+    const fraction = total > 0 ? active / total : 1.0;
+    const name = "cwfx_" + (_cwAnimSeq++);
+    const style = document.createElement("style");
+    style.textContent = cwBuildKeyframes(name, spec.stops, fraction);
+    container.appendChild(style);
+    if (spec.extra) el.style.cssText += ";" + spec.extra;
     if (!el.style.display) el.style.display = "inline-block";
     if (spec.d3) {
         container.style.perspective = "600px";
         el.style.transformStyle = "preserve-3d";
     }
-    const factor = ANIM_SPEED_FACTORS[speed] || 1.0;
-    el.style.animationDuration = (spec.dur * factor) + "s";
+    el.style.animation = name + " " + total + "s " + spec.timing + " infinite";
 }
 // font_size_px values are in 1920x1080 design space. The canvas is a
 // query container, so 1cqw = 1% of canvas width = 19.2 design px.
@@ -808,7 +831,7 @@ const WIDGETS = {
 registerWidget("text", {
     label: "Text", icon: "🅰", category: "Text & Media",
     keywords: ["text", "label", "heading", "caption", "title", "words"],
-    defaults: () => ({text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false, shrink_to_fit:false, animation:"none", animation_speed:"normal"}),
+    defaults: () => ({text:"Text", color:"#ffffff", font_size_px:48, font_family:"sans", bold:false, italic:false, shrink_to_fit:false, animation:"none", animation_speed:"normal", animation_pause_s:0}),
     summary: (w) => (w.config.text || "").slice(0, 24),
     preview: (root, cfg) => {
         const d = document.createElement("div");
@@ -828,13 +851,13 @@ registerWidget("text", {
             inner.classList.add("cw-fit");
             inner.dataset.fitMax = "512";
             inner.dataset.fitMin = "8";
-            if (anim) applyTextAnim(d, inner, anim, cfg.animation_speed);
+            if (anim) applyTextAnim(d, inner, anim, cfg.animation_speed, cfg.animation_pause_s);
             d.appendChild(inner);
         } else if (anim) {
             const span = document.createElement("span");
             span.textContent = cfg.text || "";
             d.style.fontSize = cqwFont(cfg.font_size_px);
-            applyTextAnim(d, span, anim, cfg.animation_speed);
+            applyTextAnim(d, span, anim, cfg.animation_speed, cfg.animation_pause_s);
             d.appendChild(span);
         } else {
             d.textContent = cfg.text || "";
@@ -880,7 +903,7 @@ registerWidget("text", {
             <div class="row" style="margin-top:0.5rem;">
                 <div>
                     <label>Animation</label>
-                    <select id="cw-text-anim" oninput="document.getElementById('cw-text-anim-speed').disabled=(this.value==='none'); updateSelected(x=>x.config.animation=this.value)">
+                    <select id="cw-text-anim" oninput="const off=(this.value==='none'); document.getElementById('cw-text-anim-speed').disabled=off; document.getElementById('cw-text-anim-pause').disabled=off; updateSelected(x=>x.config.animation=this.value)">
                         ${ANIM_OPTIONS.map(a=>`<option value="${a}" ${(w.config.animation||"none")===a?"selected":""}>${a}</option>`).join("")}
                     </select>
                 </div>
@@ -891,7 +914,12 @@ registerWidget("text", {
                         ${ANIM_SPEED_OPTIONS.map(s=>`<option value="${s}" ${(w.config.animation_speed||"normal")===s?"selected":""}>${s}</option>`).join("")}
                     </select>
                 </div>
-            </div>`,
+            </div>
+            <label style="margin-top:0.5rem;">Pause between plays (s) — 0 = continuous</label>
+            <input type="number" id="cw-text-anim-pause" min="0" max="30" step="1"
+                   value="${w.config.animation_pause_s||0}"
+                   ${(!w.config.animation||w.config.animation==="none")?"disabled":""}
+                   oninput="updateSelected(x=>x.config.animation_pause_s=clampInt(this.value,0,30))">`,
 });
 
 registerWidget("media", {
