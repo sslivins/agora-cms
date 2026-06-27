@@ -34,6 +34,7 @@ jobs:
             code:
               - 'cms/**'
               - 'shared/**'
+              - 'worker/**'
               - 'alembic/**'
               - 'tests/**'
               - '!tests/nightly/**'
@@ -166,6 +167,7 @@ jobs:
         run: |
           python -m pytest ${{ steps.changed.outputs.files }} \
             -x -p no:xdist -p no:timeout \
+            -m "not thumbnail" \
             --tb=short -q -rs
 
   test:
@@ -254,6 +256,7 @@ jobs:
           python -m pytest tests/ --ignore=tests/e2e \
             --splits 8 --group ${{ matrix.shard }} \
             --durations-path .test_durations \
+            -m "not thumbnail" \
             -n auto --dist=loadfile --tb=short -q -rs --durations=20
 
   # Verify docs/openapi.yaml is in sync with the live FastAPI route table.
@@ -498,13 +501,136 @@ jobs:
             -f tests/integration/docker-compose.integration.wps.yml \
             down -v --remove-orphans || true
 
+  # Layer 2 of composed-thumbnail hardening: prove the worker render
+  # import chain resolves under the worker's REAL dependency set.
+  #
+  # The worker image installs ONLY requirements-shared.txt + the worker's
+  # own deps -- never the CMS web stack (fastapi/starlette/uvicorn, which
+  # live in requirements.txt). When a CMS-only dependency creeps onto the
+  # worker's composed-thumbnail render chain (has regressed 3x), every
+  # thumbnail transcode breaks with `No module named 'fastapi'` -- and
+  # the rest of CI never catches it because the unit/e2e jobs install the
+  # full CMS stack. This job installs the worker's real reqs into a fresh
+  # venv and imports the exact render entrypoints, so a stray import fails
+  # here with the true traceback. Faster than a full Docker build and the
+  # truest python-import signal.
+  worker-import-smoke:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-shared.txt
+            worker/requirements.txt
+
+      - name: Install ONLY the worker's real dependency set
+        run: |
+          python -m venv /tmp/wenv
+          # worker/requirements.txt pulls in requirements-shared.txt via a
+          # relative -r include. Deliberately NOT installing requirements.txt
+          # (the CMS-only web stack) -- that is the whole point of this job.
+          /tmp/wenv/bin/pip install --upgrade pip
+          /tmp/wenv/bin/pip install -r worker/requirements.txt
+
+      - name: Import the worker render chain under worker-only deps
+        run: |
+          # Mirrors worker/transcoder.py::_render_composed_thumbnail. If any
+          # module on this chain has an unguarded top-level import of a
+          # CMS-only dep, this fails with the real ModuleNotFoundError.
+          cd "$GITHUB_WORKSPACE"
+          PYTHONPATH="$GITHUB_WORKSPACE" /tmp/wenv/bin/python -c "
+          import worker.transcoder
+          from cms.composed.render import build_composed_html
+          from worker.composed_render import render_composed_to_png
+          print('worker render chain imports OK under worker-only deps')
+          "
+
+  # Layer 3 of composed-thumbnail hardening: a REAL end-to-end render.
+  #
+  # Every other composed-thumbnail test mocks the render and runs in the
+  # CMS env -- which is exactly why the fastapi/markupsafe worker
+  # regressions slipped through. This job runs the `thumbnail`-marked test
+  # (deselected from the unit shards via `-m "not thumbnail"`) which calls
+  # the real build_composed_html + render_composed_to_png and asserts a
+  # valid PNG. Needs Postgres (for the composed asset fixtures) + Playwright
+  # Chromium (for the rasterise), so it lives in its own job.
+  composed-thumbnail-render:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agora_test
+          POSTGRES_PASSWORD: agora_test
+          POSTGRES_DB: agora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agora_test -d agora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGORA_CMS_DATABASE_URL: postgresql+asyncpg://agora_test:agora_test@localhost:5432/agora_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-shared.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout pytest-xdist httpx aiosqlite psycopg2-binary playwright
+
+      - name: Get Playwright version
+        id: pw-version
+        run: echo "version=$(pip show playwright | grep Version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ steps.pw-version.outputs.version }}-chromium
+
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install Playwright system deps only
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 4
+        run: python -m playwright install-deps chromium
+
+      - name: Run real composed-thumbnail render test
+        run: |
+          python -m pytest tests/ -m thumbnail \
+            -p no:xdist -p no:timeout \
+            --tb=short -q -rs
+
   # Umbrella check that branch protection requires. Runs on every PR so
   # it always reports a status. Passes iff every upstream job is either
   # success or skipped (path-filtered out); fails on failure/cancelled.
   # Keeps tests-only PRs unblocked while still catching real breakage.
   ci-gate:
     name: ci-gate
-    needs: [changes, test, e2e, broker-test, multireplica-smoke, multireplica-wps-smoke, openapi-check]
+    needs: [changes, test, e2e, broker-test, multireplica-smoke, multireplica-wps-smoke, openapi-check, worker-import-smoke, composed-thumbnail-render]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -518,8 +644,10 @@ jobs:
           echo "multireplica-smoke=${{ needs.multireplica-smoke.result }}"
           echo "multireplica-wps-smoke=${{ needs.multireplica-wps-smoke.result }}"
           echo "openapi-check=${{ needs.openapi-check.result }}"
+          echo "worker-import-smoke=${{ needs.worker-import-smoke.result }}"
+          echo "composed-thumbnail-render=${{ needs.composed-thumbnail-render.result }}"
           fail=0
-          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}" "${{ needs.broker-test.result }}" "${{ needs.multireplica-smoke.result }}" "${{ needs.multireplica-wps-smoke.result }}" "${{ needs.openapi-check.result }}"; do
+          for r in "${{ needs.changes.result }}" "${{ needs.test.result }}" "${{ needs.e2e.result }}" "${{ needs.broker-test.result }}" "${{ needs.multireplica-smoke.result }}" "${{ needs.multireplica-wps-smoke.result }}" "${{ needs.openapi-check.result }}" "${{ needs.worker-import-smoke.result }}" "${{ needs.composed-thumbnail-render.result }}"; do
             case "$r" in
               success|skipped) ;;
               *) fail=1 ;;
