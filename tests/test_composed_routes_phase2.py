@@ -96,6 +96,41 @@ class TestComposedCreate:
         resp = await client.post("/composed/", json={})
         assert resp.status_code == 400
 
+    async def test_create_with_description_persists(self, client, db_session):
+        resp = await client.post(
+            "/composed/",
+            json={"name": "Lobby welcome", "description": "  Front-door greeter  "},
+        )
+        assert resp.status_code == 201, resp.text
+        from sqlalchemy import select
+
+        asset = (
+            await db_session.execute(
+                select(Asset).where(Asset.id == uuid.UUID(resp.json()["id"]))
+            )
+        ).scalar_one()
+        # Trimmed and stored.
+        assert asset.description == "Front-door greeter"
+
+    async def test_create_without_description_is_null(self, client, db_session):
+        resp = await client.post("/composed/", json={"name": "No desc"})
+        assert resp.status_code == 201, resp.text
+        from sqlalchemy import select
+
+        asset = (
+            await db_session.execute(
+                select(Asset).where(Asset.id == uuid.UUID(resp.json()["id"]))
+            )
+        ).scalar_one()
+        assert asset.description is None
+
+    async def test_create_with_too_long_description_is_400(self, client):
+        resp = await client.post(
+            "/composed/",
+            json={"name": "x", "description": "a" * 2001},
+        )
+        assert resp.status_code == 400
+
     async def test_unauth_is_401(self, unauthed_client):
         resp = await unauthed_client.post("/composed/", json={"name": "x"})
         # The API is JSON, so it does NOT redirect — it returns 401.
@@ -214,6 +249,21 @@ class TestComposedUI:
         assert 'id="composed-title-name"' in body
         # The old deferred-rename note must be gone.
         assert "rename are managed via the Assets page" not in body
+
+    async def test_editor_edit_mode_exposes_description_field(
+        self, client, db_session
+    ):
+        # The editor must let users set/edit the description inline (parity
+        # with create mode and the Assets-page edit). Edit mode should render
+        # the textarea pre-filled with the asset's current description.
+        asset, _ = await _make_composed(db_session)
+        asset.description = "Greeter for the lobby"
+        await db_session.commit()
+        resp = await client.get(f"/assets/{asset.id}/composed")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'id="composed-description"' in body
+        assert "Greeter for the lobby" in body
 
     async def test_editor_edit_mode_exposes_group_picker(
         self, client, db_session
