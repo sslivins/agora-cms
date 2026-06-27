@@ -24,6 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
+from cms.composed.widgets._animation import (
+    ANIMATIONS,
+    ANIMATION_SPEEDS,
+    build_animation_css,
+)
 from cms.composed.widgets._autofit import (
     AUTOFIT_JS,
     autofit_inner_init_js,
@@ -61,6 +66,13 @@ class TextWidgetConfig(BaseModel):
     # manual ``font_size_px`` is ignored at render time (kept only as the
     # pre-JS starting value).  Default false → byte-identical legacy render.
     shrink_to_fit: bool = False
+    # Whole-text motion effect (iMessage-style).  ``"none"`` (default)
+    # renders byte-identically to the legacy widget — no extra markup or
+    # CSS.  Any other value must be in the server-side allowlist
+    # (cms.composed.widgets._animation), so raw CSS can never reach the
+    # bundle through config.
+    animation: str = "none"
+    animation_speed: str = "normal"
 
     @field_validator("font_family")
     @classmethod
@@ -70,6 +82,22 @@ class TextWidgetConfig(BaseModel):
             raise ValueError(
                 f"font_family must be one of: {allowed}"
             )
+        return v
+
+    @field_validator("animation")
+    @classmethod
+    def _animation_in_allowlist(cls, v: str) -> str:
+        if v not in ANIMATIONS:
+            allowed = ", ".join(ANIMATIONS)
+            raise ValueError(f"animation must be one of: {allowed}")
+        return v
+
+    @field_validator("animation_speed")
+    @classmethod
+    def _speed_in_allowlist(cls, v: str) -> str:
+        if v not in ANIMATION_SPEEDS:
+            allowed = ", ".join(ANIMATION_SPEEDS)
+            raise ValueError(f"animation_speed must be one of: {allowed}")
         return v
 
 
@@ -91,6 +119,8 @@ class TextWidget(Widget):
             "bold": False,
             "italic": False,
             "shrink_to_fit": False,
+            "animation": "none",
+            "animation_speed": "normal",
         }
 
     def editor_template(self) -> str:
@@ -152,9 +182,49 @@ class TextWidget(Widget):
             f"}}"
         )
 
+        if config.animation != "none":
+            anim_class = f"cw-text-anim-{instance_id}"
+            anim = build_animation_css(
+                config.animation,
+                instance_id=instance_id,
+                anim_selector=f".{anim_class}",
+                speed=config.animation_speed,
+            )
+            if anim is not None:
+                html_out = (
+                    f'<div class="{css_class}">'
+                    f'<span class="{anim_class}">{escaped_text}</span>'
+                    f"</div>"
+                )
+                css_out += "\n" + self._animation_css(
+                    css_class=css_class,
+                    anim_class=anim_class,
+                    anim=anim,
+                )
+
         return WidgetRender(
             html=html_out,
             css=css_out,
+        )
+
+    @staticmethod
+    def _animation_css(*, css_class: str, anim_class: str, anim) -> str:
+        """Compose the box + animated-element CSS for an active effect.
+
+        Adds ``perspective`` to the bounded box for 3D effects, makes the
+        animated span an ``inline-block`` so transforms have a box to act
+        on, then appends the scoped ``@keyframes`` + animation rule.
+        """
+        box = ""
+        if anim.needs_3d:
+            box = (
+                f".{css_class} {{ perspective: 600px; }}\n"
+                f".{anim_class} {{ transform-style: preserve-3d; }}\n"
+            )
+        return (
+            f"{box}"
+            f".{anim_class} {{ display: inline-block; }}\n"
+            f"{anim.css}"
         )
 
     def _render_shrink(
@@ -207,6 +277,21 @@ class TextWidget(Widget):
         )
 
         init_js = autofit_inner_init_js(inner_id)
+
+        if config.animation != "none":
+            anim = build_animation_css(
+                config.animation,
+                instance_id=instance_id,
+                anim_selector=f"#{inner_id}",
+                speed=config.animation_speed,
+            )
+            if anim is not None:
+                if anim.needs_3d:
+                    css_out += (
+                        f"\n.{css_class} {{ perspective: 600px; }}\n"
+                        f"#{inner_id} {{ transform-style: preserve-3d; }}"
+                    )
+                css_out += "\n" + anim.css
 
         return WidgetRender(
             html=html_out,
