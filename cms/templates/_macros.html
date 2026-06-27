@@ -218,6 +218,12 @@
                 <td data-live-variants="{{ a.id }}">
                     {% if a.asset_type.value == 'composed' and not a.checksum %}
                     <span class="has-tooltip"><span class="badge badge-failed">⚠ Unpublished</span><span class="tooltip">This composed slide has not been published — it will not appear on devices until you open it and click Publish.</span></span>
+                    {% elif a.asset_type.value == 'composed' %}
+                    {# Published composed slide. It has no transcode variants, so the
+                       generic variant_total branch below would fall through to a
+                       misleading "none" until the JS poll corrects it ~5s later. A
+                       published slide is ready to play on assigned devices. #}
+                    <span class="has-tooltip"><span class="badge badge-ready">Ready</span><span class="tooltip">Published — live on assigned devices.</span></span>
                     {% elif a.asset_type.value == 'webpage' or a.asset_type.value == 'stream' %}
                     —
                     {% elif a.asset_type.value == 'slideshow' %}

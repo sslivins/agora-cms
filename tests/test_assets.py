@@ -514,6 +514,78 @@ class TestAssetPreview:
 
 
 @pytest.mark.asyncio
+class TestComposedStatusBadge:
+    @staticmethod
+    def _status_cell(html: str, asset_id) -> str:
+        """Return the server-rendered status ``<td>`` for one asset.
+
+        The status cell is marked ``<td data-live-variants="<id>">``. We
+        scope assertions to it so we don't accidentally match the same
+        literal inside the inline status-poller JS (buildVariantBadge),
+        which also contains these badge strings.
+        """
+        marker = f'data-live-variants="{asset_id}"'
+        start = html.find(marker)
+        assert start >= 0, f"status cell for {asset_id} not found"
+        end = html.find("</td>", start)
+        return html[start:end]
+
+    async def test_published_composed_renders_ready_on_initial_load(
+        self, client, db_session
+    ):
+        """A published composed slide must show its "Ready" badge in the
+        server-rendered library table immediately — not fall through to a
+        muted "none" that only flips to Ready ~5s later when the JS status
+        poller runs.
+
+        Composed slides have no transcode variants (``variant_total == 0``),
+        so before this branch existed the status cell fell through every
+        ``elif`` to the ``none`` default. The poller's buildVariantBadge()
+        rendered "Ready", which is why the badge appeared a few seconds
+        after every reload.
+        """
+        from cms.models.asset import Asset, AssetType
+
+        published = Asset(
+            filename="composed_pub.html", asset_type=AssetType.COMPOSED,
+            size_bytes=1234, checksum="deadbeef",
+        )
+        db_session.add(published)
+        await db_session.commit()
+
+        resp = await client.get("/assets")
+        assert resp.status_code == 200
+        cell = self._status_cell(resp.text, published.id)
+
+        # Ready badge is rendered server-side up front — not a muted "none".
+        assert 'class="badge badge-ready">Ready' in cell
+        assert "none" not in cell
+
+    async def test_unpublished_composed_renders_unpublished_not_ready(
+        self, client, db_session
+    ):
+        """A composed slide that was never published (empty checksum) must
+        render the Unpublished warning in its status cell — never the
+        published "Ready" badge.
+        """
+        from cms.models.asset import Asset, AssetType
+
+        never_published = Asset(
+            filename="composed_unpub.html", asset_type=AssetType.COMPOSED,
+            size_bytes=0, checksum="",
+        )
+        db_session.add(never_published)
+        await db_session.commit()
+
+        resp = await client.get("/assets")
+        assert resp.status_code == 200
+        cell = self._status_cell(resp.text, never_published.id)
+
+        assert "⚠ Unpublished" in cell
+        assert 'class="badge badge-ready">Ready' not in cell
+
+
+@pytest.mark.asyncio
 class TestImageDuration:
     async def test_image_with_duration_shows_dash(self, client, db_session):
         """An image asset with duration_seconds set (e.g. HEIC) should show
