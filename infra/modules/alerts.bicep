@@ -234,6 +234,101 @@ resource alertExceptions 'Microsoft.Insights/scheduledQueryRules@2023-03-15-prev
 }
 
 // ──────────────────────────────────────────────────────────────
+// 4b. Transcode failures — systemic worker-render breakage.
+//
+//     The worker emits the ``agora.transcode.failure`` custom metric
+//     (counter, value=1 per failed job attempt) tagged with ``reason``
+//     and ``job_type``. A healthy environment sits at ~0; a sustained
+//     spike means transcodes are broadly failing.
+//
+//     This is the signal that was MISSING when a CMS-only dependency
+//     (fastapi via asset_readiness) crept onto the worker's
+//     composed-thumbnail render chain and silently broke EVERY composed
+//     thumbnail for ~17 days. Note: the composed-thumbnail handler
+//     swallows the ModuleNotFoundError internally and marks the variant
+//     FAILED, so that path is attributed ``reason="unknown"`` rather
+//     than ``import_error`` — which is exactly why we alert on the TOTAL
+//     across all reasons here, not just on ``import_error``.
+// ──────────────────────────────────────────────────────────────
+resource alertTranscodeFailures 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = if (alertsEnabled) {
+  name: '${namePrefix}-alert-transcode-failures'
+  location: location
+  tags: tags
+  properties: {
+    displayName: 'Worker transcode failures'
+    description: 'Triggers when the worker logs more than 5 transcode/render failures (any reason) in a 15-minute window — the systemic-breakage signal that catches a broken render dependency before it silently fails every thumbnail.'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT15M'
+    windowSize: 'PT15M'
+    scopes: [
+      appInsightsId
+    ]
+    criteria: {
+      allOf: [
+        {
+          query: 'customMetrics\n| where name == "agora.transcode.failure"\n| summarize Failures = sum(value) by bin(timestamp, 15m)'
+          timeAggregation: 'Total'
+          metricMeasureColumn: 'Failures'
+          operator: 'GreaterThan'
+          threshold: 5
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: actionsBlock
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 4c. Transcode IMPORT failures — zero-tolerance packaging bug.
+//
+//     ``reason="import_error"`` is raised whenever a worker handler
+//     dies on an ImportError / ModuleNotFoundError that propagates to
+//     the dispatch classifier (e.g. a CMS-only dependency missing from
+//     the worker image). An import error is NEVER a one-off data
+//     problem — it means the worker is missing a dependency and a whole
+//     class of jobs will fail until it is fixed. Any occurrence pages.
+// ──────────────────────────────────────────────────────────────
+resource alertTranscodeImportError 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = if (alertsEnabled) {
+  name: '${namePrefix}-alert-transcode-import-error'
+  location: location
+  tags: tags
+  properties: {
+    displayName: 'Worker transcode import error'
+    description: 'Triggers on ANY agora.transcode.failure with reason=import_error in a 15-minute window — a missing/broken worker dependency (e.g. a CMS-only package on the render import chain) that breaks a whole class of transcodes.'
+    severity: 1
+    enabled: true
+    evaluationFrequency: 'PT15M'
+    windowSize: 'PT15M'
+    scopes: [
+      appInsightsId
+    ]
+    criteria: {
+      allOf: [
+        {
+          query: 'customMetrics\n| where name == "agora.transcode.failure"\n| extend reason = tostring(customDimensions.reason)\n| where reason == "import_error"\n| summarize Failures = sum(value) by bin(timestamp, 15m)'
+          timeAggregation: 'Total'
+          metricMeasureColumn: 'Failures'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: actionsBlock
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
 // 5. Heartbeat — telemetry silence. If we see ZERO AppRequests
 //    of ANY kind across a 15-minute window, something is very
 //    wrong (CMS down, ingress broken, App Insights ingestion
