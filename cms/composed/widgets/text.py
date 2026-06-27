@@ -25,8 +25,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from cms.composed.registry import BundleContext, Widget, WidgetRender
 from cms.composed.schema import Cell
 from cms.composed.widgets._animation import (
-    ANIMATIONS,
+    ANIM_PAUSE_MAX,
+    ANIM_PAUSE_MIN,
     ANIMATION_SPEEDS,
+    ANIMATIONS,
     build_animation_css,
 )
 from cms.composed.widgets._autofit import (
@@ -73,6 +75,12 @@ class TextWidgetConfig(BaseModel):
     # bundle through config.
     animation: str = "none"
     animation_speed: str = "normal"
+    # Seconds to hold the resting state between plays (0 = loop
+    # continuously).  Lets a signage effect grab attention periodically
+    # rather than animating non-stop.  Ignored when animation == "none".
+    animation_pause_s: int = Field(
+        default=0, ge=ANIM_PAUSE_MIN, le=ANIM_PAUSE_MAX
+    )
 
     @field_validator("font_family")
     @classmethod
@@ -121,6 +129,7 @@ class TextWidget(Widget):
             "shrink_to_fit": False,
             "animation": "none",
             "animation_speed": "normal",
+            "animation_pause_s": 0,
         }
 
     def editor_template(self) -> str:
@@ -189,6 +198,7 @@ class TextWidget(Widget):
                 instance_id=instance_id,
                 anim_selector=f".{anim_class}",
                 speed=config.animation_speed,
+                pause_s=config.animation_pause_s,
             )
             if anim is not None:
                 html_out = (
@@ -284,6 +294,7 @@ class TextWidget(Widget):
                 instance_id=instance_id,
                 anim_selector=f"#{inner_id}",
                 speed=config.animation_speed,
+                pause_s=config.animation_pause_s,
             )
             if anim is not None:
                 if anim.needs_3d:
