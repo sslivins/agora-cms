@@ -13,7 +13,25 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import HTTPException
+try:  # fastapi is a CMS-only dep; the worker image does not install it.
+    from fastapi import HTTPException
+except ModuleNotFoundError:  # pragma: no cover - exercised only in the worker image
+
+    class HTTPException(Exception):  # type: ignore[no-redef]
+        """Minimal stand-in for ``fastapi.HTTPException``.
+
+        The worker imports this module transitively (composed thumbnail
+        render → ``slideshow_expand`` → ``slideshow_resolver`` → here) but
+        only ever calls ``composed_unpublished_reason``, which never raises
+        ``HTTPException``. The HTTP-raising assignment gate below runs only
+        in the CMS, where the real ``fastapi.HTTPException`` is imported.
+        """
+
+        def __init__(self, status_code: int = 500, detail: object = None) -> None:
+            self.status_code = status_code
+            self.detail = detail
+            super().__init__(detail)
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
