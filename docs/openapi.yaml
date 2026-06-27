@@ -294,6 +294,8 @@ paths:
                 conflict exists).
             ``group_ids`` (list[str] | str, optional): group UUIDs to share
                 the asset with. Empty list + admin → global.
+            ``description`` (str, optional): free-text description (≤2000
+                chars); searchable from the asset library.
 
         Returns the created asset's id and a redirect-friendly editor URL.
       operationId: create_composed_slide_composed__post
