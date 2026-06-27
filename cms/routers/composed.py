@@ -643,6 +643,8 @@ async def create_composed_slide(
             conflict exists).
         ``group_ids`` (list[str] | str, optional): group UUIDs to share
             the asset with. Empty list + admin → global.
+        ``description`` (str, optional): free-text description (≤2000
+            chars); searchable from the asset library.
 
     Returns the created asset's id and a redirect-friendly editor URL.
     """
@@ -655,6 +657,13 @@ async def create_composed_slide(
     name = str(name_raw).strip()
     if len(name) > 255:
         raise HTTPException(status_code=400, detail="name must be ≤255 chars")
+
+    desc_raw = body.get("description")
+    description = str(desc_raw).strip() if desc_raw is not None else ""
+    if len(description) > 2000:
+        raise HTTPException(
+            status_code=400, detail="Description too long (max 2000 characters)"
+        )
 
     user_groups = await get_user_group_ids(user, db)
     is_admin = user_groups is None
@@ -683,6 +692,7 @@ async def create_composed_slide(
     asset = Asset(
         filename=filename,
         display_name=name,
+        description=description or None,
         asset_type=AssetType.COMPOSED,
         size_bytes=0,
         checksum="",

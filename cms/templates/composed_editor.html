@@ -20,6 +20,13 @@
                    style="width:100%; max-width:420px; padding:0.5rem; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);">
         </div>
 
+        <div class="form-group" style="margin-bottom:0;">
+            <label for="composed-description" style="display:block; font-weight:600;">Description</label>
+            <textarea id="composed-description" class="form-control" maxlength="2000" rows="2"
+                      placeholder="Optional. Searchable from the asset library."
+                      style="width:100%; max-width:420px; padding:0.5rem; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); resize:vertical;">{{ asset_description }}</textarea>
+        </div>
+
         {% if user_groups | length > 0 %}
         <div class="form-group" style="margin-bottom:0;">
             <label style="display:block; font-weight:600;">Assign to groups</label>
@@ -610,6 +617,10 @@ let LAYOUT = {{ layout_json|tojson }};
 // Original display name (edit mode only) so saveLayout can detect a rename
 // and PATCH /api/assets/{id} {display_name}. Empty in create mode.
 let COMPOSED_ORIG_NAME = {% if edit_mode %}{{ asset_name|tojson }}{% else %}""{% endif %};
+// Persisted description (edit mode pre-populates from the asset; empty in
+// create mode). saveLayout diffs the live textarea against this to PATCH on
+// Save, mirroring the name/group diff baselines.
+let COMPOSED_ORIG_DESC = {% if edit_mode %}{{ asset_description|tojson }}{% else %}""{% endif %};
 // Persisted group-id set (edit mode pre-populates from the asset's current
 // group assignments; empty in create mode). saveLayout diffs the picker's
 // live selection against this to share/unshare on Save.
@@ -2965,7 +2976,10 @@ async function ensureAssetExists() {
         return false;
     }
     const groupIds = (window.composedSelectedGroupIds || []).slice();
+    const descEl = document.getElementById("composed-description");
+    const description = descEl ? descEl.value.trim() : "";
     const body = {name: name};
+    if (description) body.description = description;
     // Empty groups → Global (matches the slideshow builder).
     if (groupIds.length > 0) body.group_ids = groupIds;
     try {
@@ -2994,6 +3008,7 @@ async function ensureAssetExists() {
         // re-sharing the same values.
         COMPOSED_ORIG_NAME = name;
         COMPOSED_ORIG_GROUPS = groupIds;
+        COMPOSED_ORIG_DESC = description;
         return true;
     } catch (e) {
         flash("Network error creating slide: " + e, false);
@@ -3036,6 +3051,7 @@ async function saveLayout(opts) {
         }
         if (!isCreate) {
             await maybeRenameSlide();
+            await maybeUpdateDescription();
             await maybeUpdateGroups();
         }
         return true;
@@ -3068,6 +3084,30 @@ async function maybeRenameSlide() {
         if (titleName) titleName.textContent = name;
     } catch (e) {
         flash("Saved, but rename failed: " + e, false);
+    }
+}
+
+async function maybeUpdateDescription() {
+    // Edit mode only: if the description changed, PATCH the asset's
+    // description. Reuses the same endpoint as the Assets-page edit.
+    if (!ASSET_ID) return;
+    const el = document.getElementById("composed-description");
+    if (!el) return;
+    const desc = el.value.trim();
+    if (desc === (COMPOSED_ORIG_DESC || "")) return;
+    try {
+        const resp = await fetch("/api/assets/" + ASSET_ID, {
+            method: "PATCH",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({description: desc}),
+        });
+        if (!resp.ok) {
+            flash("Saved, but description update failed.", false);
+            return;
+        }
+        COMPOSED_ORIG_DESC = desc;
+    } catch (e) {
+        flash("Saved, but description update failed: " + e, false);
     }
 }
 
