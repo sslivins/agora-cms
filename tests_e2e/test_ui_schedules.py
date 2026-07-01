@@ -485,9 +485,15 @@ class TestScheduleEditWithDates:
         modal = page.locator(".modal-overlay")
         expect(modal).to_be_visible(timeout=3000)
 
-        # Set start and end dates
-        modal.locator("#edit-start-date").fill("2026-05-01")
-        modal.locator("#edit-end-date").fill("2026-05-31")
+        # Set start and end dates. Computed relative to today (not hardcoded)
+        # so the schedule stays active and its row remains in the main table
+        # instead of rotting into the "Expired Schedules" section once the
+        # dates pass -- see the date-rot fix in test_edit_all_fields below.
+        today = datetime.now(timezone.utc).date()
+        start_date = today.isoformat()
+        end_date = (today + timedelta(days=30)).isoformat()
+        modal.locator("#edit-start-date").fill(start_date)
+        modal.locator("#edit-end-date").fill(end_date)
 
         # Click Save
         modal.locator("#edit-save").click()
@@ -529,9 +535,16 @@ class TestScheduleEditWithDates:
         modal.locator("#edit-start-time").fill("14:00")
         modal.locator("#edit-end-time").fill("18:00")
 
-        # Set dates
-        modal.locator("#edit-start-date").fill("2026-06-01")
-        modal.locator("#edit-end-date").fill("2026-06-30")
+        # Set dates. Computed relative to today rather than hardcoded so the
+        # schedule stays active (end date in the future) and its row remains
+        # in the main schedules table. A hardcoded past end date (previously
+        # "2026-06-30") rots into the "Expired Schedules" section once it
+        # passes, breaking the `to_be_visible` assertion below.
+        today = datetime.now(timezone.utc).date()
+        start_date = today.isoformat()
+        end_date = (today + timedelta(days=60)).isoformat()
+        modal.locator("#edit-start-date").fill(start_date)
+        modal.locator("#edit-end-date").fill(end_date)
 
         # Change priority
         modal.locator("#edit-priority").fill("8")
@@ -547,8 +560,8 @@ class TestScheduleEditWithDates:
         schedules = api.get("/api/schedules").json()
         edited = next(s for s in schedules if s["name"] == "Fully Edited")
         assert edited["priority"] == 8
-        assert "2026-06-01" in edited["start_date"]
-        assert "2026-06-30" in edited["end_date"]
+        assert start_date in edited["start_date"]
+        assert end_date in edited["end_date"]
 
     def test_end_date_today_not_flagged_as_past(self, page: Page, api, ws_url):
         """Setting end date to today must NOT trigger the 'in the past' warning.
