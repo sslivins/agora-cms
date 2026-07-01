@@ -91,7 +91,12 @@ jobs:
 
       - name: Run full suite with coverage
         run: |
+          # `-m "not thumbnail"` matches the unit shards in tests.yml: the
+          # thumbnail-marked test needs Playwright + Chromium (not installed
+          # here) and is covered by the dedicated `composed-thumbnail-render`
+          # job. Without this the nightly fails on `No module named 'playwright'`.
           python -m pytest tests/ --ignore=tests/e2e \
+            -m "not thumbnail" \
             -n auto --dist=loadfile --tb=short -q -rs \
             --cov=cms --cov=shared --cov-report=xml --cov-report=term --cov-fail-under=50
 
