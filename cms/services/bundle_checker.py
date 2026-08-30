@@ -35,11 +35,13 @@ tick fired, and the UI's ``update_available`` badge flickered on/off
 as the load balancer round-robined requests.
 
 The bundle and the last-success timestamp now live in the
-``agora_os_latest_bundle`` single-row table (migration 0026).  All
-readers go through :func:`get_latest_bundle` / :func:`get_latest_os_version`,
-which read this row.  All writers go through :func:`set_latest_bundle`,
-which UPSERTs the row.  Multiple replicas writing the same content is
-fine — last-write-wins on identical payloads is idempotent.
+``agora_os_channel_bundle`` table (migration 0054, one row per release
+channel; superseded the single-row ``agora_os_latest_bundle`` from
+migration 0026).  All readers go through :func:`get_latest_bundle` /
+:func:`get_latest_os_version`, which take a ``channel`` argument and read
+the matching row.  All writers go through :func:`set_latest_bundle`,
+which UPSERTs the row for a channel.  Multiple replicas writing the same
+content is fine — last-write-wins on identical payloads is idempotent.
 
 ``_last_error`` deliberately stays as a module global — it's per-replica
 debug state and it's *more* useful that way (lets ops see whether one
@@ -61,7 +63,11 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.models.agora_os_latest_bundle import AgoraOsLatestBundle
+from cms.models.agora_os_channel_bundle import (
+    CHANNEL_PRERELEASE,
+    CHANNEL_STABLE,
+    AgoraOsChannelBundle,
+)
 
 logger = logging.getLogger("agora.cms.bundle_checker")
 
@@ -102,12 +108,12 @@ class BundleInfo:
 # ``_last_error`` is intentionally per-replica: it's debug state for
 # ``get_status()`` and exists so an operator can tell whether a single
 # replica's poll is failing or whether they all are.  The actual bundle
-# and last-success timestamp live in the shared ``agora_os_latest_bundle``
-# row instead (see :func:`get_latest_bundle`).
+# and last-success timestamp live in the shared ``agora_os_channel_bundle``
+# rows instead (see :func:`get_latest_bundle`).
 _last_error: Optional[str] = None
 
 
-def _bundle_from_row(row: AgoraOsLatestBundle) -> BundleInfo:
+def _bundle_from_row(row: AgoraOsChannelBundle) -> BundleInfo:
     return BundleInfo(
         target_version=row.target_version,
         release_id=row.release_id,
@@ -120,28 +126,34 @@ def _bundle_from_row(row: AgoraOsLatestBundle) -> BundleInfo:
     )
 
 
-async def get_latest_bundle(db: AsyncSession) -> Optional[BundleInfo]:
-    """Return the latest known BundleInfo (shared across replicas), or None.
+async def get_latest_bundle(
+    db: AsyncSession, channel: str = CHANNEL_STABLE
+) -> Optional[BundleInfo]:
+    """Return the latest known BundleInfo for ``channel``, or None.
 
-    Reads from the ``agora_os_latest_bundle`` single-row table.  Returns
-    ``None`` only when no poll has ever succeeded for this CMS deployment
-    (cold start before the first ``bundle_check_loop`` iteration writes
-    the row).
+    Reads the matching row from the ``agora_os_channel_bundle`` table
+    (one row per channel, shared across replicas).  Returns ``None`` only
+    when no poll has ever populated this channel (cold start before the
+    first ``bundle_check_loop`` iteration writes the row, or a channel
+    that has no eligible release yet — e.g. ``stable`` when the only
+    releases so far are prereleases).
     """
     row = await db.scalar(
-        select(AgoraOsLatestBundle).where(AgoraOsLatestBundle.id == 1)
+        select(AgoraOsChannelBundle).where(AgoraOsChannelBundle.channel == channel)
     )
     if row is None:
         return None
     return _bundle_from_row(row)
 
 
-async def get_latest_os_version(db: AsyncSession) -> Optional[str]:
-    """Return the latest known agora-os version, or None if no successful poll yet.
+async def get_latest_os_version(
+    db: AsyncSession, channel: str = CHANNEL_STABLE
+) -> Optional[str]:
+    """Return the latest agora-os version for ``channel``, or None.
 
     This is the v-stripped semver string (e.g. ``"0.0.17-test"``).
     """
-    bundle = await get_latest_bundle(db)
+    bundle = await get_latest_bundle(db, channel)
     return bundle.target_version if bundle else None
 
 
@@ -149,15 +161,35 @@ async def get_status(db: AsyncSession) -> dict:
     """Return checker health snapshot for debug endpoints (P1-4).
 
     ``last_error`` is per-replica (this process's last failed poll, if
-    any).  ``latest_version`` and ``last_success_at`` are read from the
-    shared DB row so all replicas report the same value for these.
+    any).  The per-channel latest versions and ``last_success_at`` are
+    read from the shared DB rows so all replicas report the same values.
+    ``latest_version`` is kept as an alias of the stable channel for
+    backward compatibility with existing consumers.
     """
-    row = await db.scalar(
-        select(AgoraOsLatestBundle).where(AgoraOsLatestBundle.id == 1)
+    stable = await db.scalar(
+        select(AgoraOsChannelBundle).where(
+            AgoraOsChannelBundle.channel == CHANNEL_STABLE
+        )
+    )
+    prerelease = await db.scalar(
+        select(AgoraOsChannelBundle).where(
+            AgoraOsChannelBundle.channel == CHANNEL_PRERELEASE
+        )
+    )
+    freshest = max(
+        (r for r in (stable, prerelease) if r is not None),
+        key=lambda r: r.last_success_at,
+        default=None,
     )
     return {
-        "latest_version": row.target_version if row else None,
-        "last_success_at": row.last_success_at.isoformat() if row else None,
+        "latest_version": stable.target_version if stable else None,
+        "latest_stable_version": stable.target_version if stable else None,
+        "latest_prerelease_version": (
+            prerelease.target_version if prerelease else None
+        ),
+        "last_success_at": (
+            freshest.last_success_at.isoformat() if freshest else None
+        ),
         "last_error": _last_error,
     }
 
@@ -252,26 +284,92 @@ def _gh_headers() -> dict:
     return headers
 
 
-async def _fetch_latest_bundle() -> Optional[BundleInfo]:
-    """Query GitHub Releases for the newest agora-os bundle.
+async def _build_bundle_from_release(client, release: dict) -> Optional[BundleInfo]:
+    """Build a :class:`BundleInfo` from a single GitHub release object.
 
-    Two GETs per call:
-      1. List recent releases, pick newest non-draft by published_at.
-         We include prereleases — the dev Pi rides ``-test`` tags.
-      2. Fetch that release's meta.json asset for min_from_version.
+    Performs one GET for the release's ``meta.json`` asset (for
+    ``min_from_version`` and the normalized version).  Returns None on any
+    failure (missing asset, non-200 meta, malformed meta), setting
+    ``_last_error`` for the debug endpoint.
+    """
+    global _last_error
+    assets = release.get("assets", [])
+    bundle_asset = next((a for a in assets if _BUNDLE_NAME_RE.match(a["name"])), None)
+    sig_asset = next((a for a in assets if _BUNDLE_SIG_RE.match(a["name"])), None)
+    sha256_asset = next((a for a in assets if _BUNDLE_SHA256_RE.match(a["name"])), None)
+    meta_asset = next((a for a in assets if _BUNDLE_META_RE.match(a["name"])), None)
 
-    Returns None on any failure (network, missing asset, malformed
-    meta.json).  Side-effects: updates the module-local ``_last_error``
-    (per-replica debug state surfaced via :func:`get_status`).  Caller
-    decides whether to keep the prior DB row or treat as unknown.
+    if not bundle_asset or not sig_asset or not meta_asset:
+        msg = (
+            f"Release {release.get('tag_name')!r} missing required assets "
+            f"(bundle={bool(bundle_asset)} sig={bool(sig_asset)} meta={bool(meta_asset)})"
+        )
+        logger.warning(msg)
+        _last_error = msg
+        return None
+
+    meta_resp = await client.get(meta_asset["browser_download_url"], headers=_gh_headers())
+    if meta_resp.status_code != 200:
+        msg = (
+            f"Failed to fetch meta.json for {release.get('tag_name')!r}: "
+            f"HTTP {meta_resp.status_code}"
+        )
+        logger.warning(msg)
+        _last_error = msg
+        return None
+    meta = meta_resp.json()
+
+    target_version = meta.get("version") or (release.get("tag_name") or "").lstrip("v")
+    min_from_version = meta.get("min_from_version")
+    if not target_version or not min_from_version:
+        meta_subset = {k: meta.get(k) for k in ("version", "min_from_version")}
+        msg = (
+            f"Release {release.get('tag_name')!r} meta.json missing version/"
+            f"min_from_version: {meta_subset!r}"
+        )
+        logger.warning(msg)
+        _last_error = msg
+        return None
+
+    return BundleInfo(
+        target_version=target_version.lstrip("v"),
+        release_id=str(release.get("id")),
+        min_from_version=str(min_from_version),
+        bundle_url=bundle_asset["browser_download_url"],
+        signature_url=sig_asset["browser_download_url"],
+        sha256_url=sha256_asset["browser_download_url"] if sha256_asset else None,
+        size_bytes=int(bundle_asset.get("size", 0)),
+        created_at=release.get("published_at") or "",
+    )
+
+
+async def _fetch_channel_bundles() -> dict:
+    """Query GitHub Releases and resolve the latest bundle per channel.
+
+    One GET lists the 10 most recent releases; from them we derive:
+
+    * ``stable``      — newest non-draft release NOT flagged prerelease.
+    * ``prerelease``  — newest non-draft release, prereleases included.
+
+    Each distinct release then costs one meta.json GET (cached by release
+    id, so when the two channels resolve to the same release — the common
+    case today, since every release is currently non-prerelease — we fetch
+    meta.json only once).
+
+    Returns a dict mapping channel -> :class:`BundleInfo`.  Channels that
+    couldn't be resolved (no eligible release, or a per-release fetch
+    failure) are simply absent from the dict; the caller keeps the prior
+    DB row for those.  Returns an empty dict on a top-level failure
+    (network error, releases list non-200, no non-draft releases).
+    ``_last_error`` is updated as a side effect for the debug endpoint.
     """
     global _last_error
     try:
         # follow_redirects=True is REQUIRED: GitHub release-asset
         # browser_download_url endpoints always 302 to the actual blob
         # storage URL on objects.githubusercontent.com.  Without this
-        # flag every meta.json fetch returns HTTP 302 and check_now()
-        # silently returns None -- the UI then shows "latest version:
+        # flag every meta.json fetch returns HTTP 302 and the poll
+        # silently yields nothing -- the UI then shows "latest version:
         # unknown" with no clue why.
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(
@@ -283,7 +381,7 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
                 msg = f"GitHub API /releases returned {resp.status_code}"
                 logger.warning(msg)
                 _last_error = msg
-                return None
+                return {}
             releases = resp.json()
 
             non_draft = [r for r in releases if not r.get("draft")]
@@ -291,84 +389,63 @@ async def _fetch_latest_bundle() -> Optional[BundleInfo]:
                 msg = "No non-draft agora-os releases found"
                 logger.debug(msg)
                 _last_error = msg
-                return None
+                return {}
             non_draft.sort(key=lambda r: r.get("published_at") or "", reverse=True)
-            release = non_draft[0]
 
-            assets = release.get("assets", [])
-            bundle_asset = next((a for a in assets if _BUNDLE_NAME_RE.match(a["name"])), None)
-            sig_asset = next((a for a in assets if _BUNDLE_SIG_RE.match(a["name"])), None)
-            sha256_asset = next((a for a in assets if _BUNDLE_SHA256_RE.match(a["name"])), None)
-            meta_asset = next((a for a in assets if _BUNDLE_META_RE.match(a["name"])), None)
-
-            if not bundle_asset or not sig_asset or not meta_asset:
-                msg = (
-                    f"Release {release.get('tag_name')!r} missing required assets "
-                    f"(bundle={bool(bundle_asset)} sig={bool(sig_asset)} meta={bool(meta_asset)})"
-                )
-                logger.warning(msg)
-                _last_error = msg
-                return None
-
-            meta_resp = await client.get(meta_asset["browser_download_url"], headers=_gh_headers())
-            if meta_resp.status_code != 200:
-                msg = (
-                    f"Failed to fetch meta.json for {release.get('tag_name')!r}: "
-                    f"HTTP {meta_resp.status_code}"
-                )
-                logger.warning(msg)
-                _last_error = msg
-                return None
-            meta = meta_resp.json()
-
-            target_version = meta.get("version") or (release.get("tag_name") or "").lstrip("v")
-            min_from_version = meta.get("min_from_version")
-            if not target_version or not min_from_version:
-                meta_subset = {k: meta.get(k) for k in ("version", "min_from_version")}
-                msg = (
-                    f"Release {release.get('tag_name')!r} meta.json missing version/"
-                    f"min_from_version: {meta_subset!r}"
-                )
-                logger.warning(msg)
-                _last_error = msg
-                return None
-
-            return BundleInfo(
-                target_version=target_version.lstrip("v"),
-                release_id=str(release.get("id")),
-                min_from_version=str(min_from_version),
-                bundle_url=bundle_asset["browser_download_url"],
-                signature_url=sig_asset["browser_download_url"],
-                sha256_url=sha256_asset["browser_download_url"] if sha256_asset else None,
-                size_bytes=int(bundle_asset.get("size", 0)),
-                created_at=release.get("published_at") or "",
+            # prerelease channel = newest non-draft (prereleases included);
+            # stable channel = newest non-draft that is NOT a prerelease.
+            prerelease_release = non_draft[0]
+            stable_release = next(
+                (r for r in non_draft if not r.get("prerelease")), None
             )
+
+            # Build bundles, caching by release id so identical releases
+            # across channels only cost one meta.json fetch.
+            _by_release: dict = {}
+
+            async def _bundle_for(release: Optional[dict]) -> Optional[BundleInfo]:
+                if release is None:
+                    return None
+                rid = release.get("id")
+                if rid not in _by_release:
+                    _by_release[rid] = await _build_bundle_from_release(client, release)
+                return _by_release[rid]
+
+            out: dict = {}
+            prerelease_bundle = await _bundle_for(prerelease_release)
+            if prerelease_bundle is not None:
+                out[CHANNEL_PRERELEASE] = prerelease_bundle
+            stable_bundle = await _bundle_for(stable_release)
+            if stable_bundle is not None:
+                out[CHANNEL_STABLE] = stable_bundle
+            return out
     except Exception as exc:
-        logger.debug("Failed to fetch latest agora-os bundle", exc_info=True)
+        logger.debug("Failed to fetch latest agora-os bundles", exc_info=True)
         # Preserve last_error so the debug endpoint surfaces stale polls.
         _last_error = f"{type(exc).__name__}: {exc}"
-        return None
+        return {}
 
 
 # ── DB persistence ──────────────────────────────────────────────────
 
 
-async def set_latest_bundle(db: AsyncSession, bundle: BundleInfo) -> None:
-    """UPSERT the shared single-row ``agora_os_latest_bundle`` table.
+async def set_latest_bundle(
+    db: AsyncSession, bundle: BundleInfo, channel: str = CHANNEL_STABLE
+) -> None:
+    """UPSERT the ``agora_os_channel_bundle`` row for ``channel``.
 
     Caller is responsible for committing the session.  Stamps
-    ``last_success_at`` to ``datetime.now(UTC)``.  Public so tests
-    (which previously poked ``_latest_bundle`` directly) can seed
-    state in a multi-replica-correct way.
+    ``last_success_at`` to ``datetime.now(UTC)``.  Public so tests can
+    seed per-channel state in a multi-replica-correct way.
     """
     now = datetime.now(timezone.utc)
     row = await db.scalar(
-        select(AgoraOsLatestBundle).where(AgoraOsLatestBundle.id == 1)
+        select(AgoraOsChannelBundle).where(AgoraOsChannelBundle.channel == channel)
     )
     if row is None:
         db.add(
-            AgoraOsLatestBundle(
-                id=1,
+            AgoraOsChannelBundle(
+                channel=channel,
                 target_version=bundle.target_version,
                 release_id=bundle.release_id,
                 min_from_version=bundle.min_from_version,
@@ -393,22 +470,27 @@ async def set_latest_bundle(db: AsyncSession, bundle: BundleInfo) -> None:
 
 
 async def check_now(db: AsyncSession) -> Optional[BundleInfo]:
-    """Trigger an immediate poll and update the shared DB row.
+    """Trigger an immediate poll and update every channel's DB row.
 
-    Returns the new BundleInfo on success or the previously-stored
-    value on failure (so callers can rely on a successful ``check_now``
-    not abruptly going None during transient GitHub flakes).
+    Returns the stable-channel BundleInfo on success (falling back to the
+    prerelease channel when stable has no eligible release), or the
+    previously-stored value on failure — so callers can rely on a
+    successful ``check_now`` not abruptly going None during transient
+    GitHub flakes.
     """
     global _last_error
-    bundle = await _fetch_latest_bundle()
-    if bundle is not None:
-        await set_latest_bundle(db, bundle)
+    bundles = await _fetch_channel_bundles()
+    if bundles:
+        for channel, bundle in bundles.items():
+            await set_latest_bundle(db, bundle, channel)
         await db.commit()
         _last_error = None
-        return bundle
-    # Fetch failed; surface whatever the DB has (may still be None on
-    # cold-start before any successful poll has ever landed).
-    return await get_latest_bundle(db)
+    # Report the stable channel (fall back to prerelease) regardless of
+    # whether this poll succeeded, so a flaky fetch returns the last-known
+    # good value instead of None.
+    return await get_latest_bundle(db, CHANNEL_STABLE) or await get_latest_bundle(
+        db, CHANNEL_PRERELEASE
+    )
 
 
 async def bundle_check_loop() -> None:
@@ -431,10 +513,10 @@ async def bundle_check_loop() -> None:
 
     while True:
         try:
-            bundle = await _fetch_latest_bundle()
+            bundles = await _fetch_channel_bundles()
         except asyncio.CancelledError:
             return
-        if bundle is not None:
+        if bundles:
             sf = get_session_factory()
             if sf is None:
                 # Session factory not initialised (very early startup or
@@ -444,18 +526,20 @@ async def bundle_check_loop() -> None:
             else:
                 try:
                     async with sf() as db:
-                        prev = await db.scalar(
-                            select(AgoraOsLatestBundle.target_version).where(
-                                AgoraOsLatestBundle.id == 1
+                        for channel, bundle in bundles.items():
+                            prev = await db.scalar(
+                                select(AgoraOsChannelBundle.target_version).where(
+                                    AgoraOsChannelBundle.channel == channel
+                                )
                             )
-                        )
-                        if prev != bundle.target_version:
-                            logger.info(
-                                "Latest agora-os release: %s (was %s)",
-                                bundle.target_version,
-                                prev,
-                            )
-                        await set_latest_bundle(db, bundle)
+                            if prev != bundle.target_version:
+                                logger.info(
+                                    "Latest agora-os %s release: %s (was %s)",
+                                    channel,
+                                    bundle.target_version,
+                                    prev,
+                                )
+                            await set_latest_bundle(db, bundle, channel)
                         await db.commit()
                     _last_error = None
                 except Exception:

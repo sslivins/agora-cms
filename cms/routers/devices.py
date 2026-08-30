@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_, select, update
@@ -36,6 +36,7 @@ from cms.services.scheduler import push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
 from cms.services.bundle_checker import check_now, get_latest_bundle, get_latest_os_version, is_os_update_available
+from cms.models.agora_os_channel_bundle import CHANNEL_PRERELEASE, CHANNEL_STABLE, CHANNELS
 
 router = APIRouter(prefix="/api/devices", dependencies=[Depends(require_auth)])
 
@@ -205,6 +206,20 @@ _DEVICE_OUT_OVERLAP_COLUMNS = {
 }
 
 
+def _latest_for_device(
+    device: Device, latest_stable: Optional[str], latest_prerelease: Optional[str]
+) -> Optional[str]:
+    """Resolve the latest available OS version for a device's channel.
+
+    Devices on the ``prerelease`` channel compare against the newest
+    release (prereleases included); everyone else compares against the
+    newest stable (non-prerelease) release.
+    """
+    if getattr(device, "update_channel", CHANNEL_STABLE) == CHANNEL_PRERELEASE:
+        return latest_prerelease
+    return latest_stable
+
+
 def _device_row_kwargs(device: Device) -> dict:
     """Return ``DeviceOut`` kwargs drawn from the ORM row.
 
@@ -322,7 +337,9 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     # Issue #578: read the shared latest-version once per request and thread
     # it through the per-device update_available check, so every replica
     # returns the same view of "update available" within a single response.
-    latest_version = await get_latest_os_version(db)
+    # Both channels are read once; each device resolves to its own channel.
+    latest_stable = await get_latest_os_version(db, CHANNEL_STABLE)
+    latest_prerelease = await get_latest_os_version(db, CHANNEL_PRERELEASE)
     return [
         DeviceOut(
             **_device_row_kwargs(d),
@@ -345,7 +362,9 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
             local_api_enabled=live_states[d.id]["local_api_enabled"] if d.id in live_states else None,
             error=live_states[d.id]["error"] if d.id in live_states else None,
             uptime_seconds=live_states[d.id]["uptime_seconds"] if d.id in live_states else 0,
-            update_available=is_os_update_available(d.os_version, latest_version),
+            update_available=is_os_update_available(
+                d.os_version, _latest_for_device(d, latest_stable, latest_prerelease)
+            ),
             has_active_schedule=d.id in scheduled_device_ids,
             **_ota_fields_for_out(d, now=now),
         )
@@ -384,7 +403,9 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
             raw_asset = resolved
 
     from cms.services.bundle_checker import is_os_update_available
-    latest_version = await get_latest_os_version(db)  # issue #578: shared cross-replica view
+    latest_stable = await get_latest_os_version(db, CHANNEL_STABLE)  # issue #578: shared cross-replica view
+    latest_prerelease = await get_latest_os_version(db, CHANNEL_PRERELEASE)
+    latest_version = _latest_for_device(device, latest_stable, latest_prerelease)
     return DeviceOut(
         **_device_row_kwargs(device),
         group_name=device.group.name if device.group else None,
@@ -431,6 +452,13 @@ async def update_device(
         await verify_resource_group_access(user, db, device.group_id)
 
     updates = data.model_dump(exclude_unset=True)
+
+    # Validate the requested update channel, if present.
+    if "update_channel" in updates and updates["update_channel"] not in CHANNELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"update_channel must be one of {sorted(CHANNELS)}",
+        )
 
     # Fields that require devices:manage (admin-only)
     managed_fields = {"profile_id", "timezone", "status"}
@@ -697,11 +725,11 @@ async def upgrade_device(
         )
         await db.commit()
 
-    # M5: read the cached agora-os bundle metadata. The bundle_checker
-    # poller refreshes this every 30 min; on a cold CMS start it may
-    # still be None for up to one poll interval. Surface that as a
-    # retryable 503 rather than dispatching a malformed message.
-    latest_bundle = await get_latest_bundle(db)
+    # M5: read the cached agora-os bundle metadata for the device's channel.
+    # The bundle_checker poller refreshes this every 30 min; on a cold CMS
+    # start it may still be None for up to one poll interval. Surface that
+    # as a retryable 503 rather than dispatching a malformed message.
+    latest_bundle = await get_latest_bundle(db, device.update_channel)
     if latest_bundle is None:
         await _release_claim()
         raise HTTPException(
@@ -1224,7 +1252,9 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     ) or 0
 
     from cms.services.bundle_checker import is_os_update_available
-    latest_version = await get_latest_os_version(db)  # issue #578: shared cross-replica view
+    latest_stable = await get_latest_os_version(db, CHANNEL_STABLE)  # issue #578: shared cross-replica view
+    latest_prerelease = await get_latest_os_version(db, CHANNEL_PRERELEASE)
+    latest_version = latest_stable  # template fallback; per-device value set below
     transport = get_transport()
     live_states = {s["device_id"]: s for s in await transport.get_all_states()}
     for d in group.devices:
@@ -1245,7 +1275,8 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.update_available = is_os_update_available(d.os_version, latest_version)
+        d.available_version = _latest_for_device(d, latest_stable, latest_prerelease)
+        d.update_available = is_os_update_available(d.os_version, d.available_version)
         d.is_upgrading = _is_upgrading(d)
         d.has_active_schedule = False  # poller will flip this via updateLiveFields
 

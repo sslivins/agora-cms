@@ -202,6 +202,18 @@ class Device(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # ---- Prerelease opt-in channel ----
+    # Which agora-os release channel this device receives OS updates from.
+    # ``stable`` (default) = only non-prerelease GitHub releases; the whole
+    # fleet stays on these.  ``prerelease`` = opt-in; the device additionally
+    # sees prerelease-flagged builds (``-test`` / ``-rc`` tags), so a build
+    # can be validated in production on a handful of opted-in devices without
+    # being offered to everyone.  Resolved against ``agora_os_channel_bundle``
+    # by the device-list / upgrade endpoints.  See migration 0054.
+    update_channel: Mapped[str] = mapped_column(
+        Text, nullable=False, default="stable", server_default=text("'stable'")
+    )
+
     group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
     profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys="[Device.default_asset_id]")

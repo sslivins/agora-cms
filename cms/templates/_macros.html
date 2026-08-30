@@ -758,7 +758,7 @@
     </td>
     {% endif %}
     {% if 'devices:manage' in user_perms %}
-    <td class="actions" data-live-actions="{{ d.id }}" data-actions-sig="{{ d.status.value }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.ssh_enabled else 0 }}|{{ 0 if d.local_api_enabled is false else 1 }}|{{ 1 if d.upgrade_stuck else 0 }}" onclick="event.stopPropagation()">
+    <td class="actions" data-live-actions="{{ d.id }}" data-actions-sig="{{ d.status.value }}|{{ 1 if d.is_upgrading else 0 }}|{{ 1 if d.is_online else 0 }}|{{ 1 if d.update_available else 0 }}|{{ 1 if d.ssh_enabled else 0 }}|{{ 0 if d.local_api_enabled is false else 1 }}|{{ 1 if d.upgrade_stuck else 0 }}|{{ d.update_channel or 'stable' }}" onclick="event.stopPropagation()">
         {% call kebab_menu() %}
         {% if d.status.value == 'pending' or d.status.value == 'orphaned' %}
         <button type="button" role="menuitem" onclick="adoptDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Register this device so it can receive content">Adopt</button>
@@ -767,7 +767,7 @@
         {% elif d.is_upgrading %}
         <button type="button" role="menuitem" disabled title="Firmware upgrade in progress — device will reboot when done">Upgrading…</button>
         {% elif d.is_online and d.update_available %}
-        <button type="button" role="menuitem" onclick="upgradeDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Update firmware from {{ d.firmware_version }} to {{ latest_version }}">Update</button>
+        <button type="button" role="menuitem" onclick="upgradeDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Update firmware from {{ d.firmware_version }} to {{ d.available_version or latest_version }}">Update</button>
         {% endif %}
         {% if d.status.value not in ('pending', 'orphaned') and d.is_online %}
         <button type="button" role="menuitem" onclick="changeDevicePassword({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Set the password for this device's local web UI">Change Web Password</button>
@@ -783,6 +783,13 @@
         {% endif %}
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Restart this device immediately">Reboot</button>
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice({{ d.id | tojson | forceescape }}, {{ (d.name or d.id) | tojson | forceescape }})" title="Wipe all data and return device to setup mode">Factory Reset</button>
+        {% endif %}
+        {% if d.status.value not in ('pending', 'orphaned') %}
+        {% if d.update_channel == 'prerelease' %}
+        <button type="button" role="menuitem" onclick="setUpdateChannel('{{ d.id }}', 'stable')" title="This device is on the prerelease channel — click to return to stable releases only">Leave prerelease channel</button>
+        {% else %}
+        <button type="button" role="menuitem" onclick="setUpdateChannel('{{ d.id }}', 'prerelease')" title="Opt this device in to prerelease OS builds (-rc / -test) for testing before general release">Join prerelease channel</button>
+        {% endif %}
         {% endif %}
         {% if d.group_id and 'devices:write' in user_perms %}
         <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from its group">Remove from group</button>
@@ -832,7 +839,13 @@
             <div class="detail-item">
                 <span class="detail-label">OS Version</span>
                 <span class="detail-value">
-                    <span data-live-os-version="{{ d.id }}" title="{{ d.os_version or '' }}">{{ d.os_version or '—' }}</span>{% if 'devices:manage' in user_perms %} <span class="has-tooltip" data-live-update-badge-wrap="{{ d.id }}"{% if not d.update_available %} style="display:none"{% endif %}><span class="badge badge-update" data-live-update-badge="{{ d.id }}">{{ latest_version }} available</span><span class="tooltip">A newer OS version ({{ latest_version }}) is available — open the row's actions menu to update</span></span>{% endif %}
+                    <span data-live-os-version="{{ d.id }}" title="{{ d.os_version or '' }}">{{ d.os_version or '—' }}</span>{% if 'devices:manage' in user_perms %} <span class="has-tooltip" data-live-update-badge-wrap="{{ d.id }}"{% if not d.update_available %} style="display:none"{% endif %}><span class="badge badge-update" data-live-update-badge="{{ d.id }}">{{ d.available_version or latest_version }} available</span><span class="tooltip">A newer OS version ({{ d.available_version or latest_version }}) is available — open the row's actions menu to update</span></span>{% endif %}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Update Channel</span>
+                <span class="detail-value">
+                    {% if d.update_channel == 'prerelease' %}<span class="badge badge-update">Prerelease</span>{% else %}Stable{% endif %}
                 </span>
             </div>
             <div class="detail-item">
