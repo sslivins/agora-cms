@@ -532,6 +532,13 @@ window._adoptionProfiles = [
             items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="rebootDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Restart this device immediately">Reboot</button>';
             items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="factoryResetDevice(\'' + d.id + '\', \'' + nameEsc + '\')" title="Wipe all data and return device to setup mode">Factory Reset</button>';
         }
+        if (!adoptable) {
+            if ((d.update_channel || 'stable') === 'prerelease') {
+                items += '<button type="button" role="menuitem" onclick="setUpdateChannel(\'' + d.id + '\', \'stable\')" title="This device is on the prerelease channel — click to return to stable releases only">Leave prerelease channel</button>';
+            } else {
+                items += '<button type="button" role="menuitem" onclick="setUpdateChannel(\'' + d.id + '\', \'prerelease\')" title="Opt this device in to prerelease OS builds (-rc / -test) for testing before general release">Join prerelease channel</button>';
+            }
+        }
         items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice(\'' + d.id + '\')" title="Remove this device from the CMS">Delete</button>';
         const mid = 'kebab-dev-' + d.id.replace(/[^a-zA-Z0-9_-]/g, '_');
         return '<button type="button" class="btn-kebab" popovertarget="' + mid + '" aria-haspopup="menu" aria-label="Actions">⋮</button>'
@@ -680,6 +687,7 @@ window._adoptionProfiles = [
                     d.update_available ? 1 : 0, d.ssh_enabled ? 1 : 0,
                     d.local_api_enabled === false ? 0 : 1,
                     d.upgrade_stuck ? 1 : 0,
+                    d.update_channel || 'stable',
                 ].join("|");
                 if (actionsEl.dataset.actionsSig !== sig) {
                     actionsEl.innerHTML = buildActionButtons(d);

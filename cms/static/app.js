@@ -1439,6 +1439,24 @@ async function toggleSsh(deviceId, enabled) {
     }
 }
 
+async function setUpdateChannel(deviceId, channel) {
+    const joining = channel === 'prerelease';
+    const msg = joining
+        ? "Opt this device in to the prerelease channel?\n\nIt will receive prerelease OS builds (-rc / -test) before general release."
+        : "Move this device back to the stable channel?\n\nIt will only receive stable (non-prerelease) OS releases.";
+    if (!await showConfirm(msg)) return;
+    const resp = await apiCall("PATCH", `/api/devices/${deviceId}`, { update_channel: channel });
+    if (resp && resp.ok) {
+        showToast(joining ? "Joined prerelease channel" : "Left prerelease channel");
+        // The 5s poller rebuilds the actions cell (signature includes
+        // update_channel); trigger it now for snappy feedback.
+        if (typeof window.refreshDevices === 'function') window.refreshDevices();
+    } else if (resp) {
+        const err = await resp.json().catch(() => null);
+        showToast(err?.detail || "Failed to change update channel", true);
+    }
+}
+
 async function upgradeDevice(deviceId, deviceName) {
     let msg;
     if (isDevicePlaying(deviceId)) {

@@ -69,6 +69,10 @@ class DeviceOut(BaseModel):
     local_api_enabled: Optional[bool] = None
     error: Optional[str] = None
     update_available: bool = False
+    # Which agora-os release channel this device follows: ``stable``
+    # (default; non-prerelease releases only) or ``prerelease`` (opt-in;
+    # also receives ``-test`` / ``-rc`` builds).  See migration 0054.
+    update_channel: str = "stable"
     uptime_seconds: int = 0
 
 
@@ -80,6 +84,7 @@ class DeviceUpdate(BaseModel):
     default_asset_id: Optional[uuid.UUID] = None
     profile_id: Optional[uuid.UUID] = None
     timezone: Optional[str] = None
+    update_channel: Optional[str] = None
 
 
 class DeviceGroupOut(BaseModel):

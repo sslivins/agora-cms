@@ -6066,6 +6066,10 @@ components:
           type: boolean
           title: Update Available
           default: false
+        update_channel:
+          type: string
+          title: Update Channel
+          default: stable
         uptime_seconds:
           type: integer
           title: Uptime Seconds
@@ -6126,6 +6130,11 @@ components:
           - type: string
           - type: 'null'
           title: Timezone
+        update_channel:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Update Channel
       type: object
       title: DeviceUpdate
     DownloadUrlOut:

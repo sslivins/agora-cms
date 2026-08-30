@@ -83,6 +83,36 @@ class TestDeviceCRUD:
         assert resp.status_code == 200
         assert resp.json()["timezone"] is None
 
+    async def test_update_device_channel_to_prerelease(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="test-pi-ch", name="test-pi-ch", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.patch(
+            "/api/devices/test-pi-ch", json={"update_channel": "prerelease"}
+        )
+        assert resp.status_code == 200
+
+        await db_session.refresh(device)
+        assert device.update_channel == "prerelease"
+
+    async def test_update_device_channel_invalid_rejected(self, client, db_session):
+        from cms.models.device import Device, DeviceStatus
+
+        device = Device(id="test-pi-ch2", name="test-pi-ch2", status=DeviceStatus.ADOPTED)
+        db_session.add(device)
+        await db_session.commit()
+
+        resp = await client.patch(
+            "/api/devices/test-pi-ch2", json={"update_channel": "beta"}
+        )
+        assert resp.status_code == 422
+
+        await db_session.refresh(device)
+        assert device.update_channel == "stable"
+
     async def test_adopt_device(self, client, db_session):
         from cms.models.device import Device, DeviceStatus
 
@@ -300,8 +330,15 @@ class TestCheckUpdates:
         )
         # Issue #578: check_now writes to the shared DB row -- the
         # endpoint reads back via the same row so we don't need to
-        # pre-seed; patching _fetch_latest_bundle is enough.
-        with patch.object(bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub):
+        # pre-seed; patching _fetch_channel_bundles is enough.
+        from cms.models.agora_os_channel_bundle import CHANNEL_STABLE
+
+        with patch.object(
+            bundle_checker,
+            "_fetch_channel_bundles",
+            new_callable=AsyncMock,
+            return_value={CHANNEL_STABLE: stub},
+        ):
             resp = await client.post("/api/devices/check-updates")
         assert resp.status_code == 200
         assert resp.json()["latest_version"] == "9.9.9"

@@ -53,6 +53,7 @@ from cms.services.transport import get_transport
 from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
 from cms.services.bundle_checker import get_latest_os_version, is_os_update_available
+from cms.models.agora_os_channel_bundle import CHANNEL_PRERELEASE, CHANNEL_STABLE
 from cms.routers.devices import _is_upgrading as _devices_is_upgrading
 
 import json as _json
@@ -1029,8 +1030,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     from cms.services.device_alerts import fleet_counts as _fleet_counts
     from cms.services.bundle_checker import is_os_update_available as _is_update_available
     # Issue #578: read shared latest OS version once for this request,
-    # so every replica produces a consistent badge state.
-    _latest_os_version = await get_latest_os_version(db)
+    # so every replica produces a consistent badge state.  Read both
+    # channels so per-device resolution honours prerelease opt-in.
+    _latest_stable = await get_latest_os_version(db, CHANNEL_STABLE)
+    _latest_prerelease = await get_latest_os_version(db, CHANNEL_PRERELEASE)
     _triage_devices = list(all_devices) + list(orphaned_devices)
     for d in _triage_devices:
         try:
@@ -1043,7 +1046,12 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         d.pipeline_state = state["pipeline_state"] if state else None
         d.display_connected = state["display_connected"] if state else None
         d.display_ports = state["display_ports"] if state else None
-        d.update_available = _is_update_available(d.os_version, _latest_os_version)
+        d.available_version = (
+            _latest_prerelease
+            if getattr(d, "update_channel", CHANNEL_STABLE) == CHANNEL_PRERELEASE
+            else _latest_stable
+        )
+        d.update_available = _is_update_available(d.os_version, d.available_version)
         d.is_upgrading = _devices_is_upgrading(d)
     fleet_counts_dashboard = _fleet_counts(_triage_devices, user_perms)
 
@@ -1368,7 +1376,15 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Issue #578: read the shared latest OS version once for this request,
     # so every replica produces a consistent "Update available" view.
-    latest_os_version = await get_latest_os_version(db)
+    latest_os_version = await get_latest_os_version(db, CHANNEL_STABLE)
+    latest_os_prerelease = await get_latest_os_version(db, CHANNEL_PRERELEASE)
+
+    def _channel_latest(d):
+        return (
+            latest_os_prerelease
+            if getattr(d, "update_channel", CHANNEL_STABLE) == CHANNEL_PRERELEASE
+            else latest_os_version
+        )
 
     # Build URL→display name map for resolving playback_asset on URL-based assets
     assets_early_q = await db.execute(
@@ -1415,7 +1431,8 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.playback_position_ms = state["playback_position_ms"] if state else None
         d.ssh_enabled = state["ssh_enabled"] if state else None
         d.local_api_enabled = state["local_api_enabled"] if state else None
-        d.update_available = is_os_update_available(d.os_version, latest_os_version)
+        d.available_version = _channel_latest(d)
+        d.update_available = is_os_update_available(d.os_version, d.available_version)
         d.is_upgrading = _devices_is_upgrading(d)
         d.has_active_schedule = d.id in scheduled_device_ids
 
@@ -1467,7 +1484,8 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
             d.playback_position_ms = state["playback_position_ms"] if state else None
             d.ssh_enabled = state["ssh_enabled"] if state else None
             d.local_api_enabled = state["local_api_enabled"] if state else None
-            d.update_available = is_os_update_available(d.os_version, latest_os_version)
+            d.available_version = _channel_latest(d)
+            d.update_available = is_os_update_available(d.os_version, d.available_version)
             d.is_upgrading = _devices_is_upgrading(d)
             d.has_active_schedule = d.id in scheduled_device_ids
 

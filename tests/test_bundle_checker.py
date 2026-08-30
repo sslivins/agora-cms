@@ -141,10 +141,14 @@ class TestIsOsUpdateAvailable:
 class TestCheckNow:
     async def test_check_now_persists_to_shared_row_on_success(self, db_session):
         from cms.services import bundle_checker
+        from cms.models.agora_os_channel_bundle import CHANNEL_STABLE
 
         stub = _stub_bundle("1.2.3")
         with patch.object(
-            bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=stub
+            bundle_checker,
+            "_fetch_channel_bundles",
+            new_callable=AsyncMock,
+            return_value={CHANNEL_STABLE: stub},
         ):
             result = await bundle_checker.check_now(db_session)
         assert result is not None
@@ -162,7 +166,10 @@ class TestCheckNow:
         await db_session.commit()
 
         with patch.object(
-            bundle_checker, "_fetch_latest_bundle", new_callable=AsyncMock, return_value=None
+            bundle_checker,
+            "_fetch_channel_bundles",
+            new_callable=AsyncMock,
+            return_value={},
         ):
             result = await bundle_checker.check_now(db_session)
         # check_now returns the persisted value, not None.
@@ -188,13 +195,16 @@ class TestGetLatestOsVersion:
 
 @pytest.mark.asyncio
 class TestSetLatestBundleUpsert:
-    """The shared row is a singleton (PK=1, CHECK id=1).  A second
-    ``set_latest_bundle`` must overwrite the row in place, not insert
-    a duplicate (which would 23514 the CHECK constraint anyway)."""
+    """The per-channel row is unique on ``channel`` (PK).  A second
+    ``set_latest_bundle`` for the same channel must overwrite the row in
+    place, not insert a duplicate."""
 
     async def test_upsert_overwrites_existing_row(self, db_session):
         from cms.services import bundle_checker
-        from cms.models.agora_os_latest_bundle import AgoraOsLatestBundle
+        from cms.models.agora_os_channel_bundle import (
+            AgoraOsChannelBundle,
+            CHANNEL_STABLE,
+        )
         from sqlalchemy import func, select
 
         await bundle_checker.set_latest_bundle(db_session, _stub_bundle("1.0.0"))
@@ -202,7 +212,11 @@ class TestSetLatestBundleUpsert:
         await bundle_checker.set_latest_bundle(db_session, _stub_bundle("1.0.1"))
         await db_session.commit()
 
-        count = await db_session.scalar(select(func.count()).select_from(AgoraOsLatestBundle))
+        count = await db_session.scalar(
+            select(func.count())
+            .select_from(AgoraOsChannelBundle)
+            .where(AgoraOsChannelBundle.channel == CHANNEL_STABLE)
+        )
         assert count == 1
         assert (await bundle_checker.get_latest_os_version(db_session)) == "1.0.1"
 
@@ -328,7 +342,12 @@ class TestFetchLatestBundleFollowsRedirects:
         bundle_checker._last_error = None
         try:
             with patch.object(bundle_checker.httpx, "AsyncClient", side_effect=factory):
-                result = await bundle_checker._fetch_latest_bundle()
+                bundles = await bundle_checker._fetch_channel_bundles()
+            from cms.models.agora_os_channel_bundle import CHANNEL_PRERELEASE
+
+            # The lone release is flagged prerelease=True, so it resolves
+            # to the prerelease channel (stable has no eligible release).
+            result = bundles.get(CHANNEL_PRERELEASE)
             assert result is not None, (
                 f"expected fetcher to follow the meta.json 302; got None. "
                 f"_last_error={bundle_checker._last_error!r}"
@@ -384,9 +403,148 @@ class TestFetchLatestBundleFollowsRedirects:
         bundle_checker._last_error = None
         try:
             with patch.object(bundle_checker.httpx, "AsyncClient", side_effect=factory):
-                result = await bundle_checker._fetch_latest_bundle()
-            assert result is None
+                bundles = await bundle_checker._fetch_channel_bundles()
+            assert bundles == {}
             assert bundle_checker._last_error is not None
             assert "500" in bundle_checker._last_error
         finally:
             bundle_checker._last_error = original_last_error
+
+
+def _release_with_assets(version: str, *, prerelease: bool, published_at: str) -> dict:
+    """Build a GitHub release object (with the four required assets) whose
+    meta.json is served inline (browser_download_url encodes the version)."""
+    base = f"https://github.com/sslivins/agora-os/releases/download/v{version}"
+    return {
+        "id": hash(version) & 0xFFFF,
+        "tag_name": f"v{version}",
+        "draft": False,
+        "prerelease": prerelease,
+        "published_at": published_at,
+        "assets": [
+            {"name": f"agora-bundle-{version}.tar.zst", "browser_download_url": f"{base}/bundle.tar.zst", "size": 10},
+            {"name": f"agora-bundle-{version}.tar.zst.minisig", "browser_download_url": f"{base}/bundle.minisig", "size": 1},
+            {"name": f"agora-bundle-{version}.tar.zst.sha256", "browser_download_url": f"{base}/bundle.sha256", "size": 1},
+            {"name": f"agora-bundle-{version}.meta.json", "browser_download_url": f"{base}/meta.json", "size": 1},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+class TestFetchChannelBundles:
+    """The two-channel resolver: ``stable`` = newest non-prerelease
+    release, ``prerelease`` = newest release overall (prereleases
+    included)."""
+
+    async def _run(self, releases: list) -> dict:
+        import httpx
+        from cms.services import bundle_checker
+
+        releases_url = bundle_checker.AGORA_OS_RELEASES_URL
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if url.startswith(releases_url):
+                return httpx.Response(200, json=releases)
+            if url.endswith("/meta.json"):
+                ver = url.rsplit("/", 2)[-2].lstrip("v")
+                return httpx.Response(
+                    200, json={"version": ver, "min_from_version": "0.0.0"}
+                )
+            return httpx.Response(404, text=f"unexpected {url}")
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        with patch.object(bundle_checker.httpx, "AsyncClient", side_effect=factory):
+            return await bundle_checker._fetch_channel_bundles()
+
+    async def test_channels_resolve_distinct_releases(self):
+        from cms.models.agora_os_channel_bundle import (
+            CHANNEL_PRERELEASE,
+            CHANNEL_STABLE,
+        )
+
+        releases = [
+            _release_with_assets("1.1.0-rc1", prerelease=True, published_at="2026-06-02T00:00:00Z"),
+            _release_with_assets("1.0.0", prerelease=False, published_at="2026-06-01T00:00:00Z"),
+        ]
+        bundles = await self._run(releases)
+        assert bundles[CHANNEL_PRERELEASE].target_version == "1.1.0-rc1"
+        assert bundles[CHANNEL_STABLE].target_version == "1.0.0"
+
+    async def test_no_stable_when_only_prereleases(self):
+        from cms.models.agora_os_channel_bundle import (
+            CHANNEL_PRERELEASE,
+            CHANNEL_STABLE,
+        )
+
+        releases = [
+            _release_with_assets("2.0.0-rc2", prerelease=True, published_at="2026-06-05T00:00:00Z"),
+            _release_with_assets("2.0.0-rc1", prerelease=True, published_at="2026-06-04T00:00:00Z"),
+        ]
+        bundles = await self._run(releases)
+        assert bundles[CHANNEL_PRERELEASE].target_version == "2.0.0-rc2"
+        assert CHANNEL_STABLE not in bundles
+
+    async def test_both_channels_same_release_when_newest_is_stable(self):
+        from cms.models.agora_os_channel_bundle import (
+            CHANNEL_PRERELEASE,
+            CHANNEL_STABLE,
+        )
+
+        releases = [
+            _release_with_assets("3.0.0", prerelease=False, published_at="2026-06-10T00:00:00Z"),
+            _release_with_assets("2.9.0", prerelease=False, published_at="2026-06-01T00:00:00Z"),
+        ]
+        bundles = await self._run(releases)
+        assert bundles[CHANNEL_STABLE].target_version == "3.0.0"
+        assert bundles[CHANNEL_PRERELEASE].target_version == "3.0.0"
+
+
+@pytest.mark.asyncio
+class TestPerChannelReaders:
+    """``get_latest_bundle`` / ``get_latest_os_version`` take a channel
+    argument and read the matching row independently."""
+
+    async def test_channels_are_independent(self, db_session):
+        from cms.services import bundle_checker
+        from cms.models.agora_os_channel_bundle import (
+            CHANNEL_PRERELEASE,
+            CHANNEL_STABLE,
+        )
+
+        await bundle_checker.set_latest_bundle(
+            db_session, _stub_bundle("1.0.0"), CHANNEL_STABLE
+        )
+        await bundle_checker.set_latest_bundle(
+            db_session, _stub_bundle("1.1.0-rc1"), CHANNEL_PRERELEASE
+        )
+        await db_session.commit()
+
+        assert (
+            await bundle_checker.get_latest_os_version(db_session, CHANNEL_STABLE)
+        ) == "1.0.0"
+        assert (
+            await bundle_checker.get_latest_os_version(db_session, CHANNEL_PRERELEASE)
+        ) == "1.1.0-rc1"
+        assert (await bundle_checker.get_latest_os_version(db_session)) == "1.0.0"
+
+    async def test_prerelease_absent_returns_none(self, db_session):
+        from cms.services import bundle_checker
+        from cms.models.agora_os_channel_bundle import (
+            CHANNEL_PRERELEASE,
+            CHANNEL_STABLE,
+        )
+
+        await bundle_checker.set_latest_bundle(
+            db_session, _stub_bundle("1.0.0"), CHANNEL_STABLE
+        )
+        await db_session.commit()
+        assert (
+            await bundle_checker.get_latest_os_version(db_session, CHANNEL_PRERELEASE)
+        ) is None
