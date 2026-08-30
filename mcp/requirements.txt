@@ -1,4 +1,8 @@
-mcp[cli]>=1.0.0
+# Pin to the v1 line: server.py uses the v1 FastMCP API
+# (`from mcp.server.fastmcp import FastMCP`), which was removed in mcp 2.x
+# (renamed to MCPServer). See the nightly E2E MCP-container crash when 2.x
+# was pulled in by the unpinned `>=1.0.0`.
+mcp[cli]>=1.0.0,<2
 httpx>=0.27.0
 
 # Azure Key Vault (service key exchange in Azure deployments)
