@@ -290,6 +290,18 @@ async def _resolve_loop_end_time(
             status_code=422,
             detail="Cannot compute end_time: asset has no duration. Provide end_time explicitly.",
         )
+    total_seconds = int(loop_count * asset.duration_seconds)
+    if total_seconds <= 0 or total_seconds % 86400 == 0:
+        # end_time is derived as (start + total) mod 24h, so a zero or whole-day
+        # multiple collapses to end_time == start_time — a window that never plays.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Computed playback window is zero or an exact multiple of 24 hours "
+                "(end_time would equal start_time and never play). Use a different "
+                "loop count or provide end_time explicitly."
+            ),
+        )
     return _compute_end_time(start_time, loop_count, asset.duration_seconds)
 
 

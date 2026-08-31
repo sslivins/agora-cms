@@ -19,6 +19,10 @@ from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
+from cms.services.occurrence import (
+    matches_at as occurrence_matches_at,
+    schedules_overlap,
+)
 from cms.schemas.protocol import (
     CAPABILITY_SLIDESHOW_CLIP_V1,
     CAPABILITY_SLIDESHOW_VISIBILITY_V1,
@@ -763,30 +767,12 @@ def _no_targets_entry(s: Schedule, local_now: datetime) -> dict:
 
 
 def _matches_now(schedule: Schedule, now: datetime) -> bool:
-    """Check if a schedule is active at the given datetime."""
-    if not schedule.enabled:
-        return False
-    # Compare dates only (not timestamps) — start_date/end_date represent whole days
-    now_date = now.date() if hasattr(now, 'date') else now
-    if schedule.start_date:
-        start_d = schedule.start_date.date() if hasattr(schedule.start_date, 'date') else schedule.start_date
-        if now_date < start_d:
-            return False
-    if schedule.end_date:
-        end_d = schedule.end_date.date() if hasattr(schedule.end_date, 'date') else schedule.end_date
-        if now_date > end_d:
-            return False
-    if schedule.days_of_week:
-        if now.isoweekday() not in schedule.days_of_week:
-            return False
-    current_time = now.time()
-    if schedule.start_time <= schedule.end_time:
-        if not (schedule.start_time <= current_time < schedule.end_time):
-            return False
-    else:
-        if not (current_time >= schedule.start_time or current_time < schedule.end_time):
-            return False
-    return True
+    """Check if a schedule is active at the given datetime.
+
+    Occurrence-based (see ``cms.services.occurrence``): correctly handles windows
+    that cross midnight, date-range boundaries, and sub-minute windows.
+    """
+    return occurrence_matches_at(schedule, now)
 
 
 def _times_overlap(s1: time, e1: time, s2: time, e2: time) -> bool:
@@ -846,7 +832,13 @@ def _dates_overlap(
 
 
 def schedules_conflict(a: Schedule, b: Schedule) -> bool:
-    """Check if two schedules conflict (same target, same priority, overlapping windows)."""
+    """Check if two schedules conflict (same target, same priority, overlapping windows).
+
+    Temporal overlap is occurrence-based (see ``cms.services.occurrence``) so windows
+    that cross midnight or date boundaries are compared correctly. Target/priority
+    scoping is unchanged for Stage 0 (per-group); the per-device reframing lands in a
+    later stage.
+    """
     # Must share the same target
     if a.group_id and b.group_id:
         if a.group_id != b.group_id:
@@ -857,11 +849,7 @@ def schedules_conflict(a: Schedule, b: Schedule) -> bool:
     if a.priority != b.priority:
         return False
 
-    return (
-        _times_overlap(a.start_time, a.end_time, b.start_time, b.end_time)
-        and _days_overlap(a.days_of_week, b.days_of_week)
-        and _dates_overlap(a.start_date, a.end_date, b.start_date, b.end_date)
-    )
+    return schedules_overlap(a, b)
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
