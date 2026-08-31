@@ -20,6 +20,15 @@ class ScheduleCreate(BaseModel):
     enabled: bool = True
     loop_count: Optional[int] = None
 
+    @field_validator("days_of_week")
+    @classmethod
+    def validate_days_of_week(cls, v):
+        if v is None:
+            return v
+        if any((not isinstance(d, int)) or d < 1 or d > 7 for d in v):
+            raise ValueError("days_of_week values must be between 1 (Mon) and 7 (Sun)")
+        return sorted(set(v))
+
     @field_validator("start_date", "end_date", mode="before")
     @classmethod
     def ensure_tz_aware(cls, v):
@@ -55,6 +64,31 @@ class ScheduleUpdate(BaseModel):
     priority: Optional[int] = None
     enabled: Optional[bool] = None
     loop_count: Optional[int] = None
+
+    @field_validator("priority")
+    @classmethod
+    def priority_not_null(cls, v):
+        # Distinguishes an omitted field (validator not run) from an explicit JSON
+        # null (run with v=None), which would violate the NOT NULL column and 500.
+        if v is None:
+            raise ValueError("priority cannot be null")
+        return v
+
+    @field_validator("enabled")
+    @classmethod
+    def enabled_not_null(cls, v):
+        if v is None:
+            raise ValueError("enabled cannot be null")
+        return v
+
+    @field_validator("days_of_week")
+    @classmethod
+    def validate_days_of_week(cls, v):
+        if v is None:
+            return v
+        if any((not isinstance(d, int)) or d < 1 or d > 7 for d in v):
+            raise ValueError("days_of_week values must be between 1 (Mon) and 7 (Sun)")
+        return sorted(set(v))
 
     @field_validator("start_date", "end_date", mode="before")
     @classmethod

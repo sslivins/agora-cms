@@ -138,6 +138,50 @@ class TestScheduleCRUD:
         assert resp.status_code == 201
         assert resp.json()["days_of_week"] == [1, 2, 3, 4, 5]
 
+    async def _create_group_and_timed_asset(self, db_session, duration_seconds):
+        """Helper: like _create_group_and_asset but with an asset duration."""
+        from cms.models.asset import Asset, AssetType
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+
+        group = DeviceGroup(name="Loop Group")
+        device = Device(id="loop-pi", name="Loop Test", status=DeviceStatus.ADOPTED)
+        asset = Asset(
+            filename="loop.mp4",
+            asset_type=AssetType.VIDEO,
+            size_bytes=100,
+            checksum="bbb",
+            duration_seconds=duration_seconds,
+        )
+        db_session.add_all([group, device, asset])
+        await db_session.flush()
+        device.group_id = group.id
+        await db_session.commit()
+        return str(group.id), str(asset.id)
+
+    async def test_loop_count_whole_day_multiple_rejected(self, client, db_session):
+        # 12h asset looped twice == 24h -> computed end_time == start_time (never plays).
+        group_id, asset_id = await self._create_group_and_timed_asset(db_session, 43200)
+        resp = await client.post("/api/schedules", json={
+            "name": "Whole Day Loop",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "loop_count": 2,
+        })
+        assert resp.status_code == 422
+
+    async def test_loop_count_normal_ok(self, client, db_session):
+        # 1h asset looped 3x == 3h window -> fine.
+        group_id, asset_id = await self._create_group_and_timed_asset(db_session, 3600)
+        resp = await client.post("/api/schedules", json={
+            "name": "Three Hour Loop",
+            "group_id": group_id,
+            "asset_id": asset_id,
+            "start_time": "08:00",
+            "loop_count": 3,
+        })
+        assert resp.status_code == 201
+
     async def test_get_nonexistent(self, client):
         resp = await client.get("/api/schedules/00000000-0000-0000-0000-000000000000")
         assert resp.status_code == 404
