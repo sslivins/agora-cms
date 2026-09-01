@@ -164,6 +164,37 @@ class TestPreemptedInUpcoming:
         result = get_upcoming_schedules([low, high], now, UTC, now_playing=np)
         assert result[0]["day_label"] == "today"
 
+    def test_multi_group_device_preempted_by_other_membership(self):
+        """A device can be preempted by a schedule from another of its groups."""
+        g1 = uuid.uuid4()
+        g2 = uuid.uuid4()
+        low = _make_schedule(
+            time(8, 0), time(9, 0), priority=1, name="Low",
+            group_id=g1,
+        )
+        high = _make_schedule(
+            time(8, 15), time(8, 20), priority=10, name="High",
+            group_id=g2,
+        )
+        now = datetime(2026, 3, 28, 8, 16, tzinfo=timezone.utc)
+        device_id = "multi-group-dev"
+        np = [_now_playing_entry(high, device_id)]
+
+        result = get_upcoming_schedules(
+            [low, high],
+            now,
+            UTC,
+            now_playing=np,
+            target_devices_by_schedule={
+                str(low.id): {device_id},
+                str(high.id): {device_id},
+            },
+        )
+        assert len(result) == 1
+        assert result[0]["schedule_name"] == "Low"
+        assert result[0]["preempted"] is True
+        assert result[0]["resumes_at"] == "8:20 AM"
+
 
 # ── No now_playing (backward compatibility) ──
 

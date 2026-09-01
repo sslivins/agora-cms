@@ -8,12 +8,14 @@ from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from shared.database import get_session_factory as _get_session_factory
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from shared.models.asset import AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
@@ -40,6 +42,47 @@ def _asset_display_name(asset) -> str:
     if asset is None:
         return "—"
     return asset.display_name or asset.original_filename or asset.filename
+
+
+def _schedule_wins(candidate: Schedule, incumbent: Schedule | None) -> bool:
+    """Return ``True`` when ``candidate`` beats ``incumbent`` for one device.
+
+    Equal-priority overlaps are rejected at write time, but concurrent reads can
+    still momentarily observe a tie during the narrow race window between two
+    statements. Use a deterministic internal backstop so every CMS code path
+    resolves that tie the same way.
+    """
+    if incumbent is None:
+        return True
+    if candidate.priority != incumbent.priority:
+        return candidate.priority > incumbent.priority
+    return str(candidate.id) < str(incumbent.id)
+
+
+def _resolve_group_default_asset(device: Device) -> Asset | None:
+    """Resolve the unique group-level default asset across all memberships.
+
+    If multiple memberships point at distinct non-null defaults, log and refuse
+    to silently choose one. The caller can then fall back to a device-level
+    default or to no default at all.
+    """
+    defaults: dict[str, Asset] = {}
+    for group in getattr(device, "groups", ()) or ():
+        asset = getattr(group, "default_asset", None)
+        if asset is None:
+            continue
+        defaults[str(asset.id)] = asset
+
+    if len(defaults) == 1:
+        return next(iter(defaults.values()))
+    if len(defaults) > 1:
+        logger.warning(
+            "Ambiguous group default assets for device %s across memberships %s; "
+            "ignoring group-level defaults until a device-level default is set",
+            device.id,
+            sorted(defaults),
+        )
+    return None
 
 # Confirmed playback: a **replica-local optimization cache** of what each
 # device has confirmed it's playing. Populated by WS PLAYBACK_STARTED,
@@ -360,6 +403,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
     # Resolve target devices for each active schedule (filter per-device skips)
     now_playing = []
     live_states = {s["device_id"]: s for s in await get_transport().get_all_states()}
+    targets_by_schedule = await load_target_devices_by_schedule(active, db)
 
     # Get device names
     all_device_ids = set()
@@ -367,7 +411,7 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
     for s in active:
         if not s.asset:
             continue
-        target_ids = await _get_target_device_ids(s, db)
+        target_ids = list(targets_by_schedule.get(str(s.id), set()))
         # Drop any device with an active per-device skip on this schedule
         target_ids = [
             did for did in target_ids
@@ -388,14 +432,14 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
         device_names = {}
 
     # Build per-device entries, picking highest-priority schedule per device
-    device_schedule: dict[str, tuple] = {}  # device_id -> (priority, schedule)
+    device_schedule: dict[str, Schedule] = {}
     for s, target_ids in schedule_targets:
         for did in target_ids:
             existing = device_schedule.get(did)
-            if existing is None or s.priority > existing[0]:
-                device_schedule[did] = (s.priority, s)
+            if _schedule_wins(s, existing):
+                device_schedule[did] = s
 
-    for did, (_, s) in device_schedule.items():
+    for did, s in device_schedule.items():
         is_saved_stream = s.asset.asset_type == AssetType.SAVED_STREAM
         is_url_asset = (
             s.asset.asset_type in (AssetType.WEBPAGE, AssetType.STREAM)
@@ -518,6 +562,7 @@ def get_upcoming_schedules(
     _sched_priority: dict[str, int] = {}
     for sched in schedules:
         _sched_priority[str(sched.id)] = sched.priority
+    _schedules_by_id = {str(s.id): s for s in schedules}
 
     for s in schedules:
         if not s.enabled:
@@ -549,7 +594,14 @@ def get_upcoming_schedules(
                 if all((sid_str, did) in _per_device_skipped for did in targets):
                     continue
             # Check if genuinely preempted (higher-priority schedule active on same target)
-            resume_at = _find_resume_time(s, schedules, local_now)
+            resume_at = _find_resume_time(
+                s,
+                schedules,
+                local_now,
+                target_devices=targets if target_devices_by_schedule is not None else None,
+                winning_by_device=_winning_by_did,
+                schedules_by_id=_schedules_by_id,
+            )
             if resume_at is not None:
                 results.append(_preempted_entry(s, local_now, resume_at))
             else:
@@ -630,7 +682,15 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
     }
 
 
-def _find_resume_time(preempted: Schedule, all_schedules: list, local_now: datetime) -> time | None:
+def _find_resume_time(
+    preempted: Schedule,
+    all_schedules: list,
+    local_now: datetime,
+    *,
+    target_devices: set[str] | None = None,
+    winning_by_device: dict[str, dict] | None = None,
+    schedules_by_id: dict[str, Schedule] | None = None,
+) -> time | None:
     """Find when a preempted schedule will resume playing.
 
     Returns the end_time of the latest-ending higher-priority schedule that is
@@ -638,6 +698,27 @@ def _find_resume_time(preempted: Schedule, all_schedules: list, local_now: datet
     can be identified (e.g. device offline, cross-target preemption).
     """
     latest_end_dt = None
+    if target_devices is not None and winning_by_device is not None and schedules_by_id is not None:
+        for did in target_devices:
+            winner_entry = winning_by_device.get(did)
+            if not winner_entry:
+                continue
+            if winner_entry.get("schedule_id") == str(preempted.id):
+                continue
+            other = schedules_by_id.get(winner_entry.get("schedule_id", ""))
+            if other is None or not other.enabled:
+                continue
+            if other.priority <= preempted.priority:
+                continue
+            if not _matches_now(other, local_now):
+                continue
+            end_dt = datetime.combine(local_now.date(), other.end_time)
+            if other.end_time <= other.start_time:
+                end_dt += timedelta(days=1)
+            if latest_end_dt is None or end_dt > latest_end_dt:
+                latest_end_dt = end_dt
+        return latest_end_dt.time() if latest_end_dt else None
+
     for other in all_schedules:
         if other.id == preempted.id or not other.enabled:
             continue
@@ -853,11 +934,13 @@ def schedules_conflict(a: Schedule, b: Schedule) -> bool:
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
-    """Resolve target device IDs for a schedule's group."""
+    """Resolve target device IDs for a schedule's group memberships."""
     if schedule.group_id:
         result = await db.execute(
-            select(Device.id).where(
-                Device.group_id == schedule.group_id,
+            select(DeviceGroupMembership.device_id)
+            .join(Device, Device.id == DeviceGroupMembership.device_id)
+            .where(
+                DeviceGroupMembership.group_id == schedule.group_id,
                 Device.status == DeviceStatus.ADOPTED,
             )
         )
@@ -880,8 +963,10 @@ async def load_target_devices_by_schedule(
     if not group_ids:
         return {}
     result = await db.execute(
-        select(Device.group_id, Device.id).where(
-            Device.group_id.in_(group_ids),
+        select(DeviceGroupMembership.group_id, DeviceGroupMembership.device_id)
+        .join(Device, Device.id == DeviceGroupMembership.device_id)
+        .where(
+            DeviceGroupMembership.group_id.in_(group_ids),
             Device.status == DeviceStatus.ADOPTED,
         )
     )
@@ -944,7 +1029,7 @@ def _schedule_to_entry(
     )
 
 
-async def build_device_sync(
+async def _build_device_sync_impl(
     device_id: str,
     db,
     skips: "SkipSnapshot | None" = None,
@@ -978,11 +1063,12 @@ async def build_device_sync(
             local_now.replace(tzinfo=None)
         )
 
-    # Load device with default asset
+    # Load device with default assets from its full membership set.
     dev_result = await db.execute(
         select(Device)
         .options(
             selectinload(Device.default_asset),
+            selectinload(Device.groups).selectinload(DeviceGroup.default_asset),
             selectinload(Device.group).selectinload(DeviceGroup.default_asset),
         )
         .where(Device.id == device_id)
@@ -1005,12 +1091,10 @@ async def build_device_sync(
     # Resolve default asset (device → group fallback)
     default_asset_name = None
     default_asset_checksum = None
-    if dev.default_asset:
-        default_asset_name = dev.default_asset.filename
-        default_asset_checksum = dev.default_asset.checksum
-    elif dev.group and dev.group.default_asset:
-        default_asset_name = dev.group.default_asset.filename
-        default_asset_checksum = dev.group.default_asset.checksum
+    effective_default_asset = dev.default_asset or _resolve_group_default_asset(dev)
+    if effective_default_asset:
+        default_asset_name = effective_default_asset.filename
+        default_asset_checksum = effective_default_asset.checksum
 
     # Build variant checksum map for this device's profile
     # (maps source asset filename → variant checksum)
@@ -1067,16 +1151,11 @@ async def build_device_sync(
         return resolved
 
     # Default-asset slideshow override
-    if dev.default_asset and dev.default_asset.asset_type == AssetType.SLIDESHOW:
-        resolved = await _get_slideshow_checksum(dev.default_asset)
-        if resolved is not None:
-            default_asset_checksum = resolved
-    elif (
-        dev.group
-        and dev.group.default_asset
-        and dev.group.default_asset.asset_type == AssetType.SLIDESHOW
+    if (
+        effective_default_asset
+        and effective_default_asset.asset_type == AssetType.SLIDESHOW
     ):
-        resolved = await _get_slideshow_checksum(dev.group.default_asset)
+        resolved = await _get_slideshow_checksum(effective_default_asset)
         if resolved is not None:
             default_asset_checksum = resolved
 
@@ -1090,6 +1169,7 @@ async def build_device_sync(
         .where(Schedule.enabled == True)  # noqa: E712
     )
     all_schedules = result.scalars().all()
+    targets_by_schedule = await load_target_devices_by_schedule(all_schedules, db)
 
     # Filter to schedules that target this device and are within the window
     entries: list[ScheduleEntry] = []
@@ -1109,8 +1189,7 @@ async def build_device_sync(
             if start_d > cutoff_date:
                 continue
 
-        target_ids = await _get_target_device_ids(s, db)
-        if device_id in target_ids:
+        if device_id in targets_by_schedule.get(str(s.id), set()):
             # Skip if this schedule's current occurrence is being skipped
             # (either schedule-wide, or just for this device).
             if skips.is_skipped_for_device(str(s.id), device_id):
@@ -1149,6 +1228,36 @@ async def build_device_sync(
         default_asset_checksum=default_asset_checksum or None,
         splash=default_asset_name,
     )
+
+
+async def build_device_sync(
+    device_id: str,
+    db,
+    skips: "SkipSnapshot | None" = None,
+) -> SyncMessage | None:
+    """Build a full SyncMessage for a specific device.
+
+    On PostgreSQL, execute the read path inside its own REPEATABLE READ
+    transaction so the device, memberships, default assets, variants, and
+    schedules all come from one consistent snapshot.
+    """
+    bind = getattr(db, "bind", None)
+    dialect = getattr(getattr(bind, "dialect", None), "name", None)
+    if dialect == "postgresql" and hasattr(bind, "connect"):
+        async with bind.connect() as raw_conn:
+            conn = await raw_conn.execution_options(
+                isolation_level="REPEATABLE READ"
+            )
+            session_factory = async_sessionmaker(bind=conn, expire_on_commit=False)
+            async with conn.begin():
+                async with session_factory() as snapshot_db:
+                    return await _build_device_sync_impl(
+                        device_id,
+                        snapshot_db,
+                        skips=skips,
+                    )
+
+    return await _build_device_sync_impl(device_id, db, skips=skips)
 
 
 async def push_sync_to_device(
@@ -1264,6 +1373,7 @@ async def evaluate_schedules() -> None:
             s for s in schedules
             if _matches_now(s, local_now) and not skips.is_schedule_skipped(str(s.id))
         ]
+        active_targets_by_schedule = await load_target_devices_by_schedule(active, db)
 
         # ── Detect MISSED schedules (DB-backed dedup + grace clock) ──
         #
@@ -1297,7 +1407,7 @@ async def evaluate_schedules() -> None:
         for s in active:
             if not s.asset:
                 continue
-            target_ids = await _get_target_device_ids(s, db)
+            target_ids = list(active_targets_by_schedule.get(str(s.id), set()))
             for did in target_ids:
                 # Don't flag MISSED for a device whose skip is active.
                 if skips.is_skipped_for_device(str(s.id), did):
@@ -1505,7 +1615,7 @@ async def evaluate_schedules() -> None:
         for s in active:
             if not s.asset:
                 continue
-            target_ids = await _get_target_device_ids(s, db)
+            target_ids = list(active_targets_by_schedule.get(str(s.id), set()))
             for did in target_ids:
                 if did in _confirmed_playing:
                     continue

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
@@ -20,6 +21,12 @@ from cms.services.scheduler import (
     schedules_conflict,
     build_device_sync,
 )
+
+
+async def _add_memberships(db, device_id: str, *group_ids) -> None:
+    for group_id in group_ids:
+        db.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+    await db.flush()
 
 
 # ── Helpers ──
@@ -309,6 +316,9 @@ class TestBuildDeviceSync:
         if default_asset:
             device.default_asset = default_asset
         db.add(device)
+        await db.flush()
+        if group:
+            await _add_memberships(db, device.id, group.id)
         await db.commit()
         return device
 
@@ -351,6 +361,41 @@ class TestBuildDeviceSync:
         assert len(sync.schedules) == 1
         assert sync.schedules[0].asset == "video.mp4"
         assert sync.schedules[0].name == "Test"
+
+    async def test_multi_membership_gets_schedules_from_all_groups(self, db):
+        """Membership-table reads include schedules from every current group."""
+        await self._setup_tz(db)
+        asset_a = Asset(filename="group-a.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="ga")
+        asset_b = Asset(filename="group-b.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="gb")
+        group_a = DeviceGroup(name="Group A")
+        group_b = DeviceGroup(name="Group B")
+        db.add_all([asset_a, asset_b, group_a, group_b])
+        await db.flush()
+
+        device = await self._setup_device(db, group=group_a)
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await db.flush()
+
+        db.add_all([
+            Schedule(
+                name="Sched A",
+                group_id=group_a.id,
+                asset_id=asset_a.id,
+                start_time=time(9, 0),
+                end_time=time(17, 0),
+            ),
+            Schedule(
+                name="Sched B",
+                group_id=group_b.id,
+                asset_id=asset_b.id,
+                start_time=time(9, 0),
+                end_time=time(17, 0),
+            ),
+        ])
+        await db.commit()
+
+        sync = await build_device_sync(device.id, db)
+        assert {entry.name for entry in sync.schedules} == {"Sched A", "Sched B"}
 
     async def test_group_schedule(self, db):
         """Device in a group gets group-targeted schedule."""
@@ -404,6 +449,48 @@ class TestBuildDeviceSync:
         sync = await build_device_sync("sync-pi-01", db)
         assert sync.default_asset == "group-splash.png"
         assert sync.splash == "group-splash.png"
+
+    async def test_default_asset_single_distinct_group_resolution(self, db):
+        """Exactly one distinct non-null group default is used across memberships."""
+        await self._setup_tz(db)
+        shared_default = Asset(filename="shared-splash.png", asset_type=AssetType.IMAGE, size_bytes=100, checksum="shared")
+        group_a = DeviceGroup(name="Shared A")
+        group_b = DeviceGroup(name="Shared B")
+        db.add_all([shared_default, group_a, group_b])
+        await db.flush()
+        group_a.default_asset_id = shared_default.id
+        group_b.default_asset_id = shared_default.id
+        await db.flush()
+
+        device = await self._setup_device(db, group=group_a)
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await db.commit()
+
+        sync = await build_device_sync(device.id, db)
+        assert sync.default_asset == "shared-splash.png"
+        assert sync.splash == "shared-splash.png"
+
+    async def test_default_asset_ambiguous_group_defaults_fall_back_to_none(self, db, caplog):
+        """Distinct group defaults must not be silently chosen."""
+        await self._setup_tz(db)
+        default_a = Asset(filename="group-a-splash.png", asset_type=AssetType.IMAGE, size_bytes=100, checksum="gsa")
+        default_b = Asset(filename="group-b-splash.png", asset_type=AssetType.IMAGE, size_bytes=100, checksum="gsb")
+        group_a = DeviceGroup(name="Ambiguous A")
+        group_b = DeviceGroup(name="Ambiguous B")
+        db.add_all([default_a, default_b, group_a, group_b])
+        await db.flush()
+        group_a.default_asset_id = default_a.id
+        group_b.default_asset_id = default_b.id
+        await db.flush()
+
+        device = await self._setup_device(db, group=group_a)
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await db.commit()
+
+        sync = await build_device_sync(device.id, db)
+        assert sync.default_asset is None
+        assert sync.splash is None
+        assert "Ambiguous group default assets" in caplog.text
 
     async def test_splash_none_when_no_default(self, db):
         """splash is None when device has no default asset at any level."""
@@ -543,6 +630,7 @@ class TestBuildDeviceSync:
         db.add_all([asset, other_group, other_device])
         await db.flush()
         other_device.group_id = other_group.id
+        await _add_memberships(db, other_device.id, other_group.id)
 
         await self._setup_device(db)
 

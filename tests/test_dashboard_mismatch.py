@@ -13,6 +13,7 @@ from datetime import datetime, time, timedelta, timezone
 import pytest
 import pytest_asyncio
 from cms.models.device import Device, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.services.device_manager import device_manager
 from cms.services import device_presence
 from cms.services import scheduler as _sched
@@ -49,6 +50,7 @@ async def _seed_schedule(db_session, device_id="mismatch-01",
     await db_session.execute(
         update(Device).where(Device.id == device_id).values(group_id=group.id)
     )
+    db_session.add(DeviceGroupMembership(device_id=device_id, group_id=group.id))
 
     schedule = Schedule(
         id=uuid.uuid4(),
@@ -489,6 +491,67 @@ class TestConfirmedPlayingReplicaFallback:
             )
         finally:
             await _fake_disconnect(db_session, "mismatch-01")
+
+    async def test_equal_priority_uses_lowest_schedule_uuid_backstop(
+        self, app, db_session, monkeypatch,
+    ):
+        """Equal-priority winners use UUID ASC as the deterministic backstop."""
+        from zoneinfo import ZoneInfo
+        from shared.models.asset import Asset, AssetType
+        from cms.models.device import DeviceGroup
+        from cms.models.schedule import Schedule
+        from cms.services.scheduler import compute_now_playing
+
+        await _seed_device(db_session)
+
+        asset_a = Asset(id=uuid.uuid4(), filename="a.mp4", asset_type=AssetType.VIDEO, checksum="a1")
+        asset_b = Asset(id=uuid.uuid4(), filename="b.mp4", asset_type=AssetType.VIDEO, checksum="b1")
+        group_a = DeviceGroup(id=uuid.uuid4(), name="Backstop A")
+        group_b = DeviceGroup(id=uuid.uuid4(), name="Backstop B")
+        db_session.add_all([asset_a, asset_b, group_a, group_b])
+        await db_session.flush()
+
+        db_session.add_all([
+            DeviceGroupMembership(device_id="mismatch-01", group_id=group_a.id),
+            DeviceGroupMembership(device_id="mismatch-01", group_id=group_b.id),
+        ])
+
+        low_id = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        high_id = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        db_session.add_all([
+            Schedule(
+                id=high_id,
+                name="Higher UUID",
+                asset_id=asset_b.id,
+                group_id=group_b.id,
+                start_time=time(0, 0, 0),
+                end_time=time(23, 59, 59),
+                enabled=True,
+                priority=10,
+            ),
+            Schedule(
+                id=low_id,
+                name="Lower UUID",
+                asset_id=asset_a.id,
+                group_id=group_a.id,
+                start_time=time(0, 0, 0),
+                end_time=time(23, 59, 59),
+                enabled=True,
+                priority=10,
+            ),
+        ])
+        await db_session.commit()
+
+        class _FakeTransport:
+            async def get_all_states(self):
+                return []
+
+        monkeypatch.setattr(_sched, "get_transport", lambda: _FakeTransport())
+        entries = await compute_now_playing(
+            db_session, ZoneInfo("UTC"), datetime.now(timezone.utc),
+        )
+        entry = next(x for x in entries if x["device_id"] == "mismatch-01")
+        assert entry["schedule_id"] == str(low_id)
 
     async def test_scheduled_when_device_not_playing_expected_asset(
         self, app, db_session,

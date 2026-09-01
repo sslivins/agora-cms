@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
@@ -82,6 +83,11 @@ def _make_schedule_with_asset(
     )
     s.asset = asset
     return s
+
+
+async def _add_membership(db, device_id: str, group_id) -> None:
+    db.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+    await db.flush()
 
 
 # ── Skipped schedules (End Now) — now DB-backed via skipped_schedule_ids kwarg ──
@@ -646,6 +652,7 @@ class TestUniqueScheduleName:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
 
@@ -707,6 +714,7 @@ class TestEndNowEndpoint:
         db_session.add_all([group, device, asset, setting])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
 
         resp = await client.post("/api/schedules", json={
@@ -783,6 +791,7 @@ class TestBuildDeviceSyncSkipped:
         db.add_all([setting, asset, group, device])
         await db.flush()
         device.group_id = group.id
+        await _add_membership(db, device.id, group.id)
 
         sched = Schedule(
             name="Skippable",
@@ -833,6 +842,7 @@ class TestNowPlayingCleanup:
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
 
         # Create schedule
         sched = Schedule(
@@ -916,6 +926,7 @@ class TestNowPlayingCleanup:
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
             name="Will Be Deleted",
@@ -1149,6 +1160,7 @@ class TestDashboardCountdownAttribute:
         await db_session.execute(
             update(Device).where(Device.id == "dash-dev").values(group_id=group.id)
         )
+        await _add_membership(db_session, "dash-dev", group.id)
 
         schedule = Schedule(
             id=uuid.uuid4(), name="Countdown Sched", asset_id=asset.id,
@@ -1189,6 +1201,7 @@ class TestDashboardCountdownAttribute:
         await db_session.execute(
             update(Device).where(Device.id == "dash-dev2").values(group_id=group.id)
         )
+        await _add_membership(db_session, "dash-dev2", group.id)
 
         schedule = Schedule(
             id=uuid.uuid4(), name="Long Sched", asset_id=asset.id,
@@ -1235,6 +1248,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
             name="Grace Test",
@@ -1296,6 +1310,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
             name="Grace Test 2",
@@ -1364,6 +1379,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
             name="Grace Test 3",
@@ -1430,6 +1446,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="Failover Test",
             group_id=group.id,
@@ -1489,6 +1506,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="Dup Test",
             group_id=group.id,
@@ -1541,6 +1559,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="None Test",
             group_id=group.id,
@@ -1592,6 +1611,7 @@ class TestMissedGracePeriod:
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="Revert Test",
             group_id=group.id,
