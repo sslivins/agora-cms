@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, event
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, event
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -18,6 +18,13 @@ class NotificationGroup(Base):
     """Group-target row for a shared notification."""
 
     __tablename__ = "notification_groups"
+    __table_args__ = (
+        Index(
+            "ix_notification_groups_group_notification",
+            "group_id",
+            "notification_id",
+        ),
+    )
 
     notification_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -38,6 +45,13 @@ class NotificationRead(Base):
     """Per-user read/dismiss state for a notification."""
 
     __tablename__ = "notification_reads"
+    __table_args__ = (
+        Index(
+            "ix_notification_reads_user_dismissed",
+            "user_id",
+            "dismissed_at",
+        ),
+    )
 
     notification_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
