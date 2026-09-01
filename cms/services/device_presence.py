@@ -356,6 +356,7 @@ async def update_status(
 
     result = await db.execute(
         update(Device)
+        .execution_options(synchronize_session=False)
         .where(Device.id == device_id)
         .where(
             (Device.last_status_ts.is_(None))
@@ -381,6 +382,7 @@ async def update_status(
     if rowcount > 0:
         heal_claim = await db.execute(
             update(Device)
+            .execution_options(synchronize_session=False)
             .where(Device.id == device_id)
             .where(Device.online.is_(False))
             .values(online=True)

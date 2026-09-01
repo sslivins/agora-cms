@@ -51,8 +51,14 @@ from sqlalchemy.orm import selectinload
 
 from cms.models.device import Device, DeviceStatus
 from cms.models.device_alert_state import DeviceAlertState
-from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_event import DeviceEventType
 from cms.models.notification import Notification
+from cms.services.device_alerts import (
+    get_alert_lifecycle_row,
+    open_alert_lifecycle,
+    resolve_alert_lifecycle,
+)
+from cms.services.device_events import emit_device_event, snapshot_device_groups
 
 
 def _to_uuid(val: str | _uuid.UUID | None) -> _uuid.UUID | None:
@@ -103,6 +109,38 @@ STALE_PRESENCE_THRESHOLD_S = 60
 # datacenter blip flipping the whole fleet at once); the next tick
 # will pick up the rest.
 STALE_PRESENCE_BATCH_SIZE = 50
+
+
+def _group_label(snapshot: list[dict[str, str]]) -> str:
+    names = [row["name"] for row in snapshot if row.get("name")]
+    if not names:
+        return "ungrouped devices"
+    if len(names) == 1:
+        return f"group '{names[0]}'"
+    return "groups " + ", ".join(f"'{name}'" for name in names)
+
+
+def _build_group_notification(
+    *,
+    scope: str,
+    level: str,
+    title: str,
+    message: str,
+    details: dict | None,
+    group_snapshot: list[dict[str, str]],
+) -> Notification:
+    notification = Notification(
+        scope=scope,
+        level=level,
+        title=title,
+        message=message,
+        details=details,
+    )
+    if scope == "group":
+        notification.set_group_targets([
+            _uuid.UUID(row["id"]) for row in group_snapshot
+        ])
+    return notification
 
 
 def humanize_seconds(n: int) -> str:
@@ -210,12 +248,10 @@ class AlertService:
         which writes its own immediate OFFLINE event with
         ``details={"kind": "stale_heartbeat"}``.
         """
-        if status != "adopted" or not group_id:
+        if status != "adopted":
             return
 
-        asyncio.create_task(
-            self._record_disconnect(device_id, device_name, group_id, group_name)
-        )
+        asyncio.create_task(self._record_disconnect(device_id, device_name))
 
     def device_reconnected(
         self,
@@ -235,7 +271,7 @@ class AlertService:
           3. Clears ``offline_since`` so the next disconnect starts a
              fresh grace window.
         """
-        if status != "adopted" or not group_id:
+        if status != "adopted":
             # Still clear any persisted state so orphaning/regrouping
             # doesn't leave stale rows around.
             asyncio.create_task(self._clear_alert_state(device_id))
@@ -251,8 +287,6 @@ class AlertService:
         self,
         device_id: str,
         device_name: str,
-        group_id: str,
-        group_name: str,
     ) -> None:
         """Persist the disconnect: offline_since transition.
 
@@ -385,27 +419,51 @@ class AlertService:
                 #    Reconnects within the grace window write nothing
                 #    (the matching OFFLINE event was never written).
                 if was_notified:
-                    db.add(DeviceEvent(
+                    group_snapshot = await snapshot_device_groups(
+                        db,
+                        device_id=device_id,
+                        primary_group_id=gid,
+                        primary_group_name=group_name,
+                    )
+                    open_alert = await get_alert_lifecycle_row(
+                        db, device_id=device_id, kind="offline"
+                    )
+                    incident_id = getattr(open_alert, "incident_id", None)
+                    event = await emit_device_event(
+                        db,
                         device_id=device_id,
                         device_name=device_name,
-                        group_id=gid,
-                        group_name=group_name,
+                        primary_group_id=gid,
+                        primary_group_name=group_name,
+                        group_snapshot=group_snapshot,
                         event_type=DeviceEventType.ONLINE,
-                    ))
-                    db.add(Notification(
-                        scope="group",
-                        level="success",
-                        title=f"Device back online: {device_name}",
-                        message=(
-                            f"Device '{device_name}' in group '{group_name}' "
-                            f"is back online."
-                        ),
-                        group_id=gid,
                         details={
-                            "device_id": device_id,
-                            "event_type": "online",
+                            "incident_id": str(incident_id) if incident_id else None,
                         },
-                    ))
+                    )
+                    await resolve_alert_lifecycle(
+                        db,
+                        device_id=device_id,
+                        kind="offline",
+                        resolve_event=event,
+                    )
+                    db.add(
+                        _build_group_notification(
+                            scope="group",
+                            level="success",
+                            title=f"Device back online: {device_name}",
+                            message=(
+                                f"Device '{device_name}' in {_group_label(group_snapshot)} "
+                                f"is back online."
+                            ),
+                            group_snapshot=group_snapshot,
+                            details={
+                                "device_id": device_id,
+                                "event_type": "online",
+                                "incident_id": str(incident_id) if incident_id else None,
+                            },
+                        )
+                    )
 
                 await db.commit()
                 if was_notified:
@@ -509,41 +567,32 @@ class AlertService:
         if not claimed:
             return 0
 
-        # Batch-fetch group names for the rows we'll alert on so we
-        # don't issue one SELECT per device.
-        from cms.models.device import DeviceGroup
-        group_ids = {row.group_id for row in claimed if row.group_id}
-        group_names: dict = {}
-        if group_ids:
-            for gid, gname in (
-                await db.execute(
-                    select(DeviceGroup.id, DeviceGroup.name).where(
-                        DeviceGroup.id.in_(group_ids)
-                    )
-                )
-            ).all():
-                group_names[gid] = gname or ""
-
         from sqlalchemy.exc import IntegrityError
         for row in claimed:
+            group_snapshot = await snapshot_device_groups(
+                db,
+                device_id=row.id,
+                primary_group_id=row.group_id,
+            )
             # Only adopted + grouped devices have an owner to alert.
-            if row.status != DeviceStatus.ADOPTED or not row.group_id:
+            if row.status != DeviceStatus.ADOPTED or not group_snapshot:
                 continue
 
-            group_name = group_names.get(row.group_id, "")
             device_name = row.name or row.id
 
             # 1. OFFLINE event with stale-detection marker so operators
             #    can distinguish heartbeat-timeout offlines from
             #    WS-close offlines in the audit trail.
-            db.add(DeviceEvent(
+            await emit_device_event(
+                db,
                 device_id=row.id,
                 device_name=device_name,
-                group_id=row.group_id,
-                group_name=group_name,
+                primary_group_id=group_snapshot[0]["id"],
+                primary_group_name=group_snapshot[0]["name"],
+                group_snapshot=group_snapshot,
                 event_type=DeviceEventType.OFFLINE,
                 details={"kind": "stale_heartbeat"},
-            ))
+            )
 
             # 2. Transition ``offline_since`` NULL → NOW. Mirrors the
             #    semantics of ``_record_disconnect`` so duplicate
@@ -637,38 +686,60 @@ class AlertService:
                 .options(selectinload(Device.group))
                 .where(Device.id == device_id)
             )).scalar_one_or_none()
-            if not device or device.status != DeviceStatus.ADOPTED or not device.group_id:
+            if not device or device.status != DeviceStatus.ADOPTED:
                 # Device is no longer adopted/grouped — we've already
                 # flipped offline_notified to TRUE via the claim, so
                 # it won't be re-scanned.  No alert fired.
                 continue
 
-            group_name = device.group.name if device.group else ""
             device_name = device.name or device.id
-
-            db.add(DeviceEvent(
+            group_snapshot = await snapshot_device_groups(
+                db,
+                device_id=device.id,
+                primary_group_id=device.group_id,
+                primary_group_name=device.group.name if device.group else "",
+            )
+            if not group_snapshot:
+                continue
+            incident_id = _uuid.uuid4()
+            event = await emit_device_event(
+                db,
                 device_id=device.id,
                 device_name=device_name,
-                group_id=device.group_id,
-                group_name=group_name,
+                primary_group_id=group_snapshot[0]["id"],
+                primary_group_name=group_snapshot[0]["name"],
+                group_snapshot=group_snapshot,
                 event_type=DeviceEventType.OFFLINE,
-                details={"kind": "grace_expired"},
-            ))
-            db.add(Notification(
-                scope="group",
-                level="error",
-                title=f"Device offline: {device_name}",
-                message=(
-                    f"Device '{device_name}' in group '{group_name}' has "
-                    f"been offline for over "
-                    f"{humanize_seconds(self._offline_grace_seconds)}."
-                ),
-                group_id=device.group_id,
                 details={
-                    "device_id": device.id,
-                    "event_type": "offline",
+                    "kind": "grace_expired",
+                    "incident_id": str(incident_id),
                 },
-            ))
+            )
+            await open_alert_lifecycle(
+                db,
+                device_id=device.id,
+                kind="offline",
+                raise_event=event,
+                incident_id=incident_id,
+            )
+            db.add(
+                _build_group_notification(
+                    scope="group",
+                    level="error",
+                    title=f"Device offline: {device_name}",
+                    message=(
+                        f"Device '{device_name}' in {_group_label(group_snapshot)} has "
+                        f"been offline for over "
+                        f"{humanize_seconds(self._offline_grace_seconds)}."
+                    ),
+                    group_snapshot=group_snapshot,
+                    details={
+                        "device_id": device.id,
+                        "event_type": "offline",
+                        "incident_id": str(incident_id),
+                    },
+                )
+            )
             emitted += 1
             logger.info(
                 "Offline notification emitted for device %s (%s)",
@@ -741,7 +812,7 @@ class AlertService:
 
         # Ungrouped / non-adopted: reset persisted state so the first
         # alert after re-adoption/regrouping fires cleanly.
-        if status != "adopted" or not group_id:
+        if status != "adopted":
             await self._reset_temp_state(db, device_id)
             return
 
@@ -753,6 +824,16 @@ class AlertService:
                 "WPS webhook)",
                 device_id,
             )
+
+        group_snapshot = await snapshot_device_groups(
+            db,
+            device_id=device_id,
+            primary_group_id=group_id,
+            primary_group_name=group_name,
+        )
+        if not group_snapshot:
+            await self._reset_temp_state(db, device_id)
+            return
 
         new_level = self._classify_temp(cpu_temp_c)
 
@@ -861,6 +942,7 @@ class AlertService:
             state.temp_last_alert_at = sample_ts
             await self._emit_temp_alert(
                 db, device_id, device_name, group_id, group_name,
+                group_snapshot=group_snapshot,
                 event_type=event_type,
                 notif_level=notif_level,
                 cpu_temp_c=cpu_temp_c,
@@ -903,6 +985,7 @@ class AlertService:
         group_id: str,
         group_name: str,
         *,
+        group_snapshot: list[dict[str, str]],
         event_type: DeviceEventType,
         notif_level: str,
         cpu_temp_c: float,
@@ -914,49 +997,78 @@ class AlertService:
         Caller owns the transaction (we only ``db.add``; no commit).
         """
         gid = _to_uuid(group_id)
+        current_alert = await get_alert_lifecycle_row(
+            db, device_id=device_id, kind="temperature"
+        )
+        incident_id = (
+            current_alert.incident_id
+            if current_alert is not None and current_alert.state == "open"
+            else _uuid.uuid4()
+        )
         details = {
             "cpu_temp_c": cpu_temp_c,
             "threshold_warning": self._temp_warning_c,
             "threshold_critical": self._temp_critical_c,
             "level": new_level,
             "previous_level": previous_level,
+            "incident_id": str(incident_id),
         }
-        db.add(DeviceEvent(
+        event = await emit_device_event(
+            db,
             device_id=device_id,
             device_name=device_name,
-            group_id=gid,
-            group_name=group_name,
+            primary_group_id=gid,
+            primary_group_name=group_name,
+            group_snapshot=group_snapshot,
             event_type=event_type,
             details=details,
-        ))
+        )
+        if event_type == DeviceEventType.TEMP_HIGH:
+            await open_alert_lifecycle(
+                db,
+                device_id=device_id,
+                kind="temperature",
+                raise_event=event,
+                incident_id=incident_id,
+            )
+        else:
+            await resolve_alert_lifecycle(
+                db,
+                device_id=device_id,
+                kind="temperature",
+                resolve_event=event,
+            )
 
         if event_type == DeviceEventType.TEMP_HIGH:
             title = f"High temperature: {device_name}"
             message = (
-                f"Device '{device_name}' in group '{group_name}' "
+                f"Device '{device_name}' in {_group_label(group_snapshot)} "
                 f"is at {cpu_temp_c:.1f}°C ({new_level})."
             )
         else:
             title = f"Temperature normal: {device_name}"
             message = (
-                f"Device '{device_name}' in group '{group_name}' "
+                f"Device '{device_name}' in {_group_label(group_snapshot)} "
                 f"temperature returned to normal ({cpu_temp_c:.1f}°C)."
             )
 
-        db.add(Notification(
-            scope="group",
-            level=notif_level,
-            title=title,
-            message=message,
-            group_id=gid,
-            details={
-                "device_id": device_id,
-                "event_type": event_type.value if hasattr(event_type, "value") else str(event_type),
-                "cpu_temp_c": cpu_temp_c,
-                "level": new_level,
-                "previous_level": previous_level,
-            },
-        ))
+        db.add(
+            _build_group_notification(
+                scope="group",
+                level=notif_level,
+                title=title,
+                message=message,
+                group_snapshot=group_snapshot,
+                details={
+                    "device_id": device_id,
+                    "event_type": event_type.value if hasattr(event_type, "value") else str(event_type),
+                    "cpu_temp_c": cpu_temp_c,
+                    "level": new_level,
+                    "previous_level": previous_level,
+                    "incident_id": str(incident_id),
+                },
+            )
+        )
         logger.info(
             "Temperature %s for device %s (%.1f°C, %s→%s)",
             event_type, device_id, cpu_temp_c, previous_level, new_level,

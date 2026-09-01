@@ -19,7 +19,13 @@ device state, so drift is detectable.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from typing import Iterable
+
+from sqlalchemy import select
+
+from cms.models.device_alert import DeviceAlert
 
 
 # Public severity tags. The triage bar renders one chip per tag (plus
@@ -228,3 +234,81 @@ def fleet_counts(devices, user_perms: Iterable[str] | None = None) -> dict[str, 
 # This alias exists only so callers/templates can express intent
 # ("rollup for one group") without duplicating the function.
 group_rollup = fleet_counts
+
+
+# ---- Stage 5 generic alert lifecycle helpers --------------------------------
+
+
+async def get_alert_lifecycle_row(
+    db,
+    *,
+    device_id: str,
+    kind: str,
+) -> DeviceAlert | None:
+    """Return the current lifecycle row for ``(device_id, kind)``."""
+    result = await db.execute(
+        select(DeviceAlert).where(
+            DeviceAlert.device_id == device_id,
+            DeviceAlert.kind == kind,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def open_alert_lifecycle(
+    db,
+    *,
+    device_id: str,
+    kind: str,
+    raise_event=None,
+    opened_at: datetime | None = None,
+    incident_id: uuid.UUID | None = None,
+) -> DeviceAlert:
+    """Open or refresh the generic lifecycle row for a device alert."""
+    row = await get_alert_lifecycle_row(db, device_id=device_id, kind=kind)
+    if opened_at is None:
+        opened_at = getattr(raise_event, "created_at", None) or datetime.now(timezone.utc)
+
+    if row is None:
+        row = DeviceAlert(
+            device_id=device_id,
+            kind=kind,
+            state="open",
+            incident_id=incident_id,
+            opened_at=opened_at,
+            raise_event_id=getattr(raise_event, "id", None),
+        )
+        db.add(row)
+        return row
+
+    if row.state != "open":
+        row.opened_at = opened_at
+        row.raise_event_id = getattr(raise_event, "id", None)
+    row.state = "open"
+    row.resolved_at = None
+    row.resolve_event_id = None
+    if row.raise_event_id is None:
+        row.raise_event_id = getattr(raise_event, "id", None)
+    if incident_id is not None:
+        row.incident_id = incident_id
+    elif row.incident_id is None:
+        row.incident_id = uuid.uuid4()
+    return row
+
+
+async def resolve_alert_lifecycle(
+    db,
+    *,
+    device_id: str,
+    kind: str,
+    resolve_event=None,
+    resolved_at: datetime | None = None,
+) -> DeviceAlert | None:
+    """Resolve the generic lifecycle row for a device alert if present."""
+    row = await get_alert_lifecycle_row(db, device_id=device_id, kind=kind)
+    if row is None:
+        return None
+    row.state = "resolved"
+    row.resolved_at = resolved_at or getattr(resolve_event, "created_at", None) or datetime.now(timezone.utc)
+    row.resolve_event_id = getattr(resolve_event, "id", None)
+    return row

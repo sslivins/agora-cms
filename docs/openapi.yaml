@@ -3464,7 +3464,7 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
     delete:
       summary: Delete All Notifications
-      description: Delete all visible notifications.
+      description: Dismiss all visible notifications for the current user.
       operationId: delete_all_notifications_api_notifications_delete
       responses:
         '200':
@@ -3487,7 +3487,7 @@ paths:
   /api/notifications/{notification_id}/read:
     post:
       summary: Mark Read
-      description: Mark a single notification as read.
+      description: Mark a single notification as read for the current user.
       operationId: mark_read_api_notifications__notification_id__read_post
       parameters:
       - name: notification_id
@@ -3524,7 +3524,7 @@ paths:
   /api/notifications/{notification_id}:
     delete:
       summary: Delete Notification
-      description: Delete a single notification.
+      description: Dismiss a notification for the current user.
       operationId: delete_notification_api_notifications__notification_id__delete
       parameters:
       - name: notification_id
@@ -3643,6 +3643,24 @@ paths:
           maximum: 500
           default: 100
           title: Limit
+      - name: cursor_created_at
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cursor Created At
+      - name: cursor_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Cursor Id
       responses:
         '200':
           description: Successful Response
@@ -5801,6 +5819,20 @@ components:
             format: uuid
           - type: 'null'
           title: Group Id
+        group_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Group Ids
+          default: []
+        group_snapshots:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Group Snapshots
+          default: []
         group_name:
           type: string
           title: Group Name
@@ -6311,6 +6343,13 @@ components:
             format: uuid
           - type: 'null'
           title: Group Id
+        group_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Group Ids
+          default: []
         user_id:
           anyOf:
           - type: string

@@ -9,7 +9,8 @@ from functools import lru_cache
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import and_, exists, or_, select, true
+from sqlalchemy import and_, exists, func, or_, select, true
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -380,6 +381,47 @@ def build_group_read_scope_clause(
     if group_ids:
         return or_(group_column.in_(list(group_ids)), group_column.is_(None))
     return group_column.is_(None)
+
+
+def build_group_snapshot_read_scope_clause(
+    group_ids: Collection[uuid.UUID] | None,
+    legacy_group_column,
+    snapshot_group_ids_column,
+):
+    """Return the read-scope clause for event rows with frozen group snapshots."""
+    from cms.database import get_engine
+
+    if group_ids is None:
+        return true()
+
+    engine = get_engine()
+    dialect = engine.dialect.name if engine is not None else "sqlite"
+
+    if group_ids:
+        if dialect == "postgresql":
+            snapshot_match = snapshot_group_ids_column.op("&&")(
+                array(list(group_ids), type_=PG_UUID(as_uuid=True))
+            )
+        else:
+            json_each = func.json_each(snapshot_group_ids_column).table_valued("value")
+            snapshot_match = exists(
+                select(1)
+                .select_from(json_each)
+                .where(json_each.c.value.in_([str(gid) for gid in group_ids]))
+            )
+        return or_(legacy_group_column.in_(list(group_ids)), snapshot_match)
+
+    if dialect == "postgresql":
+        no_snapshot_groups = or_(
+            snapshot_group_ids_column.is_(None),
+            func.cardinality(snapshot_group_ids_column) == 0,
+        )
+    else:
+        no_snapshot_groups = or_(
+            snapshot_group_ids_column.is_(None),
+            func.json_array_length(snapshot_group_ids_column) == 0,
+        )
+    return and_(legacy_group_column.is_(None), no_snapshot_groups)
 
 
 def build_device_read_scope_clause(group_ids: Collection[uuid.UUID] | None):

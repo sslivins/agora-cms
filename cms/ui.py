@@ -28,6 +28,7 @@ from cms.auth import (
     _resolve_user_from_session,
     build_device_read_scope_clause,
     build_group_read_scope_clause,
+    build_group_snapshot_read_scope_clause,
     get_current_user,
     get_setting,
     get_settings,
@@ -2998,7 +2999,11 @@ async def event_log_page(
             rbac_conditions.append(
                 or_(
                     DeviceEvent.device_id.is_(None),
-                    DeviceEvent.group_id.in_(user_gids),
+                    build_group_snapshot_read_scope_clause(
+                        user_gids,
+                        DeviceEvent.group_id,
+                        DeviceEvent.group_ids,
+                    ),
                 )
             )
         else:
@@ -3014,7 +3019,13 @@ async def event_log_page(
         import uuid as _uuid
         try:
             gid_val = _uuid.UUID(group_id.strip())
-            conditions.append(DeviceEvent.group_id == gid_val)
+            conditions.append(
+                build_group_snapshot_read_scope_clause(
+                    {gid_val},
+                    DeviceEvent.group_id,
+                    DeviceEvent.group_ids,
+                )
+            )
         except ValueError:
             pass
     if since.strip():

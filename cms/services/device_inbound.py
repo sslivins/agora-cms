@@ -37,6 +37,7 @@ from cms.schemas.protocol import (
     Sibling,
 )
 from cms.services.alert_service import alert_service
+from cms.services.device_events import emit_device_event
 from cms.services.scheduler import (
     clear_now_playing,
     log_schedule_event,
@@ -411,7 +412,6 @@ async def dispatch_device_message(
                 and _prev_display is not None
                 and bool(_new_display) != bool(_prev_display)
             ):
-                from cms.models.device_event import DeviceEvent, DeviceEventType
                 _ev_type = (
                     DeviceEventType.DISPLAY_CONNECTED
                     if _new_display
@@ -423,13 +423,14 @@ async def dispatch_device_message(
                         _gid_uuid = uuid.UUID(ctx.group_id)
                     except (TypeError, ValueError):
                         _gid_uuid = None
-                db.add(DeviceEvent(
+                await emit_device_event(
+                    db,
                     device_id=device_id,
                     device_name=ctx.device_name,
-                    group_id=_gid_uuid,
-                    group_name=ctx.group_name,
+                    primary_group_id=_gid_uuid,
+                    primary_group_name=ctx.group_name,
                     event_type=_ev_type.value,
-                ))
+                )
                 await db.commit()
         except Exception:
             logger.exception("Failed to log display transition for %s", device_id)
@@ -450,7 +451,6 @@ async def dispatch_device_message(
                 _emit_cleared = True
 
             if _emit_error or _emit_cleared:
-                from cms.models.device_event import DeviceEvent, DeviceEventType
                 _ev_type = (
                     DeviceEventType.ERROR
                     if _emit_error
@@ -463,14 +463,15 @@ async def dispatch_device_message(
                     except (TypeError, ValueError):
                         _gid_uuid = None
                 _details = {"error": _new_error} if _emit_error else {"previous_error": _prev_error}
-                db.add(DeviceEvent(
+                await emit_device_event(
+                    db,
                     device_id=device_id,
                     device_name=ctx.device_name,
-                    group_id=_gid_uuid,
-                    group_name=ctx.group_name,
+                    primary_group_id=_gid_uuid,
+                    primary_group_name=ctx.group_name,
                     event_type=_ev_type.value,
                     details=_details,
-                ))
+                )
                 await db.commit()
         except Exception:
             logger.exception("Failed to log error transition for %s", device_id)
@@ -700,7 +701,6 @@ async def dispatch_device_message(
         #   2) Persist a ``device_events`` row so the existing event-log
         #      surface shows the OTA timeline (and so we have an audit
         #      trail when post-mortem'ing a stuck OTA).
-        from cms.models.device_event import DeviceEvent, DeviceEventType
         from cms.services import ota_progress
 
         # Forward-compat: an unknown wire ``event_type`` is dropped with
@@ -761,11 +761,12 @@ async def dispatch_device_message(
                 group_uuid = uuid.UUID(ctx.group_id)
             except (TypeError, ValueError):
                 group_uuid = None
-        db.add(DeviceEvent(
+        await emit_device_event(
+            db,
             device_id=device_id,
             device_name=ctx.device_name or device_id,
-            group_id=group_uuid,
-            group_name=ctx.group_name or "",
+            primary_group_id=group_uuid,
+            primary_group_name=ctx.group_name or "",
             event_type=cms_type.value,
             details={
                 "event_id": msg.get("event_id"),
@@ -776,7 +777,7 @@ async def dispatch_device_message(
                 "reason": msg.get("reason"),
                 "projection_applied": mutated,
             },
-        ))
+        )
         await db.commit()
 
     else:

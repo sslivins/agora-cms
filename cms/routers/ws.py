@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import get_settings
 from cms.database import get_db
 from cms.models.device import Device, DeviceStatus
-from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_event import DeviceEventType
 from cms.schemas.protocol import (
     PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -44,6 +44,7 @@ from cms.services.ota_progress import (
     version_bumped,
 )
 from cms.services.scheduler import build_device_sync
+from cms.services.device_events import emit_device_event
 
 logger = logging.getLogger("agora.cms.ws")
 
@@ -284,20 +285,19 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
                 .execution_options(synchronize_session=False)
             )
             if clear_result.rowcount:
-                db.add(
-                    DeviceEvent(
-                        device_id=device_id,
-                        device_name=device.name or device_id,
-                        event_type=DeviceEventType.OTA_AUTO_CLEARED,
-                        details={
-                            "reason": "register_version_bump",
-                            "prior_phase": pre_register_ota_phase,
-                            "prior_firmware": (pre_register_fw or "").strip(),
-                            "prior_os": (pre_register_os or "").strip(),
-                            "reported_firmware": (raw.get("firmware_version") or "").strip(),
-                            "reported_os": (raw.get("os_version") or "").strip(),
-                        },
-                    )
+                await emit_device_event(
+                    db,
+                    device_id=device_id,
+                    device_name=device.name or device_id,
+                    event_type=DeviceEventType.OTA_AUTO_CLEARED,
+                    details={
+                        "reason": "register_version_bump",
+                        "prior_phase": pre_register_ota_phase,
+                        "prior_firmware": (pre_register_fw or "").strip(),
+                        "prior_os": (pre_register_os or "").strip(),
+                        "reported_firmware": (raw.get("firmware_version") or "").strip(),
+                        "reported_os": (raw.get("os_version") or "").strip(),
+                    },
                 )
             await db.commit()
 
@@ -421,8 +421,8 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
 
     except WebSocketDisconnect:
         logger.info("Device %s disconnected", device_id)
-    except Exception as e:
-        logger.error("WebSocket error for %s: %s", device_id, e)
+    except Exception:
+        logger.exception("WebSocket error for %s", device_id)
     finally:
         if device_id:
             device_manager.disconnect(device_id)
