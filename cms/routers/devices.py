@@ -10,7 +10,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import get_settings, get_user_group_ids, require_auth, require_permission, verify_resource_group_access
+from cms.auth import (
+    build_device_read_scope_clause,
+    can_manage_group_membership,
+    get_device_group_ids,
+    get_settings,
+    get_user_group_ids,
+    require_auth,
+    require_permission,
+    verify_resource_group_access,
+)
 from cms.database import get_db
 from cms.permissions import (
     DEVICES_READ, DEVICES_WRITE, DEVICES_MANAGE,
@@ -244,8 +253,40 @@ async def _get_device_with_access(
         raise HTTPException(status_code=404, detail="Device not found")
     user = getattr(request.state, "user", None)
     if user:
-        await verify_resource_group_access(user, db, device.group_id)
+        await verify_resource_group_access(user, db, await get_device_group_ids(device, db))
     return device
+
+
+async def _verify_membership_change_access(
+    user,
+    device: Device,
+    db: AsyncSession,
+    *,
+    target_group_id: uuid.UUID | None,
+) -> None:
+    """Require authority over every group touched by a membership replace.
+
+    Stage 4 prepares for Stage 6's dedicated membership CRUD by enforcing the
+    same invariant on today's scalar ``group_id`` write paths: if a change adds,
+    removes, or replaces memberships, the actor must be able to manage every
+    affected group — which in turn implies schedule read/write there.
+    """
+    touched_group_ids = await get_device_group_ids(device, db)
+    if target_group_id is not None:
+        target_group = await db.get(DeviceGroup, target_group_id)
+        if target_group is None:
+            raise HTTPException(status_code=404, detail="Group not found")
+        touched_group_ids.add(target_group_id)
+
+    for group_id in touched_group_ids:
+        if not await can_manage_group_membership(user, db, group_id):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Managing device group membership requires devices:write plus "
+                    "schedule read/write access to every affected group"
+                ),
+            )
 
 
 async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: AsyncSession) -> None:
@@ -306,11 +347,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     if not can_manage:
         query = query.where(Device.status == DeviceStatus.ADOPTED)
     if not is_admin:
-        # Non-admin: only devices in user's groups
-        if group_ids:
-            query = query.where(Device.group_id.in_(group_ids))
-        else:
-            query = query.where(False)
+        query = query.where(build_device_read_scope_clause(group_ids))
 
     result = await db.execute(query)
     devices = result.scalars().all()
@@ -450,9 +487,17 @@ async def update_device(
 
     user = getattr(request.state, "user", None)
     if user:
-        await verify_resource_group_access(user, db, device.group_id)
+        await verify_resource_group_access(user, db, await get_device_group_ids(device, db))
 
     updates = data.model_dump(exclude_unset=True)
+
+    if "group_id" in updates and user:
+        await _verify_membership_change_access(
+            user,
+            device,
+            db,
+            target_group_id=updates["group_id"],
+        )
 
     # Validate the requested update channel, if present.
     if "update_channel" in updates and updates["update_channel"] not in CHANNELS:
@@ -911,10 +956,15 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
     if body.location is not None:
         device.location = body.location
     if body.group_id is not None:
-        # Verify the group exists
-        grp = await db.execute(select(DeviceGroup).where(DeviceGroup.id == body.group_id))
-        if not grp.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Group not found")
+        user = getattr(request.state, "user", None)
+        if user is not None:
+            await _verify_membership_change_access(
+                user,
+                device,
+                db,
+                target_group_id=body.group_id,
+            )
+    if body.group_id is not None:
         device.group_id = body.group_id
         # Mirror into the many-to-many join table (#863, expand/contract window).
         await set_single_group_membership(db, device.id, body.group_id)

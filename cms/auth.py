@@ -3,12 +3,13 @@
 import hashlib
 import logging
 import uuid
+from collections.abc import Collection, Iterable
 from functools import lru_cache
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -337,7 +338,7 @@ def require_permission(*perms: str):
     return _check
 
 
-async def get_user_group_ids(user: User, db: AsyncSession) -> list | None:
+async def get_user_group_ids(user: User, db: AsyncSession) -> list[uuid.UUID] | None:
     """Return the list of group UUIDs a user is assigned to, or None for admins.
 
     Users with the 'groups:view_all' permission return None, meaning "no filtering"
@@ -353,21 +354,166 @@ async def get_user_group_ids(user: User, db: AsyncSession) -> list | None:
     return [row[0] for row in result.all()]
 
 
-async def verify_resource_group_access(
-    user: User, db: AsyncSession, group_id: uuid.UUID | None
+def _coerce_group_scope(
+    group_scope: uuid.UUID | Iterable[uuid.UUID] | None,
+) -> set[uuid.UUID]:
+    """Normalize a group-scope input into a deduplicated UUID set."""
+    if group_scope is None:
+        return set()
+    if isinstance(group_scope, uuid.UUID):
+        return {group_scope}
+    return {gid for gid in group_scope if gid is not None}
+
+
+def build_group_read_scope_clause(
+    group_ids: Collection[uuid.UUID] | None,
+    group_column,
+):
+    """Return the standard read-scope SQL clause for single-group resources.
+
+    ``None`` means ``groups:view_all`` (no filtering). For scoped users,
+    ungrouped resources stay visible to match ``verify_resource_group_access``'s
+    by-ID policy.
+    """
+    if group_ids is None:
+        return true()
+    if group_ids:
+        return or_(group_column.in_(list(group_ids)), group_column.is_(None))
+    return group_column.is_(None)
+
+
+def build_device_read_scope_clause(group_ids: Collection[uuid.UUID] | None):
+    """Return the standard read-scope SQL clause for devices.
+
+    During the expand/contract window, treat ``device_group_memberships`` as the
+    primary read path while defensively OR-ing the legacy ``devices.group_id``
+    FK. Ungrouped visibility is granted only when the device has *no* group in
+    either representation, so a membership-only device with ``group_id=NULL``
+    does not leak as globally visible.
+    """
+    from cms.models.device import Device
+    from cms.models.device_group_membership import DeviceGroupMembership
+
+    if group_ids is None:
+        return true()
+
+    has_any_membership = exists(
+        select(1).where(DeviceGroupMembership.device_id == Device.id)
+    )
+    if group_ids:
+        memberships_match = exists(
+            select(1).where(
+                DeviceGroupMembership.device_id == Device.id,
+                DeviceGroupMembership.group_id.in_(list(group_ids)),
+            )
+        )
+        return or_(
+            memberships_match,
+            Device.group_id.in_(list(group_ids)),
+            and_(Device.group_id.is_(None), ~has_any_membership),
+        )
+
+    return and_(Device.group_id.is_(None), ~has_any_membership)
+
+
+async def get_device_group_ids(device, db: AsyncSession) -> set[uuid.UUID]:
+    """Return the full effective group set for a device.
+
+    This unions the Stage 2 mirror table with the legacy scalar FK so by-ID
+    checks remain regression-safe while Stage 4 prepares for true
+    multi-membership in Stage 6.
+    """
+    from cms.models.device_group_membership import DeviceGroupMembership
+
+    result = await db.execute(
+        select(DeviceGroupMembership.group_id).where(
+            DeviceGroupMembership.device_id == device.id
+        )
+    )
+    group_ids = set(result.scalars().all())
+    if getattr(device, "group_id", None) is not None:
+        group_ids.add(device.group_id)
+    return group_ids
+
+
+async def assert_authority_over_group_set(
+    user: User,
+    db: AsyncSession,
+    group_ids: uuid.UUID | Iterable[uuid.UUID] | None,
 ) -> None:
-    """Raise 403 if the user does not have access to the given group.
+    """Require authority over every group in ``group_ids``.
+
+    Prepared for Stage 6's replace-membership endpoints: when a request wants a
+    device's final membership set to become ``{A, B, ...}``, call this helper
+    to enforce "authority over *all* target groups", not just any one of them.
+    """
+    required_group_ids = _coerce_group_scope(group_ids)
+    if not required_group_ids:
+        return
+    user_group_ids = await get_user_group_ids(user, db)
+    if user_group_ids is None:
+        return
+    if not required_group_ids.issubset(set(user_group_ids)):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: one or more target groups are outside your assigned groups",
+        )
+
+
+async def can_manage_group_membership(
+    user: User,
+    db: AsyncSession,
+    group_id: uuid.UUID,
+) -> bool:
+    """Return whether ``user`` may manage membership for ``group_id``.
+
+    Forward-looking Stage 4 helper for Stage 6 membership CRUD. The governing
+    permission today is still ``devices:write`` (the current PATCH/adopt
+    surfaces), but shared-device safety also requires the actor to be able to
+    see and edit schedules in that same group.
+    """
+    from cms.permissions import (
+        DEVICES_WRITE,
+        SCHEDULES_READ,
+        SCHEDULES_WRITE,
+        has_permission,
+    )
+
+    if user.role is None:
+        return False
+    perms = user.role.permissions or []
+    if not all(
+        has_permission(perms, perm)
+        for perm in (DEVICES_WRITE, SCHEDULES_READ, SCHEDULES_WRITE)
+    ):
+        return False
+    try:
+        await assert_authority_over_group_set(user, db, {group_id})
+    except HTTPException:
+        return False
+    return True
+
+
+async def verify_resource_group_access(
+    user: User,
+    db: AsyncSession,
+    group_scope: uuid.UUID | Iterable[uuid.UUID] | None,
+) -> None:
+    """Raise 403 if the user lacks read access to the resource's groups.
 
     Call this on every by-ID endpoint after fetching the resource to prevent
-    IDOR attacks. ``group_id`` may be ``None`` (e.g. a device not yet assigned
-    to a group), in which case access is allowed (the resource is unscoped).
+    IDOR attacks. ``group_scope`` may be a single group id, or the full set of
+    groups a shared resource belongs to. Empty/None means the resource is
+    ungrouped and remains visible to any authenticated user with the base read
+    permission.
     """
-    if group_id is None:
+    resource_group_ids = _coerce_group_scope(group_scope)
+    if not resource_group_ids:
         return  # Resource has no group — allow access
-    group_ids = await get_user_group_ids(user, db)
-    if group_ids is None:
+    user_group_ids = await get_user_group_ids(user, db)
+    if user_group_ids is None:
         return  # User has groups:view_all — allow all
-    if group_id not in group_ids:
+    if resource_group_ids.isdisjoint(user_group_ids):
         raise HTTPException(status_code=403, detail="Access denied: resource is outside your assigned groups")
 
 
