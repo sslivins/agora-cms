@@ -35,6 +35,7 @@ from cms.services.transport import get_transport
 from cms.services.scheduler import push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
+from cms.services.device_membership import set_single_group_membership
 from cms.services.bundle_checker import check_now, get_latest_bundle, get_latest_os_version, is_os_update_available
 from cms.models.agora_os_channel_bundle import CHANNEL_PRERELEASE, CHANNEL_STABLE, CHANNELS
 
@@ -502,6 +503,9 @@ async def update_device(
 
     for field, value in updates.items():
         setattr(device, field, value)
+    if "group_id" in updates:
+        # Mirror into the many-to-many join table (#863, expand/contract window).
+        await set_single_group_membership(db, device.id, updates["group_id"])
     await audit_log(
         db, user=user, action="device.update", resource_type="device",
         resource_id=str(device.id),
@@ -912,6 +916,8 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
         if not grp.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Group not found")
         device.group_id = body.group_id
+        # Mirror into the many-to-many join table (#863, expand/contract window).
+        await set_single_group_membership(db, device.id, body.group_id)
 
     # Verify and assign the encoder profile (required).
     # Reject if missing (404) or disabled (422) — issue #583.

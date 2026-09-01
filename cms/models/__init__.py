@@ -6,6 +6,7 @@ from cms.models.audit_log import AuditLog  # noqa: F401
 from cms.models.agora_os_channel_bundle import AgoraOsChannelBundle  # noqa: F401
 from cms.models.device import Device, DeviceGroup, DeviceStatus  # noqa: F401
 from cms.models.device_alert_state import DeviceAlertState  # noqa: F401
+from cms.models.device_group_membership import DeviceGroupMembership  # noqa: F401
 from cms.models.device_event import DeviceEvent, DeviceEventType  # noqa: F401
 from cms.models.device_profile import DeviceProfile  # noqa: F401
 from cms.models.group_asset import GroupAsset  # noqa: F401
@@ -36,6 +37,20 @@ Asset.schedules = relationship("Schedule", back_populates="asset")
 DeviceAsset.device = relationship("Device", back_populates="device_assets")
 DeviceProfile.devices = relationship("Device", back_populates="profile")
 GroupAsset.group = relationship("DeviceGroup")
+
+# Device ↔ group many-to-many (#863). Registered here (after all models are
+# imported) so the association-object relationship resolves cleanly alongside
+# the legacy Device.group_id FK during the expand/contract window.
+Device.memberships = relationship(
+    "DeviceGroupMembership",
+    back_populates="device",
+    cascade="all, delete-orphan",
+)
+DeviceGroup.memberships = relationship(
+    "DeviceGroupMembership",
+    cascade="all, delete-orphan",
+    overlaps="group",
+)
 
 # Tags are CMS-only metadata on assets.  Defined here so the Asset model
 # (which lives in shared/) doesn't need to know about Tag.
