@@ -78,6 +78,7 @@ async def _create_notification(
     title: str = "Test notification",
     message: str = "Test message",
     group_id: uuid.UUID | None = None,
+    group_ids: list[uuid.UUID] | None = None,
     user_id: uuid.UUID | None = None,
 ) -> Notification:
     notif = Notification(
@@ -88,6 +89,8 @@ async def _create_notification(
         group_id=group_id,
         user_id=user_id,
     )
+    if group_ids is not None:
+        notif.set_group_targets(group_ids)
     db.add(notif)
     await db.commit()
     await db.refresh(notif)

@@ -239,7 +239,8 @@ async def _backfill_stuck_ota_projection(settings):
     """
     from sqlalchemy import select, update
     from cms.models.device import Device
-    from cms.models.device_event import DeviceEvent, DeviceEventType
+    from cms.models.device_event import DeviceEventType
+    from cms.services.device_events import emit_device_event
     from cms.services.leader import session_advisory_lock
     from cms.services.ota_progress import OTA_PROJECTION_FIELD_NAMES, OTA_STUCK_PHASE
 
@@ -289,20 +290,19 @@ async def _backfill_stuck_ota_projection(settings):
                     .execution_options(synchronize_session=False)
                 )
                 for row in to_clear:
-                    db.add(
-                        DeviceEvent(
-                            device_id=row.id,
-                            device_name=row.name or str(row.id),
-                            event_type=DeviceEventType.OTA_AUTO_CLEARED,
-                            details={
-                                "reason": "startup_backfill",
-                                "prior_phase": OTA_STUCK_PHASE,
-                                "prior_ota_updated_at": row.ota_updated_at.isoformat()
-                                    if row.ota_updated_at else None,
-                                "last_seen": row.last_seen.isoformat()
-                                    if row.last_seen else None,
-                            },
-                        )
+                    await emit_device_event(
+                        db,
+                        device_id=row.id,
+                        device_name=row.name or str(row.id),
+                        event_type=DeviceEventType.OTA_AUTO_CLEARED,
+                        details={
+                            "reason": "startup_backfill",
+                            "prior_phase": OTA_STUCK_PHASE,
+                            "prior_ota_updated_at": row.ota_updated_at.isoformat()
+                                if row.ota_updated_at else None,
+                            "last_seen": row.last_seen.isoformat()
+                                if row.last_seen else None,
+                        },
                     )
                 await db.commit()
                 logger.info(
@@ -738,16 +738,16 @@ async def lifespan(app: FastAPI):
 
     # Log CMS startup to the event log (so upgrades/restarts show up in the timeline)
     try:
-        from cms.models.device_event import DeviceEvent, DeviceEventType
+        from cms.models.device_event import DeviceEventType
+        from cms.services.device_events import emit_device_event
         async for db in get_db():
-            db.add(DeviceEvent(
+            await emit_device_event(
+                db,
                 device_id=None,
                 device_name="CMS",
-                group_id=None,
-                group_name="",
                 event_type=DeviceEventType.CMS_STARTED,
                 details={"version": __version__, "replica_id": _replica_id()},
-            ))
+            )
             await db.commit()
             break
     except Exception:
@@ -776,16 +776,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Error closing device transport")
     try:
-        from cms.models.device_event import DeviceEvent, DeviceEventType
+        from cms.models.device_event import DeviceEventType
+        from cms.services.device_events import emit_device_event
         async for db in get_db():
-            db.add(DeviceEvent(
+            await emit_device_event(
+                db,
                 device_id=None,
                 device_name="CMS",
-                group_id=None,
-                group_name="",
                 event_type=DeviceEventType.CMS_STOPPED,
                 details={"version": __version__, "replica_id": _replica_id()},
-            ))
+            )
             await db.commit()
             break
     except Exception:

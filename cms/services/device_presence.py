@@ -356,6 +356,7 @@ async def update_status(
 
     result = await db.execute(
         update(Device)
+        .execution_options(synchronize_session=False)
         .where(Device.id == device_id)
         .where(
             (Device.last_status_ts.is_(None))
@@ -381,6 +382,7 @@ async def update_status(
     if rowcount > 0:
         heal_claim = await db.execute(
             update(Device)
+            .execution_options(synchronize_session=False)
             .where(Device.id == device_id)
             .where(Device.online.is_(False))
             .values(online=True)
@@ -391,6 +393,9 @@ async def update_status(
         healed_row = heal_claim.first()
 
     await db.commit()
+    for obj in list(db.identity_map.values()):
+        if isinstance(obj, Device) and obj.id == device_id:
+            await db.refresh(obj)
 
     if healed_row is not None:
         # Look up group_name for the back-online notification payload.

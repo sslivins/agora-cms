@@ -4,11 +4,15 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import JSON
 
 from cms.database import Base
+
+_JSON = JSON().with_variant(JSONB(), "postgresql")
+_UUID_ARRAY = ARRAY(UUID(as_uuid=True)).with_variant(JSON(), "sqlite")
 
 
 class DeviceEventType(str, PyEnum):
@@ -49,13 +53,20 @@ class DeviceEventType(str, PyEnum):
 
 class DeviceEvent(Base):
     __tablename__ = "device_events"
+    __table_args__ = (
+        Index(
+            "ix_device_events_group_ids_gin",
+            "group_ids",
+            postgresql_using="gin",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     device_id: Mapped[str | None] = mapped_column(
         String(64),
-        ForeignKey("devices.id", ondelete="CASCADE"),
+        ForeignKey("devices.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -72,10 +83,22 @@ class DeviceEvent(Base):
         String(100), nullable=False, default="",
         doc="Denormalized snapshot of group name at event time",
     )
+    group_ids: Mapped[list] = mapped_column(
+        _UUID_ARRAY,
+        nullable=False,
+        default=list,
+        doc="Full membership snapshot at event time",
+    )
+    group_snapshots: Mapped[list[dict]] = mapped_column(
+        _JSON,
+        nullable=False,
+        default=list,
+        doc="Display snapshot of every group at event time",
+    )
     event_type: Mapped[str] = mapped_column(
         String(40), nullable=False, index=True,
     )
-    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    details: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

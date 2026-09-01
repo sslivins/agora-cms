@@ -34,7 +34,7 @@ from cms.auth import get_settings
 from cms.config import Settings
 from cms.database import get_db
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_event import DeviceEventType
 from cms.services.alert_service import alert_service
 from cms.services.device_inbound import InboundContext, dispatch_device_message, rotate_api_key
 from cms.services.device_manager import device_manager
@@ -44,6 +44,7 @@ from cms.services.ota_progress import (
     OTA_STUCK_PHASE,
     version_bumped,
 )
+from cms.services.device_events import emit_device_event
 from cms.services.transport import get_transport
 from shared.wps_signature import verify_signature
 
@@ -351,20 +352,19 @@ async def events_receiver(
                     .execution_options(synchronize_session=False)
                 )
                 if clear_result.rowcount:
-                    db.add(
-                        DeviceEvent(
-                            device_id=ce_user_id,
-                            device_name=device.name or ce_user_id,
-                            event_type=DeviceEventType.OTA_AUTO_CLEARED,
-                            details={
-                                "reason": "register_version_bump",
-                                "prior_phase": pre_register_ota_phase,
-                                "prior_firmware": (pre_register_fw or "").strip(),
-                                "prior_os": (pre_register_os or "").strip(),
-                                "reported_firmware": (msg.get("firmware_version") or "").strip(),
-                                "reported_os": (msg.get("os_version") or "").strip(),
-                            },
-                        )
+                    await emit_device_event(
+                        db,
+                        device_id=ce_user_id,
+                        device_name=device.name or ce_user_id,
+                        event_type=DeviceEventType.OTA_AUTO_CLEARED,
+                        details={
+                            "reason": "register_version_bump",
+                            "prior_phase": pre_register_ota_phase,
+                            "prior_firmware": (pre_register_fw or "").strip(),
+                            "prior_os": (pre_register_os or "").strip(),
+                            "reported_firmware": (msg.get("firmware_version") or "").strip(),
+                            "reported_os": (msg.get("os_version") or "").strip(),
+                        },
                     )
                 await db.commit()
             # Notify alert service of reconnection — mirrors ws.py's

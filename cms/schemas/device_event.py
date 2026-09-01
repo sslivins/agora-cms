@@ -13,6 +13,8 @@ class DeviceEventOut(BaseModel):
     device_id: str | None = None
     device_name: str
     group_id: uuid.UUID | None = None
+    group_ids: list[uuid.UUID] = []
+    group_snapshots: list[dict] = []
     group_name: str = ""
     event_type: str
     details: dict | None = None
@@ -37,6 +39,15 @@ class DeviceEventOut(BaseModel):
             device_id=event.device_id,
             device_name=event.device_name,
             group_id=event.group_id,
+            group_ids=list(getattr(event, "group_ids", None) or ([] if event.group_id is None else [event.group_id])),
+            group_snapshots=list(
+                getattr(event, "group_snapshots", None)
+                or (
+                    []
+                    if event.group_id is None
+                    else [{"id": str(event.group_id), "name": event.group_name or ""}]
+                )
+            ),
             group_name=event.group_name,
             event_type=event.event_type,
             details=event.details,
