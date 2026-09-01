@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, union_all
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -935,17 +935,54 @@ def schedules_conflict(a: Schedule, b: Schedule) -> bool:
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
     """Resolve target device IDs for a schedule's group memberships."""
-    if schedule.group_id:
-        result = await db.execute(
-            select(DeviceGroupMembership.device_id)
-            .join(Device, Device.id == DeviceGroupMembership.device_id)
-            .where(
-                DeviceGroupMembership.group_id == schedule.group_id,
-                Device.status == DeviceStatus.ADOPTED,
-            )
+    if not schedule.group_id:
+        return []
+    devices_by_group = await _load_adopted_devices_by_group_ids({schedule.group_id}, db)
+    return sorted(devices_by_group.get(schedule.group_id, set()))
+
+
+async def _load_adopted_devices_by_group_ids(group_ids: set, db) -> dict:
+    """Resolve adopted devices for each group during the mirror period.
+
+    Stage 2 dual-writes ``Device.group_id`` into
+    ``device_group_memberships`` on production mutation paths, but some
+    legacy fixtures/import paths still set only the scalar FK. Until the
+    contract phase removes ``group_id``, treat the join table as the primary
+    read path while defensively OR-ing the legacy scalar to preserve
+    regression-free behavior.
+    """
+    if not group_ids:
+        return {}
+
+    membership_targets = (
+        select(
+            DeviceGroupMembership.group_id.label("group_id"),
+            DeviceGroupMembership.device_id.label("device_id"),
         )
-        return [row[0] for row in result.all()]
-    return []
+        .join(Device, Device.id == DeviceGroupMembership.device_id)
+        .where(
+            DeviceGroupMembership.group_id.in_(group_ids),
+            Device.status == DeviceStatus.ADOPTED,
+        )
+    )
+    legacy_targets = (
+        select(
+            Device.group_id.label("group_id"),
+            Device.id.label("device_id"),
+        )
+        .where(
+            Device.group_id.in_(group_ids),
+            Device.status == DeviceStatus.ADOPTED,
+        )
+    )
+    target_rows = union_all(membership_targets, legacy_targets).subquery()
+    result = await db.execute(select(target_rows.c.group_id, target_rows.c.device_id))
+    devices_by_group: dict = {}
+    for gid, did in result.all():
+        if gid is None:
+            continue
+        devices_by_group.setdefault(gid, set()).add(did)
+    return devices_by_group
 
 
 async def load_target_devices_by_schedule(
@@ -953,8 +990,8 @@ async def load_target_devices_by_schedule(
 ) -> dict[str, set[str]]:
     """Bulk-resolve {schedule_id_str: {adopted_device_ids}} for many schedules.
 
-    Single indexed SQL query over the distinct ``group_id`` set referenced
-    by ``schedules``; used by dashboard / schedules UI to feed
+    Indexed SQL over the distinct ``group_id`` set referenced by
+    ``schedules``; used by dashboard / schedules UI to feed
     ``get_upcoming_schedules(..., target_devices_by_schedule=...)`` without
     per-schedule DB round-trips.  Only ADOPTED devices count as targets —
     matches :func:`_get_target_device_ids`.
@@ -962,17 +999,7 @@ async def load_target_devices_by_schedule(
     group_ids = {s.group_id for s in schedules if s.group_id}
     if not group_ids:
         return {}
-    result = await db.execute(
-        select(DeviceGroupMembership.group_id, DeviceGroupMembership.device_id)
-        .join(Device, Device.id == DeviceGroupMembership.device_id)
-        .where(
-            DeviceGroupMembership.group_id.in_(group_ids),
-            Device.status == DeviceStatus.ADOPTED,
-        )
-    )
-    devices_by_group: dict = {}
-    for gid, did in result.all():
-        devices_by_group.setdefault(gid, set()).add(did)
+    devices_by_group = await _load_adopted_devices_by_group_ids(group_ids, db)
     return {
         str(s.id): devices_by_group.get(s.group_id, set())
         for s in schedules
