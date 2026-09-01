@@ -393,6 +393,9 @@ async def update_status(
         healed_row = heal_claim.first()
 
     await db.commit()
+    for obj in list(db.identity_map.values()):
+        if isinstance(obj, Device) and obj.id == device_id:
+            await db.refresh(obj)
 
     if healed_row is not None:
         # Look up group_name for the back-online notification payload.

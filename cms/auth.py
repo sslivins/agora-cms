@@ -9,8 +9,8 @@ from functools import lru_cache
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import and_, exists, func, or_, select, true
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, array
+from sqlalchemy import and_, cast, exists, func, or_, select, true
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY, UUID as PG_UUID, array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -400,7 +400,10 @@ def build_group_snapshot_read_scope_clause(
     if group_ids:
         if dialect == "postgresql":
             snapshot_match = snapshot_group_ids_column.op("&&")(
-                array(list(group_ids), type_=PG_UUID(as_uuid=True))
+                cast(
+                    array(list(group_ids), type_=PG_UUID(as_uuid=True)),
+                    PG_ARRAY(PG_UUID(as_uuid=True)),
+                )
             )
         else:
             json_each = func.json_each(snapshot_group_ids_column).table_valued("value")
