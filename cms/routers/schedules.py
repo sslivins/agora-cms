@@ -10,7 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from cms.auth import require_auth, require_permission, get_user_group_ids, verify_resource_group_access
+from cms.auth import (
+    build_group_read_scope_clause,
+    get_user_group_ids,
+    require_auth,
+    require_permission,
+    verify_resource_group_access,
+)
 from cms.database import get_db
 from cms.permissions import SCHEDULES_READ, SCHEDULES_WRITE
 from cms.models.asset import Asset, AssetType
@@ -95,13 +101,7 @@ async def list_schedules(request: Request, db: AsyncSession = Depends(get_db)):
 
     query = select(Schedule).options(*_eager_options()).order_by(Schedule.priority.desc(), Schedule.name)
     if not is_admin:
-        if group_ids:
-            # Include schedules targeting the user's groups
-            query = query.where(
-                Schedule.group_id.in_(group_ids)
-            )
-        else:
-            query = query.where(False)
+        query = query.where(build_group_read_scope_clause(group_ids, Schedule.group_id))
 
     result = await db.execute(query)
     return [_schedule_to_out(s) for s in result.scalars().all()]

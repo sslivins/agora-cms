@@ -28,7 +28,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.auth import get_user_group_ids, require_auth, require_permission
+from cms.auth import (
+    get_device_group_ids,
+    require_auth,
+    require_permission,
+    verify_resource_group_access,
+)
 from cms.database import get_db
 from cms.models.device import Device
 from cms.models.log_request import (
@@ -148,13 +153,7 @@ async def _verify_device_access(
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    group_ids = await get_user_group_ids(user, db)
-    if group_ids is not None:  # None = admin / view_all
-        if device.group_id is None or device.group_id not in group_ids:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Not authorised for device {device_id}",
-            )
+    await verify_resource_group_access(user, db, await get_device_group_ids(device, db))
     return device
 
 

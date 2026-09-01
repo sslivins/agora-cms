@@ -26,6 +26,8 @@ from cms.auth import (
     SETTING_TIMEZONE,
     SETTING_USERNAME,
     _resolve_user_from_session,
+    build_device_read_scope_clause,
+    build_group_read_scope_clause,
     get_current_user,
     get_setting,
     get_settings,
@@ -36,6 +38,7 @@ from cms.auth import (
     revoke_service_key,
     set_setting,
     verify_password,
+    get_user_group_ids,
 )
 from cms.config import Settings
 from cms.database import get_db
@@ -43,7 +46,6 @@ from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.slideshow_slide import SlideshowSlide
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.permissions import USERS_READ, USERS_WRITE, ROLES_WRITE, DEVICES_MANAGE, ASSETS_WRITE, IMAGER_READ, IMAGER_BUILD, IMAGER_MANAGE, has_permission
-from cms.auth import get_user_group_ids
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
@@ -895,12 +897,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     if can_manage:
         pending_query = select(Device).where(Device.status == DeviceStatus.PENDING).order_by(Device.registered_at)
         if not is_admin:
-            if group_ids:
-                pending_query = pending_query.where(
-                    (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
-                )
-            else:
-                pending_query = pending_query.where(Device.group_id.is_(None))
+            pending_query = pending_query.where(build_device_read_scope_clause(group_ids))
         pending_q = await db.execute(pending_query)
         pending_devices = pending_q.scalars().all()
         # One DB round-trip for presence, then in-memory check per device.
@@ -918,12 +915,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         .order_by(Device.name, Device.id)
     )
     if not is_admin:
-        if group_ids:
-            devices_query = devices_query.where(
-                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
-            )
-        else:
-            devices_query = devices_query.where(Device.group_id.is_(None))
+        devices_query = devices_query.where(build_device_read_scope_clause(group_ids))
     devices_q = await db.execute(devices_query)
     all_devices = devices_q.scalars().all()
     _connected_ids = set(await get_transport().connected_ids())
@@ -942,12 +934,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             .order_by(Device.name, Device.id)
         )
         if not is_admin:
-            if group_ids:
-                orphan_query = orphan_query.where(
-                    (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
-                )
-            else:
-                orphan_query = orphan_query.where(Device.group_id.is_(None))
+            orphan_query = orphan_query.where(build_device_read_scope_clause(group_ids))
         orphaned_q = await db.execute(orphan_query)
         orphaned_devices = orphaned_q.scalars().all()
     else:
@@ -1065,12 +1052,9 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         .where(Schedule.enabled == True)
     )
     if not is_admin:
-        if group_ids:
-            upcoming_query = upcoming_query.where(
-                Schedule.group_id.in_(group_ids)
-            )
-        else:
-            upcoming_query = upcoming_query.where(sqlalchemy.false())
+        upcoming_query = upcoming_query.where(
+            build_group_read_scope_clause(group_ids, Schedule.group_id)
+        )
     sched_q = await db.execute(upcoming_query)
     all_schedules = sched_q.scalars().all()
     offline_set = set(d.id for d in offline_devices)
@@ -1198,9 +1182,7 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
     def _scope_device_query(q):
         if is_admin:
             return q
-        if group_ids:
-            return q.where((Device.group_id.in_(group_ids)) | (Device.group_id.is_(None)))
-        return q.where(Device.group_id.is_(None))
+        return q.where(build_device_read_scope_clause(group_ids))
 
     # Pending/orphaned device IDs (only for users with devices:manage)
     user_perms = user.role.permissions if user and user.role else []
@@ -1294,12 +1276,9 @@ async def dashboard_json(request: Request, db: AsyncSession = Depends(get_db)):
         .where(Schedule.enabled == True)
     )
     if not is_admin:
-        if group_ids:
-            upcoming_q = upcoming_q.where(
-                Schedule.group_id.in_(group_ids)
-            )
-        else:
-            upcoming_q = upcoming_q.where(sqlalchemy.false())
+        upcoming_q = upcoming_q.where(
+            build_group_read_scope_clause(group_ids, Schedule.group_id)
+        )
     sched_q = await db.execute(upcoming_q)
     all_schedules = sched_q.scalars().all()
     offline_set = set(offline_ids)
@@ -1360,12 +1339,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     if not can_manage:
         device_query = device_query.where(Device.status == DeviceStatus.ADOPTED)
     if not is_admin:
-        if group_ids:
-            device_query = device_query.where(
-                (Device.group_id.in_(group_ids)) | (Device.group_id.is_(None))
-            )
-        else:
-            device_query = device_query.where(Device.group_id.is_(None))
+        device_query = device_query.where(build_device_read_scope_clause(group_ids))
 
     result = await db.execute(device_query)
     devices = result.scalars().all()
@@ -2348,12 +2322,9 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
         .order_by(Schedule.priority.desc(), Schedule.name)
     )
     if not is_admin:
-        if group_ids:
-            sched_query = sched_query.where(
-                Schedule.group_id.in_(group_ids)
-            )
-        else:
-            sched_query = sched_query.where(sqlalchemy.false())
+        sched_query = sched_query.where(
+            build_group_read_scope_clause(group_ids, Schedule.group_id)
+        )
 
     schedules_q = await db.execute(sched_query)
     all_schedules = schedules_q.scalars().all()

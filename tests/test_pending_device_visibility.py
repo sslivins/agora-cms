@@ -89,7 +89,7 @@ class TestDeviceListAPI:
         resp = await operator_client.get("/api/devices")
         assert resp.status_code == 200
         device_ids = {d["id"] for d in resp.json()}
-        assert seed_devices["adopted"] not in device_ids  # operator has no group access to ungrouped
+        assert seed_devices["adopted"] in device_ids
         assert seed_devices["pending"] not in device_ids
         assert seed_devices["orphaned"] not in device_ids
 
@@ -356,5 +356,4 @@ class TestPendingRegistrationsVisible:
         without it must get 403 from the API the card polls."""
         resp = await operator_client.get("/api/devices/pending")
         assert resp.status_code == 403
-
 
