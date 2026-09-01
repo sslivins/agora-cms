@@ -40,4 +40,4 @@ class DeviceGroupMembership(Base):
     )
 
     device: Mapped["Device"] = relationship(back_populates="memberships")  # noqa: F821
-    group: Mapped["DeviceGroup"] = relationship()  # noqa: F821
+    group: Mapped["DeviceGroup"] = relationship(back_populates="memberships")  # noqa: F821

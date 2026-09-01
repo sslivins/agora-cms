@@ -1,6 +1,12 @@
 """Tests for schedule API endpoints."""
 
 import pytest
+from cms.models.device_group_membership import DeviceGroupMembership
+
+
+async def _add_membership(db_session, device_id: str, group_id) -> None:
+    db_session.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+    await db_session.flush()
 
 
 @pytest.mark.asyncio
@@ -16,6 +22,7 @@ class TestScheduleCRUD:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
 
@@ -155,6 +162,7 @@ class TestScheduleCRUD:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
 
@@ -295,6 +303,7 @@ class TestScheduleUI:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
 
         # Create a schedule so the Edit button is rendered
@@ -440,6 +449,7 @@ class TestScheduleDeletePlayingWarning:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(name="Active Ad", asset_id=asset.id, group_id=group.id,
                          start_time=time(0, 0), end_time=time(23, 59), priority=1)
@@ -580,6 +590,7 @@ class TestScheduleNaiveDatetime:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
 
@@ -680,6 +691,7 @@ class TestEndNowClearedOnEdit:
         db_session.add_all([group, device, asset])
         await db_session.flush()
         device.group_id = group.id
+        await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
 
@@ -846,6 +858,8 @@ class TestEndNowPerDevice:
         await db_session.flush()
         d1.group_id = group.id
         d2.group_id = group.id
+        await _add_membership(db_session, d1.id, group.id)
+        await _add_membership(db_session, d2.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id), d1.id, d2.id
 
@@ -949,6 +963,7 @@ class TestEndNowPerDevice:
         db_session.add_all([group, dev, asset])
         await db_session.flush()
         dev.group_id = group.id
+        await _add_membership(db_session, dev.id, group.id)
         await db_session.commit()
         # Capture ids before any expire/refresh so later assertions don't lazy-load.
         dev_id = dev.id

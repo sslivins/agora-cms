@@ -46,10 +46,20 @@ Device.memberships = relationship(
     back_populates="device",
     cascade="all, delete-orphan",
 )
+Device.groups = relationship(
+    "DeviceGroup",
+    secondary="device_group_memberships",
+    primaryjoin="Device.id == DeviceGroupMembership.device_id",
+    secondaryjoin="DeviceGroup.id == DeviceGroupMembership.group_id",
+    viewonly=True,
+    lazy="selectin",
+    overlaps="devices,group,memberships",
+)
 DeviceGroup.memberships = relationship(
     "DeviceGroupMembership",
+    back_populates="group",
     cascade="all, delete-orphan",
-    overlaps="group",
+    overlaps="devices,group,groups",
 )
 
 # Tags are CMS-only metadata on assets.  Defined here so the Asset model
