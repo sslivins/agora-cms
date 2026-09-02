@@ -12,6 +12,7 @@ Covers:
 import uuid
 
 import pytest
+from cms.models.device_group_membership import DeviceGroupMembership
 from pydantic import ValidationError
 
 
@@ -177,7 +178,7 @@ class TestScheduleLoopCountCRUD:
         )
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
         return str(group.id), str(asset.id)
 

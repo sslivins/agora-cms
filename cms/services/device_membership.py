@@ -1,16 +1,4 @@
-"""Manage device↔group memberships during the group-id coexistence window.
-
-Stage 2 introduced ``device_group_memberships`` as an exact mirror of the
-legacy scalar ``devices.group_id`` column.  That legacy mirror helper,
-``set_single_group_membership()``, must remain untouched because older write
-paths still rely on its "exactly one membership" contract.
-
-Stage 6 adds true multi-membership writers alongside it.  These helpers update
-the join table with add/remove/replace semantics while also keeping the legacy
-scalar on the ``Device`` row pinned to one member of the resulting set for
-backward compatibility.  The scalar remains the deprecated single-group view;
-the join table carries the full membership set.
-"""
+"""Manage device↔group memberships in ``device_group_memberships``."""
 
 from __future__ import annotations
 
@@ -18,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Iterable
 
-from sqlalchemy import delete, false, select, union_all
+from sqlalchemy import delete, false, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cms.models.device import Device, DeviceStatus
@@ -31,7 +19,6 @@ class DeviceMembershipChange:
     result_group_ids: tuple[uuid.UUID, ...]
     added_group_ids: tuple[uuid.UUID, ...]
     removed_group_ids: tuple[uuid.UUID, ...]
-    legacy_group_id: uuid.UUID | None
     changed: bool
 
 
@@ -58,44 +45,31 @@ def effective_device_group_rows_subquery(
 ):
     """Return ``(device_id, group_id)`` rows for the effective device groups.
 
-    The join table is the primary read path. During Stage 8a we still union the
-    legacy scalar ``devices.group_id`` as a centralized defense-in-depth
-    fallback so any straggling scalar-only rows remain visible until Stage 8b
-    actually drops the column.
+    Stage 8b removes the legacy scalar ``devices.group_id`` column, so the join
+    table is now the sole source of truth.
     """
-    membership_rows = select(
+    rows = select(
         DeviceGroupMembership.device_id.label("device_id"),
         DeviceGroupMembership.group_id.label("group_id"),
-    )
-    legacy_rows = (
-        select(
-            Device.id.label("device_id"),
-            Device.group_id.label("group_id"),
-        )
-        .where(Device.group_id.is_not(None))
     )
 
     device_id_list = list(device_ids) if device_ids is not None else None
     if device_id_list is not None:
         if device_id_list:
-            membership_rows = membership_rows.where(
+            rows = rows.where(
                 DeviceGroupMembership.device_id.in_(device_id_list)
             )
-            legacy_rows = legacy_rows.where(Device.id.in_(device_id_list))
         else:
-            membership_rows = membership_rows.where(false())
-            legacy_rows = legacy_rows.where(false())
+            rows = rows.where(false())
 
     group_id_list = list(group_ids) if group_ids is not None else None
     if group_id_list is not None:
         if group_id_list:
-            membership_rows = membership_rows.where(
+            rows = rows.where(
                 DeviceGroupMembership.group_id.in_(group_id_list)
             )
-            legacy_rows = legacy_rows.where(Device.group_id.in_(group_id_list))
         else:
-            membership_rows = membership_rows.where(false())
-            legacy_rows = legacy_rows.where(false())
+            rows = rows.where(false())
 
     if statuses is not None:
         status_list = (
@@ -104,22 +78,15 @@ def effective_device_group_rows_subquery(
             else list(statuses)
         )
         if status_list:
-            membership_rows = (
-                membership_rows
+            rows = (
+                rows
                 .join(Device, Device.id == DeviceGroupMembership.device_id)
                 .where(Device.status.in_(status_list))
             )
-            legacy_rows = legacy_rows.where(Device.status.in_(status_list))
         else:
-            membership_rows = membership_rows.where(false())
-            legacy_rows = legacy_rows.where(false())
+            rows = rows.where(false())
 
-    combined = union_all(membership_rows, legacy_rows).subquery()
-    return (
-        select(combined.c.device_id, combined.c.group_id)
-        .distinct()
-        .subquery()
-    )
+    return rows.distinct().subquery()
 
 
 async def _load_membership_group_ids(
@@ -139,30 +106,7 @@ async def _current_effective_group_ids_in_preferred_order(
     device,
 ) -> list[uuid.UUID]:
     current = await _load_membership_group_ids(db, device.id)
-    ordered: list[uuid.UUID] = []
-    scalar_group_id = getattr(device, "group_id", None)
-    if scalar_group_id is not None:
-        ordered.append(scalar_group_id)
-        current.discard(scalar_group_id)
-    ordered.extend(sorted(current, key=lambda gid: str(gid)))
-    return ordered
-
-
-def _choose_legacy_group_id(
-    *,
-    current_group_id: uuid.UUID | None,
-    desired_group_ids: list[uuid.UUID],
-) -> uuid.UUID | None:
-    """Select the scalar ``devices.group_id`` representative.
-
-    Prefer to preserve the current scalar when it still belongs to the new set;
-    otherwise choose the first requested group.  If the caller did not provide a
-    stable order (e.g. remove-one operations), the wrapper should pass the
-    desired groups in its preferred deterministic order.
-    """
-    if current_group_id is not None and current_group_id in desired_group_ids:
-        return current_group_id
-    return desired_group_ids[0] if desired_group_ids else None
+    return sorted(current, key=lambda gid: str(gid))
 
 
 async def _plan_membership_change(
@@ -172,8 +116,6 @@ async def _plan_membership_change(
 ) -> tuple[DeviceMembershipChange, list[uuid.UUID]]:
     ordered_desired = _unique_group_ids(desired_group_ids)
     current = await _load_membership_group_ids(db, device.id)
-    if getattr(device, "group_id", None) is not None:
-        current.add(device.group_id)
     desired = set(ordered_desired)
     added = desired - current
     removed = current - desired
@@ -183,10 +125,6 @@ async def _plan_membership_change(
             result_group_ids=_sorted_group_ids(desired),
             added_group_ids=_sorted_group_ids(added),
             removed_group_ids=_sorted_group_ids(removed),
-            legacy_group_id=_choose_legacy_group_id(
-                current_group_id=getattr(device, "group_id", None),
-                desired_group_ids=ordered_desired,
-            ),
             changed=(current != desired),
         ),
         ordered_desired,
@@ -201,9 +139,7 @@ async def set_single_group_membership(
     """Make ``device_id``'s membership set exactly ``{group_id}`` (or empty).
 
     Idempotent: deletes any memberships that don't match and inserts the target
-    one if it isn't already present. Does not commit — the caller owns the
-    transaction so the membership write lands atomically with the ``group_id``
-    change it mirrors.
+    one if it isn't already present. Does not commit.
     """
     stmt = delete(DeviceGroupMembership).where(
         DeviceGroupMembership.device_id == device_id
@@ -234,9 +170,7 @@ async def replace_device_group_memberships(
 ) -> DeviceMembershipChange:
     """Replace a device's full membership set with ``group_ids``.
 
-    During Stage 6 coexistence the join table carries the complete set, while
-    ``device.group_id`` keeps a single representative for backward-compatible
-    readers.  No commit is performed here.
+    The join table is the source of truth. No commit is performed here.
     """
     change, ordered_desired = await _plan_membership_change(db, device, group_ids)
     if dry_run or not change.changed:
@@ -253,8 +187,6 @@ async def replace_device_group_memberships(
     for group_id in ordered_desired:
         if group_id not in existing:
             db.add(DeviceGroupMembership(device_id=device.id, group_id=group_id))
-
-    device.group_id = change.legacy_group_id
     return change
 
 

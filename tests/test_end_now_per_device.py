@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.setting import CMSSetting
@@ -52,9 +53,14 @@ class TestPerDeviceSkipAgainstDB:
         group = DeviceGroup(name="Lobby")
         db.add_all([asset, group])
         await db.flush()
-        d1 = Device(id="pi-240-a", name="A", status=DeviceStatus.ADOPTED, group_id=group.id)
-        d2 = Device(id="pi-240-b", name="B", status=DeviceStatus.ADOPTED, group_id=group.id)
+        d1 = Device(id="pi-240-a", name="A", status=DeviceStatus.ADOPTED)
+        d2 = Device(id="pi-240-b", name="B", status=DeviceStatus.ADOPTED)
         db.add_all([d1, d2])
+        await db.flush()
+        db.add_all([
+            DeviceGroupMembership(device_id=d1.id, group_id=group.id),
+            DeviceGroupMembership(device_id=d2.id, group_id=group.id),
+        ])
         sched = Schedule(
             name="Always",
             group_id=group.id,

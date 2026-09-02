@@ -94,12 +94,19 @@ async def _seed_device_and_schedule(
                 "INSERT INTO devices "
                 "(id, name, location, status, firmware_version, "
                 " storage_capacity_mb, storage_used_mb, device_type, "
-                " supported_codecs, os_version, registered_at, online, group_id, "
+                " supported_codecs, os_version, registered_at, online, "
                 " upgrade_started_at) "
                 "VALUES (:id, :name, '', 'ADOPTED', '', 0, 0, '', '', '', "
-                "        :now, TRUE, :gid, NULL)"
+                "        :now, TRUE, NULL)"
             ),
-            {"id": device_id, "name": "int-dev", "now": now, "gid": group_id},
+            {"id": device_id, "name": "int-dev", "now": now},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO device_group_memberships (device_id, group_id) "
+                "VALUES (:device_id, :group_id)"
+            ),
+            {"device_id": device_id, "group_id": group_id},
         )
         await conn.execute(
             text(
@@ -133,6 +140,10 @@ async def _cleanup(
         await conn.execute(
             text("DELETE FROM schedule_device_skips WHERE schedule_id = :s"),
             {"s": schedule_id},
+        )
+        await conn.execute(
+            text("DELETE FROM device_group_memberships WHERE device_id = :d"),
+            {"d": device_id},
         )
         await conn.execute(
             text("DELETE FROM schedules WHERE id = :s"), {"s": schedule_id}

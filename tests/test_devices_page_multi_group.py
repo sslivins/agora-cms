@@ -20,7 +20,6 @@ class TestDevicesPageManyToMany:
             id="ui-g2m-001",
             name="UI G2M Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group_a.id,
         )
         db_session.add(device)
         await db_session.flush()

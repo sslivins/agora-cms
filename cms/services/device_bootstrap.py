@@ -25,6 +25,7 @@ from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_profile import DeviceProfile
 from cms.models.pending_registration import PendingRegistration
 from cms.services import device_identity
+from cms.services.device_membership import set_single_group_membership
 
 
 logger = logging.getLogger(__name__)
@@ -497,7 +498,6 @@ async def _perform_adoption(
         name=name or "",
         location=location or "",
         status=DeviceStatus.ADOPTED,
-        group_id=uuid.UUID(group_id) if group_id else None,
         profile_id=uuid.UUID(profile_id),
         pubkey=pending.pubkey,
     )
@@ -510,6 +510,9 @@ async def _perform_adoption(
         # partial unique index on pubkey blocks concurrent pending
         # rows, but double-check).
         raise BootstrapAlreadyAdopted(str(pending.id)) from e
+
+    if group_id is not None:
+        await set_single_group_membership(db, device.id, uuid.UUID(group_id))
 
     # Mint a fresh WPS JWT for the new device.
     access = await mint_wps_jwt(device_row_id)

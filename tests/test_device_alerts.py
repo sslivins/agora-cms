@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_alert_state import DeviceAlertState
 from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.notification import Notification
 from cms.models.notification_pref import UserNotificationPref
 from cms.models.user import User, UserGroup
@@ -36,9 +37,10 @@ async def seed_group_and_device(app):
             id="alert-device-001",
             name="Test Display",
             status=DeviceStatus.ADOPTED,
-            group_id=group.id,
         )
         db.add(device)
+        await db.flush()
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db.commit()
         yield {
             "device_id": device.id,

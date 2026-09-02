@@ -484,6 +484,12 @@ class _StubTransport:
             "token": f"stub-jwt-{user_id}-{minutes_to_expire}m",
         }
 
+    async def get_all_states(self):
+        return []
+
+    async def is_connected(self, device_id):
+        return False
+
 
 @pytest.fixture
 def stub_wps_transport():
@@ -654,12 +660,9 @@ class TestAdopt:
         ).scalars().all()
         assert set(memberships) == {group_a.id, group_b.id}
 
-        device = (
-            await db_session.execute(
-                select(Device).where(Device.id == device_id)
-            )
-        ).scalar_one()
-        assert device.group_id == group_a.id
+        listed = await client.get(f"/api/devices/{device_id}")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["group_id"] == str(group_a.id)
 
     async def test_group_id_and_group_ids_together_return_422(
         self, client, fleet_secret_enabled, stub_wps_transport,
@@ -854,12 +857,9 @@ class TestAdopt:
         ).scalars().all()
         assert set(memberships) == {group_a.id, group_b.id}
 
-        device = (
-            await db_session.execute(
-                select(Device).where(Device.id == device_id)
-            )
-        ).scalar_one()
-        assert device.group_id == group_a.id
+        listed = await client.get(f"/api/devices/{device_id}")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["group_id"] == str(group_a.id)
 
 
 # ---------------------------------------------------------------------

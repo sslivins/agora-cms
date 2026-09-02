@@ -1,6 +1,7 @@
 """Tests: auto-compute end_time when loop_count is provided."""
 
 import pytest
+from cms.models.device_group_membership import DeviceGroupMembership
 
 
 @pytest.mark.asyncio
@@ -24,7 +25,7 @@ class TestLoopEndTimeComputation:
         )
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
         return str(group.id), str(asset.id)
 
@@ -106,7 +107,7 @@ class TestLoopEndTimeComputation:
         )
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
 
         resp = await client.post("/api/schedules", json={

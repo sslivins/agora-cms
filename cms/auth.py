@@ -430,11 +430,9 @@ def build_group_snapshot_read_scope_clause(
 def build_device_read_scope_clause(group_ids: Collection[uuid.UUID] | None):
     """Return the standard read-scope SQL clause for devices.
 
-    During the expand/contract window, treat ``device_group_memberships`` as the
-    primary read path while defensively OR-ing the legacy ``devices.group_id``
-    FK. Ungrouped visibility is granted only when the device has *no* group in
-    either representation, so a membership-only device with ``group_id=NULL``
-    does not leak as globally visible.
+    Stage 8b makes ``device_group_memberships`` the only source of group
+    membership. Ungrouped visibility is granted only when the device has no
+    membership rows.
     """
     from cms.models.device import Device
     from cms.models.device_group_membership import DeviceGroupMembership
@@ -452,22 +450,13 @@ def build_device_read_scope_clause(group_ids: Collection[uuid.UUID] | None):
                 DeviceGroupMembership.group_id.in_(list(group_ids)),
             )
         )
-        return or_(
-            memberships_match,
-            Device.group_id.in_(list(group_ids)),
-            and_(Device.group_id.is_(None), ~has_any_membership),
-        )
+        return or_(memberships_match, ~has_any_membership)
 
-    return and_(Device.group_id.is_(None), ~has_any_membership)
+    return ~has_any_membership
 
 
 async def get_device_group_ids(device, db: AsyncSession) -> set[uuid.UUID]:
-    """Return the full effective group set for a device.
-
-    This unions the Stage 2 mirror table with the legacy scalar FK so by-ID
-    checks remain regression-safe while Stage 4 prepares for true
-    multi-membership in Stage 6.
-    """
+    """Return the full group set for a device from the join table."""
     from cms.models.device_group_membership import DeviceGroupMembership
 
     result = await db.execute(
@@ -475,10 +464,7 @@ async def get_device_group_ids(device, db: AsyncSession) -> set[uuid.UUID]:
             DeviceGroupMembership.device_id == device.id
         )
     )
-    group_ids = set(result.scalars().all())
-    if getattr(device, "group_id", None) is not None:
-        group_ids.add(device.group_id)
-    return group_ids
+    return set(result.scalars().all())
 
 
 async def assert_authority_over_group_set(

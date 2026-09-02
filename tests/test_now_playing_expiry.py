@@ -11,6 +11,8 @@ from datetime import datetime, time, timedelta, timezone
 import pytest
 import pytest_asyncio
 
+from cms.models.device_group_membership import DeviceGroupMembership
+
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.schedule import Schedule
@@ -43,7 +45,6 @@ class TestNowPlayingExpiry:
             id="expire-dev-01",
             name="Expire Test Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group.id,
             device_auth_token_hash=hashlib.sha256(b"tok").hexdigest(),
         )
         db_session.add(device)
@@ -58,6 +59,7 @@ class TestNowPlayingExpiry:
         )
         db_session.add(asset)
         await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         # Schedule that ended 1 hour ago
         now = datetime.now()

@@ -9,6 +9,7 @@ import pytest
 
 from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.services.assistant.approval_display import resolve_friendly_names
 
 
@@ -17,8 +18,11 @@ from cms.services.assistant.approval_display import resolve_friendly_names
 # ---------------------------------------------------------------------------
 
 async def _device(db, did="pi-100", name="Pi100", group_id=None):
-    d = Device(id=did, name=name, status=DeviceStatus.ADOPTED, group_id=group_id)
+    d = Device(id=did, name=name, status=DeviceStatus.ADOPTED)
     db.add(d)
+    await db.flush()
+    if group_id is not None:
+        db.add(DeviceGroupMembership(device_id=d.id, group_id=group_id))
     await db.commit()
     return d
 
@@ -182,4 +186,3 @@ class TestSkipping:
             db_session, {"device_id": "pi-after-boom"}
         )
         assert out == {"device_id": "AfterBoom"}
-

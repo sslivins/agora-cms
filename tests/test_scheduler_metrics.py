@@ -36,6 +36,7 @@ import pytest
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog
 from cms.models.schedule_missed_event import ScheduleMissedEvent
@@ -269,7 +270,7 @@ class TestMissedEmittedCounter:
         )
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         sched = Schedule(
             name="B2 Metric Test",
@@ -348,7 +349,7 @@ class TestMissedEmittedCounter:
         )
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         sched = Schedule(
             name="B2 Revert Test",

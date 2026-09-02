@@ -49,7 +49,6 @@ class TestGroupPanelEndpoint:
             id="panel-m2m-001",
             name="Panel M2M Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group_a.id,
         )
         db_session.add(device)
         await db_session.flush()

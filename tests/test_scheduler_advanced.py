@@ -651,7 +651,6 @@ class TestUniqueScheduleName:
         asset = Asset(filename="dedup.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ded")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
@@ -713,7 +712,6 @@ class TestEndNowEndpoint:
         setting = CMSSetting(key="timezone", value="UTC")
         db_session.add_all([group, device, asset, setting])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
 
@@ -790,7 +788,6 @@ class TestBuildDeviceSyncSkipped:
         device = Device(id="skip-pi-01", name="Skip Test", status=DeviceStatus.ADOPTED)
         db.add_all([setting, asset, group, device])
         await db.flush()
-        device.group_id = group.id
         await _add_membership(db, device.id, group.id)
 
         sched = Schedule(
@@ -841,7 +838,6 @@ class TestNowPlayingCleanup:
                         status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
 
         # Create schedule
@@ -925,7 +921,6 @@ class TestNowPlayingCleanup:
                         status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
@@ -1156,10 +1151,6 @@ class TestDashboardCountdownAttribute:
         db_session.add_all([asset, group])
         await db_session.flush()
 
-        from sqlalchemy import update
-        await db_session.execute(
-            update(Device).where(Device.id == "dash-dev").values(group_id=group.id)
-        )
         await _add_membership(db_session, "dash-dev", group.id)
 
         schedule = Schedule(
@@ -1197,10 +1188,6 @@ class TestDashboardCountdownAttribute:
         db_session.add_all([asset, group])
         await db_session.flush()
 
-        from sqlalchemy import update
-        await db_session.execute(
-            update(Device).where(Device.id == "dash-dev2").values(group_id=group.id)
-        )
         await _add_membership(db_session, "dash-dev2", group.id)
 
         schedule = Schedule(
@@ -1247,7 +1234,6 @@ class TestMissedGracePeriod:
                        status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
@@ -1309,7 +1295,6 @@ class TestMissedGracePeriod:
                        status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
@@ -1378,7 +1363,6 @@ class TestMissedGracePeriod:
                         status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(
@@ -1445,7 +1429,6 @@ class TestMissedGracePeriod:
                        status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="Failover Test",
@@ -1505,7 +1488,6 @@ class TestMissedGracePeriod:
                        status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="Dup Test",
@@ -1558,7 +1540,6 @@ class TestMissedGracePeriod:
                         status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="None Test",
@@ -1610,7 +1591,6 @@ class TestMissedGracePeriod:
                        status=DeviceStatus.ADOPTED)
         db_session.add_all([setting, asset, group, device, dummy])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         sched = Schedule(
             name="Revert Test",

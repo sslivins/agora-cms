@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 
@@ -88,7 +89,7 @@ class TestScheduleLogModel:
         asset = Asset(filename="clip.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="abc")
         db.add_all([group, device, asset])
         await db.flush()
-        device.group_id = group.id
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         schedule = Schedule(
             name="Linked Schedule",
@@ -156,7 +157,7 @@ class TestLogEventHelper:
         asset = Asset(filename="log.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="log1")
         db.add_all([group, device, asset])
         await db.flush()
-        device.group_id = group.id
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         schedule = Schedule(
             name="Test",
@@ -195,7 +196,7 @@ class TestEndNowLogsSkipped:
         asset = Asset(filename="skip-video.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ccc")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         schedule = Schedule(
             name="Skippable Schedule",
