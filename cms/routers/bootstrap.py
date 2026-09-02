@@ -63,6 +63,7 @@ from cms.services import device_bootstrap, device_identity, fleet_registry
 from cms.services.audit_service import audit_log
 from cms.services.device_membership import replace_device_group_memberships
 from cms.services.transport import get_transport
+from cms.auth import get_device_group_ids
 
 
 logger = logging.getLogger(__name__)
@@ -406,6 +407,9 @@ async def adopt(
         logger.exception("/adopt internal error")
         raise HTTPException(status_code=500, detail="internal_error")
 
+    assigned_group_ids = [
+        str(group_id) for group_id in await get_device_group_ids(device, db)
+    ]
     await audit_log(
         db,
         user=getattr(request.state, "user", None),
@@ -416,10 +420,8 @@ async def adopt(
         details={
             "name": device.name,
             "location": device.location,
-            "group_id": str(device.group_id) if device.group_id else None,
-            "group_ids": [str(group_id) for group_id in requested_group_ids]
-            if body.group_ids is not None
-            else ([str(device.group_id)] if device.group_id else []),
+            "group_ids": assigned_group_ids,
+            "group_id": assigned_group_ids[0] if assigned_group_ids else None,
             "profile_id": str(device.profile_id) if device.profile_id else None,
             "pending_id": str(pending.id),
         },
@@ -562,6 +564,9 @@ async def adopt_pending(
         logger.exception("/adopt-pending internal error")
         raise HTTPException(status_code=500, detail="internal_error")
 
+    assigned_group_ids = [
+        str(group_id) for group_id in await get_device_group_ids(device, db)
+    ]
     await audit_log(
         db,
         user=getattr(request.state, "user", None),
@@ -574,10 +579,8 @@ async def adopt_pending(
         details={
             "name": device.name,
             "location": device.location,
-            "group_id": str(device.group_id) if device.group_id else None,
-            "group_ids": [str(group_id) for group_id in requested_group_ids]
-            if body.group_ids is not None
-            else ([str(device.group_id)] if device.group_id else []),
+            "group_ids": assigned_group_ids,
+            "group_id": assigned_group_ids[0] if assigned_group_ids else None,
             "profile_id": str(device.profile_id) if device.profile_id else None,
             "pending_id": str(pending.id),
             "flow": "adopt-pending",

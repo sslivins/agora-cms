@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import get_settings
 from cms.config import Settings
 from cms.database import get_db
-from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device import Device, DeviceStatus
 from cms.models.device_event import DeviceEventType
 from cms.services.alert_service import alert_service
 from cms.services.device_inbound import InboundContext, dispatch_device_message, rotate_api_key
@@ -44,7 +44,7 @@ from cms.services.ota_progress import (
     OTA_STUCK_PHASE,
     version_bumped,
 )
-from cms.services.device_events import emit_device_event
+from cms.services.device_events import emit_device_event, get_primary_device_group_context
 from cms.services.transport import get_transport
 from shared.wps_signature import verify_signature
 
@@ -373,17 +373,12 @@ async def events_receiver(
             # ``device_alert_state``, and (if applicable) fires the
             # "back online" notification.  Without this call, WPS
             # devices silently skip all alert-service bookkeeping.
-            _group_id = str(device.group_id) if device.group_id else None
             _device_name = device.name or ce_user_id
             _device_status = device.status.value if device.status else "pending"
-            _group_name = ""
-            if device.group_id:
-                g = await db.execute(
-                    select(DeviceGroup.name).where(
-                        DeviceGroup.id == device.group_id,
-                    )
-                )
-                _group_name = g.scalar_one_or_none() or ""
+            _group_id, _group_name = await get_primary_device_group_context(
+                db,
+                device_id=ce_user_id,
+            )
             alert_service.device_reconnected(
                 ce_user_id,
                 device_name=_device_name,
@@ -450,21 +445,17 @@ async def events_receiver(
         # this, every WPS-delivered event (i.e. the entire Pi fleet)
         # lands with ``group_name=''`` even when ``group_id`` is set,
         # leaving the Group column permanently blank.
-        _ctx_group_name = ""
-        if device.group_id:
-            _grp_q = await db.execute(
-                select(DeviceGroup.name).where(
-                    DeviceGroup.id == device.group_id,
-                )
-            )
-            _ctx_group_name = _grp_q.scalar_one_or_none() or ""
+        _ctx_group_id, _ctx_group_name = await get_primary_device_group_context(
+            db,
+            device_id=ce_user_id,
+        )
 
         ctx = InboundContext(
             device_id=ce_user_id,
             device=device,
             base_url=base_url,
             settings=settings,
-            group_id=str(device.group_id) if device.group_id else None,
+            group_id=_ctx_group_id,
             device_name=device.name or ce_user_id,
             device_status=device.status.value if device.status else "pending",
             group_name=_ctx_group_name,

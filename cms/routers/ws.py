@@ -43,8 +43,8 @@ from cms.services.ota_progress import (
     OTA_STUCK_PHASE,
     version_bumped,
 )
-from cms.services.scheduler import build_device_sync
-from cms.services.device_events import emit_device_event
+from cms.services.scheduler import _resolve_group_default_asset, build_device_sync
+from cms.services.device_events import emit_device_event, get_primary_device_group_context
 
 logger = logging.getLogger("agora.cms.ws")
 
@@ -302,16 +302,12 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             await db.commit()
 
         # ── 3b. Notify alert service of reconnection ──
-        _group_id = str(device.group_id) if device.group_id else None
         _device_name = device.name or device_id
         _device_status = device.status.value
-        _group_name = ""
-        if device.group_id:
-            from cms.models.device import DeviceGroup
-            _grp_result = await db.execute(
-                select(DeviceGroup.name).where(DeviceGroup.id == device.group_id)
-            )
-            _group_name = _grp_result.scalar_one_or_none() or ""
+        _group_id, _group_name = await get_primary_device_group_context(
+            db,
+            device_id=device_id,
+        )
         alert_service.device_reconnected(
             device_id,
             device_name=_device_name,
@@ -352,11 +348,12 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             logger.info("Device %s is %s — skipping sync until adopted", device_id, device.status.value)
 
         # ── 6. If device is adopted and has a default asset, push it ──
-        await db.refresh(device, ["default_asset", "group"])
+        await db.refresh(device, ["default_asset", "groups"])
         default_asset = device.default_asset
-        if not default_asset and device.group:
-            await db.refresh(device.group, ["default_asset"])
-            default_asset = device.group.default_asset
+        if not default_asset:
+            for group in getattr(device, "groups", ()) or ():
+                await db.refresh(group, ["default_asset"])
+            default_asset = _resolve_group_default_asset(device)
 
         if device.status == DeviceStatus.ADOPTED and default_asset:
             fetch = await _resolve_asset_for_device(default_asset, device, base_url, db)
@@ -458,11 +455,13 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             # (or silently drops when the device was originally ungrouped).
             try:
                 if device is not None:
-                    await db.refresh(device, ["group_id", "group", "name", "status"])
-                    _group_id = str(device.group_id) if device.group_id else None
+                    await db.refresh(device, ["name", "status"])
+                    _group_id, _group_name = await get_primary_device_group_context(
+                        db,
+                        device_id=device_id,
+                    )
                     _device_name = device.name or device_id
                     _device_status = device.status.value
-                    _group_name = (device.group.name if device.group else "") or ""
                 elif ctx is not None:
                     _group_id = ctx.group_id
                     _device_name = ctx.device_name

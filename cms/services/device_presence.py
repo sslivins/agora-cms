@@ -24,7 +24,8 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.models.device import Device, DeviceGroup
+from cms.models.device import Device
+from cms.services.device_events import get_primary_device_group_context
 
 logger = logging.getLogger("agora.cms.device_presence")
 
@@ -228,7 +229,7 @@ async def mark_offline_and_alert(
         .where(Device.id == device_id)
         .where(Device.connection_id == expected_connection_id)
         .values(online=False, connection_id=None)
-        .returning(Device.name, Device.group_id, Device.status)
+        .returning(Device.name, Device.status)
     )
     row = result.first()
     await db.commit()
@@ -239,19 +240,17 @@ async def mark_offline_and_alert(
         )
         return False
 
-    group_name = ""
-    if row.group_id is not None:
-        g = await db.execute(
-            select(DeviceGroup.name).where(DeviceGroup.id == row.group_id)
-        )
-        group_name = g.scalar_one_or_none() or ""
+    group_id, group_name = await get_primary_device_group_context(
+        db,
+        device_id=device_id,
+    )
 
     try:
         from cms.services.alert_service import alert_service
         alert_service.device_disconnected(
             device_id,
             device_name=row.name or device_id,
-            group_id=str(row.group_id) if row.group_id else None,
+            group_id=group_id,
             group_name=group_name,
             status=(
                 row.status.value
@@ -387,7 +386,7 @@ async def update_status(
             .where(Device.online.is_(False))
             .values(online=True)
             .returning(
-                Device.name, Device.group_id, Device.status,
+                Device.name, Device.status,
             )
         )
         healed_row = heal_claim.first()
@@ -402,21 +401,16 @@ async def update_status(
         # Done after commit so we don't extend the heartbeat
         # transaction; tiny extra round-trip on the rare transition
         # edge only.
-        group_name = ""
-        if healed_row.group_id is not None:
-            group_name = (
-                await db.execute(
-                    select(DeviceGroup.name).where(
-                        DeviceGroup.id == healed_row.group_id
-                    )
-                )
-            ).scalar_one_or_none() or ""
+        group_id, group_name = await get_primary_device_group_context(
+            db,
+            device_id=device_id,
+        )
         try:
             from cms.services.alert_service import alert_service
             alert_service.device_reconnected(
                 device_id,
                 device_name=healed_row.name or device_id,
-                group_id=str(healed_row.group_id) if healed_row.group_id else None,
+                group_id=group_id,
                 group_name=group_name,
                 status=(
                     healed_row.status.value

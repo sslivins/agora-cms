@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, union_all
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -15,7 +15,6 @@ from shared.database import get_session_factory as _get_session_factory
 from cms.models.asset import Asset, AssetVariant, VariantStatus
 from shared.models.asset import AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.schedule import Schedule
 from cms.models.schedule_device_skip import ScheduleDeviceSkip
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
@@ -32,6 +31,7 @@ from cms.schemas.protocol import (
     SyncMessage,
 )
 from cms.services.transport import get_transport
+from cms.services.device_membership import effective_device_group_rows_subquery
 from cms import metrics as _metrics
 
 logger = logging.getLogger("agora.cms.scheduler")
@@ -1114,38 +1114,17 @@ async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:
 async def _load_adopted_devices_by_group_ids(group_ids: set, db) -> dict:
     """Resolve adopted devices for each group during the mirror period.
 
-    Stage 2 dual-writes ``Device.group_id`` into
-    ``device_group_memberships`` on production mutation paths, but some
-    legacy fixtures/import paths still set only the scalar FK. Until the
-    contract phase removes ``group_id``, treat the join table as the primary
-    read path while defensively OR-ing the legacy scalar to preserve
-    regression-free behavior.
+    Stage 8a reads the join table as the primary source of truth while keeping
+    the legacy scalar in one centralized union helper until Stage 8b actually
+    drops ``devices.group_id``.
     """
     if not group_ids:
         return {}
 
-    membership_targets = (
-        select(
-            DeviceGroupMembership.group_id.label("group_id"),
-            DeviceGroupMembership.device_id.label("device_id"),
-        )
-        .join(Device, Device.id == DeviceGroupMembership.device_id)
-        .where(
-            DeviceGroupMembership.group_id.in_(group_ids),
-            Device.status == DeviceStatus.ADOPTED,
-        )
+    target_rows = effective_device_group_rows_subquery(
+        group_ids=group_ids,
+        statuses=DeviceStatus.ADOPTED,
     )
-    legacy_targets = (
-        select(
-            Device.group_id.label("group_id"),
-            Device.id.label("device_id"),
-        )
-        .where(
-            Device.group_id.in_(group_ids),
-            Device.status == DeviceStatus.ADOPTED,
-        )
-    )
-    target_rows = union_all(membership_targets, legacy_targets).subquery()
     result = await db.execute(select(target_rows.c.group_id, target_rows.c.device_id))
     devices_by_group: dict = {}
     for gid, did in result.all():
@@ -1266,7 +1245,6 @@ async def _build_device_sync_impl(
         .options(
             selectinload(Device.default_asset),
             selectinload(Device.groups).selectinload(DeviceGroup.default_asset),
-            selectinload(Device.group).selectinload(DeviceGroup.default_asset),
         )
         .where(Device.id == device_id)
     )
