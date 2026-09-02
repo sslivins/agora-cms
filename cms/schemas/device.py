@@ -124,6 +124,36 @@ class DeviceGroupMembershipMutationOut(BaseModel):
     schedules_removed: list[DeviceScheduleMatchSummary] = Field(default_factory=list)
 
 
+class DeviceScheduleStatusSummary(BaseModel):
+    schedule_id: uuid.UUID
+    schedule_name: str
+    group_id: uuid.UUID | None = None
+    group_name: str | None = None
+    asset_filename: str | None = None
+    priority: int
+    start_time: str
+    end_time: str
+    countdown: str | None = None
+    day_label: str | None = None
+    preempted: bool = False
+    starting: bool = False
+    no_targets: bool = False
+    resumes_at: str | None = None
+    source: str | None = None
+    preempting_schedule_id: uuid.UUID | None = None
+    preempting_schedule_name: str | None = None
+    preempting_group_id: uuid.UUID | None = None
+    preempting_group_name: str | None = None
+    preempting_priority: int | None = None
+
+
+class DeviceScheduleStatusOut(BaseModel):
+    device_id: str
+    now_playing: DeviceScheduleStatusSummary | None = None
+    coming_up: list[DeviceScheduleStatusSummary] = Field(default_factory=list)
+    preempted: list[DeviceScheduleStatusSummary] = Field(default_factory=list)
+
+
 class DeviceGroupAddRequest(BaseModel):
     group_id: uuid.UUID
 
@@ -175,5 +205,4 @@ class SetPasswordRequest(BaseModel):
 
 class ToggleRequest(BaseModel):
     enabled: StrictBool
-
 

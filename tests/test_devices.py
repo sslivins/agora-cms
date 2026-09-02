@@ -1,7 +1,7 @@
 """Tests for device API endpoints."""
 
 import uuid
-from datetime import time
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -549,6 +549,118 @@ class TestGetSingleDevice:
         assert dev["pipeline_state"] is None
         assert dev["display_connected"] is None
         assert dev["has_active_schedule"] is False
+
+
+@pytest.mark.asyncio
+class TestDeviceScheduleStatus:
+    async def test_schedule_status_reports_now_playing_coming_up_and_preempted(
+        self, client, db_session
+    ):
+        from cms.models.asset import Asset
+        from cms.models.device import Device, DeviceGroup, DeviceStatus
+        from cms.models.device_group_membership import DeviceGroupMembership
+        from cms.models.schedule import Schedule
+        from shared.models.asset import AssetType
+
+        now = datetime.now(timezone.utc)
+        current_start = (now - timedelta(minutes=30)).time().replace(microsecond=0)
+        current_end = (now + timedelta(minutes=30)).time().replace(microsecond=0)
+        preempt_end = (now + timedelta(minutes=15)).time().replace(microsecond=0)
+        next_start = (now + timedelta(minutes=45)).time().replace(microsecond=0)
+        next_end = (now + timedelta(minutes=90)).time().replace(microsecond=0)
+
+        group_a = DeviceGroup(id=uuid.uuid4(), name="Status Alpha")
+        group_b = DeviceGroup(id=uuid.uuid4(), name="Status Beta")
+        db_session.add_all([group_a, group_b])
+        await db_session.flush()
+
+        device = Device(
+            id="status-dev-001",
+            name="Status Device",
+            status=DeviceStatus.ADOPTED,
+            group_id=group_a.id,
+        )
+        db_session.add(device)
+        await db_session.flush()
+        db_session.add_all(
+            [
+                DeviceGroupMembership(device_id=device.id, group_id=group_a.id),
+                DeviceGroupMembership(device_id=device.id, group_id=group_b.id),
+            ]
+        )
+
+        asset_low = Asset(
+            id=uuid.uuid4(),
+            filename="low.mp4",
+            original_filename="low.mp4",
+            asset_type=AssetType.VIDEO,
+            checksum="low",
+        )
+        asset_high = Asset(
+            id=uuid.uuid4(),
+            filename="high.mp4",
+            original_filename="high.mp4",
+            asset_type=AssetType.VIDEO,
+            checksum="high",
+        )
+        asset_next = Asset(
+            id=uuid.uuid4(),
+            filename="next.mp4",
+            original_filename="next.mp4",
+            asset_type=AssetType.VIDEO,
+            checksum="next",
+        )
+        db_session.add_all([asset_low, asset_high, asset_next])
+        await db_session.flush()
+
+        low = Schedule(
+            id=uuid.uuid4(),
+            name="Low Priority",
+            group_id=group_a.id,
+            asset_id=asset_low.id,
+            start_time=current_start,
+            end_time=current_end,
+            priority=1,
+            enabled=True,
+        )
+        high = Schedule(
+            id=uuid.uuid4(),
+            name="High Priority",
+            group_id=group_b.id,
+            asset_id=asset_high.id,
+            start_time=current_start,
+            end_time=preempt_end,
+            priority=10,
+            enabled=True,
+        )
+        coming = Schedule(
+            id=uuid.uuid4(),
+            name="Coming Soon",
+            group_id=group_a.id,
+            asset_id=asset_next.id,
+            start_time=next_start,
+            end_time=next_end,
+            priority=3,
+            enabled=True,
+        )
+        db_session.add_all([low, high, coming])
+        await db_session.commit()
+
+        resp = await client.get("/api/devices/status-dev-001/schedule-status")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        assert data["device_id"] == "status-dev-001"
+        assert data["now_playing"]["schedule_name"] == "High Priority"
+        assert data["now_playing"]["priority"] == 10
+        assert data["now_playing"]["group_name"] == "Status Beta"
+
+        assert [item["schedule_name"] for item in data["preempted"]] == ["Low Priority"]
+        assert data["preempted"][0]["preempting_schedule_name"] == "High Priority"
+        assert data["preempted"][0]["preempting_group_name"] == "Status Beta"
+        assert data["preempted"][0]["resumes_at"] is not None
+
+        assert [item["schedule_name"] for item in data["coming_up"]] == ["Coming Soon"]
 
 
 @pytest.mark.asyncio

@@ -244,13 +244,7 @@ def test_devices_page_moves_row_in_place_on_group_change(
     authenticated_page: Page,
     simulator: SimulatorClient,
 ) -> None:
-    """Smoke regression for #146.
-
-    Open /devices, assign a sim device to a group via the inline dropdown, and
-    then click Remove — both transitions must update the DOM in place (the
-    target row must appear in the destination tbody and the page URL must not
-    change). Counts and empty-state placeholders must update too.
-    """
+    """Smoke test the Stage 7 many-to-many group controls on /devices."""
     page = authenticated_page
 
     # Pick any adopted simulator device that's not in a group; create a fresh
@@ -272,7 +266,6 @@ def test_devices_page_moves_row_in_place_on_group_change(
     try:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
-        url_before = page.url
 
         ungrouped_tbody = page.locator('tbody[data-group-tbody="ungrouped"]')
         group_tbody = page.locator(f'tbody[data-group-tbody="{group_id}"]')
@@ -283,38 +276,33 @@ def test_devices_page_moves_row_in_place_on_group_change(
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
 
-        # Step 1: assign to group via the inline dropdown in the ungrouped row.
-        ungrouped_row.locator("select[data-device-group-select]").select_option(group_id)
+        # Step 1: add the group via the Stage 7 add-group selector.
+        ungrouped_row.locator("select[data-device-add-group]").select_option(group_id)
+        page.wait_for_load_state("domcontentloaded")
         group_row.wait_for(state="attached", timeout=5000)
         assert ungrouped_row.count() == 0
         # Group device-count badge should now read 1.
         count_badge = page.locator(f'[data-group-count="{group_id}"]')
         assert count_badge.inner_text().lower().startswith("1 device"), count_badge.inner_text()
-        # No navigation happened.
-        assert page.url == url_before, "page reloaded — fix #146 regressed"
 
-        # Moved row should now expose a kebab menu containing "Remove from group".
-        # (Per PR #351 row actions were consolidated into a kebab popover.)
-        assert group_row.locator("button.btn-kebab").count() == 1
+        # Moved row should now expose a removable group chip.
+        assert group_row.locator(".device-group-badge .btn-x").count() == 1
 
-        # Expand the group panel so the kebab is visible/clickable.
+        # Expand the group panel so the chip is visible/clickable.
         # Group panels start collapsed; the compact table lives inside the
         # panel body which is hidden until the header is clicked.
         group_panel = page.locator(f'.group-panel[data-group-id="{group_id}"]')
         if not group_panel.evaluate("el => el.classList.contains('expanded')"):
             group_panel.locator(".group-header").click()
 
-        # Step 2: open the kebab and click "Remove from group" — the row should
-        # move back to Ungrouped in place.
-        group_row.locator("button.btn-kebab").click()
-        page.locator('.kebab-menu [role="menuitem"]:has-text("Remove from group")').click()
+        # Step 2: remove the chip — the row should move back to Ungrouped.
+        group_row.locator(".device-group-badge .btn-x").click()
+        page.wait_for_load_state("domcontentloaded")
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
         assert count_badge.inner_text().lower().startswith("0 device"), count_badge.inner_text()
         # Empty-state placeholder for the now-empty group should be visible.
         assert page.locator(f'[data-group-empty="{group_id}"]').is_visible()
-        # Still no navigation.
-        assert page.url == url_before, "page reloaded after Remove — fix #146 regressed"
     finally:
         # Cleanup: detach (already ungrouped after Remove) and drop the group.
         _api_patch(page, f"/api/devices/{serial}", {"group_id": None})

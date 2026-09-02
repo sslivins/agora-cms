@@ -238,12 +238,11 @@ class TestPanelRichRowContract:
 
 
 @pytest.mark.asyncio
-class TestRemoveFromGroupKebab:
-    """Restored in 5784afe after a Phase C macro consolidation regression.
-    Guards against the kebab item disappearing again, and exercises the
-    PATCH endpoint that backs it."""
+class TestGroupRemovalControls:
+    """Stage 7 replaces the singular Remove-from-group kebab with
+    multi-group controls on the row itself."""
 
-    async def test_admin_sees_remove_from_group_on_grouped_row(
+    async def test_admin_sees_multi_group_controls_on_grouped_row(
         self, client, grouped_update_device
     ):
         gid = grouped_update_device["group_id"]
@@ -262,9 +261,9 @@ class TestRemoveFromGroupKebab:
         assert m, "couldn't locate device row block for kebab assertion"
         row_block = m.group(0)
         assert (
-            f"assignGroup('{did}', '')" in row_block
-            and "Remove from group" in row_block
-        ), "Remove from group kebab item missing on grouped device row"
+            "data-device-group-id=" in row_block
+            and f"clearDeviceGroups('{did}')" in row_block
+        ), "expected Stage 7 multi-group controls on grouped device row"
 
     async def test_patch_group_id_null_unassigns_device(
         self, client, grouped_update_device

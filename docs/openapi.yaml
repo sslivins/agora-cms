@@ -708,6 +708,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/schedule-status:
+    get:
+      summary: Get Device Schedule Status Route
+      operationId: get_device_schedule_status_route_api_devices__device_id__schedule_status_get
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceScheduleStatusOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/{device_id}/groups:
     post:
       summary: Add Device Group Membership
@@ -6421,6 +6445,130 @@ components:
       - name
       - group_id
       title: DeviceScheduleMatchSummary
+    DeviceScheduleStatusOut:
+      properties:
+        device_id:
+          type: string
+          title: Device Id
+        now_playing:
+          anyOf:
+          - $ref: '#/components/schemas/DeviceScheduleStatusSummary'
+          - type: 'null'
+        coming_up:
+          items:
+            $ref: '#/components/schemas/DeviceScheduleStatusSummary'
+          type: array
+          title: Coming Up
+        preempted:
+          items:
+            $ref: '#/components/schemas/DeviceScheduleStatusSummary'
+          type: array
+          title: Preempted
+      type: object
+      required:
+      - device_id
+      title: DeviceScheduleStatusOut
+    DeviceScheduleStatusSummary:
+      properties:
+        schedule_id:
+          type: string
+          format: uuid
+          title: Schedule Id
+        schedule_name:
+          type: string
+          title: Schedule Name
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        group_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Name
+        asset_filename:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Filename
+        priority:
+          type: integer
+          title: Priority
+        start_time:
+          type: string
+          title: Start Time
+        end_time:
+          type: string
+          title: End Time
+        countdown:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Countdown
+        day_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Day Label
+        preempted:
+          type: boolean
+          title: Preempted
+          default: false
+        starting:
+          type: boolean
+          title: Starting
+          default: false
+        no_targets:
+          type: boolean
+          title: No Targets
+          default: false
+        resumes_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resumes At
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        preempting_schedule_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Preempting Schedule Id
+        preempting_schedule_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preempting Schedule Name
+        preempting_group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Preempting Group Id
+        preempting_group_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preempting Group Name
+        preempting_priority:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Preempting Priority
+      type: object
+      required:
+      - schedule_id
+      - schedule_name
+      - priority
+      - start_time
+      - end_time
+      title: DeviceScheduleStatusSummary
     DeviceStatus:
       type: string
       enum:
