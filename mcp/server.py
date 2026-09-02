@@ -51,6 +51,9 @@ TOOL_PERMISSIONS: dict[str, str | None] = {
     "get_device": "devices:read",
     "adopt_device": "devices:write",
     "update_device": "devices:write",
+    "add_device_to_group": "devices:write",
+    "remove_device_from_group": "devices:write",
+    "replace_device_groups": "devices:write",
     "reboot_device": "devices:reboot",
     "delete_device": "devices:delete",
     "list_groups": "groups:read",
@@ -221,14 +224,18 @@ async def update_device(
     device_id: str,
     name: str | None = None,
     group_id: str | None = None,
+    group_ids: list[str] | None = None,
     default_asset_id: str | None = None,
 ) -> str:
-    """Update a device's name, group assignment, or default asset (splash screen).
+    """Update a device's name, group assignment(s), or default asset.
 
     Args:
         device_id: The device ID to update.
         name: New display name for the device.
-        group_id: UUID of the group to assign the device to, or null to remove from group.
+        group_id: Deprecated single-group assignment field. Assigns exactly one group
+            (or null to ungroup) using the legacy scalar contract.
+        group_ids: Full replacement membership set for true multi-group assignment.
+            Do not provide together with group_id.
         default_asset_id: UUID of the asset to use as the device's default splash screen,
             or null to clear (falls back to group default, then system splash).
     """
@@ -239,6 +246,8 @@ async def update_device(
         fields["name"] = name
     if group_id is not None:
         fields["group_id"] = group_id
+    if group_ids is not None:
+        fields["group_ids"] = group_ids
     if default_asset_id is not None:
         fields["default_asset_id"] = default_asset_id if default_asset_id != "null" else None
     result = await _call_api("update_device", device_id, fields)
@@ -269,6 +278,45 @@ async def delete_device(device_id: str) -> str:
         return err
     await _call_api("delete_device", device_id)
     return f"Device {device_id} deleted"
+
+
+@mcp.tool()
+async def add_device_to_group(device_id: str, group_id: str) -> str:
+    """Add one group membership to a device.
+
+    Args:
+        device_id: The device ID to update.
+        group_id: UUID of the group to add.
+    """
+    if err := _check_permission("add_device_to_group"):
+        return err
+    return _json_result(await _call_api("add_device_to_group", device_id, group_id))
+
+
+@mcp.tool()
+async def remove_device_from_group(device_id: str, group_id: str) -> str:
+    """Remove one group membership from a device.
+
+    Args:
+        device_id: The device ID to update.
+        group_id: UUID of the group to remove.
+    """
+    if err := _check_permission("remove_device_from_group"):
+        return err
+    return _json_result(await _call_api("remove_device_from_group", device_id, group_id))
+
+
+@mcp.tool()
+async def replace_device_groups(device_id: str, group_ids: list[str]) -> str:
+    """Replace a device's full group membership set.
+
+    Args:
+        device_id: The device ID to update.
+        group_ids: Full replacement group UUID list. May be empty to ungroup.
+    """
+    if err := _check_permission("replace_device_groups"):
+        return err
+    return _json_result(await _call_api("replace_device_groups", device_id, group_ids))
 
 
 # ── Groups ──

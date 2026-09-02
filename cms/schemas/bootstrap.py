@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------
@@ -49,7 +49,14 @@ class BootstrapAdoptRequest(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     location: str | None = Field(default=None, max_length=255)
     group_id: str | None = None  # uuid
+    group_ids: list[str] | None = None
     profile_id: str = Field(min_length=1)  # uuid; required
+
+    @model_validator(mode="after")
+    def _reject_ambiguous_group_assignment(self):
+        if self.group_id is not None and self.group_ids is not None:
+            raise ValueError("Provide either group_id or group_ids, not both")
+        return self
 
 
 class AdoptPendingRequest(BaseModel):
@@ -63,7 +70,14 @@ class AdoptPendingRequest(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     location: str | None = Field(default=None, max_length=255)
     group_id: str | None = None  # uuid
+    group_ids: list[str] | None = None
     profile_id: str = Field(min_length=1)  # uuid; required
+
+    @model_validator(mode="after")
+    def _reject_ambiguous_group_assignment(self):
+        if self.group_id is not None and self.group_ids is not None:
+            raise ValueError("Provide either group_id or group_ids, not both")
+        return self
 
 
 class BootstrapAdoptResponse(BaseModel):
