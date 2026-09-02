@@ -914,7 +914,6 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     # All adopted devices
     devices_query = (
         select(Device)
-        .options(selectinload(Device.group))
         .where(Device.status == DeviceStatus.ADOPTED)
         .order_by(Device.name, Device.id)
     )
@@ -933,7 +932,6 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     if can_manage:
         orphan_query = (
             select(Device)
-            .options(selectinload(Device.group))
             .where(Device.status == DeviceStatus.ORPHANED)
             .order_by(Device.name, Device.id)
         )
@@ -943,6 +941,14 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         orphaned_devices = orphaned_q.scalars().all()
     else:
         orphaned_devices = []
+
+    groups_by_device_id = await _load_effective_group_summaries_by_device_id(
+        list(all_devices) + list(orphaned_devices),
+        db,
+    )
+    for d in list(all_devices) + list(orphaned_devices):
+        d.ui_groups = groups_by_device_id.get(d.id, [])
+        d.ui_group_ids = [group.id for group in d.ui_groups]
 
     # Now Playing — computed from DB + live device state
     now_playing = await compute_now_playing(db, tz, now)
@@ -1002,7 +1008,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         device_states.append({
             "id": d.id,
             "name": d.name or d.id,
-            "group_name": d.group.name if d.group else None,
+            "group_name": d.ui_groups[0].name if getattr(d, "ui_groups", []) else None,
             "is_online": d.is_online,
             "mode": state["mode"] if state else "offline",
             "asset": state["asset"] if state else None,
@@ -1339,7 +1345,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     user_perms = user.role.permissions if user and user.role else []
     can_manage = has_permission(user_perms, DEVICES_MANAGE)
 
-    device_query = select(Device).options(selectinload(Device.group)).order_by(Device.name, Device.id)
+    device_query = select(Device).order_by(Device.name, Device.id)
     if not can_manage:
         device_query = device_query.where(Device.status == DeviceStatus.ADOPTED)
     if not is_admin:

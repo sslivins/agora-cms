@@ -18,9 +18,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Iterable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, false, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cms.models.device import Device, DeviceStatus
 from cms.models.device_group_membership import DeviceGroupMembership
 
 
@@ -47,6 +48,78 @@ def _unique_group_ids(group_ids: Iterable[uuid.UUID] | None) -> list[uuid.UUID]:
 
 def _sorted_group_ids(group_ids: Iterable[uuid.UUID]) -> tuple[uuid.UUID, ...]:
     return tuple(sorted(group_ids, key=lambda gid: str(gid)))
+
+
+def effective_device_group_rows_subquery(
+    *,
+    device_ids: Iterable[str] | None = None,
+    group_ids: Iterable[uuid.UUID] | None = None,
+    statuses: DeviceStatus | Iterable[DeviceStatus] | None = None,
+):
+    """Return ``(device_id, group_id)`` rows for the effective device groups.
+
+    The join table is the primary read path. During Stage 8a we still union the
+    legacy scalar ``devices.group_id`` as a centralized defense-in-depth
+    fallback so any straggling scalar-only rows remain visible until Stage 8b
+    actually drops the column.
+    """
+    membership_rows = select(
+        DeviceGroupMembership.device_id.label("device_id"),
+        DeviceGroupMembership.group_id.label("group_id"),
+    )
+    legacy_rows = (
+        select(
+            Device.id.label("device_id"),
+            Device.group_id.label("group_id"),
+        )
+        .where(Device.group_id.is_not(None))
+    )
+
+    device_id_list = list(device_ids) if device_ids is not None else None
+    if device_id_list is not None:
+        if device_id_list:
+            membership_rows = membership_rows.where(
+                DeviceGroupMembership.device_id.in_(device_id_list)
+            )
+            legacy_rows = legacy_rows.where(Device.id.in_(device_id_list))
+        else:
+            membership_rows = membership_rows.where(false())
+            legacy_rows = legacy_rows.where(false())
+
+    group_id_list = list(group_ids) if group_ids is not None else None
+    if group_id_list is not None:
+        if group_id_list:
+            membership_rows = membership_rows.where(
+                DeviceGroupMembership.group_id.in_(group_id_list)
+            )
+            legacy_rows = legacy_rows.where(Device.group_id.in_(group_id_list))
+        else:
+            membership_rows = membership_rows.where(false())
+            legacy_rows = legacy_rows.where(false())
+
+    if statuses is not None:
+        status_list = (
+            [statuses]
+            if isinstance(statuses, DeviceStatus)
+            else list(statuses)
+        )
+        if status_list:
+            membership_rows = (
+                membership_rows
+                .join(Device, Device.id == DeviceGroupMembership.device_id)
+                .where(Device.status.in_(status_list))
+            )
+            legacy_rows = legacy_rows.where(Device.status.in_(status_list))
+        else:
+            membership_rows = membership_rows.where(false())
+            legacy_rows = legacy_rows.where(false())
+
+    combined = union_all(membership_rows, legacy_rows).subquery()
+    return (
+        select(combined.c.device_id, combined.c.group_id)
+        .distinct()
+        .subquery()
+    )
 
 
 async def _load_membership_group_ids(

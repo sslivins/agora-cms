@@ -51,12 +51,17 @@ from cms.schemas.device import (
 )
 from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, OSUpdateDispatchMessage, RebootMessage, SyncMessage, WipeAssetsMessage
 from cms.services.transport import get_transport
-from cms.services.scheduler import get_device_schedule_status, push_sync_to_device
+from cms.services.scheduler import (
+    _resolve_group_default_asset,
+    get_device_schedule_status,
+    push_sync_to_device,
+)
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
 from cms.services.device_membership import (
     DeviceMembershipChange,
     add_device_to_group,
+    effective_device_group_rows_subquery,
     remove_device_from_group,
     replace_device_group_memberships,
     set_single_group_membership,
@@ -204,6 +209,7 @@ _DEVICE_OUT_OVERLAP_COLUMNS = {
     "online",
     "connection_id",
     "last_status_ts",
+    "group_id",
     "cpu_temp_c",
     "load_avg",
     "uptime_seconds",
@@ -343,23 +349,21 @@ async def _load_effective_group_summaries_by_device_id(
     if not devices:
         return {}
 
-    device_ids = [device.id for device in devices]
+    effective_rows = effective_device_group_rows_subquery(
+        device_ids=[device.id for device in devices],
+    )
     membership_rows = await db.execute(
         select(
-            DeviceGroupMembership.device_id,
-            DeviceGroupMembership.group_id,
-        ).where(DeviceGroupMembership.device_id.in_(device_ids))
+            effective_rows.c.device_id,
+            effective_rows.c.group_id,
+        )
+        .select_from(effective_rows)
     )
     group_ids_by_device_id: dict[str, set[uuid.UUID]] = defaultdict(set)
     all_group_ids: set[uuid.UUID] = set()
     for device_id, group_id in membership_rows.all():
         group_ids_by_device_id[device_id].add(group_id)
         all_group_ids.add(group_id)
-
-    for device in devices:
-        if device.group_id is not None:
-            group_ids_by_device_id[device.id].add(device.group_id)
-            all_group_ids.add(device.group_id)
 
     group_summary_map = await _load_group_summary_map(db, all_group_ids)
     return {
@@ -378,8 +382,10 @@ def _device_membership_out_kwargs(
     device: Device,
     groups: list[DeviceGroupSummary],
 ) -> dict:
+    primary_group = groups[0] if groups else None
     return {
-        "group_name": device.group.name if getattr(device, "group", None) else None,
+        "group_id": primary_group.id if primary_group else None,
+        "group_name": primary_group.name if primary_group else None,
         "group_ids": [group.id for group in groups],
         "groups": groups,
     }
@@ -553,7 +559,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     user_perms = user.role.permissions if user and user.role else []
     can_manage = has_permission(user_perms, DEVICES_MANAGE)
 
-    query = select(Device).options(selectinload(Device.group)).order_by(Device.registered_at)
+    query = select(Device).order_by(Device.registered_at)
     if not can_manage:
         query = query.where(Device.status == DeviceStatus.ADOPTED)
     if not is_admin:
@@ -637,7 +643,6 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
     now = datetime.now(timezone.utc)
 
     device = await _get_device_with_access(device_id, request, db)
-    await db.refresh(device, ["group"])
     groups = (await _load_effective_group_summaries_by_device_id([device], db)).get(device.id, [])
     _transport = get_transport()
     live_states = {s["device_id"]: s for s in await _transport.get_all_states()}
@@ -822,7 +827,7 @@ async def update_device(
         request=request,
     )
     await db.commit()
-    await db.refresh(device, ["group", "default_asset"])
+    await db.refresh(device, ["default_asset"])
 
     # If group_id changed, push a full sync immediately.  The new group
     # may carry schedules that newly target this device (or no longer
@@ -841,9 +846,20 @@ async def update_device(
         base_url = get_asset_base_url(request)
         # Resolve: device default → group default → none (splash)
         effective_asset = device.default_asset
-        if not effective_asset and device.group:
-            await db.refresh(device.group, ["default_asset"])
-            effective_asset = device.group.default_asset
+        if not effective_asset:
+            device_with_groups = (
+                await db.execute(
+                    select(Device)
+                    .options(
+                        selectinload(Device.groups).selectinload(
+                            DeviceGroup.default_asset
+                        )
+                    )
+                    .where(Device.id == device_id)
+                )
+            ).scalar_one_or_none()
+            if device_with_groups is not None:
+                effective_asset = _resolve_group_default_asset(device_with_groups)
 
         if effective_asset:
             await _push_default_asset(device_id, effective_asset, base_url, db)
@@ -928,7 +944,6 @@ async def add_device_group_membership(
         request=request,
     )
     await db.commit()
-    await db.refresh(device, ["group"])
     await push_sync_to_device(device.id, db)
     return await _build_membership_mutation_response(
         device,
@@ -1000,7 +1015,6 @@ async def remove_device_group_membership(
         request=request,
     )
     await db.commit()
-    await db.refresh(device, ["group"])
     await push_sync_to_device(device.id, db)
     return await _build_membership_mutation_response(
         device,
@@ -1076,7 +1090,6 @@ async def replace_device_group_membership_set(
         request=request,
     )
     await db.commit()
-    await db.refresh(device, ["group"])
     await push_sync_to_device(device.id, db)
     return await _build_membership_mutation_response(
         device,
@@ -1489,15 +1502,12 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
     # (e.g. the OOBE screen advances from "waiting for adoption" to "adopted").
     await push_sync_to_device(device_id, db)
 
-    # Resolve group name for the audit description
-    group_name = None
-    if device.group_id:
-        grp_q = await db.execute(select(DeviceGroup.name).where(DeviceGroup.id == device.group_id))
-        group_name = grp_q.scalar_one_or_none()
+    groups = (await _load_effective_group_summaries_by_device_id([device], db)).get(device.id, [])
+    primary_group = groups[0] if groups else None
 
     desc = f"Adopted device '{device.name or device_id}'"
-    if group_name:
-        desc += f" into group '{group_name}'"
+    if primary_group:
+        desc += f" into group '{primary_group.name}'"
     await audit_log(
         db, user=getattr(request.state, "user", None),
         action="device.adopt", resource_type="device",
@@ -1506,8 +1516,8 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
         details={
             "name": device.name,
             "location": device.location,
-            "group_id": str(device.group_id) if device.group_id else None,
-            "group_ids": [str(group_id) for group_id in await get_device_group_ids(device, db)],
+            "group_id": str(primary_group.id) if primary_group else None,
+            "group_ids": [str(group.id) for group in groups],
             "profile_id": str(device.profile_id) if device.profile_id else None,
         },
         request=request,
@@ -1555,12 +1565,13 @@ async def list_groups(request: Request, db: AsyncSession = Depends(get_db)):
     group_ids = await get_user_group_ids(user, db) if user else []
     is_admin = group_ids is None
 
+    effective_rows = effective_device_group_rows_subquery()
     query = (
         select(
             DeviceGroup,
-            func.count(Device.id).label("device_count"),
+            func.count(func.distinct(effective_rows.c.device_id)).label("device_count"),
         )
-        .outerjoin(Device, Device.group_id == DeviceGroup.id)
+        .outerjoin(effective_rows, effective_rows.c.group_id == DeviceGroup.id)
         .group_by(DeviceGroup.id)
         .order_by(DeviceGroup.name)
     )
@@ -1668,11 +1679,13 @@ async def update_group(
         new_default = await db.get(Asset, updates["default_asset_id"])
         if new_default and new_default.asset_type == AssetType.SLIDESHOW:
             from cms.schemas.protocol import CAPABILITY_SLIDESHOW_V1
+            effective_rows = effective_device_group_rows_subquery(
+                group_ids=[group_id],
+                statuses=DeviceStatus.ADOPTED,
+            )
             members_q = await db.execute(
-                select(Device).where(
-                    Device.group_id == group_id,
-                    Device.status == DeviceStatus.ADOPTED,
-                )
+                select(Device)
+                .join(effective_rows, effective_rows.c.device_id == Device.id)
             )
             incompatible = [
                 d for d in members_q.scalars().all()
@@ -1713,10 +1726,13 @@ async def update_group(
         from cms.routers.ws import get_asset_base_url
 
         base_url = get_asset_base_url(request)
+        effective_rows = effective_device_group_rows_subquery(
+            group_ids=[group.id],
+        )
         devices_q = await db.execute(
             select(Device)
             .options(selectinload(Device.default_asset))
-            .where(Device.group_id == group.id)
+            .join(effective_rows, effective_rows.c.device_id == Device.id)
         )
         for device in devices_q.scalars().all():
             # Resolve: device default → group default → none (splash)
@@ -1729,7 +1745,13 @@ async def update_group(
             else:
                 await push_sync_to_device(device.id, db)
 
-    count_q = await db.execute(select(func.count(Device.id)).where(Device.group_id == group.id))
+    effective_rows = effective_device_group_rows_subquery(
+        group_ids=[group.id],
+    )
+    count_q = await db.execute(
+        select(func.count(func.distinct(effective_rows.c.device_id)))
+        .select_from(effective_rows)
+    )
     return DeviceGroupOut(
         id=group.id,
         name=group.name,
@@ -1763,18 +1785,14 @@ async def delete_group(group_id: uuid.UUID, request: Request, db: AsyncSession =
             detail=f"Cannot delete — group is used by {sched_count} schedule(s). Remove it from all schedules first.",
         )
 
+    effective_rows = effective_device_group_rows_subquery(
+        group_ids=[group_id],
+    )
     affected_membership_rows = await db.execute(
-        select(DeviceGroupMembership.device_id).where(
-            DeviceGroupMembership.group_id == group_id
-        )
+        select(effective_rows.c.device_id).select_from(effective_rows)
     )
     affected_device_ids = {
         *affected_membership_rows.scalars().all(),
-        *(
-            await db.execute(
-                select(Device.id).where(Device.group_id == group_id)
-            )
-        ).scalars().all(),
     }
 
     await audit_log(

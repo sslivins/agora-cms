@@ -1032,15 +1032,15 @@
         <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for g in groups %}
-            <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
+            <option value="{{ g.id }}" {% if g.id == ((d.ui_group_ids | default([])) | first) %}selected{% endif %}>{{ g.name }}</option>
             {% endfor %}
         </select>
         {% else %}
-        {{ d.group.name if d.group else '—' }}
+        {{ (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '—' }}
         {% endif %}
     </td>
     <td class="actions" onclick="event.stopPropagation()">
-        {% if d.group_id and 'devices:write' in user_perms %}
+        {% if d.ui_group_ids | default([]) and 'devices:write' in user_perms %}
         {% call kebab_menu() %}
             <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from the group">Remove from group</button>
         {% endcall %}

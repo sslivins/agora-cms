@@ -28,6 +28,7 @@ from cms.schemas.schedule import ScheduleCreate, ScheduleOut, ScheduleUpdate
 from cms.services.scheduler import push_sync_to_affected_devices, push_sync_to_device, _get_target_device_ids, skip_schedule_until, clear_schedule_skip, schedules_conflict, evaluate_schedules
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready, composed_unpublished_reason
+from cms.services.device_membership import effective_device_group_rows_subquery
 
 logger = logging.getLogger("agora.cms.schedules")
 
@@ -168,11 +169,12 @@ def _is_pi5_compatible(device_type: str) -> bool:
 
 async def _validate_webpage_group(group_id: uuid.UUID, db: AsyncSession) -> None:
     """Validate all adopted devices in a group are Pi 5+ for webpage assets."""
+    group_devices = effective_device_group_rows_subquery(
+        group_ids=[group_id],
+        statuses=DeviceStatus.ADOPTED,
+    )
     result = await db.execute(
-        select(Device).where(
-            Device.group_id == group_id,
-            Device.status == DeviceStatus.ADOPTED,
-        )
+        select(Device).join(group_devices, group_devices.c.device_id == Device.id)
     )
     devices = result.scalars().all()
     non_pi5 = [d for d in devices if not _is_pi5_compatible(d.device_type)]
@@ -208,11 +210,12 @@ async def _validate_slideshow_group(
         CAPABILITY_SLIDESHOW_COMPOSED_V1,
     )
 
+    group_devices = effective_device_group_rows_subquery(
+        group_ids=[group_id],
+        statuses=DeviceStatus.ADOPTED,
+    )
     result = await db.execute(
-        select(Device).where(
-            Device.group_id == group_id,
-            Device.status == DeviceStatus.ADOPTED,
-        )
+        select(Device).join(group_devices, group_devices.c.device_id == Device.id)
     )
     devices = result.scalars().all()
     incompatible = [

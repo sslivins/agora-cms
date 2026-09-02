@@ -37,7 +37,7 @@ from cms.schemas.protocol import (
     Sibling,
 )
 from cms.services.alert_service import alert_service
-from cms.services.device_events import emit_device_event
+from cms.services.device_events import emit_device_event, get_primary_device_group_context
 from cms.services.scheduler import (
     clear_now_playing,
     log_schedule_event,
@@ -95,6 +95,15 @@ class InboundContext:
     # None on the direct-WebSocket path (local transport); callers then
     # fall back to ``datetime.now(UTC)``.
     received_at: datetime | None = None
+
+
+async def _refresh_group_context(ctx: InboundContext, db: AsyncSession) -> None:
+    group_id, group_name = await get_primary_device_group_context(
+        db,
+        device_id=ctx.device_id,
+    )
+    ctx.group_id = group_id
+    ctx.group_name = group_name
 
 
 async def _resolve_variant_or_source(
@@ -369,14 +378,11 @@ async def dispatch_device_message(
         # and alert_service silently drops the sample.
         await db.refresh(
             device,
-            ["group_id", "group", "name", "status", "display_connected", "error"],
+            ["name", "status", "display_connected", "error"],
         )
-        ctx.group_id = str(device.group_id) if device.group_id else None
+        await _refresh_group_context(ctx, db)
         ctx.device_name = device.name or device_id
         ctx.device_status = device.status.value
-        ctx.group_name = ""
-        if device.group_id and device.group is not None:
-            ctx.group_name = device.group.name or ""
 
         # Capture previous values for transition detection *before* the
         # UPDATE overwrites them.  Stage 2c: read from the Device row

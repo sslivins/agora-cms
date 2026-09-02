@@ -556,12 +556,7 @@ class AlertService:
             .where(Device.last_seen.is_not(None))
             .where(Device.last_seen < cutoff)
             .values(online=False, connection_id=None)
-            .returning(
-                Device.id,
-                Device.name,
-                Device.group_id,
-                Device.status,
-            )
+            .returning(Device.id, Device.name, Device.status)
         )
         claimed = (await db.execute(claim_stmt)).all()
         if not claimed:
@@ -572,7 +567,6 @@ class AlertService:
             group_snapshot = await snapshot_device_groups(
                 db,
                 device_id=row.id,
-                primary_group_id=row.group_id,
             )
             # Only adopted + grouped devices have an owner to alert.
             if row.status != DeviceStatus.ADOPTED or not group_snapshot:
@@ -683,7 +677,6 @@ class AlertService:
         for device_id in claimed_ids:
             device = (await db.execute(
                 select(Device)
-                .options(selectinload(Device.group))
                 .where(Device.id == device_id)
             )).scalar_one_or_none()
             if not device or device.status != DeviceStatus.ADOPTED:
@@ -696,8 +689,6 @@ class AlertService:
             group_snapshot = await snapshot_device_groups(
                 db,
                 device_id=device.id,
-                primary_group_id=device.group_id,
-                primary_group_name=device.group.name if device.group else "",
             )
             if not group_snapshot:
                 continue
@@ -813,6 +804,9 @@ class AlertService:
         # Ungrouped / non-adopted: reset persisted state so the first
         # alert after re-adoption/regrouping fires cleanly.
         if status != "adopted":
+            await self._reset_temp_state(db, device_id)
+            return
+        if not group_id:
             await self._reset_temp_state(db, device_id)
             return
 
