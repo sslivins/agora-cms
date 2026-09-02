@@ -9,7 +9,9 @@ Covers:
 import uuid
 
 import pytest
+from sqlalchemy import select
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.device_profile import DeviceProfile
 
 
@@ -159,6 +161,50 @@ class TestAdoptWithGroup:
         resp = await client.get("/api/devices")
         dev = [d for d in resp.json() if d["id"] == "adopt-test-001"][0]
         assert dev["group_id"] is None
+
+    async def test_adopt_with_group_ids_sets_full_membership(self, client, db_session):
+        await _create_pending_device(db_session)
+        group_a = await _create_group(db_session, name="Alpha")
+        group_b = await _create_group(db_session, name="Beta")
+        profile = await _create_profile(db_session)
+
+        resp = await client.post(
+            "/api/devices/adopt-test-001/adopt",
+            json={
+                "group_ids": [str(group_a.id), str(group_b.id)],
+                "profile_id": str(profile.id),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        resp = await client.get("/api/devices/adopt-test-001")
+        dev = resp.json()
+        assert dev["group_id"] == str(group_a.id)
+        assert set(dev["group_ids"]) == {str(group_a.id), str(group_b.id)}
+
+        memberships = (
+            await db_session.execute(
+                select(DeviceGroupMembership.group_id).where(
+                    DeviceGroupMembership.device_id == "adopt-test-001",
+                )
+            )
+        ).scalars().all()
+        assert set(memberships) == {group_a.id, group_b.id}
+
+    async def test_adopt_rejects_group_id_and_group_ids_together(self, client, db_session):
+        await _create_pending_device(db_session)
+        group = await _create_group(db_session, name="Alpha")
+        profile = await _create_profile(db_session)
+
+        resp = await client.post(
+            "/api/devices/adopt-test-001/adopt",
+            json={
+                "group_id": str(group.id),
+                "group_ids": [str(group.id)],
+                "profile_id": str(profile.id),
+            },
+        )
+        assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -425,3 +471,10 @@ class TestAdoptRequestSchema:
         from cms.schemas.device import AdoptRequest
         with pytest.raises(Exception):
             AdoptRequest(profile_id="not-a-uuid")
+
+    def test_group_id_and_group_ids_together_invalid(self):
+        from cms.schemas.device import AdoptRequest
+        gid = uuid.uuid4()
+        pid = uuid.uuid4()
+        with pytest.raises(Exception):
+            AdoptRequest(group_id=gid, group_ids=[gid], profile_id=pid)

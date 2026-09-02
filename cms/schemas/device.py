@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from cms.models.device import DeviceStatus
 
@@ -18,6 +18,8 @@ class DeviceOut(BaseModel):
     status: DeviceStatus
     group_id: Optional[uuid.UUID] = None
     group_name: Optional[str] = None
+    group_ids: list[uuid.UUID] = Field(default_factory=list)
+    groups: list["DeviceGroupSummary"] = Field(default_factory=list)
     default_asset_id: Optional[uuid.UUID] = None
     timezone: Optional[str] = None
     firmware_version: str
@@ -81,10 +83,53 @@ class DeviceUpdate(BaseModel):
     location: Optional[str] = None
     status: Optional[DeviceStatus] = None
     group_id: Optional[uuid.UUID] = None
+    group_ids: list[uuid.UUID] | None = None
     default_asset_id: Optional[uuid.UUID] = None
     profile_id: Optional[uuid.UUID] = None
     timezone: Optional[str] = None
     update_channel: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _reject_ambiguous_group_update(self):
+        if self.group_id is not None and self.group_ids is not None:
+            raise ValueError("Provide either group_id or group_ids, not both")
+        return self
+
+
+class DeviceGroupSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class DeviceScheduleMatchSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    group_id: uuid.UUID
+    group_name: str | None = None
+
+
+class DeviceGroupMembershipMutationOut(BaseModel):
+    device_id: str
+    dry_run: bool = False
+    changed: bool = False
+    group_id: Optional[uuid.UUID] = None
+    group_name: Optional[str] = None
+    group_ids: list[uuid.UUID] = Field(default_factory=list)
+    groups: list[DeviceGroupSummary] = Field(default_factory=list)
+    current_group_ids: list[uuid.UUID] = Field(default_factory=list)
+    current_groups: list[DeviceGroupSummary] = Field(default_factory=list)
+    added_group_ids: list[uuid.UUID] = Field(default_factory=list)
+    removed_group_ids: list[uuid.UUID] = Field(default_factory=list)
+    schedules_added: list[DeviceScheduleMatchSummary] = Field(default_factory=list)
+    schedules_removed: list[DeviceScheduleMatchSummary] = Field(default_factory=list)
+
+
+class DeviceGroupAddRequest(BaseModel):
+    group_id: uuid.UUID
+
+
+class DeviceGroupReplaceRequest(BaseModel):
+    group_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class DeviceGroupOut(BaseModel):
@@ -114,7 +159,14 @@ class AdoptRequest(BaseModel):
     name: Optional[str] = None
     location: Optional[str] = None
     group_id: Optional[uuid.UUID] = None
+    group_ids: list[uuid.UUID] | None = None
     profile_id: uuid.UUID
+
+    @model_validator(mode="after")
+    def _reject_ambiguous_group_adopt(self):
+        if self.group_id is not None and self.group_ids is not None:
+            raise ValueError("Provide either group_id or group_ids, not both")
+        return self
 
 
 class SetPasswordRequest(BaseModel):
@@ -123,6 +175,5 @@ class SetPasswordRequest(BaseModel):
 
 class ToggleRequest(BaseModel):
     enabled: StrictBool
-
 
 

@@ -92,6 +92,23 @@ class CMSClient:
     async def update_device(self, device_id: str, fields: dict) -> dict:
         return await self._patch(f"/api/devices/{device_id}", json=fields)
 
+    async def add_device_to_group(self, device_id: str, group_id: str) -> dict:
+        return await self._post(
+            f"/api/devices/{device_id}/groups",
+            json={"group_id": group_id},
+        )
+
+    async def remove_device_from_group(self, device_id: str, group_id: str) -> dict:
+        resp = await self._client.delete(f"/api/devices/{device_id}/groups/{group_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def replace_device_groups(self, device_id: str, group_ids: list[str]) -> dict:
+        return await self._put(
+            f"/api/devices/{device_id}/groups",
+            json={"group_ids": group_ids},
+        )
+
     async def adopt_device(self, device_id: str) -> dict:
         return await self._post(f"/api/devices/{device_id}/adopt")
 
