@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, time, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -311,8 +312,6 @@ class TestBuildDeviceSync:
             name="Sync Test",
             status=DeviceStatus.ADOPTED,
         )
-        if group:
-            device.group = group
         if default_asset:
             device.default_asset = default_asset
         db.add(device)
@@ -470,7 +469,7 @@ class TestBuildDeviceSync:
         assert sync.default_asset == "shared-splash.png"
         assert sync.splash == "shared-splash.png"
 
-    async def test_default_asset_ambiguous_group_defaults_fall_back_to_none(self, db, caplog):
+    async def test_default_asset_ambiguous_group_defaults_fall_back_to_none(self, db):
         """Distinct group defaults must not be silently chosen."""
         await self._setup_tz(db)
         default_a = Asset(filename="group-a-splash.png", asset_type=AssetType.IMAGE, size_bytes=100, checksum="gsa")
@@ -487,10 +486,12 @@ class TestBuildDeviceSync:
         db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
         await db.commit()
 
-        sync = await build_device_sync(device.id, db)
+        with patch("cms.services.scheduler.logger.warning") as mock_warning:
+            sync = await build_device_sync(device.id, db)
         assert sync.default_asset is None
         assert sync.splash is None
-        assert "Ambiguous group default assets" in caplog.text
+        mock_warning.assert_called_once()
+        assert "Ambiguous group default assets" in mock_warning.call_args.args[0]
 
     async def test_splash_none_when_no_default(self, db):
         """splash is None when device has no default asset at any level."""
@@ -629,7 +630,6 @@ class TestBuildDeviceSync:
         other_device = Device(id="other-pi", name="Other", status=DeviceStatus.ADOPTED)
         db.add_all([asset, other_group, other_device])
         await db.flush()
-        other_device.group_id = other_group.id
         await _add_memberships(db, other_device.id, other_group.id)
 
         await self._setup_device(db)

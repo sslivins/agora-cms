@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta, timezone
 import pytest
 import pytest_asyncio
 
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.device_profile import DeviceProfile
 
 
@@ -198,10 +199,11 @@ class TestDeviceCRUD:
         device = Device(
             id="test-pi-fallback", name="test-pi-fallback",
             status=DeviceStatus.ADOPTED,
-            group_id=group.id,
             default_asset_id=device_asset.id,
         )
         db_session.add(device)
+        await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
 
         # Clear device default — should fall back to group default
@@ -270,10 +272,11 @@ class TestDeviceCRUD:
         db_session.add(group)
         await db_session.flush()
 
-        device = Device(id="del-sched-pi", name="Del Sched", status=DeviceStatus.ADOPTED, group_id=group.id)
+        device = Device(id="del-sched-pi", name="Del Sched", status=DeviceStatus.ADOPTED)
         asset = Asset(filename="test.mp4", asset_type=AssetType.VIDEO, size_bytes=5000, checksum="abc")
         db_session.add_all([device, asset])
         await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         schedule = Schedule(
             name="Test Schedule",
@@ -413,10 +416,7 @@ class TestDevicePlaybackFields:
         db_session.add_all([asset, group])
         await db_session.flush()
 
-        from sqlalchemy import update
-        await db_session.execute(
-            update(Device).where(Device.id == "pb-sched").values(group_id=group.id)
-        )
+        db_session.add(DeviceGroupMembership(device_id="pb-sched", group_id=group.id))
 
         schedule = Schedule(
             id=uuid.uuid4(), name="Test Sched", asset_id=asset.id,
@@ -516,10 +516,7 @@ class TestGetSingleDevice:
         db_session.add_all([asset, group])
         await db_session.flush()
 
-        from sqlalchemy import update
-        await db_session.execute(
-            update(Device).where(Device.id == "single-sched").values(group_id=group.id)
-        )
+        db_session.add(DeviceGroupMembership(device_id="single-sched", group_id=group.id))
 
         schedule = Schedule(
             id=uuid.uuid4(), name="Single Sched", asset_id=asset.id,
@@ -578,7 +575,6 @@ class TestDeviceScheduleStatus:
             id="status-dev-001",
             name="Status Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group_a.id,
         )
         db_session.add(device)
         await db_session.flush()
@@ -1421,9 +1417,14 @@ class TestGroupDefaultAssetSync:
         db_session.add(group)
         await db_session.flush()
 
-        d1 = Device(id="grp-sync-pi-1", name="Pi 1", status=DeviceStatus.ADOPTED, group_id=group.id)
-        d2 = Device(id="grp-sync-pi-2", name="Pi 2", status=DeviceStatus.ADOPTED, group_id=group.id)
+        d1 = Device(id="grp-sync-pi-1", name="Pi 1", status=DeviceStatus.ADOPTED)
+        d2 = Device(id="grp-sync-pi-2", name="Pi 2", status=DeviceStatus.ADOPTED)
         db_session.add_all([d1, d2])
+        await db_session.flush()
+        db_session.add_all([
+            DeviceGroupMembership(device_id=d1.id, group_id=group.id),
+            DeviceGroupMembership(device_id=d2.id, group_id=group.id),
+        ])
         await db_session.commit()
 
         sent_d1, sent_d2 = [], []
@@ -1474,8 +1475,10 @@ class TestGroupDefaultAssetSync:
         db_session.add(group)
         await db_session.flush()
 
-        device = Device(id="grp-clear-pi", name="Clear Pi", status=DeviceStatus.ADOPTED, group_id=group.id)
+        device = Device(id="grp-clear-pi", name="Clear Pi", status=DeviceStatus.ADOPTED)
         db_session.add(device)
+        await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
 
         sent = []
@@ -1510,8 +1513,10 @@ class TestGroupDefaultAssetSync:
         db_session.add(group)
         await db_session.flush()
 
-        device = Device(id="grp-nopush-pi", name="No Push Pi", status=DeviceStatus.ADOPTED, group_id=group.id)
+        device = Device(id="grp-nopush-pi", name="No Push Pi", status=DeviceStatus.ADOPTED)
         db_session.add(device)
+        await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
 
         sent = []
@@ -1549,10 +1554,12 @@ class TestGroupDefaultAssetSync:
 
         device = Device(
             id="grp-override-pi", name="Override Pi",
-            status=DeviceStatus.ADOPTED, group_id=group.id,
+            status=DeviceStatus.ADOPTED,
             default_asset_id=device_asset.id,
         )
         db_session.add(device)
+        await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db_session.commit()
 
         sent = []

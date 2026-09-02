@@ -51,8 +51,19 @@ class _FakeSession:
         # ``device_row``; everything else returns ``None``.  The webhook's
         # only ``.scalar_one_or_none()`` caller is the device lookup.
         row = self.device_row
+        stmt_text = str(stmt)
         result = MagicMock()
         result.scalar_one_or_none = MagicMock(return_value=row)
+        result.scalar = MagicMock(
+            return_value=getattr(row, "group_name", None)
+            if row is not None and "SELECT device_groups.name" in stmt_text
+            else None
+        )
+        group_id = getattr(row, "group_id", None) if row is not None else None
+        group_name = getattr(row, "group_name", "") or ""
+        result.all = MagicMock(
+            return_value=[] if group_id is None else [(group_id, group_name)]
+        )
         # ``mark_offline_and_alert`` uses ``UPDATE ... RETURNING``, then
         # reads ``result.first()`` to get the device's name/group_id/
         # status in one round-trip.  Drive that off ``device_row`` too.

@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.notification import Notification
 from cms.services.alert_service import AlertService
 
@@ -34,9 +35,10 @@ async def seed_group_and_device(app):
             id="split-device-001",
             name="Split Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group.id,
         )
         db.add(device)
+        await db.flush()
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db.commit()
         yield {
             "device_id": device.id,

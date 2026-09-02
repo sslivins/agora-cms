@@ -21,7 +21,6 @@ class TestScheduleCRUD:
         asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="aaa")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
@@ -161,7 +160,6 @@ class TestScheduleCRUD:
         )
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
@@ -302,7 +300,6 @@ class TestScheduleUI:
         asset = Asset(filename="edit.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="eee")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
 
@@ -448,7 +445,6 @@ class TestScheduleDeletePlayingWarning:
                       size_bytes=100, checksum="warn1")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
 
         sched = Schedule(name="Active Ad", asset_id=asset.id, group_id=group.id,
@@ -589,7 +585,6 @@ class TestScheduleNaiveDatetime:
         asset = Asset(filename="tz.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ttt")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
@@ -690,7 +685,6 @@ class TestEndNowClearedOnEdit:
         asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="bbb")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        device.group_id = group.id
         await _add_membership(db_session, device.id, group.id)
         await db_session.commit()
         return str(group.id), str(asset.id)
@@ -856,8 +850,6 @@ class TestEndNowPerDevice:
         asset = Asset(filename="p.mp4", asset_type=AssetType.VIDEO, size_bytes=1, checksum="c")
         db_session.add_all([group, d1, d2, asset])
         await db_session.flush()
-        d1.group_id = group.id
-        d2.group_id = group.id
         await _add_membership(db_session, d1.id, group.id)
         await _add_membership(db_session, d2.id, group.id)
         await db_session.commit()
@@ -962,7 +954,6 @@ class TestEndNowPerDevice:
         )
         db_session.add_all([group, dev, asset])
         await db_session.flush()
-        dev.group_id = group.id
         await _add_membership(db_session, dev.id, group.id)
         await db_session.commit()
         # Capture ids before any expire/refresh so later assertions don't lazy-load.

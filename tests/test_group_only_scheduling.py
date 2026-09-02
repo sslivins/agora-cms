@@ -13,6 +13,7 @@ import pytest
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.device_profile import DeviceProfile
 
 
@@ -32,9 +33,11 @@ async def _seed_group_and_asset(db):
     db.add(group)
     await db.flush()
 
-    device = Device(id="loc-pi-001", name="Lobby TV", status=DeviceStatus.ADOPTED, group_id=group.id)
+    device = Device(id="loc-pi-001", name="Lobby TV", status=DeviceStatus.ADOPTED)
     asset = Asset(filename="promo.mp4", asset_type=AssetType.VIDEO, size_bytes=5000, checksum="abc1")
     db.add_all([device, asset])
+    await db.flush()
+    db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
     await db.commit()
     return str(group.id), str(asset.id)
 

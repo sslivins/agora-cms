@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.models.device import Device, DeviceGroup
+from cms.models.device import DeviceGroup
 from cms.models.device_event import DeviceEvent
 from cms.models.device_group_membership import DeviceGroupMembership
 
@@ -32,6 +32,7 @@ async def snapshot_device_groups(
     primary_group_name: str | None = None,
 ) -> list[dict[str, str]]:
     """Snapshot a device's full effective group set inside the current txn."""
+    primary_uuid = _coerce_uuid(primary_group_id)
     rows = (
         await db.execute(
             select(DeviceGroup.id, DeviceGroup.name)
@@ -40,19 +41,9 @@ async def snapshot_device_groups(
                 DeviceGroupMembership.group_id == DeviceGroup.id,
             )
             .where(DeviceGroupMembership.device_id == device_id)
+            .order_by(DeviceGroup.name, DeviceGroup.id)
         )
     ).all()
-
-    primary_uuid = _coerce_uuid(primary_group_id)
-    legacy_row = (
-        await db.execute(
-            select(Device.group_id, DeviceGroup.name)
-            .outerjoin(DeviceGroup, DeviceGroup.id == Device.group_id)
-            .where(Device.id == device_id)
-        )
-    ).first()
-    legacy_uuid = _coerce_uuid(legacy_row.group_id) if legacy_row else None
-    legacy_name = legacy_row.name if legacy_row else ""
 
     ordered: list[tuple[uuid.UUID, str]] = []
     seen: set[uuid.UUID] = set()
@@ -65,19 +56,12 @@ async def snapshot_device_groups(
             )
         ordered.append((primary_uuid, primary_name_value or ""))
         seen.add(primary_uuid)
-    elif legacy_uuid is not None:
-        ordered.append((legacy_uuid, legacy_name or ""))
-        seen.add(legacy_uuid)
 
-    for gid, name in sorted(rows, key=lambda row: (str(row[0]), row[1] or "")):
+    for gid, name in rows:
         if gid in seen:
             continue
         ordered.append((gid, name or ""))
         seen.add(gid)
-
-    if legacy_uuid is not None and legacy_uuid not in seen:
-        ordered.append((legacy_uuid, legacy_name or ""))
-        seen.add(legacy_uuid)
 
     return [{"id": str(gid), "name": name} for gid, name in ordered]
 
@@ -97,15 +81,6 @@ async def get_primary_device_group_context(
         primary_group_name=primary_group_name,
     )
     if not snapshot:
-        legacy_row = (
-            await db.execute(
-                select(Device.group_id, DeviceGroup.name)
-                .outerjoin(DeviceGroup, DeviceGroup.id == Device.group_id)
-                .where(Device.id == device_id)
-            )
-        ).first()
-        if legacy_row and legacy_row.group_id is not None:
-            return str(legacy_row.group_id), legacy_row.name or ""
         return None, ""
     primary = snapshot[0]
     return primary["id"], primary["name"] or ""

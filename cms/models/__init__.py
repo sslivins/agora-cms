@@ -40,8 +40,7 @@ DeviceProfile.devices = relationship("Device", back_populates="profile")
 GroupAsset.group = relationship("DeviceGroup")
 
 # Device ↔ group many-to-many (#863). Registered here (after all models are
-# imported) so the association-object relationship resolves cleanly alongside
-# the legacy Device.group_id FK during the expand/contract window.
+# imported) so the association-object relationship resolves cleanly.
 Device.memberships = relationship(
     "DeviceGroupMembership",
     back_populates="device",
@@ -54,13 +53,22 @@ Device.groups = relationship(
     secondaryjoin="DeviceGroup.id == DeviceGroupMembership.group_id",
     viewonly=True,
     lazy="selectin",
-    overlaps="devices,group,memberships",
+    overlaps="devices,memberships",
+)
+DeviceGroup.devices = relationship(
+    "Device",
+    secondary="device_group_memberships",
+    primaryjoin="DeviceGroup.id == DeviceGroupMembership.group_id",
+    secondaryjoin="Device.id == DeviceGroupMembership.device_id",
+    viewonly=True,
+    lazy="selectin",
+    overlaps="groups,memberships",
 )
 DeviceGroup.memberships = relationship(
     "DeviceGroupMembership",
     back_populates="group",
     cascade="all, delete-orphan",
-    overlaps="devices,group,groups",
+    overlaps="devices,groups",
 )
 
 # Tags are CMS-only metadata on assets.  Defined here so the Asset model

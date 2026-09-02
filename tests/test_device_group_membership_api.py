@@ -98,7 +98,6 @@ async def _create_device(
         id=device_id,
         name=name,
         status=DeviceStatus.ADOPTED,
-        group_id=group_id,
     )
     db.add(device)
     await db.flush()
@@ -232,8 +231,6 @@ class TestDeviceGroupMembershipEndpoints:
         mock_sync.assert_called_once()
 
         db_session.expire_all()
-        refreshed = await db_session.get(Device, device_id)
-        assert refreshed.group_id is None
         assert await _device_memberships(db_session, device_id) == set()
 
     async def test_replace_memberships_dry_run_previews_without_mutating(self, client, db_session):
@@ -263,14 +260,14 @@ class TestDeviceGroupMembershipEndpoints:
         assert [item["name"] for item in data["schedules_removed"]] == ["Alpha Schedule"]
         mock_sync.assert_not_called()
 
-        refreshed = await db_session.get(Device, device.id)
-        assert refreshed.group_id == group_a.id
         assert await _device_memberships(db_session, device.id) == {group_a.id}
 
     async def test_replace_memberships_commits_and_syncs(self, client, db_session):
         group_a = await _create_group(db_session, "Alpha")
         group_b = await _create_group(db_session, "Beta")
         group_c = await _create_group(db_session, "Gamma")
+        group_b_id = group_b.id
+        group_c_id = group_c.id
         device = await _create_device(
             db_session,
             device_id="g2m-replace-002",
@@ -287,14 +284,12 @@ class TestDeviceGroupMembershipEndpoints:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["changed"] is True
-        assert data["group_id"] == str(group_b.id)
-        assert set(data["group_ids"]) == {str(group_b.id), str(group_c.id)}
+        assert data["group_id"] == str(group_b_id)
+        assert set(data["group_ids"]) == {str(group_b_id), str(group_c_id)}
         mock_sync.assert_called_once()
 
         db_session.expire_all()
-        refreshed = await db_session.get(Device, device_id)
-        assert refreshed.group_id == group_b.id
-        assert await _device_memberships(db_session, device_id) == {group_b.id, group_c.id}
+        assert await _device_memberships(db_session, device_id) == {group_b_id, group_c_id}
 
     async def test_add_membership_requires_manageable_group(self, app, db_session):
         group = await _create_group(db_session, "Restricted")
@@ -380,6 +375,8 @@ class TestPatchCompatibility:
         group_a = await _create_group(db_session, "Alpha")
         group_b = await _create_group(db_session, "Beta")
         group_c = await _create_group(db_session, "Gamma")
+        group_b_id = group_b.id
+        group_c_id = group_c.id
         device = await _create_device(
             db_session,
             device_id="g2m-patch-002",
@@ -395,18 +392,16 @@ class TestPatchCompatibility:
 
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["group_id"] == str(group_b.id)
-        assert set(data["group_ids"]) == {str(group_b.id), str(group_c.id)}
+        assert data["group_id"] == str(group_b_id)
+        assert set(data["group_ids"]) == {str(group_b_id), str(group_c_id)}
         assert {group["id"] for group in data["groups"]} == {
-            str(group_b.id),
-            str(group_c.id),
+            str(group_b_id),
+            str(group_c_id),
         }
         mock_sync.assert_called_once()
 
         db_session.expire_all()
-        refreshed = await db_session.get(Device, device_id)
-        assert refreshed.group_id == group_b.id
-        assert await _device_memberships(db_session, device_id) == {group_b.id, group_c.id}
+        assert await _device_memberships(db_session, device_id) == {group_b_id, group_c_id}
 
     async def test_patch_rejects_group_id_and_group_ids_together(self, client, db_session):
         group_a = await _create_group(db_session, "Alpha")

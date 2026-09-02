@@ -23,6 +23,7 @@ from sqlalchemy import select, update
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_alert_state import DeviceAlertState
 from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.notification import Notification
 from cms.services import device_presence
 from cms.services.alert_service import (
@@ -49,11 +50,12 @@ async def stale_seed(app):
             id="stale-device-001",
             name="Stale Display",
             status=DeviceStatus.ADOPTED,
-            group_id=group.id,
             online=True,
             last_seen=stale_ts,
         )
         db.add(device)
+        await db.flush()
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
         await db.commit()
         yield {
             "device_id": device.id,
@@ -127,11 +129,12 @@ class TestStalePresenceSweep:
                 id="fresh-device-001",
                 name="Fresh Device",
                 status=DeviceStatus.ADOPTED,
-                group_id=group.id,
                 online=True,
                 last_seen=recent_ts,
             )
             db.add(device)
+            await db.flush()
+            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
             await db.commit()
             break
 
@@ -162,11 +165,12 @@ class TestStalePresenceSweep:
             device = Device(
                 id="already-offline-001",
                 status=DeviceStatus.ADOPTED,
-                group_id=group.id,
                 online=False,
                 last_seen=stale_ts,
             )
             db.add(device)
+            await db.flush()
+            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
             await db.commit()
             break
 
@@ -231,7 +235,6 @@ class TestStalePresenceSweep:
             device = Device(
                 id="ungrouped-stale-001",
                 status=DeviceStatus.ADOPTED,
-                group_id=None,
                 online=True,
                 last_seen=stale_ts,
             )
@@ -344,9 +347,12 @@ class TestStalePresenceSweep:
                 db.add(Device(
                     id=f"batch-stale-{i:03d}",
                     status=DeviceStatus.ADOPTED,
-                    group_id=group.id,
                     online=True,
                     last_seen=stale_ts,
+                ))
+                db.add(DeviceGroupMembership(
+                    device_id=f"batch-stale-{i:03d}",
+                    group_id=group.id,
                 ))
             await db.commit()
             break
@@ -383,11 +389,12 @@ class TestStalePresenceSweep:
             device = Device(
                 id="never-seen-001",
                 status=DeviceStatus.ADOPTED,
-                group_id=group.id,
                 online=True,
                 last_seen=None,
             )
             db.add(device)
+            await db.flush()
+            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
             await db.commit()
             break
 

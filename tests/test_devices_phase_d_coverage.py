@@ -75,6 +75,7 @@ async def grouped_update_device(app):
 
     from cms.database import get_db
     from cms.models.device import Device, DeviceGroup, DeviceStatus
+    from cms.models.device_group_membership import DeviceGroupMembership
     from cms.models.user import Role, User, UserGroup
     from cms.services import bundle_checker
 
@@ -92,9 +93,10 @@ async def grouped_update_device(app):
             status=DeviceStatus.ADOPTED,
             firmware_version="0.0.1",   # ancient (audit only post-M6)
             os_version="0.0.1",         # M6: badge driven by os_version → update_available=True
-            group_id=group.id,
         )
         db.add(device)
+        await db.flush()
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         # Grant any seeded non-admin user (e.g. the operator from
         # operator_client) access to this group so /api/devices/groups/

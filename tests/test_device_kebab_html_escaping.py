@@ -62,6 +62,7 @@ async def device_with_apostrophe(app):
 
     from cms.database import get_db
     from cms.models.device import Device, DeviceGroup, DeviceStatus
+    from cms.models.device_group_membership import DeviceGroupMembership
     from cms.models.user import Role, User, UserGroup
     from cms.services import bundle_checker, device_presence
 
@@ -79,10 +80,10 @@ async def device_with_apostrophe(app):
             status=DeviceStatus.ADOPTED,
             firmware_version="0.0.1",
             os_version="0.0.1",  # < latest, so update_available=True
-            group_id=group.id,
         )
         db.add(device)
         await db.flush()
+        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
         # The kebab menu items that interpolate d.name (Update, Change
         # Web Password, Reboot, Factory Reset) are guarded on

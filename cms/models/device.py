@@ -31,7 +31,6 @@ class DeviceGroup(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    devices: Mapped[list["Device"]] = relationship(back_populates="group")
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys=[default_asset_id])
 
 
@@ -59,9 +58,6 @@ class Device(Base):
     location: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[DeviceStatus] = mapped_column(
         Enum(DeviceStatus), default=DeviceStatus.PENDING
-    )
-    group_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("device_groups.id"), nullable=True
     )
     firmware_version: Mapped[str] = mapped_column(String(32), default="")
     os_version: Mapped[str] = mapped_column(String(32), default="", index=True)
@@ -214,7 +210,6 @@ class Device(Base):
         Text, nullable=False, default="stable", server_default=text("'stable'")
     )
 
-    group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
     profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys="[Device.default_asset_id]")
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="device")

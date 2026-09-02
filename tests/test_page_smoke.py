@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 
 from cms.models.device import Device, DeviceGroup, DeviceStatus
+from cms.models.device_group_membership import DeviceGroupMembership
 from shared.models.asset import Asset, AssetType
 from cms.models.schedule import Schedule
 
@@ -38,7 +39,7 @@ async def seeded_db(db_session):
 
     device = Device(
         id="smoke-pi-001", name="Smoke Device",
-        status=DeviceStatus.ADOPTED, group_id=group.id,
+        status=DeviceStatus.ADOPTED,
     )
     asset = Asset(
         id=uuid.uuid4(), filename="smoke-video.mp4",
@@ -46,6 +47,7 @@ async def seeded_db(db_session):
     )
     db_session.add_all([device, asset])
     await db_session.flush()
+    db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
 
     schedule = Schedule(
         id=uuid.uuid4(), name="Smoke Schedule",

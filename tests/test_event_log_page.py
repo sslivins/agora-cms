@@ -10,6 +10,7 @@ from sqlalchemy import select
 from cms.auth import hash_password
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_event import DeviceEvent, DeviceEventType
+from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.user import Role, User, UserGroup
 
 
@@ -28,12 +29,14 @@ async def two_groups_with_events(app):
         db.add_all([group_a, group_b])
         await db.flush()
 
-        dev_a = Device(id="evt-dev-a", name="Device A",
-                       status=DeviceStatus.ADOPTED, group_id=group_a.id)
-        dev_b = Device(id="evt-dev-b", name="Device B",
-                       status=DeviceStatus.ADOPTED, group_id=group_b.id)
+        dev_a = Device(id="evt-dev-a", name="Device A", status=DeviceStatus.ADOPTED)
+        dev_b = Device(id="evt-dev-b", name="Device B", status=DeviceStatus.ADOPTED)
         db.add_all([dev_a, dev_b])
         await db.flush()
+        db.add_all([
+            DeviceGroupMembership(device_id=dev_a.id, group_id=group_a.id),
+            DeviceGroupMembership(device_id=dev_b.id, group_id=group_b.id),
+        ])
 
         # Events for device A
         db.add(DeviceEvent(
@@ -153,10 +156,10 @@ async def test_offline_event_kinds_render_humanized(app, client):
         grp = DeviceGroup(name="Polish Group")
         db.add(grp)
         await db.flush()
-        dev = Device(id="polish-dev", name="Polish Device",
-                     status=DeviceStatus.ADOPTED, group_id=grp.id)
+        dev = Device(id="polish-dev", name="Polish Device", status=DeviceStatus.ADOPTED)
         db.add(dev)
         await db.flush()
+        db.add(DeviceGroupMembership(device_id=dev.id, group_id=grp.id))
         db.add(DeviceEvent(
             device_id=dev.id, device_name=dev.name,
             group_id=grp.id, group_name=grp.name,

@@ -112,7 +112,6 @@ async def test_deleting_device_preserves_historical_device_events(db_session):
         id="durable-device-01",
         name="Durable Device",
         status=DeviceStatus.ADOPTED,
-        group_id=group.id,
     )
     db_session.add(device)
     await db_session.flush()
@@ -184,7 +183,6 @@ async def test_emitted_device_event_snapshots_all_groups_and_visibility(app, db_
         id="event-m2m-01",
         name="Event M2M Device",
         status=DeviceStatus.ADOPTED,
-        group_id=group_a.id,
     )
     db_session.add(device)
     await db_session.flush()
@@ -235,7 +233,6 @@ async def test_single_group_notification_and_event_shape_stays_compatible(app, d
         id="compat-device-01",
         name="Compat Device",
         status=DeviceStatus.ADOPTED,
-        group_id=group.id,
     )
     db_session.add(device)
     await db_session.flush()
@@ -279,7 +276,6 @@ async def test_offline_alert_lifecycle_row_opens_and_resolves(app):
             id="alert-life-01",
             name="Alert Lifecycle Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group.id,
         )
         db.add(group)
         await db.flush()

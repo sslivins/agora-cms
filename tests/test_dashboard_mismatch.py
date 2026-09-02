@@ -37,8 +37,6 @@ async def _seed_schedule(db_session, device_id="mismatch-01",
     from shared.models.asset import Asset, AssetType
     from cms.models.device import DeviceGroup
     from cms.models.schedule import Schedule
-    from sqlalchemy import update
-
     asset = Asset(id=uuid.uuid4(), filename=asset_filename,
                   asset_type=AssetType.VIDEO, checksum="abc123")
     db_session.add(asset)
@@ -47,9 +45,6 @@ async def _seed_schedule(db_session, device_id="mismatch-01",
     db_session.add(group)
     await db_session.flush()
 
-    await db_session.execute(
-        update(Device).where(Device.id == device_id).values(group_id=group.id)
-    )
     db_session.add(DeviceGroupMembership(device_id=device_id, group_id=group.id))
 
     schedule = Schedule(

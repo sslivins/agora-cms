@@ -463,13 +463,13 @@ async def _build_membership_mutation_response(
         for group_id in change.removed_group_ids
         for schedule in schedule_map.get(group_id, [])
     ]
-    projected_group = summary_map.get(change.legacy_group_id) if change.legacy_group_id else None
+    primary_group = result_groups[0] if result_groups else None
     return DeviceGroupMembershipMutationOut(
         device_id=device.id,
         dry_run=dry_run,
         changed=change.changed,
-        group_id=change.legacy_group_id,
-        group_name=projected_group.name if projected_group else None,
+        group_id=primary_group.id if primary_group else None,
+        group_name=primary_group.name if primary_group else None,
         group_ids=list(change.result_group_ids),
         groups=result_groups,
         current_group_ids=list(change.current_group_ids),
@@ -745,6 +745,8 @@ async def update_device(
             db,
             target_group_id=updates["group_id"],
         )
+    if "group_id" in updates and updates["group_id"] is not None:
+        await _require_existing_groups(db, [updates["group_id"]])
     if group_ids_in_request:
         await _require_existing_groups(db, requested_group_ids)
         if user:
@@ -801,6 +803,19 @@ async def update_device(
 
     # Snapshot before mutation so we can build a true diff for the audit log
     changes = compute_diff(device, updates)
+    if "group_id" in updates:
+        current_groups = await _load_group_summary_map(
+            db,
+            await get_device_group_ids(device, db),
+        )
+        current_primary = next(
+            iter(_sort_group_summaries(list(current_groups.values()))),
+            None,
+        )
+        old_group_id = str(current_primary.id) if current_primary else None
+        new_group_id = str(updates["group_id"]) if updates["group_id"] is not None else None
+        if old_group_id != new_group_id:
+            changes["group_id"] = {"old": old_group_id, "new": new_group_id}
     if group_ids_in_request:
         current_group_ids = sorted(
             (str(group_id) for group_id in await get_device_group_ids(device, db)),
@@ -813,11 +828,12 @@ async def update_device(
             }
 
     for field, value in updates.items():
+        if field == "group_id":
+            continue
         setattr(device, field, value)
     if group_ids_in_request:
         await replace_device_group_memberships(db, device, requested_group_ids)
     elif "group_id" in updates:
-        # Mirror into the many-to-many join table (#863, expand/contract window).
         await set_single_group_membership(db, device.id, updates["group_id"])
     await audit_log(
         db, user=user, action="device.update", resource_type="device",
@@ -1458,6 +1474,7 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
         device.location = body.location
     requested_group_ids = list(dict.fromkeys(body.group_ids or [])) if body.group_ids is not None else None
     if body.group_id is not None:
+        await _require_existing_groups(db, [body.group_id])
         user = getattr(request.state, "user", None)
         if user is not None:
             await _verify_membership_change_access(
@@ -1477,8 +1494,6 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
                 requested_group_ids,
             )
     if body.group_id is not None:
-        device.group_id = body.group_id
-        # Mirror into the many-to-many join table (#863, expand/contract window).
         await set_single_group_membership(db, device.id, body.group_id)
     elif requested_group_ids is not None:
         await replace_device_group_memberships(db, device, requested_group_ids)

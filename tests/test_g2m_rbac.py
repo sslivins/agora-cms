@@ -105,11 +105,13 @@ class TestSharedDeviceReadAccess:
             id="shared-read-01",
             name="Shared Read Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group_a.id,
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        db_session.add_all([
+            DeviceGroupMembership(device_id=device.id, group_id=group_a.id),
+            DeviceGroupMembership(device_id=device.id, group_id=group_b.id),
+        ])
         await db_session.commit()
 
         await _create_user(
@@ -135,9 +137,10 @@ class TestSharedDeviceReadAccess:
             id="group-a-only-01",
             name="Only A Device",
             status=DeviceStatus.ADOPTED,
-            group_id=group_a.id,
         )
         db_session.add(device)
+        await db_session.flush()
+        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group_a.id))
         await db_session.commit()
 
         await _create_user(
@@ -164,7 +167,6 @@ class TestSharedDeviceListScoping:
             id="membership-visible-01",
             name="Membership Visible Device",
             status=DeviceStatus.ADOPTED,
-            group_id=None,
         )
         db_session.add(device)
         await db_session.flush()
