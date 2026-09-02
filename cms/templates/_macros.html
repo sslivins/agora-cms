@@ -693,7 +693,7 @@
 
 
 {% macro device_row(d, groups, assets, profiles, user_perms, pending_ttl_hours, latest_version, timezones, draggable=false) -%}
-<tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}" data-severity-tags="{{ d.severity_tags | join(' ') if d.severity_tags is defined else '' }}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
+<tr class="device-row{% if draggable %} draggable-device{% endif %}" onclick="toggleDevice(this)" data-device-id="{{ d.id }}" data-severity-tags="{{ d.severity_tags | join(' ') if d.severity_tags is defined else '' }}" data-group-ids="{% for group in d.ui_groups | default([]) %}{{ group.id }}{% if not loop.last %} {% endif %}{% endfor %}"{% if d.has_active_schedule %} data-playing="true"{% endif %}{% if draggable %} draggable="true" ondragstart="dragDevice(event, '{{ d.id }}')"{% endif %}>
     <td class="expand-toggle">▶</td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -719,16 +719,37 @@
         {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
-        {% if 'devices:write' in user_perms %}
-        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
-            <option value="">None</option>
-            {% for g in groups %}
-            <option value="{{ g.id }}" {% if d.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
-            {% endfor %}
-        </select>
-        {% else %}
-        {{ d.group.name if d.group else '—' }}
-        {% endif %}
+        {% set memberships = d.ui_groups | default([]) %}
+        <div class="device-group-editor" onclick="event.stopPropagation()">
+            <div class="device-group-badges">
+                {% for membership in memberships %}
+                <span class="badge badge-count device-group-badge" data-device-group-id="{{ membership.id }}">
+                    <span>{{ membership.name }}</span>
+                    {% if 'devices:write' in user_perms %}
+                    <button
+                        type="button"
+                        class="btn-x"
+                        aria-label="Remove {{ membership.name }}"
+                        data-group-name="{{ membership.name }}"
+                        onclick="removeDeviceGroup('{{ d.id }}', '{{ membership.id }}', this)"
+                    >&times;</button>
+                    {% endif %}
+                </span>
+                {% else %}
+                <span class="text-muted">—</span>
+                {% endfor %}
+                {% if 'devices:write' in user_perms %}
+                <select class="inline-edit inline-edit-sm device-group-add-select" data-device-add-group onclick="event.stopPropagation()" onchange="previewAddDeviceGroup('{{ d.id }}', this)">
+                    <option value="">Add group…</option>
+                    {% for g in groups %}
+                    {% if g.id not in d.ui_group_ids | default([]) %}
+                    <option value="{{ g.id }}">{{ g.name }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+                {% endif %}
+            </div>
+        </div>
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -791,8 +812,8 @@
         <button type="button" role="menuitem" onclick="setUpdateChannel('{{ d.id }}', 'prerelease')" title="Opt this device in to prerelease OS builds (-rc / -test) for testing before general release">Join prerelease channel</button>
         {% endif %}
         {% endif %}
-        {% if d.group_id and 'devices:write' in user_perms %}
-        <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from its group">Remove from group</button>
+        {% if d.ui_group_ids | default([]) and 'devices:write' in user_perms %}
+        <button type="button" role="menuitem" onclick="clearDeviceGroups('{{ d.id }}')" title="Remove this device from every group">Remove all groups</button>
         {% endif %}
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')" title="Remove this device from the CMS">Delete</button>
         {% endcall %}
@@ -926,6 +947,12 @@
                     {% endif %}
                 </span>
             </div>
+            </div>
+            <div class="detail-item" style="grid-column: 1 / -1;">
+                <span class="detail-label">Schedule Status</span>
+                <div class="detail-value device-schedule-status" data-schedule-status-for="{{ d.id }}">
+                    <span class="text-muted">Expand this row to load Now Playing and Coming Up.</span>
+                </div>
             </div>
         </div>
         </div>
@@ -1081,16 +1108,16 @@
     </div>
     <div class="group-body">
         <div class="table-wrap">
-            <table data-group-table="{{ g.id }}"{% if not g.devices %} style="display: none;"{% endif %}>
+            <table data-group-table="{{ g.id }}"{% if not g.panel_devices %} style="display: none;"{% endif %}>
                 <thead>{{ th_row_full(user_perms) }}</thead>
                 <tbody data-group-tbody="{{ g.id }}">
-                    {% for d in g.devices | sort(attribute='name') %}
+                    {% for d in g.panel_devices %}
                     {{ device_row(d, groups, assets, profiles, user_perms, pending_ttl_hours, latest_version, timezones) }}
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-        <p class="text-muted empty-state" data-group-empty="{{ g.id }}"{% if g.devices %} style="display: none;"{% endif %}>No devices in this group. Drag a device here to add it.</p>
+        <p class="text-muted empty-state" data-group-empty="{{ g.id }}"{% if g.panel_devices %} style="display: none;"{% endif %}>No devices in this group. Drag a device here to add it.</p>
     </div>
 </div>
 {%- endmacro %}

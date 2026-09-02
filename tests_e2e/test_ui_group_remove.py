@@ -3,7 +3,7 @@
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests_e2e.conftest import run_async, click_row_action, expand_group_panel
+from tests_e2e.conftest import run_async, expand_group_panel
 from tests_e2e.fake_device import FakeDevice
 
 
@@ -82,14 +82,9 @@ class TestGroupRemoveButtons:
         expect(group_panel).to_be_visible(timeout=5000)
         group_body = expand_group_panel(group_panel)
         expect(group_body).to_be_visible(timeout=3000)
-        device_row = group_body.locator('tr[data-device-id="grp-rm-003"]')
+        device_row = group_body.locator('tr[data-device-id="grp-rm-003"]').first
         expect(device_row).to_be_visible(timeout=3000)
-        click_row_action(device_row, "Remove from group")
-
-        page.wait_for_load_state("networkidle")
-
-        # Reload to verify
-        page.goto("/devices")
+        device_row.locator('.device-group-badge .btn-x').click()
         page.wait_for_load_state("domcontentloaded")
 
         # The group should still exist
@@ -195,9 +190,8 @@ class TestGroupRemoveButtons:
         expect(delete_item).to_be_enabled()
 
 
-class TestGroupRemoveInPlaceMove:
-    """Regression tests for #146 — the row should move between sections without
-    a full page reload after a group assignment changes."""
+class TestGroupMembershipTransitions:
+    """Stage 7 membership edits may reload, but the resulting placement must be correct."""
 
     def _register_and_adopt(self, api, ws_url, device_id, name=None):
         async def register():
@@ -214,10 +208,8 @@ class TestGroupRemoveInPlaceMove:
             body["profile_id"] = profile_id
         api.post(f"/api/devices/{device_id}/adopt", json=body)
 
-    def test_remove_moves_row_to_ungrouped_without_reload(self, page: Page, api, ws_url, e2e_server):
-        """Clicking Remove inside a group should move the row to the Ungrouped
-        section in place (no page navigation), update the group count, and reveal
-        the 'no devices' placeholder when the group becomes empty."""
+    def test_remove_moves_row_to_ungrouped(self, page: Page, api, ws_url, e2e_server):
+        """Removing the last group via the chip should leave the device ungrouped."""
         self._register_and_adopt(api, ws_url, "inplace-001", "Solo Device")
 
         resp = api.post("/api/devices/groups/", json={"name": "Inplace Move Group"})
@@ -228,25 +220,22 @@ class TestGroupRemoveInPlaceMove:
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        # Capture the URL so we can assert later that we never navigated.
-        nav_url_before = page.url
-
         # Sanity: row starts in the group tbody, not in the ungrouped tbody.
         group_tbody = page.locator(f'tbody[data-group-tbody="{group_id}"]')
         ungrouped_tbody = page.locator('tbody[data-group-tbody="ungrouped"]')
         expect(group_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(1)
         expect(ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(0)
 
-        # Expand and click Remove (in the row kebab).
+        # Expand and click the group-chip remove button.
         group_panel = page.locator(f'div.group-panel[data-group-id="{group_id}"]')
         expand_group_panel(group_panel)
-        device_row = group_panel.locator('tr[data-device-id="inplace-001"]')
+        device_row = group_panel.locator('tr[data-device-id="inplace-001"]').first
         expect(device_row).to_be_visible(timeout=3000)
-        click_row_action(device_row, "Remove from group")
+        device_row.locator('.device-group-badge .btn-x').click()
+        page.wait_for_load_state("domcontentloaded")
 
-        # Wait for the in-place move (no reload) — row should appear in the
-        # ungrouped tbody and disappear from the group tbody.
-        expect(ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(1, timeout=3000)
+        # Row should appear in the ungrouped tbody and disappear from the group tbody.
+        expect(ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(1, timeout=5000)
         expect(group_tbody.locator('tr[data-device-id="inplace-001"]')).to_have_count(0)
 
         # The Ungrouped section should now be visible.
@@ -259,18 +248,11 @@ class TestGroupRemoveInPlaceMove:
         # The empty-state placeholder for the group should be visible.
         expect(page.locator(f'[data-group-empty="{group_id}"]')).to_be_visible()
 
-        # The page must not have navigated — confirms it was an in-place update.
-        assert page.url == nav_url_before, (
-            "Page should not reload when removing a device from a group"
-        )
+        moved_row = ungrouped_tbody.locator('tr[data-device-id="inplace-001"]').first
+        expect(moved_row.locator('.device-group-badge')).to_have_count(0)
 
-        # The Remove from group action should be gone from the moved row (now ungrouped).
-        moved_row = ungrouped_tbody.locator('tr[data-device-id="inplace-001"]')
-        expect(moved_row.locator('button[role="menuitem"]', has_text="Remove from group")).to_have_count(0)
-
-    def test_assign_to_group_moves_row_from_ungrouped_in_place(self, page: Page, api, ws_url, e2e_server):
-        """Assigning an ungrouped device to a group via the inline dropdown
-        should move its row out of the Ungrouped section without a reload."""
+    def test_assign_to_group_moves_row_from_ungrouped(self, page: Page, api, ws_url, e2e_server):
+        """Adding a group via the new add-group select should place the row in that panel."""
         self._register_and_adopt(api, ws_url, "inplace-002", "Migrating Device")
         # Adopt a second device into the group so the group panel starts non-empty.
         self._register_and_adopt(api, ws_url, "inplace-003", "Anchor Device")
@@ -282,26 +264,22 @@ class TestGroupRemoveInPlaceMove:
 
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
-        nav_url_before = page.url
 
         ungrouped_tbody = page.locator('tbody[data-group-tbody="ungrouped"]')
         group_tbody = page.locator(f'tbody[data-group-tbody="{group_id}"]')
         expect(ungrouped_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(1)
 
-        # Use the inline group <select> in the ungrouped row to assign the group.
-        ungrouped_row = ungrouped_tbody.locator('tr[data-device-id="inplace-002"]')
-        ungrouped_row.locator('select[data-device-group-select]').select_option(group_id)
+        # Use the add-group select in the ungrouped row to assign the group.
+        ungrouped_row = ungrouped_tbody.locator('tr[data-device-id="inplace-002"]').first
+        ungrouped_row.locator('select[data-device-add-group]').select_option(group_id)
+        page.wait_for_load_state("domcontentloaded")
 
         # Row should appear in the group tbody and vanish from ungrouped.
-        expect(group_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(1, timeout=3000)
+        expect(group_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(1, timeout=5000)
         expect(ungrouped_tbody.locator('tr[data-device-id="inplace-002"]')).to_have_count(0)
 
         # Group device-count badge should bump from 1 → 2.
         expect(page.locator(f'[data-group-count="{group_id}"]')).to_have_text("2 devices")
 
-        # No reload happened.
-        assert page.url == nav_url_before
-
-        # The moved row should now have a Remove from group action in its kebab.
-        moved_row = group_tbody.locator('tr[data-device-id="inplace-002"]')
-        expect(moved_row.locator('button[role="menuitem"]', has_text="Remove from group")).to_have_count(1)
+        moved_row = group_tbody.locator('tr[data-device-id="inplace-002"]').first
+        expect(moved_row.locator('.device-group-badge')).to_have_count(1)

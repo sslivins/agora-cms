@@ -57,7 +57,10 @@ from cms.services.audit_service import audit_log
 from cms.services.json_compat import json_as_text
 from cms.services.bundle_checker import get_latest_os_version, is_os_update_available
 from cms.models.agora_os_channel_bundle import CHANNEL_PRERELEASE, CHANNEL_STABLE
-from cms.routers.devices import _is_upgrading as _devices_is_upgrading
+from cms.routers.devices import (
+    _is_upgrading as _devices_is_upgrading,
+    _load_effective_group_summaries_by_device_id,
+)
 
 import json as _json
 from datetime import datetime, timezone as _tz
@@ -1344,6 +1347,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(device_query)
     devices = result.scalars().all()
+    groups_by_device_id = await _load_effective_group_summaries_by_device_id(devices, db)
     _transport = get_transport()
     live_states = {s["device_id"]: s for s in await _transport.get_all_states()}
     _connected_ids = set(await _transport.connected_ids())
@@ -1410,6 +1414,8 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.update_available = is_os_update_available(d.os_version, d.available_version)
         d.is_upgrading = _devices_is_upgrading(d)
         d.has_active_schedule = d.id in scheduled_device_ids
+        d.ui_groups = groups_by_device_id.get(d.id, [])
+        d.ui_group_ids = [group.id for group in d.ui_groups]
 
     groups_query = (
         select(DeviceGroup)
@@ -1436,36 +1442,28 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         )).all()
         group_sched_counts = {gid: cnt for gid, cnt in sched_rows}
 
+    device_by_id = {device.id: device for device in devices}
+
     # Attach device_count, schedule_count, and is_online to each group's devices
     for g in groups:
-        g.device_count = len(g.devices)
+        g.panel_devices = sorted(
+            [
+                device
+                for device in device_by_id.values()
+                if g.id in getattr(device, "ui_group_ids", [])
+            ],
+            key=lambda device: ((device.name or device.id).lower(), device.id),
+        )
+        g.device_count = len(g.panel_devices)
         g.schedule_count = group_sched_counts.get(g.id, 0)
-        for d in g.devices:
+        for d in g.panel_devices:
             # See note above: detach before decorating with live-state
             # attributes since some names now collide with real columns.
-            db.expunge(d)
-            d.is_online = d.id in _connected_ids
-            state = live_states.get(d.id)
-            d.cpu_temp_c = state["cpu_temp_c"] if state else None
-            # #436: see note in main /devices render above.
-            live_ip = state["ip_address"] if state else None
-            d.ip_address = live_ip or d.ip_address
-            d.playback_mode = state["mode"] if state else None
-            d.playback_asset = state["asset"] if state else None
-            if d.playback_asset and d.playback_asset in _url_display:
-                d.playback_asset = _url_display[d.playback_asset]
-            d.pipeline_state = state["pipeline_state"] if state else None
-            d.started_at = state["started_at"] if state else None
-            d.playback_position_ms = state["playback_position_ms"] if state else None
-            d.ssh_enabled = state["ssh_enabled"] if state else None
-            d.local_api_enabled = state["local_api_enabled"] if state else None
-            d.available_version = _channel_latest(d)
-            d.update_available = is_os_update_available(d.os_version, d.available_version)
-            d.is_upgrading = _devices_is_upgrading(d)
-            d.has_active_schedule = d.id in scheduled_device_ids
+            if sqlalchemy.inspect(d).session is not None:
+                db.expunge(d)
 
-    # Devices not assigned to any group
-    ungrouped = [d for d in devices if d.group_id is None]
+    # Devices not assigned to any group in either representation.
+    ungrouped = [d for d in devices if not getattr(d, "ui_group_ids", [])]
 
     assets = assets_early
 
@@ -1499,7 +1497,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
         d.severity_tags = device_severity_tags(d, user_perms)
         decorated_ids.add(id(d))
     for g in groups:
-        for d in g.devices:
+        for d in g.panel_devices:
             if id(d) not in decorated_ids:
                 # Defensive — a group may surface a device the top-level
                 # query filtered out (shouldn't happen given the perm
@@ -1510,7 +1508,7 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Phase C: per-group rollup chips on group panel headers
     for g in groups:
-        g.rollup = fleet_counts(g.devices, user_perms)
+        g.rollup = fleet_counts(g.panel_devices, user_perms)
 
     raw_alert = (request.query_params.get("alert") or "").strip().lower()
     valid_filters = {"all", "needs-attention", "critical", "warning", "healthy", *SEVERITY_TAGS}

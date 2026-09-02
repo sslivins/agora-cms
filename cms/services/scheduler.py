@@ -493,8 +493,11 @@ async def compute_now_playing(db, tz: ZoneInfo, now: datetime) -> list[dict]:
             "device_name": device_name,
             "schedule_id": str(s.id),
             "schedule_name": s.name,
+            "group_id": str(s.group_id) if s.group_id else None,
+            "group_name": s.group.name if s.group else None,
             "asset_filename": display_name,
             "asset_raw": asset_raw,
+            "priority": s.priority,
             "since": since,
             "source": "confirmed" if is_confirmed else "scheduled",
             "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
@@ -668,10 +671,14 @@ def _upcoming_entry(s: Schedule, run_date, day_label: str, delta: timedelta) -> 
     target_name = s.group.name if s.group else None
 
     return {
+        "schedule_id": str(s.id),
         "schedule_name": s.name,
+        "group_id": str(s.group_id) if s.group_id else None,
+        "group_name": target_name or "—",
         "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
+        "priority": s.priority,
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -769,10 +776,14 @@ def _preempted_entry(s: Schedule, local_now: datetime, resume_at: time) -> dict:
             countdown += f", {mins} minute{'s' if mins != 1 else ''}"
 
     return {
+        "schedule_id": str(s.id),
         "schedule_name": s.name,
+        "group_id": str(s.group_id) if s.group_id else None,
+        "group_name": target_name or "—",
         "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
+        "priority": s.priority,
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -797,10 +808,14 @@ def _starting_entry(s: Schedule, local_now: datetime) -> dict:
     target_name = s.group.name if s.group else None
 
     return {
+        "schedule_id": str(s.id),
         "schedule_name": s.name,
+        "group_id": str(s.group_id) if s.group_id else None,
+        "group_name": target_name or "—",
         "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
+        "priority": s.priority,
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -831,10 +846,14 @@ def _no_targets_entry(s: Schedule, local_now: datetime) -> dict:
     target_name = s.group.name if s.group else None
 
     return {
+        "schedule_id": str(s.id),
         "schedule_name": s.name,
+        "group_id": str(s.group_id) if s.group_id else None,
+        "group_name": target_name or "—",
         "asset_filename": _asset_display_name(s.asset),
         "target_name": target_name or "—",
         "target_type": "group",
+        "priority": s.priority,
         "start_time": s.start_time.strftime("%I:%M %p").lstrip("0"),
         "end_time": s.end_time.strftime("%I:%M %p").lstrip("0"),
         "duration_mins": duration_mins,
@@ -931,6 +950,157 @@ def schedules_conflict(a: Schedule, b: Schedule) -> bool:
         return False
 
     return schedules_overlap(a, b)
+
+
+def _device_schedule_status_summary(
+    schedule: Schedule,
+    *,
+    countdown: str | None = None,
+    day_label: str | None = None,
+    preempted: bool = False,
+    starting: bool = False,
+    no_targets: bool = False,
+    resumes_at: str | None = None,
+    source: str | None = None,
+    preempting: Schedule | None = None,
+) -> dict:
+    return {
+        "schedule_id": schedule.id,
+        "schedule_name": schedule.name,
+        "group_id": schedule.group_id,
+        "group_name": schedule.group.name if schedule.group else None,
+        "asset_filename": _asset_display_name(schedule.asset),
+        "priority": schedule.priority,
+        "start_time": schedule.start_time.strftime("%I:%M %p").lstrip("0"),
+        "end_time": schedule.end_time.strftime("%I:%M %p").lstrip("0"),
+        "countdown": countdown,
+        "day_label": day_label,
+        "preempted": preempted,
+        "starting": starting,
+        "no_targets": no_targets,
+        "resumes_at": resumes_at,
+        "source": source,
+        "preempting_schedule_id": preempting.id if preempting else None,
+        "preempting_schedule_name": preempting.name if preempting else None,
+        "preempting_group_id": preempting.group_id if preempting else None,
+        "preempting_group_name": preempting.group.name if preempting and preempting.group else None,
+        "preempting_priority": preempting.priority if preempting else None,
+    }
+
+
+async def get_device_schedule_status(
+    db,
+    device_id: str,
+    tz: ZoneInfo,
+    now: datetime,
+) -> dict:
+    """Return Now Playing / Coming Up / preempted schedule state for one device."""
+    local_now = now.astimezone(tz).replace(tzinfo=None)
+    skips = (await load_skip_snapshot(db)).active_as_of(local_now)
+
+    result = await db.execute(
+        select(Schedule)
+        .options(selectinload(Schedule.asset), selectinload(Schedule.group))
+        .where(Schedule.enabled == True)  # noqa: E712
+    )
+    schedules = result.scalars().all()
+    targets_by_schedule = await load_target_devices_by_schedule(schedules, db)
+    device_schedules = [
+        schedule
+        for schedule in schedules
+        if device_id in targets_by_schedule.get(str(schedule.id), set())
+        and not skips.is_schedule_skipped(str(schedule.id))
+        and not skips.is_skipped_for_device(str(schedule.id), device_id)
+    ]
+    schedule_by_id = {str(schedule.id): schedule for schedule in device_schedules}
+
+    now_playing_all = await compute_now_playing(db, tz, now)
+    winning_entry = next(
+        (entry for entry in now_playing_all if entry["device_id"] == device_id),
+        None,
+    )
+    winning_schedule = (
+        schedule_by_id.get(winning_entry["schedule_id"])
+        if winning_entry is not None
+        else None
+    )
+
+    now_playing = None
+    if winning_schedule is not None:
+        now_playing = _device_schedule_status_summary(
+            winning_schedule,
+            source=winning_entry.get("source"),
+        )
+
+    preempted_entries: list[dict] = []
+    if winning_schedule is not None:
+        active_non_winners = [
+            schedule
+            for schedule in device_schedules
+            if schedule.id != winning_schedule.id and _matches_now(schedule, local_now)
+        ]
+        for schedule in active_non_winners:
+            if winning_schedule.priority <= schedule.priority:
+                continue
+            resume_at = _find_resume_time(
+                schedule,
+                device_schedules,
+                local_now,
+                target_devices={device_id},
+                winning_by_device={device_id: winning_entry},
+                schedules_by_id=schedule_by_id,
+            )
+            preempted_entries.append(
+                _device_schedule_status_summary(
+                    schedule,
+                    countdown=(
+                        _preempted_entry(schedule, local_now, resume_at)["countdown"]
+                        if resume_at is not None
+                        else None
+                    ),
+                    day_label="today",
+                    preempted=True,
+                    resumes_at=(
+                        resume_at.strftime("%I:%M %p").lstrip("0")
+                        if resume_at is not None
+                        else None
+                    ),
+                    preempting=winning_schedule,
+                )
+            )
+
+    device_targets = {
+        str(schedule.id): {device_id}
+        for schedule in device_schedules
+    }
+    coming_up = [
+        _device_schedule_status_summary(
+            schedule_by_id[entry["schedule_id"]],
+            countdown=entry.get("countdown"),
+            day_label=entry.get("day_label"),
+            preempted=bool(entry.get("preempted")),
+            starting=bool(entry.get("starting")),
+            no_targets=bool(entry.get("no_targets")),
+            resumes_at=entry.get("resumes_at"),
+        )
+        for entry in get_upcoming_schedules(
+            device_schedules,
+            now,
+            tz,
+            now_playing=now_playing_all,
+            skipped_schedule_ids=set(skips.schedule_wide.keys()),
+            per_device_skipped=set(skips.per_device.keys()),
+            target_devices_by_schedule=device_targets,
+        )
+        if entry["schedule_id"] in schedule_by_id and not entry.get("preempted")
+    ]
+
+    return {
+        "device_id": device_id,
+        "now_playing": now_playing,
+        "coming_up": coming_up,
+        "preempted": preempted_entries,
+    }
 
 
 async def _get_target_device_ids(schedule: Schedule, db) -> list[str]:

@@ -250,14 +250,13 @@ def e2e_server(e2e_port, tmp_path_factory):
                 "username": os.environ.get("AGORA_CMS_ADMIN_USERNAME", "admin"),
                 "password": os.environ["AGORA_CMS_ADMIN_PASSWORD"],
             })
-            c.post("/setup/account", data={
+            c.post("/setup/account", json={
                 "display_name": "Admin",
                 "email": "admin@localhost",
-                "password": "",
-                "password_confirm": "",
+                "password": os.environ["AGORA_CMS_ADMIN_PASSWORD"],
             })
-            c.post("/setup/smtp", data={})
-            c.post("/setup/timezone", data={"timezone": "UTC"})
+            c.post("/setup/smtp", json={})
+            c.post("/setup/timezone", json={"timezone": "UTC"})
             c.post("/setup/mcp", json={"enabled": False})
             c.post("/setup/complete")
 
@@ -433,22 +432,32 @@ def api(context: BrowserContext, base_url: str):
             a short-lived async DB update on a fresh engine so the caller
             doesn't have to contend with the server's event loop.
             """
-            from sqlalchemy import text as sa_text
+            import uuid
             from sqlalchemy.ext.asyncio import create_async_engine
+            from sqlalchemy import select as sa_select
+
+            from shared.models.asset import AssetVariant, VariantStatus
 
             db_url = os.environ["AGORA_CMS_DATABASE_URL"]
+            asset_uuid = uuid.UUID(str(asset_id))
 
             async def _exec():
                 engine = create_async_engine(db_url)
                 try:
-                    async with engine.begin() as conn:
-                        await conn.execute(
-                            sa_text(
-                                "UPDATE asset_variants SET status = 'READY' "
-                                "WHERE source_asset_id = :aid"
-                            ),
-                            {"aid": str(asset_id)},
-                        )
+                    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+                    Session = async_sessionmaker(engine, expire_on_commit=False)
+                    async with Session() as session:
+                        rows = (
+                            await session.execute(
+                                sa_select(AssetVariant).where(AssetVariant.source_asset_id == asset_uuid)
+                            )
+                        ).scalars().all()
+                        for row in rows:
+                            row.status = VariantStatus.READY
+                            row.progress = 100.0
+                            row.error_message = ""
+                        await session.commit()
                 finally:
                     await engine.dispose()
 

@@ -291,6 +291,7 @@ function toggleDevice(row) {
         row.classList.add("expanded");
         detail.style.display = "";
         if (typeof applyAssetTooltips === "function") requestAnimationFrame(applyAssetTooltips);
+        if (typeof loadDeviceScheduleStatus === "function") loadDeviceScheduleStatus(deviceId);
     }
 }
 
@@ -756,7 +757,7 @@ async function _insertGroupPanel(groupId) {
     const opt = document.createElement('option');
     opt.value = groupId;
     opt.textContent = gName;
-    document.querySelectorAll('select[data-device-group-select]').forEach(sel => {
+    document.querySelectorAll('select[data-device-group-select], select[data-device-add-group]').forEach(sel => {
         if (!sel.querySelector(`option[value="${groupId}"]`)) {
             sel.appendChild(opt.cloneNode(true));
         }

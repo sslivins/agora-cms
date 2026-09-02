@@ -40,6 +40,7 @@ from cms.schemas.device import (
     DeviceGroupMembershipMutationOut,
     DeviceGroupOut,
     DeviceGroupReplaceRequest,
+    DeviceScheduleStatusOut,
     DeviceGroupSummary,
     DeviceGroupUpdate,
     DeviceOut,
@@ -50,7 +51,7 @@ from cms.schemas.device import (
 )
 from cms.schemas.protocol import ConfigMessage, FactoryResetMessage, OSUpdateDispatchMessage, RebootMessage, SyncMessage, WipeAssetsMessage
 from cms.services.transport import get_transport
-from cms.services.scheduler import push_sync_to_device
+from cms.services.scheduler import get_device_schedule_status, push_sync_to_device
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
 from cms.services.device_membership import (
@@ -682,6 +683,31 @@ async def get_device(device_id: str, request: Request, db: AsyncSession = Depend
         update_available=is_os_update_available(device.os_version, latest_version),
         has_active_schedule=device.id in scheduled_device_ids,
         **_ota_fields_for_out(device, now=now),
+    )
+
+
+@router.get(
+    "/{device_id}/schedule-status",
+    response_model=DeviceScheduleStatusOut,
+    dependencies=[Depends(require_permission(DEVICES_READ))],
+)
+async def get_device_schedule_status_route(
+    device_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    from cms.auth import SETTING_TIMEZONE
+    from cms.ui import get_setting
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, timezone
+
+    await _get_device_with_access(device_id, request, db)
+    tz_name = await get_setting(db, SETTING_TIMEZONE) or "UTC"
+    return await get_device_schedule_status(
+        db,
+        device_id,
+        ZoneInfo(tz_name),
+        datetime.now(timezone.utc),
     )
 
 
@@ -1785,16 +1811,35 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         await verify_resource_group_access(user, db, group_id)
 
     result = await db.execute(
-        select(DeviceGroup)
-        .where(DeviceGroup.id == group_id)
-        .options(selectinload(DeviceGroup.devices))
+        select(DeviceGroup).where(DeviceGroup.id == group_id)
     )
     group = result.scalar_one_or_none()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
+    user_perms = list(user.role.permissions) if user and user.role else []
+    can_manage = DEVICES_MANAGE in user_perms
+
+    device_query = select(Device).order_by(Device.name, Device.id)
+    if not can_manage:
+        device_query = device_query.where(Device.status == DeviceStatus.ADOPTED)
+    if user:
+        visible_group_ids = await get_user_group_ids(user, db)
+        if visible_group_ids is not None:
+            device_query = device_query.where(build_device_read_scope_clause(visible_group_ids))
+    device_rows = (await db.execute(device_query)).scalars().all()
+    groups_by_device_id = await _load_effective_group_summaries_by_device_id(device_rows, db)
+    group.panel_devices = sorted(
+        [
+            device
+            for device in device_rows
+            if group_id in {summary.id for summary in groups_by_device_id.get(device.id, [])}
+        ],
+        key=lambda device: ((device.name or device.id).lower(), device.id),
+    )
+
     # Annotate the same fields the /devices page template expects.
-    group.device_count = len(group.devices)
+    group.device_count = len(group.panel_devices)
     group.schedule_count = await db.scalar(
         select(func.count()).select_from(ScheduleModel).where(ScheduleModel.group_id == group_id)
     ) or 0
@@ -1805,7 +1850,7 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     latest_version = latest_stable  # template fallback; per-device value set below
     transport = get_transport()
     live_states = {s["device_id"]: s for s in await transport.get_all_states()}
-    for d in group.devices:
+    for d in group.panel_devices:
         # See cms/ui.py: detach before decorating with live-state attributes
         # so display-only values (cpu_temp_c, ip_address, …) cannot autoflush
         # back to the DB.  Some of these names collide with real columns.
@@ -1827,6 +1872,8 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
         d.update_available = is_os_update_available(d.os_version, d.available_version)
         d.is_upgrading = _is_upgrading(d)
         d.has_active_schedule = False  # poller will flip this via updateLiveFields
+        d.ui_groups = groups_by_device_id.get(d.id, [])
+        d.ui_group_ids = [summary.id for summary in d.ui_groups]
 
     # Splash-screen dropdown options need the same ready annotations ui.py
     # applies on the full page render.
@@ -1856,7 +1903,6 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     else:
         visible_groups = []
 
-    user_perms = list(user.role.permissions) if user and user.role else []
     pending_ttl_hours = get_settings().pending_device_ttl_hours
 
     # Phase C: rich device_row needs profiles, latest_version, timezones, and
@@ -1875,9 +1921,9 @@ async def get_group_panel(group_id: uuid.UUID, request: Request, db: AsyncSessio
     # decoration — this is the same shared cross-replica value.
     timezones = COMMON_TIMEZONES
 
-    for d in group.devices:
+    for d in group.panel_devices:
         d.severity_tags = device_severity_tags(d, user_perms)
-    group.rollup = fleet_counts(group.devices, user_perms)
+    group.rollup = fleet_counts(group.panel_devices, user_perms)
 
     macros = templates.env.get_template("_macros.html").module
     html = macros.group_panel(

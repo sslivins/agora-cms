@@ -140,8 +140,92 @@ tr.row-flash.row-flash-maintenance > td { animation-name: row-flash-maintenance;
 .group-rollup-chip.sev-orphan  { background: #fef3c7; color: #92400e; }
 .group-rollup-chip.sev-maint   { background: #dbeafe; color: #1e40af; }
 .group-rollup-chip.sev-ok      { background: #dcfce7; color: #166534; }
+.group-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    margin: 0 0 1rem 0;
+}
+.group-filter-chip {
+    max-width: 20rem;
+}
+.group-filter-chip .group-filter-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.device-group-editor {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+}
+.device-group-badges {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+    min-height: 1.8rem;
+}
+.device-group-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+}
+.device-group-add-select {
+    min-width: 9rem;
+    max-width: 14rem;
+}
+.device-schedule-status {
+    display: grid;
+    gap: 0.5rem;
+}
+.device-schedule-status-section {
+    display: grid;
+    gap: 0.3rem;
+}
+.device-schedule-status-heading {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+.device-schedule-status-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-alt);
+}
+.device-schedule-status-card strong {
+    display: inline-block;
+    margin-right: 0.35rem;
+}
+.device-schedule-status-meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.2rem;
+}
 </style>
 {{ macros.triage_bar(fleet_counts, active_alert, user_perms) }}
+{% endif %}
+
+{% if groups and 'groups:read' in user_perms %}
+<div class="group-filter-bar">
+    <span class="triage-bar-label">Group filter (any selected)</span>
+    {% for g in groups %}
+    <button
+        type="button"
+        class="triage-chip group-filter-chip"
+        data-group-filter="{{ g.id }}"
+        aria-pressed="false"
+    >
+        <span class="group-filter-name">{{ g.name }}</span>
+        <span class="triage-chip-count">{{ g.device_count }}</span>
+    </button>
+    {% endfor %}
+</div>
 {% endif %}
 
 {# ── Device Groups (expandable) ── #}
@@ -250,9 +334,16 @@ const TRIAGE_NEEDS_ATTENTION = new Set([
 ]);
 const TRIAGE_CRITICAL = new Set(['error', 'offline', 'storage-critical']);
 const TRIAGE_WARNING = new Set(['display-off', 'orphaned']);
+let _activeTriageFilter = 'all';
+const _activeGroupFilters = new Set();
 
 function triageGetTags(tr) {
     const raw = (tr.getAttribute('data-severity-tags') || '').trim();
+    return raw ? raw.split(/\s+/) : [];
+}
+
+function deviceGroupIds(tr) {
+    const raw = (tr.getAttribute('data-group-ids') || '').trim();
     return raw ? raw.split(/\s+/) : [];
 }
 
@@ -275,28 +366,35 @@ function triageRowMatches(tr, filter) {
     return tags.includes(filter);
 }
 
-function triageBarApply(filter) {
-    // Toggle each device row's [hidden] state. Pending devices have
-    // no severity tags and live in their own card — skip them.
+function groupRowMatches(tr) {
+    if (_activeGroupFilters.size === 0) return true;
+    return deviceGroupIds(tr).some(groupId => _activeGroupFilters.has(groupId));
+}
+
+function applyDeviceFilters() {
     document.querySelectorAll('tr.device-row[data-severity-tags]').forEach(tr => {
-        const match = triageRowMatches(tr, filter);
+        const match = triageRowMatches(tr, _activeTriageFilter) && groupRowMatches(tr);
         if (match) tr.removeAttribute('hidden');
         else tr.setAttribute('hidden', '');
     });
-    // Filter-empty panels stay visible — surface an inline empty-state
-    // row inside each tbody when filter excludes every device. Genuinely
-    // empty Ungrouped (zero devices total) keeps its existing hide path.
+
+    const hasGroupFilter = _activeGroupFilters.size > 0;
+    document.querySelectorAll('.group-panel[data-group-id]').forEach(panel => {
+        const groupId = panel.getAttribute('data-group-id');
+        panel.style.display = (!hasGroupFilter || _activeGroupFilters.has(groupId)) ? '' : 'none';
+    });
+
     document.querySelectorAll('[data-group-tbody]').forEach(tbody => {
         const total = tbody.querySelectorAll('tr.device-row').length;
         const visible = tbody.querySelectorAll('tr.device-row:not([hidden])').length;
         let emptyRow = tbody.querySelector('tr.triage-empty-state');
-        if (filter !== 'all' && total > 0 && visible === 0) {
+        if ((_activeTriageFilter !== 'all' || hasGroupFilter) && total > 0 && visible === 0) {
             if (!emptyRow) {
                 emptyRow = document.createElement('tr');
                 emptyRow.className = 'triage-empty-state';
                 const td = document.createElement('td');
                 td.colSpan = 99;
-                td.textContent = 'No devices match the current filter.';
+                td.textContent = 'No devices match the current filters.';
                 emptyRow.appendChild(td);
                 tbody.appendChild(emptyRow);
             }
@@ -305,17 +403,40 @@ function triageBarApply(filter) {
             emptyRow.hidden = true;
         }
     });
-    // Update active state on the chips.
+
+    const ungroupedBody = document.querySelector('tbody[data-group-tbody="ungrouped"]');
+    const ungroupedSection = document.getElementById('ungrouped-section');
+    if (ungroupedBody && ungroupedSection) {
+        const visibleUngrouped = ungroupedBody.querySelectorAll('tr.device-row:not([hidden])').length;
+        const totalUngrouped = ungroupedBody.querySelectorAll('tr.device-row').length;
+        if (hasGroupFilter) {
+            ungroupedSection.style.display = visibleUngrouped > 0 ? '' : 'none';
+        } else {
+            ungroupedSection.style.display = totalUngrouped > 0 ? '' : 'none';
+        }
+    }
+
     document.querySelectorAll('.triage-chip').forEach(btn => {
-        const active = btn.getAttribute('data-filter') === filter;
+        if (!btn.hasAttribute('data-filter')) return;
+        const active = btn.getAttribute('data-filter') === _activeTriageFilter;
         btn.classList.toggle('is-active', active);
         btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
-    // Persist the filter in the URL.
+    document.querySelectorAll('.group-filter-chip').forEach(btn => {
+        const active = _activeGroupFilters.has(btn.getAttribute('data-group-filter'));
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+
     const url = new URL(window.location.href);
-    if (filter === 'all') url.searchParams.delete('alert');
-    else url.searchParams.set('alert', filter);
+    if (_activeTriageFilter === 'all') url.searchParams.delete('alert');
+    else url.searchParams.set('alert', _activeTriageFilter);
     window.history.replaceState({}, '', url.toString());
+}
+
+function triageBarApply(filter) {
+    _activeTriageFilter = filter || 'all';
+    applyDeviceFilters();
 }
 
 function triageBarRecomputeCounts() {
@@ -360,6 +481,7 @@ function triageBarRecomputeCounts() {
 
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.triage-chip').forEach(btn => {
+        if (!btn.hasAttribute('data-filter')) return;
         btn.addEventListener('click', () => {
             // Toggle: clicking the active chip clears the filter back to 'all'.
             const target = btn.classList.contains('is-active')
@@ -368,9 +490,19 @@ document.addEventListener('DOMContentLoaded', () => {
             triageBarApply(target);
         });
     });
+    document.querySelectorAll('.group-filter-chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const groupId = btn.getAttribute('data-group-filter');
+            if (!groupId) return;
+            if (_activeGroupFilters.has(groupId)) _activeGroupFilters.delete(groupId);
+            else _activeGroupFilters.add(groupId);
+            applyDeviceFilters();
+        });
+    });
     // Apply initial filter from server-rendered active state.
     const initial = document.querySelector('.triage-chip.is-active');
     if (initial) triageBarApply(initial.getAttribute('data-filter'));
+    else applyDeviceFilters();
     // Flash matching rows when arriving from a dashboard tile so the
     // user can see at a glance which rows triggered the count.
     triageFlashFromUrl();
@@ -411,15 +543,193 @@ async function dropDevice(e, groupId) {
     e.preventDefault();
     const deviceId = e.dataTransfer.getData('text/plain');
     if (!deviceId) return;
-    const resp = await apiCall('PATCH', `/api/devices/${deviceId}`, { group_id: groupId });
+    await addDeviceGroup(deviceId, groupId, { successMessage: 'Device added to group' });
+}
+
+function _deviceGroupPreviewMessage(actionLabel, preview) {
+    const current = (preview.current_groups || []).map(group => group.name).join(', ') || 'none';
+    const resulting = (preview.groups || []).map(group => group.name).join(', ') || 'none';
+    const added = (preview.schedules_added || []).map(item => `${item.name} (${item.group_name || 'unknown group'})`);
+    const removed = (preview.schedules_removed || []).map(item => `${item.name} (${item.group_name || 'unknown group'})`);
+    const lines = [
+        actionLabel,
+        '',
+        `Current groups: ${current}`,
+        `Resulting groups: ${resulting}`,
+    ];
+    if (added.length) {
+        lines.push('', 'Schedules that will start matching this device:');
+        added.forEach(item => lines.push(`• ${item}`));
+    }
+    if (removed.length) {
+        lines.push('', 'Schedules that will stop matching this device:');
+        removed.forEach(item => lines.push(`• ${item}`));
+    }
+    if (!added.length && !removed.length) {
+        lines.push('', 'No schedule impact preview was returned.');
+    }
+    return lines.join('\n');
+}
+
+async function _runDeviceGroupMutation({ method, url, body = null, actionLabel, successMessage, confirmWhen = null }) {
+    const dryRunUrl = url.includes('?') ? `${url}&dry_run=true` : `${url}?dry_run=true`;
+    const previewResp = await apiCall(method, dryRunUrl, body);
+    if (!previewResp || !previewResp.ok) {
+        const err = previewResp ? await previewResp.json().catch(() => ({})) : null;
+        showToast(extractErrorMsg(err, 'Group update failed'), true);
+        return false;
+    }
+    const preview = await previewResp.json();
+    if (!preview.changed) {
+        showToast('No group change needed');
+        return true;
+    }
+    const shouldConfirm = typeof confirmWhen === 'function'
+        ? confirmWhen(preview)
+        : Boolean(confirmWhen);
+    if (shouldConfirm) {
+        const ok = await showConfirm(_deviceGroupPreviewMessage(actionLabel, preview));
+        if (!ok) return false;
+    }
+    const resp = await apiCall(method, url, body);
     if (!resp || !resp.ok) {
-        showToast('Failed to assign device to group', true);
-        return;
+        const err = resp ? await resp.json().catch(() => ({})) : null;
+        showToast(extractErrorMsg(err, 'Group update failed'), true);
+        return false;
     }
-    showToast('Device added to group');
-    if (!moveDeviceRowInDom(deviceId, groupId)) {
-        location.reload();
+    showToast(successMessage);
+    location.reload();
+    return true;
+}
+
+async function addDeviceGroup(deviceId, groupId, { successMessage = 'Group added' } = {}) {
+    return _runDeviceGroupMutation({
+        method: 'POST',
+        url: `/api/devices/${deviceId}/groups`,
+        body: { group_id: groupId },
+        actionLabel: 'Add this device to the selected group?',
+        successMessage,
+        confirmWhen: (preview) => (preview.schedules_added || []).length > 0 || (preview.schedules_removed || []).length > 0,
+    });
+}
+
+async function previewAddDeviceGroup(deviceId, selectEl) {
+    const groupId = selectEl.value;
+    selectEl.value = '';
+    if (!groupId) return;
+    await addDeviceGroup(deviceId, groupId);
+}
+
+async function removeDeviceGroup(deviceId, groupId) {
+    return _runDeviceGroupMutation({
+        method: 'DELETE',
+        url: `/api/devices/${deviceId}/groups/${groupId}`,
+        actionLabel: 'Remove this device from the selected group?',
+        successMessage: 'Group removed',
+        confirmWhen: (preview) => (preview.schedules_added || []).length > 0 || (preview.schedules_removed || []).length > 0,
+    });
+}
+
+async function clearDeviceGroups(deviceId) {
+    return _runDeviceGroupMutation({
+        method: 'PUT',
+        url: `/api/devices/${deviceId}/groups`,
+        body: { group_ids: [] },
+        actionLabel: 'Remove this device from every group?',
+        successMessage: 'All groups removed',
+        confirmWhen: true,
+    });
+}
+
+function _renderScheduleStatusItem(item, kind) {
+    const groupName = item.group_name || 'Ungrouped';
+    const statusBits = [`Priority ${item.priority}`, groupName, `${item.start_time}–${item.end_time}`];
+    if (item.source === 'confirmed') statusBits.push('confirmed');
+    if (item.source === 'scheduled') statusBits.push('scheduled');
+    const extra = [];
+    if (kind === 'preempted' && item.preempting_schedule_name) {
+        extra.push(`Paused by ${item.preempting_schedule_name} (${item.preempting_group_name || 'unknown group'}, priority ${item.preempting_priority})`);
     }
+    if (item.resumes_at) extra.push(`Resumes at ${item.resumes_at}`);
+    if (item.countdown && item.countdown !== 'starting' && item.countdown !== 'no_targets') extra.push(item.countdown);
+    if (item.starting) extra.push('Starting now');
+    if (item.no_targets) extra.push('No adopted target devices');
+    return `
+        <div class="device-schedule-status-card">
+            <strong>${_escHtml(item.schedule_name)}</strong>
+            <span>${_escHtml(item.asset_filename || '—')}</span>
+            <div class="device-schedule-status-meta">${_escHtml(statusBits.join(' · '))}</div>
+            ${extra.length ? `<div class="device-schedule-status-meta">${_escHtml(extra.join(' · '))}</div>` : ''}
+        </div>
+    `;
+}
+
+function _renderScheduleStatusSection(title, items, kind, emptyText) {
+    if (!items.length) {
+        return `
+            <div class="device-schedule-status-section">
+                <div class="device-schedule-status-heading">${_escHtml(title)}</div>
+                <div class="text-muted">${_escHtml(emptyText)}</div>
+            </div>
+        `;
+    }
+    return `
+        <div class="device-schedule-status-section">
+            <div class="device-schedule-status-heading">${_escHtml(title)}</div>
+            ${items.map(item => _renderScheduleStatusItem(item, kind)).join('')}
+        </div>
+    `;
+}
+
+async function loadDeviceScheduleStatus(deviceId) {
+    const containers = document.querySelectorAll(`[data-schedule-status-for="${deviceId}"]`);
+    if (!containers.length) return;
+    containers.forEach(el => {
+        if (!el.dataset.loading) {
+            el.dataset.loading = '1';
+            el.innerHTML = '<span class="text-muted">Loading schedule status…</span>';
+        }
+    });
+    try {
+        const resp = await fetch(`/api/devices/${deviceId}/schedule-status`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const html = [
+            _renderScheduleStatusSection(
+                'Now Playing',
+                data.now_playing ? [data.now_playing] : [],
+                'now',
+                'Nothing is playing right now.'
+            ),
+            _renderScheduleStatusSection(
+                'Preempted / Resume',
+                data.preempted || [],
+                'preempted',
+                'No lower-priority schedule is currently paused.'
+            ),
+            _renderScheduleStatusSection(
+                'Coming Up',
+                data.coming_up || [],
+                'coming',
+                'No upcoming schedules for this device.'
+            ),
+        ].join('');
+        containers.forEach(el => {
+            delete el.dataset.loading;
+            el.innerHTML = html;
+        });
+    } catch (e) {
+        containers.forEach(el => {
+            delete el.dataset.loading;
+            el.innerHTML = '<span class="text-muted">Could not load schedule status.</span>';
+        });
+    }
+}
+
+function _escHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function applyAssetTooltips() {
@@ -538,6 +848,9 @@ window._adoptionProfiles = [
             } else {
                 items += '<button type="button" role="menuitem" onclick="setUpdateChannel(\'' + d.id + '\', \'prerelease\')" title="Opt this device in to prerelease OS builds (-rc / -test) for testing before general release">Join prerelease channel</button>';
             }
+        }
+        if ((d.group_ids || []).length > 0) {
+            items += '<button type="button" role="menuitem" onclick="clearDeviceGroups(\'' + d.id + '\')" title="Remove this device from every group">Remove all groups</button>';
         }
         items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice(\'' + d.id + '\')" title="Remove this device from the CMS">Delete</button>';
         const mid = 'kebab-dev-' + d.id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -663,8 +976,7 @@ window._adoptionProfiles = [
             // used. The capacity bytes also change in practice (storage swap,
             // re-flash with a different SD card) and reading capacity only
             // from the initial server-rendered dataset is a stale-data bug.
-            const storagePctEl = document.querySelector(`[data-live-storage-pct="${d.id}"]`);
-            if (storagePctEl) {
+            document.querySelectorAll(`[data-live-storage-pct="${d.id}"]`).forEach(storagePctEl => {
                 const cap = (d.storage_capacity_mb != null)
                     ? d.storage_capacity_mb
                     : (parseInt(storagePctEl.dataset.storageMb) || 0);
@@ -674,14 +986,13 @@ window._adoptionProfiles = [
                     storagePctEl.dataset.storageMb = cap;
                     storagePctEl.dataset.usedMb = used;
                 }
-            }
+            });
 
             // ── Collapsed row: action buttons ──
             // Rebuild only when the *signature* of relevant device state changes —
             // unconditional innerHTML replace would race the user's kebab click
             // and detach the popover before the browser opens it.
-            const actionsEl = document.querySelector(`[data-live-actions="${d.id}"]`);
-            if (actionsEl) {
+            document.querySelectorAll(`[data-live-actions="${d.id}"]`).forEach(actionsEl => {
                 const sig = [
                     d.status, d.is_upgrading ? 1 : 0, d.is_online ? 1 : 0,
                     d.update_available ? 1 : 0, d.ssh_enabled ? 1 : 0,
@@ -693,11 +1004,10 @@ window._adoptionProfiles = [
                     actionsEl.innerHTML = buildActionButtons(d);
                     actionsEl.dataset.actionsSig = sig;
                 }
-            }
+            });
 
             // ── Detail panel: display, pipeline, asset ──
-            const displayEl = document.querySelector(`[data-live-display="${d.id}"]`);
-            if (displayEl) {
+            document.querySelectorAll(`[data-live-display="${d.id}"]`).forEach(displayEl => {
                 if (Array.isArray(d.display_ports) && d.display_ports.length > 1) {
                     displayEl.innerHTML = d.display_ports.map(p => {
                         const cls = p.connected ? 'badge-online' : 'badge-offline';
@@ -710,35 +1020,37 @@ window._adoptionProfiles = [
                 else if (d.display_connected === null || d.display_connected === undefined) displayEl.innerHTML = '<span class="text-muted">—</span>';
                 else if (d.display_connected) displayEl.innerHTML = '<span class="badge badge-online">Connected</span>';
                 else displayEl.innerHTML = '<span class="badge badge-offline">Disconnected</span>';
-            }
-            const pipelineEl = document.querySelector(`[data-live-pipeline="${d.id}"]`);
-            if (pipelineEl) pipelineEl.innerHTML = buildPipelineBadge(d);
-            const assetEl = document.querySelector(`[data-live-asset="${d.id}"]`);
-            if (assetEl) assetEl.innerHTML = buildAssetDisplay(d);
+            });
+            document.querySelectorAll(`[data-live-pipeline="${d.id}"]`).forEach(pipelineEl => {
+                pipelineEl.innerHTML = buildPipelineBadge(d);
+            });
+            document.querySelectorAll(`[data-live-asset="${d.id}"]`).forEach(assetEl => {
+                assetEl.innerHTML = buildAssetDisplay(d);
+            });
 
             // ── Detail panel: CPU temperature ──
-            const tempEl = document.querySelector(`[data-live-temp="${d.id}"]`);
-            if (tempEl) tempEl.innerHTML = buildTempDisplay(d);
+            document.querySelectorAll(`[data-live-temp="${d.id}"]`).forEach(tempEl => {
+                tempEl.innerHTML = buildTempDisplay(d);
+            });
 
             // ── Detail panel: IP address ──
-            const ipEl = document.querySelector(`[data-live-ip="${d.id}"]`);
-            if (ipEl) ipEl.textContent = d.ip_address || '—';
+            document.querySelectorAll(`[data-live-ip="${d.id}"]`).forEach(ipEl => {
+                ipEl.textContent = d.ip_address || '—';
+            });
 
             // ── Detail panel: firmware + OS versions (#573) ──
             // Both fields are read-once-then-stale in the initial server
             // render; after an OTA the device's reported values change
             // but the page didn't repaint them, so operators thought the
             // upgrade hadn't completed until they hit F5.
-            const fwEl = document.querySelector(`[data-live-firmware-version="${d.id}"]`);
-            if (fwEl) {
+            document.querySelectorAll(`[data-live-firmware-version="${d.id}"]`).forEach(fwEl => {
                 fwEl.textContent = d.firmware_version || '—';
                 fwEl.title = d.firmware_version || '';
-            }
-            const osEl = document.querySelector(`[data-live-os-version="${d.id}"]`);
-            if (osEl) {
+            });
+            document.querySelectorAll(`[data-live-os-version="${d.id}"]`).forEach(osEl => {
                 osEl.textContent = d.os_version || '—';
                 osEl.title = d.os_version || '';
-            }
+            });
             // The "{latest_version} available" badge is rendered server-
             // side INSIDE the os-version detail cell (latest_version comes
             // from bundle_checker polling agora-os releases, so it's an
@@ -755,14 +1067,14 @@ window._adoptionProfiles = [
             // bundle_checker (~30 min cadence), so its text is left as
             // the server-rendered value -- not worth wiring through the
             // per-device payload.
-            const badgeWrapEl = document.querySelector(`[data-live-update-badge-wrap="${d.id}"]`);
-            if (badgeWrapEl) badgeWrapEl.style.display = d.update_available ? '' : 'none';
+            document.querySelectorAll(`[data-live-update-badge-wrap="${d.id}"]`).forEach(badgeWrapEl => {
+                badgeWrapEl.style.display = d.update_available ? '' : 'none';
+            });
 
             // ── Detail panel: storage detail ──
             // Same stale-capacity fix as the collapsed-row percentage above:
             // pull capacity from the API payload, not the initial dataset.
-            const storageEl = document.querySelector(`[data-live-storage="${d.id}"]`);
-            if (storageEl) {
+            document.querySelectorAll(`[data-live-storage="${d.id}"]`).forEach(storageEl => {
                 const cap = (d.storage_capacity_mb != null)
                     ? d.storage_capacity_mb
                     : (parseInt(storageEl.dataset.storageMb) || 0);
@@ -770,7 +1082,7 @@ window._adoptionProfiles = [
                 storageEl.textContent = fmtStorage(used) + ' / ' + fmtStorage(cap);
                 storageEl.dataset.storageMb = cap;
                 storageEl.dataset.usedMb = used;
-            }
+            });
 
             // ── Detail panel: device type + supported codecs ──
             // Both fields are written from the device's registration payload
@@ -778,24 +1090,27 @@ window._adoptionProfiles = [
             // and after #573 we already repaint os/firmware version live in
             // the same detail panel -- these two were the remaining stale
             // values an operator could see without F5.
-            const deviceTypeEl = document.querySelector(`[data-live-device-type="${d.id}"]`);
-            if (deviceTypeEl) deviceTypeEl.textContent = d.device_type || '—';
-            const codecsEl = document.querySelector(`[data-live-supported-codecs="${d.id}"]`);
-            if (codecsEl) {
+            document.querySelectorAll(`[data-live-device-type="${d.id}"]`).forEach(deviceTypeEl => {
+                deviceTypeEl.textContent = d.device_type || '—';
+            });
+            document.querySelectorAll(`[data-live-supported-codecs="${d.id}"]`).forEach(codecsEl => {
                 codecsEl.textContent = d.supported_codecs
                     ? d.supported_codecs.replace(/,/g, ', ')
                     : '—';
-            }
+            });
 
             // ── Detail panel: last seen ──
-            const lastSeenEl = document.querySelector(`[data-live-lastseen="${d.id}"]`);
-            if (lastSeenEl && d.is_online) {
-                lastSeenEl.textContent = 'Now';
-            }
+            document.querySelectorAll(`[data-live-lastseen="${d.id}"]`).forEach(lastSeenEl => {
+                if (d.is_online) lastSeenEl.textContent = 'Now';
+            });
 
             // ── Detail panel: online-only sections visibility ──
-            const onlineSection = document.querySelector(`[data-live-online-section="${d.id}"]`);
-            if (onlineSection) onlineSection.style.display = d.is_online ? '' : 'none';
+            document.querySelectorAll(`[data-live-online-section="${d.id}"]`).forEach(onlineSection => {
+                onlineSection.style.display = d.is_online ? '' : 'none';
+            });
+            if (document.querySelector(`tr.device-row[data-device-id="${d.id}"].expanded`)) {
+                loadDeviceScheduleStatus(d.id);
+            }
         }
         requestAnimationFrame(applyAssetTooltips);
     }
@@ -881,9 +1196,23 @@ window._adoptionProfiles = [
             // Always update all live fields inline
             updateLiveFields(devices);
 
-            // Structural reload only when devices are added or removed
+            // Structural reload when devices are added/removed or when a
+            // device's group memberships changed on another session.
             const newIds = new Set(devices.map(d => d.id));
-            if (newIds.size !== knownDeviceIds.size || ![...newIds].every(id => knownDeviceIds.has(id))) {
+            const membershipChanged = devices.some(d => {
+                const actual = (d.group_ids || []).map(String).sort().join(' ');
+                const rendered = Array.from(
+                    document.querySelectorAll(`tr.device-row[data-device-id="${d.id}"]`)
+                )
+                    .map(row => row.getAttribute('data-group-ids') || '')
+                    .find(Boolean);
+                return (rendered || '') !== actual;
+            });
+            if (
+                newIds.size !== knownDeviceIds.size
+                || ![...newIds].every(id => knownDeviceIds.has(id))
+                || membershipChanged
+            ) {
                 // Skip reload only if the user has expanded a device detail
                 // row — group panels are now expanded by default (Phase D)
                 // so they're no longer a useful "user is interacting" signal.
@@ -900,11 +1229,6 @@ window._adoptionProfiles = [
     // ── Pending Devices card (bootstrap redesign A.5) ──
     // Poll /api/devices/pending every 5s and render one row per unadopted
     // registration.  The card is hidden when the list is empty.
-    function _escHtml(s) {
-        return String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
     function _fmtRelativeAge(iso) {
         if (!iso) return '—';
         const t = Date.parse(iso);
