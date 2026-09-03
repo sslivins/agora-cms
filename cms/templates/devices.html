@@ -685,8 +685,11 @@ async function loadDeviceScheduleStatus(deviceId) {
     const containers = document.querySelectorAll(`[data-schedule-status-for="${deviceId}"]`);
     if (!containers.length) return;
     containers.forEach(el => {
-        if (!el.dataset.loading) {
-            el.dataset.loading = '1';
+        // Only show the "Loading…" placeholder the first time this container
+        // is populated. Later 5s polling refreshes (see pollDevicesOnce)
+        // reuse the same element and would otherwise blank it out and
+        // repaint it every cycle, causing a distracting flicker.
+        if (!el.dataset.loaded) {
             el.innerHTML = '<span class="text-muted">Loading schedule status…</span>';
         }
     });
@@ -715,12 +718,12 @@ async function loadDeviceScheduleStatus(deviceId) {
             ),
         ].join('');
         containers.forEach(el => {
-            delete el.dataset.loading;
+            el.dataset.loaded = '1';
             el.innerHTML = html;
         });
     } catch (e) {
         containers.forEach(el => {
-            delete el.dataset.loading;
+            el.dataset.loaded = '1';
             el.innerHTML = '<span class="text-muted">Could not load schedule status.</span>';
         });
     }
