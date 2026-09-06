@@ -244,7 +244,7 @@ def test_devices_page_moves_row_in_place_on_group_change(
     authenticated_page: Page,
     simulator: SimulatorClient,
 ) -> None:
-    """Smoke test the Stage 7 many-to-many group controls on /devices."""
+    """A device has exactly one group; changing it moves the row in place."""
     page = authenticated_page
 
     # Pick any adopted simulator device that's not in a group; create a fresh
@@ -252,7 +252,7 @@ def test_devices_page_moves_row_in_place_on_group_change(
     serials = sorted(simulator.serials())
     assert serials, "no simulator devices adopted"
     serial = serials[0]
-    # Make sure we start ungrouped (idempotent — no-op if already null).
+    # Make sure we start ungrouped (idempotent - no-op if already null).
     _api_patch(page, f"/api/devices/{serial}", {"group_id": None})
 
     # Create a fresh group via API so the panel is on the page.
@@ -276,8 +276,8 @@ def test_devices_page_moves_row_in_place_on_group_change(
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
 
-        # Step 1: add the group via the Stage 7 add-group selector.
-        ungrouped_row.locator("select[data-device-add-group]").select_option(group_id)
+        # Step 1: assign the group from the row's group selector.
+        ungrouped_row.locator("select[data-device-group-select]").select_option(group_id)
         page.wait_for_load_state("domcontentloaded")
         group_row.wait_for(state="attached", timeout=5000)
         assert ungrouped_row.count() == 0
@@ -285,18 +285,17 @@ def test_devices_page_moves_row_in_place_on_group_change(
         count_badge = page.locator(f'[data-group-count="{group_id}"]')
         assert count_badge.inner_text().lower().startswith("1 device"), count_badge.inner_text()
 
-        # Moved row should now expose a removable group chip.
-        assert group_row.locator(".device-group-badge .btn-x").count() == 1
+        # The moved row's selector should reflect the new group.
+        assert group_row.locator("select[data-device-group-select]").input_value() == group_id
 
-        # Expand the group panel so the chip is visible/clickable.
-        # Group panels start collapsed; the compact table lives inside the
-        # panel body which is hidden until the header is clicked.
+        # Expand the group panel so the row is visible/interactive. Group
+        # panels start collapsed; the table lives in the hidden panel body.
         group_panel = page.locator(f'.group-panel[data-group-id="{group_id}"]')
         if not group_panel.evaluate("el => el.classList.contains('expanded')"):
             group_panel.locator(".group-header").click()
 
-        # Step 2: remove the chip — the row should move back to Ungrouped.
-        group_row.locator(".device-group-badge .btn-x").click()
+        # Step 2: select None - the row should move back to Ungrouped.
+        group_row.locator("select[data-device-group-select]").select_option("")
         page.wait_for_load_state("domcontentloaded")
         ungrouped_row.wait_for(state="attached", timeout=5000)
         assert group_row.count() == 0
@@ -304,6 +303,6 @@ def test_devices_page_moves_row_in_place_on_group_change(
         # Empty-state placeholder for the now-empty group should be visible.
         assert page.locator(f'[data-group-empty="{group_id}"]').is_visible()
     finally:
-        # Cleanup: detach (already ungrouped after Remove) and drop the group.
+        # Cleanup: detach (already ungrouped after the move) and drop the group.
         _api_patch(page, f"/api/devices/{serial}", {"group_id": None})
         _api_delete(page, f"/api/devices/groups/{group_id}")
