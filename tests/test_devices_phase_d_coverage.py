@@ -243,7 +243,7 @@ class TestGroupRemovalControls:
     """Stage 7 replaces the singular Remove-from-group kebab with
     multi-group controls on the row itself."""
 
-    async def test_admin_sees_multi_group_controls_on_grouped_row(
+    async def test_admin_sees_group_controls_on_grouped_row(
         self, client, grouped_update_device
     ):
         gid = grouped_update_device["group_id"]
@@ -262,9 +262,9 @@ class TestGroupRemovalControls:
         assert m, "couldn't locate device row block for kebab assertion"
         row_block = m.group(0)
         assert (
-            "data-device-group-id=" in row_block
-            and f"clearDeviceGroups('{did}')" in row_block
-        ), "expected Stage 7 multi-group controls on grouped device row"
+            "data-device-group-select" in row_block
+            and f"assignGroup('{did}', '')" in row_block
+        ), "expected single-group controls on grouped device row"
 
     async def test_patch_group_id_null_unassigns_device(
         self, client, grouped_update_device

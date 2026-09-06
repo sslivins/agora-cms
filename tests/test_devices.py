@@ -564,8 +564,7 @@ class TestDeviceScheduleStatus:
         next_end = (now + timedelta(minutes=90)).time().replace(microsecond=0)
 
         group_a = DeviceGroup(id=uuid.uuid4(), name="Status Alpha")
-        group_b = DeviceGroup(id=uuid.uuid4(), name="Status Beta")
-        db_session.add_all([group_a, group_b])
+        db_session.add(group_a)
         await db_session.flush()
 
         device = Device(
@@ -576,7 +575,6 @@ class TestDeviceScheduleStatus:
         db_session.add(device)
         await db_session.flush()
         await assign_device_group(db_session, device.id, group_a.id)
-        await assign_device_group(db_session, device.id, group_b.id)
         asset_low = Asset(
             id=uuid.uuid4(),
             filename="low.mp4",
@@ -614,7 +612,7 @@ class TestDeviceScheduleStatus:
         high = Schedule(
             id=uuid.uuid4(),
             name="High Priority",
-            group_id=group_b.id,
+            group_id=group_a.id,
             asset_id=asset_high.id,
             start_time=current_start,
             end_time=preempt_end,
@@ -641,11 +639,11 @@ class TestDeviceScheduleStatus:
         assert data["device_id"] == "status-dev-001"
         assert data["now_playing"]["schedule_name"] == "High Priority"
         assert data["now_playing"]["priority"] == 10
-        assert data["now_playing"]["group_name"] == "Status Beta"
+        assert data["now_playing"]["group_name"] == "Status Alpha"
 
         assert [item["schedule_name"] for item in data["preempted"]] == ["Low Priority"]
         assert data["preempted"][0]["preempting_schedule_name"] == "High Priority"
-        assert data["preempted"][0]["preempting_group_name"] == "Status Beta"
+        assert data["preempted"][0]["preempting_group_name"] == "Status Alpha"
         assert data["preempted"][0]["resumes_at"] is not None
 
         assert [item["schedule_name"] for item in data["coming_up"]] == ["Coming Soon"]

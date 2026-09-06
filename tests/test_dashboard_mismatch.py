@@ -501,12 +501,10 @@ class TestConfirmedPlayingReplicaFallback:
         asset_a = Asset(id=uuid.uuid4(), filename="a.mp4", asset_type=AssetType.VIDEO, checksum="a1")
         asset_b = Asset(id=uuid.uuid4(), filename="b.mp4", asset_type=AssetType.VIDEO, checksum="b1")
         group_a = DeviceGroup(id=uuid.uuid4(), name="Backstop A")
-        group_b = DeviceGroup(id=uuid.uuid4(), name="Backstop B")
-        db_session.add_all([asset_a, asset_b, group_a, group_b])
+        db_session.add_all([asset_a, asset_b, group_a])
         await db_session.flush()
 
         await assign_device_group(db_session, "mismatch-01", group_a.id)
-        await assign_device_group(db_session, "mismatch-01", group_b.id)
         low_id = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
         high_id = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
         db_session.add_all([
@@ -514,7 +512,7 @@ class TestConfirmedPlayingReplicaFallback:
                 id=high_id,
                 name="Higher UUID",
                 asset_id=asset_b.id,
-                group_id=group_b.id,
+                group_id=group_a.id,
                 start_time=time(0, 0, 0),
                 end_time=time(23, 59, 59),
                 enabled=True,

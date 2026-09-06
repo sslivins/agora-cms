@@ -348,11 +348,11 @@ async def device_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_
             logger.info("Device %s is %s — skipping sync until adopted", device_id, device.status.value)
 
         # ── 6. If device is adopted and has a default asset, push it ──
-        await db.refresh(device, ["default_asset", "groups"])
+        await db.refresh(device, ["default_asset", "group"])
         default_asset = device.default_asset
         if not default_asset:
-            for group in getattr(device, "groups", ()) or ():
-                await db.refresh(group, ["default_asset"])
+            if device.group is not None:
+                await db.refresh(device.group, ["default_asset"])
             default_asset = _resolve_group_default_asset(device)
 
         if device.status == DeviceStatus.ADOPTED and default_asset:
