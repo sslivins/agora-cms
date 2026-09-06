@@ -84,7 +84,7 @@ class TestGroupRemoveButtons:
         expect(group_body).to_be_visible(timeout=3000)
         device_row = group_body.locator('tr[data-device-id="grp-rm-003"]').first
         expect(device_row).to_be_visible(timeout=3000)
-        device_row.locator('.device-group-badge .btn-x').click()
+        device_row.locator("select[data-device-group-select]").select_option("")
         page.wait_for_load_state("domcontentloaded")
 
         # The group should still exist
@@ -231,7 +231,7 @@ class TestGroupMembershipTransitions:
         expand_group_panel(group_panel)
         device_row = group_panel.locator('tr[data-device-id="inplace-001"]').first
         expect(device_row).to_be_visible(timeout=3000)
-        device_row.locator('.device-group-badge .btn-x').click()
+        device_row.locator("select[data-device-group-select]").select_option("")
         page.wait_for_load_state("domcontentloaded")
 
         # Row should appear in the ungrouped tbody and disappear from the group tbody.
@@ -249,7 +249,7 @@ class TestGroupMembershipTransitions:
         expect(page.locator(f'[data-group-empty="{group_id}"]')).to_be_visible()
 
         moved_row = ungrouped_tbody.locator('tr[data-device-id="inplace-001"]').first
-        expect(moved_row.locator('.device-group-badge')).to_have_count(0)
+        expect(moved_row.locator("select[data-device-group-select]")).to_have_value("")
 
     def test_assign_to_group_moves_row_from_ungrouped(self, page: Page, api, ws_url, e2e_server):
         """Adding a group via the new add-group select should place the row in that panel."""
@@ -271,7 +271,7 @@ class TestGroupMembershipTransitions:
 
         # Use the add-group select in the ungrouped row to assign the group.
         ungrouped_row = ungrouped_tbody.locator('tr[data-device-id="inplace-002"]').first
-        ungrouped_row.locator('select[data-device-add-group]').select_option(group_id)
+        ungrouped_row.locator("select[data-device-group-select]").select_option(group_id)
         page.wait_for_load_state("domcontentloaded")
 
         # Row should appear in the group tbody and vanish from ungrouped.
@@ -282,4 +282,4 @@ class TestGroupMembershipTransitions:
         expect(page.locator(f'[data-group-count="{group_id}"]')).to_have_text("2 devices")
 
         moved_row = group_tbody.locator('tr[data-device-id="inplace-002"]').first
-        expect(moved_row.locator('.device-group-badge')).to_have_count(1)
+        expect(moved_row.locator("select[data-device-group-select]")).to_have_value(group_id)
