@@ -13,7 +13,7 @@ from datetime import datetime, time, timedelta, timezone
 import pytest
 import pytest_asyncio
 from cms.models.device import Device, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.services.device_manager import device_manager
 from cms.services import device_presence
 from cms.services import scheduler as _sched
@@ -45,8 +45,7 @@ async def _seed_schedule(db_session, device_id="mismatch-01",
     db_session.add(group)
     await db_session.flush()
 
-    db_session.add(DeviceGroupMembership(device_id=device_id, group_id=group.id))
-
+    await assign_device_group(db_session, device_id, group.id)
     schedule = Schedule(
         id=uuid.uuid4(),
         name=schedule_name,
@@ -506,11 +505,8 @@ class TestConfirmedPlayingReplicaFallback:
         db_session.add_all([asset_a, asset_b, group_a, group_b])
         await db_session.flush()
 
-        db_session.add_all([
-            DeviceGroupMembership(device_id="mismatch-01", group_id=group_a.id),
-            DeviceGroupMembership(device_id="mismatch-01", group_id=group_b.id),
-        ])
-
+        await assign_device_group(db_session, "mismatch-01", group_a.id)
+        await assign_device_group(db_session, "mismatch-01", group_b.id)
         low_id = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
         high_id = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
         db_session.add_all([

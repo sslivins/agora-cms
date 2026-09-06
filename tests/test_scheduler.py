@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.schedule import Schedule
 from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
@@ -26,7 +26,7 @@ from cms.services.scheduler import (
 
 async def _add_memberships(db, device_id: str, *group_ids) -> None:
     for group_id in group_ids:
-        db.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+        await assign_device_group(db, device_id, group_id)
     await db.flush()
 
 
@@ -372,7 +372,7 @@ class TestBuildDeviceSync:
         await db.flush()
 
         device = await self._setup_device(db, group=group_a)
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await assign_device_group(db, device.id, group_b.id)
         await db.flush()
 
         db.add_all([
@@ -462,7 +462,7 @@ class TestBuildDeviceSync:
         await db.flush()
 
         device = await self._setup_device(db, group=group_a)
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await assign_device_group(db, device.id, group_b.id)
         await db.commit()
 
         sync = await build_device_sync(device.id, db)
@@ -483,7 +483,7 @@ class TestBuildDeviceSync:
         await db.flush()
 
         device = await self._setup_device(db, group=group_a)
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await assign_device_group(db, device.id, group_b.id)
         await db.commit()
 
         with patch("cms.services.scheduler.logger.warning") as mock_warning:

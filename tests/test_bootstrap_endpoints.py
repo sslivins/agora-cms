@@ -624,70 +624,7 @@ class TestAdopt:
         assert r.status_code == 404
         assert "group" in r.json()["detail"]
 
-    async def test_group_ids_sets_full_initial_membership(
-        self, client, fleet_secret_enabled, stub_wps_transport,
-        db_session, unauthed_client,
-    ):
-        from cms.models.device import Device, DeviceGroup
-        from cms.models.device_group_membership import DeviceGroupMembership
 
-        _, pairing_secret, _, _ = await _register_one(
-            unauthed_client, device_id="pi-group-ids",
-        )
-        group_a = DeviceGroup(name="Bootstrap Alpha", description="")
-        group_b = DeviceGroup(name="Bootstrap Beta", description="")
-        db_session.add_all([group_a, group_b])
-        await db_session.commit()
-        profile = await _seed_profile(db_session, name="bootstrap-groups")
-
-        r = await client.post(
-            "/api/devices/adopt",
-            json={
-                "pairing_secret": pairing_secret,
-                "profile_id": str(profile.id),
-                "group_ids": [str(group_a.id), str(group_b.id)],
-            },
-        )
-        assert r.status_code == 200, r.text
-        device_id = r.json()["device_id"]
-
-        memberships = (
-            await db_session.execute(
-                select(DeviceGroupMembership.group_id).where(
-                    DeviceGroupMembership.device_id == device_id,
-                )
-            )
-        ).scalars().all()
-        assert set(memberships) == {group_a.id, group_b.id}
-
-        listed = await client.get(f"/api/devices/{device_id}")
-        assert listed.status_code == 200, listed.text
-        assert listed.json()["group_id"] == str(group_a.id)
-
-    async def test_group_id_and_group_ids_together_return_422(
-        self, client, fleet_secret_enabled, stub_wps_transport,
-        db_session, unauthed_client,
-    ):
-        from cms.models.device import DeviceGroup
-
-        _, pairing_secret, _, _ = await _register_one(
-            unauthed_client, device_id="pi-bootstrap-conflict",
-        )
-        group = DeviceGroup(name="Bootstrap Conflict", description="")
-        db_session.add(group)
-        await db_session.commit()
-        profile = await _seed_profile(db_session, name="bootstrap-conflict")
-
-        r = await client.post(
-            "/api/devices/adopt",
-            json={
-                "pairing_secret": pairing_secret,
-                "profile_id": str(profile.id),
-                "group_id": str(group.id),
-                "group_ids": [str(group.id)],
-            },
-        )
-        assert r.status_code == 422
 
     async def test_already_adopted_returns_409(
         self, client, fleet_secret_enabled, stub_wps_transport,
@@ -823,43 +760,6 @@ class TestAdopt:
         assert r.status_code == 422
         assert r.json()["detail"] == "profile_disabled"
 
-    async def test_adopt_pending_group_ids_sets_full_initial_membership(
-        self, client, unauthed_client, fleet_secret_enabled,
-        stub_wps_transport, db_session,
-    ):
-        from cms.models.device import Device
-        from cms.models.device_group_membership import DeviceGroupMembership
-
-        await _register_one(unauthed_client, device_id="pi-pending-groups")
-        listing = await client.get("/api/devices/pending")
-        pending_id = listing.json()["items"][0]["id"]
-        group_a = await _seed_group(db_session, name="Pending Alpha")
-        group_b = await _seed_group(db_session, name="Pending Beta")
-        profile = await _seed_profile(db_session, name="pending-groups")
-
-        r = await client.post(
-            "/api/devices/adopt-pending",
-            json={
-                "pending_id": pending_id,
-                "profile_id": str(profile.id),
-                "group_ids": [str(group_a.id), str(group_b.id)],
-            },
-        )
-        assert r.status_code == 200, r.text
-        device_id = r.json()["device_id"]
-
-        memberships = (
-            await db_session.execute(
-                select(DeviceGroupMembership.group_id).where(
-                    DeviceGroupMembership.device_id == device_id,
-                )
-            )
-        ).scalars().all()
-        assert set(memberships) == {group_a.id, group_b.id}
-
-        listed = await client.get(f"/api/devices/{device_id}")
-        assert listed.status_code == 200, listed.text
-        assert listed.json()["group_id"] == str(group_a.id)
 
 
 # ---------------------------------------------------------------------

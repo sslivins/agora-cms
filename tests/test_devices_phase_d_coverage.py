@@ -75,7 +75,7 @@ async def grouped_update_device(app):
 
     from cms.database import get_db
     from cms.models.device import Device, DeviceGroup, DeviceStatus
-    from cms.models.device_group_membership import DeviceGroupMembership
+    from tests.group_helpers import assign_device_group
     from cms.models.user import Role, User, UserGroup
     from cms.services import bundle_checker
 
@@ -96,8 +96,7 @@ async def grouped_update_device(app):
         )
         db.add(device)
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db, device.id, group.id)
         # Grant any seeded non-admin user (e.g. the operator from
         # operator_client) access to this group so /api/devices/groups/
         # {id}/panel doesn't 403 on the group-scoped check.

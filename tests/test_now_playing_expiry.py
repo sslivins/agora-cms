@@ -11,7 +11,7 @@ from datetime import datetime, time, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
@@ -59,8 +59,7 @@ class TestNowPlayingExpiry:
         )
         db_session.add(asset)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db_session, device.id, group.id)
         # Schedule that ended 1 hour ago
         now = datetime.now()
         ended = (now - timedelta(hours=1)).time().replace(microsecond=0)

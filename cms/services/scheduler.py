@@ -60,29 +60,11 @@ def _schedule_wins(candidate: Schedule, incumbent: Schedule | None) -> bool:
 
 
 def _resolve_group_default_asset(device: Device) -> Asset | None:
-    """Resolve the unique group-level default asset across all memberships.
-
-    If multiple memberships point at distinct non-null defaults, log and refuse
-    to silently choose one. The caller can then fall back to a device-level
-    default or to no default at all.
-    """
-    defaults: dict[str, Asset] = {}
-    for group in getattr(device, "groups", ()) or ():
-        asset = getattr(group, "default_asset", None)
-        if asset is None:
-            continue
-        defaults[str(asset.id)] = asset
-
-    if len(defaults) == 1:
-        return next(iter(defaults.values()))
-    if len(defaults) > 1:
-        logger.warning(
-            "Ambiguous group default assets for device %s across memberships %s; "
-            "ignoring group-level defaults until a device-level default is set",
-            device.id,
-            sorted(defaults),
-        )
-    return None
+    """Resolve the group-level default asset for a device's owning group."""
+    group = getattr(device, "group", None)
+    if group is None:
+        return None
+    return getattr(group, "default_asset", None)
 
 # Confirmed playback: a **replica-local optimization cache** of what each
 # device has confirmed it's playing. Populated by WS PLAYBACK_STARTED,
@@ -1239,12 +1221,12 @@ async def _build_device_sync_impl(
             local_now.replace(tzinfo=None)
         )
 
-    # Load device with default assets from its full membership set.
+    # Load device with default assets from its owning group.
     dev_result = await db.execute(
         select(Device)
         .options(
             selectinload(Device.default_asset),
-            selectinload(Device.groups).selectinload(DeviceGroup.default_asset),
+            selectinload(Device.group).selectinload(DeviceGroup.default_asset),
         )
         .where(Device.id == device_id)
     )

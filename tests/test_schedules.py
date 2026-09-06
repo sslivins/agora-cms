@@ -1,11 +1,11 @@
 """Tests for schedule API endpoints."""
 
 import pytest
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 
 
 async def _add_membership(db_session, device_id: str, group_id) -> None:
-    db_session.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+    await assign_device_group(db_session, device_id, group_id)
     await db_session.flush()
 
 

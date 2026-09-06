@@ -719,37 +719,16 @@
         {{ device_alert_chips(d, user_perms) }}
     </td>
     <td>
-        {% set memberships = d.ui_groups | default([]) %}
-        <div class="device-group-editor" onclick="event.stopPropagation()">
-            <div class="device-group-badges">
-                {% for membership in memberships %}
-                <span class="badge badge-count device-group-badge" data-device-group-id="{{ membership.id }}">
-                    <span>{{ membership.name }}</span>
-                    {% if 'devices:write' in user_perms %}
-                    <button
-                        type="button"
-                        class="btn-x"
-                        aria-label="Remove {{ membership.name }}"
-                        data-group-name="{{ membership.name }}"
-                        onclick="removeDeviceGroup('{{ d.id }}', '{{ membership.id }}', this)"
-                    >&times;</button>
-                    {% endif %}
-                </span>
-                {% else %}
-                <span class="text-muted">—</span>
-                {% endfor %}
-                {% if 'devices:write' in user_perms %}
-                <select class="inline-edit inline-edit-sm device-group-add-select" data-device-add-group onclick="event.stopPropagation()" onchange="previewAddDeviceGroup('{{ d.id }}', this)">
-                    <option value="">Add group…</option>
-                    {% for g in groups %}
-                    {% if g.id not in d.ui_group_ids | default([]) %}
-                    <option value="{{ g.id }}">{{ g.name }}</option>
-                    {% endif %}
-                    {% endfor %}
-                </select>
-                {% endif %}
-            </div>
-        </div>
+        {% if 'devices:write' in user_perms %}
+        <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
+            <option value="">None</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
+            {% endfor %}
+        </select>
+        {% else %}
+        {{ (d.ui_groups | default([]) | map(attribute='name') | join(', ')) or '-' }}
+        {% endif %}
     </td>
     <td>
         {% if 'devices:write' in user_perms %}
@@ -812,8 +791,8 @@
         <button type="button" role="menuitem" onclick="setUpdateChannel('{{ d.id }}', 'prerelease')" title="Opt this device in to prerelease OS builds (-rc / -test) for testing before general release">Join prerelease channel</button>
         {% endif %}
         {% endif %}
-        {% if d.ui_group_ids | default([]) and 'devices:write' in user_perms %}
-        <button type="button" role="menuitem" onclick="clearDeviceGroups('{{ d.id }}')" title="Remove this device from every group">Remove all groups</button>
+        {% if d.group_id and 'devices:write' in user_perms %}
+        <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from its group">Remove from group</button>
         {% endif %}
         <button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice('{{ d.id }}')" title="Remove this device from the CMS">Delete</button>
         {% endcall %}
@@ -1032,7 +1011,7 @@
         <select class="inline-edit" data-device-group-select onclick="event.stopPropagation()" onchange="assignGroup('{{ d.id }}', this.value)">
             <option value="">None</option>
             {% for g in groups %}
-            <option value="{{ g.id }}" {% if g.id == ((d.ui_group_ids | default([])) | first) %}selected{% endif %}>{{ g.name }}</option>
+            <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
             {% endfor %}
         </select>
         {% else %}
@@ -1040,7 +1019,7 @@
         {% endif %}
     </td>
     <td class="actions" onclick="event.stopPropagation()">
-        {% if d.ui_group_ids | default([]) and 'devices:write' in user_perms %}
+        {% if d.group_id and 'devices:write' in user_perms %}
         {% call kebab_menu() %}
             <button type="button" role="menuitem" onclick="assignGroup('{{ d.id }}', '')" title="Remove this device from the group">Remove from group</button>
         {% endcall %}

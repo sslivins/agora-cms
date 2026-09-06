@@ -102,10 +102,7 @@ async def _seed_device_and_schedule(
             {"id": device_id, "name": "int-dev", "now": now},
         )
         await conn.execute(
-            text(
-                "INSERT INTO device_group_memberships (device_id, group_id) "
-                "VALUES (:device_id, :group_id)"
-            ),
+            text("UPDATE devices SET group_id = :group_id WHERE id = :device_id"),
             {"device_id": device_id, "group_id": group_id},
         )
         await conn.execute(
@@ -140,10 +137,6 @@ async def _cleanup(
         await conn.execute(
             text("DELETE FROM schedule_device_skips WHERE schedule_id = :s"),
             {"s": schedule_id},
-        )
-        await conn.execute(
-            text("DELETE FROM device_group_memberships WHERE device_id = :d"),
-            {"d": device_id},
         )
         await conn.execute(
             text("DELETE FROM schedules WHERE id = :s"), {"s": schedule_id}

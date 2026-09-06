@@ -543,102 +543,7 @@ async function dropDevice(e, groupId) {
     e.preventDefault();
     const deviceId = e.dataTransfer.getData('text/plain');
     if (!deviceId) return;
-    await addDeviceGroup(deviceId, groupId, { successMessage: 'Device added to group' });
-}
-
-function _deviceGroupPreviewMessage(actionLabel, preview) {
-    const current = (preview.current_groups || []).map(group => group.name).join(', ') || 'none';
-    const resulting = (preview.groups || []).map(group => group.name).join(', ') || 'none';
-    const added = (preview.schedules_added || []).map(item => `${item.name} (${item.group_name || 'unknown group'})`);
-    const removed = (preview.schedules_removed || []).map(item => `${item.name} (${item.group_name || 'unknown group'})`);
-    const lines = [
-        actionLabel,
-        '',
-        `Current groups: ${current}`,
-        `Resulting groups: ${resulting}`,
-    ];
-    if (added.length) {
-        lines.push('', 'Schedules that will start matching this device:');
-        added.forEach(item => lines.push(`• ${item}`));
-    }
-    if (removed.length) {
-        lines.push('', 'Schedules that will stop matching this device:');
-        removed.forEach(item => lines.push(`• ${item}`));
-    }
-    if (!added.length && !removed.length) {
-        lines.push('', 'No schedule impact preview was returned.');
-    }
-    return lines.join('\n');
-}
-
-async function _runDeviceGroupMutation({ method, url, body = null, actionLabel, successMessage, confirmWhen = null }) {
-    const dryRunUrl = url.includes('?') ? `${url}&dry_run=true` : `${url}?dry_run=true`;
-    const previewResp = await apiCall(method, dryRunUrl, body);
-    if (!previewResp || !previewResp.ok) {
-        const err = previewResp ? await previewResp.json().catch(() => ({})) : null;
-        showToast(extractErrorMsg(err, 'Group update failed'), true);
-        return false;
-    }
-    const preview = await previewResp.json();
-    if (!preview.changed) {
-        showToast('No group change needed');
-        return true;
-    }
-    const shouldConfirm = typeof confirmWhen === 'function'
-        ? confirmWhen(preview)
-        : Boolean(confirmWhen);
-    if (shouldConfirm) {
-        const ok = await showConfirm(_deviceGroupPreviewMessage(actionLabel, preview));
-        if (!ok) return false;
-    }
-    const resp = await apiCall(method, url, body);
-    if (!resp || !resp.ok) {
-        const err = resp ? await resp.json().catch(() => ({})) : null;
-        showToast(extractErrorMsg(err, 'Group update failed'), true);
-        return false;
-    }
-    showToast(successMessage);
-    location.reload();
-    return true;
-}
-
-async function addDeviceGroup(deviceId, groupId, { successMessage = 'Group added' } = {}) {
-    return _runDeviceGroupMutation({
-        method: 'POST',
-        url: `/api/devices/${deviceId}/groups`,
-        body: { group_id: groupId },
-        actionLabel: 'Add this device to the selected group?',
-        successMessage,
-        confirmWhen: (preview) => (preview.schedules_added || []).length > 0 || (preview.schedules_removed || []).length > 0,
-    });
-}
-
-async function previewAddDeviceGroup(deviceId, selectEl) {
-    const groupId = selectEl.value;
-    selectEl.value = '';
-    if (!groupId) return;
-    await addDeviceGroup(deviceId, groupId);
-}
-
-async function removeDeviceGroup(deviceId, groupId) {
-    return _runDeviceGroupMutation({
-        method: 'DELETE',
-        url: `/api/devices/${deviceId}/groups/${groupId}`,
-        actionLabel: 'Remove this device from the selected group?',
-        successMessage: 'Group removed',
-        confirmWhen: (preview) => (preview.schedules_added || []).length > 0 || (preview.schedules_removed || []).length > 0,
-    });
-}
-
-async function clearDeviceGroups(deviceId) {
-    return _runDeviceGroupMutation({
-        method: 'PUT',
-        url: `/api/devices/${deviceId}/groups`,
-        body: { group_ids: [] },
-        actionLabel: 'Remove this device from every group?',
-        successMessage: 'All groups removed',
-        confirmWhen: true,
-    });
+    await assignGroup(deviceId, groupId);
 }
 
 function _renderScheduleStatusItem(item, kind) {
@@ -852,8 +757,8 @@ window._adoptionProfiles = [
                 items += '<button type="button" role="menuitem" onclick="setUpdateChannel(\'' + d.id + '\', \'prerelease\')" title="Opt this device in to prerelease OS builds (-rc / -test) for testing before general release">Join prerelease channel</button>';
             }
         }
-        if ((d.group_ids || []).length > 0) {
-            items += '<button type="button" role="menuitem" onclick="clearDeviceGroups(\'' + d.id + '\')" title="Remove this device from every group">Remove all groups</button>';
+        if (d.group_id) {
+            items += '<button type="button" role="menuitem" onclick="assignGroup(\'' + d.id + '\', \'\')" title="Remove this device from its group">Remove from group</button>';
         }
         items += '<button type="button" role="menuitem" class="kebab-item-danger" onclick="deleteDevice(\'' + d.id + '\')" title="Remove this device from the CMS">Delete</button>';
         const mid = 'kebab-dev-' + d.id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1203,7 +1108,7 @@ window._adoptionProfiles = [
             // device's group memberships changed on another session.
             const newIds = new Set(devices.map(d => d.id));
             const membershipChanged = devices.some(d => {
-                const actual = (d.group_ids || []).map(String).sort().join(' ');
+                const actual = d.group_id ? String(d.group_id) : '';
                 const rendered = Array.from(
                     document.querySelectorAll(`tr.device-row[data-device-id="${d.id}"]`)
                 )

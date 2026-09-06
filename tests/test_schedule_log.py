@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.schedule import Schedule
 from cms.models.schedule_log import ScheduleLog, ScheduleLogEvent
 
@@ -89,8 +89,7 @@ class TestScheduleLogModel:
         asset = Asset(filename="clip.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="abc")
         db.add_all([group, device, asset])
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db, device.id, group.id)
         schedule = Schedule(
             name="Linked Schedule",
             group_id=group.id,
@@ -157,8 +156,7 @@ class TestLogEventHelper:
         asset = Asset(filename="log.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="log1")
         db.add_all([group, device, asset])
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db, device.id, group.id)
         schedule = Schedule(
             name="Test",
             group_id=group.id,
@@ -196,8 +194,7 @@ class TestEndNowLogsSkipped:
         asset = Asset(filename="skip-video.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="ccc")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db_session, device.id, group.id)
         schedule = Schedule(
             name="Skippable Schedule",
             group_id=group.id,

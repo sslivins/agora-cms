@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.schedule import Schedule
 from cms.models.schedule_missed_event import ScheduleMissedEvent
 from cms.models.setting import CMSSetting
@@ -86,7 +86,7 @@ def _make_schedule_with_asset(
 
 
 async def _add_membership(db, device_id: str, group_id) -> None:
-    db.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+    await assign_device_group(db, device_id, group_id)
     await db.flush()
 
 

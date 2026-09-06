@@ -8,9 +8,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cms.models.device import DeviceGroup
+from cms.models.device import Device, DeviceGroup
 from cms.models.device_event import DeviceEvent
-from cms.models.device_group_membership import DeviceGroupMembership
 
 
 def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -31,17 +30,18 @@ async def snapshot_device_groups(
     primary_group_id: uuid.UUID | str | None = None,
     primary_group_name: str | None = None,
 ) -> list[dict[str, str]]:
-    """Snapshot a device's full effective group set inside the current txn."""
+    """Snapshot a device's owning group inside the current txn.
+
+    Still returns a list: historical rows written while device↔group was
+    many-to-many (#863) legitimately carry several groups, so the frozen event
+    shape is left alone. New events can only ever snapshot one group.
+    """
     primary_uuid = _coerce_uuid(primary_group_id)
     rows = (
         await db.execute(
             select(DeviceGroup.id, DeviceGroup.name)
-            .join(
-                DeviceGroupMembership,
-                DeviceGroupMembership.group_id == DeviceGroup.id,
-            )
-            .where(DeviceGroupMembership.device_id == device_id)
-            .order_by(DeviceGroup.name, DeviceGroup.id)
+            .join(Device, Device.group_id == DeviceGroup.id)
+            .where(Device.id == device_id)
         )
     ).all()
 

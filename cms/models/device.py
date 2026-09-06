@@ -32,6 +32,7 @@ class DeviceGroup(Base):
     )
 
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys=[default_asset_id])
+    devices: Mapped[list["Device"]] = relationship(back_populates="group")
 
 
 class Device(Base):
@@ -58,6 +59,15 @@ class Device(Base):
     location: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[DeviceStatus] = mapped_column(
         Enum(DeviceStatus), default=DeviceStatus.PENDING
+    )
+    # The device's single owning group. This is the authorization boundary:
+    # everything scheduled on a device belongs to this group, so any schedule
+    # conflict is always between schedules the same operators can read and fix.
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("device_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     firmware_version: Mapped[str] = mapped_column(String(32), default="")
     os_version: Mapped[str] = mapped_column(String(32), default="", index=True)
@@ -210,6 +220,7 @@ class Device(Base):
         Text, nullable=False, default="stable", server_default=text("'stable'")
     )
 
+    group: Mapped[DeviceGroup | None] = relationship(back_populates="devices")
     profile: Mapped["DeviceProfile | None"] = relationship(back_populates="devices")
     default_asset: Mapped["Asset | None"] = relationship(foreign_keys="[Device.default_asset_id]")
     device_assets: Mapped[list["DeviceAsset"]] = relationship(back_populates="device")

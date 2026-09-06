@@ -6,7 +6,7 @@ from datetime import datetime, time, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.device_profile import DeviceProfile
 
 
@@ -203,7 +203,7 @@ class TestDeviceCRUD:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db_session, device.id, group.id)
         await db_session.commit()
 
         # Clear device default — should fall back to group default
@@ -276,8 +276,7 @@ class TestDeviceCRUD:
         asset = Asset(filename="test.mp4", asset_type=AssetType.VIDEO, size_bytes=5000, checksum="abc")
         db_session.add_all([device, asset])
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db_session, device.id, group.id)
         schedule = Schedule(
             name="Test Schedule",
             group_id=group.id,
@@ -416,8 +415,7 @@ class TestDevicePlaybackFields:
         db_session.add_all([asset, group])
         await db_session.flush()
 
-        db_session.add(DeviceGroupMembership(device_id="pb-sched", group_id=group.id))
-
+        await assign_device_group(db_session, "pb-sched", group.id)
         schedule = Schedule(
             id=uuid.uuid4(), name="Test Sched", asset_id=asset.id,
             group_id=group.id, start_time=time(0, 0, 0),
@@ -516,8 +514,7 @@ class TestGetSingleDevice:
         db_session.add_all([asset, group])
         await db_session.flush()
 
-        db_session.add(DeviceGroupMembership(device_id="single-sched", group_id=group.id))
-
+        await assign_device_group(db_session, "single-sched", group.id)
         schedule = Schedule(
             id=uuid.uuid4(), name="Single Sched", asset_id=asset.id,
             group_id=group.id, start_time=time(0, 0, 0),
@@ -555,7 +552,7 @@ class TestDeviceScheduleStatus:
     ):
         from cms.models.asset import Asset
         from cms.models.device import Device, DeviceGroup, DeviceStatus
-        from cms.models.device_group_membership import DeviceGroupMembership
+        from tests.group_helpers import assign_device_group
         from cms.models.schedule import Schedule
         from shared.models.asset import AssetType
 
@@ -578,13 +575,8 @@ class TestDeviceScheduleStatus:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add_all(
-            [
-                DeviceGroupMembership(device_id=device.id, group_id=group_a.id),
-                DeviceGroupMembership(device_id=device.id, group_id=group_b.id),
-            ]
-        )
-
+        await assign_device_group(db_session, device.id, group_a.id)
+        await assign_device_group(db_session, device.id, group_b.id)
         asset_low = Asset(
             id=uuid.uuid4(),
             filename="low.mp4",
@@ -1421,10 +1413,8 @@ class TestGroupDefaultAssetSync:
         d2 = Device(id="grp-sync-pi-2", name="Pi 2", status=DeviceStatus.ADOPTED)
         db_session.add_all([d1, d2])
         await db_session.flush()
-        db_session.add_all([
-            DeviceGroupMembership(device_id=d1.id, group_id=group.id),
-            DeviceGroupMembership(device_id=d2.id, group_id=group.id),
-        ])
+        await assign_device_group(db_session, d1.id, group.id)
+        await assign_device_group(db_session, d2.id, group.id)
         await db_session.commit()
 
         sent_d1, sent_d2 = [], []
@@ -1478,7 +1468,7 @@ class TestGroupDefaultAssetSync:
         device = Device(id="grp-clear-pi", name="Clear Pi", status=DeviceStatus.ADOPTED)
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db_session, device.id, group.id)
         await db_session.commit()
 
         sent = []
@@ -1516,7 +1506,7 @@ class TestGroupDefaultAssetSync:
         device = Device(id="grp-nopush-pi", name="No Push Pi", status=DeviceStatus.ADOPTED)
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db_session, device.id, group.id)
         await db_session.commit()
 
         sent = []
@@ -1559,7 +1549,7 @@ class TestGroupDefaultAssetSync:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db_session, device.id, group.id)
         await db_session.commit()
 
         sent = []
