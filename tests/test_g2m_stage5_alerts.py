@@ -10,11 +10,10 @@ from sqlalchemy.orm import selectinload
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_alert import DeviceAlert
 from cms.models.device_event import DeviceEvent, DeviceEventType
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.notification import Notification, NotificationRead
 from cms.services.alert_service import AlertService
 from cms.services.device_events import emit_device_event
-from cms.services.device_membership import set_single_group_membership
 from tests.test_notifications import (
     _create_group,
     _create_notification,
@@ -115,7 +114,7 @@ async def test_deleting_device_preserves_historical_device_events(db_session):
     )
     db_session.add(device)
     await db_session.flush()
-    await set_single_group_membership(db_session, device.id, group.id)
+    await assign_device_group(db_session, device.id, group.id)
     event = await emit_device_event(
         db_session,
         device_id=device.id,
@@ -176,33 +175,31 @@ async def test_deleting_group_only_removes_that_notification_link(app, db_sessio
 
 
 @pytest.mark.asyncio
-async def test_emitted_device_event_snapshots_all_groups_and_visibility(app, db_session):
-    group_a = await _create_group(db_session, "Event A")
+async def test_emitted_device_event_snapshots_owning_group_and_visibility(app, db_session):
     group_b = await _create_group(db_session, "Event B")
     device = Device(
         id="event-m2m-01",
-        name="Event M2M Device",
+        name="Event Device",
         status=DeviceStatus.ADOPTED,
     )
     db_session.add(device)
     await db_session.flush()
-    await set_single_group_membership(db_session, device.id, group_a.id)
-    db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+    await assign_device_group(db_session, device.id, group_b.id)
     await db_session.commit()
 
     event = await emit_device_event(
         db_session,
         device_id=device.id,
         device_name=device.name,
-        primary_group_id=group_a.id,
-        primary_group_name=group_a.name,
+        primary_group_id=group_b.id,
+        primary_group_name=group_b.name,
         event_type=DeviceEventType.ERROR,
         details={"error": "boom"},
     )
     await db_session.commit()
     await db_session.refresh(event)
 
-    assert set(str(gid) for gid in event.group_ids) == {str(group_a.id), str(group_b.id)}
+    assert set(str(gid) for gid in event.group_ids) == {str(group_b.id)}
 
     await _create_user(
         db_session, email="event_b@test.com", role_name="Operator", group_ids=[group_b.id]
@@ -236,7 +233,7 @@ async def test_single_group_notification_and_event_shape_stays_compatible(app, d
     )
     db_session.add(device)
     await db_session.flush()
-    await set_single_group_membership(db_session, device.id, group.id)
+    await assign_device_group(db_session, device.id, group.id)
     await emit_device_event(
         db_session,
         device_id=device.id,
@@ -281,7 +278,7 @@ async def test_offline_alert_lifecycle_row_opens_and_resolves(app):
         await db.flush()
         db.add(device)
         await db.flush()
-        await set_single_group_membership(db, device.id, group.id)
+        await assign_device_group(db, device.id, group.id)
         await db.commit()
         group_id = group.id
         group_name = group.name

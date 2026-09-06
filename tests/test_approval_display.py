@@ -9,7 +9,7 @@ import pytest
 
 from cms.models.asset import Asset
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.services.assistant.approval_display import resolve_friendly_names
 
 
@@ -22,7 +22,7 @@ async def _device(db, did="pi-100", name="Pi100", group_id=None):
     db.add(d)
     await db.flush()
     if group_id is not None:
-        db.add(DeviceGroupMembership(device_id=d.id, group_id=group_id))
+        await assign_device_group(db, d.id, group_id)
     await db.commit()
     return d
 

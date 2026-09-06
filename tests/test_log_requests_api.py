@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 from cms.database import get_session_factory
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.log_request import (
     STATUS_PENDING,
     STATUS_READY,
@@ -117,7 +117,7 @@ async def seeded(app):
         )
         db.add(device)
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_id))
+        await assign_device_group(db, device.id, group_id)
         await db.commit()
     return {"group_id": group_id, "device_id": DEVICE_ID}
 

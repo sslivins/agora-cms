@@ -75,7 +75,7 @@ async def grouped_update_device(app):
 
     from cms.database import get_db
     from cms.models.device import Device, DeviceGroup, DeviceStatus
-    from cms.models.device_group_membership import DeviceGroupMembership
+    from tests.group_helpers import assign_device_group
     from cms.models.user import Role, User, UserGroup
     from cms.services import bundle_checker
 
@@ -96,8 +96,7 @@ async def grouped_update_device(app):
         )
         db.add(device)
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
-
+        await assign_device_group(db, device.id, group.id)
         # Grant any seeded non-admin user (e.g. the operator from
         # operator_client) access to this group so /api/devices/groups/
         # {id}/panel doesn't 403 on the group-scoped check.
@@ -244,7 +243,7 @@ class TestGroupRemovalControls:
     """Stage 7 replaces the singular Remove-from-group kebab with
     multi-group controls on the row itself."""
 
-    async def test_admin_sees_multi_group_controls_on_grouped_row(
+    async def test_admin_sees_group_controls_on_grouped_row(
         self, client, grouped_update_device
     ):
         gid = grouped_update_device["group_id"]
@@ -263,9 +262,9 @@ class TestGroupRemovalControls:
         assert m, "couldn't locate device row block for kebab assertion"
         row_block = m.group(0)
         assert (
-            "data-device-group-id=" in row_block
-            and f"clearDeviceGroups('{did}')" in row_block
-        ), "expected Stage 7 multi-group controls on grouped device row"
+            "data-device-group-select" in row_block
+            and f"assignGroup('{did}', '')" in row_block
+        ), "expected single-group controls on grouped device row"
 
     async def test_patch_group_id_null_unassigns_device(
         self, client, grouped_update_device

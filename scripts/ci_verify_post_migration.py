@@ -58,26 +58,27 @@ async def verify(baseline_counts_path: str | None = None) -> int:
                 n = res.scalar() or 0
             except Exception as exc:
                 failures.append(f"cannot query {t}: {exc}")
+                await conn.rollback()
                 continue
             if t in REQUIRED_NONEMPTY and n == 0:
                 failures.append(f"{t} is empty after migration (seeded data lost)")
             print(f"  {t}: {n} rows")
 
-        # 2. A relational sanity query — devices joined through memberships to
-        #    zero/one/many groups plus their profile.
+        # 2. A relational sanity query — devices joined to their owning group
+        #    plus their profile.
         try:
             res = await conn.execute(text(
-                "SELECT d.id, d.name, m.group_id, g.name, p.name "
+                "SELECT d.id, d.name, d.group_id, g.name, p.name "
                 "FROM devices d "
-                "LEFT JOIN device_group_memberships m ON m.device_id = d.id "
-                "LEFT JOIN device_groups g ON g.id = m.group_id "
+                "LEFT JOIN device_groups g ON g.id = d.group_id "
                 "LEFT JOIN device_profiles p ON p.id = d.profile_id "
                 "LIMIT 5"
             ))
             rows = res.fetchall()
-            print(f"  devices⋈memberships⋈groups⋈profiles: {len(rows)} sample rows")
+            print(f"  devices⋈groups⋈profiles: {len(rows)} sample rows")
         except Exception as exc:
             failures.append(f"devices JOIN query failed: {exc}")
+            await conn.rollback()
 
         # 3. Asset→variant relationship still intact.
         try:
@@ -90,6 +91,7 @@ async def verify(baseline_counts_path: str | None = None) -> int:
             print(f"  assets⋈variants: {len(rows)} sample rows")
         except Exception as exc:
             failures.append(f"assets⋈variants query failed: {exc}")
+            await conn.rollback()
 
         # 4. Destructive-forward guard: for every table that existed in the
         #    baseline and STILL exists post-migration, row count must not

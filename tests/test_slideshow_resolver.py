@@ -210,7 +210,7 @@ async def _seed_device(
     db, *, did, group=None, profile=None,
     capabilities=None, status=DeviceStatus.ADOPTED,
 ):
-    from cms.models.device_group_membership import DeviceGroupMembership
+    from tests.group_helpers import assign_device_group
 
     d = Device(
         id=did,
@@ -222,7 +222,7 @@ async def _seed_device(
     db.add(d)
     await db.flush()
     if group is not None:
-        db.add(DeviceGroupMembership(device_id=d.id, group_id=group.id))
+        await assign_device_group(db, d.id, group.id)
     await db.commit()
     await db.refresh(d)
     return d

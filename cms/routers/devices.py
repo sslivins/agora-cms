@@ -30,16 +30,12 @@ from cms.permissions import (
 from cms.models.asset import Asset
 from shared.models.asset import AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
 from cms.models.device_profile import DeviceProfile
 from cms.models.schedule import Schedule
 from cms.schemas.device import (
     AdoptRequest,
-    DeviceGroupAddRequest,
     DeviceGroupCreate,
-    DeviceGroupMembershipMutationOut,
     DeviceGroupOut,
-    DeviceGroupReplaceRequest,
     DeviceScheduleStatusOut,
     DeviceGroupSummary,
     DeviceGroupUpdate,
@@ -59,12 +55,8 @@ from cms.services.scheduler import (
 from cms.services.audit_service import audit_log, compute_diff
 from cms.services.asset_readiness import require_asset_ready
 from cms.services.device_membership import (
-    DeviceMembershipChange,
-    add_device_to_group,
     effective_device_group_rows_subquery,
-    remove_device_from_group,
-    replace_device_group_memberships,
-    set_single_group_membership,
+    set_device_group,
 )
 from cms.services.bundle_checker import check_now, get_latest_bundle, get_latest_os_version, is_os_update_available
 from cms.models.agora_os_channel_bundle import CHANNEL_PRERELEASE, CHANNEL_STABLE, CHANNELS
@@ -279,19 +271,18 @@ async def _get_device_with_access(
     return device
 
 
-async def _verify_membership_change_access(
+async def _verify_group_change_access(
     user,
     device: Device,
     db: AsyncSession,
     *,
     target_group_id: uuid.UUID | None,
 ) -> None:
-    """Require authority over every group touched by a membership replace.
+    """Require authority over both the old and the new owning group.
 
-    Stage 4 prepares for Stage 6's dedicated membership CRUD by enforcing the
-    same invariant on today's scalar ``group_id`` write paths: if a change adds,
-    removes, or replaces memberships, the actor must be able to manage every
-    affected group — which in turn implies schedule read/write there.
+    Moving a device changes which schedules reach it, so the actor must be able
+    to manage the group it leaves as well as the one it joins — which in turn
+    implies schedule read/write in both.
     """
     touched_group_ids = await get_device_group_ids(device, db)
     if target_group_id is not None:
@@ -382,127 +373,12 @@ def _device_membership_out_kwargs(
     device: Device,
     groups: list[DeviceGroupSummary],
 ) -> dict:
-    primary_group = groups[0] if groups else None
+    """Group fields for ``DeviceOut``. A device has at most one group."""
+    group = groups[0] if groups else None
     return {
-        "group_id": primary_group.id if primary_group else None,
-        "group_name": primary_group.name if primary_group else None,
-        "group_ids": [group.id for group in groups],
-        "groups": groups,
+        "group_id": group.id if group else None,
+        "group_name": group.name if group else None,
     }
-
-
-async def _load_schedule_match_summaries_by_group_id(
-    db: AsyncSession,
-    group_ids: set[uuid.UUID],
-) -> dict[uuid.UUID, list[DeviceScheduleMatchSummary]]:
-    if not group_ids:
-        return {}
-    rows = await db.execute(
-        select(
-            Schedule.id,
-            Schedule.name,
-            Schedule.group_id,
-            DeviceGroup.name,
-        )
-        .join(DeviceGroup, DeviceGroup.id == Schedule.group_id)
-        .where(
-            Schedule.enabled == True,  # noqa: E712
-            Schedule.group_id.in_(group_ids),
-        )
-        .order_by(DeviceGroup.name, Schedule.name, Schedule.id)
-    )
-    schedule_map: dict[uuid.UUID, list[DeviceScheduleMatchSummary]] = defaultdict(list)
-    for schedule_id, schedule_name, group_id, group_name in rows.all():
-        schedule_map[group_id].append(
-            DeviceScheduleMatchSummary(
-                id=schedule_id,
-                name=schedule_name,
-                group_id=group_id,
-                group_name=group_name,
-            )
-        )
-    return schedule_map
-
-
-async def _build_membership_mutation_response(
-    device: Device,
-    db: AsyncSession,
-    change: DeviceMembershipChange,
-    *,
-    dry_run: bool,
-) -> DeviceGroupMembershipMutationOut:
-    summary_map = await _load_group_summary_map(
-        db,
-        set(change.current_group_ids) | set(change.result_group_ids),
-    )
-    current_groups = _sort_group_summaries(
-        [
-            summary_map[group_id]
-            for group_id in change.current_group_ids
-            if group_id in summary_map
-        ]
-    )
-    result_groups = _sort_group_summaries(
-        [
-            summary_map[group_id]
-            for group_id in change.result_group_ids
-            if group_id in summary_map
-        ]
-    )
-    schedule_map = await _load_schedule_match_summaries_by_group_id(
-        db,
-        set(change.added_group_ids) | set(change.removed_group_ids),
-    )
-    schedules_added = [
-        schedule
-        for group_id in change.added_group_ids
-        for schedule in schedule_map.get(group_id, [])
-    ]
-    schedules_removed = [
-        schedule
-        for group_id in change.removed_group_ids
-        for schedule in schedule_map.get(group_id, [])
-    ]
-    primary_group = result_groups[0] if result_groups else None
-    return DeviceGroupMembershipMutationOut(
-        device_id=device.id,
-        dry_run=dry_run,
-        changed=change.changed,
-        group_id=primary_group.id if primary_group else None,
-        group_name=primary_group.name if primary_group else None,
-        group_ids=list(change.result_group_ids),
-        groups=result_groups,
-        current_group_ids=list(change.current_group_ids),
-        current_groups=current_groups,
-        added_group_ids=list(change.added_group_ids),
-        removed_group_ids=list(change.removed_group_ids),
-        schedules_added=schedules_added,
-        schedules_removed=schedules_removed,
-    )
-
-
-async def _verify_replace_membership_access(
-    user,
-    device: Device,
-    db: AsyncSession,
-    target_group_ids: list[uuid.UUID],
-) -> None:
-    current_group_ids = await get_device_group_ids(device, db)
-    touched_group_ids = current_group_ids | set(target_group_ids)
-    for group_id in touched_group_ids:
-        if not await can_manage_group_membership(user, db, group_id):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Managing device group membership requires devices:write plus "
-                    "schedule read/write access to every affected group"
-                ),
-            )
-    await assert_authority_over_group_set(
-        user,
-        db,
-        set(target_group_ids) - current_group_ids,
-    )
 
 
 async def _push_default_asset(device_id: str, asset: Asset, base_url: str, db: AsyncSession) -> None:
@@ -735,27 +611,18 @@ async def update_device(
         await verify_resource_group_access(user, db, await get_device_group_ids(device, db))
 
     updates = data.model_dump(exclude_unset=True)
-    group_ids_in_request = "group_ids" in updates
-    requested_group_ids = list(dict.fromkeys(updates.pop("group_ids", []) or []))
+    updates.pop("group_ids", None)
 
-    if "group_id" in updates and user:
-        await _verify_membership_change_access(
-            user,
-            device,
-            db,
-            target_group_id=updates["group_id"],
-        )
-    if "group_id" in updates and updates["group_id"] is not None:
-        await _require_existing_groups(db, [updates["group_id"]])
-    if group_ids_in_request:
-        await _require_existing_groups(db, requested_group_ids)
+    if "group_id" in updates:
         if user:
-            await _verify_replace_membership_access(
+            await _verify_group_change_access(
                 user,
                 device,
                 db,
-                requested_group_ids,
+                target_group_id=updates["group_id"],
             )
+        if updates["group_id"] is not None:
+            await _require_existing_groups(db, [updates["group_id"]])
 
     # Validate the requested update channel, if present.
     if "update_channel" in updates and updates["update_channel"] not in CHANNELS:
@@ -801,40 +668,16 @@ async def update_device(
         if not target_profile.enabled:
             raise HTTPException(status_code=422, detail="Profile is disabled")
 
-    # Snapshot before mutation so we can build a true diff for the audit log
+    # Snapshot before mutation so we can build a true diff for the audit log.
+    # ``group_id`` is an ordinary column again, so compute_diff covers it.
     changes = compute_diff(device, updates)
-    if "group_id" in updates:
-        current_groups = await _load_group_summary_map(
-            db,
-            await get_device_group_ids(device, db),
-        )
-        current_primary = next(
-            iter(_sort_group_summaries(list(current_groups.values()))),
-            None,
-        )
-        old_group_id = str(current_primary.id) if current_primary else None
-        new_group_id = str(updates["group_id"]) if updates["group_id"] is not None else None
-        if old_group_id != new_group_id:
-            changes["group_id"] = {"old": old_group_id, "new": new_group_id}
-    if group_ids_in_request:
-        current_group_ids = sorted(
-            (str(group_id) for group_id in await get_device_group_ids(device, db)),
-        )
-        new_group_ids = sorted(str(group_id) for group_id in requested_group_ids)
-        if current_group_ids != new_group_ids:
-            changes["group_ids"] = {
-                "old": current_group_ids,
-                "new": new_group_ids,
-            }
 
     for field, value in updates.items():
         if field == "group_id":
             continue
         setattr(device, field, value)
-    if group_ids_in_request:
-        await replace_device_group_memberships(db, device, requested_group_ids)
-    elif "group_id" in updates:
-        await set_single_group_membership(db, device.id, updates["group_id"])
+    if "group_id" in updates:
+        await set_device_group(db, device, updates["group_id"])
     await audit_log(
         db, user=user, action="device.update", resource_type="device",
         resource_id=str(device.id),
@@ -851,9 +694,9 @@ async def update_device(
     # this push the device would wait up to ~15s for the next scheduler
     # tick to pick up the change.  A full sync covers both schedules and
     # the effective default in one message, so it subsumes the
-    # default_asset_id / timezone branches below when group_id/group_ids is also
+    # default_asset_id / timezone branches below when group_id is also
     # in this PATCH.
-    if group_ids_in_request or "group_id" in updates:
+    if "group_id" in updates:
         await push_sync_to_device(device_id, db)
 
     # If default_asset_id was changed, resolve effective default and push
@@ -867,7 +710,7 @@ async def update_device(
                 await db.execute(
                     select(Device)
                     .options(
-                        selectinload(Device.groups).selectinload(
+                        selectinload(Device.group).selectinload(
                             DeviceGroup.default_asset
                         )
                     )
@@ -895,224 +738,6 @@ async def update_device(
         is_online=await get_transport().is_connected(device.id),
     )
 
-
-@router.post(
-    "/{device_id}/groups",
-    response_model=DeviceGroupMembershipMutationOut,
-    dependencies=[Depends(require_permission(DEVICES_WRITE))],
-)
-async def add_device_group_membership(
-    device_id: str,
-    body: DeviceGroupAddRequest,
-    request: Request,
-    dry_run: bool = Query(
-        default=False,
-        description=(
-            "When true, validates authorization and returns the projected "
-            "membership + schedule impact without committing or syncing the device."
-        ),
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Add one group membership to a device.
-
-    The response always describes the resulting membership state. During
-    ``dry_run=true`` it is only a preview and no audit log, commit, or sync is
-    performed. ``schedules_added``/``schedules_removed`` list enabled schedules
-    whose group targeting would newly start or stop matching the device.
-    """
-    device = await _get_device_with_access(device_id, request, db)
-    if await db.get(DeviceGroup, body.group_id) is None:
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    user = getattr(request.state, "user", None)
-    if user and not await can_manage_group_membership(user, db, body.group_id):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Managing device group membership requires devices:write plus "
-                "schedule read/write access to the target group"
-            ),
-        )
-
-    change = await add_device_to_group(db, device, body.group_id, dry_run=dry_run)
-    response = await _build_membership_mutation_response(
-        device,
-        db,
-        change,
-        dry_run=dry_run,
-    )
-    if dry_run or not change.changed:
-        return response
-
-    await audit_log(
-        db,
-        user=user,
-        action="device.group.add",
-        resource_type="device",
-        resource_id=str(device.id),
-        description=f"Added device '{device.name or device.id}' to a group",
-        details={
-            "group_id": str(body.group_id),
-            "group_ids": [str(group_id) for group_id in change.result_group_ids],
-            "added_group_ids": [str(group_id) for group_id in change.added_group_ids],
-        },
-        request=request,
-    )
-    await db.commit()
-    await push_sync_to_device(device.id, db)
-    return await _build_membership_mutation_response(
-        device,
-        db,
-        change,
-        dry_run=False,
-    )
-
-
-@router.delete(
-    "/{device_id}/groups/{group_id}",
-    response_model=DeviceGroupMembershipMutationOut,
-    dependencies=[Depends(require_permission(DEVICES_WRITE))],
-)
-async def remove_device_group_membership(
-    device_id: str,
-    group_id: uuid.UUID,
-    request: Request,
-    dry_run: bool = Query(
-        default=False,
-        description=(
-            "When true, validates authorization and returns the projected "
-            "membership + schedule impact without committing or syncing the device."
-        ),
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Remove one group membership from a device.
-
-    Idempotent: removing a group the device does not currently belong to is a
-    no-op success. The response always returns the resulting membership state.
-    """
-    device = await _get_device_with_access(device_id, request, db)
-    if await db.get(DeviceGroup, group_id) is None:
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    user = getattr(request.state, "user", None)
-    if user and not await can_manage_group_membership(user, db, group_id):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Managing device group membership requires devices:write plus "
-                "schedule read/write access to the target group"
-            ),
-        )
-
-    change = await remove_device_from_group(db, device, group_id, dry_run=dry_run)
-    response = await _build_membership_mutation_response(
-        device,
-        db,
-        change,
-        dry_run=dry_run,
-    )
-    if dry_run or not change.changed:
-        return response
-
-    await audit_log(
-        db,
-        user=user,
-        action="device.group.remove",
-        resource_type="device",
-        resource_id=str(device.id),
-        description=f"Removed a group from device '{device.name or device.id}'",
-        details={
-            "group_id": str(group_id),
-            "group_ids": [str(current_group_id) for current_group_id in change.result_group_ids],
-            "removed_group_ids": [str(current_group_id) for current_group_id in change.removed_group_ids],
-        },
-        request=request,
-    )
-    await db.commit()
-    await push_sync_to_device(device.id, db)
-    return await _build_membership_mutation_response(
-        device,
-        db,
-        change,
-        dry_run=False,
-    )
-
-
-@router.put(
-    "/{device_id}/groups",
-    response_model=DeviceGroupMembershipMutationOut,
-    dependencies=[Depends(require_permission(DEVICES_WRITE))],
-)
-async def replace_device_group_membership_set(
-    device_id: str,
-    body: DeviceGroupReplaceRequest,
-    request: Request,
-    dry_run: bool = Query(
-        default=False,
-        description=(
-            "When true, validates authorization and returns the projected "
-            "membership + schedule impact without committing or syncing the device."
-        ),
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Replace a device's full membership set.
-
-    ``group_ids`` may be empty to fully ungroup the device. The response always
-    returns the projected final state, even when ``dry_run=true``.
-    """
-    device = await _get_device_with_access(device_id, request, db)
-    requested_group_ids = list(dict.fromkeys(body.group_ids))
-    await _require_existing_groups(db, requested_group_ids)
-
-    user = getattr(request.state, "user", None)
-    if user:
-        await _verify_replace_membership_access(
-            user,
-            device,
-            db,
-            requested_group_ids,
-        )
-
-    change = await replace_device_group_memberships(
-        db,
-        device,
-        requested_group_ids,
-        dry_run=dry_run,
-    )
-    response = await _build_membership_mutation_response(
-        device,
-        db,
-        change,
-        dry_run=dry_run,
-    )
-    if dry_run or not change.changed:
-        return response
-
-    await audit_log(
-        db,
-        user=user,
-        action="device.group.replace",
-        resource_type="device",
-        resource_id=str(device.id),
-        description=f"Replaced groups for device '{device.name or device.id}'",
-        details={
-            "group_ids": [str(group_id) for group_id in change.result_group_ids],
-            "added_group_ids": [str(group_id) for group_id in change.added_group_ids],
-            "removed_group_ids": [str(group_id) for group_id in change.removed_group_ids],
-        },
-        request=request,
-    )
-    await db.commit()
-    await push_sync_to_device(device.id, db)
-    return await _build_membership_mutation_response(
-        device,
-        db,
-        change,
-        dry_run=False,
-    )
 
 
 @router.post("/{device_id}/password", dependencies=[Depends(require_permission(DEVICES_MANAGE))])
@@ -1444,9 +1069,8 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
     For pending devices: sets status to adopted and assigns an auth token on next connect.
     For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
 
-    Optionally accepts a JSON body with name, location, and either deprecated
-    ``group_id`` or additive ``group_ids`` to configure the device during
-    adoption.
+    Optionally accepts a JSON body with name, location, and ``group_id`` to
+    configure the device during adoption.
 
     In both cases, a wipe_assets command is sent so the device starts fresh
     without stale content from a previous adoption.
@@ -1472,31 +1096,18 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
         device.name = body.name
     if body.location is not None:
         device.location = body.location
-    requested_group_ids = list(dict.fromkeys(body.group_ids or [])) if body.group_ids is not None else None
-    if body.group_id is not None:
-        await _require_existing_groups(db, [body.group_id])
+    requested_group_id = body.group_id
+    if requested_group_id is not None:
+        await _require_existing_groups(db, [requested_group_id])
         user = getattr(request.state, "user", None)
         if user is not None:
-            await _verify_membership_change_access(
+            await _verify_group_change_access(
                 user,
                 device,
                 db,
-                target_group_id=body.group_id,
+                target_group_id=requested_group_id,
             )
-    if requested_group_ids is not None:
-        await _require_existing_groups(db, requested_group_ids)
-        user = getattr(request.state, "user", None)
-        if user is not None:
-            await _verify_replace_membership_access(
-                user,
-                device,
-                db,
-                requested_group_ids,
-            )
-    if body.group_id is not None:
-        await set_single_group_membership(db, device.id, body.group_id)
-    elif requested_group_ids is not None:
-        await replace_device_group_memberships(db, device, requested_group_ids)
+        await set_device_group(db, device, requested_group_id)
 
     # Verify and assign the encoder profile (required).
     # Reject if missing (404) or disabled (422) — issue #583.
@@ -1532,7 +1143,6 @@ async def adopt_device(device_id: str, body: AdoptRequest, request: Request, db:
             "name": device.name,
             "location": device.location,
             "group_id": str(primary_group.id) if primary_group else None,
-            "group_ids": [str(group.id) for group in groups],
             "profile_id": str(device.profile_id) if device.profile_id else None,
         },
         request=request,

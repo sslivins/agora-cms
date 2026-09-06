@@ -732,146 +732,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/devices/{device_id}/groups:
-    post:
-      summary: Add Device Group Membership
-      description: |-
-        Add one group membership to a device.
-
-        The response always describes the resulting membership state. During
-        ``dry_run=true`` it is only a preview and no audit log, commit, or sync is
-        performed. ``schedules_added``/``schedules_removed`` list enabled schedules
-        whose group targeting would newly start or stop matching the device.
-      operationId: add_device_group_membership_api_devices__device_id__groups_post
-      parameters:
-      - name: device_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Device Id
-      - name: dry_run
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: When true, validates authorization and returns the projected membership + schedule impact without committing
-            or syncing the device.
-          default: false
-          title: Dry Run
-        description: When true, validates authorization and returns the projected membership + schedule impact without committing
-          or syncing the device.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeviceGroupAddRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeviceGroupMembershipMutationOut'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    put:
-      summary: Replace Device Group Membership Set
-      description: |-
-        Replace a device's full membership set.
-
-        ``group_ids`` may be empty to fully ungroup the device. The response always
-        returns the projected final state, even when ``dry_run=true``.
-      operationId: replace_device_group_membership_set_api_devices__device_id__groups_put
-      parameters:
-      - name: device_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Device Id
-      - name: dry_run
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: When true, validates authorization and returns the projected membership + schedule impact without committing
-            or syncing the device.
-          default: false
-          title: Dry Run
-        description: When true, validates authorization and returns the projected membership + schedule impact without committing
-          or syncing the device.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeviceGroupReplaceRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeviceGroupMembershipMutationOut'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/devices/{device_id}/groups/{group_id}:
-    delete:
-      summary: Remove Device Group Membership
-      description: |-
-        Remove one group membership from a device.
-
-        Idempotent: removing a group the device does not currently belong to is a
-        no-op success. The response always returns the resulting membership state.
-      operationId: remove_device_group_membership_api_devices__device_id__groups__group_id__delete
-      parameters:
-      - name: device_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Device Id
-      - name: group_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Group Id
-      - name: dry_run
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: When true, validates authorization and returns the projected membership + schedule impact without committing
-            or syncing the device.
-          default: false
-          title: Dry Run
-        description: When true, validates authorization and returns the projected membership + schedule impact without committing
-          or syncing the device.
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeviceGroupMembershipMutationOut'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/devices/{device_id}/password:
     post:
       summary: Set Device Password
@@ -1037,9 +897,8 @@ paths:
         For pending devices: sets status to adopted and assigns an auth token on next connect.
         For orphaned devices: clears stored auth credentials so a new token is assigned on reconnect.
 
-        Optionally accepts a JSON body with name, location, and either deprecated
-        ``group_id`` or additive ``group_ids`` to configure the device during
-        adoption.
+        Optionally accepts a JSON body with name, location, and ``group_id`` to
+        configure the device during adoption.
 
         In both cases, a wipe_assets command is sent so the device starts fresh
         without stale content from a previous adoption.
@@ -2230,6 +2089,175 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/groups/{group_id}/tags:
+    get:
+      summary: List Group Tags
+      operationId: list_group_tags_api_groups__group_id__tags_get
+      parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Group Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceTagOut'
+                title: Response List Group Tags Api Groups  Group Id  Tags Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Create Group Tag
+      operationId: create_group_tag_api_groups__group_id__tags_post
+      parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Group Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTagIn'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceTagOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/device-tags/{tag_id}:
+    patch:
+      summary: Update Group Tag
+      operationId: update_group_tag_api_device_tags__tag_id__patch
+      parameters:
+      - name: tag_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Tag Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTagPatch'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceTagOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Delete Group Tag
+      operationId: delete_group_tag_api_device_tags__tag_id__delete
+      parameters:
+      - name: tag_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Tag Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/devices/{device_id}/tags:
+    get:
+      summary: Get Device Tags
+      operationId: get_device_tags_api_devices__device_id__tags_get
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceTagsOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Set Device Tags
+      description: |-
+        Replace a device's tag set.
+
+        Tagging changes which schedules are effective for the device, so the
+        resulting configuration is validated before it is written: a change that
+        would introduce an equal-priority overlap on this device is rejected rather
+        than left for the runtime to resolve arbitrarily.
+      operationId: set_device_tags_api_devices__device_id__tags_put
+      parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Device Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTagsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceTagsOut'
         '422':
           description: Validation Error
           content:
@@ -4845,13 +4873,6 @@ components:
           - type: string
           - type: 'null'
           title: Group Id
-        group_ids:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Group Ids
         profile_id:
           type: string
           minLength: 1
@@ -4884,14 +4905,6 @@ components:
             format: uuid
           - type: 'null'
           title: Group Id
-        group_ids:
-          anyOf:
-          - items:
-              type: string
-              format: uuid
-            type: array
-          - type: 'null'
-          title: Group Ids
         profile_id:
           type: string
           format: uuid
@@ -5611,13 +5624,6 @@ components:
           - type: string
           - type: 'null'
           title: Group Id
-        group_ids:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Group Ids
         profile_id:
           type: string
           minLength: 1
@@ -6049,16 +6055,6 @@ components:
       - event_type
       - created_at
       title: DeviceEventOut
-    DeviceGroupAddRequest:
-      properties:
-        group_id:
-          type: string
-          format: uuid
-          title: Group Id
-      type: object
-      required:
-      - group_id
-      title: DeviceGroupAddRequest
     DeviceGroupCreate:
       properties:
         name:
@@ -6078,78 +6074,6 @@ components:
       required:
       - name
       title: DeviceGroupCreate
-    DeviceGroupMembershipMutationOut:
-      properties:
-        device_id:
-          type: string
-          title: Device Id
-        dry_run:
-          type: boolean
-          title: Dry Run
-          default: false
-        changed:
-          type: boolean
-          title: Changed
-          default: false
-        group_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Group Id
-        group_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Group Name
-        group_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Group Ids
-        groups:
-          items:
-            $ref: '#/components/schemas/DeviceGroupSummary'
-          type: array
-          title: Groups
-        current_group_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Current Group Ids
-        current_groups:
-          items:
-            $ref: '#/components/schemas/DeviceGroupSummary'
-          type: array
-          title: Current Groups
-        added_group_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Added Group Ids
-        removed_group_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Removed Group Ids
-        schedules_added:
-          items:
-            $ref: '#/components/schemas/DeviceScheduleMatchSummary'
-          type: array
-          title: Schedules Added
-        schedules_removed:
-          items:
-            $ref: '#/components/schemas/DeviceScheduleMatchSummary'
-          type: array
-          title: Schedules Removed
-      type: object
-      required:
-      - device_id
-      title: DeviceGroupMembershipMutationOut
     DeviceGroupOut:
       properties:
         id:
@@ -6183,30 +6107,6 @@ components:
       - description
       - created_at
       title: DeviceGroupOut
-    DeviceGroupReplaceRequest:
-      properties:
-        group_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Group Ids
-      type: object
-      title: DeviceGroupReplaceRequest
-    DeviceGroupSummary:
-      properties:
-        id:
-          type: string
-          format: uuid
-          title: Id
-        name:
-          type: string
-          title: Name
-      type: object
-      required:
-      - id
-      - name
-      title: DeviceGroupSummary
     DeviceGroupUpdate:
       properties:
         name:
@@ -6252,17 +6152,6 @@ components:
           - type: string
           - type: 'null'
           title: Group Name
-        group_ids:
-          items:
-            type: string
-            format: uuid
-          type: array
-          title: Group Ids
-        groups:
-          items:
-            $ref: '#/components/schemas/DeviceGroupSummary'
-          type: array
-          title: Groups
         default_asset_id:
           anyOf:
           - type: string
@@ -6421,30 +6310,6 @@ components:
       - storage_used_mb
       - registered_at
       title: DeviceOut
-    DeviceScheduleMatchSummary:
-      properties:
-        id:
-          type: string
-          format: uuid
-          title: Id
-        name:
-          type: string
-          title: Name
-        group_id:
-          type: string
-          format: uuid
-          title: Group Id
-        group_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Group Name
-      type: object
-      required:
-      - id
-      - name
-      - group_id
-      title: DeviceScheduleMatchSummary
     DeviceScheduleStatusOut:
       properties:
         device_id:
@@ -6576,6 +6441,110 @@ components:
       - adopted
       - orphaned
       title: DeviceStatus
+    DeviceTagIn:
+      properties:
+        name:
+          type: string
+          title: Name
+        color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color
+      type: object
+      required:
+      - name
+      title: DeviceTagIn
+    DeviceTagOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        group_id:
+          type: string
+          format: uuid
+          title: Group Id
+        name:
+          type: string
+          title: Name
+        color:
+          type: string
+          title: Color
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        group_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group Name
+        qualified_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualified Name
+        device_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Device Count
+      type: object
+      required:
+      - id
+      - group_id
+      - name
+      - color
+      - created_at
+      title: DeviceTagOut
+    DeviceTagPatch:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color
+      type: object
+      title: DeviceTagPatch
+    DeviceTagsOut:
+      properties:
+        device_id:
+          type: string
+          title: Device Id
+        group_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Group Id
+        tags:
+          items:
+            $ref: '#/components/schemas/DeviceTagOut'
+          type: array
+          title: Tags
+          default: []
+      type: object
+      required:
+      - device_id
+      title: DeviceTagsOut
+    DeviceTagsUpdate:
+      properties:
+        tag_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Tag Ids
+          default: []
+      type: object
+      title: DeviceTagsUpdate
+      description: Replace the full tag set of one device.
     DeviceUpdate:
       properties:
         name:
@@ -6598,14 +6567,6 @@ components:
             format: uuid
           - type: 'null'
           title: Group Id
-        group_ids:
-          anyOf:
-          - items:
-              type: string
-              format: uuid
-            type: array
-          - type: 'null'
-          title: Group Ids
         default_asset_id:
           anyOf:
           - type: string
@@ -7452,6 +7413,12 @@ components:
           type: string
           format: uuid
           title: Group Id
+        tag_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Tag Id
         asset_id:
           type: string
           format: uuid
@@ -7518,6 +7485,12 @@ components:
           type: string
           format: uuid
           title: Group Id
+        tag_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Tag Id
         asset_id:
           type: string
           format: uuid
@@ -7532,6 +7505,16 @@ components:
           - type: string
           - type: 'null'
           title: Group Name
+        tag_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tag Name
+        target_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Label
         start_date:
           anyOf:
           - type: string
@@ -7599,6 +7582,12 @@ components:
             format: uuid
           - type: 'null'
           title: Group Id
+        tag_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Tag Id
         asset_id:
           anyOf:
           - type: string

@@ -1520,10 +1520,28 @@ async def devices_page(request: Request, db: AsyncSession = Depends(get_db)):
     valid_filters = {"all", "needs-attention", "critical", "warning", "healthy", *SEVERITY_TAGS}
     active_alert = raw_alert if raw_alert in valid_filters else "all"
 
+    # Group-scoped tags, for the per-device tag editor. Keyed by group id
+    # because a device may only carry tags from its own group.
+    from cms.services.device_tags import get_tags_by_device_ids, list_tags_for_groups
+
+    group_tags: dict[str, list[dict]] = {}
+    for tag in await list_tags_for_groups(db, [g.id for g in groups]):
+        group_tags.setdefault(str(tag.group_id), []).append(
+            {"id": str(tag.id), "name": tag.name, "color": tag.color}
+        )
+    device_tags = {
+        did: [{"id": str(t.id), "name": t.name, "color": t.color} for t in tags]
+        for did, tags in (
+            await get_tags_by_device_ids(db, [d.id for d in devices])
+        ).items()
+    }
+
     return templates.TemplateResponse(request, "devices.html", {
         "active_tab": "devices",
         "devices": devices,
         "groups": groups,
+        "group_tags": group_tags,
+        "device_tags": device_tags,
         "ungrouped": ungrouped,
         "assets": assets,
         "profiles": profiles,
@@ -2465,12 +2483,24 @@ async def schedules_page(request: Request, db: AsyncSession = Depends(get_db)):
     }
     playing_schedule_ids = list(_cache_playing_ids | _shadow_confirmed_ids)
 
+    # Group-scoped tags for the target picker. A tag only ever narrows a
+    # schedule within its own group, so the picker is keyed by group id and the
+    # display form is "<Group>:<Tag>".
+    from cms.services.device_tags import list_tags_for_groups
+
+    group_tags: dict[str, list[dict]] = {}
+    for tag in await list_tags_for_groups(db, [g.id for g in groups]):
+        group_tags.setdefault(str(tag.group_id), []).append(
+            {"id": str(tag.id), "name": tag.name, "color": tag.color}
+        )
+
     return templates.TemplateResponse(request, "schedules.html", {
         "active_tab": "schedules",
         "schedules": active_schedules,
         "expired_schedules": expired_schedules,
         "assets": assets,
         "groups": groups,
+        "group_tags": group_tags,
         "current_timezone": current_timezone,
         "timezone_saved": timezone_saved,
         "tz_options": tz_options,

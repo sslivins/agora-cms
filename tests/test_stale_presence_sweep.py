@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 from cms.models.device import Device, DeviceGroup, DeviceStatus
 from cms.models.device_alert_state import DeviceAlertState
 from cms.models.device_event import DeviceEvent, DeviceEventType
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.notification import Notification
 from cms.services import device_presence
 from cms.services.alert_service import (
@@ -55,7 +55,7 @@ async def stale_seed(app):
         )
         db.add(device)
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db, device.id, group.id)
         await db.commit()
         yield {
             "device_id": device.id,
@@ -134,7 +134,7 @@ class TestStalePresenceSweep:
             )
             db.add(device)
             await db.flush()
-            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+            await assign_device_group(db, device.id, group.id)
             await db.commit()
             break
 
@@ -170,7 +170,7 @@ class TestStalePresenceSweep:
             )
             db.add(device)
             await db.flush()
-            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+            await assign_device_group(db, device.id, group.id)
             await db.commit()
             break
 
@@ -350,10 +350,7 @@ class TestStalePresenceSweep:
                     online=True,
                     last_seen=stale_ts,
                 ))
-                db.add(DeviceGroupMembership(
-                    device_id=f"batch-stale-{i:03d}",
-                    group_id=group.id,
-                ))
+                await assign_device_group(db, f"batch-stale-{i:03d}", group.id,)
             await db.commit()
             break
 
@@ -394,7 +391,7 @@ class TestStalePresenceSweep:
             )
             db.add(device)
             await db.flush()
-            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+            await assign_device_group(db, device.id, group.id)
             await db.commit()
             break
 

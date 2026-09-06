@@ -57,3 +57,5 @@ tests/nightly/coverage-data/
 test_run*.log
 _commitmsg.txt
 _prbody.md
+
+_pytest_out.txt

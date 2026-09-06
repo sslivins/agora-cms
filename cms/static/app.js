@@ -571,7 +571,17 @@ async function assignGroup(deviceId, groupId) {
         showToast("Group update failed", true);
         return;
     }
-    showToast("Group updated");
+    // Tags belong to the group they were created in, so moving a device out
+    // always strips them. The server has already dropped them; mirror that in
+    // the DOM and tell the operator what was lost.
+    const chipBox = document.querySelector(`[data-device-tags="${deviceId}"]`);
+    const dropped = chipBox
+        ? Array.from(chipBox.querySelectorAll(".device-tag-chip")).map(c => c.textContent.trim())
+        : [];
+    if (chipBox) chipBox.querySelectorAll(".device-tag-chip").forEach(c => c.remove());
+    showToast(dropped.length
+        ? `Group updated — removed tag${dropped.length > 1 ? "s" : ""}: ${dropped.join(", ")}`
+        : "Group updated");
     if (!moveDeviceRowInDom(deviceId, groupId)) {
         // Could not update DOM in place (e.g., destination tbody missing for a
         // freshly-created group); fall back to a refresh so the user still sees
@@ -3188,3 +3198,187 @@ window.addEventListener("resize", _repositionAllOpenPopovers);
     window.addEventListener("scroll", hide, true);
     window.addEventListener("resize", hide);
 })();
+
+
+// ── Group-scoped device tags ────────────────────────────────────────────
+//
+// Tags are labels scoped to the device's owning group; they carry no access
+// control of their own. A device may only wear tags belonging to its own
+// group, so the picker is built from that group's tag list.
+
+function _deviceTagState() {
+    return (window._deviceTagData || { groupTags: {}, deviceGroup: {} });
+}
+
+function renderDeviceTagChips(deviceId, tags) {
+    const box = document.querySelector(`[data-device-tags="${deviceId}"]`);
+    if (!box) return;
+    box.querySelectorAll(".device-tag-chip").forEach(c => c.remove());
+    const editBtn = box.querySelector(".device-tag-edit");
+    tags.forEach(tg => {
+        const chip = document.createElement("span");
+        chip.className = "badge device-tag-chip";
+        chip.dataset.tagId = tg.id;
+        chip.style.background = tg.color;
+        chip.style.color = "#fff";
+        chip.textContent = tg.name;
+        box.insertBefore(chip, editBtn);
+    });
+}
+
+async function openDeviceTagEditor(deviceId) {
+    const state = _deviceTagState();
+    const groupSel = document.querySelector(
+        `tr[data-device-id="${deviceId}"] select[data-device-group-select]`);
+    const groupId = groupSel ? groupSel.value : (state.deviceGroup[deviceId] || "");
+    if (!groupId) {
+        showToast("Assign the device to a group before tagging it", true);
+        return;
+    }
+    const available = (state.groupTags || {})[groupId] || [];
+    if (!available.length) {
+        showToast("This group has no tags yet — create one from the group header", true);
+        return;
+    }
+    const chipBox = document.querySelector(`[data-device-tags="${deviceId}"]`);
+    const current = new Set(
+        Array.from(chipBox ? chipBox.querySelectorAll(".device-tag-chip") : [])
+            .map(c => c.dataset.tagId));
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.style.display = "flex";
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    box.innerHTML = `
+        <h3 style="margin-bottom:1rem;">Device Tags</h3>
+        <div class="form-group" id="device-tag-options">
+            ${available.map(tg => `
+            <label style="display:block;margin:.25rem 0;">
+                <input type="checkbox" value="${tg.id}" ${current.has(tg.id) ? "checked" : ""}>
+                <span class="badge" style="background:${tg.color};color:#fff">${tg.name}</span>
+            </label>`).join("")}
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-tag-cancel>Cancel</button>
+            <button type="button" class="btn btn-primary" data-tag-save>Save</button>
+        </div>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    box.querySelector("[data-tag-cancel]").onclick = close;
+    overlay.onclick = (ev) => { if (ev.target === overlay) close(); };
+
+    box.querySelector("[data-tag-save]").onclick = async () => {
+        const tagIds = Array.from(box.querySelectorAll("#device-tag-options input:checked"))
+            .map(i => i.value);
+        const resp = await apiCall("PUT", `/api/devices/${deviceId}/tags`, { tag_ids: tagIds });
+        if (resp && resp.ok) {
+            const data = await resp.json();
+            renderDeviceTagChips(deviceId, data.tags || []);
+            showToast("Tags updated");
+            close();
+        } else if (resp && resp.status === 409) {
+            // The tag set would place this device under two equal-priority
+            // schedules that overlap in time.
+            const err = await resp.json().catch(() => ({}));
+            showToast(err.detail || "Tagging would create a schedule conflict", true);
+        } else {
+            showToast("Tag update failed", true);
+        }
+    };
+}
+
+async function openGroupTagManager(groupId, groupName) {
+    const resp = await apiCall("GET", `/api/groups/${groupId}/tags`);
+    if (!resp || !resp.ok) {
+        showToast("Could not load tags", true);
+        return;
+    }
+    let tags = await resp.json();
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.style.display = "flex";
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    box.style.minWidth = "420px";
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => { overlay.remove(); location.reload(); };
+    overlay.onclick = (ev) => { if (ev.target === overlay) close(); };
+
+    function render() {
+        box.innerHTML = `
+            <h3 style="margin-bottom:.25rem;">Tags in ${groupName}</h3>
+            <p class="text-muted" style="margin-bottom:1rem;">
+                Tags are scoped to this group. The same name in another group is a
+                different tag, and a device loses its tags when it moves group.
+            </p>
+            <div id="group-tag-list">
+                ${tags.length ? tags.map(tg => `
+                <div class="form-row" data-tag-row="${tg.id}" style="align-items:center;gap:.5rem;">
+                    <input type="text" value="${tg.name}" data-tag-name style="flex:1">
+                    <input type="color" value="${tg.color}" data-tag-color>
+                    <button type="button" class="btn btn-sm" data-tag-save-row>Save</button>
+                    <button type="button" class="btn btn-sm btn-danger" data-tag-delete-row>Delete</button>
+                </div>`).join("") : `<p class="text-muted">No tags yet.</p>`}
+            </div>
+            <hr>
+            <div class="form-row" style="align-items:center;gap:.5rem;">
+                <input type="text" id="new-tag-name" placeholder="New tag name" style="flex:1">
+                <input type="color" id="new-tag-color" value="#6c757d">
+                <button type="button" class="btn btn-primary btn-sm" id="new-tag-add">Add</button>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" data-tag-close>Done</button>
+            </div>`;
+
+        box.querySelector("[data-tag-close]").onclick = close;
+
+        box.querySelector("#new-tag-add").onclick = async () => {
+            const name = box.querySelector("#new-tag-name").value.trim();
+            if (!name) return;
+            const r = await apiCall("POST", `/api/groups/${groupId}/tags`, {
+                name, color: box.querySelector("#new-tag-color").value,
+            });
+            if (r && r.ok) {
+                tags.push(await r.json());
+                render();
+            } else {
+                const err = r ? await r.json().catch(() => ({})) : {};
+                showToast(err.detail || "Could not create tag", true);
+            }
+        };
+
+        box.querySelectorAll("[data-tag-row]").forEach(row => {
+            const tagId = row.dataset.tagRow;
+            row.querySelector("[data-tag-save-row]").onclick = async () => {
+                const r = await apiCall("PATCH", `/api/device-tags/${tagId}`, {
+                    name: row.querySelector("[data-tag-name]").value.trim(),
+                    color: row.querySelector("[data-tag-color]").value,
+                });
+                if (r && r.ok) showToast("Tag updated");
+                else {
+                    const err = r ? await r.json().catch(() => ({})) : {};
+                    showToast(err.detail || "Could not update tag", true);
+                }
+            };
+            row.querySelector("[data-tag-delete-row]").onclick = async () => {
+                const ok = await showConfirm(
+                    "Delete this tag? Schedules narrowed to it will target the whole group again.");
+                if (!ok) return;
+                const r = await apiCall("DELETE", `/api/device-tags/${tagId}`);
+                if (r && r.ok) {
+                    tags = tags.filter(x => x.id !== tagId);
+                    render();
+                } else {
+                    showToast("Could not delete tag", true);
+                }
+            };
+        });
+    }
+
+    render();
+}

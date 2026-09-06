@@ -430,41 +430,23 @@ def build_group_snapshot_read_scope_clause(
 def build_device_read_scope_clause(group_ids: Collection[uuid.UUID] | None):
     """Return the standard read-scope SQL clause for devices.
 
-    Stage 8b makes ``device_group_memberships`` the only source of group
-    membership. Ungrouped visibility is granted only when the device has no
-    membership rows.
+    A device has exactly one owning group, so this is the ordinary
+    single-group clause. Ungrouped devices stay visible to scoped users, which
+    matches ``verify_resource_group_access``'s by-ID policy and keeps freshly
+    adopted devices reachable before they are filed into a group.
     """
     from cms.models.device import Device
-    from cms.models.device_group_membership import DeviceGroupMembership
 
-    if group_ids is None:
-        return true()
-
-    has_any_membership = exists(
-        select(1).where(DeviceGroupMembership.device_id == Device.id)
-    )
-    if group_ids:
-        memberships_match = exists(
-            select(1).where(
-                DeviceGroupMembership.device_id == Device.id,
-                DeviceGroupMembership.group_id.in_(list(group_ids)),
-            )
-        )
-        return or_(memberships_match, ~has_any_membership)
-
-    return ~has_any_membership
+    return build_group_read_scope_clause(group_ids, Device.group_id)
 
 
 async def get_device_group_ids(device, db: AsyncSession) -> set[uuid.UUID]:
-    """Return the full group set for a device from the join table."""
-    from cms.models.device_group_membership import DeviceGroupMembership
+    """Return the device's owning group as a set (empty when ungrouped).
 
-    result = await db.execute(
-        select(DeviceGroupMembership.group_id).where(
-            DeviceGroupMembership.device_id == device.id
-        )
-    )
-    return set(result.scalars().all())
+    Kept set-shaped so the group-set authorization helpers stay uniform across
+    resources; a device can only ever contribute one group.
+    """
+    return {device.group_id} if device.group_id is not None else set()
 
 
 async def assert_authority_over_group_set(

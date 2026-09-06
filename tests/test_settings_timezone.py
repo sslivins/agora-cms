@@ -150,7 +150,7 @@ class TestSyncTimezone:
             yield session
 
     async def _setup_device(self, db, device_id="tz-pi-01", timezone=None, group=None):
-        from cms.models.device_group_membership import DeviceGroupMembership
+        from tests.group_helpers import assign_device_group
 
         device = Device(
             id=device_id,
@@ -161,7 +161,7 @@ class TestSyncTimezone:
         db.add(device)
         await db.flush()
         if group:
-            db.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+            await assign_device_group(db, device.id, group.id)
         await db.commit()
         return device
 

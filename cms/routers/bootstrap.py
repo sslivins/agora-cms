@@ -61,7 +61,6 @@ from cms.schemas.bootstrap import (
 )
 from cms.services import device_bootstrap, device_identity, fleet_registry
 from cms.services.audit_service import audit_log
-from cms.services.device_membership import replace_device_group_memberships
 from cms.services.transport import get_transport
 from cms.auth import get_device_group_ids
 
@@ -76,30 +75,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/devices", tags=["bootstrap"])
 
 
-async def _validate_bootstrap_group_ids(
+async def _validate_bootstrap_group_id(
     db: AsyncSession,
-    group_ids: list[str] | None,
-) -> list[uuid.UUID]:
-    requested: list[uuid.UUID] = []
-    seen: set[uuid.UUID] = set()
-    for raw in group_ids or []:
-        try:
-            group_id = uuid.UUID(raw)
-        except (ValueError, AttributeError) as e:
-            raise HTTPException(status_code=404, detail="group_not_found") from e
-        if group_id in seen:
-            continue
-        seen.add(group_id)
-        requested.append(group_id)
-    if not requested:
-        return []
-    rows = await db.execute(
-        select(DeviceGroup.id).where(DeviceGroup.id.in_(requested))
+    group_id: str | None,
+) -> str | None:
+    """Resolve and existence-check the optional adoption group."""
+    if group_id is None:
+        return None
+    try:
+        group_uuid = uuid.UUID(group_id)
+    except (ValueError, AttributeError) as e:
+        raise HTTPException(status_code=404, detail="group_not_found") from e
+    exists = await db.scalar(
+        select(DeviceGroup.id).where(DeviceGroup.id == group_uuid)
     )
-    existing = set(rows.scalars().all())
-    if len(existing) != len(requested):
+    if exists is None:
         raise HTTPException(status_code=404, detail="group_not_found")
-    return requested
+    return str(group_uuid)
 
 
 # ---------------------------------------------------------------------
@@ -355,10 +347,7 @@ async def adopt(
             raise HTTPException(status_code=429, detail="rate_limited")
         bucket.append(now)
 
-    requested_group_ids = await _validate_bootstrap_group_ids(db, body.group_ids)
-    bootstrap_group_id = (
-        str(requested_group_ids[0]) if requested_group_ids else body.group_id
-    )
+    bootstrap_group_id = await _validate_bootstrap_group_id(db, body.group_id)
 
     async def _mint(device_row_id: str) -> dict[str, Any]:
         transport = get_transport()
@@ -383,8 +372,7 @@ async def adopt(
             mint_wps_jwt=_mint,
             settings=settings,
         )
-        if body.group_ids is not None:
-            await replace_device_group_memberships(db, device, requested_group_ids)
+
     except device_bootstrap.BootstrapPendingNotFound:
         await db.rollback()
         raise HTTPException(status_code=404, detail="pending_not_found")
@@ -407,9 +395,7 @@ async def adopt(
         logger.exception("/adopt internal error")
         raise HTTPException(status_code=500, detail="internal_error")
 
-    assigned_group_ids = [
-        str(group_id) for group_id in await get_device_group_ids(device, db)
-    ]
+
     await audit_log(
         db,
         user=getattr(request.state, "user", None),
@@ -420,8 +406,7 @@ async def adopt(
         details={
             "name": device.name,
             "location": device.location,
-            "group_ids": assigned_group_ids,
-            "group_id": assigned_group_ids[0] if assigned_group_ids else None,
+            "group_id": str(device.group_id) if device.group_id else None,
             "profile_id": str(device.profile_id) if device.profile_id else None,
             "pending_id": str(pending.id),
         },
@@ -507,10 +492,7 @@ async def adopt_pending(
             raise HTTPException(status_code=429, detail="rate_limited")
         bucket.append(now)
 
-    requested_group_ids = await _validate_bootstrap_group_ids(db, body.group_ids)
-    bootstrap_group_id = (
-        str(requested_group_ids[0]) if requested_group_ids else body.group_id
-    )
+    bootstrap_group_id = await _validate_bootstrap_group_id(db, body.group_id)
 
     try:
         pending_uuid = uuid.UUID(body.pending_id)
@@ -540,8 +522,7 @@ async def adopt_pending(
             mint_wps_jwt=_mint,
             settings=settings,
         )
-        if body.group_ids is not None:
-            await replace_device_group_memberships(db, device, requested_group_ids)
+
     except device_bootstrap.BootstrapPendingNotFound:
         await db.rollback()
         raise HTTPException(status_code=404, detail="pending_not_found")
@@ -564,9 +545,7 @@ async def adopt_pending(
         logger.exception("/adopt-pending internal error")
         raise HTTPException(status_code=500, detail="internal_error")
 
-    assigned_group_ids = [
-        str(group_id) for group_id in await get_device_group_ids(device, db)
-    ]
+
     await audit_log(
         db,
         user=getattr(request.state, "user", None),
@@ -579,8 +558,7 @@ async def adopt_pending(
         details={
             "name": device.name,
             "location": device.location,
-            "group_ids": assigned_group_ids,
-            "group_id": assigned_group_ids[0] if assigned_group_ids else None,
+            "group_id": str(device.group_id) if device.group_id else None,
             "profile_id": str(device.profile_id) if device.profile_id else None,
             "pending_id": str(pending.id),
             "flow": "adopt-pending",

@@ -15,7 +15,7 @@ from cms.auth import (
     hash_password,
 )
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.user import Role, User, UserGroup
 from cms.permissions import (
     ALL_PERMISSIONS,
@@ -95,38 +95,6 @@ async def _create_group(db, name: str) -> DeviceGroup:
 
 @pytest.mark.asyncio
 class TestSharedDeviceReadAccess:
-    async def test_group_membership_any_of_allows_shared_device_read(
-        self, app, db_session,
-    ):
-        """A user should reach a shared device through any authorised group."""
-        group_a = await _create_group(db_session, "Shared Read A")
-        group_b = await _create_group(db_session, "Shared Read B")
-        device = Device(
-            id="shared-read-01",
-            name="Shared Read Device",
-            status=DeviceStatus.ADOPTED,
-        )
-        db_session.add(device)
-        await db_session.flush()
-        db_session.add_all([
-            DeviceGroupMembership(device_id=device.id, group_id=group_a.id),
-            DeviceGroupMembership(device_id=device.id, group_id=group_b.id),
-        ])
-        await db_session.commit()
-
-        await _create_user(
-            db_session,
-            email="shared_b@test.com",
-            role_name="Operator",
-            group_ids=[group_b.id],
-        )
-        client = await _login_as(app, "shared_b@test.com")
-        try:
-            resp = await client.get(f"/api/devices/{device.id}")
-            assert resp.status_code == 200, resp.text
-            assert resp.json()["id"] == device.id
-        finally:
-            await client.aclose()
 
     async def test_group_membership_any_of_still_denies_unshared_device(
         self, app, db_session,
@@ -140,7 +108,7 @@ class TestSharedDeviceReadAccess:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group_a.id))
+        await assign_device_group(db_session, device.id, group_a.id)
         await db_session.commit()
 
         await _create_user(
@@ -170,7 +138,7 @@ class TestSharedDeviceListScoping:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group_a.id))
+        await assign_device_group(db_session, device.id, group_a.id)
         await db_session.commit()
 
         await _create_user(

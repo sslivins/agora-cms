@@ -14,7 +14,7 @@ import pytest
 
 from cms.models.asset import Asset, AssetType, AssetVariant, VariantStatus
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.device_profile import DeviceProfile
 
 
@@ -26,7 +26,7 @@ async def _seed_group_and_device(db_session):
     device = Device(id="stream-pi", name="Stream Pi", status=DeviceStatus.ADOPTED)
     db_session.add_all([group, device])
     await db_session.flush()
-    db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+    await assign_device_group(db_session, device.id, group.id)
     await db_session.commit()
     return group
 

@@ -8,7 +8,7 @@ import pytest_asyncio
 from cms.auth import set_setting, SETTING_TIMEZONE
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.schedule import Schedule
 
 
@@ -22,7 +22,7 @@ class TestExpiredSchedulesPage:
         asset = Asset(filename="clip.mp4", asset_type=AssetType.VIDEO, size_bytes=100, checksum="abc")
         db_session.add_all([group, device, asset])
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db_session, device.id, group.id)
         await db_session.commit()
         return group.id, asset.id
 

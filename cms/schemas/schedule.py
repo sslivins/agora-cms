@@ -10,6 +10,10 @@ from pydantic import BaseModel, field_validator, model_validator
 class ScheduleCreate(BaseModel):
     name: str
     group_id: uuid.UUID
+    # Optional group-scoped tag narrowing the target from "every device in the
+    # group" to "every device in the group carrying this tag". The tag must
+    # belong to ``group_id``; display form is ``<Group>:<Tag>``.
+    tag_id: Optional[uuid.UUID] = None
     asset_id: uuid.UUID
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
@@ -55,6 +59,8 @@ class ScheduleCreate(BaseModel):
 class ScheduleUpdate(BaseModel):
     name: Optional[str] = None
     group_id: Optional[uuid.UUID] = None
+    # Explicit null clears the tag, widening the target back to the whole group.
+    tag_id: Optional[uuid.UUID] = None
     asset_id: Optional[uuid.UUID] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
@@ -118,9 +124,13 @@ class ScheduleOut(BaseModel):
     id: uuid.UUID
     name: str
     group_id: uuid.UUID
+    tag_id: Optional[uuid.UUID] = None
     asset_id: uuid.UUID
     asset_filename: Optional[str] = None
     group_name: Optional[str] = None
+    tag_name: Optional[str] = None
+    # ``<Group>:<Tag>`` when tagged, else just the group name.
+    target_label: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     start_time: time

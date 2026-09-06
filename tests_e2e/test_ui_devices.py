@@ -110,79 +110,64 @@ class TestDevicesPage:
         expect(page.locator("strong", has_text="E2E Test Group")).to_be_visible()
 
 
-class TestManyToManyDeviceGroupsUI:
-    """Stage 7 device-group chips, filter, and preview flow."""
+class TestDeviceGroupUI:
+    """Device group assignment and the group filter chips."""
 
-    def test_device_can_be_added_to_second_group_with_preview(
+    def test_assigning_a_group_moves_the_device_into_that_panel(
         self, page: Page, api, ws_url, e2e_server
     ):
-        _register_and_adopt(api, ws_url, "g2m-ui-001", "G2M UI Device")
-        group_a = api.post("/api/devices/groups/", json={"name": "G2M Alpha"}).json()
-        group_b = api.post("/api/devices/groups/", json={"name": "G2M Beta"}).json()
-        api.patch("/api/devices/g2m-ui-001", json={"group_id": group_a["id"]})
-
-        asset_resp = api.create_asset(filename="preview-impact.mp4")
-        assert asset_resp.status_code == 201
-        asset_id = asset_resp.json()["id"]
-        sched_resp = api.post(
-            "/api/schedules",
-            json={
-                "name": "Preview Impact Schedule",
-                "group_id": group_b["id"],
-                "asset_id": asset_id,
-                "start_time": "09:00",
-                "end_time": "17:00",
-            },
-        )
-        assert sched_resp.status_code == 201, sched_resp.text
+        _register_and_adopt(api, ws_url, "grp-ui-001", "Group UI Device")
+        group_a = api.post("/api/devices/groups/", json={"name": "Grp Alpha"}).json()
+        group_b = api.post("/api/devices/groups/", json={"name": "Grp Beta"}).json()
+        api.patch("/api/devices/grp-ui-001", json={"group_id": group_a["id"]})
 
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
 
-        row = page.locator('tr.device-row[data-device-id="g2m-ui-001"]').first
+        row = page.locator('tr.device-row[data-device-id="grp-ui-001"]').first
         expect(row).to_be_visible(timeout=5000)
-        expect(row.locator('.device-group-badge')).to_have_count(1)
-        row.locator('select[data-device-add-group]').select_option(group_b["id"])
+        # A device belongs to exactly one group, so it appears exactly once.
+        expect(page.locator('tr.device-row[data-device-id="grp-ui-001"]')).to_have_count(1)
+        row.locator("select[data-device-group-select]").select_option(group_b["id"])
+        page.wait_for_load_state("networkidle")
 
-        modal = page.locator(".modal-overlay")
-        expect(modal).to_be_visible(timeout=3000)
-        expect(modal).to_contain_text("Preview Impact Schedule")
-        modal.get_by_role("button", name="Confirm").click()
-        page.wait_for_load_state("domcontentloaded")
+        expect(
+            page.locator(
+                f'.group-panel[data-group-id="{group_b["id"]}"] '
+                'tr.device-row[data-device-id="grp-ui-001"]'
+            )
+        ).to_have_count(1, timeout=5000)
+        expect(
+            page.locator(
+                f'.group-panel[data-group-id="{group_a["id"]}"] '
+                'tr.device-row[data-device-id="grp-ui-001"]'
+            )
+        ).to_have_count(0)
 
-        expect(page.locator('tr.device-row[data-device-id="g2m-ui-001"]').first.locator('.device-group-badge')).to_have_count(2)
-        expect(page.locator(f'.group-panel[data-group-id="{group_a["id"]}"] tr.device-row[data-device-id="g2m-ui-001"]')).to_have_count(1)
-        expect(page.locator(f'.group-panel[data-group-id="{group_b["id"]}"] tr.device-row[data-device-id="g2m-ui-001"]')).to_have_count(1)
-
-    def test_group_filter_is_any_selected_groups(
+    def test_group_filter_shows_only_selected_groups(
         self, page: Page, api, ws_url, e2e_server
     ):
-        _register_and_adopt(api, ws_url, "g2m-ui-101", "Alpha Device")
-        _register_and_adopt(api, ws_url, "g2m-ui-102", "Beta Device")
-        _register_and_adopt(api, ws_url, "g2m-ui-103", "Both Device")
+        _register_and_adopt(api, ws_url, "grp-ui-101", "Alpha Device")
+        _register_and_adopt(api, ws_url, "grp-ui-102", "Beta Device")
 
         group_a = api.post("/api/devices/groups/", json={"name": "Filter Alpha"}).json()
         group_b = api.post("/api/devices/groups/", json={"name": "Filter Beta"}).json()
-        api.patch("/api/devices/g2m-ui-101", json={"group_id": group_a["id"]})
-        api.patch("/api/devices/g2m-ui-102", json={"group_id": group_b["id"]})
-        api.put("/api/devices/g2m-ui-103/groups", json={"group_ids": [group_a["id"], group_b["id"]]})
+        api.patch("/api/devices/grp-ui-101", json={"group_id": group_a["id"]})
+        api.patch("/api/devices/grp-ui-102", json={"group_id": group_b["id"]})
 
         page.goto("/devices")
         page.wait_for_load_state("domcontentloaded")
-
-        expect(page.locator('tr.device-row[data-device-id="g2m-ui-103"]')).to_have_count(2)
 
         page.locator(f'.group-filter-chip[data-group-filter="{group_a["id"]}"]').click()
         expect(page.locator(f'.group-panel[data-group-id="{group_a["id"]}"]')).to_be_visible()
         expect(page.locator(f'.group-panel[data-group-id="{group_b["id"]}"]')).to_be_hidden()
-        expect(page.locator('tr.device-row[data-device-id="g2m-ui-101"]').first).to_be_visible()
-        expect(page.locator('tr.device-row[data-device-id="g2m-ui-102"]').first).to_be_hidden()
-        expect(page.locator('tr.device-row[data-device-id="g2m-ui-103"]').first).to_be_visible()
+        expect(page.locator('tr.device-row[data-device-id="grp-ui-101"]').first).to_be_visible()
+        expect(page.locator('tr.device-row[data-device-id="grp-ui-102"]').first).to_be_hidden()
 
         page.locator(f'.group-filter-chip[data-group-filter="{group_b["id"]}"]').click()
         expect(page.locator(f'.group-panel[data-group-id="{group_a["id"]}"]')).to_be_visible()
         expect(page.locator(f'.group-panel[data-group-id="{group_b["id"]}"]')).to_be_visible()
-        expect(page.locator('tr.device-row[data-device-id="g2m-ui-102"]').first).to_be_visible()
+        expect(page.locator('tr.device-row[data-device-id="grp-ui-102"]').first).to_be_visible()
 
 
 class TestDashboardPendingDeviceName:

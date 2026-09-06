@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cms.auth import hash_password, set_setting, _hash_api_key
 from cms.models.api_key import APIKey
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.group_asset import GroupAsset
 from cms.models.user import Role, User, UserGroup
 
@@ -560,10 +560,8 @@ class TestDeviceGroupAPIScoping:
         dev_b = Device(id="dev-scope-b", name="Device B", status=DeviceStatus.ADOPTED)
         db_session.add_all([dev_a, dev_b])
         await db_session.flush()
-        db_session.add_all([
-            DeviceGroupMembership(device_id=dev_a.id, group_id=group_a.id),
-            DeviceGroupMembership(device_id=dev_b.id, group_id=group_b.id),
-        ])
+        await assign_device_group(db_session, dev_a.id, group_a.id)
+        await assign_device_group(db_session, dev_b.id, group_b.id)
         await db_session.commit()
 
         await _create_user(db_session, email="dev_scope@test.com", role_name="Operator",
@@ -724,7 +722,7 @@ class TestIDORProtection:
                        status=DeviceStatus.ADOPTED)
         db_session.add(dev_b)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=dev_b.id, group_id=group_b.id))
+        await assign_device_group(db_session, dev_b.id, group_b.id)
         await db_session.commit()
 
         await _create_user(db_session, email="idor_dev@test.com",
@@ -801,7 +799,7 @@ class TestIDORProtection:
                        status=DeviceStatus.ADOPTED)
         db_session.add(dev_b)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=dev_b.id, group_id=group_b.id))
+        await assign_device_group(db_session, dev_b.id, group_b.id)
         await db_session.commit()
 
         custom_role = Role(
@@ -871,10 +869,8 @@ class TestIDORProtection:
                        status=DeviceStatus.ADOPTED)
         db_session.add_all([dev_a, dev_b])
         await db_session.flush()
-        db_session.add_all([
-            DeviceGroupMembership(device_id=dev_a.id, group_id=group_a.id),
-            DeviceGroupMembership(device_id=dev_b.id, group_id=group_b.id),
-        ])
+        await assign_device_group(db_session, dev_a.id, group_a.id)
+        await assign_device_group(db_session, dev_b.id, group_b.id)
         await db_session.commit()
 
         await _create_user(db_session, email="ui_grp@test.com",
@@ -1769,7 +1765,7 @@ class TestDeviceActionIDOR:
                      status=DeviceStatus.ADOPTED)
         db.add(dev)
         await db.flush()
-        db.add(DeviceGroupMembership(device_id=dev.id, group_id=group_b.id))
+        await assign_device_group(db, dev.id, group_b.id)
         await db.commit()
         email = f"devact_{uuid.uuid4().hex[:6]}@test.com"
         await _create_user(db, email=email, role_name="Operator", group_ids=[group_a.id])
@@ -1858,7 +1854,7 @@ class TestDeviceActionIDOR:
                      status=DeviceStatus.ADOPTED)
         db_session.add(dev)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=dev.id, group_id=group_b.id))
+        await assign_device_group(db_session, dev.id, group_b.id)
         await db_session.commit()
         # Operator doesn't have devices:delete; use Admin in group A
         email = f"devdel_{uuid.uuid4().hex[:6]}@test.com"
@@ -1914,7 +1910,7 @@ class TestDeviceActionIDOR:
                      status=DeviceStatus.ADOPTED)
         db_session.add(dev)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=dev.id, group_id=group.id))
+        await assign_device_group(db_session, dev.id, group.id)
         await db_session.commit()
         email = f"devadmin_{uuid.uuid4().hex[:6]}@test.com"
         await _create_user(db_session, email=email, role_name="Admin")

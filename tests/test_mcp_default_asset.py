@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 
 ASSET_UUID = str(uuid.uuid4())
 
@@ -47,7 +47,7 @@ async def _create_device(db, device_id="dev-1", group_id=None):
     db.add(device)
     await db.flush()
     if group_id is not None:
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_id))
+        await assign_device_group(db, device.id, group_id)
     await db.commit()
     return device
 

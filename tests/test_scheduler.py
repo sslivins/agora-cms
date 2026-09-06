@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from cms.models.asset import Asset, AssetType
 from cms.models.device import Device, DeviceGroup, DeviceStatus
-from cms.models.device_group_membership import DeviceGroupMembership
+from tests.group_helpers import assign_device_group
 from cms.models.schedule import Schedule
 from cms.models.setting import CMSSetting
 from cms.services.scheduler import (
@@ -26,7 +26,7 @@ from cms.services.scheduler import (
 
 async def _add_memberships(db, device_id: str, *group_ids) -> None:
     for group_id in group_ids:
-        db.add(DeviceGroupMembership(device_id=device_id, group_id=group_id))
+        await assign_device_group(db, device_id, group_id)
     await db.flush()
 
 
@@ -361,40 +361,6 @@ class TestBuildDeviceSync:
         assert sync.schedules[0].asset == "video.mp4"
         assert sync.schedules[0].name == "Test"
 
-    async def test_multi_membership_gets_schedules_from_all_groups(self, db):
-        """Membership-table reads include schedules from every current group."""
-        await self._setup_tz(db)
-        asset_a = Asset(filename="group-a.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="ga")
-        asset_b = Asset(filename="group-b.mp4", asset_type=AssetType.VIDEO, size_bytes=1000, checksum="gb")
-        group_a = DeviceGroup(name="Group A")
-        group_b = DeviceGroup(name="Group B")
-        db.add_all([asset_a, asset_b, group_a, group_b])
-        await db.flush()
-
-        device = await self._setup_device(db, group=group_a)
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
-        await db.flush()
-
-        db.add_all([
-            Schedule(
-                name="Sched A",
-                group_id=group_a.id,
-                asset_id=asset_a.id,
-                start_time=time(9, 0),
-                end_time=time(17, 0),
-            ),
-            Schedule(
-                name="Sched B",
-                group_id=group_b.id,
-                asset_id=asset_b.id,
-                start_time=time(9, 0),
-                end_time=time(17, 0),
-            ),
-        ])
-        await db.commit()
-
-        sync = await build_device_sync(device.id, db)
-        assert {entry.name for entry in sync.schedules} == {"Sched A", "Sched B"}
 
     async def test_group_schedule(self, db):
         """Device in a group gets group-targeted schedule."""
@@ -462,36 +428,13 @@ class TestBuildDeviceSync:
         await db.flush()
 
         device = await self._setup_device(db, group=group_a)
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
+        await assign_device_group(db, device.id, group_b.id)
         await db.commit()
 
         sync = await build_device_sync(device.id, db)
         assert sync.default_asset == "shared-splash.png"
         assert sync.splash == "shared-splash.png"
 
-    async def test_default_asset_ambiguous_group_defaults_fall_back_to_none(self, db):
-        """Distinct group defaults must not be silently chosen."""
-        await self._setup_tz(db)
-        default_a = Asset(filename="group-a-splash.png", asset_type=AssetType.IMAGE, size_bytes=100, checksum="gsa")
-        default_b = Asset(filename="group-b-splash.png", asset_type=AssetType.IMAGE, size_bytes=100, checksum="gsb")
-        group_a = DeviceGroup(name="Ambiguous A")
-        group_b = DeviceGroup(name="Ambiguous B")
-        db.add_all([default_a, default_b, group_a, group_b])
-        await db.flush()
-        group_a.default_asset_id = default_a.id
-        group_b.default_asset_id = default_b.id
-        await db.flush()
-
-        device = await self._setup_device(db, group=group_a)
-        db.add(DeviceGroupMembership(device_id=device.id, group_id=group_b.id))
-        await db.commit()
-
-        with patch("cms.services.scheduler.logger.warning") as mock_warning:
-            sync = await build_device_sync(device.id, db)
-        assert sync.default_asset is None
-        assert sync.splash is None
-        mock_warning.assert_called_once()
-        assert "Ambiguous group default assets" in mock_warning.call_args.args[0]
 
     async def test_splash_none_when_no_default(self, db):
         """splash is None when device has no default asset at any level."""

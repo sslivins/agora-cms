@@ -221,7 +221,7 @@ class TestGroupChangePushSync:
 
     async def test_clearing_group_id_pushes_sync(self, client, db_session):
         from cms.models.device import Device, DeviceGroup
-        from cms.models.device_group_membership import DeviceGroupMembership
+        from tests.group_helpers import assign_device_group
 
         group = DeviceGroup(id=uuid.uuid4(), name="Lobby")
         db_session.add(group)
@@ -230,7 +230,7 @@ class TestGroupChangePushSync:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=group.id))
+        await assign_device_group(db_session, device.id, group.id)
         await db_session.commit()
 
         with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:
@@ -244,7 +244,7 @@ class TestGroupChangePushSync:
 
     async def test_changing_group_id_pushes_sync(self, client, db_session):
         from cms.models.device import Device, DeviceGroup
-        from cms.models.device_group_membership import DeviceGroupMembership
+        from tests.group_helpers import assign_device_group
 
         old_group = DeviceGroup(id=uuid.uuid4(), name="Lobby")
         new_group = DeviceGroup(id=uuid.uuid4(), name="Cafeteria")
@@ -254,7 +254,7 @@ class TestGroupChangePushSync:
         )
         db_session.add(device)
         await db_session.flush()
-        db_session.add(DeviceGroupMembership(device_id=device.id, group_id=old_group.id))
+        await assign_device_group(db_session, device.id, old_group.id)
         await db_session.commit()
 
         with patch("cms.routers.devices.push_sync_to_device", new_callable=AsyncMock) as mock_sync:

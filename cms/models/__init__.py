@@ -7,7 +7,6 @@ from cms.models.agora_os_channel_bundle import AgoraOsChannelBundle  # noqa: F40
 from cms.models.device import Device, DeviceGroup, DeviceStatus  # noqa: F401
 from cms.models.device_alert import DeviceAlert  # noqa: F401
 from cms.models.device_alert_state import DeviceAlertState  # noqa: F401
-from cms.models.device_group_membership import DeviceGroupMembership  # noqa: F401
 from cms.models.device_event import DeviceEvent, DeviceEventType  # noqa: F401
 from cms.models.device_profile import DeviceProfile  # noqa: F401
 from cms.models.group_asset import GroupAsset  # noqa: F401
@@ -23,6 +22,11 @@ from cms.models.schedule_missed_event import ScheduleMissedEvent  # noqa: F401
 from cms.models.setting import CMSSetting  # noqa: F401
 from cms.models.slideshow_slide import SlideshowSlide  # noqa: F401
 from cms.models.tag import Tag, AssetTag, DEFAULT_TAG_COLOR  # noqa: F401
+from cms.models.device_tag import (  # noqa: F401
+    DEFAULT_DEVICE_TAG_COLOR,
+    DeviceTag,
+    DeviceTagAssignment,
+)
 from cms.models.asset_view import AssetView  # noqa: F401
 from cms.models.chat_message import ChatMessage  # noqa: F401
 from cms.models.chat_pending_approval import ChatPendingApproval  # noqa: F401
@@ -39,38 +43,6 @@ DeviceAsset.device = relationship("Device", back_populates="device_assets")
 DeviceProfile.devices = relationship("Device", back_populates="profile")
 GroupAsset.group = relationship("DeviceGroup")
 
-# Device ↔ group many-to-many (#863). Registered here (after all models are
-# imported) so the association-object relationship resolves cleanly.
-Device.memberships = relationship(
-    "DeviceGroupMembership",
-    back_populates="device",
-    cascade="all, delete-orphan",
-)
-Device.groups = relationship(
-    "DeviceGroup",
-    secondary="device_group_memberships",
-    primaryjoin="Device.id == DeviceGroupMembership.device_id",
-    secondaryjoin="DeviceGroup.id == DeviceGroupMembership.group_id",
-    viewonly=True,
-    lazy="selectin",
-    overlaps="devices,memberships",
-)
-DeviceGroup.devices = relationship(
-    "Device",
-    secondary="device_group_memberships",
-    primaryjoin="DeviceGroup.id == DeviceGroupMembership.group_id",
-    secondaryjoin="Device.id == DeviceGroupMembership.device_id",
-    viewonly=True,
-    lazy="selectin",
-    overlaps="groups,memberships",
-)
-DeviceGroup.memberships = relationship(
-    "DeviceGroupMembership",
-    back_populates="group",
-    cascade="all, delete-orphan",
-    overlaps="devices,groups",
-)
-
 # Tags are CMS-only metadata on assets.  Defined here so the Asset model
 # (which lives in shared/) doesn't need to know about Tag.
 Asset.tags = relationship(
@@ -78,4 +50,14 @@ Asset.tags = relationship(
     secondary="asset_tags",
     order_by="Tag.name",
     lazy="selectin",
+)
+
+# Group-scoped device tags. Attached here (rather than on Device) to keep the
+# device model free of tag knowledge and to mirror the Asset.tags pattern.
+Device.tags = relationship(
+    "DeviceTag",
+    secondary="device_tag_assignments",
+    order_by="DeviceTag.name",
+    lazy="selectin",
+    viewonly=True,
 )
